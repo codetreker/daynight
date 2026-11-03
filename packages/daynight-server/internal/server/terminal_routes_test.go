@@ -86,7 +86,7 @@ func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
 	h := projectTestHandler(t, db, io.Discard)
 	extendedWorkerTestHandler(h)
 	project := taskProject(t, h)
-	task := updateHTTPTask(t, h, createHTTPTask(t, h, project.ID, "Terminal"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, h, createHTTPWorkerTask(t, h, project.ID, "Terminal"), map[string]any{"allowAgents": true})
 	claim := workerClaimBody(task.Version)
 	claim["agentControlMode"] = "herdr"
 	task = claimHTTPWorker(t, h, task, claim)

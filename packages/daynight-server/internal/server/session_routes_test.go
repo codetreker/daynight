@@ -79,7 +79,7 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	f.handler = projectTestHandler(t, f.db, io.Discard)
 	extendedWorkerTestHandler(f.handler)
 	project := taskProject(t, f.handler)
-	f.task = updateHTTPTask(t, f.handler, createHTTPTask(t, f.handler, project.ID, "Web session"), map[string]any{"allowAgents": true})
+	f.task = updateHTTPTask(t, f.handler, createHTTPWorkerTask(t, f.handler, project.ID, "Web session"), map[string]any{"allowAgents": true})
 	body := workerClaimBody(f.task.Version)
 	body["agentControlMode"] = "web"
 	f.task = claimHTTPWorker(t, f.handler, f.task, body)

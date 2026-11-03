@@ -780,7 +780,12 @@ remains available regardless of automatic eligibility.
 Permission PATCH distinguishes omission from false, rejects null/nonboolean,
 checks version before same-value handling and rejects actual changes while
 in_progress as invalid_transition. Explicit task execution accepts either value;
-automatic discovery requires true. The [claim foundation](../../docs/design/daynight-worker-claims.md)
+automatic discovery requires true and assignedTo matching the authenticated
+local user ID. Unassigned or other-user tasks fail automatic claim with
+409 invalid_transition, preserving fields, version and timestamps. Worker
+candidates use assignedTo=me before pagination; complete claim inventory omits
+assignment filtering, and explicit manual resume retains its owner/admin rules.
+The [claim foundation](../../docs/design/daynight-worker-claims.md)
 rechecks eligibility and ownership in the same transaction. PR order and duplicates
 remain significant. Readiness changes do not advance dependent task revisions.
 
@@ -1166,6 +1171,17 @@ status, readiness, dependencies and escaped PR references while omitting
 description, version and timestamps; `task show` retains those detail fields.
 Both detail and all-status list output preserve visible PR control-character
 escaping without emitting raw terminal controls.
+
+The [external-dependency write scenario](cmd/daynight-server/acceptance_external_dependency_write_cli_test.go)
+waits for the parsed `http_request` records for both successful raw PATCHes,
+`external-flags-only` and `external-flags-noop`, before capturing the subsequent
+CLI refusal's mutation-count baseline. Each preparation record must match its
+request ID, method PATCH and status 200; an HTTP response or unrelated record
+count does not establish that the test process has consumed those logs. After
+the CLI exits, the existing mutation-log wait precedes the strict assertion of
+exactly one additional request, status 409 and the matching stderr request ID.
+The [request-log synchronization decision](../../.agents/notes/implemented/testing/2026-11-03-cli-request-log-synchronization.md)
+owns this ordering rationale and its regression boundaries.
 
 The independent [platform/status scenario](cmd/daynight-server/acceptance_platform_cli_test.go),
 `TestInstalledCLIPlatformAcceptance` / `installed_cli_platform_status_workflow`,

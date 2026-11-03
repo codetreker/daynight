@@ -36,7 +36,11 @@ resolved all/unassigned/user selection participates in task cursor version 2;
 project and account-Worker cursors retain version 1. Resolving me before cursor
 validation makes it equivalent to the corresponding concrete UUID while keeping
 another principal's self-filter out of that scope. Filters are explicit inputs,
-not an execution-eligibility condition.
+originally independent of execution eligibility. That initial separation kept
+human responsibility distinct from execution ownership. The [self-assigned
+acquisition decision](2026-11-03-worker-self-assigned-claims.md) now requires
+assignment to the authenticated user for automatic candidates and claims, while
+retaining original claim authority for inventory and manual control.
 
 A project-scoped people read separates canonical profile and access facts from
 Task versions. It offers complete candidate/retained-assignee enumeration and

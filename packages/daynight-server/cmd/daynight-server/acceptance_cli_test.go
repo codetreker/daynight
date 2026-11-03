@@ -437,6 +437,17 @@ func acceptanceCLIMutations(process *acceptanceProcess) []acceptanceCLIRequest {
 	return requests
 }
 
+func acceptanceCLIWaitSuccessfulPatchLogs(ctx context.Context, logs *acceptanceLogs, requestIDs ...string) error {
+	return acceptanceEventually(ctx, func() (bool, error) {
+		for _, id := range requestIDs {
+			if !logs.matches(map[string]any{"type": "http_request", "method": http.MethodPatch, "status": float64(http.StatusOK), "request_id": id}) {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+}
+
 func acceptanceCLIWaitMutations(t *testing.T, process *acceptanceProcess, count int) []acceptanceCLIRequest {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -456,7 +467,9 @@ func (c *acceptanceCLI) refuse(t *testing.T, process *acceptanceProcess, code, t
 	}
 	requests := acceptanceCLIWaitMutations(t, process, before+1)
 	if len(requests) != before+1 || requests[before].Status != 409 || requests[before].RequestID == "" || !strings.Contains(result.stderr, "requestId="+requests[before].RequestID) {
-		t.Fatal("installed CLI refusal retried or lost the actual server request identity")
+		t.Fatalf("installed CLI refusal request mismatch: before=%d expected total=%d actual total=%d added=%+v exit=%d stdout bytes=%d requestId-in-stderr=%t stderr=%q",
+			before, before+1, len(requests), requests[before:], result.status, len(result.stdout),
+			requests[before].RequestID != "" && strings.Contains(result.stderr, "requestId="+requests[before].RequestID), result.stderr)
 	}
 	if err := binaryAcceptance.update(func() {
 		c.scenario.CLIRefusalRequestIDs = append(c.scenario.CLIRefusalRequestIDs, requests[before].RequestID)

@@ -61,6 +61,9 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal core.Principal, proje
 		if err := workerReady(current); err != nil {
 			return taskMutation{}, err
 		}
+		if current.AssignedTo == nil || *current.AssignedTo != principal.UserID {
+			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Task must be assigned to the authenticated user for automatic execution."}
+		}
 		if !current.AllowAgents || !core.PlatformCompatible(current.RequiredPlatform, descriptor.Platform) {
 			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Task does not permit automatic execution on this platform."}
 		}

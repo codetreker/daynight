@@ -20,7 +20,7 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	add := func(principal core.Principal, id string) core.Task {
 		descriptor := workerDescriptor()
 		descriptor.WorkerID = id
-		return claimWorkerTask(t, tasks, principal, claimableTask(t, tasks, admin, project.ID), descriptor)
+		return claimWorkerTask(t, tasks, principal, claimableTask(t, tasks, principal, project.ID), descriptor)
 	}
 
 	createTask(t, tasks, admin, project.ID, "Unclaimed first")
@@ -118,7 +118,7 @@ func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 	ctx := context.Background()
 	owner := workerMember(t, database, project.ID)
 	descriptor := workerDescriptor()
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), descriptor)
+	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
 	inventory := func(principal core.Principal, wantClaim string) {
 		t.Helper()
 		page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}, WorkerID: &descriptor.WorkerID})

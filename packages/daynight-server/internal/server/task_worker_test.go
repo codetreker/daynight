@@ -17,6 +17,13 @@ func workerClaimBody(version int64) map[string]any {
 		"machine": map[string]any{"id": uuid.NewString(), "name": "Worker machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}
 }
 
+func createHTTPWorkerTask(t *testing.T, handler *resourceTestHandler, projectID, title string, dependencies ...string) api.Task {
+	t.Helper()
+	return decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(projectID), jsonBody(t, map[string]any{
+		"title": title, "description": "initial description", "dependsOn": append([]string{}, dependencies...), "assignedTo": handler.principal.UserID,
+	})), http.StatusCreated)
+}
+
 func claimHTTPWorker(t *testing.T, handler http.Handler, task api.Task, body map[string]any) api.Task {
 	t.Helper()
 	body["version"] = task.Version
@@ -31,7 +38,7 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, projectTestStore(t), &logs)
 	project := taskProject(t, handler)
-	task := createHTTPTask(t, handler, project.ID, "Worker task")
+	task := createHTTPWorkerTask(t, handler, project.ID, "Worker task")
 	read := projectRequest(handler, http.MethodGet, taskPath(task), "")
 	if _, exists := decodeResponse[api.Task](t, read, http.StatusOK).Properties["worker"]; exists {
 		t.Fatal("unclaimed task contains a worker property")
@@ -78,7 +85,7 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Strict worker task"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Strict worker task"), map[string]any{"allowAgents": true})
 	base := workerClaimBody(task.Version)
 	for _, test := range []struct {
 		key   string
@@ -150,7 +157,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 func TestWorkerHTTPReleaseAndExplicitManualResume(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Resume worker task"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Resume worker task"), map[string]any{"allowAgents": true})
 	body := workerClaimBody(task.Version)
 	task = claimHTTPWorker(t, handler, task, body)
 	old := apiWorker(t, task.Properties).ClaimID
@@ -173,7 +180,7 @@ func TestWorkerHTTPReleaseAndExplicitManualResume(t *testing.T) {
 func TestWorkerHTTPRejectsDeprecatedContinuityInputs(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Fresh worker execution"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Fresh worker execution"), map[string]any{"allowAgents": true})
 	claim := workerClaimBody(task.Version)
 	rejectContinuity := func(path string, body map[string]any) {
 		t.Helper()
@@ -199,7 +206,7 @@ func TestWorkerHTTPWithdrawalReturnsClearedClaim(t *testing.T) {
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, projectTestStore(t), &logs)
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Force withdrawal"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Force withdrawal"), map[string]any{"allowAgents": true})
 	body := workerClaimBody(task.Version)
 	task = claimHTTPWorker(t, handler, task, body)
 	claimID := apiWorker(t, task.Properties).ClaimID

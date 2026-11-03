@@ -20,7 +20,9 @@ func TestInstalledWorkerClientAcceptance(t *testing.T) {
 		process := fixture.launch(t, nil).started(t)
 		cli := newAcceptanceCLI(t, receipt, scenario)
 		project := process.project(t, "Worker internal API")
+		user := acceptanceDecode[api.User](t, process.request(context.Background(), http.MethodGet, "/api/v1/me", nil, ""), http.StatusOK)
 		task := process.task(t, project, "Worker API execution")
+		task = process.update(t, task, map[string]any{"assignedTo": user.ID})
 		task = process.update(t, task, map[string]any{"allowAgents": true})
 		program := filepath.Join(cli.root, "worker-client.mjs")
 		if err := os.WriteFile(program, []byte(workerClientAcceptanceProgram), 0o600); err != nil {
