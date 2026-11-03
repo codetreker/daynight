@@ -3,10 +3,10 @@ import { UsageError } from "./context.js";
 export type CommandOption = {
   names: readonly string[];
   description: string;
-  value?: { name: string; kind: "directory" | "text"; allowEmpty?: boolean; choices?: readonly string[] };
+  value?: { name: string; kind: "directory" | "text"; allowEmpty?: boolean; choices?: readonly string[]; optional?: boolean };
   required?: boolean;
   repeatable?: boolean;
-  action?: "help" | "version";
+  action?: "help" | "version" | "skill";
 };
 
 export type CommandArgument = {
@@ -41,20 +41,31 @@ type CommandLocation = { command: CommandDefinition; path: readonly string[] };
 export type CommandSelection = CommandLocation & (
   | { kind: "help" }
   | { kind: "version" }
+  | { kind: "skill"; resource?: string }
   | { kind: "selected"; remaining: readonly string[] }
 );
 
 export type ParsedCommand = CommandLocation & (
   | { kind: "help" }
   | { kind: "version" }
+  | { kind: "skill"; resource?: string }
   | { kind: "run"; values: readonly string[]; options: ReadonlyMap<string, string | readonly string[] | true> }
 );
 
 const matchesCommand = (command: CommandDefinition, name: string): boolean =>
   command.name === name || command.aliases?.includes(name) === true;
 
-const informationAction = (command: CommandDefinition, args: readonly string[]): "help" | "version" | undefined =>
-  args.length === 1 ? command.options?.find((option) => option.names.includes(args[0]!))?.action : undefined;
+type InformationSelection = { kind: "help" | "version" } | { kind: "skill"; resource?: string };
+
+const informationAction = (command: CommandDefinition, args: readonly string[], helpCommand: string): InformationSelection | undefined => {
+  const option = command.options?.find((candidate) => candidate.names.includes(args[0]!));
+  if (option?.action === undefined) return undefined;
+  if (option.action !== "skill") return args.length === 1 ? { kind: option.action } : undefined;
+  if (args.length > 2 || args[1] !== undefined && (args[1] === "" || args[1].startsWith("-"))) {
+    throw new UsageError(`${option.names[0]} accepts at most one resource path.`, helpCommand);
+  }
+  return args[1] === undefined ? { kind: "skill" } : { kind: "skill", resource: args[1] };
+};
 
 export const selectCommand = (
   definition: CommandDefinition,
@@ -62,8 +73,8 @@ export const selectCommand = (
   path: readonly string[] = [definition.name],
   helpCommand = `${path.join(" ")} --help`,
 ): CommandSelection => {
-  const action = informationAction(definition, args);
-  if (action !== undefined) return { kind: action, command: definition, path };
+  const action = informationAction(definition, args, helpCommand);
+  if (action !== undefined) return { ...action, command: definition, path };
   if (args.length === 0) return { kind: "help", command: definition, path };
   const command = definition.commands?.find((candidate) => matchesCommand(candidate, args[0]!));
   if (command === undefined) throw new UsageError(`Unknown command ${JSON.stringify(args[0])}.`, helpCommand);
@@ -82,8 +93,8 @@ export const parseCommand = (
     if (selection.kind !== "selected") return selection;
     return parseCommand(selection.command, selection.remaining, selection.path, `${selection.path.join(" ")} --help`);
   }
-  const action = informationAction(definition, args);
-  if (action !== undefined) return { kind: action, command: definition, path };
+  const action = informationAction(definition, args, helpCommand);
+  if (action !== undefined) return { ...action, command: definition, path };
   const values: string[] = [];
   const options = new Map<string, string | string[] | true>();
   let optionsTerminated = false;
@@ -139,10 +150,10 @@ export const parseCommand = (
 };
 
 const optionLabel = (option: CommandOption): string =>
-  `${option.names.join(", ")}${option.value === undefined ? "" : ` <${option.value.name}>`}`;
+  `${option.names.join(", ")}${option.value === undefined ? "" : option.value.optional === true ? ` [<${option.value.name}>]` : ` <${option.value.name}>`}`;
 
 const optionUsage = (option: CommandOption): string =>
-  `${option.names[0]}${option.value === undefined ? "" : ` <${option.value.name}>`}${option.repeatable === true ? "..." : ""}`;
+  `${option.names[0]}${option.value === undefined ? "" : option.value.optional === true ? ` [<${option.value.name}>]` : ` <${option.value.name}>`}${option.repeatable === true ? "..." : ""}`;
 
 const renderRows = (rows: readonly (readonly [string, string])[]): string => {
   const width = Math.max(...rows.map(([label]) => label.length)) + 2;

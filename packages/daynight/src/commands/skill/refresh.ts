@@ -5,7 +5,8 @@ import type { CliContext } from "../../cli/context.js";
 import { discoverWorktreeRoot } from "../../repository/git.js";
 import type { RepositoryGitOptions } from "../../repository/git.js";
 import { skillAgents } from "./agents.js";
-import { captureInstalledSkill, installSkillTargets, SkillInstallationError } from "./install.js";
+import { captureInstalledSkill } from "./bundle.js";
+import { installSkillTargets, SkillInstallationError } from "./install.js";
 import { mergeSkillTargets, planSkillTargets } from "./targets.js";
 import type { SkillScope, SkillTarget } from "./targets.js";
 

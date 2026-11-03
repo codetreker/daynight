@@ -9,8 +9,8 @@ const optionSpecifications = (option: CommandOption): readonly string[] => {
   const action = option.value?.choices === undefined ? "->text_value" : `(${option.value.choices.map(quote).join(" ")})`;
   const value = option.value === undefined
     ? ""
-    : `:${escapeSpecification(option.value.name)}:${option.value.kind === "directory" ? "_files -/" : action}`;
-  return option.names.map((name) => `${option.repeatable === true ? "*" : `(${exclusions})`}${escapeSpecification(name)}${option.value?.kind === "text" ? "=" : ""}[${escapeSpecification(option.description)}]${value}`);
+    : `${option.value.optional === true ? "::" : ":"}${escapeSpecification(option.value.name)}:${option.value.kind === "directory" ? "_files -/" : action}`;
+  return option.names.map((name) => `${option.repeatable === true ? "*" : `(${exclusions})`}${escapeSpecification(name)}${option.value?.kind === "text" && option.action === undefined ? "=" : ""}[${escapeSpecification(option.description)}]${value}`);
 };
 
 const valueValidation = (option: CommandOption, variable: string, indentation: string): string => [
@@ -23,9 +23,16 @@ const renderPrefixValidation = (command: CommandDefinition): string => {
   validateCommandArguments(command);
   if (command.commands !== undefined) {
     const names = command.commands.flatMap((child) => [child.name, ...(child.aliases ?? [])]);
-    return `  if (( CURRENT > 2 )); then
+    const informationValues = command.options?.filter((option) => option.action !== undefined && option.value !== undefined) ?? [];
+    return `  local information_option=''
+  if (( CURRENT > 2 )); then
     case "\${(Q)words[2]}" in
       ${names.map(quote).join("|")}) ;;
+${informationValues.map((option) => `      ${option.names.map(quote).join("|")})
+        (( CURRENT == 3 )) || return 1
+        [[ "\${(Q)words[CURRENT]}" != -* ]] || return 1
+        information_option="\${(Q)words[2]}"
+        ;;`).join("\n")}
       *) return 1 ;;
     esac
   fi
@@ -93,6 +100,7 @@ export const renderZshCompletion = (root: CommandDefinition): string => {
     const children = command.commands?.map((child) => ({ command: child, functionName: renderCommand(child) })) ?? [];
     const specifications = command.options?.filter((option) => option.action === undefined).flatMap(optionSpecifications) ?? [];
     const informationOptions = command.options?.filter((option) => option.action !== undefined).flatMap(optionSpecifications) ?? [];
+    const informationValues = command.options?.filter((option) => option.action !== undefined && option.value !== undefined) ?? [];
     const states: string[] = [];
     const freeformSpecifications: string[] = [];
     if (command.options?.some((option) => option.value?.kind === "text") === true) {
@@ -146,7 +154,7 @@ ${renderPrefixValidation(command).trimEnd()}
   local -a specifications=(
 ${specifications.map((specification) => `    ${quote(specification)}`).join("\n")}
   )
-${freeformSpecifications.length === 0 ? "" : `${freeformSpecifications.join("\n")}\n`}${informationOptions.length === 0 ? "" : `  if (( CURRENT == 2 )); then\n    specifications+=( ${informationOptions.map(quote).join(" ")} )\n  fi\n`}  (( $#specifications )) && _arguments -C${command.allowOptionsTerminator === true ? " -S" : ""} "\${specifications[@]}" && result=0
+${children.length === 0 ? "" : `  if [[ -n "$information_option" ]]; then\n    specifications=()\n    case "$information_option" in\n${informationValues.map((option) => `      ${option.names.map(quote).join("|")}) specifications+=( ${optionSpecifications(option).map(quote).join(" ")} ) ;;`).join("\n")}\n    esac\n  fi\n`}${freeformSpecifications.length === 0 ? "" : `${freeformSpecifications.join("\n")}\n`}${informationOptions.length === 0 ? "" : `  if (( CURRENT == 2 )); then\n    specifications+=( ${informationOptions.map(quote).join(" ")} )\n  fi\n`}  (( $#specifications )) && _arguments -C${command.allowOptionsTerminator === true ? " -S" : ""} "\${specifications[@]}" && result=0
 ${states.length === 0 ? "" : `  case "$state" in\n${states.join("\n")}\n  esac\n`}  return result
 }`);
     return functionName;

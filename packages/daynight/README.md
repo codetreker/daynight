@@ -94,6 +94,7 @@ records installation ownership and verification requirements.
 daynight                            # Show root help
 daynight --help                      # Also -h
 daynight --version                   # Also -v
+daynight --skill [<resource>]        # Read the bundled entry or a Markdown reference
 daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
@@ -138,8 +139,8 @@ daynight task attachment remove <task-id> <relative-path> [--project <project-id
 ```
 
 Groups and operations show help when `--help` or `-h` is their sole argument.
-Help, version and completion generation do not resolve the user home, load review
-configuration, open SQLite or require review tools. `review add-repo` accepts one
+Help, version, skill reading and completion generation do not resolve the user
+home, load review configuration, open SQLite or require review tools. `review add-repo` accepts one
 `--path <path>` before or after its remote; `--path=value` and `--` are invalid.
 Unknown commands and invalid arguments exit with status 2; operation failures
 exit with status 1 and retain their cause. The old `--daemon-review` and root
@@ -149,6 +150,30 @@ the [composition decision](../../.agents/notes/archived/architecture/2026-10-20-
 records module ownership and the preserved data layout.
 
 ## Agent skill installation
+
+Read the current package's `using-daynight` instructions without installing them:
+
+```bash
+daynight --skill
+dn --skill references/handbook.md
+daynight --skill references/run-task.md
+```
+
+`--skill` prints the bundled `SKILL.md`; an optional resource selects one
+Markdown file by its slash-separated path relative to the skill bundle. Output
+preserves the file bytes, including frontmatter and the final newline. Reference
+links resolve relative to their document; CLI resource paths always start at the
+bundle root. For example, a link to `write-safety.md` inside
+`references/handbook.md` is read with `daynight --skill references/write-safety.md`.
+The CLI reads its own package resources, so User or Project copies and local
+edits do not affect this output. No login, Git repository, configuration,
+launcher or interactive terminal is required, and reading creates no files.
+
+The option accepts at most one resource and cannot be combined with a command
+or another option. Invalid syntax, an invalid resource path or an unknown
+resource exits with status 2 and empty stdout. A missing bundle or entry, invalid
+resource tree or entry, or a read failure exits with status 1 and retains its cause. An output failure can leave
+partial stdout.
 
 The public `using-daynight` skill provides task creation, handoff review and
 execution of one specified task. Ordinary execution reads `run-task.md`.
@@ -396,8 +421,8 @@ messages use stderr so stdout retains its normal text or JSON format.
 Noninteractive missing review configuration fails with a `review add-repo`
 command. Shared YAML/schema errors, invalid selected values, explicit empty
 review lists and read failures retain their errors. Unrelated capability values
-remain outside the current command's validation. Help, version, completion,
-update and invalid arguments do not prompt.
+remain outside the current command's validation. Help, version, skill reading,
+completion, update and invalid arguments do not prompt.
 
 Test services and noninteractive automation use the existing
 `~/.daynight/config.yml` fields. For a test service, provision its origin before

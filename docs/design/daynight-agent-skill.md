@@ -5,7 +5,7 @@
 拥有普通与 managed 执行的分工；[原模式决策](../../.agents/notes/archived/architecture/2026-10-21-using-daynight-modes.md)
 保留单一入口的原始理由；[内容与移交决策](../../.agents/notes/implemented/process/2026-10-25-task-content-handoff.md)
 拥有内容单一所有权和审查后启用许可的取舍；[原分发决策](../../.agents/notes/archived/architecture/2026-10-21-public-agent-skill-design.md)
-保留安装机制的原始理由。[Project/Task CLI](daynight-project-task.md)与
+保留安装机制的原始理由；[CLI 文档读取决策](../../.agents/notes/implemented/feature/2026-11-03-cli-skill-reading.md)拥有包内读取与按需资源选择的理由。[Project/Task CLI](daynight-project-task.md)与
 [附件设计](daynight-task-attachments.md)继续拥有服务访问、版本、依赖和文件操作。
 
 [Goal 流程设计](daynight-goal-workflow.md)拥有需求讨论、方案讨论、确认后实际拆分、
@@ -27,6 +27,8 @@ packages/daynight/
     command.ts
     agents.ts
     targets.ts
+    bundle.ts
+    read.ts
     install.ts
     skills/using-daynight/
       SKILL.md
@@ -358,7 +360,7 @@ WSL Linux 仍为 Linux。普通指定任务保留人工路径，但不借此把�
 ## 安装命令与既有机制
 
 `daynight-review` 仍是 review runtime 的内部审查资源，其 plugin wrapper、快照、哈希
-和发现校验独立。公开 skill 由 `skill` 命令持有，只共享普通 bundle 捕获和校验。
+和发现校验独立。公开 skill 的资源读取与交互安装由 `commands/skill/` 持有，只与 review 共享普通 bundle 捕获和校验。
 
 | 机制 | 所在位置与职责 |
 |---|---|
@@ -370,11 +372,13 @@ WSL Linux 仍为 Linux。普通指定任务保留人工路径，但不借此把�
 | worktree 定位 | [git.ts](../../packages/daynight/src/repository/git.ts)只定位根，安装不依赖 origin 或服务 |
 | 打包验收 | [installed-cli.ts](../../packages/daynight/test/fixtures/installed-cli.ts)真实打包安装与 launcher fixture |
 
-入口保持 `daynight skill install`，不增加非交互参数、卸载命令、注册中心或用户修改
-检测。`agents.ts` 拥有 Codex/Copilot CLI/Claude Code 的命令、路径、重载说明；
-`targets.ts` 规划物理目标；`install.ts` 捕获字节、发布和清理旧名称；
-`platform/skill-bundle.ts` 校验资源树与入口。`CliContext.packageDirectory` 定位包内资源，
-不依赖 cwd。`files: ["dist"]` 包含完整相对资源。
+`bundle.ts` 从 `CliContext.packageDirectory` 定位 `dist/commands/skill/skills/using-daynight` 并捕获完整资源树，使用 `platform/skill-bundle.ts` 校验目录、文件类型和入口 frontmatter。读取、安装、自动同步与 worker prompt 共用这一包内来源；`files: ["dist"]` 包含完整相对资源。
+
+根选项 `--skill [<resource>]` 由轻量命令 schema 定义，并由 `cli/application.ts` 按需加载 `read.ts`。省略 resource 时选择 `SKILL.md`，指定时先验证 bundle 根目录相对 Markdown 路径，再在已捕获资源中查找一个文件。Reader 经 `stdoutBytes` 输出原始 Buffer，保留 frontmatter 和换行，不拼接 references 或改写链接。入口提供 `daynight --skill references/...` 的读取方式；reference 内的相对链接按其文件目录解析，但 CLI 路径始终从 bundle 根目录开始。
+
+参数与路径语法先于资源 I/O 拒绝；合法但不存在的资源是 usage error，包内捕获或校验失败是保留 cause 的执行错误。开始输出前完成资源读取和校验，输出通道失败可留下部分 stdout。读取不加载安装选择器、User/Project 目标、配置、Git、数据库、服务或 Agent launcher，也不查询 cwd；当前包版本决定读取内容。根 help 与 Bash/zsh 补全从同一 optional-value 元数据得知语法，资源自由文本不枚举文件或访问 bundle。
+
+交互安装入口保持 `daynight skill install`，不增加非交互安装参数、卸载命令、注册中心或用户修改检测。`agents.ts` 拥有 Codex/Copilot CLI/Claude Code 的命令、路径、重载说明；`targets.ts` 规划物理目标；`install.ts` 发布目标并清理旧名称。
 
 检测依固定顺序查找 codex、copilot、claude，通过直接依赖 `which` 的薄适配器遵守原生
 PATH、POSIX 执行权限、Windows 当前目录/PATHEXT/npm `.cmd`/带引号 PATH；不运行
@@ -473,6 +477,8 @@ Windows 沿用进程树终止机制。强制终止不能承诺 stage 清理或�
 证明当前有界命令、附件读取或模型加载成本。
 
 ## 验证与诊断
+
+文档读取验收运行实际 npm pack 和本地安装 CLI，从非仓库目录通过 `daynight` 与 `dn` 读取入口和 references，比较所选文件的原始字节，检查无配置、launcher 或交互终端时的依赖隔离、无效参数、未知资源和包内损坏错误。
 
 安装验收运行实际 npm pack 和本地安装 CLI，隔离 User、Project、PATH 和全部临时
 资源。模拟 codex/copilot/claude launcher 启动即写 sentinel 并失败，场景结束要求

@@ -3,7 +3,7 @@ import type { CliContext } from "../../cli/context.js";
 import { parseCommand, renderCommandHelp } from "../../cli/schema.js";
 import { skillDefinition } from "./definition.js";
 import type { SkillAgent, SkillAgentId } from "./agents.js";
-import type { SkillBundle } from "./install.js";
+import type { SkillBundle } from "./bundle.js";
 import type { SkillScope, SkillTarget } from "./targets.js";
 
 export type SkillCommandDependencies = {
@@ -22,7 +22,7 @@ const defaultDependencies: SkillCommandDependencies = {
     try { return await (await import("../../repository/git.js")).discoverWorktreeRoot(cwd, operation); }
     finally { operation.dispose(); }
   },
-  captureBundle: async (packageDirectory) => (await import("./install.js")).captureInstalledSkill(packageDirectory),
+  captureBundle: async (packageDirectory) => (await import("./bundle.js")).captureInstalledSkill(packageDirectory),
   planTargets: async (...args) => (await import("./targets.js")).planSkillTargets(...args),
   install: async (...args) => (await import("./install.js")).installSkillTargets(...args),
 };

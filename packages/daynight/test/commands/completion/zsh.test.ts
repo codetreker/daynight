@@ -5,6 +5,14 @@ import { renderZshCompletion } from "../../../src/commands/completion/zsh.js";
 import { taskDefinition } from "../../../src/commands/task/definition.js";
 
 describe("native zsh completion", () => {
+  it("declares a separate optional skill resource and accepts only its current value state", () => {
+    const script = renderZshCompletion(commandTree);
+    expect(script).toContain("--skill[Print the bundled using-daynight skill or a Markdown resource]::resource:->text_value");
+    expect(script).not.toContain("--skill=");
+    expect(script).toContain("(( CURRENT == 3 )) || return 1");
+    expect(script).toContain('information_option="${(Q)words[2]}"');
+  });
+
   it("offers explicit login and logout with a boolean browser option", () => {
     const script = renderZshCompletion(commandTree);
     expect(script).toContain("'login:Sign in through a browser using a device code'");

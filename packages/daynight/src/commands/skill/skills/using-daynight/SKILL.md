@@ -32,6 +32,8 @@ Use `daynight --help` and the relevant subcommand's `--help` for arguments and o
 ## Read by purpose
 
 Read only the files and required references for the current operation, not every document by default.
+Read the installed files or use `daynight --skill <resource>` with a path relative to the skill bundle, such as `daynight --skill references/authorization.md`.
+Links inside a reference resolve from that reference's directory; CLI resource paths always start at the bundle root.
 
 | Purpose | Reference and responsibility |
 | --- | --- |

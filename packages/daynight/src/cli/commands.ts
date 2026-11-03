@@ -48,6 +48,7 @@ export const commandTree: CommandDefinition = {
   description: "A client command toolkit for development workflows",
   commands: commands.map(({ load, ...definition }) => definition),
   options: [
+    { names: ["--skill"], description: "Print the bundled using-daynight skill or a Markdown resource", action: "skill", value: { name: "resource", kind: "text", optional: true } },
     { names: ["-h", "--help"], description: "Show this help", action: "help" },
     { names: ["-v", "--version"], description: "Show the installed version", action: "version" },
   ],

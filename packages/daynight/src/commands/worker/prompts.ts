@@ -3,7 +3,7 @@ import path from "node:path";
 import { canonicalId } from "../../api/parse.js";
 import type { TaskPlatform } from "../../api/types.js";
 import { normalizeServerUrl } from "../../config/server.js";
-import { captureInstalledSkill } from "../skill/install.js";
+import { captureInstalledSkill } from "../skill/bundle.js";
 import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, WorktreeBinding } from "./types.js";
 

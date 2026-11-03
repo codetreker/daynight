@@ -175,7 +175,14 @@ const runtime = String.raw`
     done
     if ((dn_match >= 0)); then
       [[ "@{dn_option_repeats[dn_match]}" == 1 || "$dn_used" != *"|@{dn_option_ids[dn_match]}|"* ]] || return 0
-      [[ -z "@{dn_option_actions[dn_match]}" ]] || return 0
+      if [[ -n "@{dn_option_actions[dn_match]}" ]]; then
+        ((dn_count == 0 && !dn_inline && dn_index == @{#dn_words[@]}-2)) || return 0
+        [[ -n "@{dn_option_values[dn_match]}" ]] || return 0
+        dn_value_match=$dn_match; dn_value_option="@{dn_option_ids[dn_match]}"
+        @PREFIX@_schema
+        dn_pending="@{dn_option_values[dn_match]}"
+        continue
+      fi
       dn_used+="@{dn_option_ids[dn_match]}|"
       dn_value_match=$dn_match; dn_value_option="@{dn_option_ids[dn_match]}"
       @PREFIX@_schema

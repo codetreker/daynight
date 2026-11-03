@@ -10,7 +10,7 @@ worker 已提供独立前台入口，完整行为和后续管理/平台验收由
 Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `daynight` 入口及短命令 `dn`，命令模块
 拥有各自的业务行为、依赖和生命周期。`review` 是 GitHub PR 审查模块，`worker` 是按自有 claim 对账的前台任务执行模块；`update` 管理
 整个客户端的 npm 全局安装；`login/logout` 管理 CLI 凭据；review 自行拥有仓库配置和首次引导；`completion` 生成 Bash 和 zsh
-的原生补全脚本并安装启动配置；`skill` 安装随包分发的公开 `using-daynight` skill。独立的 Go 服务和浏览器应用保留自己的产品需求
+的原生补全脚本并安装启动配置；`--skill` 读取随包分发的公开 `using-daynight` 文档，`skill install` 将其安装到 Agent scope。独立的 Go 服务和浏览器应用保留自己的产品需求
 与生命周期。
 
 本文档负责客户端入口、命令组合、按需配置引导、自更新和 shell 补全的必需行为；
@@ -18,7 +18,7 @@ Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `da
 [worker 需求](daynight-worker.md)负责前台领取、资源、恢复和清理。
 [project/task 需求](daynight-project-task.md)负责已确认的 server 连接配置、仓库关联
 发现和远端项目任务命令。客户端机制见[架构设计](../design/daynight.md)，补全机制见
-[补全设计](../design/daynight-completion.md)。公开 skill 的分发、交互安装和任务工作流
+[补全设计](../design/daynight-completion.md)。公开 skill 的分发、文档读取、交互安装和任务工作流
 由[Agent skill 需求](daynight-agent-skill.md)拥有；各业务文档明确实际交付状态。
 
 ## 需求
@@ -44,6 +44,7 @@ daynight --help
 daynight -h
 daynight --version
 daynight -v
+daynight --skill [<resource>]
 daynight update
 daynight login [--no-browser]
 daynight logout
@@ -83,7 +84,7 @@ daynight task attachment remove <task-id> <relative-path> [--project <project-id
 无参数、`--help` 或 `-h` 显示顶层帮助并成功退出；帮助列出 `worker`、`review`、`update`、`login`、`logout`、
 `completion`、`skill`、`project` 和 `task`。`--version` 与 `-v` 输出当前包版本。裸 `worker`、裸 `review` 和裸 `completion`
 显示各自帮助；裸 `skill`、`project` 与 `task` 同样显示组帮助。组和操作在该层唯一参数为 `--help` 或 `-h` 时显示帮助，且不得执行
-该操作。顶层版本选项不继承到子命令。`review ls` 是 `review list` 的别名。
+该操作。`--skill` 输出随当前包发布的 `SKILL.md`；可选的 `<resource>` 按 bundle 根目录相对路径读取一个 Markdown 文件，例如 `references/handbook.md`。该选项最多接受一个资源，不能与其他选项或命令组合，不支持内联赋值。顶层版本与 skill 读取选项不继承到子命令。`review ls` 是 `review list` 的别名。
 
 `review add-repo` 的 `--path <path>` 可以位于 remote 前后，只能指定一次；不接受
 `--path=value` 或 `--` 语法。未知命令、未知选项、多余参数或不完整参数必须输出
@@ -109,10 +110,10 @@ review 的目录 `--path` 保留原有拒绝规则。`project create` 接受一�
 外部适配器或运行时。只在选中的命令需要执行时加载该命令；命令内部只加载当前操作
 所需的依赖。
 
-根帮助、版本、任何命令帮助和补全脚本生成不解析用户主目录、不创建配置或状态、
+根帮助、版本、skill 文档读取、任何命令帮助和补全脚本生成不解析用户主目录、不创建配置或状态、
 不加载 SQLite，也不启动 Git、GitHub CLI、Copilot 或更新操作。补全生成还不得查询
 工作目录、获取实例锁、读取审查状态或执行 npm 和网络请求。生成的脚本在按 Tab 时
-遵守 C5 的本地执行要求。
+遵守 C5 的本地执行要求。Skill 文档读取只使用当前包内资源，无需工作目录、登录、配置、服务、Agent launcher 或交互式终端；资源选择与失败语义由 [AS1](daynight-agent-skill.md#as1-发布产物与路由) 拥有。
 
 `worker setup` 在参数分派后加载配置和有界只读环境检查，选择 agent 与既有 Project 后确认原子保存；它不启动 worker、Herdr 或 native agent，不创建 SQLite、clone 或 claim。`worker run` 加载前台配置、SQLite、Git、Herdr 与协调循环，读取固定状态根及启动时配置，不触发 review 配置引导。`worker attach` 只加载私有 Herdr 客户端入口，在交互式终端连接已有会话，不读取凭据、SQLite、worker 锁或调用服务端。独立有界请求、客户端连接与常驻命令生命周期分开，worker 取消先进入原任务收尾；详细行为由[worker 需求](daynight-worker.md)拥有。
 
@@ -251,7 +252,7 @@ EOF、Ctrl+C、SIGTERM 或 Windows SIGBREAK 取消输入，不保存部分值也
 review 配置引导不访问网络、不认证、不 clone、不初始化 SQLite 或审查运行时。YAML 诊断只保留
 安全类别、代码和位置，不泄露标量或原始 parser cause；其他有效错误链继续保留。
 review 自动引导保存后以原参数执行原命令一次，后续失败保留配置。人工输入不消耗业务期限；
-帮助、版本、补全、自更新及无效参数不触发引导。
+帮助、版本、skill 文档读取、补全、自更新及无效参数不触发引导。
 
 ### C7. 补全启动配置安装
 
@@ -300,8 +301,9 @@ shell 的内存状态；输出对应的既有 `source <(daynight completion bash
 
 | 场景 | 必需结果 | 对应需求 |
 |---|---|---|
-| 安装 npm 包后通过 `daynight` 或 `dn` 调用相同参数，包括帮助、版本及自更新。 | 两个启动器使用同一入口，输出、配置与退出行为一致；更新后两者指向同一新版本。 | C1, C2, C4 |
+| 安装 npm 包后通过 `daynight` 或 `dn` 调用相同参数，包括帮助、版本、skill 文档读取及自更新。 | 两个启动器使用同一入口，输出、配置与退出行为一致；更新后两者指向同一新版本。 | C1, C2, C4 |
 | 无配置、SQLite 不可加载且 PATH 缺少 review 工具时调用根帮助或版本。 | 输出帮助或当前包版本，退出 0，未解析用户主目录或触及 review 数据。 | C1, C2, C3 |
+| 在无配置、无仓库、无 launcher 的目录执行 `--skill` 或 `--skill references/handbook.md`。 | 输出当前 npm 安装包对应资源的原始字节，退出 0，无安装或运行时副作用；非法参数或未知资源退出 2，包内资源损坏退出 1 并保留原因。 | C2, C3, AS1 |
 | 调用裸 `review`、裸 `completion`、组帮助或任何操作帮助。 | 显示对应帮助，退出 0，未进入业务操作或加载审查运行时。 | C2, C3 |
 | 调用未知根命令、旧入口、不完整参数或未知操作选项。 | 输出错误及对应帮助命令，退出 2；未执行配置、审查或更新。 | C2, C3 |
 | 在 remote 前后使用一次 `--path`，或重复、合并赋值、混用帮助及其他参数。 | 合法顺序保持等价；重复 `--path`、`--path=value`、`--` 和非唯一帮助参数退出 2。 | C2 |
