@@ -51,9 +51,6 @@ take precedence.
   solution. A request to start or advance a discussion authorizes setting that
   discussion task to `in_progress`; it grants no delivery-task execution permission. Discussion completion follows the confirmed Daynight material and
   phase acceptance. Repository delivery retains its own PR and merge requirements.
-- When autopilot is activated, execute only the already confirmed task breakdown.
-  Do not derive extra tasks or prerequisite work outside that queue; newly
-  proposed work requires separate scope confirmation.
 - Complete authorized work and its verification. Before marking a task done,
   verify both its own results and the actual registration of any required
   successors within its confirmed scope and existing creation authorization.
