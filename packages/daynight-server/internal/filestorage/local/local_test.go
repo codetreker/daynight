@@ -428,7 +428,7 @@ func TestExistingRootBelowSearchOnlyAncestor(t *testing.T) {
 	}
 }
 
-func TestNewRootSyncsOnlyCreatedDirectoryEntries(t *testing.T) {
+func TestMakeRootSyncsCreatedDirectoryEntries(t *testing.T) {
 	parent := t.TempDir()
 	first := filepath.Join(parent, "first")
 	root := filepath.Join(first, "storage")
@@ -443,7 +443,7 @@ func TestNewRootSyncsOnlyCreatedDirectoryEntries(t *testing.T) {
 		t.Fatalf("directory persistence barriers: got %v, want %v", synced, want)
 	}
 	if err := makeRoot(root, func(*os.File) error {
-		t.Fatal("existing root requires no ancestor synchronization")
+		t.Fatal("creation phase repeated synchronization for an existing root")
 		return nil
 	}); err != nil {
 		t.Fatal(err)

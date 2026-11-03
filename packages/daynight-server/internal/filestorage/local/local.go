@@ -30,10 +30,25 @@ type Storage struct {
 var _ filestorage.Storage = (*Storage)(nil)
 
 func New(root string) (*Storage, error) {
-	if err := makeRoot(root, (*os.File).Sync); err != nil {
+	return newWithDirectorySync(root, (*os.File).Sync)
+}
+
+func newWithDirectorySync(root string, fileSync func(*os.File) error) (*Storage, error) {
+	if err := makeRoot(root, fileSync); err != nil {
 		return nil, err
 	}
-	directory, err := os.OpenRoot(root)
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return nil, err
+	}
+	if err := syncRootParents(resolved, fileSync); err != nil {
+		return nil, err
+	}
+	directory, err := os.OpenRoot(resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -330,8 +345,8 @@ func createProbeFile(root *os.Root, name string) error {
 	return file.Close()
 }
 
-// Existing roots need only searchable ancestors. Each directory created here
-// must persist its own inode and parent entry before creating children in it.
+// Each new directory needs a readable parent for its persistence barrier.
+// Existing roots may have searchable but unreadable pre-provisioned ancestors.
 func makeRoot(root string, fileSync func(*os.File) error) (result error) {
 	info, err := os.Stat(root)
 	if err == nil {
@@ -377,4 +392,25 @@ func makeRoot(root string, fileSync func(*os.File) error) (result error) {
 		return err
 	}
 	return fileSync(directory)
+}
+
+// Another initializer can observe mkdir before its parent entry is durable, or
+// adopt a populated directory left by a failed initializer. Every caller must
+// finish the barriers on the resolved path before exposing a writable Storage.
+func syncRootParents(root string, fileSync func(*os.File) error) error {
+	for directory := root; ; directory = filepath.Dir(directory) {
+		file, err := os.Open(directory)
+		if err != nil {
+			// makeRoot opens parents before creating entries, so unreadable
+			// ancestors are outside the directory chain it can create.
+			if directory == root || !errors.Is(err, fs.ErrPermission) {
+				return err
+			}
+		} else if err := errors.Join(fileSync(file), file.Close()); err != nil {
+			return err
+		}
+		if filepath.Dir(directory) == directory {
+			return nil
+		}
+	}
 }

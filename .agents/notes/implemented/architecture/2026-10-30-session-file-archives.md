@@ -35,12 +35,20 @@ reconciliation after restart. Completed archives are
 immutable display records; they do not carry control or native resume authority.
 
 Local storage initialization persists each directory it creates and its entry
-in the immediate parent before creating the next directory. Existing storage
-roots need only searchable ancestors; initialization does not open those
-ancestors for reading. A failed directory barrier removes the newly created
-empty directory so a retry cannot bypass that barrier by treating it as an
-existing root. Cleanup never recursively removes a directory that another
-process may have populated, and cleanup errors remain visible.
+in the immediate parent before creating the next directory. It opens the parent
+before creating an entry, so it cannot create an unsynchronized directory under
+an unreadable parent. Before returning writable storage, every initializer
+resolves symbolic links and synchronizes the root and all readable ancestors,
+including when the root already exists. A concurrent caller can observe mkdir
+before its creator finishes synchronization; the caller must finish those
+barriers itself. Ancestor open-permission failures are skipped while traversal
+continues upward, allowing pre-provisioned search-only ancestors. Root open
+errors, synchronization failures and other I/O failures remain fatal.
+
+A failed creation barrier removes the newly created empty directory. Cleanup
+never recursively removes a directory that another process may have populated,
+and cleanup errors remain visible. A retry over such a retained directory still
+performs the complete initialization barriers before publishing objects.
 
 This partially supersedes the
 [Controller-owned content decision](2026-10-28-local-session-content.md). That
@@ -71,12 +79,17 @@ sudden container loss but adds remote checkpoints, event synchronization and
 retention policy to the execution path. Normal-completion archival does not
 require that guarantee; failed final uploads retain the local source.
 
-**Synchronize every ancestor of an existing storage root.** This also covers new
-nested root entries, but requires read access to pre-existing directories that
-the service only needs to traverse. A usable private storage root below a
-search-only ancestor would prevent the entire service from starting. Tracking
-directory creation keeps the persistence barriers at the entries initialization
-actually creates.
+**Require read access to every ancestor of an existing storage root.** This also
+covers new nested root entries, but rejects a usable private storage root below
+a pre-provisioned search-only ancestor and prevents the service from starting.
+Only ancestor open-permission failures may be skipped; actual synchronization
+errors cannot establish persistence and remain fatal.
+
+**Synchronize only directories created by the current initializer.** This avoids
+ancestor reads but lets a second caller adopt a visible directory before its
+creator synchronizes its parent entry. The creator may fail after that directory
+becomes populated, preventing cleanup. Every initializer must complete the
+readable ancestor barriers, including for existing roots and failure retries.
 
 ## Consequences
 
