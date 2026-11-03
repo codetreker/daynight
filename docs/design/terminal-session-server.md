@@ -59,6 +59,9 @@ Worker HTTP 消息必须携带 `Daynight-Connection-Epoch`。WebSocket 从握手
 相同注册请求幂等返回原 epoch；reconnect 必须携带当前 epoch，并在同一 Session
 中增加连接代次。物理 Worker channel 对 epoch 只能绑定一次；关闭后必须使用
 reconnect 获得新代次，不能用重复注册同时拥有两条有效输入通道。
+原实例心跳仍有效且任务执行仍活动时，发往另一实例的当前状态、固定状态、操作结果
+或新控制请求返回 `relay_instance_unavailable`（HTTP 503），不改变原租约、控制代次
+或待处理操作。实例不匹配不是失联证据；真实心跳超时或执行失效仍触发原有失效规则。
 
 运行账本从 generation 1 连续增长。已有 owner、启动时间、绑定和段归属不能替换；
 nativeSessionId 只允许一致补齐。停止后的运行不可改写。新 generation 以前一运行

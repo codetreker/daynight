@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -663,6 +665,97 @@ func TestTerminalFailedInsertCancelsItsBodyAndPermitsRetry(t *testing.T) {
 	f.submit(t, m)
 	if offered := f.poll(t, "1"); len(offered) != 1 {
 		t.Fatal("same-ID retry after failure was not dispatched", offered)
+	}
+}
+
+func TestTerminalForeignHealthyRelayCannotRevokeControlOrPendingOperation(t *testing.T) {
+	for _, endpoint := range []string{"current", "state", "operation", "submit"} {
+		for _, dispatched := range []bool{false, true} {
+			t.Run(endpoint+map[bool]string{false: "/queued", true: "/dispatching"}[dispatched], func(t *testing.T) {
+				f := terminalControlSetup(t)
+				lease := f.acquire(t)
+				input := f.input(lease, "1", "original instance input")
+				f.submit(t, input)
+				if dispatched {
+					f.poll(t, "1")
+				}
+				other := New(f.s.DB)
+				other.now = f.s.now
+				ctx := context.Background()
+				var before string
+				if err := f.s.DB.Pool.QueryRow(ctx, `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, input.SessionID).Scan(&before); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				switch endpoint {
+				case "current":
+					_, err = other.CurrentTerminal(ctx, f.p, f.project, f.task)
+				case "state":
+					_, err = other.TerminalState(ctx, f.p, f.project, f.task, input.SessionID)
+				case "operation":
+					_, err = other.TerminalOperation(ctx, f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+				case "submit":
+					_, err = other.SubmitTerminal(ctx, f.p, f.project, f.task, input.SessionID, f.browser, f.input(lease, "2", "wrong relay"))
+				}
+				var after string
+				if readErr := f.s.DB.Pool.QueryRow(ctx, `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, input.SessionID).Scan(&after); readErr != nil {
+					t.Fatal(readErr)
+				}
+				if before != after {
+					t.Fatal("foreign relay mutated healthy original control state")
+				}
+				var refusal *service.Fault
+				if !errors.As(err, &refusal) || refusal.Code != "relay_instance_unavailable" {
+					t.Fatalf("missing explicit relay routing refusal: %v", err)
+				}
+				got, readErr := f.s.TerminalOperation(ctx, f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+				want := map[bool]string{false: "queued", true: "dispatching"}[dispatched]
+				if readErr != nil || got.Payload.(v2.OperationResult).State != want {
+					t.Fatal("foreign request changed original operation", got, readErr)
+				}
+				if !dispatched && len(f.poll(t, "1")) != 1 {
+					t.Fatal("original Worker could not receive queued body")
+				}
+			})
+		}
+	}
+}
+
+func TestTerminalForeignRelaySuspendsOnlyAfterHeartbeatLossOrClaimEnd(t *testing.T) {
+	for _, cause := range []string{"heartbeat_timeout", "claim_ended"} {
+		t.Run(cause, func(t *testing.T) {
+			f := terminalControlSetup(t)
+			lease := f.acquire(t)
+			input := f.input(lease, "1", "pending when owner ends")
+			f.submit(t, input)
+			f.poll(t, "1")
+			other := New(f.s.DB)
+			other.now, other.Origin = f.s.now, f.s.Origin
+			registration := f.message.Payload.(v2.Registration)
+			registration.Mode = "reconnect"
+			epoch := "1"
+			registration.ConnectionEpoch = &epoch
+			_, err := other.RegisterTerminal(context.Background(), f.p, f.project, f.task, f.msg("registration", registration))
+			var refusal *service.Fault
+			if !errors.As(err, &refusal) || refusal.Code != "input_busy" {
+				t.Fatalf("healthy foreign registration bypassed existing owner: %v", err)
+			}
+			if cause == "heartbeat_timeout" {
+				f.now = f.now.Add(HeartbeatTimeout + time.Second)
+			} else {
+				archiveTerminal(t, f.fixture)
+			}
+			if _, err := other.TerminalState(context.Background(), f.p, f.project, f.task, input.SessionID); err != nil {
+				t.Fatal(err)
+			}
+			if control := f.control(t); control.State != "suspended" || control.Lease != nil || control.ControlEpoch != "3" {
+				t.Fatal("lost owner retained manual control", control)
+			}
+			got, err := other.TerminalOperation(context.Background(), f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+			if err != nil || got.Payload.(v2.OperationResult).State != "unknown" {
+				t.Fatal("lost owner dispatch did not remain unknown", got, err)
+			}
+		})
 	}
 }
 

@@ -407,6 +407,11 @@ func (s *Service) suspendTerminal(ctx context.Context, tx pgx.Tx, r *terminalRec
 	return saveTerminal(ctx, tx, r)
 }
 func (s *Service) refreshTerminalControl(ctx context.Context, tx pgx.Tx, r *terminalRecord, t task) error {
+	// A missing local cache is a routing condition, not evidence that the
+	// original Worker's connection or lease was lost.
+	if r.ServerInstance != s.instance && terminalActive(t, r) && r.LastSeen != nil && s.now().Sub(*r.LastSeen) <= HeartbeatTimeout {
+		return fault("relay_instance_unavailable", "The live terminal Worker belongs to another relay instance.")
+	}
 	s.terminalMutex.Lock()
 	s.expireTerminalBodiesLocked(s.now())
 	s.terminalMutex.Unlock()
@@ -417,7 +422,7 @@ func (s *Service) refreshTerminalControl(ctx context.Context, tx pgx.Tx, r *term
 	if r.Control == nil {
 		return nil
 	}
-	if !terminalActive(t, r) || !terminalRecordingReady(r) || r.ServerInstance != s.instance || r.LastSeen == nil || s.now().Sub(*r.LastSeen) > HeartbeatTimeout {
+	if !terminalActive(t, r) || !terminalRecordingReady(r) || r.LastSeen == nil || s.now().Sub(*r.LastSeen) > HeartbeatTimeout {
 		if r.Control.Lease != nil || r.ControlActor != nil {
 			return s.suspendTerminal(ctx, tx, r)
 		}

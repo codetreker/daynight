@@ -31,6 +31,35 @@ func terminalRequest(h http.Handler, method, path, body, protocol string) *httpt
 	return w
 }
 
+func TestTerminalStateReadOnForeignLiveRelayReturnsRoutingError(t *testing.T) {
+	f := terminalHTTPSetup(t)
+	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
+	a, err := New(Dependencies{Store: f.app.relay.service.DB, Files: attachmentTestFiles(t)}, configuredTestConfig(), testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherApp := a.(*sessionApplication)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := otherApp.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	other := *f.h
+	other.Handler = RequestLogging(testLogger(), otherApp)
+	for _, path := range []string{f.base + "/current", f.base + "/" + f.message.SessionID + "/state"} {
+		response := terminalRequest(&other, http.MethodGet, path, "", v2.Protocol)
+		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"relay_instance_unavailable"`) {
+			t.Fatalf("foreign relay state: %d %s", response.Code, response.Body.String())
+		}
+		response = terminalRequest(f.h, http.MethodGet, path, "", v2.Protocol)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"connected":true`) {
+			t.Fatalf("owning relay state: %d %s", response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestTerminalProtocolSelection(t *testing.T) {
 	for _, tc := range []struct {
 		header    []string

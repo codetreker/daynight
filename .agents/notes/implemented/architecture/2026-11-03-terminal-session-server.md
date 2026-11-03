@@ -19,6 +19,10 @@ its polling and disconnect fence only after that transactional grant succeeds.
 Recovery uses the native identity established by the validated prior run, including
 an identity first learned in its stop proof. The frozen run binding remains intact;
 requiring it to be rewritten or reconnected would prevent otherwise valid recovery.
+Requests routed to another relay while the owning Worker is live fail explicitly
+before changing leases or operation receipts. Local cache absence does not prove
+the owning connection is lost; real heartbeat expiry and execution invalidation
+retain their normal suspension rules.
 Explicit v2 selection
 preserves strict v1 producers, responses and historical files.
 
