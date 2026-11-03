@@ -187,8 +187,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 至少 24px；600px 及以下边距为 12px。外壳最大高度为
 `min(880px, 100dvh − 2 × gutter)`，公共标题、状态、页签和底部说明处于面板滚动区
 之外，关闭入口始终可访问。顶栏的 `h2.task-detail-title` 直接使用实际任务标题并提供对话框的可访问名称；没有已加载详情时使用加载或失败状态标题。完整标题自身有界、可聚焦并原生滚动，状态、新标签和关闭控件保持可访问；详情通过同一个 `LocaleProvider` 使用应用当前语言，顶栏保留实际标题及文字右侧的复制图标按钮、全屏按钮、“…”菜单与关闭入口；菜单位于关闭按钮左侧，收纳任务删除和按当前任务/页签/附件生成的新标签真实链接，独立页只保留菜单中的删除。菜单关闭后聚焦“…”再打开删除确认，取消确认恢复该入口。任务删除在共享详情主体中明确确认“解除全部传入依赖并删除”，说明可能改变 ready；确认按执行时全部引用这一类别授权，不冻结显示数量，捕获 removeDepends=true 后由会话传给 API。操作所有权、已删除终态和缓存移除由[软删除设计](daynight-task-deletion.md)拥有。正文头部的公共状态行依次放置状态菜单、平台切换和 ready/blocked 提示，右侧保留自动执行控件；提示归属独立浮层。`task-detail.css` 使用统一的 `task-detail-*` 类名。
-`TaskDetailPanels` 提供默认概览及附件页签，两面板保持挂载并以 hidden/inert 隔离
-隐藏控件；页签使用可访问关联、roving tabindex、方向键与 Home/End 自动激活。
+`TaskDetailPanels`按概览、附件、讨论、可选Session组合内容，各面板保持挂载并以hidden/inert隔离隐藏控件；页签使用可访问关联、roving tabindex、方向键与Home/End自动激活。Discussion独立接收active并按可见性控制读取，其临时状态、连续位置与详情子层由[Thread Web设计](task-thread-web.md)拥有。
 project/task 身份切换按入口状态初始化。`TaskDetailSurface` 拥有两种容器共用的
 详情读取、内容和现有操作；弹窗中的任务/页签/附件导航仍为本地状态。标题栏与附件
 预览的新标签入口都进入独立完整详情，前者保留全部导航状态，后者定位当前文件。
@@ -531,6 +530,7 @@ packages/daynight-web/
   src/features/task-graph/          model.ts、layout.ts、dashes.ts、ChainList、TaskGraph、TaskNode
   src/features/task-detail/         TaskDetailDialog、TaskDetailSession、详情请求 hook、PR 展示及 focus helper
   src/features/task-detail/attachments/  路径树、附件 hook、操作和内容预览
+  src/features/task-thread/         持久讨论的页面controller、传输和消息呈现
   src/styles/                      设计变量、排版与样式
   scripts/                         构建发布、严格覆盖率、生产验收及布局差分检查
   tests/                           组件、算法与真实浏览器验收
@@ -558,7 +558,7 @@ packages/daynight-server/
 | React Flow 组件 | 视口、只读节点、缩放、平移和节点选择 | 接收布局与 onSelectTask，不调用 API |
 | 虚线绘制分解 | 保留弧长/相位的局部轴向 line 与短原生转角 path | 只依赖布局坐标类型，不访问 DOM、视口或 API |
 | 静态依赖 SVG | 公开 ViewportPortal 内的完整 canonical 路线、原生箭头、派生 body paint 与可访问语义 | 接收不可变布局，复用 React Flow 视口变换，不订阅逐边状态 |
-| TaskDetailDialog、TaskDetailPanels | 当前 taskId 的详情、状态控件、居中外壳、概览/附件页签、关系跳转、body portal、焦点和关闭 | 消费任务会话，通过 TaskDetailReading 组合概览与附件；不自行修改图快照 |
+| TaskDetailDialog、TaskDetailPanels | 当前taskId的详情、状态控件、居中外壳、内容页签、关系跳转、body portal、焦点和关闭 | 消费任务会话，通过TaskDetailReading组合概览、附件、独立Discussion与可选Session；不自行修改图快照 |
 | TaskDetailSession | 工作空间/当前身份生命周期内按 project/task 隔离的详情、状态设置的防重和结果核对 | 确认状态后发布对应项目刷新，关闭对话框不遗失进行中提交 |
 | TaskDetailReading、MarkdownContent | 共享 Markdown 视图、明确的资源基准、描述附件导航与单一控制器组合 | 调用同一个 useAttachments，将其交给描述导航和 TaskAttachmentsPanel；渲染器接收 URL 与点击策略 |
 | 附件 hook/model | 当前 project/task 的分页、写状态、选择、预览状态及目录树 | 调用 api；不修改详情或图快照 |
@@ -605,9 +605,10 @@ flowchart LR
   相同有序 PR 内容复用数组，保留分页和焦点；关闭详情释放普通读取，但不丢失进行中
   状态提交或未核对结果。代次检查隔离晚到响应和旧源状态，资源/身份切换保持加载边界。
 - `TaskDetailReading` 持有唯一附件控制器，向描述导航和 `TaskAttachmentsPanel` 传递同一实例；
-  `TaskDetailPanels` 的两个面板保持挂载，隐藏面板排除交互。页签状态属于当前 project/task，
+  `TaskDetailPanels`的内容面板保持挂载，隐藏面板排除交互；Discussion的网络活动仍由active和document可见性明确控制。页签状态属于当前project/task，
   不进入项目浏览偏好。同任务自动或状态设置触发的后台详情读取保留附件选择、上传输入、
   写操作和预览 frame；task/project 切换仍以资源 key 卸载旧状态。
+- Discussion controller按user/project/task持有有界页面内存，复用scope认证生命周期而不写TaskCache；[Thread Web设计](task-thread-web.md)拥有连续游标、发送确认与引用读取。
 - `useAttachments(projectId, taskId)` 独立拥有按页加载的文件、选择、写操作与预览；所有结果绑定 project/task，预览还绑定 path。列表校验重复游标和目录冲突，续页失败保留已读取文件并明确标记不完整；刷新取消旧列表请求。所选路径或 `updatedAt` 改变时取消并重新读取内容，同路径覆盖后增加预览 revision。
 - 图与详情的已加载数据分别绑定 projectId 与 `(projectId,taskId)`。渲染时只显示 key 相符的数据；key 变化立即显示新资源的加载状态，不能等 effect 清理后再去掉旧内容。同资源刷新才保留旧快照，取消/序号检查不能代替这一显示身份约束。对话框的焦点外壳保持独立，关系跳转不把焦点临时恢复到旧节点。
 - Worker API 的列表和详情读取由 `api/workers.ts` 拥有，principal 准入、整轮集合及陈旧时钟遵守“我的 Worker 列表与详情”；它不调用 task-sync。

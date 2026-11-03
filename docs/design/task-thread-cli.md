@@ -18,13 +18,12 @@ CLI 不生成另一种提交身份，不自动重试或按相同正文合并。
 | `src/commands/task/thread.ts` | 零 I/O 输入校验、项目选择与一次资源调用 |
 | `src/api/client.ts` | 认证传输、原始来源解码、响应主体验证与提交确认 |
 | `src/api/json-source.ts` | 有界 JSON 区间扫描与重复成员拒绝 |
-| `src/api/thread.ts` | CLI 自有薄 Thread decoder 与来源准入，严格解析消息与页面 |
+| `src/api/thread.ts` | 浏览器安全的Thread字段与原始区间解析，供CLI与Web消费 |
 | `src/commands/task/thread-rendering.ts` | 完整正文编码、连续页选择和实际文本预算 |
 | `src/commands/task/thread-diagnostics.ts` | 受控诊断及远端结果分类 |
 | `src/commands/server/runtime.ts` | Operation、取消、确认回执与清理生命周期 |
 
-CLI 不依赖 Web 模块。来源扫描是纯原语，特定客户端的 DTO 验证与 renderer 由客户端
-持有；契约测试对照实际服务响应。收件箱、定向派发、回执、worker 控制、消息修改与
+CLI不依赖Web模块。来源扫描与Thread字段解析是无Node运行时依赖的纯原语，[Web消费者](task-thread-web.md)复用这些解析；账号准入、网络生命周期、终端renderer和浏览器controller仍由各自消费者持有。契约测试对照实际服务响应。收件箱、定向派发、回执、worker 控制、消息修改与
 后台消费没有预置接口。
 
 ## 命令与输入

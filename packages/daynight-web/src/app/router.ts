@@ -1,7 +1,7 @@
 import { ApiError, attachmentPageUrl } from "../api/client";
 import { canonicalId, isAttachmentPath } from "../api/parse";
 
-export type TaskDetailTab = "overview" | "attachments" | "session";
+export type TaskDetailTab = "overview" | "attachments" | "discussion" | "session";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
 
 export type Route =
@@ -24,7 +24,7 @@ export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly retu
 const detailTab = (search: string, defaultTab: TaskDetailTab): TaskDetailTab | null => {
   const values = new URLSearchParams(search).getAll("tab");
   if (values.length === 0) return defaultTab;
-  return values.length === 1 && (values[0] === "overview" || values[0] === "attachments" || values[0] === "session") ? values[0] : null;
+  return values.length === 1 && (values[0] === "overview" || values[0] === "attachments" || values[0] === "discussion" || values[0] === "session") ? values[0] : null;
 };
 
 export const parseRoute = (pathname: string, search = ""): Route => {

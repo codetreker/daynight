@@ -9,7 +9,7 @@ import { sessionRespondGate, hasPendingResponse, type SessionState } from './sta
 import { SessionResourceView } from './SessionResourceView';
 import { SessionInteractionCard } from './SessionInteractionCard';
 import { useSessionMessages } from './messages';
-import { useSessionScroll } from './useSessionScroll';
+import { useTimelineScroll } from '../../ui/useTimelineScroll';
 
 export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder, loadingOlder, onLoadOlder, onLoadResource, historyError = null }: {
   readonly state: SessionState; readonly active: boolean; readonly canRespond: boolean;
@@ -19,7 +19,7 @@ export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder
 }) {
   const m = useSessionMessages();
   const entries = useMemo(() => state.entries.filter(entry => entry.kind !== 'reasoning' || entry.text.trim().length > 0), [state.entries]);
-  const scroll = useSessionScroll(`${state.snapshot?.sessionId}/${state.snapshot?.historyEpoch}`, active, entries);
+  const scroll = useTimelineScroll(`${state.snapshot?.sessionId}/${state.snapshot?.historyEpoch}`, active, entries);
   return <div className="session-timeline-shell">
     <div className="session-timeline" ref={scroll.viewport} tabIndex={0} aria-label={m.title} onScroll={scroll.onScroll} onWheel={scroll.onWheel} onTouchStart={scroll.onTouchStart} onTouchMove={scroll.onTouchMove} onPointerDown={scroll.onPointerDown} onKeyDown={scroll.onKeyDown} onFocus={scroll.onFocus} onClick={(event) => { if (event.target instanceof Element && event.target.closest('a[data-footnote-ref], a[data-footnote-backref]')) scroll.pause(); }}>
       <div ref={scroll.content} className="session-timeline-content">
