@@ -644,6 +644,86 @@
       "file": "invalid-zero-run-error-gap.json",
       "type": "archive",
       "valid": false
+    },
+    {
+      "file": "valid-recording-responsibility.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recording-evidence-zero.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recording-evidence-open.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-recording-count-order.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recording-revision-zero.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recording-missing-provenance.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recording-bad-source.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recording-unknown-field.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-control-renew.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-control-renew-no-lease.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-control-dispatch.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-control-dispatch-digest.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-control-dispatch-actor.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-control-ack.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-control-ack-not-durable.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-control-ack-unsettled.json",
+      "type": "message",
+      "valid": false
     }
   ]
 }

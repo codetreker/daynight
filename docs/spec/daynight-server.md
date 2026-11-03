@@ -5,7 +5,7 @@
 定义验证范围、要求与测试映射和 CI 产物解释；逐次运行结果随对应 PR 与 CI 保存。
 
 本文定义 `daynight-server` 面向本机 CLI 和内部程序的任务管理行为。
-[Steps 资源契约](daynight-task-steps.md)定义独立的完整有序集合、单项读取、原子添加、内容与状态更新、位置移动、共享父版本、编码容量及未知结果核对；常规 Task 投影保持独立。
+[Steps 资源契约](daynight-task-steps.md)定义独立的完整有序集合、单项读取、原子添加、内容与状态更新、位置移动、当前记录删除、共享父版本、编码容量及未知结果核对；常规 Task 投影保持独立。
 [Thread 需求](daynight-task-thread.md)定义任务范围内的持久讨论、引用回复、作者快照、Id 分页与独立的 HTTP 读写；它不改变 Task 版本或执行状态。
 [技术设计](../design/daynight-server.md)拥有分层、存储和并发机制；
 [设计决策](../../.agents/notes/archived/architecture/2026-10-19-daynight-server-task-design.md)
@@ -184,6 +184,7 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps/{stepId}` | 按父 version 原子更新 title/description，返回 `200` 和完整集合 |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps/{stepId}/status` | 按父 version 独立设置四状态，返回 `200` 和完整集合 |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps/{stepId}/position` | 按父 version 以 before/after/first/last 移动，返回 `200` 和完整集合 |
+| `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps/{stepId}` | JSON version 原子删除当前记录并压紧位置，返回 `200` 和完整剩余集合，空为 [] |
 | `GET` | `/api/v1/task-properties/schema` | 认证后读取全服务属性定义，无项目参数 |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | 返回 projectId、taskId、version 和完整 properties |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version/valueText，服务端解析与校验后设置完整单值，返回 200 属性资源 |
@@ -202,13 +203,15 @@ HTTP 创建请求使用 `Content-Type: application/json`，可附带 UTF-8 chars
 未知或只读字段、错误类型、必填字段为 `null` 和尾随 JSON。
 
 Steps 读取与写入均不接受 query，包括尾部空 `?`。集合允许 `GET, HEAD, POST`，
-单项允许 `GET, HEAD, PATCH`，单项 status 和 position 子路径只允许 `PUT`。
+单项允许 `GET, HEAD, PATCH, DELETE`，单项 status 和 position 子路径只允许 `PUT`。
 添加要求提交前确定的 8 位十六进制 id、title 和正 int64 version；可选 description
 省略为空字符串，status 省略为 todo，before 与 after 互斥。内容 PATCH 仅接受
 version 及 title/description 至少一个，省略字段保留，空 description 明确清空，
 成对内容一次原子保存；状态 PUT 仅接受 version 和必填四状态之一，允许自由转换。
 位置 PUT 仅接受 version 和 before/after/position 恰好一个；position 为 first 或 last，
 相对锚点必须为同 Task 内另一 Step，自引用拒绝，缺失锚点不回退其他位置。
+Step DELETE 仅接受 JSON version，所有状态均可删除；不存在目标为 404，不是 no-op。
+当前缺失目标先于版本耗尽，陈旧版本先于目标缺失；存在目标的删除总是实际变化。
 所有字段拒绝显式 null，文本拒绝 NUL、无效 UTF-8 和孤立转义 UTF-16 surrogate，
 保留合法原值；详情由 [Steps 资源契约](daynight-task-steps.md)拥有。
 
@@ -219,14 +222,17 @@ admin/member 均可修改 Steps，Task 状态、许可和 Worker/Session 归属�
 缺失目标或锚点先于真实变化的版本耗尽拒绝。
 真实变化只推进父版本及更新时间一次，内容/状态修改只更新目标内容时间，目标创建
 时间、身份和位置以及其他 Step 的字段与时间保持。移动仅修改受影响区间的稠密位置，
-保留所有 Step 的内容和创建/更新时间。所有 Steps 操作保留其他 Task
+保留所有 Step 的内容和创建/更新时间。删除移除目标并压紧后续位置，保留其他 Step
+的内容、时间和相对顺序，释放 Task 内 ID；后续同 ID 的 POST 是新建，不是恢复。
+Step 删除不删除引用附件、PR 或 Session。所有 Steps 操作保留其他 Task
 业务字段、依赖、属性、执行计时及 Worker/Session 归属，不冻结 Session。
 
 完整候选必须在任何数据修改前通过公共 codec 的 64 MiB 检查，编码计入转义、末尾 LF
 及父版本的 19 位预留。超限返回 `steps_limit_exceeded`，`error.details` 包含
 `encodedBytes`、`maxEncodedBytes`，不提交部分修改；状态值变长也参与相同检查。
 事务完成与响应结果独立记录，no-op 的业务 unchanged 与事务 committed 可同时成立。
-未知 Commit 或响应丢失按原身份只读核对当前事实，不自动重放写入。
+未知 Commit 或响应丢失按原身份只读核对当前事实，不自动重放写入；当前缺失不能
+证明某次未知删除造成了该状态，同 ID 当前存在也不能证明是原记录。
 
 所有成功读取返回 `200`。Project 不存在时，其 task 子路径必须返回 `404`，
 不能将空 task 列表作为不存在 project 的结果。授权成员访问已软删除任务的定点资源返回

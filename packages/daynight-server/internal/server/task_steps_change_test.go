@@ -157,7 +157,7 @@ func TestStepsHTTPChangeStrictInputAndMethods(t *testing.T) {
 	for _, tc := range []struct {
 		endpoint, allow string
 		methods         []string
-	}{{path, "GET, HEAD, POST", []string{"PATCH", "PUT", "DELETE"}}, {path + "/abcdef01", "GET, HEAD, PATCH", []string{"POST", "PUT", "DELETE"}}, {path + "/abcdef01/status", "PUT", []string{"GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"}}} {
+	}{{path, "GET, HEAD, POST", []string{"PATCH", "PUT", "DELETE"}}, {path + "/abcdef01", "GET, HEAD, PATCH, DELETE", []string{"POST", "PUT"}}, {path + "/abcdef01/status", "PUT", []string{"GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"}}} {
 		for _, method := range tc.methods {
 			response := projectRequest(handler, method, tc.endpoint, `{}`)
 			if response.Code != 405 || response.Header().Get("Allow") != tc.allow || response.Header().Get("Cache-Control") != "no-store" {

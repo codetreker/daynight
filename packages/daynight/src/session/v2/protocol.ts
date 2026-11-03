@@ -73,7 +73,7 @@ const parseLease = (value: unknown): SessionV2Lease => {
   const o = exact(value, ["leaseId", "holderUserId", "browserClientId", "controlEpoch", "expiresAt"]);
   return { leaseId: uuidValue(o.leaseId), holderUserId: uuidValue(o.holderUserId), browserClientId: uuidValue(o.browserClientId), controlEpoch: seq(o.controlEpoch), expiresAt: timestamp(o.expiresAt) };
 };
-const actions: readonly SessionV2Action[] = ["acquire_control", "release_control", "resume_automation", "paste", "keys"];
+const actions: readonly SessionV2Action[] = ["acquire_control", "renew_control", "release_control", "resume_automation", "paste", "keys"];
 export const SESSION_V2_KEYS: readonly SessionV2Key[] = ["Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Tab", "Backspace", "Delete", "Home", "End", "PageUp", "PageDown", "Ctrl+C", "Ctrl+D", "Ctrl+U"];
 const completeness = (value: unknown) => choice(value, ["complete", "partial"]);
 const unavailableReason = (value: unknown) => choice(value, ["recording_not_enabled", "ended_before_first_sample"]);
@@ -109,14 +109,33 @@ const parsePayload = <K extends keyof SessionV2Payloads>(kind: K, value: unknown
       case "snapshot": { const o = exact(value, ["connectionEpoch", "segmentId", "segmentOrdinal", "binding", "frame", "recorded"]); return { connectionEpoch: seq(o.connectionEpoch), segmentId: uuidValue(o.segmentId), segmentOrdinal: seq(o.segmentOrdinal), binding: parseTerminalBinding(o.binding), frame: parseTerminalFrame(o.frame), recorded: bool(o.recorded) }; }
       case "control_state": {
         const o = exact(value, ["connectionEpoch", "controlEpoch", "state", "lease", "initialAssignment", "availableActions", "unavailableReason"]);
-        const parsed: SessionV2Payloads["control_state"] = { connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), state: choice(o.state, ["automation", "manual", "suspended", "closing", "closed"]), lease: nullable(o.lease, parseLease), initialAssignment: choice(o.initialAssignment, ["pending", "dispatching", "transport_completed", "unknown", "unconfirmed"]), availableActions: unique(list(o.availableActions, v => choice(v, actions), 5), v => v), unavailableReason: nullable(o.unavailableReason, errorCode) };
+        const parsed: SessionV2Payloads["control_state"] = { connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), state: choice(o.state, ["automation", "manual", "suspended", "closing", "closed"]), lease: nullable(o.lease, parseLease), initialAssignment: choice(o.initialAssignment, ["pending", "dispatching", "transport_completed", "unknown", "unconfirmed"]), availableActions: unique(list(o.availableActions, v => choice(v, actions), 6), v => v), unavailableReason: nullable(o.unavailableReason, errorCode) };
         if ((parsed.state === "manual") !== (parsed.lease !== null) || parsed.lease && parsed.lease.controlEpoch !== parsed.controlEpoch || ["closing", "closed"].includes(parsed.state) && parsed.availableActions.length || parsed.state !== "manual" && parsed.availableActions.some(a => a === "paste" || a === "keys") || parsed.state === "automation" && ["unknown", "unconfirmed"].includes(parsed.initialAssignment) || parsed.state === "manual" && parsed.initialAssignment === "dispatching") return fail();
         return parsed;
       }
       case "control_request": {
         const o = exact(value, ["operationId", "connectionEpoch", "controlEpoch", "action", "browserClientId", "leaseId", "draftHandled", "initialUnknownDisposition"]);
-        const p: SessionV2Payloads["control_request"] = { operationId: uuidValue(o.operationId), connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), action: choice(o.action, ["acquire_control", "release_control", "resume_automation"]), browserClientId: uuidValue(o.browserClientId), leaseId: nullable(o.leaseId, uuidValue), draftHandled: bool(o.draftHandled), initialUnknownDisposition: nullable(o.initialUnknownDisposition, v => literal(v, "delivered_continue")) };
+        const p: SessionV2Payloads["control_request"] = { operationId: uuidValue(o.operationId), connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), action: choice(o.action, ["acquire_control", "renew_control", "release_control", "resume_automation"]), browserClientId: uuidValue(o.browserClientId), leaseId: nullable(o.leaseId, uuidValue), draftHandled: bool(o.draftHandled), initialUnknownDisposition: nullable(o.initialUnknownDisposition, v => literal(v, "delivered_continue")) };
         if (p.action === "resume_automation" ? !p.draftHandled : p.draftHandled || p.initialUnknownDisposition !== null || (p.action === "acquire_control") !== (p.leaseId === null)) return fail();
+        return p;
+      }
+      case "control_dispatch": {
+        const o = exact(value, ["actorUserId", "requestDigest", "request"]);
+        return { actorUserId: uuidValue(o.actorUserId), requestDigest: hash(o.requestDigest), request: parsePayload("control_request", o.request, base) };
+      }
+      case "control_ack": {
+        const o = exact(value, ["requestDigest", "durable", "controlState", "result"]), result = parsePayload("operation_result", o.result, base);
+        if (result.state === "queued" || result.state === "dispatching") return fail();
+        return { requestDigest: hash(o.requestDigest), durable: literal(o.durable, true), controlState: parsePayload("control_state", o.controlState, base), result };
+      }
+      case "recording_responsibility": {
+        const o = exact(value, ["responsibilityId", "recordingEnabled"]);
+        return { responsibilityId: uuidValue(o.responsibilityId), recordingEnabled: bool(o.recordingEnabled) };
+      }
+      case "recording_evidence": {
+        const o = exact(value, ["responsibilityId", "evidenceId", "revision", "selectedFrameCount", "registeredFrameCount", "captureError", "closed", "journalSha256", "sourceSha256"]);
+        const p = { responsibilityId: uuidValue(o.responsibilityId), evidenceId: uuidValue(o.evidenceId), revision: seq(o.revision), selectedFrameCount: seq(o.selectedFrameCount, true), registeredFrameCount: seq(o.registeredFrameCount, true), captureError: nullable(o.captureError, errorCode), closed: bool(o.closed), journalSha256: hash(o.journalSha256), sourceSha256: hash(o.sourceSha256) };
+        if (BigInt(p.registeredFrameCount) > BigInt(p.selectedFrameCount)) return fail();
         return p;
       }
       case "operation": {
@@ -151,7 +170,7 @@ export const parseSessionV2Message = (value: unknown): SessionV2Message => {
   const o = exact(value, ["protocol", "schemaVersion", "projectionVersion", "type", "sessionId", "claimId", "executionGeneration", "agentControlMode", "contentKind", "payload"]);
   if (o.protocol !== SESSION_V2_PROTOCOL || o.schemaVersion !== 2 || o.projectionVersion !== 1) return fail("unsupported_protocol");
   const base: SessionV2Envelope = { protocol: SESSION_V2_PROTOCOL, schemaVersion: 2, projectionVersion: 1, sessionId: uuidValue(o.sessionId), claimId: uuidValue(o.claimId), executionGeneration: seq(o.executionGeneration) };
-  const kind = choice(o.type, ["registration", "registration_ack", "snapshot", "control_state", "control_request", "operation", "operation_result", "generation_ledger", "finalization", "archive_status", "receipt", "native_snapshot"]);
+  const kind = choice(o.type, ["registration", "registration_ack", "snapshot", "control_state", "control_request", "control_dispatch", "control_ack", "recording_responsibility", "recording_evidence", "operation", "operation_result", "generation_ledger", "finalization", "archive_status", "receipt", "native_snapshot"]);
   if (kind === "native_snapshot") {
     if (o.agentControlMode !== "web" || o.contentKind !== "native_timeline") return fail("unsupported_content_kind");
     return { ...base, agentControlMode: "web", contentKind: "native_timeline", type: kind, payload: parsePayload(kind, o.payload, base) };
@@ -169,5 +188,10 @@ export const verifySessionV2Receipt = async (message: Extract<SessionV2Message, 
 export const decodeSessionV2Message = async (input: string | Uint8Array): Promise<SessionV2Message> => {
   const result = parseSessionV2Message(decodeStrictSessionJson(input, SESSION_V2_LIMITS.metadataMaxBytes));
   if (result.type === "receipt") await verifySessionV2Receipt(result);
+  if (result.type === "control_dispatch" && result.payload.requestDigest !== await controlRequestDigest(result.payload.actorUserId, result.payload.request)) return fail("source_corrupt");
   return result;
 };
+
+// The enclosing message carries the fence; the digest binds the authenticated
+// actor to the exact control intent within that execution.
+export const controlRequestDigest = async (actorUserId: string, request: SessionV2Payloads["control_request"]): Promise<string> => hashSessionBytes(canonicalSessionJson({ actorUserId, request }));

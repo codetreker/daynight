@@ -27,13 +27,18 @@ const PollInterval = 250 * time.Millisecond
 const HeartbeatTimeout = 30 * time.Second
 
 type Service struct {
-	DB        *store.Store
-	files     filestorage.Storage
-	now       func() time.Time
-	liveMutex sync.Mutex
-	live      map[string]*liveCell
-	instance  string
-	content   contentBroker
+	Origin              string
+	DB                  *store.Store
+	files               filestorage.Storage
+	now                 func() time.Time
+	liveMutex           sync.Mutex
+	live                map[string]*liveCell
+	instance            string
+	content             contentBroker
+	terminalMutex       sync.Mutex
+	terminalPending     map[string]map[string]*terminalBodyWrite
+	terminalFrames      map[string]*terminalFrameWrite
+	terminalFrameWrites map[string]*terminalFrameWrite
 }
 
 func New(db *store.Store, files ...filestorage.Storage) *Service {
@@ -76,7 +81,7 @@ func load(ctx context.Context, tx pgx.Tx, id string) (*record, error) {
 	r := &record{}
 	var raw []byte
 	var parent, kind, connectionParent *string
-	err := tx.QueryRow(ctx, `SELECT server_instance::text,snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 FOR UPDATE`, id).Scan(&r.ServerInstance, &raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.FirstInputBlocked)
+	err := tx.QueryRow(ctx, `SELECT server_instance::text,snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 AND backend='web' FOR UPDATE`, id).Scan(&r.ServerInstance, &raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.FirstInputBlocked)
 	if err != nil {
 		return nil, err
 	}
