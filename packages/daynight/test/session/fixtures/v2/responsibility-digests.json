@@ -1,0 +1,40 @@
+{
+  "emptySourceSha256": "e1d7b5d67fda77f61097fb0a62123ba266ff84cfe5e004d63b001c8576197ffe",
+  "cases": [
+    {
+      "file": "valid-archive.json",
+      "generation": "1",
+      "sourceSha256": "760896177d6cf9b0a74a3e294795dadcd051b0c73a1b6af8a2f8a2d600077c4d"
+    },
+    {
+      "file": "valid-empty-first-run.json",
+      "generation": "1",
+      "sourceSha256": "e1d7b5d67fda77f61097fb0a62123ba266ff84cfe5e004d63b001c8576197ffe"
+    },
+    {
+      "file": "valid-empty-first-run.json",
+      "generation": "2",
+      "sourceSha256": "b731e0bc50a664e593c2e22736fe4c9b5a35427c13c0772025784ed2b5533870"
+    },
+    {
+      "file": "valid-empty-final-run.json",
+      "generation": "1",
+      "sourceSha256": "760896177d6cf9b0a74a3e294795dadcd051b0c73a1b6af8a2f8a2d600077c4d"
+    },
+    {
+      "file": "valid-empty-final-run.json",
+      "generation": "2",
+      "sourceSha256": "e1d7b5d67fda77f61097fb0a62123ba266ff84cfe5e004d63b001c8576197ffe"
+    },
+    {
+      "file": "valid-multiple-runs-clock-rollback.json",
+      "generation": "1",
+      "sourceSha256": "760896177d6cf9b0a74a3e294795dadcd051b0c73a1b6af8a2f8a2d600077c4d"
+    },
+    {
+      "file": "valid-multiple-runs-clock-rollback.json",
+      "generation": "2",
+      "sourceSha256": "b731e0bc50a664e593c2e22736fe4c9b5a35427c13c0772025784ed2b5533870"
+    }
+  ]
+}

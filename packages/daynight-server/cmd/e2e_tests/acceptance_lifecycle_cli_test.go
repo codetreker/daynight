@@ -481,8 +481,8 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 		for index, entry := range migration.AfterLedger {
 			versions[index] = entry.Version
 		}
-		if !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30}) || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
-			t.Fatal("startup did not append the property-row, session archive, assignment, Thread and Steps schemas while preserving prior ledger, dependencies and attachments")
+		if !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}) || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
+			t.Fatal("startup did not append the property-row, session archive, assignment, Thread, Steps and terminal Session schemas while preserving prior ledger, dependencies and attachments")
 		}
 		acceptanceStatusMigrationRows(t, migration.StatusBeforeRows, migration.AfterRows)
 		user := acceptanceDecode[api.User](t, process.request(context.Background(), http.MethodGet, "/api/v1/me", nil, ""), http.StatusOK)
