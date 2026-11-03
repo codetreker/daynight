@@ -130,6 +130,11 @@ finalization. Preserve durable control identity while reusing live display field
 
 ## Consequences
 
+The [terminal v2 contract](2026-11-03-session-v2-terminal-contract.md) extends
+the format with independently renderable frames, explicit gaps, stopped-run
+ownership and ready/unavailable receipts. It preserves the v1 producer and
+reader behavior described here; its schema does not enable a terminal runtime.
+
 Completed Session URLs can render messages, tools and resources without a live
 Controller. The same renderer is used with all write operations disabled, and
 the server independently denies terminal-session control. Archive integrity and

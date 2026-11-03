@@ -1,0 +1,46 @@
+{
+  "protocol": "daynight.session.v2",
+  "schemaVersion": 2,
+  "projectionVersion": 1,
+  "sessionId": "00000000-0000-4000-8000-000000000006",
+  "claimId": "00000000-0000-4000-8000-000000000007",
+  "executionGeneration": "1",
+  "agentControlMode": "herdr",
+  "contentKind": "terminal_recording",
+  "type": "snapshot",
+  "payload": {
+    "connectionEpoch": "1",
+    "segmentId": "00000000-0000-4000-8000-000000000009",
+    "segmentOrdinal": "1",
+    "binding": {
+      "instanceId": "private_herdr_1",
+      "sessionId": "daynight-worker",
+      "workspaceId": "workspace_1",
+      "paneId": "pane_1",
+      "terminalId": "term_641e9a1f10001",
+      "nativeSessionId": null
+    },
+    "frame": {
+      "frameSeq": "1",
+      "capturedAt": "2026-11-03T10:00:00Z",
+      "elapsedMs": "0",
+      "width": 80,
+      "height": 1,
+      "full": true,
+      "rows": [
+        [
+          {
+            "text": "你好 <script> Ω 😀 ",
+            "foreground": "red",
+            "background": null,
+            "bold": true,
+            "italic": false,
+            "underline": false,
+            "inverse": false
+          }
+        ]
+      ]
+    },
+    "recorded": true
+  }
+}
