@@ -35,7 +35,7 @@ test('task-assignment', scenario, async ({ page, api, playwright, allowBrowserWr
     expect(permission.status()).toBe(200); task = await permission.json() as Task;
     expect(task).toMatchObject({ assignedTo: null, allowAgents: true });
     const endpoint = new URL(taskPath(project.id, task.id), origin).href;
-    allowBrowserWrites([{ method: 'PATCH', url: endpoint, count: 3 }]);
+    allowBrowserWrites([{ method: 'PATCH', url: endpoint, count: 4 }]);
     const writes: { assignedTo: string | null; version: string; status: number; requestId: string }[] = [];
     let mode: 'ordinary' | 'conflict' | 'commit-then-abort' = 'ordinary';
     let rejectReconciliation = false;
@@ -104,7 +104,30 @@ test('task-assignment', scenario, async ({ page, api, playwright, allowBrowserWr
       const savedScreenshot = info.outputPath('assignment-reconciled.png');
       await page.screenshot({ path: savedScreenshot, animations: 'disabled' });
       await info.attach('scenario-screenshot', { path: savedScreenshot, contentType: 'image/png' });
-      await info.attach('assignment-transaction-receipts', { body: JSON.stringify({ writes, final: { assignedTo: aliceProfile.id, allowAgents: false } }, null, 2), contentType: 'application/json' });
+      const reconciled = await (await api.get(taskPath(project.id, task.id))).json() as Task;
+      const reenabledResponse = await api.patch(taskPath(project.id, task.id), { data: { version: reconciled.version, allowAgents: true } });
+      expect(reenabledResponse.status()).toBe(200);
+      const reenabled = await reenabledResponse.json() as Task;
+      expect(reenabled).toEqual({ ...reconciled, allowAgents: true, version: reconciled.version + 1, updatedAt: reenabled.updatedAt });
+      await expect(detail(page).getByRole('switch', { name: '自动执行' })).toBeChecked();
+      await expect(assignee(page)).toHaveAccessibleName(`负责人：${aliceProfile.name}`);
+      expect(writes).toHaveLength(3);
+      await choose(page, '未分配');
+      await expect(assignee(page)).toHaveAccessibleName('负责人：未分配');
+      await expect(detail(page).getByRole('switch', { name: '自动执行' })).not.toBeChecked();
+      const clearedResponse = await api.get(taskPath(project.id, task.id));
+      expect(clearedResponse.status()).toBe(200);
+      const cleared = await clearedResponse.json() as Task;
+      expect(cleared).toEqual({ ...reenabled, assignedTo: null, allowAgents: false, version: reenabled.version + 1, updatedAt: cleared.updatedAt });
+      expect(writes).toHaveLength(4);
+      expect(writes[3]).toMatchObject({ assignedTo: null, version: String(reenabled.version), status: 200 });
+      expect(writes.map((write) => write.status)).toEqual([200, 409, 200, 200]);
+      await choose(page, '未分配');
+      expect(writes).toHaveLength(4);
+      const clearedScreenshot = info.outputPath('assignment-cleared.png');
+      await page.screenshot({ path: clearedScreenshot, animations: 'disabled' });
+      await info.attach('scenario-screenshot', { path: clearedScreenshot, contentType: 'image/png' });
+      await info.attach('assignment-transaction-receipts', { body: JSON.stringify({ writes, reenabled: { assignedTo: reenabled.assignedTo, allowAgents: reenabled.allowAgents, version: reenabled.version }, final: { assignedTo: cleared.assignedTo, allowAgents: cleared.allowAgents, version: cleared.version } }, null, 2), contentType: 'application/json' });
     } finally { await page.unroute(endpoint); }
   } finally { await bob.dispose(); }
 });
