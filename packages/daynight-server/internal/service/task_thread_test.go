@@ -371,6 +371,90 @@ func TestThreadPageByteLimitKeepsCompleteBodiesAndActualSides(t *testing.T) {
 	}
 }
 
+func TestThreadSameMillisecondBytePagesTraverseBothResourceForms(t *testing.T) {
+	tasks, database, project, _, principal := taskService(t)
+	threads := NewTaskThreads(database)
+	task := createTask(t, tasks, principal, project.ID, "Same millisecond byte pages")
+	createdAt := time.Date(2026, 11, 3, 0, 0, 0, 120000000, time.UTC)
+	execution := &core.ThreadExecution{ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), Provider: "codex"}
+	name := "Alice <>&"
+	want := make([]core.ThreadMessage, 7)
+	indices := make(map[string]int, len(want))
+	for i := range want {
+		message := core.ThreadMessage{
+			TaskID: task.ID, ID: fmt.Sprintf("00000000-0000-4000-8000-%012x", i+1), CreatedAt: createdAt,
+			Author: core.ThreadAuthor{UserID: principal.UserID, DisplayName: &name, Agent: true, Execution: execution},
+			Body:   fmt.Sprintf("message %d <>&\"\\\n\t中文🌛\u2028\u2029 ", i),
+		}
+		if i > 0 {
+			message.ReplyTo = &want[0].ID
+		}
+		encoded, err := taskthreadjson.EncodeMessage(message, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		message.Body += strings.Repeat("x", taskthreadjson.MessageLimit-len(encoded))
+		encoded, err = taskthreadjson.EncodeMessage(message, true)
+		if err != nil || len(encoded) != taskthreadjson.MessageLimit {
+			t.Fatalf("detailed fixture is not exactly 64 KiB: %d, %v", len(encoded), err)
+		}
+		// Equal-time rows isolate UUID pagination from clock preparation. The
+		// separate admission tests prove these complete resource sizes are legal.
+		if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_thread_messages
+ (task_id,message_id,created_at,author_user_id,author_display_name,author_agent,author_claim_id,author_worker_id,author_provider,body,reply_to_message_id)
+ VALUES($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10)`, task.ID, message.ID, createdAt, principal.UserID, name,
+			execution.ClaimID, execution.WorkerID, execution.Provider, message.Body, message.ReplyTo); err != nil {
+			t.Fatal(err)
+		}
+		want[i], indices[message.ID] = message, i
+	}
+	for _, details := range []bool{false, true} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("details=%t/reverse=%t", details, reverse), func(t *testing.T) {
+				request := ThreadListRequest{Count: 100, Details: details, FromBeginning: !reverse}
+				var traversed []core.ThreadMessage
+				pages := 0
+				for {
+					page := listThread(t, threads, principal, task, request).Page
+					pages++
+					if pages > len(want) || len(page.Items) == 0 || len(page.Items) >= len(want) {
+						t.Fatalf("byte limit did not provide bounded progress: page %d has %d items", pages, len(page.Items))
+					}
+					if details && len(page.Items) > 3 {
+						t.Fatalf("four complete 64 KiB resources fit in one page: %d items", len(page.Items))
+					}
+					first, last := indices[page.Items[0].ID], indices[page.Items[len(page.Items)-1].ID]
+					if page.HasMoreBefore != (first > 0) || page.HasMoreAfter != (last < len(want)-1) {
+						t.Fatalf("page sides disagree with boundaries %d..%d: before=%t after=%t", first, last, page.HasMoreBefore, page.HasMoreAfter)
+					}
+					for _, message := range page.Items {
+						index, exists := indices[message.ID]
+						if !exists || !reflect.DeepEqual(message, want[index]) {
+							t.Fatalf("same-millisecond byte page changed a complete message: %s", message.ID)
+						}
+					}
+					if reverse {
+						traversed = append(page.Items, traversed...)
+						if !page.HasMoreBefore {
+							break
+						}
+						request.BeforeID = &page.Items[0].ID
+					} else {
+						traversed = append(traversed, page.Items...)
+						if !page.HasMoreAfter {
+							break
+						}
+						request.FromBeginning, request.AfterID = false, &page.Items[len(page.Items)-1].ID
+					}
+				}
+				if pages < 2 || !reflect.DeepEqual(traversed, want) {
+					t.Fatal("same-millisecond byte traversal omitted, duplicated or changed messages")
+				}
+			})
+		}
+	}
+}
+
 func TestThreadLocalPostDoesNotHideUnreadMessagesAndEmptyInitialization(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	threads := NewTaskThreads(database)

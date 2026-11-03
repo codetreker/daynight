@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,34 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+type threadCancelAfterCheck struct {
+	context.Context
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (ctx *threadCancelAfterCheck) Err() error {
+	err := ctx.Context.Err()
+	ctx.once.Do(ctx.cancel)
+	return err
+}
+
+func TestThreadAdmissionObservesCancellationAfterInitialCheck(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Cancel immediately after observing the successful admission check. This
+	// fixes the interleaving without relying on encoding time or a goroutine race.
+	ctx := &threadCancelAfterCheck{Context: parent, cancel: cancel}
+	message := core.ThreadMessage{
+		ID: uuid.NewString(), CreatedAt: time.Now().UTC(), Body: strings.Repeat("<>&\u2028中文🌛", 1000),
+		Author: core.ThreadAuthor{UserID: uuid.NewString()},
+	}
+	encoded, err := admitThreadMessage(ctx, message)
+	if encoded != nil || !errors.Is(err, context.Canceled) || !errors.Is(parent.Err(), context.Canceled) {
+		t.Fatalf("admission returned encoded bytes after cancellation: %d bytes, %v", len(encoded), err)
+	}
+}
 
 func tracedThreads(t *testing.T, databaseURL string, action taskQueryAction) *TaskThreads {
 	t.Helper()

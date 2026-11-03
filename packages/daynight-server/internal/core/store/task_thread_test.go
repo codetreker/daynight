@@ -336,3 +336,50 @@ func TestThreadClosedTransactionsKeepStoreFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestThreadSourceReadsOnlyValidatedWorkerAttribution(t *testing.T) {
+	database, principal, _, project := membershipFixture(t)
+	ctx := context.Background()
+	ordinary := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	reference := setSnapshotTaskClaim(t, database, project.ID, 11, principal.UserID, queryID(900))
+	// Unrelated properties are not source attribution inputs. Reading a worker
+	// must not parse them or make ordinary posting depend on their structure.
+	putTaskPropertyFixture(t, database, reference.TaskID, "unrelated", []byte(`not valid JSON`))
+	if err := database.WriteThread(ctx, func(tx *ThreadTx) error {
+		if _, err := tx.LockTaskPresence(ctx, project.ID, reference.TaskID); err != nil {
+			return err
+		}
+		source, err := tx.SourceTask(ctx, project.ID, reference.TaskID)
+		if err != nil {
+			return err
+		}
+		worker := fixtureWorker(t, source.Properties)
+		if source.Status != core.TaskInProgress || len(source.Properties) != 1 || worker == nil || worker.ClaimID != reference.ClaimID || worker.WorkerID != queryID(900) || worker.UserID != principal.UserID || worker.Agent != core.AgentClaude {
+			t.Fatalf("validated worker source: %#v worker=%#v", source, worker)
+		}
+		if _, err := tx.LockTaskPresence(ctx, project.ID, ordinary.ID); err != nil {
+			return err
+		}
+		source, err = tx.SourceTask(ctx, project.ID, ordinary.ID)
+		if err != nil || source.Status != core.TaskTodo || len(source.Properties) != 0 {
+			t.Fatalf("absent worker source: %#v %v", source, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	putTaskPropertyFixture(t, database, reference.TaskID, "worker", []byte(`{"claimId":"untrusted private attribution"}`))
+	err := database.WriteThread(ctx, func(tx *ThreadTx) error {
+		if _, err := tx.LockTaskPresence(ctx, project.ID, reference.TaskID); err != nil {
+			return err
+		}
+		_, err := tx.SourceTask(ctx, project.ID, reference.TaskID)
+		return err
+	})
+	var transaction *ThreadTransactionError
+	var failure *Error
+	if !errors.As(err, &transaction) || transaction.CommitAttempted || !errors.As(err, &failure) || failure.Phase != "decode thread source" || strings.Contains(err.Error(), "untrusted") || errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("malformed source was hidden or exposed: %v", err)
+	}
+	assertMigrationPoolReusable(t, database.Pool)
+}
