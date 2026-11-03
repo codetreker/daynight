@@ -402,23 +402,6 @@ pnpm web:build
 pnpm web:test
 ```
 
-For the frontend-only recent-task preview, open
-`/tests/mockups/recent-tasks.html` on the origin printed by `pnpm web:dev`. It
-mounts the production project page, styles and locale catalog with controlled
-read-only synchronization responses. Its `#mixed`, `#completed`, `#empty`,
-`#loading` and `#failure` scenarios cover 20-entry pagination, full Goal children,
-local-calendar recency, 100% recent completion and recovery without a Go service
-or PostgreSQL. These responses demonstrate frontend behavior; they do not prove
-real service or deployment behavior.
-
-For the frontend-only attachment mockup, run `pnpm web:dev` and open
-`/tests/mockups/attachments.html` on the origin printed by Vite. It uses the real
-attachment UI with in-memory metadata and local fixture files; it needs no Go
-service or PostgreSQL. It exercises the detail tabs, adjacent panes, tall
-content and attachment loading, empty, failure and busy states. Production builds
-keep the single application index and exclude these fixture entry points. The [web README](../packages/daynight-web/README.md#task-attachments)
-explains previews and the mockup's evidence limits.
-
 The frontend build emits `packages/daynight-web/dist/`, validates its HTML and
 assets, and publishes a complete replacement into the Go embed directory. A
 clean Go build without generated assets fails; no placeholder UI is committed.

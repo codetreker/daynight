@@ -10,6 +10,8 @@ daynight --version
 daynight --help
 daynight task --help
 daynight task update --help
+daynight task thread read --help
+daynight task thread post --help
 daynight task attachment put --help
 ```
 
@@ -31,6 +33,7 @@ Do not treat this skill's workflow names as CLI commands or infer commands from 
 | Set or remove task properties | `task set-property`, `task remove-property` | [Properties](task-management.md#properties) |
 | Change status | `task set-status` | [Task management](task-management.md#status-and-timing) |
 | Delete tasks | `task delete` | [Task management](task-management.md#task-deletion) |
+| Read or post durable task discussion | `task thread read`, `task thread post` | [Discussion threads](task-management.md#discussion-threads) |
 | Upload, list, read, or remove attachments | `task attachment put/list/read/remove` | [Task content standard](task-content.md#attachments-and-references) |
 | Set up and manage workers | `worker` | See `daynight worker --help`; for execution within an assignment, see [managed task execution](autopilot-managed-task.md). |
 

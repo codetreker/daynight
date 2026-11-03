@@ -59,9 +59,10 @@ now owns a fixed viewport-relative area and restores its list trigger with
 
 The [Web specification](../../../../docs/spec/daynight-web.md) owns required
 behavior, and the [Web design](../../../../docs/design/daynight-web.md) owns the
-current composition. The production-component browsing fixture is the current
-layout reference; the original static task-category preview retains its earlier
-visual baseline and state examples.
+current composition. The production-component browsing fixture illustrated the
+section layout, while the original static task-category preview supplied its
+earlier visual baseline and state examples. Their repository retention is
+superseded by the [prototype ownership decision](../process/2026-11-03-ui-mockup-ownership.md).
 
 ## Alternatives
 

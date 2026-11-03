@@ -40,9 +40,10 @@ the dialog geometry and reading columns while retaining this layering,
 keyboard-event boundary and shared scroll lock. The
 [requirements](../../../../docs/spec/daynight-web.md) own the interaction,
 and the [design](../../../../docs/design/daynight-web.md) owns its structure.
-The existing frontend-only browsing mockup renders the production components
-and CSS. Production browser assertions extend existing journeys without
-changing their inventory.
+The original frontend-only browsing mockup rendered the production components
+and CSS. Its repository retention is superseded by the [prototype ownership
+decision](../process/2026-11-03-ui-mockup-ownership.md). Production browser assertions
+extend existing journeys without changing their inventory.
 
 ## Alternatives
 

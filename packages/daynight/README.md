@@ -1,8 +1,9 @@
 # Daynight CLI
 
 The `@codetreker/daynight` package provides the `daynight` command and its `dn`
-alias. Use it to manage server-backed projects, tasks and attachments, install
-the `using-daynight` skill for coding agents, run foreground task workers through
+alias. Use it to manage server-backed projects, tasks, discussion threads and
+attachments, install the `using-daynight` skill for coding agents, run foreground
+task workers through
 Herdr or browser-connected native Controllers, and run a local GitHub PR reviewer through Copilot CLI. Both command names
 share configuration and behavior.
 
@@ -29,6 +30,7 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Project management](#project-management)
 - [Task management](#task-management)
 - [Task deletion](#task-deletion)
+- [Task discussion threads](#task-discussion-threads)
 - [Task attachments](#task-attachments)
 - [Worker configuration and startup](#worker-configuration-and-startup)
 - [Worker manual management](#worker-manual-management)
@@ -162,6 +164,8 @@ daynight task update <task-id> [options]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
+daynight task thread read <task-id> [--before-id <message-id> | --after-id <message-id>] [--count=N] [--details] [--project <project-id>]
+daynight task thread post <task-id> --body <text> [--reply-to <message-id>] [--claim-id <claim-id>] [--project <project-id>]
 daynight task attachment
 daynight task attachment put <task-id> <file> [--path <relative-path>] [--project <project-id>]
 daynight task attachment list <task-id> [--tree | --json] [--project <project-id>]
@@ -424,9 +428,7 @@ keep the credential name within 100 characters. The credential never expires by 
 The Web account's token manager can set a future expiration, restore “Never expires”, or
 revoke it. Changing expiration keeps the same credential, so the saved CLI login
 continues without replacing its secret. Expired or revoked credentials cannot be
-revived. The [token manager mockup](../../packages/daynight-web/tests/mockups/tokens.html)
-shares the production components and styles for creating tokens and editing
-expiration, including conflict and uncertain-result states. A credential
+revived. A credential
 represents the account's current project permissions. `daynight logout` revokes the current credential and removes
 its local value after a confirmed response; an already invalid credential is
 removed locally. Network or unconfirmed failures remain visible. Configuration
@@ -834,7 +836,7 @@ without a runtime default. Human output uses `Required platform: any` for null
 and the enum otherwise. `assignedTo` is also required as null or a canonical
 local user UUID on every Task and graph node; missing, malformed or noncanonical
 values fail instead of defaulting. Human output adds `Assigned to: USER_UUID` or
-`Assigned to: unassigned`, with no profile request or rule narration. Queries support
+`Assigned to: unassigned`, with no profile request or rule narration. Task metadata queries support
 `--json`: task `list` returns every matching task in one array, omitting only
 `description` while retaining every other API field, including explicit nullable
 assignedTo, raw PR strings, version and timestamps. This applies to the default list and every filter,
@@ -954,6 +956,68 @@ requires a new decision, while a permission or transport failure leaves the
 outcome unknown. The [deletion requirements](../../docs/spec/daynight-task-deletion.md)
 and [design](../../docs/design/daynight-task-deletion.md) own retained history,
 reference removal and cache invalidation.
+
+## Task discussion threads
+
+```bash
+daynight task thread read <task-id>
+daynight task thread read <task-id> --after-id <last-read-message-id> --count=20
+daynight task thread read <task-id> --before-id <first-shown-message-id> --count=20
+daynight task thread read <task-id> --details --project <project-id>
+daynight task thread post <task-id> --body 'What should the retry policy be?'
+daynight task thread post <task-id> --body 'Use an explicit retry decision.' --reply-to <message-id>
+daynight task thread post <task-id> --body 'The check passed.' --claim-id <active-claim-id>
+```
+
+A Thread holds durable discussion independently of task execution. Reads and
+posts work before execution, while its original environment is offline, and
+after completion. Messages are immutable and replies refer to messages in the
+selected task. Posting neither changes task metadata nor wakes an Agent.
+Descriptions and attachments remain the owners of effective requirements,
+solutions and formal results; Sessions hold execution content.
+
+Read fetches one page, defaulting to the latest messages. `--count=N` accepts
+1 through 100 and defaults to 20; the CLI always sends that value explicitly.
+`--before-id` and `--after-id` are mutually exclusive. Messages display from old
+to new with complete Id, Author and account Id, millisecond UTC CreatedAt,
+optional ReplyTo, and complete Message. Agent authors also have `Agent: True`.
+`--details` expands verified claim, worker and provider attribution. Thread
+commands provide readable text and do not accept `--json`.
+
+`... Has more messages before` appears above a page with earlier messages;
+`Has more messages after...` appears below a page with later messages. Continue
+history with the first displayed Id and incremental reading with the last
+fully consumed displayed Id. The 256 KiB output budget can reduce the page
+below its requested count; complete messages remain contiguous and bodies are
+never truncated. A post receipt cannot advance the read position: after reading
+A, another person's B and a local post C must still be read from A.
+
+Post requires nonblank `--body`, preserving its original whitespace. For text
+beginning with a dash, use `--body=-example`. The service generates the message
+Id and authenticates the author. Omit `--claim-id` for an ordinary account post;
+provide a current claim explicitly for verified Agent attribution. The CLI does
+not infer a claim or accept a client message Id, version or submission token.
+`--reply-to` is optional and must identify a message in the same task.
+
+Terminal text escapes dangerous controls. Multiline Message lines are indented,
+retain LF and TAB, and encode literal backslashes before visible control
+escapes; DEL is `\x7f`, CR is `\r`, and other unsafe controls use `\uXXXX`.
+The representation preserves the full body without executing terminal escapes.
+Success prints `Message posted.`, the complete Id and optional ReplyTo, without
+repeating the body. An uncertain post exits with a clear unknown-outcome message.
+Read the Thread before deciding whether to send again; equal text cannot prove
+that a particular request succeeded. The CLI never automatically repeats POST.
+
+The [Thread requirements](../../docs/spec/daynight-task-thread.md) own the
+service contract; the [CLI design](../../docs/design/task-thread-cli.md) owns
+source validation, rendering and submission confirmation. Explicit `--project`
+uses the supplied UUID directly for the Thread request; otherwise the existing
+Git binding resolves the project. Origin and credential remain fixed for one
+invocation. Argument errors exit 2 before configuration or network access;
+other failures exit 1. Diagnostics remain on stderr and exclude message bodies
+and untrusted server text. A confirmed post followed by a local receipt-output
+or cleanup failure retains its confirmed message Id and is not reported as an
+unknown remote result.
 
 ## Task attachments
 

@@ -25,6 +25,10 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Keep the working material with the task.** Upload designs, screenshots and
   other files; read Markdown with Mermaid flowcharts, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
+- **Discuss tasks through the CLI.** Read persistent discussion history, post as
+  your account or an explicitly verified Agent claim, and reply to a message with
+  `daynight task thread`. [Thread commands](packages/daynight/README.md#task-discussion-threads)
+  preserve complete messages and explicit pagination independently of Sessions.
 - **Work with coding agents.** Install the `using-daynight` skill for Codex,
   Copilot CLI or Claude Code to register work, discuss designs, execute specified
   tasks and review handoffs. Ordinary execution handles one specified task.
@@ -45,6 +49,8 @@ or run your own service. The interface supports English and Simplified Chinese.
   answer supported approvals, questions and forms in the task’s Session tab.
 - **Automate PR review.** Monitor configured GitHub repositories and retain
   per-PR worktrees, Copilot sessions and review state across restarts.
+
+Task Steps have [independent persisted collection and item reads](docs/spec/daynight-task-steps.md), with complete ordered content and the parent Task version.
 
 Task creation and general editing use the CLI. The Web app provides project and Worker browsing,
 status and execution-setting controls, task deletion and attachment management.
@@ -393,6 +399,11 @@ their PR and CI run. CI artifacts expire after 30 days; lasting conclusions must
 remain understandable in their research or decision owner with methods, source
 identity and limitations. See the
 [evidence ownership decision](.agents/notes/archived/process/2026-10-20-source-bound-validation-evidence.md).
+
+UI mockups, `mockui` pages, their resource bundles, and tests targeting them
+must not be committed, including interactive previews composed from production
+components. Keep local prototypes in the task worktree's Git-ignored `.tmp/`
+and reviewable prototypes in their owning Daynight task's attachments.
 
 Specifications and designs use Chinese headings and prose while preserving
 technical literals. Other documents, skills, code, comments and commit messages

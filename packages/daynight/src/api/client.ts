@@ -1,5 +1,8 @@
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
+import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
+import type { ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
+import { isNonemptyText } from "../platform/text.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
@@ -22,6 +25,7 @@ export class ApiError extends Error {
   readonly details?: ErrorDetails;
   readonly outcomeUnconfirmed: boolean;
   readonly confirmedRefusal: boolean;
+  readonly confirmedMessageId?: string;
 
   constructor(context: Context, phase: ApiPhase, options: {
     readonly cause: unknown;
@@ -29,6 +33,7 @@ export class ApiError extends Error {
     readonly serverError?: ServerError;
     readonly outcomeUnconfirmed?: boolean;
     readonly confirmedRefusal?: boolean;
+    readonly confirmedMessageId?: string;
   }) {
     const target = [context.projectId === undefined ? "" : ` project=${context.projectId}`, context.taskId === undefined ? "" : ` task=${context.taskId}`].join("");
     const server = options.serverError;
@@ -48,10 +53,13 @@ export class ApiError extends Error {
     if (details !== undefined) this.details = details;
     this.outcomeUnconfirmed = options.outcomeUnconfirmed === true;
     this.confirmedRefusal = options.confirmedRefusal === true;
+    if (options.confirmedMessageId !== undefined) this.confirmedMessageId = options.confirmedMessageId;
   }
 }
 
 export type ApiClient = {
+  readTaskThread(projectId: string, taskId: string, query: ThreadReadQuery): Promise<ThreadPage>;
+  postTaskThreadMessage(projectId: string, taskId: string, input: PostThreadMessageInput): Promise<ThreadMessage>;
   getCurrentUser(): Promise<User>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   createProject(input: CreateProjectInput): Promise<Project>;
@@ -107,10 +115,10 @@ export const createApiClient = (options: {
   const operation = options.operation;
   const fetch = options.fetch ?? globalThis.fetch;
 
-  type JsonResponseMetadata = { readonly principalHeader: string | null };
+  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
-    | { readonly kind: "json"; readonly parse: JsonParser<T> }
+    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
@@ -129,6 +137,7 @@ export const createApiClient = (options: {
     let requestDeadline = Infinity;
     let totalBudgetCapped = false;
     let serverError: ServerError | undefined;
+    let confirmedMessageId: string | undefined;
     const controller = new AbortController();
     const checkRequest = (): void => {
       operation.check();
@@ -201,6 +210,7 @@ export const createApiClient = (options: {
       status = response.status;
       phase = "response";
       const success = statuses.includes(status);
+      let principalId: string | undefined;
       const binary = success && mode.kind === "bytes";
       const empty = success && mode.kind === "empty";
       const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -213,10 +223,11 @@ export const createApiClient = (options: {
         // Cancelling an already errored stream repeats its existing failure, rather than introducing a cleanup failure.
         void reader.closed.catch((error: unknown) => { bodyFailure = error; });
       }
-      if (success && expectedUserId !== undefined) {
+      if (success && (expectedUserId !== undefined || mode.kind === "json" && mode.requirePrincipal === true)) {
         phase = "protocol";
         const principal = response.headers.get("Daynight-User-ID");
-        if (principal === null || canonicalId(principal) !== expectedUserId) throw new ProtocolError("The authenticated response principal does not match the expected user.");
+        if (principal === null || canonicalId(principal) === null || mode.kind === "json" && mode.requirePrincipal === true && canonicalId(principal) !== principal || expectedUserId !== undefined && canonicalId(principal) !== expectedUserId) throw new ProtocolError("The authenticated response principal does not match the expected user.");
+        principalId = canonicalId(principal)!;
         phase = "response";
       }
       if (reader !== undefined) {
@@ -233,7 +244,7 @@ export const createApiClient = (options: {
             continue;
           }
           operation.consume(chunk.value.byteLength);
-          if (bytes > operation.limits.responseBytes) throw new OperationError("response_limit");
+          if (bytes > Math.min(operation.limits.responseBytes, mode.kind === "json" && mode.responseBytes !== undefined ? mode.responseBytes : Infinity)) throw new OperationError("response_limit");
           if (empty) throw new ProtocolError("Expected an empty response body.");
           // Count the whole bounded body even when UTF-8 decoding fails before its end.
           if (decodingError === undefined) {
@@ -252,17 +263,20 @@ export const createApiClient = (options: {
       chunks.push(pendingText, decoder.decode());
       const responseContentType = response.headers.get("content-type");
       if (responseContentType === null || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(responseContentType)) throw new ProtocolError("Expected an application/json UTF-8 response.");
-      const value = parseApiJson(chunks.join(""));
+      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), ...(principalId === undefined ? {} : { principalId }) };
+      const source = chunks.join("");
+      const value = mode.kind === "json" && mode.decodeJsonSource !== undefined ? mode.decodeJsonSource(source, responseContext) : parseApiJson(source);
       checkRequest();
       if (!success) {
         if (status < 400 || status > 599) throw new ProtocolError("Unexpected HTTP status.");
         serverError = parseServerError(value);
-        const confirmedRefusal = status >= 400 && status < 500;
+        const confirmedRefusal = status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
         throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: method !== "GET" && !confirmedRefusal });
       }
       if (mode.kind !== "json") throw new ProtocolError("Unexpected response mode.");
-      const result = mode.parse(value, { principalHeader: response.headers.get("Daynight-User-ID") });
-      checkRequest();
+      const result = mode.parse(value, responseContext);
+      if (mode.confirmMutation !== undefined) confirmedMessageId = mode.confirmMutation(result);
+      else checkRequest();
       if (uploadReader !== undefined && !uploadDone) {
         await Promise.race([uploadReader.cancel(), aborted]);
         checkRequest();
@@ -292,13 +306,16 @@ export const createApiClient = (options: {
         ...(serverError === undefined ? {} : { serverError }),
         confirmedRefusal: cause instanceof ApiError && cause.confirmedRefusal,
         outcomeUnconfirmed: cause instanceof ApiError ? cause.outcomeUnconfirmed : method !== "GET" && dispatched,
+        ...(confirmedMessageId === undefined ? {} : { confirmedMessageId, outcomeUnconfirmed: false }),
       });
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       removeAbort();
       removeOperationAbort();
-      reader?.releaseLock();
-      uploadReader?.releaseLock();
+      try { reader?.releaseLock(); uploadReader?.releaseLock(); }
+      catch (cause) {
+        throw new ApiError(context, phase, { cause, ...(confirmedMessageId === undefined ? {} : { confirmedMessageId }), outcomeUnconfirmed: confirmedMessageId === undefined && method !== "GET" && dispatched });
+      }
     }
   };
 
@@ -402,6 +419,33 @@ export const createApiClient = (options: {
   };
 
   return {
+    readTaskThread: (projectId, taskId, query) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      if (!Number.isInteger(query.count) || query.count < 1 || query.count > 100 || typeof query.details !== "boolean" || query.beforeId !== undefined && query.afterId !== undefined) throw new Error("Invalid Thread page query.");
+      const normalized = { count: query.count, details: query.details, ...(query.beforeId === undefined ? {} : { beforeId: resourceId(query.beforeId) }), ...(query.afterId === undefined ? {} : { afterId: resourceId(query.afterId) }) };
+      const params = new URLSearchParams({ count: String(normalized.count), details: String(normalized.details), ...(normalized.beforeId === undefined ? {} : { beforeId: normalized.beforeId }), ...(normalized.afterId === undefined ? {} : { afterId: normalized.afterId }) });
+      return exchange({ operation: "task.thread.read", projectId: project, taskId: task }, `${resourcePath("projects", project, "tasks", task, "thread", "messages")}?${params}`, "GET", {
+        kind: "json", requirePrincipal: true, responseBytes: THREAD_PAGE_BYTES,
+        decodeJsonSource: (source, response) => decodeThreadJsonSource(source, response.success ? "page" : "error"),
+        parse: (value) => parseThreadPage(value, normalized),
+      }, [200], undefined, true);
+    },
+    postTaskThreadMessage: (projectId, taskId, input) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      if (!isNonemptyText(input.body) || Buffer.byteLength(input.body, "utf8") > THREAD_MESSAGE_BYTES) throw new Error("Thread body must be nonempty text of at most 65536 UTF-8 bytes.");
+      const normalized = { body: input.body, ...(input.replyTo === undefined ? {} : { replyTo: resourceId(input.replyTo) }), ...(input.claimId === undefined ? {} : { claimId: resourceId(input.claimId) }) };
+      return exchange({ operation: "task.thread.post", projectId: project, taskId: task }, resourcePath("projects", project, "tasks", task, "thread", "messages"), "POST", {
+        kind: "json", requirePrincipal: true, responseBytes: THREAD_MESSAGE_BYTES,
+        decodeJsonSource: (source, response) => decodeThreadJsonSource(source, response.success ? "message" : "error"),
+        parse: (value, response) => {
+          const message = parseThreadMessage(value, false);
+          if (message.author.userId !== response.principalId || message.body !== normalized.body || message.replyTo !== normalized.replyTo || message.author.Agent !== (normalized.claimId !== undefined)) throw new ProtocolError("Thread message does not match the submitted content or authenticated author.");
+          return message;
+        },
+        confirmedFailure: (status, error) => status === 503 && error.code === "clock_not_advanced",
+        confirmMutation: (message) => message.id,
+      }, [201], { kind: "json", value: normalized }, true);
+    },
     getCurrentUser: () => exchange({ operation: "auth.me" }, "/me", "GET", { kind: "json", parse: parseUser }, [200], undefined, true),
     reportWorker: (workerId, input) => {
       const worker = resourceId(workerId);
