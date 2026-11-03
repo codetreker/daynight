@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 2,
+  "projectionVersion": 1,
+  "contentKind": "terminal_recording",
+  "agentControlMode": "herdr",
+  "sessionId": "00000000-0000-4000-8000-000000000006",
+  "claimId": "00000000-0000-4000-8000-000000000007",
+  "executionGeneration": "1",
+  "owner": {
+    "projectId": "00000000-0000-4000-8000-000000000001",
+    "taskId": "00000000-0000-4000-8000-000000000002",
+    "workerId": "00000000-0000-4000-8000-000000000003",
+    "worktreeId": "00000000-0000-4000-8000-000000000004",
+    "ownerUserId": "00000000-0000-4000-8000-000000000005",
+    "serverOrigin": "https://daynight.cc",
+    "provider": "codex"
+  },
+  "finalizationId": "00000000-0000-4000-8000-000000000014",
+  "startedAt": "2026-11-03T10:00:00Z",
+  "endedAt": "2026-11-03T10:00:10Z",
+  "completeness": "complete",
+  "policy": {
+    "sampleIntervalMs": 350,
+    "checkpointIntervalMs": 5000
+  },
+  "runs": [
+    {
+      "executionGeneration": "1",
+      "owner": {
+        "projectId": "00000000-0000-4000-8000-000000000001",
+        "taskId": "00000000-0000-4000-8000-000000000002",
+        "workerId": "00000000-0000-4000-8000-000000000003",
+        "worktreeId": "00000000-0000-4000-8000-000000000004",
+        "ownerUserId": "00000000-0000-4000-8000-000000000005",
+        "serverOrigin": "https://daynight.cc",
+        "provider": "codex"
+      },
+      "binding": {
+        "instanceId": "private_herdr_1",
+        "sessionId": "daynight-worker",
+        "workspaceId": "workspace_1",
+        "paneId": "pane_1",
+        "terminalId": "term_641e9a1f10001",
+        "nativeSessionId": null
+      },
+      "startedAt": "2026-11-03T10:00:00Z",
+      "stoppedAt": "2026-11-03T10:00:10Z",
+      "stopProof": {
+        "recordId": "00000000-0000-4000-8000-000000000008",
+        "executionGeneration": "1",
+        "binding": {
+          "instanceId": "private_herdr_1",
+          "sessionId": "daynight-worker",
+          "workspaceId": "workspace_1",
+          "paneId": "pane_1",
+          "terminalId": "term_641e9a1f10001",
+          "nativeSessionId": null
+        },
+        "bootId": "boot-original",
+        "stoppedAt": "2026-11-03T10:00:10Z",
+        "method": "instances_exited",
+        "terminalStopped": true,
+        "processes": [
+          {
+            "role": "shell",
+            "pid": 100,
+            "birthToken": "start:1",
+            "bootId": "boot-original"
+          },
+          {
+            "role": "agent",
+            "pid": 101,
+            "birthToken": "start:2",
+            "bootId": "boot-original"
+          }
+        ]
+      },
+      "segmentIds": [
+        "00000000-0000-4000-8000-000000000009"
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "segmentId": "00000000-0000-4000-8000-000000000009",
+      "segmentOrdinal": "1",
+      "executionGeneration": "1",
+      "binding": {
+        "instanceId": "private_herdr_1",
+        "sessionId": "daynight-worker",
+        "workspaceId": "workspace_1",
+        "paneId": "pane_1",
+        "terminalId": "term_641e9a1f10001",
+        "nativeSessionId": null
+      },
+      "startedAt": "2026-11-03T10:00:00Z",
+      "endedAt": "2026-11-03T10:00:10Z",
+      "durationMs": "10000"
+    }
+  ],
+  "files": [
+    {
+      "fileId": "00000000-0000-4000-8000-000000000015",
+      "segmentId": "00000000-0000-4000-8000-000000000009",
+      "frameSeq": "1",
+      "sha256": "46ef2f28cb9a1850271c2a842bd6b50447da9c9a852cd33343423ae42b73d1ef",
+      "byteLength": "253",
+      "data": "{\"frameSeq\":\"1\",\"capturedAt\":\"2026-11-03T10:00:00Z\",\"elapsedMs\":\"0\",\"width\":80,\"height\":1,\"full\":true,\"rows\":[[{\"text\":\"你好 <script> Ω 😀 \",\"foreground\":\"#aabbcc\",\"background\":null,\"bold\":true,\"italic\":false,\"underline\":false,\"inverse\":false}]]}"
+    }
+  ],
+  "index": [
+    {
+      "segmentId": "00000000-0000-4000-8000-000000000009",
+      "frameSeq": "1",
+      "fileId": "00000000-0000-4000-8000-000000000015",
+      "firstElapsedMs": "0",
+      "lastElapsedMs": "5000"
+    }
+  ],
+  "gaps": [],
+  "extra": true,
+  "unavailableRuns": []
+}

@@ -1,0 +1,21 @@
+{
+  "protocol": "daynight.session.v2",
+  "schemaVersion": 2,
+  "projectionVersion": 1,
+  "sessionId": "00000000-0000-4000-8000-000000000006",
+  "claimId": "00000000-0000-4000-8000-000000000007",
+  "executionGeneration": "1",
+  "agentControlMode": "herdr",
+  "contentKind": "terminal_recording",
+  "type": "receipt",
+  "payload": {
+    "finalizationId": "00000000-0000-4000-8000-000000000014",
+    "disposition": "ready",
+    "dispositionDigest": "d0cb46f260579998b61a66cdbd105ca9307aa25363d42408170573a60e5d59f4",
+    "reason": null,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "byteLength": "1024",
+    "completeness": "complete",
+    "evidence": null
+  }
+}
