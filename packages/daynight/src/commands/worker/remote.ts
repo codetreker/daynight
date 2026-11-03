@@ -128,7 +128,7 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       return result;
     },
     candidates: async function* (projectId, platform, signal) {
-      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, compatiblePlatform: platform }, signal)) {
+      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, compatiblePlatform: platform, assignedTo: "me" }, signal)) {
         if (readWorkerClaim(task.properties)?.state === "released") continue;
         if (readWorkerClaim(task.properties)?.state === "active") throw new ProtocolError("Worker candidate has an active claim.");
         yield task;

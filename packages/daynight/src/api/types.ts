@@ -225,6 +225,7 @@ export type TaskFilters = {
   readonly ready?: boolean;
   readonly allowAgents?: boolean;
   readonly compatiblePlatform?: TaskPlatform;
+  readonly assignedTo?: string;
   readonly workerId?: string;
 };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };

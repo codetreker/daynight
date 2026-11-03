@@ -82,7 +82,7 @@ func TestInstalledCLIThreadAcceptance(t *testing.T) {
 		if after := process.readTask(t, task); !reflect.DeepEqual(after, task) {
 			t.Fatal("Thread CLI changed its Task version, timestamps, state or properties")
 		}
-		acceptanceThreadAgentCLI(t, fixture, process, cli, project)
+		acceptanceThreadAgentCLI(t, fixture, process, cli, project, first.Author.UserID)
 		acceptanceThreadPaginationCLI(t, fixture, process, cli, project, first.Author.UserID)
 		acceptanceThreadBytesCLI(t, process, cli, project)
 		acceptanceThreadRefusalsCLI(t, fixture, process, cli, project, task)
@@ -121,10 +121,10 @@ func acceptanceThreadReadIDs(t *testing.T, output string) []string {
 	return ids
 }
 
-func acceptanceThreadAgentCLI(t *testing.T, fixture *acceptanceFixture, process *acceptanceProcess, cli *acceptanceCLI, project api.Project) {
+func acceptanceThreadAgentCLI(t *testing.T, fixture *acceptanceFixture, process *acceptanceProcess, cli *acceptanceCLI, project api.Project, userID string) {
 	t.Helper()
 	task := process.task(t, project, "Explicit Agent source")
-	task = process.update(t, task, map[string]any{"allowAgents": true})
+	task = process.update(t, task, map[string]any{"allowAgents": true, "assignedTo": userID})
 	claimID, workerID := uuid.NewString(), uuid.NewString()
 	task = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPost, acceptanceTaskPath(task)+"/worker-claim", map[string]any{
 		"version": task.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Thread acceptance"},

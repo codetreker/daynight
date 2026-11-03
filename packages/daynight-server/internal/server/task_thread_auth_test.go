@@ -40,7 +40,7 @@ func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
 		t.Fatal("missing invitation token")
 	}
 	identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, 200)
-	_, data = request(member, http.MethodPost, taskCollection(project.ID), map[string]any{"title": "Thread owner"}, origin, 201, "")
+	_, data = request(member, http.MethodPost, taskCollection(project.ID), map[string]any{"title": "Thread owner", "assignedTo": memberUser.ID}, origin, 201, "")
 	task := identityDecode[api.Task](t, data)
 	path := threadPath(task)
 	body := map[string]any{"body": "Explicit authenticated discussion"}
