@@ -25,7 +25,7 @@ const configuration: HerdrAgentConfiguration = { agent: "codex", model: "model-a
 const composerScreen = "  >_ OpenAI Codex (v0.164.0)\n\n› Ask Codex to do anything\n\n  GPT-6.1 Sol default · /task\n";
 const trustScreen = "  Folder access\n  /task\n\n  Trust this folder? Codex can read, edit, and run files here.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit\n";
 
-const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspaceEnvironment: HerdrWorkspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }) => {
+const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspaceEnvironment: HerdrWorkspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, readCodexConfig = async (_args: readonly string[], _cwd: string, _operation: Operation): Promise<unknown> => ({ config: {} })) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-agent-tests"); await mkdir(scratch, { recursive: true });
   const cwd = await mkdtemp(path.join(scratch, "task-")); directories.push(cwd);
   const context: HerdrExecutionContext = { projectId, taskId, claimId, worktreeId, cwd, agent: kind };
@@ -95,7 +95,7 @@ const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspace
     }
     throw new Error(`Unexpected fixture method ${method}`);
   } };
-  const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => { preflights += 1; } }, workspaceEnvironment, processExecuting: async (value) => executing.has(value), pollIntervalMs: 1 });
+  const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => { preflights += 1; } }, workspaceEnvironment, readCodexConfig, processExecuting: async (value) => executing.has(value), pollIntervalMs: 1 });
   return { context, manager, workspaces, panes, agents, tabs, calls, prompts, processes, executing, closeProcesses, rpc, snapshot, launch, hook: (value: typeof hook) => { hook = value; }, preflights: () => preflights };
 };
 const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
@@ -619,4 +619,39 @@ it("binds Codex CLI mappings through native shell policy after all user argument
   await launch(f);
   const args = f.calls.find(call => call.method === "agent.start")!.params.args as string[];
   expect(args.slice(-4)).toEqual(["-c", 'shell_environment_policy.set.PATH="/private/aliases:/usr/bin"', "-c", 'shell_environment_policy.set.DN_CONFIG_DIR="/private/dev"']);
+});
+
+
+it.skipIf(process.platform === "win32").each([undefined, nativeId])("preserves effective Codex PATH and native override order (resume %s)", async resumeSessionId => {
+  const environment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", PATH: "/private/aliases:/worker/bin", DN_CONFIG_DIR: "/private/dev" };
+  const reads: { args: readonly string[]; cwd: string }[] = [];
+  const f = await fixture("codex", environment, async (args, cwd) => { reads.push({ args: [...args], cwd }); return { config: { shell_environment_policy: { set: { PATH: "/custom/toolchain:/usr/bin:/bin" } } } }; });
+  const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+  const configuration = { agent: "codex" as const, model: null, args: ["-p", "work", "-c", 'shell_environment_policy.set.PATH="/custom/toolchain:/usr/bin:/bin"'] };
+  await f.manager.start(f.context, binding, { configuration, prompt: "initial", ...(resumeSessionId ? { resumeSessionId } : {}) }, operation());
+  const args = f.calls.find(call => call.method === "agent.start")!.params.args as string[];
+  expect(reads).toHaveLength(1);
+  expect(reads[0]!.cwd).toBe(await realpath(f.context.cwd));
+  expect(reads[0]!.args).toEqual(buildHerdrAgentArguments(configuration, await realpath(f.context.cwd), resumeSessionId));
+  expect(args.slice(-4)).toEqual(["-c", 'shell_environment_policy.set.PATH="/private/aliases:/custom/toolchain:/usr/bin:/bin"', "-c", 'shell_environment_policy.set.DN_CONFIG_DIR="/private/dev"']);
+});
+
+
+it("does not inspect Codex config without aliases or before an existing Agent", async () => {
+  let reads = 0;
+  const read = async () => { reads++; throw new Error("unexpected config inspection"); };
+  const plain = await fixture("codex", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, read);
+  await launch(plain);
+  const mapped = await fixture("codex", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", PATH: "/private/aliases:/bin" }, read);
+  const binding = await mapped.manager.prepareWorkspace(mapped.context, taskTitle, operation());
+  mapped.launch({ pane_id: binding.paneId, name: herdrExecutionAgentName(mapped.context) });
+  await mapped.manager.start(mapped.context, binding, { configuration, prompt: "never sent" }, operation());
+  expect(reads).toBe(0);
+});
+
+it("does not start an Agent when effective configuration inspection fails", async () => {
+  const f = await fixture("codex", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", PATH: "/private/aliases:/bin" }, async () => { throw new Error("native configuration unavailable"); });
+  const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+  await expect(f.manager.start(f.context, binding, { configuration, prompt: "never sent" }, operation())).rejects.toThrow("native configuration unavailable");
+  expect(f.calls.some(call => call.method === "agent.start")).toBe(false);
 });

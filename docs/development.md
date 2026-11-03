@@ -258,9 +258,19 @@ mapping. Retained Herdr workspaces keep their environment, while a newly started
 Codex process receives the current launch policy. Editing configuration alone does
 not rewrite an already-running process. Ordinary terminals and the separate PR reviewer do
 not receive these aliases. Provider settings or shell startup files can override
-PATH. For Codex, Daynight also supplies explicit native shell-environment policy
-values for PATH and DN_CONFIG_DIR so restoring its login-shell snapshot preserves
-the mapping. User include-only filters can still exclude these variables. Verify
+PATH. For Codex, Daynight reads the native effective configuration for the Agent's
+working directory before starting or resuming it. An explicit native
+`shell_environment_policy.set.PATH` keeps its complete value with the private
+alias directory prepended; without that override, the prepared launch PATH is
+retained. Daynight supplies this PATH and DN_CONFIG_DIR as explicit policy values
+so restoring a login-shell snapshot preserves the mapping. Other policy fields,
+including inheritance and include/exclude filters, are unchanged; include-only
+filters can still exclude these variables. The Web Controller reuses its native
+app-server connection. Herdr uses a bounded, session-free app-server inspection
+with the same environment and ordered configuration flags after native
+preflight. Unsupported profile inspection, failed configuration reads or
+unconfirmed probe cleanup stop that launch instead of selecting a default PATH.
+No inspection is added when aliases are absent. Verify
 `command -v daynight` and `daynight --build-info` from the actual
 Agent when customizing those environments. No claim is made about arbitrary
 shell startup overrides.

@@ -1,3 +1,4 @@
+import { readCodexConfiguration } from "./herdr/codex-config.js";
 import type { WorkerPaths } from "./paths.js";
 import type { HerdrWorkspaceEnvironment } from "./herdr/agents.js";
 import { createHerdrAgentManager } from "./herdr/agents.js";
@@ -48,7 +49,7 @@ export const createWorkerHerdr = (options: {
     verifyStart: (input, operation) => {
       return preflight.verifyStart({ ...input, configuration: { ...input.configuration, agent: input.configuration.agent } }, operation);
     },
-  }, workspaceEnvironment });
+  }, workspaceEnvironment, readCodexConfig: (args, cwd, operation) => readCodexConfiguration({ args, cwd, environment: { ...nativeEnvironment, ...workspaceEnvironment } }, operation) });
   return {
     ensureInstance: instance.ensure,
     stopInstance: instance.stop,

@@ -38,7 +38,15 @@ injection. Herdr workspaces receive the environment; the persistent daemon does
 not inherit an alias PATH that could leak into later unconfigured workspaces.
 Codex additionally receives explicit shell-environment policy values for PATH and
 DN_CONFIG_DIR; native shell snapshots would otherwise restore a different PATH.
-User include filters remain authoritative. The selected configuration root follows mapped commands. Existing workspaces and
+The PATH override prepends the private directory to the native configured PATH,
+not the Worker's PATH when the user has explicitly selected a toolchain. Native
+`config/read` resolves user, trusted project and command-line layers for the
+launch cwd. Web reuses its app-server; Herdr performs a bounded, session-free
+inspection after preflight using the same native environment and configuration
+arguments. Failed reads and unsupported profile inspection prevent launch rather
+than falling back to an unrelated config. Without an explicit native PATH the
+prepared launch PATH is retained. User inheritance and include/exclude filters
+remain authoritative. The selected configuration root follows mapped commands. Existing workspaces and
 processes retain their environment, and releasing an execution does not require
 a currently available alias target.
 
@@ -59,6 +67,14 @@ and SSH behavior. A Daynight-specific root avoids both effects.
 **Point the development entry at mutable dist and node_modules.** Rebuilding
 could change code loaded by an already-running process. Independent snapshots
 cost disk space but preserve the executing build, including lazy dependencies.
+
+**Parse only command-line PATH overrides or read config.toml directly.** This
+misses trusted project layers, selected native configuration and managed
+precedence. Native configuration inspection avoids implementing another config
+loader. It adds one local process to an opted-in Herdr start, with bounded
+output, cancellation and confirmed cleanup; Web needs only one RPC. Codex
+versions whose inspection commands reject the selected profile cannot safely
+use that combination, even if their interactive command supports it.
 
 ## Consequences
 

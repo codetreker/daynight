@@ -4,6 +4,7 @@ let waiting = null, holdResponse = false;
 for await (const line of createInterface({input:process.stdin})) {
  const m=JSON.parse(line);
  if(m.method==='initialize')out({id:m.id,result:{}});
+ if(m.method==='config/read')out({id:m.id,result:{config:JSON.parse(process.env.CODEX_TEST_EFFECTIVE_CONFIG ?? '{}')}});
  if(process.env.EXPECT_WORKER_PERMISSIONS && (m.method==='thread/start'||m.method==='thread/resume')) {
   const expected=process.env.EXPECT_WORKER_PERMISSIONS==='yes';
   if((m.params.sandbox==='danger-full-access')!==expected || (m.params.approvalPolicy==='never')!==expected) {out({id:m.id,error:{code:-32602,message:'Unexpected native permissions'}});continue;}
