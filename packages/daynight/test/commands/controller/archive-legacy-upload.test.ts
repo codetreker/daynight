@@ -5,7 +5,8 @@ import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
-import { openControllerLifecycleStore, type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -206,4 +207,30 @@ test.each([1, 2, 3, 4, 5] as const)("normal lifecycle opening retains v%i upgrad
     expect(() => openControllerLifecycleStore(f.journalPath, f.ticket)).toThrow("writer is still running");
     expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(6);
   } finally { store.close(); }
+});
+
+test.each((["stop", "snapshot", "operation", "writer"] as const).flatMap(entrypoint => [false, true].map(drained => [entrypoint, drained] as const)))("%s upgrade cannot turn a v1 source into a complete archive (outbox drained: %s)", async (entrypoint, drained) => {
+  const f = await fixture(1), bodies: string[] = [];
+  if (drained) inspect(f.journalPath, db => db.exec("DELETE FROM outbox"));
+  if (entrypoint === "snapshot") expect(readControllerSnapshot(f.journalPath)).toEqual(f.snapshot);
+  else if (entrypoint === "operation") expect(readControllerOperation(f.journalPath, f.operation.operationId)).toEqual(f.operation);
+  else if (entrypoint === "writer") {
+    const store = openControllerLifecycleStore(f.journalPath, f.ticket);
+    // Delivery may drain the old outbox without supplying a complete local history.
+    store.acknowledgeEvents("9");
+    store.close();
+  }
+  const stopped = { ...f.snapshot, controllerProcess: { pid: 2_000_000_000, parentPid: 1, processGroupId: 2_000_000_000, startedAt: "original", commandHash: "a".repeat(64) } };
+  inspect(f.journalPath, db => db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify(stopped)));
+  // Only process-tree inspection is substituted; stop reconciliation and both
+  // database openings are real and preserve their migration transactions.
+  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  expect(await recordStoppedControllerGeneration(f.journalPath, f.ticket)).toEqual(stopped);
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow("unresolved projection gap");
+  expect(bodies).toEqual([]);
+  inspect(f.journalPath, db => {
+    expect(db.pragma("user_version", { simple: true })).toBe(6);
+    expect(db.prepare("SELECT archive_incomplete FROM execution").get()).toEqual({ archive_incomplete: 1 });
+    expect(db.prepare("SELECT value FROM outbox").all()).toEqual(drained || entrypoint === "writer" ? [] : [{ value: JSON.stringify({ kind: "timeline_upsert", payload: f.entry }) }]);
+  });
 });

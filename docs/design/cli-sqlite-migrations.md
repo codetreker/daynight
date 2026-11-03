@@ -13,7 +13,7 @@
 | 原实例锁和严格不接管的同步维护 permit | `platform/instance-lock.ts` |
 | 本库基线 DDL、已交付转换、业务准入和必要结构检查 | 各 store 的 format 模块 |
 
-格式定义包含基线版本及建库函数、连续的后续迁移和按版本验证函数，不包含无版本来源验证或接入 callback。SQL 主链在格式模块初始化时从所属目录加载并按文件名排序；建库和迁移 callbacks 在传入 Database 上执行已经加载的 SQL 或本库 JSON 转换，返回类型为 `undefined`，拒绝误传 async callback。版本由执行器统一推进，迁移不自行提交或开始事务，也不操作 Git、网络或原生进程。Controller journal v6 的领域迁移还须先把旧正文可靠导出到本执行的待归档文件，再执行正文表删除及索引转换；SQLite 回滚不能撤销已落盘文件，重试须核对并复用它们，不能提前清除唯一正文源。该例外由 [Session 归档设计](task-session-protocol.md#完成后的文件归档)拥有，公共执行器不承担文件迁移。
+格式定义包含基线版本及建库函数、连续的后续迁移和按版本验证函数，不包含无版本来源验证或接入 callback。SQL 主链在格式模块初始化时从所属目录加载并按文件名排序；建库和迁移 callbacks 在传入 Database 上执行已经加载的 SQL 或本库 JSON 转换，返回类型为 `undefined`，拒绝误传 async callback。每步迁移同时接收本次事务初始识别的 `SqliteSource`；该来源不随中间 `user_version` 推进改变，领域转换可以据此保留旧格式的完整性限制。版本由执行器统一推进，迁移不自行提交或开始事务，也不操作 Git、网络或原生进程。Controller journal v6 的领域迁移还须先把旧正文可靠导出到本执行的待归档文件，再执行正文表删除及索引转换；SQLite 回滚不能撤销已落盘文件，重试须核对并复用它们，不能提前清除唯一正文源。该例外由 [Session 归档设计](task-session-protocol.md#完成后的文件归档)拥有，公共执行器不承担文件迁移。
 
 ## SQL 资源与参考结构
 

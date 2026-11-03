@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { SqliteAccessError } from "./sqlite-error.js";
 
-export type SqliteMigration = { readonly toVersion: number; readonly up: (db: Database.Database) => undefined };
+export type SqliteMigration = { readonly toVersion: number; readonly up: (db: Database.Database, source: SqliteSource) => undefined };
 export type SqliteFormat = {
   readonly name: string;
   readonly baseline: { readonly version: number; readonly create: (db: Database.Database) => undefined };
@@ -79,7 +79,7 @@ export const upgradeSqlite = (db: Database.Database, format: SqliteFormat): Sqli
   for (const migration of format.migrations) {
     if (migration.toVersion <= version) continue;
     try {
-      migration.up(db);
+      migration.up(db, source);
       format.validateVersioned(db, migration.toVersion);
       db.pragma(`user_version = ${migration.toVersion}`);
       version = migration.toVersion;

@@ -21,7 +21,7 @@ const validateVersioned = (db: Database.Database, version: number): undefined =>
 export const controllerJournalFormat: SqliteFormat = {
   name: "controller-journal",
   baseline: { version: baseline.version, create: (db) => { db.exec(baseline.sql); } },
-  migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database): undefined => {
+  migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database, source: SqliteSource): undefined => {
     if (step.version !== 6) { db.exec(step.sql); return; }
     const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string } | undefined;
     if (row === undefined) {
@@ -33,6 +33,9 @@ export const controllerJournalFormat: SqliteFormat = {
     // Files survive an enclosing migration rollback; SQL sources disappear only
     // after their complete pending archive has reached durable storage.
     migratePendingContent(db, openPendingContent(db.name, snapshot.sessionId), step.sql);
+    // Version 1 has no durable projection, and its acknowledged outbox may have
+    // discarded history. Intermediate DDL cannot establish that source as complete.
+    if (source.kind === "outdated" && source.version === 1) db.exec("UPDATE execution SET archive_incomplete=1 WHERE id=1");
   } })),
   validateVersioned,
 };

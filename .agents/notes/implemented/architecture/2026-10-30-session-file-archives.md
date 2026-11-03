@@ -22,7 +22,13 @@ admission, without acquiring a writer lease or changing execution identity.
 The v6 domain callback exports legacy content before its numbered SQL conversion
 drops the content tables. All pending schema steps share one transaction; failed
 exports roll SQL back to the original version while retaining durable files for
-verified retry. A version-zero SQL reset does not delete pending files, and a
+verified retry. Every migration step receives the transaction's original source
+classification. An existing v1 execution remains archive-incomplete after v6:
+v1 has no durable projection, and its acknowledged outbox may have discarded
+history. This applies to stop reconciliation, snapshot and operation reads, and
+writer opening as well as direct upload. Creating intermediate empty tables
+cannot establish completeness. Fresh empty-database initialization is unaffected.
+A version-zero SQL reset does not delete pending files, and a
 new writer without an execution record cannot adopt nonempty pending content
 solely because its Session ID matches. Empty pending manifests remain usable
 for initialization retries. File commits
@@ -41,6 +47,10 @@ without archiving or deleting worktrees, including executions already awaiting
 terminal finalization; their terminal responsibility survives for normal
 reconciliation after restart. Completed archives are
 immutable display records; they do not carry control or native resume authority.
+The persisted Session identity remains authoritative when attaching local live
+state. Another relay can establish a final native ID while this instance retains
+an older cache; both reads and draining expiration must preserve that committed
+identity instead of copying a stale null back to SQL.
 
 Soft-deleted tasks retain archive-finalization access for the original session
 owner with a valid PAT and current project membership. The task lock orders this
@@ -109,6 +119,15 @@ creator synchronizes its parent entry. The creator may fail after that directory
 becomes populated, preventing cleanup. Every initializer must complete the
 readable ancestor barriers, including for existing roots and failure retries.
 
+**Infer completeness from the upgraded schema or a remaining outbox.** The schema
+can acquire empty projection tables during migration, while an acknowledged
+outbox can already be empty. Neither proves a complete original history. Preserve
+the known source limitation explicitly instead of synthesizing a successful archive.
+
+**Prefer a same-fence live snapshot over durable identity.** A matching execution
+fence does not make one instance's cache newer than another instance's committed
+finalization. Preserve durable control identity while reusing live display fields.
+
 ## Consequences
 
 Completed Session URLs can render messages, tools and resources without a live
@@ -126,3 +145,7 @@ or native data that the Provider never projected. Explicit size and resource
 bounds can cause archival to fail; failure never means silently truncated
 success. The pending source remains local until upload is confirmed. Sudden
 loss of that source before upload remains unrecoverable under this guarantee.
+
+The v1 completeness guard preserves known source limitations on upgrades performed
+by this implementation. It cannot infer an earlier v1 origin after an older
+release already upgraded the journal without retaining that provenance.
