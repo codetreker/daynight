@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/api"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 )
 
@@ -72,6 +73,36 @@ func TestSessionArchiveRoutes(t *testing.T) {
 		if r := projectRequest(f.handler, method, base, "{}"); r.Code != 400 {
 			t.Fatal(r.Code)
 		}
+	}
+}
+
+func TestDeletedTaskArchiveRoutesAllowFinalizationOnly(t *testing.T) {
+	f := sessionHTTPSetup(t)
+	base := f.base + "/" + f.snapshot.SessionID + "/archive"
+	ended := decodeResponse[api.Task](t, projectRequest(f.handler, "PUT", taskPath(f.task)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: f.task.Version, Status: "done", ClaimID: &f.snapshot.ClaimID})), http.StatusOK)
+	response := projectRequest(f.handler, "DELETE", taskPath(ended), jsonBody(t, api.TaskDeleteRequest{Version: ended.Version}))
+	if response.Code != http.StatusNoContent {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	status := decodeResponse[struct {
+		Archive sp.ArchiveStatus `json:"archive"`
+	}](t, projectRequest(f.handler, "GET", base, ""), http.StatusOK)
+	if status.Archive.State != "unavailable" {
+		t.Fatal(status)
+	}
+	update := sp.ArchiveUpdate{Fence: f.snapshot.Fence, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, State: "pending"}
+	decodeResponse[map[string]any](t, projectRequest(f.handler, "POST", base, jsonBody(t, update)), http.StatusOK)
+	doc := sp.ArchiveDocument{Fence: f.snapshot.Fence, SchemaVersion: 1, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", Entries: []sp.TimelineEntry{}, Resources: []sp.ArchiveResource{}}
+	decodeResponse[map[string]any](t, projectRequest(f.handler, "PUT", base, jsonBody(t, doc)), http.StatusOK)
+	status = decodeResponse[struct {
+		Archive sp.ArchiveStatus `json:"archive"`
+	}](t, projectRequest(f.handler, "GET", base, ""), http.StatusOK)
+	if status.Archive.State != "ready" || status.Archive.SHA256 == nil {
+		t.Fatal(status)
+	}
+	assertProjectError(t, projectRequest(f.handler, "GET", taskPath(ended), ""), http.StatusGone, "task_deleted")
+	for _, path := range []string{base + "/content", f.base + "/current"} {
+		assertProjectError(t, projectRequest(f.handler, "GET", path, ""), http.StatusNotFound, "not_found")
 	}
 }
 func TestArchiveBodyRejectsInvalidInputs(t *testing.T) {

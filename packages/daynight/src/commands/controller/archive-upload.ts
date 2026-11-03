@@ -5,6 +5,7 @@ import { sessionBinding } from "../../session/protocol.js";
 import { parseSessionArchive, parseSessionArchiveStatus, verifySessionArchiveResources, type SessionArchiveStatus } from "../../session/archive.js";
 import type { ControllerLaunchTicket } from "./launch-ticket.js";
 import { readControllerSnapshot } from "./lifecycle-store.js";
+import { migrateControllerJournalSchema } from "./journal-schema.js";
 import { migratePendingContent, reconcilePendingContent, openPendingContent, writeDurableJson } from "./pending-content.js";
 
 export const uploadStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; serverToken: string; request?: typeof fetch; signal?: AbortSignal }): Promise<SessionArchiveStatus> => {
@@ -38,6 +39,9 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
       const version = Number(db.pragma("user_version", { simple: true }));
       if (version < 2 || version > 6) throw new Error("Unsupported controller archive journal.");
       if (version >= 6 && !existsSync(`${journalPath}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
+      // Stopped journals need the same intermediate columns as live recovery,
+      // without claiming a writer lease or replacing the stopped snapshot.
+      db.transaction(() => migrateControllerJournalSchema(db)).immediate();
       const content = openPendingContent(journalPath, ticket.sessionId);
       migratePendingContent(db, content);
       reconcilePendingContent(db, content);

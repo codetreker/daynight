@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -453,7 +454,10 @@ func TestMakeRootSyncsCreatedDirectoryEntries(t *testing.T) {
 func TestNewRootSyncFailureCanRetryWithoutSkippingBarrier(t *testing.T) {
 	for _, failAt := range []int{1, 2, 3, 4} {
 		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
-			parent := t.TempDir()
+			parent, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
 			first := filepath.Join(parent, "first")
 			root := filepath.Join(first, "storage")
 			calls := 0
@@ -467,22 +471,44 @@ func TestNewRootSyncFailureCanRetryWithoutSkippingBarrier(t *testing.T) {
 			}); !errors.Is(err, failure) {
 				t.Fatal("failed directory synchronization acknowledged:", err)
 			}
-			if _, err := os.Stat(root); !errors.Is(err, fs.ErrNotExist) {
-				t.Fatal("failed initialization left a reusable root:", err)
+			retained := first
+			if failAt >= 3 {
+				retained = root
+			}
+			if info, err := os.Stat(retained); err != nil || !info.IsDir() {
+				t.Fatal("failed initialization removed an adoptable directory:", err)
+			}
+			// An existing directory never waives a New caller's own barriers.
+			storage, err := newWithDirectorySync(root, func(file *os.File) error {
+				if file.Name() == parent {
+					return failure
+				}
+				return file.Sync()
+			})
+			if storage != nil {
+				storage.Close()
+				t.Fatal("retry exposed storage before its failed ancestor barrier")
+			}
+			if !errors.Is(err, failure) {
+				t.Fatalf("retry skipped failed barrier: %v", err)
 			}
 			var retried []string
-			if err := makeRoot(root, func(file *os.File) error {
+			storage, err = newWithDirectorySync(root, func(file *os.File) error {
 				retried = append(retried, file.Name())
 				return file.Sync()
-			}); err != nil {
+			})
+			if err != nil {
 				t.Fatal(err)
 			}
-			want := []string{root, first}
-			if failAt <= 2 {
-				want = append([]string{first, parent}, want...)
+			defer storage.Close()
+			for _, required := range []string{root, first, parent} {
+				if !slices.Contains(retried, required) {
+					t.Fatalf("retry skipped directory barrier %s: %v", required, retried)
+				}
 			}
-			if !reflect.DeepEqual(retried, want) {
-				t.Fatalf("retry skipped failed barriers: got %v, want %v", retried, want)
+			put(t, storage, "archives", "session/file", []byte("retried archive"))
+			if got := string(read(t, storage, "archives", "session/file")); got != "retried archive" {
+				t.Fatal(got)
 			}
 		})
 	}

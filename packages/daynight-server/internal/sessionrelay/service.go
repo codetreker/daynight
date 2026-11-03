@@ -148,6 +148,9 @@ func lockTask(ctx context.Context, tx pgx.Tx, project, id string) (task, error) 
 	if err := tx.QueryRow(ctx, `SELECT status FROM tasks WHERE project_id=$1 AND id=$2 AND deleted_at IS NULL FOR SHARE`, project, id).Scan(&t.Status); err != nil {
 		return task{}, err
 	}
+	return taskWorker(ctx, tx, id, t)
+}
+func taskWorker(ctx context.Context, tx pgx.Tx, id string, t task) (task, error) {
 	rows, err := tx.Query(ctx, `SELECT name,value FROM task_properties WHERE task_id=$1 ORDER BY name`, id)
 	if err != nil {
 		return task{}, err

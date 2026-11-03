@@ -17,7 +17,9 @@ The standardized Controller timeline is the display-history source. Live updates
 write private, atomic per-entry files beside the execution journal; registered
 resources use the same pending-upload directory. SQLite keeps execution identity,
 operation evidence, content hashes and revisions, and a bounded transport outbox.
-Migration exports legacy content before dropping its SQL tables. File commits
+Stopped uploaders share the lifecycle opener's structural journal migrations
+before exporting legacy content, without acquiring a writer lease or changing
+execution identity. Migration exports legacy content before dropping its SQL tables. File commits
 precede SQL delivery metadata; recovery rejects missing or regressed content and
 resynchronizes file updates that survived a rolled-back SQL transaction.
 
@@ -34,6 +36,12 @@ terminal finalization; their terminal responsibility survives for normal
 reconciliation after restart. Completed archives are
 immutable display records; they do not carry control or native resume authority.
 
+Soft-deleted tasks retain archive-finalization access for the original session
+owner with a valid PAT and current project membership. The task lock orders this
+access against deletion, while the original execution fence and identity still
+govern writes. Deleted-task content reads, browser access and control remain
+denied; archival never restores task visibility.
+
 Local storage initialization persists each directory it creates and its entry
 in the immediate parent before creating the next directory. It opens the parent
 before creating an entry, so it cannot create an unsynchronized directory under
@@ -45,10 +53,14 @@ barriers itself. Ancestor open-permission failures are skipped while traversal
 continues upward, allowing pre-provisioned search-only ancestors. Root open
 errors, synchronization failures and other I/O failures remain fatal.
 
-A failed creation barrier removes the newly created empty directory. Cleanup
-never recursively removes a directory that another process may have populated,
-and cleanup errors remain visible. A retry over such a retained directory still
-performs the complete initialization barriers before publishing objects.
+The original initialization decision removed newly created empty directories on
+a barrier failure to prevent retries from adopting incomplete roots, while
+non-recursive removal protected populated directories. That decision did not
+account for an initializer that had already opened an empty root. The
+[shared-root initialization decision](../bug-fix/2026-11-03-shared-storage-root-initialization.md)
+replaces that rollback: failed initialization retains directories, and every
+retry completes its own barriers. It also preserves symbolic-link and parent
+component semantics before choosing the path to synchronize and open.
 
 This partially supersedes the
 [Controller-owned content decision](2026-10-28-local-session-content.md). That

@@ -37,11 +37,23 @@ func newWithDirectorySync(root string, fileSync func(*os.File) error) (*Storage,
 	if err := makeRoot(root, fileSync); err != nil {
 		return nil, err
 	}
-	absolute, err := filepath.Abs(root)
-	if err != nil {
-		return nil, err
+	if !filepath.IsAbs(root) {
+		// Prefix the current directory without cleaning the caller's components:
+		// a symlink followed by ".." must traverse the symlink's physical parent.
+		volume := filepath.VolumeName(root)
+		relative := root[len(volume):]
+		base := volume + "."
+		if len(relative) > 0 && os.IsPathSeparator(relative[0]) {
+			base = volume + relative[:1]
+			relative = relative[1:]
+		}
+		absoluteBase, err := filepath.Abs(base)
+		if err != nil {
+			return nil, err
+		}
+		root = absoluteBase + string(os.PathSeparator) + relative
 	}
-	resolved, err := filepath.EvalSymlinks(absolute)
+	resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return nil, err
 	}
@@ -358,31 +370,39 @@ func makeRoot(root string, fileSync func(*os.File) error) (result error) {
 	if !errors.Is(err, fs.ErrNotExist) || root == "" {
 		return err
 	}
-	parent := filepath.Dir(root)
+	// Keep symlink/.. components intact when finding the creation parent.
+	// filepath.Dir would clean them before the filesystem can resolve them.
+	end := len(root)
+	for end > 0 && os.IsPathSeparator(root[end-1]) {
+		end--
+	}
+	for end > 0 && !os.IsPathSeparator(root[end-1]) {
+		end--
+	}
+	volume := filepath.VolumeName(root)
+	parent := root[:end]
+	if end > len(volume)+1 {
+		parent = root[:end-1]
+	} else if end <= len(volume) {
+		parent = volume + "."
+	}
 	if err := makeRoot(parent, fileSync); err != nil {
 		return err
 	}
-	// Open before creation so insufficient parent read permission cannot leave
-	// an unsynchronized child that a later initialization mistakes for an old root.
+	// New entries require a readable parent for their persistence barrier.
+	// Existing roots may still traverse unreadable pre-provisioned ancestors.
 	directory, err := os.Open(parent)
 	if err != nil {
 		return err
 	}
-	created := false
-	defer func() {
-		result = errors.Join(result, directory.Close())
-		if result != nil && created {
-			// No child has been created through this call yet. Never recursively
-			// remove the directory: another process may have started using it.
-			result = errors.Join(result, os.Remove(root))
-		}
-	}()
+	// Another instance may adopt even an empty directory as soon as mkdir
+	// succeeds. Failure cannot revoke that instance's root by removing it;
+	// every New performs its own ancestor barriers, including on retry.
+	defer func() { result = errors.Join(result, directory.Close()) }()
 	if err := os.Mkdir(root, 0o700); err != nil {
 		if info, statErr := os.Stat(root); !errors.Is(err, fs.ErrExist) || statErr != nil || !info.IsDir() {
 			return err
 		}
-	} else {
-		created = true
 	}
 	child, err := os.Open(root)
 	if err != nil {

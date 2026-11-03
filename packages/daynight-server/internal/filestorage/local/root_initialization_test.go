@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"testing"
 )
 
@@ -46,7 +45,7 @@ func TestRootInitializationDoesNotIgnoreSyncFailures(t *testing.T) {
 }
 
 func TestRootRemovedDuringInitializationDoesNotReturnStorage(t *testing.T) {
-	for _, phase := range []string{"resolve", "open"} {
+	for _, phase := range []string{"resolve", "open", "cwd"} {
 		t.Run(phase, func(t *testing.T) {
 			parent, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
@@ -62,6 +61,11 @@ func TestRootRemovedDuringInitializationDoesNotReturnStorage(t *testing.T) {
 					target = filepath.Dir(target)
 				}
 			}
+			if phase == "cwd" {
+				t.Chdir(parent)
+				root = "storage"
+				target = "."
+			}
 			removed := false
 			storage, err := newWithDirectorySync(root, func(file *os.File) error {
 				if file.Name() == target && !removed {
@@ -71,6 +75,9 @@ func TestRootRemovedDuringInitializationDoesNotReturnStorage(t *testing.T) {
 						return err
 					}
 					removed = true
+					if phase == "cwd" {
+						return errors.Join(os.Remove(parent), file.Sync())
+					}
 				}
 				return file.Sync()
 			})
@@ -145,115 +152,245 @@ func TestRootInitializationContinuesAboveUnreadableAncestor(t *testing.T) {
 func TestConcurrentRootInitializationPersistsExistingDirectoryChain(t *testing.T) {
 	for _, depth := range []int{1, 3} {
 		for _, alias := range []bool{false, true} {
-			t.Run(fmt.Sprintf("depth=%d/symlink=%t", depth, alias), func(t *testing.T) {
-				parent, err := filepath.EvalSymlinks(t.TempDir())
-				if err != nil {
-					t.Fatal(err)
-				}
-				first := filepath.Join(parent, "first")
-				root := first
-				for range depth - 1 {
-					root = filepath.Join(root, "nested")
-				}
-				created := make(chan struct{})
-				release := make(chan struct{})
-				finished := make(chan error, 1)
-				done := make(chan struct{})
-				failure := errors.New("creator parent sync failed")
-				var once sync.Once
-				resume := func() { once.Do(func() { close(release) }) }
-				go func() {
-					defer close(done)
-					storage, err := newWithDirectorySync(root, func(file *os.File) error {
-						if file.Name() == parent {
-							// The first mkdir is visible, but its parent entry has not
-							// passed its persistence barrier. A second caller can adopt it.
-							close(created)
-							<-release
-							return failure
-						}
-						return file.Sync()
-					})
-					if storage != nil {
-						err = errors.Join(err, storage.Close())
-					}
-					finished <- err
-				}()
-				t.Cleanup(func() {
-					resume()
-					<-done
-				})
-				select {
-				case <-created:
-				case err := <-finished:
-					t.Fatal("creator did not reach the pending directory barrier:", err)
-				case <-t.Context().Done():
-					t.Fatal(t.Context().Err())
-				}
-				requestedRoot := root
-				if alias {
-					link := filepath.Join(parent, "alias")
-					if err := os.Symlink(first, link); err != nil {
-						t.Fatal(err)
-					}
-					relative, err := filepath.Rel(first, root)
+			for _, populated := range []bool{false, true} {
+				t.Run(fmt.Sprintf("depth=%d/symlink=%t/populated=%t", depth, alias, populated), func(t *testing.T) {
+					parent, err := filepath.EvalSymlinks(t.TempDir())
 					if err != nil {
 						t.Fatal(err)
 					}
-					requestedRoot = filepath.Join(link, relative)
-				}
-				var barriers = map[string]bool{}
-				storage, err := newWithDirectorySync(requestedRoot, func(file *os.File) error {
-					if err := file.Sync(); err != nil {
-						return err
+					first := filepath.Join(parent, "first")
+					root := first
+					for range depth - 1 {
+						root = filepath.Join(root, "nested")
 					}
-					barriers[file.Name()] = true
-					return nil
+					created := make(chan struct{})
+					release := make(chan struct{})
+					finished := make(chan error, 1)
+					done := make(chan struct{})
+					failure := errors.New("creator parent sync failed")
+					var once sync.Once
+					resume := func() { once.Do(func() { close(release) }) }
+					go func() {
+						defer close(done)
+						storage, err := newWithDirectorySync(root, func(file *os.File) error {
+							if file.Name() == parent {
+								// The first mkdir is visible, but its parent entry has not
+								// passed its persistence barrier. A second caller can adopt it.
+								close(created)
+								<-release
+								return failure
+							}
+							return file.Sync()
+						})
+						if storage != nil {
+							err = errors.Join(err, storage.Close())
+						}
+						finished <- err
+					}()
+					t.Cleanup(func() {
+						resume()
+						<-done
+					})
+					select {
+					case <-created:
+					case err := <-finished:
+						t.Fatal("creator did not reach the pending directory barrier:", err)
+					case <-t.Context().Done():
+						t.Fatal(t.Context().Err())
+					}
+					requestedRoot := root
+					if alias {
+						link := filepath.Join(parent, "alias")
+						if err := os.Symlink(first, link); err != nil {
+							t.Fatal(err)
+						}
+						relative, err := filepath.Rel(first, root)
+						if err != nil {
+							t.Fatal(err)
+						}
+						requestedRoot = filepath.Join(link, relative)
+					}
+					var barriers = map[string]bool{}
+					storage, err := newWithDirectorySync(requestedRoot, func(file *os.File) error {
+						if err := file.Sync(); err != nil {
+							return err
+						}
+						barriers[file.Name()] = true
+						return nil
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						if err := storage.Close(); err != nil {
+							t.Error(err)
+						}
+					})
+					for directory := root; ; directory = filepath.Dir(directory) {
+						if !barriers[directory] {
+							t.Fatalf("storage became writable before directory entry barrier: %s", directory)
+						}
+						if directory == parent {
+							break
+						}
+					}
+					if populated {
+						put(t, storage, "archives", "session/file", []byte("retained archive"))
+					}
+					resume()
+					select {
+					case err := <-finished:
+						if !errors.Is(err, failure) {
+							t.Fatalf("creator must report its synchronization failure: %v", err)
+						}
+					case <-t.Context().Done():
+						t.Fatal(t.Context().Err())
+					}
+					// Adoption does not require the second instance to have written yet.
+					// Its first write must still work after the creator has failed.
+					if !populated {
+						put(t, storage, "archives", "session/file", []byte("retained archive"))
+					}
+					// Retrying an existing root must perform the same ancestor barriers.
+					barriers = map[string]bool{}
+					retried, err := newWithDirectorySync(requestedRoot, func(file *os.File) error {
+						barriers[file.Name()] = true
+						return file.Sync()
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer retried.Close()
+					if !barriers[parent] || !barriers[first] || !barriers[root] {
+						t.Fatalf("retry skipped existing directory barriers: %v", barriers)
+					}
+					if got := string(read(t, retried, "archives", "session/file")); got != "retained archive" {
+						t.Fatal(got)
+					}
 				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() {
-					if err := storage.Close(); err != nil {
-						t.Error(err)
-					}
-				})
-				for directory := root; ; directory = filepath.Dir(directory) {
-					if !barriers[directory] {
-						t.Fatalf("storage became writable before directory entry barrier: %s", directory)
-					}
-					if directory == parent {
-						break
-					}
-				}
-				put(t, storage, "archives", "session/file", []byte("retained archive"))
-				resume()
-				select {
-				case err := <-finished:
-					if !errors.Is(err, failure) || !errors.Is(err, syscall.ENOTEMPTY) {
-						t.Fatalf("creator must preserve a now-populated directory: %v", err)
-					}
-				case <-t.Context().Done():
-					t.Fatal(t.Context().Err())
-				}
-				// A failed creator cannot remove this populated tree. Retrying an
-				// existing root must still perform the same ancestor barriers.
-				barriers = map[string]bool{}
-				retried, err := newWithDirectorySync(requestedRoot, func(file *os.File) error {
-					barriers[file.Name()] = true
-					return file.Sync()
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer retried.Close()
-				if !barriers[parent] || !barriers[first] || !barriers[root] {
-					t.Fatalf("retry skipped existing directory barriers: %v", barriers)
-				}
-				if got := string(read(t, retried, "archives", "session/file")); got != "retained archive" {
-					t.Fatal(got)
-				}
-			})
+			}
 		}
+	}
+}
+
+func TestRootInitializationPreservesSymlinkParentTraversal(t *testing.T) {
+	for _, relative := range []bool{false, true} {
+		for _, existing := range []bool{false, true} {
+			for _, alternative := range []bool{false, true} {
+				for _, trailing := range []bool{false, true} {
+					t.Run(fmt.Sprintf("relative=%t/existing=%t/alternative=%t/trailing=%t", relative, existing, alternative, trailing), func(t *testing.T) {
+						parent, err := filepath.EvalSymlinks(t.TempDir())
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.MkdirAll(filepath.Join(parent, "target", "nested"), 0o700); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Symlink(filepath.Join("target", "nested"), filepath.Join(parent, "link")); err != nil {
+							t.Fatal(err)
+						}
+						expected := filepath.Join(parent, "target", "new", "storage")
+						wrong := filepath.Join(parent, "new", "storage")
+						if existing {
+							if err := os.MkdirAll(filepath.Join(expected, "bucket"), 0o700); err != nil {
+								t.Fatal(err)
+							}
+							if err := os.WriteFile(filepath.Join(expected, "bucket", "existing"), []byte("original archive"), 0o600); err != nil {
+								t.Fatal(err)
+							}
+						}
+						if alternative {
+							if err := os.MkdirAll(filepath.Join(wrong, "bucket"), 0o700); err != nil {
+								t.Fatal(err)
+							}
+							if err := os.WriteFile(filepath.Join(wrong, "bucket", "existing"), []byte("unrelated archive"), 0o600); err != nil {
+								t.Fatal(err)
+							}
+						}
+						// filepath.Join would erase the traversal that this input exercises.
+						requested := parent + "/link/../new/storage"
+						if relative {
+							t.Chdir(parent)
+							requested = "link/../new/storage"
+						}
+						if trailing {
+							requested += "/"
+						}
+						storage, err := New(requested)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer storage.Close()
+						if existing && string(read(t, storage, "bucket", "existing")) != "original archive" {
+							t.Fatal("opened an unrelated storage root")
+						}
+						put(t, storage, "bucket", "new", []byte("new archive"))
+						if got, err := os.ReadFile(filepath.Join(expected, "bucket", "new")); err != nil || string(got) != "new archive" {
+							t.Fatalf("write did not use physical parent: %q %v", got, err)
+						}
+						if alternative {
+							if got, err := os.ReadFile(filepath.Join(wrong, "bucket", "existing")); err != nil || string(got) != "unrelated archive" {
+								t.Fatalf("changed unrelated archive: %q %v", got, err)
+							}
+							if _, err := os.Stat(filepath.Join(wrong, "bucket", "new")); !errors.Is(err, fs.ErrNotExist) {
+								t.Fatalf("wrote into unrelated root: %v", err)
+							}
+						} else if _, err := os.Stat(filepath.Join(parent, "new")); !errors.Is(err, fs.ErrNotExist) {
+							t.Fatalf("created lexical alternative: %v", err)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestRootInitializationResolvesRelativePathFromPhysicalWorkingDirectory(t *testing.T) {
+	parent := t.TempDir()
+	working := filepath.Join(parent, "target", "nested")
+	if err := os.MkdirAll(working, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(parent, "alias")
+	if err := os.Symlink(working, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(link)
+	// On Unix Getwd may return PWD when it identifies the current directory.
+	t.Setenv("PWD", link)
+	storage, err := New("../storage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	put(t, storage, "bucket", "new", []byte("physical parent"))
+	if got, err := os.ReadFile(filepath.Join(parent, "target", "storage", "bucket", "new")); err != nil || string(got) != "physical parent" {
+		t.Fatalf("write did not use physical working directory: %q %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(parent, "storage")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("created logical working-directory alternative: %v", err)
+	}
+}
+
+func TestRootInitializationCreatesRelativeDirectoryComponents(t *testing.T) {
+	for _, fixture := range []struct{ requested, expected string }{
+		{"storage", "storage"},
+		{"storage/", "storage"},
+		{"new/../storage", "storage"},
+		{"new//storage", "new/storage"},
+	} {
+		t.Run(fixture.requested, func(t *testing.T) {
+			parent := t.TempDir()
+			t.Chdir(parent)
+			storage, err := New(fixture.requested)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer storage.Close()
+			put(t, storage, "bucket", "new", []byte("relative archive"))
+			if got, err := os.ReadFile(filepath.Join(parent, fixture.expected, "bucket", "new")); err != nil || string(got) != "relative archive" {
+				t.Fatalf("relative root write: %q %v", got, err)
+			}
+		})
 	}
 }

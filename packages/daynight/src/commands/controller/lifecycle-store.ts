@@ -2,6 +2,7 @@ import { sessionDisplayEntry } from "./wire-display.js";
 import type { SessionControls } from "../../session/controls.js";
 import Database from "better-sqlite3";
 import { openPendingContent, migratePendingContent, reconcilePendingContent } from "./pending-content.js";
+import { migrateControllerJournalSchema } from "./journal-schema.js";
 import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
@@ -34,12 +35,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null };
   const atomic = <T>(action: () => T): T => db.transaction(action).immediate();
   try { atomic(() => {
-    const version = db.pragma("user_version", { simple: true }); if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6) throw new Error("Unsupported controller journal version.");
-    if (version === 0) db.exec("CREATE TABLE execution (id INTEGER PRIMARY KEY CHECK(id=1), ticket_hash TEXT NOT NULL, owner_pid INTEGER, snapshot TEXT NOT NULL, last_sequence INTEGER NOT NULL DEFAULT 0); CREATE TABLE operations (id TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox (sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version=1;");
-    if (version < 2) db.exec("ALTER TABLE execution ADD COLUMN last_acknowledged INTEGER NOT NULL DEFAULT 0; CREATE TABLE projection (id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, revision INTEGER NOT NULL, value TEXT NOT NULL); PRAGMA user_version=2;");
-    if (version < 3) db.exec("ALTER TABLE operations ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=3;");
-    if (version < 4) db.exec("ALTER TABLE execution ADD COLUMN projection_gap TEXT; PRAGMA user_version=4;");
-    if (version < 5) db.exec("ALTER TABLE execution ADD COLUMN source_floor INTEGER NOT NULL DEFAULT 0; CREATE TABLE resources (id TEXT PRIMARY KEY, descriptor TEXT NOT NULL, content BLOB); PRAGMA user_version=5;");
+    migrateControllerJournalSchema(db);
     const existing = db.prepare("SELECT ticket_hash, owner_pid, snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; owner_pid: number | null; snapshot: string } | undefined;
     if (existing === undefined) db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,?,?)").run(controllerPayloadHash(ticket), process.pid, JSON.stringify(initial));
     else {
