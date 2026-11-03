@@ -29,7 +29,7 @@ func testEnvironment(t *testing.T) map[string]string {
 	if url == "" {
 		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required for PostgreSQL tests")
 	}
-	address := acceptanceAddress(t)
+	address := testAddress(t)
 	origin := "http://" + address
 	return map[string]string{
 		"DAYNIGHT_DATABASE_URL": url, "DAYNIGHT_STORAGE_ROOT": testStorageRoot(t), "DAYNIGHT_LISTEN_ADDR": address,
@@ -40,23 +40,37 @@ func testEnvironment(t *testing.T) map[string]string {
 	}
 }
 
+func testAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return address
+}
+
 func testStorageRoot(t *testing.T) string {
 	t.Helper()
-	root := newTestStorageRoot(t)
+	temporary, err := filepath.Abs(filepath.Join("..", "..", ".tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(temporary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp(temporary, "command-storage-")
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		if err := os.RemoveAll(root); err != nil {
 			t.Error(err)
 		}
 	})
-	return root
-}
-
-func newTestStorageRoot(t *testing.T) string {
-	t.Helper()
-	root, err := os.MkdirTemp(filepath.Dir(binaryAcceptance.path), "process-storage-")
-	if err != nil {
-		t.Fatal(err)
-	}
 	return root
 }
 
@@ -230,7 +244,7 @@ func TestRunServesProjectAndTaskAPI(t *testing.T) {
 	testauth.Login(t, browser, values["DAYNIGHT_PUBLIC_ORIGIN"], "alice")
 	token := testauth.CreatePAT(t, browser, values["DAYNIGHT_PUBLIC_ORIGIN"])
 	browser.CloseIdleConnections()
-	client := &http.Client{Timeout: 3 * time.Second, Transport: acceptanceBearerTransport{token: token, next: http.DefaultTransport}}
+	client := &http.Client{Timeout: 3 * time.Second, Transport: bearerTransport{token: token, next: http.DefaultTransport}}
 	response, err := client.Get("http://" + address + "/api/v1/projects")
 	if err != nil {
 		t.Fatal(err)
@@ -308,12 +322,12 @@ func TestRunServesProjectAndTaskAPI(t *testing.T) {
 	}
 }
 
-type acceptanceBearerTransport struct {
+type bearerTransport struct {
 	token string
 	next  http.RoundTripper
 }
 
-func (t acceptanceBearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+func (t bearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	authenticated := request.Clone(request.Context())
 	authenticated.Header.Set("Authorization", "Bearer "+t.token)
 	return t.next.RoundTrip(authenticated)

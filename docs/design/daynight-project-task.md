@@ -575,8 +575,10 @@ fixture [`installed-cli.ts`](../../packages/daynight/test/fixtures/installed-cli
 `node packages/daynight/scripts/project-task-acceptance.ts`，由 Go 检查脚本调用；
 [`project-task-budgets.ts`](../../packages/daynight/scripts/project-task-budgets.ts)
 拥有期限与解码字节预算场景。
-它构建并安装 CLI 一次，将安装身份传给 Go command-package 验收，复用既有 fresh
-race binary、隔离 PostgreSQL schema、listener、重启和数据库等待屏障。新场景
+它构建并安装 CLI 一次，将安装身份传给独立 Go 测试包 `cmd/e2e_tests`，复用其 fresh
+race binary、隔离 PostgreSQL schema、listener、重启和数据库等待屏障。该包拥有
+跨进程验收的 `TestMain` 与辅助设施，由既有 `go-cov` 入口和 `go test ./...`
+发现执行；主命令包保留直接调用内部函数的测试并独立管理临时资源。场景
 `installed_cli_project_task_workflow` 通过要求编号 `PT.V1`、`PT.V3`、`PT.V5`、
 `PT.V6`、`PT.V7`、`PT.V8`、`PT.V9`、`PT.V10` 与 CLI 验收对应，保留原有服务
 场景及所属 package 覆盖率。Go receipt 的 `installedCli` 保存共享 helper 的 schema、
