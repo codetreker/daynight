@@ -76,8 +76,11 @@ native scenarios. The [approval lifecycle](2026-10-22-task-approval-lifecycle.md
 added three approval scenarios per target; the later
 [withdrawal decision](2026-10-23-task-unapprove.md) added one more. The inventory at that delivery
 was twenty-four functional per target and twenty-nine native, fifty-three across both targets,
-retaining all five capacity/limit cases. The existing single project, one worker, zero retries,
-capacity matrix, strict coverage and cleanup gates remain required. The
+retaining all five capacity/limit cases. The existing single project, one worker,
+zero retries, strict coverage and cleanup gates remain required. The
+[local stress decision](../testing/2026-11-03-local-stress-suites.md) subsequently
+places the complete capacity matrix behind explicit local stress acceptance;
+ordinary CI retains the functional language scenarios. The
 [pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md) records the original
 phase-scheduling choices; the [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
 owns current scheduling, requirement mapping and receipt interpretation.

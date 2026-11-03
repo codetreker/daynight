@@ -135,7 +135,65 @@ test('the thin CLI rejects unknown arguments before starting acceptance', { skip
     const result = await start([cli, '--unknown'], value).done;
     assert.equal(result.timedOut, false);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /Usage: node scripts\/acceptance\.mts \[--apfs \| --cleanup \[run-id\]\]/);
+    assert.match(result.stderr, /Usage: node scripts\/acceptance\.mts \[--apfs\] \[--stress\] \| --cleanup \[run-id\]/);
+    assert.equal(await readFile(value.commands, 'utf8'), '');
+  });
+});
+
+test('stress CLI options reject CI before starting any command or fixture', { skip: process.platform === 'win32' }, async () => {
+  await fixture(async (value) => {
+    value.env.CI = '1';
+    for (const flags of [['--stress'], ['--apfs', '--stress'], ['--stress', '--apfs']]) {
+      const result = await start([cli, ...flags], value).done;
+      assert.equal(result.timedOut, false);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /Browser stress acceptance is local-only and cannot run in CI/);
+      assert.equal(await readFile(value.commands, 'utf8'), '');
+      assert.deepEqual((await readdir(value.directory)).sort(), ['bin', 'commands.log']);
+    }
+  });
+});
+
+test('programmatic stress acceptance rejects CI before preparing resources', { skip: process.platform === 'win32' }, async () => {
+  await fixture(async (value) => {
+    value.env.CI = '1';
+    const result = await start(['--input-type=module', '--eval', `
+      import assert from 'node:assert/strict';
+      const { runAcceptance } = await import(${JSON.stringify(runner)});
+      await assert.rejects(runAcceptance(new AbortController(), { stress: true }), /Browser stress acceptance is local-only and cannot run in CI/);
+    `], value).done;
+    assert.equal(result.timedOut, false);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await readFile(value.commands, 'utf8'), '');
+    assert.deepEqual((await readdir(value.directory)).sort(), ['bin', 'commands.log']);
+  });
+});
+
+test('raw Playwright stress selection rejects CI before test discovery', { skip: process.platform === 'win32' }, async () => {
+  await fixture(async (value) => {
+    value.env.CI = '1';
+    value.env.DAYNIGHT_ACCEPTANCE_STRESS = '1';
+    const config = new URL('../../playwright.config.ts', import.meta.url).href;
+    const result = await start(['--input-type=module', '--eval', `await import(${JSON.stringify(config)})`], value).done;
+    assert.equal(result.timedOut, false);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Browser stress acceptance is local-only and cannot run in CI/);
+    assert.equal(await readFile(value.commands, 'utf8'), '');
+    assert.deepEqual((await readdir(value.directory)).sort(), ['bin', 'commands.log']);
+  });
+});
+
+test('a raw capacity spec refuses CI even when a caller replaces the Playwright configuration', { skip: process.platform === 'win32' }, async () => {
+  await fixture(async (value) => {
+    value.env.CI = '1';
+    value.env.DAYNIGHT_ACCEPTANCE_STRESS = '1';
+    const config = join(value.directory, 'capacity.config.mts');
+    await writeFile(config, `export default { testDir: ${JSON.stringify(join(packageRoot, 'tests/e2e'))}, testMatch: 'capacity.spec.ts' };`);
+    const playwright = fileURLToPath(import.meta.resolve('@playwright/test/cli'));
+    const result = await start([playwright, 'test', '--config', config, '--list'], value).done;
+    assert.equal(result.timedOut, false);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Capacity browser tests require explicit local stress acceptance/);
     assert.equal(await readFile(value.commands, 'utf8'), '');
   });
 });
