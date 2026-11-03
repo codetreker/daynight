@@ -64,20 +64,33 @@ describe("worker repositories and task worktrees", () => {
     expect(await readFile(path.join(target, "unrelated"), "utf8")).toBe("keep");
   });
 
-  it("discovers claim resources from Git alone, including registrations whose leaf disappeared", async () => {
+  it("finds no claim resources in a repository without managed worktrees", async () => {
     const f = await fixture(); const adapter = manager(f.root);
     expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
-    const first = await adapter.prepareWorktree(f.project, f.owner, operation());
-    const otherOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", worktreeId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
-    const second = await adapter.prepareWorktree(f.project, otherOwner, operation());
-    const unrelated = path.join(f.root, "unrelated worktree");
-    git(f.repository, ["worktree", "add", "--detach", "--lock", "--reason", "unrelated", unrelated, "HEAD"]);
-    expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding: first }, { owner: otherOwner, binding: second }]);
-    await rm(first.worktreePath, { recursive: true });
-    expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding: first }, { owner: otherOwner, binding: second }]);
-    await adapter.removeWorktree(f.project, f.owner, operation());
-    expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: otherOwner, binding: second }]);
-    expect(await readFile(path.join(unrelated, "tracked.txt"), "utf8")).toBe("original\n");
+  });
+
+  describe("claim resource discovery", () => {
+    const prepare = async () => {
+      const f = await fixture(); const adapter = manager(f.root);
+      const first = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const otherOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", worktreeId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
+      const second = await adapter.prepareWorktree(f.project, otherOwner, operation());
+      const unrelated = path.join(f.root, "unrelated worktree");
+      git(f.repository, ["worktree", "add", "--detach", "--lock", "--reason", "unrelated", unrelated, "HEAD"]);
+      return { f, adapter, first, otherOwner, second, unrelated };
+    };
+    let prepared: Awaited<ReturnType<typeof prepare>>;
+    beforeEach(async () => { prepared = await prepare(); });
+
+    it("discovers claim resources from Git alone, including registrations whose leaf disappeared", async () => {
+      const { f, adapter, first, otherOwner, second, unrelated } = prepared;
+      expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding: first }, { owner: otherOwner, binding: second }]);
+      await rm(first.worktreePath, { recursive: true });
+      expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding: first }, { owner: otherOwner, binding: second }]);
+      await adapter.removeWorktree(f.project, f.owner, operation());
+      expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: otherOwner, binding: second }]);
+      expect(await readFile(path.join(unrelated, "tracked.txt"), "utf8")).toBe("original\n");
+    });
   });
 
   it("reports an unregistered reserved task directory during discovery", async () => {
