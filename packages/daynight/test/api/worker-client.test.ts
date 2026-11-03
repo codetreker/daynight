@@ -19,7 +19,7 @@ const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, 
 const task = (worker: WorkerClaim | undefined, version = 2n): Task => ({
   id: taskId, projectId, title: "Claimed task", description: "", properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], ...(worker === undefined ? {} : { worker }) },
   status: worker?.state === "active" ? "in_progress" : worker?.state === "completed" ? "done" : "todo",
-  allowAgents: true, requiredPlatform: null, version, startedAt: worker?.state === "active" ? time : null,
+  allowAgents: true, requiredPlatform: null, assignedTo: null, version, startedAt: worker?.state === "active" ? time : null,
   completedAt: worker?.state === "completed" ? time : null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: worker === undefined || worker.state === "released",
 });
 const cleanups: (() => void | Promise<void>)[] = [];

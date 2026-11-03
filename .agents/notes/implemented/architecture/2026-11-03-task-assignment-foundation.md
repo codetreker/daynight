@@ -22,8 +22,9 @@ A neutral currentTaskWrite constructor preserves assignment through metadata,
 status, property and worker writes. Input normalization precedes candidate
 comparison. Actual assignment changes run a shared transaction policy after
 no-op/deletion handling, reject in-progress work, validate a new target and set
-AllowAgents false in the same update. Equal values preserve permission and do
-not revalidate a retained former assignee.
+AllowAgents false in the same update. Equal assignment causes no permission
+reset and does not revalidate a retained former assignee; other supplied fields
+retain their ordinary mutation rules.
 
 Migration 028 adds the column and project/assignment/keyset index. Historical
 and soft-deleted tasks receive NULL without rewriting versions, business times,
@@ -36,7 +37,11 @@ resolved all/unassigned/user selection participates in task cursor version 2;
 project and account-Worker cursors retain version 1. Resolving me before cursor
 validation makes it equivalent to the corresponding concrete UUID while keeping
 another principal's self-filter out of that scope. Filters are explicit inputs,
-not an execution-eligibility condition.
+originally independent of execution eligibility, preserving the distinction
+between human responsibility and execution ownership. The accepted self-assigned
+automatic-acquisition rule is delivered by pending
+[PR #322](https://github.com/codetreker/daynight/pull/322); it does not transfer
+existing claim or manual-control authority.
 
 A project-scoped people read separates canonical profile and access facts from
 Task versions. It offers complete candidate/retained-assignee enumeration and
@@ -45,6 +50,22 @@ snapshot and use raw membership or live-task references before a LEFT JOIN to
 profiles. A qualified reference without a user row is an internal integrity
 failure; a request with no scoped qualification is explicitly unresolved without
 revealing a global profile. Nullable names and avatars remain actual data.
+
+
+The CLI requires nullable assignedTo on every Task and graph input, preserves it
+in JSON and shows its current UUID or unassigned in text. Ordinary create/update
+flags own assignment and null clearing; list alone accepts UUID/me/unassigned
+filters. Ready has no assignee command option. The accepted automatic worker
+candidate contract uses me, while complete existing-claim inventory remains
+unfiltered by responsibility; PR #322 owns that runtime delivery.
+
+For me filtering, successful task-page parsing receives that response's
+principal header. A complete traversal binds its first successful identity and
+checks every page, even an empty one, without an extra identity request. The
+binding belongs to one traversal; normal non-me requests retain their existing
+optional-header behavior when no expected principal is configured. Ordinary
+Task PATCH returns the complete mutation result, so the CLI adds no normal
+post-write GET or profile lookup.
 
 
 ## Alternatives
@@ -86,6 +107,12 @@ to the requested set; full enumeration remains an explicit catalogue operation.
 qualified references. Retaining raw candidate IDs and nullable joined user IDs
 lets the service expose integrity failure instead of successful partial output.
 
+**Infer me from a task or cached client identity.** An empty page has no task
+from which to infer it, and an unconfigured client has no expected principal.
+Per-response metadata validates the actual successful response and detects
+later-page account changes without adding a separate /me round trip or global
+identity state.
+
 ## Consequences
 
 Server callers receive one versioned native field and atomic permission reset.
@@ -102,7 +129,9 @@ worker-only traversal.
 People reads return minimal fields and explicit unresolved IDs. They neither
 create membership nor change task versions, and errors never publish a partial
 set. Complete catalogue cost remains a measured consideration; the bounded mode
-has direct cardinality, qualification and query-plan checks. CLI/Web assignment
-operations and browser cache consumption remain separate consumer capabilities.
+has direct cardinality, qualification and query-plan checks. CLI assignment
+operations are implemented with required nullable parsing, direct mutation and
+principal-bound list validation. Web assignment and browser cache consumption
+remain separate consumer capabilities.
 Migration, raw-wire, snapshot, privacy, race and rollback checks retain these
 boundaries.
