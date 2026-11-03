@@ -20,7 +20,9 @@ preserves strict v1 producers, responses and historical files.
 Recording responsibility belongs to the trusted Worker. The server registers its
 identity and policy, retains monotonic evidence and freezes closed evidence before
 accepting a final archive or unavailable receipt. Per-run file counts and source
-digests must match. Missing responsibility, selected content or credible closure
+digests must match. Downloads send the original stored bytes without JSON
+re-encoding, preserving the receipt hash and length even for formatted JSON.
+Missing responsibility, selected content or credible closure
 cannot be reclassified as an empty successful recording. Journal hashes identify
 local evidence; they do not independently prove the remote filesystem's history.
 

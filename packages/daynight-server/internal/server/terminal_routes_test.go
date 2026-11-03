@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"github.com/coder/websocket"
@@ -8,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -458,5 +461,64 @@ func TestTerminalWorkerChannelRejectsBinaryRegistration(t *testing.T) {
 	}
 	if _, _, err = c.Read(ctx); err == nil {
 		t.Fatal("binary registration accepted")
+	}
+}
+
+func TestTerminalArchiveDownloadPreservesReceiptBytes(t *testing.T) {
+	f := terminalHTTPSetup(t)
+	raw, err := os.ReadFile("../../../daynight/test/session/fixtures/v2/valid-archive.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := v2.DecodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := f.message.Payload.(v2.Registration)
+	reg.Binding = doc.Runs[0].Binding
+	f.message.Payload = reg
+	doc.SessionID = f.message.SessionID
+	doc.ClaimID = f.message.ClaimID
+	doc.Owner = reg.Owner
+	doc.FinalizationID = uuid.NewString()
+	for i := range doc.Runs {
+		doc.Runs[i].Owner = reg.Owner
+	}
+	terminalMessage(t, terminalRequest(f.h, "POST", f.base, jsonBody(t, f.message), v2.Protocol))
+	active := doc.Runs[0]
+	active.StopProof = nil
+	active.StoppedAt = nil
+	f.messageRequest(t, "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{active}})
+	responsibility := v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true}
+	f.messageRequest(t, "recording_responsibility", responsibility)
+	f.messageRequest(t, "generation_ledger", v2.GenerationLedger{Runs: doc.Runs})
+	digest, err := v2.SourceDigest(doc, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.messageRequest(t, "recording_evidence", v2.RecordingEvidence{ResponsibilityID: responsibility.ResponsibilityID, EvidenceID: uuid.NewString(), Revision: "1", SelectedFrameCount: "1", RegisteredFrameCount: "1", Closed: true, JournalSHA256: v2.HashBytes([]byte("durable test journal")), SourceSHA256: digest})
+	if _, err = f.app.relay.service.DB.Pool.Exec(context.Background(), `UPDATE tasks SET status='done' WHERE id=$1`, reg.Owner.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	f.messageRequest(t, "finalization", v2.Finalization{FinalizationID: doc.FinalizationID, ClaimTerminal: true, Runs: doc.Runs})
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, []byte("\n \t\n")...)
+	path := f.base + "/" + doc.SessionID + "/archive"
+	receipt := terminalMessage(t, terminalRequest(f.h, "PUT", path, string(data), v2.Protocol)).Payload.(v2.Receipt)
+	got := terminalRequest(f.h, "GET", path+"/content", "", v2.Protocol)
+	if got.Code != 200 {
+		t.Fatal(got.Code, got.Body.String())
+	}
+	if !bytes.Equal(got.Body.Bytes(), data) {
+		t.Fatalf("archive bytes changed: uploaded %d bytes, downloaded %d", len(data), got.Body.Len())
+	}
+	if receipt.SHA256 == nil || *receipt.SHA256 != v2.HashBytes(got.Body.Bytes()) || receipt.ByteLength == nil || *receipt.ByteLength != strconv.Itoa(got.Body.Len()) {
+		t.Fatal("download differs from immutable receipt", receipt)
+	}
+	if got.Header().Get("Content-Type") != "application/json" {
+		t.Fatal(got.Header())
 	}
 }

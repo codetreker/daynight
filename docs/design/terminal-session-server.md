@@ -90,7 +90,7 @@ ready 包必须与冻结运行账本完全相符，每代文件数量、来源�
 recording_not_enabled。每代证据独立核对。
 
 服务端向 `session-archives` 写原始字节，重新打开并核对大小和 SHA-256 后持久
-保存 receipt；下载再次校验文件和身份。ready/unavailable 的不同正文、原因或
+保存 receipt；下载再次校验文件和身份，并直接发送原始存储字节，不重新编码 JSON。ready/unavailable 的不同正文、原因或
 finalizationId 不能覆盖已有终态。failed 不产生允许清理的回执。正文 SHA-256、
 来源摘要、日志摘要与 dispositionDigest 各自具有明确对象，不能互相替代。
 

@@ -170,9 +170,21 @@ func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p 
 			}
 			result, err = h.service.TerminalRecordingEvidence(r.Context(), p, project, task, id, values.Get("generation"), r.PathValue("evidenceId"))
 		case strings.HasSuffix(path, "/archive/content"):
-			if _, err = queryValues(r); err == nil {
-				result, err = h.service.TerminalArchiveContent(r.Context(), p, project, task, id)
+			if _, err = queryValues(r); err != nil {
+				break
 			}
+			content, contentErr := h.service.TerminalArchiveContent(r.Context(), p, project, task, id)
+			if contentErr != nil {
+				err = contentErr
+				break
+			}
+			// The immutable receipt hashes these exact bytes, including JSON whitespace.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			if _, writeErr := w.Write(content); writeErr != nil {
+				LogFailure(h.logger, r.Context(), "session", "response", writeErr)
+			}
+			return
 		case strings.HasSuffix(path, "/archive/receipt"):
 			if _, err = queryValues(r); err == nil {
 				result, err = h.service.TerminalReceipt(r.Context(), p, project, task, id)
