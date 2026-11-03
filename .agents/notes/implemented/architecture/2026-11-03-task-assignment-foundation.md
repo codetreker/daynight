@@ -35,8 +35,11 @@ Task filtering uses native UUID equality or IS NULL before pagination. Its
 resolved all/unassigned/user selection participates in task cursor version 2;
 project and account-Worker cursors retain version 1. Resolving me before cursor
 validation makes it equivalent to the corresponding concrete UUID while keeping
-another principal's self-filter out of that scope. Filters are explicit inputs,
-not an execution-eligibility condition.
+another principal's self-filter out of that scope. The original filter design
+kept responsibility independent of execution eligibility. The accepted
+self-assigned automatic-acquisition contract is delivered by pending
+[PR #322](https://github.com/codetreker/daynight/pull/322); existing inventory and
+manual resume retain their execution-based authority.
 
 A project-scoped people read separates canonical profile and access facts from
 Task versions. It offers complete candidate/retained-assignee enumeration and
@@ -46,6 +49,24 @@ profiles. A qualified reference without a user row is an internal integrity
 failure; a request with no scoped qualification is explicitly unresolved without
 revealing a global profile. Nullable names and avatars remain actual data.
 
+Web Task/detail/summary/graph consumers require the nullable field, and schema 4
+rebuilds old task material from versions 1, 2 and 3. The detail session owns one
+normal Task PATCH and read-only reconciliation of unknown outcomes. It predicts
+same-value versions separately and preserves assignment across all other
+mutations.
+
+A scope-owned, session-memory people owner coalesces rendered/detail/filter ID
+demands and successful mount-local receipts. Batches contain at most 100 IDs;
+empty demand sends no request, and full catalogues are opened explicitly. Each
+person has an accepted dispatch sequence, while project/user fences protect
+history and authorization. A trusted parent-project denial is processed even
+when presentation demand changes, without letting an old history revoke a new
+one.
+
+The Web keeps status and assignee in one compact control group and matches
+assignees only in displayed list selections. Full chain progress, dependencies,
+readiness and overview facts retain the complete index. Mutable profile data
+never enters Task versions or persistent task records.
 
 ## Alternatives
 
@@ -86,6 +107,20 @@ to the requested set; full enumeration remains an explicit catalogue operation.
 qualified references. Retaining raw candidate IDs and nullable joined user IDs
 lets the service expose integrity failure instead of successful partial output.
 
+**Filter task-sync or rebuild the graph from matches.** Hidden prerequisites
+would disappear from readiness and progress. Matching displayed rows before
+pagination retains navigation context without changing authoritative graph
+facts.
+
+**Publish directory results only against the latest visible demand.** That
+would drop an already observed project denial when a menu closes or a person
+set changes. Scope/ticket-bound negative admission remains distinct from
+positive profile publication.
+
+**Store only a largest receipt revision.** Re-mounted graph owners start their
+local counter again. Owner identity plus revision preserves successful-refresh
+semantics without a false global sequence.
+
 ## Consequences
 
 Server callers receive one versioned native field and atomic permission reset.
@@ -102,7 +137,8 @@ worker-only traversal.
 People reads return minimal fields and explicit unresolved IDs. They neither
 create membership nor change task versions, and errors never publish a partial
 set. Complete catalogue cost remains a measured consideration; the bounded mode
-has direct cardinality, qualification and query-plan checks. CLI/Web assignment
-operations and browser cache consumption remain separate consumer capabilities.
+has direct cardinality, qualification and query-plan checks. Web assignment and
+schema-4 consumption are implemented together. CLI assignment consumers remain
+a separate capability in this source baseline.
 Migration, raw-wire, snapshot, privacy, race and rollback checks retain these
 boundaries.

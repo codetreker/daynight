@@ -25,7 +25,9 @@ The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
 Task assignee. Ordinary task creation/PATCH and full Task, summary and graph
 producers carry it. Native assignee filtering and project-scoped people reads
-are implemented; CLI/Web assignment consumers remain separate capabilities.
+are implemented. The Web consumes assignment with schema-4 cache rebuilding,
+people presentation, mutation and local list filters; CLI assignment consumers
+remain a separate capability in this source baseline.
 
 The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define UniAuth identity
@@ -65,11 +67,11 @@ transaction-completion faults remain 500 internal_error and take precedence over
 a saved property validation refusal. A stored project epoch invalidates caches after supported
 history replacement and transactional task soft deletion. The Web persists
 summaries and details and replaces them atomically after an epoch change. Its
-schema-3 upgrade rebuilds project, summary and detail stores, rotates user fences
-and clears old watermarks before a complete snapshot. That browser projection
-does not yet consume assignedTo; new-field consumers and their cache-format
-upgrade must be delivered together. Absent properties in old
-summaries cannot be inferred as an empty object. Graph nodes omit properties,
+schema-4 upgrade directly rebuilds project, summary and detail stores from
+versions 1, 2 or 3, rotates user fences and clears old watermarks before a complete
+snapshot. Strict assignedTo consumption and that cache-format upgrade are
+delivered together. Absent properties or assignedTo in old summaries cannot be
+inferred as an empty object or null. Graph nodes omit properties,
 and cached values grant no detail or mutation admission. Complete properties
 increase transport, parsing and summary storage costs: node/edge limits and the
 detail-cache byte budget do not bound total summary bytes. Network, decoding and

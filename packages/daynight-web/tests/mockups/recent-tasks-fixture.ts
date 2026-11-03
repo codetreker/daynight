@@ -24,7 +24,7 @@ const localDay = (offset: number, hour = 12): string => {
 const timestamp = (number: number): string => new Date(Date.parse(localDay(-30)) + number * 1_000).toISOString();
 type Seed = { readonly number: number; readonly title: string; readonly status: TaskStatus;
   readonly dependsOn?: readonly number[]; readonly completedAt?: string | null };
-const task = ({ number, title, status, dependsOn = [], completedAt = null }: Seed): GraphTask => ({
+const task = ({ number, title, status, dependsOn = [], completedAt = null }: Seed): GraphTask => ({ assignedTo: null,
   id: id(number), titlePreview: title, titleTruncated: false, status,
   dependsOn: dependsOn.map(id), externalDependsOn: [], blockedBy: [], ready: false,
   allowAgents: false, requiredPlatform: null, startedAt: null, completedAt,

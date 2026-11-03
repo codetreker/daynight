@@ -11,9 +11,9 @@ vi.mock('../src/features/task-graph/TaskGraph', () => ({
   TaskGraph: () => <div>Dependency graph canvas</div>,
 }));
 
-const render = createLocaleRender('zh-CN');
+const render = createLocaleRender('zh-CN', { taskCache: true });
 const time = '2026-10-20T12:00:00Z';
-const task = (id: string, status: GraphTask['status'], dependsOn: readonly string[] = [], externalDependsOn: readonly string[] = []): GraphTask => ({
+const task = (id: string, status: GraphTask['status'], dependsOn: readonly string[] = [], externalDependsOn: readonly string[] = []): GraphTask => ({ assignedTo: null,
   id, titlePreview: id, titleTruncated: false, status, dependsOn, externalDependsOn, blockedBy: [], ready: false,
   requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time,
 });
@@ -39,7 +39,7 @@ const indexOf = (items = seeds): GraphIndex => {
   return buildGraphIndex(graph);
 };
 const noop = () => {};
-const list = (index: GraphIndex, onOpenTask = noop) => <ChainList index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+const list = (index: GraphIndex, onOpenTask = noop) => <ChainList projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
   openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
 const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
@@ -150,7 +150,7 @@ describe('Goal task lists', () => {
     const index = indexOf();
     const Wrapper = () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
-      return <ChainList index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+      return <ChainList projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
         openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)}
         onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
     };
@@ -164,7 +164,7 @@ describe('Goal task lists', () => {
     expect(graph).toHaveFocus();
     disclosure().focus();
     await user.keyboard('{Enter}');
-    const child = screen.getByRole('button', { name: /Implementation\s*进行中/ });
+    const child = screen.getByRole('button', { name: /Implementation.*进行中/ });
     await user.click(child);
     expect(onOpenTask).toHaveBeenLastCalledWith('Implementation', child);
     const goalDetails = screen.getByRole('button', { name: 'Goal，查看 Goal 详情' });
@@ -184,7 +184,7 @@ describe('Goal task lists', () => {
   it('refreshes visible members and status while preserving disclosure and restoring focus after removal', () => {
     const view = render(list(indexOf()));
     fireEvent.click(disclosure());
-    const removed = screen.getByRole('button', { name: /Acceptance\s*待处理\s*被阻塞/ });
+    const removed = screen.getByRole('button', { name: /Acceptance.*待处理\s*被阻塞/ });
     removed.focus();
     const after = seeds.filter((item) => item.id !== 'Acceptance').map((item) => item.id === 'Implementation' ? { ...item, status: 'done' as const } : item);
     view.rerender(list(indexOf(after)));
@@ -192,7 +192,7 @@ describe('Goal task lists', () => {
     expect(disclosure()).toHaveFocus();
     expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
     expect(within(children()).getAllByRole('button')).toHaveLength(3);
-    expect(screen.getByRole('button', { name: /Implementation\s*已完成/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: /Implementation.*已完成/ })).toBeVisible();
     expect([...children().querySelectorAll('.goal-task-row .root-title')].map((title) => title.textContent)).toEqual(['Other root', 'Implementation']);
     expect(disclosure().querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
   });

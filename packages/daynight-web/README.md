@@ -156,14 +156,15 @@ owns bottom placement. Cross-tab live updates and server or cross-device
 synchronization are outside the local persistence guarantee.
 
 Task details expose the versioned automatic-execution permission: one bilingual
-label and switch on the right of the status row below the title, with status
-and readiness on the left. Both enabling and disabling require confirmation;
+label and switch on the right of the status row below the title, with the
+status/assignee group, platform and readiness on the left. Both enabling and
+disabling require confirmation;
 Cancel, close and Escape submit nothing. The switch keeps confirmed server
 state until success and actual changes are disabled during `in_progress`.
 Successful permission changes observed in the open detail show a floating status
 bubble for three seconds without moving the heading, tabs or reading area.
 Pending, refusal, unknown-result, reconciliation, read and freshness notices use
-the shared floating notification layer. Locked controls explain their reason
+the shared floating notification layer. Permission and platform controls explain their lock reason
 through hover and keyboard-focus tooltips. Dismissing a bubble changes only
 presentation; reopening a detail with an already confirmed result does not replay it.
 Standalone rows and graph nodes show each task's permission without turning a
@@ -184,14 +185,14 @@ freshness, request ownership and unknown-result GET reconciliation. When space
 permits, automatic execution aligns with the first status line. At narrow widths,
 the left group and the complete automatic-execution control can wrap while
 retaining full labels, right alignment and nonoverlapping controls.
-`TaskDetailSessionProvider` owns detail, status, permission and platform
+`TaskDetailSessionProvider` owns detail, status, permission, platform and assignee
 state within the authenticated branch, keyed by user identity/session generation.
-All three mutations share one task write gate and exact-version freshness
-checks. Pending or unknown platform results block permission and status writes;
+All task mutations share one task write gate and exact-version freshness
+checks. Pending or unknown results block other task writes;
 conflicts require a fresh observation and unknown results require an actual task
 read before another write. Close/reopen and navigation preserve the original
 request owner, so late responses cannot change another task. Platform updates
-preserve status, permission, dependencies, properties and execution times.
+preserve status, permission, assignee, dependencies, properties and execution times.
 Same-user verification and project navigation retain it; identity replacement,
 logout and anonymous state dispose it so old results cannot reach a new identity. Identity changes invalidate outstanding requests
 and unmount user-owned content; a project 404 stays a resource error. Returning
@@ -416,10 +417,11 @@ edit changes task time or graph geometry.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 3 and idb 8.0.4, with `userScopes`, `projects`, `summaries` and `details`
-stores. Upgrades from schema 2 or directly from 1 rebuild projects, summaries and
+schema 4 and idb 8.0.4, with `userScopes`, `projects`, `summaries` and `details`
+stores. Upgrades directly from schema 1, 2 or 3 rebuild projects, summaries and
 details, rotate user fences and clear old epochs/watermarks before a complete
-snapshot. Old summaries without properties cannot be inferred as empty objects.
+snapshot. Missing properties or assignedTo in old records cannot be inferred as
+empty objects or null.
 Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
 fences/generations and bounded counts for both active and invalidated manifests.
@@ -431,13 +433,15 @@ bounded LRU and business-version-driven detail reads.
 `beginSync` reads the epoch and greatest exact accepted summary `updatedAt`;
 `applySync` validates the transaction's complete durable set and atomically saves
 changed summaries with that watermark. Every snapshot/delta record contains its
-complete current properties from the task row's database snapshot. Higher task
+required nullable assignedTo and complete current properties from the task row's
+database snapshot. Higher task
 versions replace whole summaries and property maps; missing keys remove old
 values without property tombstones or ordinary epoch changes. Equal-version
-content must match all own property keys and JSON values: object order is
+content must match all intrinsic fields, including assignedTo, and all own
+property keys and JSON values: object order is
 irrelevant, array order matters, and missing differs from null or an empty array.
 Older responses cannot revive removed properties. Graph projections explicitly
-drop properties while the summary map retains them. Only project-sync summaries
+drop properties while retaining assignedTo; the summary map keeps complete properties. Only project-sync summaries
 advance the watermark.
 Details, mutations, request time, Project time and `observedAt` cannot establish
 project coverage. UTC seconds plus nine fractional digits preserve ordering;
@@ -504,13 +508,14 @@ owns the algorithm, schema, failure rules and detail integration.
 
 ## Persistent task details
 
-`TaskDetailSessions(scope)` uses the same authenticated scope and schema-3 details
+`TaskDetailSessions(scope)` uses the same authenticated scope and schema-4 details
 store as project summaries. `detail-cache.ts` validates intrinsic bodies against
 the current summary and guarded lifecycle ticket, then materializes readiness and
 blockers from the complete local graph. Full current properties preserve actual
 present keys: an absent worker means no retained ownership, while a present
 worker is an object whose nullable inner fields retain their defined meaning.
-Detail-to-summary consistency uses the same complete semantic property comparison. A new summary version invalidates its
+Detail-to-summary consistency includes assignedTo and uses the same complete
+semantic property comparison. A new summary version invalidates its
 detail; prerequisite-only changes update derived fields without successor GETs.
 Raw server-derived disagreements are retained separately before materialization,
 so stale feedback and write restrictions cannot disappear through local overwrite.
@@ -551,7 +556,7 @@ the project's details under the captured lifecycle, then expose the original
 error; Retry reads actual storage and performs live GET. Cleanup/write failures
 remain visible rather than enabling a silent network-only path.
 
-Detail GET and all three task mutations require explicit `TaskResponseAdmission`
+Detail GET and all task mutations require explicit `TaskResponseAdmission`
 with userId and onPrincipalMismatch. Same-user HTTP 200 confirms the remote write
 response before payload parsing, separately from whether a body can be installed
 or cached. Malformed bodies require GET-only reconciliation; cache failures keep
@@ -559,6 +564,63 @@ the confirmed operation and an error without replaying a write. Existing pending
 unknown, reconciling and exact-version gates remain. The
 [cache architecture](../../docs/design/daynight-task-sync.md#6-投影时钟与详情)
 owns the complete admission, race, budget and failure rules.
+
+## Task assignees
+
+Task, summary and graph consumers require an explicit assignedTo field containing
+null or a canonical local user UUID. Equality, freshness, review keys and material
+preservation include the field. Its native storage, atomic permission reset and
+in-progress write policy belong to the [assignment contract](../../docs/spec/daynight-task-assignment.md).
+Schema 4 and the strict consumers are delivered together; profile data is never
+persisted in task records or included in task versions.
+
+The detail places status and assignee in one 24px compact group, followed by
+platform and readiness, with automatic execution on the right. The assignee
+control shows the confirmed value with a 16px avatar; rows use 17px avatars.
+Names and avatars retain actual nullable values. Missing profile data or a null
+name displays a short UUID, failed images use an identity placeholder, and only
+an explicit hasProjectAccess=false result marks a former member. Long names
+retain accessible full text and narrow layouts keep controls within the viewport.
+
+Opening the shared picker or choosing Retry requests the complete project
+catalogue. Search accepts names and UUIDs; assignment choices contain current
+members and clearing, while filters can retain former assignees. Loading and
+failure keep choices unavailable with explicit recovery. Arrow keys move among
+options, Escape closes and restores the trigger, and Tab or outside click closes
+without stealing subsequent focus. A fixed popup stays inside the surface's
+focus-owner subtree and tracks scrolling, resizing and fullscreen changes.
+
+Choosing the saved assignee closes with no write. A change sends one ordinary
+Task PATCH with the captured exact version and UUID or null. TaskDetailSessions
+checks the expected +0/+1 version, assignment, permission and preserved materials;
+all other operations retain assignment. A successful response installs the full
+Task. Conflicts read current state, and unknown outcomes use GET-only
+reconciliation without replaying PATCH. Pending, stale, in-progress and unknown
+states share the existing write gate. Added controls and results express rules
+through values and availability, retaining necessary errors, access status and
+recovery actions.
+
+TaskAssigneesProvider lives inside the authenticated TaskCacheProvider and outside
+the detail provider. Its session-memory owner coalesces mounted row, detail and
+selected-filter ID demands, sorts and deduplicates them, then resolves batches of
+at most 100. Empty demand sends no request. Successful graph receipts, including
+empty deltas, refresh the bounded set; owner identity plus mount-local revision
+handles remounts, and a slow request retains one queued refresh. Complete
+catalogues remain explicit open/Retry reads, with no second polling loop.
+Per-person dispatch sequencing prevents an old catalogue from replacing a newer
+resolve. Scope fences and captured authorized in-memory manifests protect
+publication without another beginSync. Trusted same-user project 404 responses
+withdraw admission even after presentation demand changes; stale histories
+cannot withdraw a replacement generation.
+
+The task-list filter supports All, Assigned to me, Unassigned and a person. It
+intersects recent/show-all selections before pagination and returns to page one
+when changed. Standalone rows match directly. A chain with any matching member
+retains its real representative as context and shows matching children and count;
+full-chain progress, readiness, dependencies, statistics and graph use the complete
+index. Overview positioning can clear a filter that hides its target. The
+[assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
+mutation and presentation mechanisms.
 
 ## Task execution time and possible stalls
 
@@ -638,7 +700,7 @@ and share copy. The top bar and graph-dialog header
 expose selectors in both dialog modes using the same saved language. Task details consume the current
 application locale through the same Provider; their header contains the task
 title with an adjacent copy icon, fullscreen toggle, More task actions menu and
-close control. The status menu sits beside platform selection in the state row below the title. The `…` menu sits immediately left of Close and contains Open in new tab
+close control. Status and assignee share the state-row control group before platform selection. The `…` menu sits immediately left of Close and contains Open in new tab
 and Delete task; the standalone page retains only Delete task in that menu.
 
 `LocaleProvider` requires an explicit initial locale result. `useI18n()` reads
@@ -855,9 +917,9 @@ chain in progress; other chains are todo. External context does not affect progr
 
 The actual task title is the common dialog header and accessible name, with a
 copy icon immediately to its right. The ID and its copy control belong to Overview.
-The three-item status menu begins the shared state row, immediately before the
-platform selector, with readiness after both and automatic execution at the right.
-Status and platform controls share a compact 24px height; the left group can wrap
+The three-item status menu begins the shared state row beside the assignee
+control, followed by platform and readiness, with automatic execution at the right.
+Status, assignee and platform controls share a compact 24px height; the left group can wrap
 on narrow screens. The menu remains available on both tabs, marks the current
 item and permits selecting it. Arrow/Home/End, activation and
 Escape preserve keyboard access and focus. Confirmation shows the full task name,
@@ -865,14 +927,15 @@ current/target states and timing consequences. Cancel is initially focused;
 Cancel/close/Escape submits nothing. Long title and confirmation text have bounded
 native scrolling; 320px retains controls without horizontal page overflow.
 
-Status, allowAgents and requiredPlatform saves share one per-task mutation owner and confirmation union.
+Status, allowAgents, requiredPlatform and assignedTo saves share one per-task
+mutation owner. Operations that require confirmation share one confirmation union.
 Reviewed identity/status/version and material inputs remain frozen; observed
 changes invalidate confirmation. Exact bigint version survives JSON numeric
 serialization without rounding. Same-state requires +0; actual change requires +1.
 Same-state may return fresh derived readiness at the same version. Generation and
 confirmed-version floor prevent older reads from restoring stale state.
 
-Pending, stale, unknown or failed reconciliation blocks all three writes. Closing or
+Pending, stale, unknown or failed reconciliation blocks all task writes. Closing or
 switching details retains original ownership. A confirmed result refreshes the
 matching project graph while keeping panels, attachments, reading and focus.
 Conflict rereads require fresh review. Unknown results keep the write error and
@@ -1026,8 +1089,9 @@ records the original persistence rules; the
 [shared-scroll decision](../../.agents/notes/implemented/bug-fix/2026-11-03-shared-task-list-scroll.md)
 owns the shared offset and category-switch behavior.
 
-The generic task and summary decoders require a properties object and preserve
-all keys. The PR business reader accepts an absent pullRequests key; a present
+The generic task and summary decoders require nullable assignedTo and a properties
+object, preserving all property keys. Graph decoders also require assignedTo.
+The PR business reader accepts an absent pullRequests key; a present
 value must be an array of objects with string `url` and `title` fields. Missing
 pullRequests and an empty array share the existing empty presentation while
 remaining distinct data. A malformed present value produces the existing error
@@ -1332,16 +1396,17 @@ task details at that file, even while preview content is loading.
 
 `TaskDetailSurface` shares the full content and existing actions between dialog
 and page: description, status, relationships, PRs, metadata, three-state setting,
-automatic-execution permission, execution platform and attachment management.
+automatic-execution permission, execution platform, assignee and attachment management.
 `TaskDetailDialog` retains the modal portal, inertness, scroll lock, focus loop
 and focus restoration. `TaskDetailPage` provides an ordinary full-page container,
 return-to-project link and language selector. Their outer workspaces own fullscreen
 mode and the shared Surface handles layered Escape. Standalone fullscreen hides
 the auxiliary top bar while keeping an explicit return-to-project link in the
-title bar; exit restores normal page controls. The platform select
-stays in the status row, with its lock explanation in a hover/focus tooltip
+title bar; exit restores normal page controls. The assignee picker and platform select
+stay in the status row, with its lock explanation in a hover/focus tooltip
 and operation feedback in the shared floating layer. Status, permission and
-platform use the same confirmation/review owner; file deletion keeps its own
+platform use the same confirmation/review owner; assignment uses the same mutation
+gate and review freshness. File deletion keeps its own
 modal confirmation. These interactions remain available in either container.
 Ordinary standalone mode retains native page and frame keys. Fullscreen supplies
 an `AttachmentKeyboardOwner` with the active reading root and `onEscape`; the
@@ -1558,7 +1623,7 @@ official Ubuntu archives before installation, as delivered in
 
 Native functional checks start after the native process and browser are ready.
 Their browser cleanup must pass before an atomic, run/source-bound permission
-releases the container's twenty-nine functional checks. Capacity runs last, after all
+releases the container's thirty-one functional checks. Capacity runs last, after all
 its preparation commands, container checks, full dev-ci cleanup and container
 browser recovery have finished. Every browser phase retains one
 worker and zero retries. Browser CI runs controlled deployment fixtures before
@@ -1626,7 +1691,7 @@ ownership revalidation. Uncertain ownership fails without recursive removal.
 Existing recovery commands remain available without opting into new attachment.
 
 The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same 63 scenarios, additional combined
+macOS local acceptance runs the same 67 scenarios, additional combined
 authentication checks and fixed performance budgets, with native filesystem
 coverage qualified by its recorded capability. A local pass does not establish
 macOS CI coverage. The [filesystem coverage decision](../../.agents/notes/implemented/testing/2026-10-23-native-development-filesystem-coverage.md)
@@ -1639,7 +1704,7 @@ npm registry unless the build variable is explicitly supplied.
 The command builds real embedded assets and a new Go executable and owns a
 separate PostgreSQL container/volume and ephemeral loopback listener. In parallel,
 the normal dev-ci runner builds and starts the actual production image. Browser
-execution proceeds through twenty-nine native functional scenarios, the same twenty-nine
+execution proceeds through thirty-one native functional scenarios, the same thirty-one
 functional scenarios through the production image's stream gateway, then five
 native capacity/limit scenarios. The native process and PostgreSQL remain alive
 through the capacity phase; other preparation commands and the complete
@@ -1669,12 +1734,22 @@ browser PATCH. The `task-execution-time` journey keeps the browser GET/HEAD-only
 real service/API and installed CLI prepare timing, save thresholds and complete
 work while controlled browser receipt delivery isolates the local ticker.
 
+The `task-assignment` journey admits only exact registered assignee PATCHes and
+checks real set/clear writes, same-value zero writes, conflicts, committed response
+loss and GET-only recovery with preserved task materials. The
+`task-assignment-layout` journey covers bilingual 1366px/390px/320px layouts,
+long/null names, avatar failure, popup/focus/scroll/fullscreen behavior, former
+members, read-only browsing, local filters and complete progress with hidden
+siblings.
+
 The [status journeys](tests/e2e/status.spec.ts) reuse the packed CLI and each
 target's authenticated service with the same Alice identity. Origin, method,
 headers and body pass through the redacting authenticated wrapper unchanged;
 receipts exclude credentials. Status scenarios are task-status, task-status-conflicts,
-task-status-recovery and task-status-transitions; total functional inventory stays
-28 per target, with five additional native capacity/limit checks (61 combined).
+task-status-recovery and task-status-transitions. The status-transition extension
+was validated against its 28-per-target functional inventory with five additional
+native capacity/limit checks (61 combined); the current complete inventory below
+also includes later functional scenarios.
 
 The journeys exercise direct completion, reopening, all three states, current
 same-state no-op, exact stale conflicts and shared status/permission ownership.
@@ -1712,7 +1787,7 @@ or an iframe load cannot satisfy this check. The
 records the original data-sharing, rendering and independent-reading proof choices.
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
-requires a separate receipt on each runtime target, alongside the 63
+requires a separate receipt on each runtime target, alongside the 67
 Playwright cases. It reuses the same installed package and normal Alice/Bob
 identities, records their initial project sets, and crosses browser and CLI data
 through shared/private projects, original-credential service restart, logout/PAT
@@ -1817,7 +1892,7 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The 63-scenario inventory (34 native, 29 container), current manual/periodic refresh,
+The 67-scenario inventory (36 native, 31 container), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -1853,6 +1928,7 @@ scenario annotations validated in each target's report.
 | W11 | Strict raw Go/V8 coverage reports, validated complete browser/performance receipts and the final `checks` result |
 | W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |
 | W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
+| W20 | `task-assignment`, `task-assignment-layout`: native field propagation, real exact-version assignment/clear PATCHes, same-value zero writes, conflict and committed-response-loss GET-only recovery, people identity/access presentation, local filters with full-chain facts, bilingual desktop/narrow menu, focus, scroll and fullscreen behavior |
 | W15 | `task-platform`: status-row selection and confirmation, zero-write dismissal and select-focus restoration, set/clear, shared status/permission gate, exact versions, stale/unknown GET-only recovery, cross-task late ownership, manual-start lock, field propagation and bilingual narrow layouts |
 | TT3 | `project-settings`: real-service direct entry/reload, administrator save and independent member read, project isolation, exact settings versions above 2^53, stale conflict and demotion, read-only member recovery, actual commit with lost response and failed-read retry without PATCH replay, bilingual 320px/390px form/control/navigation containment and unclipped text |
 | TT1–TT2, TT4–TT6 | `task-execution-time`: real PostgreSQL crossing with graph deliveries held and an incorrect client wall clock, one-second local progress, stable focus/DOM/geometry/edges/viewport, real saved-threshold changes, installed-CLI completion and frozen polling, unknown legacy starts, sub-minute/multi-day/shared/external cards and standalone rows, bilingual 320px/390px layout; browser GET/HEAD only, with fixture mutations through authenticated API or installed CLI |
@@ -1882,14 +1958,14 @@ combined receipts are `native/auth-combined/target.json` and
 They require all eleven named checks, source/browser/installed-package identity,
 old/new restart process identity and passed browser/resource cleanup. They retain
 safe observations and hashes, not credential/configuration bodies or raw logs.
-The 63-case report validator remains independent. `CI` requires a clean checkout matching
+The 67-case report validator remains independent. `CI` requires a clean checkout matching
 `GITHUB_SHA` and the pinned browser for the current Linux or macOS host. Playwright uses one worker and no
 retries; skipped, flaky, duplicate/missing or incomplete scenarios fail validation.
 When selected, the web CI job archives `daynight-web-acceptance` separately from raw
 coverage for 30 days. Inspect the artifact from the exact workflow run and its
 tested checkout identity, which is normally a merge revision for PR runs. A pass
-requires the strict union of twenty-nine native functional and five native capacity/limit
-scenarios (34 native total), plus the twenty-nine container functional scenarios. Every
+requires the strict union of thirty-one native functional and five native capacity/limit
+scenarios (36 native total), plus the thirty-one container functional scenarios. Every
 phase and target rejects missing, extra or duplicate scenarios and skipped/flaky/retried results.
 Installed-CLI handoff, container callbacks and recovery require matching source
 commit/tree/dirty state as well as existing package/artifact ownership. A missing

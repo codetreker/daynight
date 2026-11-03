@@ -12,7 +12,7 @@ import type {
 import { isTaskVersion } from "./json";
 
 export { array, boolean, canonicalId, executionPlatform, id, malformed, nonemptyString, record, string, timestamp } from "./validation";
-import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableTimestamp, record, requiredPlatform, status, string, timestamp } from "./validation";
+import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableId, nullableTimestamp, record, requiredPlatform, status, string, timestamp } from "./validation";
 import { parseTaskProperties, readPullRequests, readWorkerClaim } from "./task-properties";
 
 const projectSettings = (value: unknown): Project["settings"] => {
@@ -61,6 +61,7 @@ const graphTask = (value: unknown): GraphTask => {
     blockedBy: ids(data.blockedBy),
     ready: boolean(data.ready),
     allowAgents: boolean(data.allowAgents),
+    assignedTo: nullableId(data.assignedTo),
     requiredPlatform: requiredPlatform(data.requiredPlatform),
     startedAt: nullableTimestamp(data.startedAt),
     completedAt: nullableTimestamp(data.completedAt),
@@ -108,6 +109,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
     blockedBy: ids(data.blockedBy),
     ready: boolean(data.ready),
     allowAgents: boolean(data.allowAgents),
+    assignedTo: nullableId(data.assignedTo),
     requiredPlatform: requiredPlatform(data.requiredPlatform),
     startedAt: nullableTimestamp(data.startedAt),
     completedAt: nullableTimestamp(data.completedAt),

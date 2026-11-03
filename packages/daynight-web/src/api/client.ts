@@ -315,6 +315,28 @@ export const setTaskRequiredPlatform = async (
   });
 };
 
+export const setTaskAssignedTo = async (
+  projectId: string, taskId: string, assignedTo: string | null, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
+): Promise<TaskDetail> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  const target = assignedTo === null ? null : requestId(assignedTo);
+  if (!isTaskVersion(exactVersion)) throw new ApiError("protocol");
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
+    method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: stringifyApiJson({ version: exactVersion, assignedTo: target }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
+  return json(response, signal, (data) => {
+    const result = parseTaskDetail(data, project, task);
+    if (response.status !== 200 || result.assignedTo !== target || result.version !== exactVersion && result.version !== exactVersion + 1n) {
+      throw new ApiError("protocol", response.status);
+    }
+    return result;
+  });
+};
+
 const attachmentTaskUrl = (projectId: string, taskId: string): string =>
   `/api/v1/projects/${requestId(projectId)}/tasks/${requestId(taskId)}`;
 

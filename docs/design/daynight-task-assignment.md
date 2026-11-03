@@ -1,6 +1,6 @@
-# Task 负责人服务端设计
+# Task 负责人设计
 
-状态：原生负责人列及事务、读取生产者、任务筛选和项目内人员读取已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
+状态：原生负责人列、事务与查询，以及Web负责人写入/展示/筛选和schema4缓存已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
 
 ## 数据所有权
 
@@ -46,7 +46,7 @@ Tasks.write 在明确 no-op/删除路径之后，只对真正 create/update 的�
 
 HTTP 单值 assignedTo 输入在 service 边界转换为显式 all/unassigned/user 选择，零值是 all。me 先解析为 principal.UserID，user 选择仅携带规范 UUID；选择本身可比较并参与游标范围，不为被查询的人增加成员资格要求。
 
-Snapshot.Tasks 按规范选择使用静态 SQL 片段：all 不增加条件，unassigned 使用 assigned_to IS NULL，user 使用绑定的 UUID 等值。输入值只作参数，不拼接 SQL。条件在 ORDER/LIMIT 之前；worker inventory 分支同样先应用显式原生条件，再执行既有 worker 解码、归属匹配和最终 limit+1。worker 自动发现未提供选择，继续为 all。
+Snapshot.Tasks 按规范选择使用静态 SQL 片段：all 不增加条件，unassigned 使用 assigned_to IS NULL，user 使用绑定的 UUID 等值。输入值只作参数，不拼接 SQL。条件在 ORDER/LIMIT 之前；worker inventory 分支同样先应用显式原生条件，再执行既有 worker 解码、归属匹配和最终 limit+1。已确认的worker新候选选择me；完整既有claim库存仍为all。本人自动领取运行时由待合并的[PR #322](https://github.com/codetreker/daynight/pull/322)交付。
 
 page.go 仅为 kind=tasks 编码和要求 cursor version 2，并保存必需的规范选择 all/unassigned/user:UUID。项目列表和账号级 Worker 列表继续使用版本 1，不编码任务选择字段；workerId 筛选的 Task 页仍是 tasks version 2。任务旧版本拒绝，而 me 与对应 UUID 在规范 scope 相同时可续页。项目、状态、ready、许可、平台、workerUser/workerId 和位置仍绑定原 scope。
 
@@ -72,7 +72,27 @@ HTTP 以局部 query 解析只允许重复 userId，不放宽共用 queryValues 
 
 Go 组装仍验证规范 ID、互斥和完整覆盖：items 与 unresolved 恰好覆盖规范请求一次，各自稳定排序。query/scan/rows/取消或事务失败不安装部分集合。错误不借用 ErrNotFound 表示资料缺失，避免外层误译为项目 404。
 
-完整目录面向显式打开或重试；周期消费者使用当前展示/选中 ID 的限定模式，空集合不发请求，不能省略参数退化为全量。CLI/Web 消费和刷新 owner 仍是独立客户端能力，人员资料不写入 Task 版本或浏览器持久任务记录。
+完整目录面向显式打开或重试；周期消费者使用当前展示/选中 ID 的限定模式，空集合不发请求，不能省略参数退化为全量。Web消费和刷新由认证scope内的TaskAssignees拥有，人员资料不写入Task版本或浏览器持久任务记录。当前基线CLI负责人消费者仍由其独立客户端交付。
+
+## Web 字段与任务写入
+
+TaskDetailSession 继续唯一拥有所有 Task mutation，assignedTo action 复用普通 PATCH helper。规范目标与previous值比较决定预期v或v+1；等值保留updatedAt/许可，实际变化要求目标/false及其他材料保持。所有其他action也核验assignedTo未变，withdraw只获准移除其worker归属。
+
+HTTP200确认后才能抬高已提交版本下限；响应读取失败或未知结果沿既有GET核对队列，不重放PATCH。更高版本完整当前值可替代原意图，旧历史/旧owner不能发布结果。确认、摘要同步与详情持久化继续属于现有ticket/generation边界。
+
+Web所有Task/detail/summary/graph解析和比较纳入assignedTo。schema4复用既有升级事务，1/2/3直接清除projects/summaries/details、清水位并轮换user fence；新字段消费者与此重建同时交付，不把缺字段解释为null。mutable profile不进入IDB或Task version。
+
+## Web 人员与界面所有者
+
+TaskAssigneesProvider在认证TaskCache边界中为当前scope提供TaskAssignees。当前挂载行、详情和具体过滤以独立symbol登记ID需求，合并、排序去重后分100项；空集合不请求。ProjectPage与独立TaskDetailPage将graph-owner symbol和正revision登记为receipt；重挂载的revision从1开始仍可触发读取，不能用全局lastRevision单调判重。
+
+限定读取在途时合并一个后继刷新，避免慢请求每5秒被取消而永不完成。完整目录只由打开/重试触发。capture从已授权内存manifest取得userFence/cacheGeneration等ticket，不调用beginSync重复验证整项目持久摘要；scope.ready前后均检查身份、历史、需求及所有权，正结果在无await段发布。
+
+people map按每个人最新派发序号合并，晚到catalogue不能覆盖较新限定结果；unresolved同样保留顺序fence。可信同用户404先由scope.canRevokeProject核验捕获ticket，再沿scope.signal撤权；菜单关闭或需求变化不丢失父项目失权，旧E1不能清新E2。错误与清理故障保留原状态和原因，不制造失权资料。
+
+TaskAssigneeIdentity显示真实nullable姓名/头像，name缺失显示短UUID，图片失败使用当前身份首字形态；不生成email。TaskAssigneeSelect紧邻状态24px成组，TaskAssigneeFilter拥有all/me/unassigned/user显示状态。AssigneePicker的fixed菜单在surface的焦点所有者子树内，尺寸和12px边界按视口计算，随scroll/resize/fullscreen及进入动画稳定定位；键盘与Escape/Tab/外部点击保留现有详情层级和焦点。
+
+ProjectPage从完整index导出匹配ID，再在显示集合和分页前相交；ChainList保留完整component进度和依赖，仅裁剪展示的子任务集合。概览与图不继承负责人过滤，显式概览定位可回到all以展示目标。新增界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
 
 ## 观测与验证
 
@@ -80,4 +100,6 @@ Go 组装仍验证规范 ID、互斥和完整覆盖：items 与 unresolved 恰�
 
 真实 PostgreSQL 验证迁移保全、三套字段投影、nullable 输入、等值及失权目标、全部写入保留、竞态和后续失败回滚。原始 JSON 检查字段存在；迁移 026 的历史事实测试固定其历史 schema，现行迁移另行覆盖。
 
-查询验证过滤先于分页、完整 scope、旧任务游标拒绝和其他列表版本不变、worker inventory 组合与默认资格不变。目录验证两种模式的原始引用完整性、隐私、精确覆盖、100/101 边界、真实快照并发及所有失败路径。至少 10000 任务和 100 人员的生产查询 EXPLAIN ANALYZE BUFFERS 与响应样本绑定被测代码；数量样本不改变 Web 图规模限制，也不是生产容量上限。
+查询验证过滤先于分页、完整 scope、旧任务游标拒绝和其他列表版本不变、worker inventory组合及其独立执行归属保持；本人候选和claim事务规则由PR #322验证。目录验证两种模式的原始引用完整性、隐私、精确覆盖、100/101 边界、真实快照并发及所有失败路径。至少 10000 任务和 100 人员的生产查询 EXPLAIN ANALYZE BUFFERS 与响应样本绑定被测代码；数量样本不改变 Web 图规模限制，也不是生产容量上限。
+
+Web验证覆盖字段/schema4升级、mutation同值/确认下限/材料保持、people需求/receipt/派发和负向撤权fence、完整链筛选、菜单焦点及双语窄屏。生产功能场景task-assignment与task-assignment-layout分别拥有真实写入/未知结果核对，以及身份/布局/完整图显示的验证；完整inventory由Web验收所有者定义。

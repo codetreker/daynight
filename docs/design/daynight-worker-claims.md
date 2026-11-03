@@ -6,7 +6,7 @@
 
 完整 Task 的 `properties` 是保留所有键的通用 JSON 对象。`worker` 缺失表示没有保留的执行归属，包括从未认领或已经强制撤回；存在时是最后一条合法认领记录，`state` 为 `active`、`released` 或 `completed`。读取不补 null，现有旧 worker:null 在属性行迁移中转为缺失。task-sync 摘要携带同快照的完整属性并按任务版本替换，包含 Worker 生命周期变化；服务端图和浏览器图节点保持不含属性的精简投影。摘要属性不代替执行身份核对所需的实时 Task GET。
 
-顶层 `assignedTo` 是独立的人的责任归属，机制由[负责人设计](daynight-task-assignment.md)拥有。claim、摘要更新、release、withdraw、resume、完成及其 no-op 保留该列；改派不转移旧 worker、Session 或 archive 身份。负责人不参与自动候选或 claim 资格，许可开启后其他人的合格 worker 仍可领取。
+顶层 `assignedTo` 是独立的人的责任归属，机制由[负责人设计](daynight-task-assignment.md)拥有。claim、摘要更新、release、withdraw、resume、完成及其 no-op 保留该列；改派不转移旧 worker、Session 或 archive 身份。已确认的自动领取合同要求 assignedTo 等于当前认证账号，候选使用 assignedTo=me，claim 事务重验当前负责人；未分配或他人任务即使许可开启也不能自动领取。运行时由待合并的[PR #322](https://github.com/codetreker/daynight/pull/322)交付；既有库存、恢复及显式人工 resume 保持原执行授权。
 
 ```json
 {
@@ -105,7 +105,7 @@ Typed ApiClient 的 `getCurrentUser()` 复用既有 GET /api/v1/me，解码 User
 
 listTaskPage 保留 nextCursor，供运行时有界推进候选；许可、ready 和实际平台在服务端排序和分页前组合。active 记录对应 in_progress，天然不属于 ready todo。普通 daemon 跳过 released 候选并继续后续游标，不能据此把仓库判为空。
 
-`GET /api/v1/projects/{projectId}/tasks?workerId=<uuid>` 提供当前认证用户及指定 worker 的有效 active claim，历史记录不属于清单。UUID 规范化后与隐式 userId 一起绑定版本2的Task游标；不附加 status/ready/allowAgents/compatiblePlatform/assignedTo 才是该项目完整归属查询。显式 assignedTo 条件先按原生列过滤，再在既有 TEXT 解码后匹配 worker，全部匹配先于最终分页；带负责人条件的结果只是清单子集，不能据其缺席清理。自动发现和原有库存调用省略该条件，不新增 claim 表或归属权威。
+`GET /api/v1/projects/{projectId}/tasks?workerId=<uuid>` 提供当前认证用户及指定 worker 的有效 active claim，历史记录不属于清单。UUID 规范化后与隐式 userId 一起绑定版本2的Task游标；不附加 status/ready/allowAgents/compatiblePlatform/assignedTo 才是该项目完整归属查询。显式 assignedTo 条件先按原生列过滤，再在既有 TEXT 解码后匹配 worker，全部匹配先于最终分页；带负责人条件的结果只是清单子集，不能据其缺席清理。完整原有库存省略该条件；已确认的新候选使用 assignedTo=me，其运行时由 PR #322 交付。不新增 claim 表或归属权威。
 
 Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 workerId；listTasks 成功读到末页才返回完整数组，后页失败、重复身份或游标循环抛出错误，不返回部分成功。listTaskPage 仍是显式分页接口；响应不匹配 active/workerId 时拒绝协议，不本地丢项。调用者汇总全部项目后按原 claimId 是否在清单对账，不读取 task 状态分类缺席原因。
 

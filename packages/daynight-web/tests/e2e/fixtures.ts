@@ -129,7 +129,7 @@ export const test = base.extend<{
 export type Project = { id: string; name: string; repoUrl: string; createdAt: string; updatedAt: string };
 export type Task = {
   id: string; projectId: string; title: string; description: string; status: 'todo' | 'in_progress' | 'done';
-  version: number; dependsOn: string[]; externalDependsOn: readonly string[]; blockedBy: string[]; ready: boolean; allowAgents: boolean; requiredPlatform: ExecutionPlatform | null; createdAt: string; updatedAt: string;
+  version: number; assignedTo: string | null; dependsOn: string[]; externalDependsOn: readonly string[]; blockedBy: string[]; ready: boolean; allowAgents: boolean; requiredPlatform: ExecutionPlatform | null; createdAt: string; updatedAt: string;
   properties: TaskProperties;
 };
 
@@ -142,16 +142,17 @@ export const createProject = async (request: AuthenticatedAPI, input: { name?: s
 };
 
 export const createTask = async (request: AuthenticatedAPI, projectId: string, input: {
-  title: string; description?: string; dependsOn?: string[]; properties?: WritableTaskProperties; requiredPlatform?: ExecutionPlatform | null;
+  title: string; description?: string; dependsOn?: string[]; properties?: WritableTaskProperties; requiredPlatform?: ExecutionPlatform | null; assignedTo?: string | null;
 }): Promise<Task> => {
   const response = await request.post(`/api/v1/projects/${projectId}/tasks`, {
-    data: { title: input.title, description: input.description ?? '', dependsOn: input.dependsOn ?? [], properties: input.properties, requiredPlatform: input.requiredPlatform },
+    data: { title: input.title, description: input.description ?? '', dependsOn: input.dependsOn ?? [], properties: input.properties, requiredPlatform: input.requiredPlatform, assignedTo: input.assignedTo },
   });
   expect(response.status(), 'Task fixture creation succeeds').toBe(201);
   const task = await response.json() as Task;
   expect(task.status, 'Task fixture creation registers a to-do task').toBe('todo');
   expect(task.version).toBe(1);
   expect(task.requiredPlatform).toBe(input.requiredPlatform === undefined ? null : input.requiredPlatform);
+  expect(task).toHaveProperty('assignedTo', input.assignedTo === undefined ? null : input.assignedTo);
   return task;
 };
 
@@ -170,7 +171,7 @@ export const executeTask = async (request: AuthenticatedAPI, projectId: string, 
   finishTask(request, projectId, await startTask(request, projectId, task));
 
 export const updateTask = async (request: AuthenticatedAPI, projectId: string, taskId: string, input: {
-  version: number; title?: string; description?: string; dependsOn?: string[]; properties?: WritableTaskProperties; requiredPlatform?: ExecutionPlatform | null;
+  version: number; title?: string; description?: string; dependsOn?: string[]; properties?: WritableTaskProperties; requiredPlatform?: ExecutionPlatform | null; assignedTo?: string | null;
 }): Promise<Task> => {
   const response = await request.patch(`/api/v1/projects/${projectId}/tasks/${taskId}`, { data: input });
   expect(response.status(), 'Task fixture update succeeds').toBe(200);
@@ -198,6 +199,18 @@ const ownedDatabase = async (): Promise<DatabaseTarget> => {
   });
   if (label !== target.projectLabel.value) throw new Error('Database ownership label differs from this acceptance target.');
   return target;
+};
+
+export const seedUserProfile = async (userId: string, profile: { readonly name: string | null; readonly avatarUrl: string | null }): Promise<void> => {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  if (!uuid.test(userId) || Object.values(profile).some((value) => value !== null && value.includes('\0'))) throw new Error('Invalid owned user profile fixture.');
+  const literal = (value: string | null): string => value === null ? 'NULL' : `'${value.replaceAll("'", "''")}'`;
+  const target = await ownedDatabase();
+  const result = await command('docker', ['exec', target.postgresContainer, 'psql', '--no-psqlrc', '--set', 'ON_ERROR_STOP=1',
+    '--username', 'daynight', '--dbname', target.database, '--tuples-only', '--no-align', '--command',
+    `UPDATE users SET name = ${literal(profile.name)}, avatar_url = ${literal(profile.avatarUrl)}, updated_at = statement_timestamp() WHERE id = '${userId}' RETURNING id;`],
+  { cwd: process.cwd(), timeoutMs: 15_000, quiet: true });
+  expect(result.split('\n').filter((line) => uuid.test(line)), 'Owned profile fixture updates exactly the selected cached user').toEqual([userId]);
 };
 
 export const seedTaskVersion = async (projectId: string, taskId: string, version: bigint): Promise<void> => {

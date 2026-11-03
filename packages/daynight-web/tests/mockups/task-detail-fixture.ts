@@ -11,7 +11,7 @@ import flowcharts from './files/docs/flowcharts.md?raw';
 export const detailProjectId = '00000000-0000-4000-8000-000000000100';
 export const detailTaskId = '00000000-0000-4000-8000-000000000001';
 const timestamp = '2026-10-24T10:00:00Z';
-const task = (id: string, title: string, status: TaskDetail['status']): TaskDetail => ({
+const task = (id: string, title: string, status: TaskDetail['status']): TaskDetail => ({ assignedTo: null,
   id, projectId: detailProjectId, title, description: '# 任务交付\n\n使用同一套完整任务详情查看资料与操作。\n\n- [方案与验收](docs/guide.md)\n- [交互原型](site/index.html)\n- [长文档](docs/tall.md)',
   status, version: 1n, allowAgents: false, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [],
   ready: status === 'todo', startedAt: null, completedAt: status === 'done' ? timestamp : null,
@@ -53,7 +53,7 @@ export const createTaskDetailFixture = (options: { readonly initialStatus?: Task
     const graph: TaskGraph = {
       observedAt: timestamp,
       project: { id: detailProjectId, name: '任务详情交互示例', repoUrl: 'https://github.com/example/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: timestamp, updatedAt: timestamp },
-      tasks: details.map((item) => ({ id: item.id, titlePreview: item.title, titleTruncated: false, status: item.status,
+      tasks: details.map((item) => ({ assignedTo: item.assignedTo, id: item.id, titlePreview: item.title, titleTruncated: false, status: item.status,
         allowAgents: item.allowAgents, requiredPlatform: item.requiredPlatform, dependsOn: item.dependsOn, externalDependsOn: item.externalDependsOn,
         blockedBy: item.blockedBy, ready: item.ready, startedAt: item.startedAt, completedAt: item.completedAt, createdAt: item.createdAt, updatedAt: item.updatedAt })),
       summary: { total: details.length, todo: details.filter((item) => item.status === 'todo').length,

@@ -24,7 +24,7 @@ SDK 提供 App-aware provider discovery；发现失败与用户会话失效分�
 [语言设计](daynight-web-i18n.md)拥有已实现的类型化目录、Intl 格式化器、首屏解析、常驻 Provider、共享选择器和全部现有第一方组件的双语呈现；[双语需求](../spec/daynight-web-i18n.md)拥有完整覆盖与验收。语言偏好使用独立的 origin-local 键，不改变本文的项目浏览记录、API、图或附件生命周期。
 
 [执行计时架构](daynight-task-timing.md)的起止字段与数据库 `observedAt` 已进入严格 API 读取器。
-`useTaskGraph` 从 task-sync 获取最新服务端样本，保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。[缓存架构](daynight-task-sync.md)拥有已实现的 IndexedDB schema 3 摘要、完整属性同步、原子增量应用和身份生命周期；详情已在同一 scope 下按需持久化，以摘要业务版本和恢复需要驱动 GET。
+`useTaskGraph` 从 task-sync 获取最新服务端样本，保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。[缓存架构](daynight-task-sync.md)拥有已实现的 IndexedDB schema 4 摘要、完整属性同步、原子增量应用和身份生命周期；详情已在同一 scope 下按需持久化，以摘要业务版本和恢复需要驱动 GET。
 [外部依赖架构](daynight-external-dependencies.md)的存储及严格读取准备也已实现：
 GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去重及完整依赖的子集，
 摘要自身内容比较和详情描述符纳入该集合。buildGraphIndex 用普通依赖构造弱连通分量，
@@ -269,6 +269,20 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 卸载时，`useLayoutEffect` 同步移除键盘监听、恢复背景 inert 与 body 滚动状态；独立的 `useEffect([])` cleanup 在 DOM 删除后，调用 ref 中最新的焦点恢复回调。刷新可能同时卸载对话框和相邻任务链，恢复必须等旧节点真正移除后再检查 `isConnected`，否则焦点会先落到即将删除的节点，随后丢失到 body。关系跳转继续复用对话框，不触发卸载恢复。具体失败机制与验证由[焦点恢复决策](../../.agents/notes/archived/bug-fix/2026-10-20-drawer-focus-restoration.md)记录。
 
+### 任务负责人
+
+`TaskAssigneeSelect` 与状态控件组成同一个 24px 控制组，再排列平台和 ready/blocked；自动执行保持右侧。入口使用已确认详情，16px 头像配姓名，列表身份使用 17px 头像。`TaskAssigneeIdentity` 从项目人员 map 读取实际 nullable 姓名和头像，未载资料或无姓名显示短 UUID，图片失败保留身份替代形态；只有明确 `hasProjectAccess=false` 才显示失权状态，不生成邮箱。
+
+共享 `AssigneePicker` 拥有搜索、活动项、键盘与菜单定位；完整目录只在打开或 Retry 时读取，加载或失败时提交禁用。菜单以 fixed 定位并 portal 到 surface 的焦点所有者子树，按视口保留 12px 边界，随 scroll、resize、fullscreen 和进入动画更新锚点。Escape 关闭菜单并恢复入口；Tab 或外部点击关闭但保留后续焦点行为。详情任务、禁用状态或准入变化使菜单关闭。选择当前值不创建 mutation，其他选择直接交给详情会话，不增加确认层或规则说明文案。
+
+`TaskDetailSessions.setAssignedTo` 使用普通 PATCH 的 `setTaskAssignedTo`，只发送精确 version 与 nullable UUID。会话按原值是否等于规范目标预测版本 +0/+1；同值保留更新时间和许可，实际变化校验目标、`allowAgents=false` 与其余完整材料。所有其他 mutation 核验 assignedTo 保持不变。HTTP 200 的远端写确认先于完整正文安装；冲突只读刷新，未知结果沿现有 GET 核对队列，不重放 PATCH，旧 owner 或历史不能安装结果。pending、陈旧、unknown 和核对 gate 与其他任务操作共用。
+
+`TaskAssigneesProvider` 位于认证 `TaskCacheProvider` 内和详情 Provider 外，拥有该 scope 的会话内存资料；独立详情与项目页共用它。挂载行、详情和具体人员筛选以独立 symbol 登记 ID 需求，排序去重后分批最多 100 项，空集合不请求。项目页与独立详情按 graph-owner symbol 加正 revision 登记成功 receipt；重新挂载的 revision 不与另一 owner 的计数比较。限定请求在途时合并一次后继刷新，完整目录仅响应显式打开和重试，不增加轮询。
+
+人员读取在 scope.ready 后捕获已授权内存 manifest 的 userFence/cacheGeneration，不调用 beginSync 重读持久摘要。每人独立的派发序号阻止旧目录覆盖较新限定读取，包括 unresolved；身份、ticket 和需求共同约束正向发布。可信同用户项目 404 先按 ticket 处理 scope 撤权，菜单关闭或需求变化不能丢失负向准入；旧历史仍不能撤回新历史。资料与错误不写入 Task 版本或 IDB，读取失败不改 Task.assignedTo。
+
+`TaskAssigneeFilter` 拥有 all/me/unassigned/user 显示条件。`ProjectPage` 在完整 index 上计算匹配 ID，与近期范围相交后分页；`StandaloneList` 只呈现匹配行，`ChainList` 保留匹配成员所在真实代表，显示匹配子任务及数量。链进度、上下文、ready、统计与图继续使用完整 component/index，task-sync 不携带此筛选；显式概览定位可回到 all。新增交互保留必要错误、访问状态和恢复入口。字段、人员与筛选的完整机制由[负责人设计](daynight-task-assignment.md)拥有。
+
 ### 任务详情提示
 
 `TaskDetailSurface` 内的公共提示层承接状态、自动执行、平台、复制、保留详情、刷新失败和过期快照反馈；独立页保留图快照时的刷新失败，以及顶部语言偏好读取/保存提示，也进入该层；语言选择器的其他调用位置保持自身呈现。浮层位于容器右下方，不参与标题、页签和面板的高度分配，并限制堆叠宽高，长错误在气泡内部滚动。首次加载失败和附件列表、预览的内容状态仍属于各自面板。
@@ -279,7 +293,7 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 ### 自动执行许可与确认
 
-详情和图 DTO 的 `allowAgents` 均严格解码为布尔；缺失、null 或其他类型拒绝。`TaskAgentPermission` 在标题下的公共状态行右侧组合标签与 switch，左侧依次为状态菜单、平台切换和 ready/blocked 提示。状态来自已确认详情，不做乐观切换；此入口在概览与附件页均可用，不重复渲染状态 badge 或 Overview 编辑区。空间充足时自动执行与左组首行顶部对齐；空间不足时允许左组内容与完整的自动执行组合换行，自动执行保持右对齐，完整标签与控件互不重叠；锁定原因通过控件 tooltip 展示，失败、未知结果和人工等待反馈归属详情提示层。`TaskAgentPermissionFeedback` 仅在当前详情观察到同一操作从 pending 变为 confirmed 时显示成功气泡，3 秒后移除；气泡定位于对话框之上，不参与标题、页签及正文的高度分配。计时与显示状态属于呈现，不清除或改写会话中的 mutation；挂载时已有 confirmed 结果、普通刷新和语言切换均不重播，卸载清理计时。独立任务行和图节点的紧凑许可标记只表达自身任务，根链条目不聚合许可，也不增加图卡高度。
+详情和图 DTO 的 `allowAgents` 均严格解码为布尔；缺失、null 或其他类型拒绝。`TaskAgentPermission` 在标题下的公共状态行右侧组合标签与 switch，左侧依次为状态与负责人控制组、平台切换和 ready/blocked 提示。状态来自已确认详情，不做乐观切换；此入口在概览与附件页均可用，不重复渲染状态 badge 或 Overview 编辑区。空间充足时自动执行与左组首行顶部对齐；空间不足时允许左组内容与完整的自动执行组合换行，自动执行保持右对齐，完整标签与控件互不重叠；锁定原因通过控件 tooltip 展示，失败、未知结果和人工等待反馈归属详情提示层。`TaskAgentPermissionFeedback` 仅在当前详情观察到同一操作从 pending 变为 confirmed 时显示成功气泡，3 秒后移除；气泡定位于对话框之上，不参与标题、页签及正文的高度分配。计时与显示状态属于呈现，不清除或改写会话中的 mutation；挂载时已有 confirmed 结果、普通刷新和语言切换均不重播，卸载清理计时。独立任务行和图节点的紧凑许可标记只表达自身任务，根链条目不聚合许可，也不增加图卡高度。
 
 两个方向复用 `TaskConfirmation` 的模态、取消初始焦点、长任务名滚动、下层 inert 和焦点恢复。确认冻结目标布尔值、身份、源状态和精确版本；后台已知变化使确认失效。`TaskDetailSession` 与状态设置及平台确认共用同一个进行中 operation；pending、未知或必需核对期间阻止相冲突写入，关闭/重开详情、切换任务或项目不会把原操作交给新资源。普通可选周期 GET 不废弃仍有效的版本。
 
@@ -297,7 +311,7 @@ TaskDetailSession 将 withdraw 纳入同一单任务 operation，与状态、许
 
 ### 平台要求与确认下拉框
 
-详情与图 DTO 要求 `requiredPlatform` 字段为 null、windows、linux 或 macos，缺失和非法值拒绝；nullable 值不经过运行时默认。独立行与图节点保留只读 `TaskPlatformBadge`，按自身任务值显示平台文案。详情状态行左组在当前状态菜单后紧邻放置一个紧凑平台下拉框，两者共用 24px 高度、4px 圆角、边框、浅底色、字色、排版、箭头留白及禁用/聚焦样式，不带通用按钮阴影；平台保持原生 select，状态保留颜色点和自有菜单，ready/blocked 提示跟在后面；提供不限平台/Any platform、Windows、Linux、macOS；它的受控值始终来自最近确认的详情，兼有展示和操作入口。空间充足时自动执行控件与左组首行顶部对齐；窄屏允许左组内容及完整的自动执行组合换行，自动执行仍靠右对齐，各控件保留完整标签且互不重叠。平台入口在概览和附件页均可用；概览不再挂载独立平台编辑器或 Save platform 按钮。
+详情与图 DTO 要求 `requiredPlatform` 字段为 null、windows、linux 或 macos，缺失和非法值拒绝；nullable 值不经过运行时默认。独立行与图节点保留只读 `TaskPlatformBadge`，按自身任务值显示平台文案。详情状态行左组在状态与负责人控制组后放置紧凑平台下拉框，三者共用 24px 高度、4px 圆角、边框、浅底色、字色、排版、箭头留白及禁用/聚焦样式，不带通用按钮阴影；平台保持原生 select，状态保留颜色点和自有菜单，ready/blocked 提示跟在后面；提供不限平台/Any platform、Windows、Linux、macOS；它的受控值始终来自最近确认的详情，兼有展示和操作入口。空间充足时自动执行控件与左组首行顶部对齐；窄屏允许左组内容及完整的自动执行组合换行，自动执行仍靠右对齐，各控件保留完整标签且互不重叠。平台入口在概览和附件页均可用；概览不再挂载独立平台编辑器或 Save platform 按钮。
 
 `TaskPlatform` 模块中的 `TaskPlatformSelect` 提供平台入口，`TaskPlatformConfirmation` 与 `TaskPlatformFeedback` 拥有确认和反馈。选择当前值不创建操作；选择不同值只建立 `PlatformConfirmation`，捕获已审阅的完整详情、project/task、源平台、目标平台和精确 version。选择不限平台的目标为 null。下拉框立即保持原已确认值，目标值由确认窗口的当前/目标转换说明表达，不保存独立选择草稿或乐观更新。后台已知详情或版本变化使确认失效，不能静默换版本提交旧决定。`matchesPlatformReview` 以 `taskReviewKey` 验证原审阅。`TaskDetailSurface` 在弹窗与独立页共用 `DetailConfirmation` 的 status/permission/platform/delete/withdraw 判别联合，保存唯一的本地确认并统一校验与提交路由，避免确认相互叠加；父详情在最上层确认开启时保持 inert。
 
@@ -307,19 +321,19 @@ TaskDetailSession 将 withdraw 纳入同一单任务 operation，与状态、许
 
 ### 版本化状态设置与任务会话
 
-`TaskDetailSession.tsx` 按 project/task 保存详情与 status/allowAgents/requiredPlatform/删除操作；工作空间 provider
+`TaskDetailSession.tsx` 按 project/task 保存详情与 status/allowAgents/requiredPlatform/assignedTo/删除操作；工作空间 provider
 按 user ID 和身份 generation 隔离，导航保留当前操作，登出或身份替换卸载，晚到结果不进入新身份。
-它只协调当前工作空间，不是服务端所有权锁。状态、许可、平台和删除确认共用单写入 owner 与一个确认 union，
+它只协调当前工作空间，不是服务端所有权锁。状态、许可、平台、负责人和删除操作共用单写入 owner；需要确认的操作共用一个确认 union，
 pending、stale、unknown、读取/核对失败期间均阻止任务写入，关闭详情不代表事务回滚。
 
 共享头部保留实际标题及标题复制、全屏、“…”菜单和关闭入口，ID 及其复制位于概览，继承应用语言。
-当前状态菜单位于标题下的公共状态行，在平台切换之前，ready/blocked 提示在两者之后；自动执行保持右侧。
+当前状态菜单位于标题下的公共状态行，与负责人紧邻成组，之后为平台及 ready/blocked 提示；自动执行保持右侧。
 菜单固定三项 menuitemradio，当前项标记且可选，支持方向键、Home/End、Enter/Space、Escape 及焦点恢复。
 选择后确认完整任务名、当前→目标和计时影响；同状态明确不修改时间。取消初始焦点、下层 inert，
 取消/关闭/Escape 不提交。标题和确认正文各自有界且支持原生键盘滚动，控制在 320px 保持可用。
 资料与附件 panels 保持挂载，reading key 只取 project/task，状态与版本不重建附件 controller。
 
-确认冻结 reviewed detail、目标和精确 bigint version；review key 包含身份、状态、许可、平台、普通/外部边和
+确认冻结 reviewed detail、目标和精确 bigint version；review key 包含身份、状态、许可、平台、负责人、普通/外部边和
 派生阻塞。实质读取变化使确认失效，不换新版本静默提交；相同观察与可选 GET 不关闭确认。
 图 receipt 仅表示读取上下文，不等于任务 revision；已知描述符变化要求新的完整 GET。
 后台读取保留同任务面板和附件输入，首次读取、身份/资源切换使用独立加载边界。
@@ -595,17 +609,17 @@ flowchart LR
 
 ### 前端数据和状态所有权
 
-认证身份下的 TaskCacheScope 拥有项目持久摘要及可发布投影，项目页面维护图加载与当前资源；Worker hooks 只持有页面内存观测并复用 scope 的认证生命周期，不进入项目缓存或建立全局注册表。不引入 Redux 或查询框架。专用 TaskDetailSession 保存项目/任务键对应的详情与状态操作，纯图模型只计算派生内容。TaskCacheProvider 包裹全部认证路由并位于详情 Provider 外，独立任务和附件路径页共享该 scope。
+认证身份下的 TaskCacheScope 拥有项目持久摘要及可发布投影，项目页面维护图加载与当前资源；Worker hooks 只持有页面内存观测并复用 scope 的认证生命周期，不进入项目缓存或建立全局注册表。不引入 Redux 或查询框架。专用 TaskDetailSession 保存项目/任务键对应的详情与任务写操作，纯图模型只计算派生内容。TaskCacheProvider 包裹全部认证路由，内部依次放置 TaskAssigneesProvider 和详情 Provider；独立任务和附件路径页共享该 scope。
 
 - Workspace 按认证身份保持正文和导航边界；`useSidebarPreference` 只拥有 origin-local 桌面折叠值和保存错误，手机覆盖导航为独立临时状态。二者不参与项目、缓存、详情或图的 key，也不触发业务读取。
 - 项目目录 Provider 在 Workspace 的认证身份边界拥有当前已加载页、nextCursor 和下一页错误；`useProjects` 在 Provider 内管理请求，`useProjectList` 向侧栏及项目列表提供同一份状态和操作。首次请求、加载更多和刷新有各自状态；刷新使旧游标及旧请求失效，卸载取消请求，身份变化重建目录。项目切换与侧栏折叠不重建目录或增加轮询。
 - `useTaskGraph(projectId)` 拥有完整派生 TaskGraph、接收时间、独立数据库样本、成功 receipt revision、请求序号、refresh 与可见页面轮询。身份核验后先发布经生命周期与完整性验证的本地摘要，后台同步；本地 snapshot 的 revision=0，成功接收与服务端时钟字段为空，不增加在线授权。没有有效缓存时保持加载态，同步普通失败保留已显示摘要，可信撤权清除内容。严格解析 task-sync 后立即捕获 receivedMonotonic，早于 IDB 应用和索引计算；每次成功同步成对更新 observedAt/receivedMonotonic，receivedAt 仅作本机最近刷新标签。TaskCacheScope 在一个事务内按业务版本合并当前完整持久集合，再提交摘要与最大 updatedAt；相等/旧版行不写入。仅时钟变化复用 graph/index，仅设置变化替换 graph.project 并复用 tasks、summary 与 index，任务变化整体替换相关资源。设置版本保持 bigint。稳定 graph.observedAt 可保留旧样本，当前时钟始终使用独立 snapshot 样本；磁盘或其他标签页不能提供它。
 - `TaskExecutionClockProvider` 按项目拥有稳定 context/store，将最新服务端时间、单调接收时间和已保存阈值在 layout effect 一起发布。useTaskExecution 仅让已知起点的运行任务订阅一个可见页一秒 ticker；完成任务只订阅设置说明，未知任务无活动订阅。隐藏时暂停，恢复可见立即发布单调差值；正常轮询独立刷新锚点，最后运行订阅与 provider 卸载清理 timer/listener。计时局部更新不进入 GraphIndex、投影、布局或边路由；既有身份 guard 继续约束 API，没有新增失焦监听或网络轮询。
-- `ProjectPage` 管理任务选择、当前页签、单成员及多成员普通分量的倒序展示序列、共享近期投影、两类“显示所有”筛选和分页、各自浏览位置。`ChainList` 消费当前页的代表序列，并以完整筛选条目数显示工具栏数量；完整 `GraphIndex` 保存全部成员、关系上下文与项目统计。概览导航的 task witness 经 `componentByTask` 解析到最新代表，再在完整筛选序列中确定目标页。图入口的 witness 不因代表变化覆盖仍有效的任务定位值，当前页入口不可见时关闭图。详情始终绑定 task ID，分类、筛选和翻页不关闭仍存在的详情。
+- `ProjectPage` 管理任务选择、当前页签、单成员及多成员普通分量的倒序展示序列、共享近期投影、两类“显示所有”及共享负责人筛选和分页、共享任务列表浏览位置。`ChainList` 消费当前页的代表序列，并以完整筛选条目数显示工具栏数量；完整 `GraphIndex` 保存全部成员、关系上下文与项目统计。概览导航的 task witness 经 `componentByTask` 解析到最新代表，再在完整筛选序列中确定目标页。图入口的 witness 不因代表变化覆盖仍有效的任务定位值，当前页入口不可见时关闭图。详情始终绑定 task ID，分类、筛选和翻页不关闭仍存在的详情。
 - `useTaskDetail(projectId, taskId)` 消费 TaskDetailSession 中该键的详情与状态操作状态，
   在本挂载成功同步后以匹配持久正文加速打开，再 live GET。摘要业务版本、项目 generation 和恢复需要驱动读取，正常重复 receipt 不 GET；相同版本的前置变化只物化派生字段。相同活动资源且同 cacheGeneration 保留正文与附件，活动 GET 不被自动触发中断，必要后续读取合并；显式重试仍有优先权。revision 与
   loadedRevision 记录请求和成功 GET 起始上下文；requiresFreshRead 根据任务描述符、
-  读取错误和显式核对判断，独立于网络 refreshing。未改变描述符的可选轮询不阻断状态、许可或平台操作。
+  读取错误和显式核对判断，独立于网络 refreshing。未改变描述符的可选轮询不阻断状态、许可、平台或负责人操作。
   相同有序 PR 内容复用数组，保留分页和焦点；关闭详情释放普通读取，但不丢失进行中
   状态提交或未核对结果。代次检查隔离晚到响应和旧源状态，资源/身份切换保持加载边界。
 - `TaskDetailReading` 持有唯一附件控制器，向描述导航和 `TaskAttachmentsPanel` 传递同一实例；
@@ -833,7 +847,7 @@ Project、分页 Project 与图内 Project.settings 的版本通过专用 `proje
 
 生产页面通过 task-sync 读取任务摘要，合并完整本地集合后物化 `TaskGraph`，不调用
 服务端 task-graph。`task-cache/projection.ts` 从完整摘要计算 blockedBy、ready 和六项
-summary，显式去掉 version 与 properties 后形成图节点；完整属性保留在摘要 map 中。摘要解析复用 parseTaskProperties，sameSummary 比较与详情 summaryOf 保留完整属性并使用 sameTaskProperties 比较全部键与 JSON 值，不因对象键序产生同版本差异。随后由既有 `buildGraphIndex` 验证依赖、状态、容量、统计与无环条件。所有依赖
+summary，显式去掉 version 与 properties 后形成保留 assignedTo 的图节点；完整属性保留在摘要 map 中。摘要解析严格要求 nullable assignedTo 并复用 parseTaskProperties，sameSummary 比较与详情 summaryOf 保留 assignedTo 和完整属性并使用 sameTaskProperties 比较全部键与 JSON 值，不因对象键序产生同版本差异。随后由既有 `buildGraphIndex` 验证依赖、状态、容量、统计与无环条件。所有依赖
 必须在本地完整集合中可解析；完整上游闭包供 Web 链图使用，不采用 CLI 的一层外部前置边界。
 [时间窗口架构](daynight-task-sync.md)拥有同步、持久化、版本、水位、身份和发布机制。
 
@@ -863,6 +877,7 @@ type TaskGraph = {
     ready: boolean;
     allowAgents: boolean;
     requiredPlatform: "windows" | "linux" | "macos" | null;
+    assignedTo: string | null;
     createdAt: string;
     updatedAt: string;
     startedAt: string | null;
@@ -966,8 +981,8 @@ API 数据和固定图集。
 gateway 夹具取得正常浏览器会话和 PAT，数据准备与安装 CLI 使用同一授权通道。
 App 与用户凭据只保存在私有 0600 元数据，公开回执和截图不包含秘密。受控外部
 provider 响应证明 gateway/SDK 协议，不等同于真实上游账号登录。
-原生目标分成二十九个功能场景和五个容量/超限场景，容器目标经实际生产镜像 gateway
-执行同一个二十九场景功能集合。`refresh-staleness` 验证自动读取后图、统计和当前详情
+原生目标分成三十一个功能场景和五个容量/超限场景，容器目标经实际生产镜像 gateway
+执行同一个三十一场景功能集合。`refresh-staleness` 验证自动读取后图、统计和当前详情
 的一致更新，以及保留浏览、焦点和附件状态的故障恢复；定时器、可见性、请求串行与
 资源切换另由 hook/组件测试验证。浏览器顺序和清理屏障由[CI 构建归属](#ci-构建归属)定义。日常 localhost 栈
 不参与测试。`project-view-tabs` 覆盖两类分类及依赖迁移、独立任务直接详情、独立完成筛选、
@@ -976,6 +991,8 @@ provider 响应证明 gateway/SDK 协议，不等同于真实上游账号登录�
 PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` 和 `task-status-transitions`
 单独允许已登记 project/task 的 PUT status 和精确请求次数；六个鉴权场景仅放行各自
 登记的精确管理请求；`project-settings` 另只放行四次登记设置 PATCH，覆盖成功、409、真实提交后丢失响应及降权 403，重读失败后只重试读取。该场景还检查真实大版本、项目隔离、成员只读及双语 320px/390px 控件与导航边界及文字不截断。`task-agent-permission` 只允许登记任务的许可 PATCH 和精确请求次数，覆盖普通成员双向确认、取消/Escape、锁定、冲突、已提交响应丢失与读取核对、详情关闭/切换后的请求归属、严格布尔/精确版本及双语窄屏几何；未知写入只核对，不重放。`task-platform` 仅允许登记任务的精确平台 PATCH，覆盖状态行选择后确认、当前值无操作、各取消路径零写入和下拉框焦点恢复、确认后设置/清除、状态/许可共享锁、冲突与真实丢响应后的 GET 核对、跨任务归属、人工开始后锁定、字段传播及双语 320px/390px 窄屏。
+`task-assignment` 仅放行登记任务和精确次数的负责人 PATCH，验证设置/清空、同值零写入、冲突、真实提交丢响应与 GET-only 恢复，以及完整材料保持。`task-assignment-layout` 覆盖双语 1366px/390px/320px、长姓名与 null 姓名、头像失败、菜单焦点与滚动/全屏、失权人员显示、只读浏览，以及隐藏兄弟任务时仍保持完整链进度和依赖事实。
+
 平台确认的浏览器辅助函数先等待下拉框可用，再聚焦并确认焦点，随后才选择选项；缓存详情可见不表示实时读取已允许编辑。取消后的原值、焦点恢复和零写入断言保持独立验证，不在取消后强制聚焦，也不放宽超时或重试规则。附件组件测试将删除确认框的 DOM 移除与被动清理中的焦点恢复分开，在附件重载仍挂起时等待预览区域实际获得焦点，随后放行重载并继续验证焦点保持。[可观测验收就绪决策](../../.agents/notes/archived/testing/2026-10-20-observable-acceptance-readiness.md)记录这项前置条件。
 
 `task-detail-page` 在 browser context 层观测来源页与 popup，精确放行登记任务五次属性 PATCH、三次 PUT status（todo→in_progress→done→todo）及精确附件各一次 PUT/DELETE；核对逐次版本、起止/重置时间及运行中平台/许可锁定，来源页自身不放行写入，取消不增加请求，未知结果只读取核查。另一个匿名 context 通过真实应用/gateway 重定向验证保留导航查询参数的登录返回，仅控制 provider 端点且不允许应用写入。task-execution-time 保持浏览器 GET/HEAD-only，由正常 API/安装 CLI 准备起止、保存阈值和完成任务；挂起图响应与错误本机墙钟隔离本地单调 tick，验证实时/冻结/未知、卡片/独立行、外部虚线及焦点和图几何，其他写请求仍失败。附件场景在两目标上都让安装 CLI 与生产页面操作同一
@@ -989,7 +1006,7 @@ PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` �
 runner 的服务重启 callback 与显式安装回执路径；目标 probe 在校验 run/source/
 容器标记后读取实际 staging/SQL，客户端发送成功不作为服务端准入证据。详细机制由
 [组合鉴权验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)拥有。
-这两份回执与现有 63 项 Playwright 场景并列，不复制容量矩阵或改变测量、预算和
+这两份回执与现有 67 项 Playwright 场景并列，不复制容量矩阵或改变测量、预算和
 清理屏障；运行结果与真实上游人工登录分别留证。
 
 双语功能的三个稳定场景由[语言设计](daynight-web-i18n.md#验证与证据归属)定义，使用同一受监控页面与场景级 locale；首屏和偏好、图/详情/附件状态、错误及窄屏布局分别提供定向检查。语言不会复制容量矩阵或改变阶段与清理屏障。
@@ -1004,8 +1021,8 @@ runner 的服务重启 callback 与显式安装回执路径；目标 probe 在�
 
 Playwright 固定单 worker、零 retry；报告必须包含全部要求的唯一场景、一次成功
 执行、有效 PNG 附件及一致的汇总，跳过、重试、flaky、缺失、多余或重复场景及
-全局错误均失败。原生 functional/capacity 两份报告严格合并为三十四个唯一场景，
-容器目标严格要求二十九个；原生与容器及同目标各阶段浏览器身份必须一致。
+全局错误均失败。原生 functional/capacity 两份报告严格合并为三十六个唯一场景，
+容器目标严格要求三十一个；原生与容器及同目标各阶段浏览器身份必须一致。
 CI 要求当前 Linux 或 macOS 平台与浏览器回执一致、锁定 Playwright 的完整 Chromium channel `chromium`、干净 checkout，且 git SHA 必须
 等于 `GITHUB_SHA`；本机可以显式选择现有 Chromium，回执必须记录这一差异。
 完整 CI 工作流仍在 Linux 上执行；macOS 本机运行相同功能、容量与恢复验收，不放宽预算。
@@ -1032,7 +1049,7 @@ PDF 预览通过轮询 iframe 的实际 compositor 截图，验证 fixture 专�
 
 chain、merge 和 external 夹具保留从源向末端的节点创建批次，先通过真实 API 创建无依赖任务，再从末端向源补齐依赖。merge/external 按逆拓扑层执行完整 PATCH 批次，同层最多六请求，层间等待；每次保留返回的新 Task/version。merge 的额外边探针使用最终任务版本，external 在依赖补齐后以最终 sink 版本执行既有外部依赖分类。shared 保留直接构造。完整 API 读回仍逐 ID 校验普通/外部依赖，以实际快照顺序选择可见概览；构造顺序不改变图规模、五次测量或独立超限检查。[夹具构造决策](../../.agents/notes/implemented/testing/2026-10-28-web-capacity-fixture-construction.md)记录新增写请求的成本与选择依据。
 
-每次从 trusted 输入到完整可见概览、根可操作和两次 animation frame，openMs≤3,000；select/detail/zoom/pan≤300。普通 Details→关闭→立即缩放/平移之后，可信选择可见任务，再执行高亮态同序列；每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。依赖检查验证完整 H、隐藏祖先去重及独立曲线/paint/marker。`visibility[5]` 逐次保留 repetition、overviewNodes/Edges、addedNodes/Edges、expandedNodes/Edges、resetNodes/Edges、selectedId 和 hiddenUpstream，要求顺序、预算、精确增量和 reset 计数正确。布局/渲染诊断与网络独立计量，1,001 节点和 5,001 边仍完整 409 拒绝。63 场景（原生 34、容器 29）、锁定浏览器、coverage、timeout、零 retry 和清理保持。鉴权和生命周期合并后源码仍需完整运行回执。
+每次从 trusted 输入到完整可见概览、根可操作和两次 animation frame，openMs≤3,000；select/detail/zoom/pan≤300。普通 Details→关闭→立即缩放/平移之后，可信选择可见任务，再执行高亮态同序列；每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。依赖检查验证完整 H、隐藏祖先去重及独立曲线/paint/marker。`visibility[5]` 逐次保留 repetition、overviewNodes/Edges、addedNodes/Edges、expandedNodes/Edges、resetNodes/Edges、selectedId 和 hiddenUpstream，要求顺序、预算、精确增量和 reset 计数正确。布局/渲染诊断与网络独立计量，1,001 节点和 5,001 边仍完整 409 拒绝。67 场景（原生 36、容器 31）、锁定浏览器、coverage、timeout、零 retry 和清理保持。鉴权和生命周期合并后源码仍需完整运行回执。
 
 每个容量 dataset 的 `feedbackDiagnostics` 增量保存每次 open/detail/zoom/pan 的
 `kind`、`repetition`、`start`、`capturedAt`、`conditionAt`、`frame1At`、

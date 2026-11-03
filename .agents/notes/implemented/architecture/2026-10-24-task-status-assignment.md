@@ -20,8 +20,10 @@ Existing applied migrations remain unchanged, and runtime readers do not accept
 the deleted state as an alias.
 
 The implementation reuses project-lock transactions, complete mutation plans,
-CLI choices and the shared Web status/permission owner. Platform saves are a third operation under
-that same owner, without adding another confirmation or mutation controller.
+CLI choices and the shared Web status/permission owner. Platform saves reuse
+that owner without adding another confirmation or mutation controller. The
+[assignment decision](2026-11-03-task-assignment-foundation.md) extends the same
+mutation owner to assignee writes and preserves assignment across status changes.
 Status changes and migration retain requiredPlatform; immutable migration 013
 adds platform first, while 014 performs state conversion. It compares exact versions
 before same-state no-op, preserves all-edge forward/reverse dependency protection,

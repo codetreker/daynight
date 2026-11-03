@@ -21,7 +21,7 @@ flowchart TB
   A -->|claim-bound done| S
 ```
 
-服务端提供当前 claim 归属，SQLite 保存本机认领和原生会话索引，Git 与 Herdr 提供实际资源。顶层 assignedTo 是独立人的责任归属，所有 worker 服务端写入保留它；候选选择不按负责人筛选，也不因改派转移旧 claim、Session 或 archive 权限。Agent 完成实现、验证、PR、审查、授权合并和任务验收，最后提交原 claim 的 done；worker 按自己的完整 claim 清单决定资源生命周期，不再次解释业务验收。
+服务端提供当前 claim 归属，SQLite 保存本机认领和原生会话索引，Git 与 Herdr 提供实际资源。顶层 assignedTo 是独立人的责任归属，所有 worker 服务端写入保留它；已确认的自动领取规则要求候选为 assignedTo=me，并在 claim 事务重验本人负责人；运行时由待合并的[PR #322](https://github.com/codetreker/daynight/pull/322)交付。既有 claim 库存和显式人工 resume 保持原执行授权，改派不转移旧 claim、Session 或 archive 权限。Agent 完成实现、验证、PR、审查、授权合并和任务验收，最后提交原 claim 的 done；worker 按自己的完整 claim 清单决定资源生命周期，不再次解释业务验收。
 
 ## 配置与目录
 
