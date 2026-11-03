@@ -37,11 +37,11 @@ resolved all/unassigned/user selection participates in task cursor version 2;
 project and account-Worker cursors retain version 1. Resolving me before cursor
 validation makes it equivalent to the corresponding concrete UUID while keeping
 another principal's self-filter out of that scope. Filters are explicit inputs,
-originally independent of execution eligibility, preserving the distinction
-between human responsibility and execution ownership. The accepted self-assigned
-automatic-acquisition rule is delivered by pending
-[PR #322](https://github.com/codetreker/daynight/pull/322); it does not transfer
-existing claim or manual-control authority.
+originally independent of execution eligibility. That initial separation kept
+human responsibility distinct from execution ownership. The [self-assigned
+acquisition decision](2026-11-03-worker-self-assigned-claims.md) now requires
+assignment to the authenticated user for automatic candidates and claims, while
+retaining original claim authority for inventory and manual control.
 
 A project-scoped people read separates canonical profile and access facts from
 Task versions. It offers complete candidate/retained-assignee enumeration and
@@ -51,13 +51,13 @@ profiles. A qualified reference without a user row is an internal integrity
 failure; a request with no scoped qualification is explicitly unresolved without
 revealing a global profile. Nullable names and avatars remain actual data.
 
-
 The CLI requires nullable assignedTo on every Task and graph input, preserves it
 in JSON and shows its current UUID or unassigned in text. Ordinary create/update
 flags own assignment and null clearing; list alone accepts UUID/me/unassigned
-filters. Ready has no assignee command option. The accepted automatic worker
-candidate contract uses me, while complete existing-claim inventory remains
-unfiltered by responsibility; PR #322 owns that runtime delivery.
+filters. Ready has no assignee command option. Automatic worker candidates use
+me, while complete existing-claim inventory remains unfiltered by responsibility;
+the [self-assigned acquisition decision](2026-11-03-worker-self-assigned-claims.md)
+owns that runtime rule.
 
 For me filtering, successful task-page parsing receives that response's
 principal header. A complete traversal binds its first successful identity and
@@ -66,7 +66,6 @@ binding belongs to one traversal; normal non-me requests retain their existing
 optional-header behavior when no expected principal is configured. Ordinary
 Task PATCH returns the complete mutation result, so the CLI adds no normal
 post-write GET or profile lookup.
-
 
 ## Alternatives
 

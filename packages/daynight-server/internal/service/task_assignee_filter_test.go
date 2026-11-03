@@ -205,11 +205,22 @@ func TestTaskAssignedToWorkerInventoryUsesExplicitSelectionOnly(t *testing.T) {
 	workerID := uuid.NewString()
 	var active []core.Task
 	for _, assigned := range []*string{&bob.UserID, nil, &alice.UserID} {
-		task := createAssignedTask(t, tasks, admin, project.ID, assigned)
-		task = updateTask(t, tasks, admin, task, UpdateTask{AllowAgents: pointer(true)})
+		task := claimableTask(t, tasks, owner, project.ID)
 		descriptor := workerDescriptor()
 		descriptor.WorkerID = workerID
-		active = append(active, claimWorkerTask(t, tasks, owner, task, descriptor))
+		task = claimWorkerTask(t, tasks, owner, task, descriptor)
+		task, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		task = updateTask(t, tasks, admin, task, UpdateTask{AssignedTo: assignmentChange(assigned)})
+		next := workerDescriptor()
+		next.WorkerID = workerID
+		task, err = tasks.ResumeWorker(ctx, owner, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: task.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		active = append(active, task)
 	}
 	all, err := tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}, WorkerID: &workerID})
 	if err != nil || !reflect.DeepEqual(assignmentTaskIDs(all.Items), assignmentTaskIDs(active)) {
@@ -225,6 +236,6 @@ func TestTaskAssignedToWorkerInventoryUsesExplicitSelectionOnly(t *testing.T) {
 	}
 	candidates, err := tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}, Ready: pointer(true), AllowAgents: pointer(true)})
 	if err != nil || len(candidates.Items) != 3 {
-		t.Fatalf("automatic discovery implicitly filtered responsibility: %#v %v", candidates, err)
+		t.Fatalf("unfiltered task list implicitly filtered responsibility: %#v %v", candidates, err)
 	}
 }

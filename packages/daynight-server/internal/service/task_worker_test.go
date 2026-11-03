@@ -31,7 +31,11 @@ func workerMember(t *testing.T, database *store.Store, projectID string) core.Pr
 
 func claimableTask(t *testing.T, tasks *Tasks, principal core.Principal, projectID string) core.Task {
 	t.Helper()
-	return updateTask(t, tasks, principal, createTask(t, tasks, principal, projectID, "Worker task"), UpdateTask{AllowAgents: pointer(true)})
+	created, err := tasks.Create(context.Background(), principal, projectID, CreateTask{Title: "Worker task", AssignedTo: &principal.UserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return updateTask(t, tasks, principal, created, UpdateTask{AllowAgents: pointer(true)})
 }
 
 func claimWorkerTask(t *testing.T, tasks *Tasks, principal core.Principal, task core.Task, descriptor WorkerDescriptor) core.Task {
@@ -45,17 +49,17 @@ func claimWorkerTask(t *testing.T, tasks *Tasks, principal core.Principal, task 
 
 func TestWorkerClaimHasOneWinnerAndPreservesTaskData(t *testing.T) {
 	tasks, database, project, _, admin := taskService(t)
-	first, second := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
+	owner := workerMember(t, database, project.ID)
 	prerequisite := finishTask(t, tasks, admin, startTask(t, tasks, admin, createTask(t, tasks, admin, project.ID, "Dependency")))
-	task := claimableTask(t, tasks, admin, project.ID)
+	task := claimableTask(t, tasks, owner, project.ID)
 	task = updateTask(t, tasks, admin, task, UpdateTask{DependsOn: pointer([]string{prerequisite.ID}), ExternalDependsOn: pointer([]string{prerequisite.ID}), Properties: propertyPatch(core.PullRequestProperty{URL: "opaque\x00\n", Title: "Evidence"}), RequiredPlatform: platformChange(pointer(core.PlatformLinux))})
 	a, b := workerDescriptor(), workerDescriptor()
 	results := competeTaskWrites(t, database, project.ID,
 		func(ctx context.Context) (core.Task, error) {
-			return tasks.ClaimWorker(ctx, first, project.ID, task.ID, ClaimWorker{Version: task.Version, WorkerDescriptor: a})
+			return tasks.ClaimWorker(ctx, owner, project.ID, task.ID, ClaimWorker{Version: task.Version, WorkerDescriptor: a})
 		},
 		func(ctx context.Context) (core.Task, error) {
-			return tasks.ClaimWorker(ctx, second, project.ID, task.ID, ClaimWorker{Version: task.Version, WorkerDescriptor: b})
+			return tasks.ClaimWorker(ctx, owner, project.ID, task.ID, ClaimWorker{Version: task.Version, WorkerDescriptor: b})
 		})
 	assertOneTaskWinner(t, results, "version_conflict")
 	actual, err := tasks.Get(context.Background(), admin, project.ID, task.ID)
@@ -66,7 +70,7 @@ func TestWorkerClaimHasOneWinnerAndPreservesTaskData(t *testing.T) {
 	if worker == nil || worker.State != core.WorkerActive || worker.Phase != core.WorkerPreparing || worker.Herdr != nil || worker.NativeSessionID != nil || worker.ClaimedAt.IsZero() || worker.ClaimedAt.Before(task.UpdatedAt) {
 		t.Fatalf("missing server execution facts: %#v", worker)
 	}
-	if (worker.ClaimID != a.ClaimID || worker.UserID != first.UserID) && (worker.ClaimID != b.ClaimID || worker.UserID != second.UserID) {
+	if (worker.ClaimID != a.ClaimID || worker.UserID != owner.UserID) && (worker.ClaimID != b.ClaimID || worker.UserID != owner.UserID) {
 		t.Fatal("claim identity does not identify the successful caller")
 	}
 	preserved := actual
@@ -81,7 +85,7 @@ func TestWorkerClaimEligibilityAndPermissionRaces(t *testing.T) {
 	tasks, database, project, _, admin := taskService(t)
 	ctx := context.Background()
 	descriptor := workerDescriptor()
-	task := createTask(t, tasks, admin, project.ID, "Manual only")
+	task := createAssignedTask(t, tasks, admin, project.ID, &admin.UserID)
 	_, err := tasks.ClaimWorker(ctx, admin, project.ID, task.ID, ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor})
 	requireFault(t, err, "invalid_transition")
 	task = updateTask(t, tasks, admin, task, UpdateTask{AllowAgents: pointer(true), RequiredPlatform: platformChange(pointer(core.PlatformWindows))})
@@ -116,7 +120,7 @@ func TestWorkerSessionUpdatesAndClaimBoundCompletion(t *testing.T) {
 	tasks, database, project, _, admin := taskService(t)
 	ctx := context.Background()
 	owner, other := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
+	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
 	original := *testWorker(t, task.Properties)
 	phase, native := core.WorkerExecuting, "native-session"
 	herdr := &core.WorkerHerdr{Session: "w", WorkspaceID: "workspace-1", PaneID: "pane-1"}
@@ -171,7 +175,7 @@ func TestWorkerReleaseAndManualResumeCreateFreshExecution(t *testing.T) {
 	ctx := context.Background()
 	owner, other := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
 	descriptor := workerDescriptor()
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), descriptor)
+	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
 	resource := &core.WorkerHerdr{Session: "w", WorkspaceID: "source-workspace", PaneID: "source-pane"}
 	task, err := tasks.UpdateWorker(ctx, owner, project.ID, task.ID, UpdateWorker{Version: task.Version, ClaimID: descriptor.ClaimID, Herdr: &resource, NativeSessionID: pointer(pointer("source-native"))})
 	if err != nil {
@@ -231,7 +235,7 @@ func TestWorkerWithdrawalResetsClaimAndDisablesAutomation(t *testing.T) {
 				owner, other := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
 				descriptor := workerDescriptor()
 				dependency := finishTask(t, tasks, admin, startTask(t, tasks, admin, createTask(t, tasks, admin, project.ID, "Prerequisite")))
-				candidate := updateTask(t, tasks, admin, claimableTask(t, tasks, admin, project.ID), UpdateTask{RequiredPlatform: platformChange(pointer(core.PlatformLinux)), DependsOn: pointer([]string{dependency.ID}), ExternalDependsOn: pointer([]string{dependency.ID}), Properties: propertyPatch(core.PullRequestProperty{URL: "opaque\x00", Title: "Evidence"})})
+				candidate := updateTask(t, tasks, admin, claimableTask(t, tasks, owner, project.ID), UpdateTask{RequiredPlatform: platformChange(pointer(core.PlatformLinux)), DependsOn: pointer([]string{dependency.ID}), ExternalDependsOn: pointer([]string{dependency.ID}), Properties: propertyPatch(core.PullRequestProperty{URL: "opaque\x00", Title: "Evidence"})})
 				task := claimWorkerTask(t, tasks, owner, candidate, descriptor)
 				if state == core.WorkerReleased {
 					var err error
@@ -392,7 +396,7 @@ func TestWorkerClaimRechecksMembershipAndRollsBackUnknownWrites(t *testing.T) {
 	tasks, database, project, databaseURL, admin := taskService(t)
 	ctx := context.Background()
 	member := workerMember(t, database, project.ID)
-	task := claimableTask(t, tasks, admin, project.ID)
+	task := claimableTask(t, tasks, member, project.ID)
 	descriptor := workerDescriptor()
 	result := make(chan taskResult, 1)
 	lockContext, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -409,6 +413,7 @@ func TestWorkerClaimRechecksMembershipAndRollsBackUnknownWrites(t *testing.T) {
 	}
 	requireFault(t, receiveTaskResult(t, lockContext, result).err, "not_found")
 	assertTaskUnchanged(t, tasks, admin, task)
+	task = claimableTask(t, tasks, admin, project.ID)
 	for _, fragment := range []string{"SELECT statement_timestamp()", "UPDATE tasks SET"} {
 		t.Run(fragment, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -470,7 +475,7 @@ func TestWorkerManagementRacesKeepOneDecision(t *testing.T) {
 	tasks, database, project, _, admin := taskService(t)
 	ctx := context.Background()
 	owner := workerMember(t, database, project.ID)
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
+	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
 	claimID := testWorker(t, task.Properties).ClaimID
 	assertOneTaskWinner(t, competeTaskWrites(t, database, project.ID,
 		func(ctx context.Context) (core.Task, error) {
@@ -483,7 +488,7 @@ func TestWorkerManagementRacesKeepOneDecision(t *testing.T) {
 	if err != nil || testWorker(t, withdrawn.Properties) != nil || withdrawn.AllowAgents || withdrawn.Status != core.TaskTodo || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil {
 		t.Fatalf("withdrawal race left partial execution state: %#v, %v", withdrawn, err)
 	}
-	task = claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
+	task = claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
 	released, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
 	if err != nil {
 		t.Fatal(err)
@@ -553,7 +558,7 @@ func TestWorkerManagementRechecksOperatorMembership(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
+				task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
 				if operation == "resume" {
 					var err error
 					task, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})

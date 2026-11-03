@@ -260,7 +260,7 @@ limit，每项必须为 ready，且 task ID 不得重复；响应违反任一条
 元数据 update 至少提供标题、描述、普通/外部依赖、自动执行许可、平台要求或负责人中的一个字段；属性由专用通用命令维护。`update --allow-agents true|false` 显式设置许可，省略保留，false 关闭；服务在 in_progress 拒绝实际切换，同值精确版本不改版本或时间。该选项不改变 ready；明确指定执行不要求开启许可。--required-platform windows|linux|macos 设置，--clear-required-platform 发送null，二者互斥；省略均保留。
 精确版本同值不写，旧版本冲突，in_progress实际变化整体拒绝；普通人工setter不按平台筛选。
 
---assigned-to 在创建/更新中只接受用户 UUID，规范化后提交顶层 assignedTo；update 用互斥的 --clear-assigned-to 明确发送 null，省略均保留。查询专用 me/unassigned 不能作为写入值。实际负责人变化同一事务关闭 allowAgents；等值不重置，in_progress 拒绝实际变化。分配不授予项目访问权或既有执行控制权。已确认的自动领取合同还要求负责人等于worker认证账号；运行时交付由[PR #322](https://github.com/codetreker/daynight/pull/322)拥有，许可开启本身不足以领取他人任务。设置/清空冲突、错误UUID和非法查询token在配置/Git/网络前拒绝，新参数仍允许自由UUID值而非封闭 choices。
+--assigned-to 在创建/更新中只接受用户 UUID，规范化后提交顶层 assignedTo；update 用互斥的 --clear-assigned-to 明确发送 null，省略均保留。查询专用 me/unassigned 不能作为写入值。实际负责人变化同一事务关闭 allowAgents；等值不重置，in_progress 拒绝实际变化。分配不授予项目访问权或既有执行控制权。自动领取还要求负责人等于 worker 认证账号；运行时规则由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有，许可开启本身不足以领取他人任务。设置/清空冲突、错误UUID和非法查询token在配置/Git/网络前拒绝，新参数仍允许自由UUID值而非封闭 choices。
 `task update --status`
 作为不支持的选项拒绝，帮助引导使用 set-status。省略字段表示保持，空描述表示
 清空描述。两类依赖选项分别形成普通 N 和外部 E，任一出现就提交完整 D=N∪E 及精确 E。

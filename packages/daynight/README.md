@@ -736,11 +736,12 @@ automatic-selection conditions independent of readiness; explicitly designated
 execution retains the manual exception. List also accepts
 `--assigned-to <user-uuid|me|unassigned>`, combined with its other filters and
 preserved across every page. `task ready` has no assignee option; use
-`task list --ready --assigned-to me` for that intersection. The accepted automatic-acquisition contract requires the task to be assigned
-to the worker's authenticated account, in addition to permission and other
-eligibility checks. Existing claim inventory and manual control remain
-execution-based; the runtime rule is delivered by
-[PR #322](https://github.com/codetreker/daynight/pull/322).
+`task list --ready --assigned-to me` for that intersection. Automatic acquisition
+requires the task to be assigned to the worker's authenticated account, in addition
+to permission and other eligibility checks. Existing claim inventory and manual
+control remain execution-based; the
+[self-assigned acquisition decision](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)
+owns the runtime rule.
 
 For `me`, each successful task-page response must carry one canonical
 Daynight-User-ID, even when its items array is empty. A complete list traversal
@@ -801,13 +802,15 @@ inline assignment. Attachment `put` declares its `--path` as text, accepting
 paths starting with a dash. Property set/remove also accept this terminator for
 literal property/value positionals; other operations retain their declared syntax.
 
-The internal typed ApiClient accepts optional `workerId` on TaskFilters and
-TaskPageQuery. It requests only the authenticated user/worker active claims and
-validates active state and matching worker ID in responses. `listTasks` returns
+The internal typed ApiClient accepts optional `assignedTo` and `workerId` on
+TaskFilters and TaskPageQuery. Assignment selectors accept `me`, `unassigned` or
+a user UUID; the worker uses `me` for new candidates across every page. With
+workerId, the client requests only the authenticated user/worker active claims
+and validates active state and matching worker ID in responses. `listTasks` returns
 only after every page succeeds; `listTaskPage` remains partial. A workerId-only
 traversal across all relevant projects provides ownership inventory; extra filters
-or incomplete pages cannot authorize cleanup. This field is not a public task CLI
-option.
+or incomplete pages cannot authorize cleanup. These filters are not public task
+CLI options.
 
 Human task lists use labeled blocks containing ID, project, title, complete
 properties, status, readiness, automatic-execution permission, required platform,
@@ -992,7 +995,7 @@ records binary transport and output ownership.
 ## Worker configuration and startup
 
 `daynight worker run` is a foreground reconciler. It claims eligible ready tasks
-across configured repositories, runs native agents through the claim's Herdr or
+assigned to its authenticated account across configured repositories, runs native agents through the claim's Herdr or
 Web backend, and cleans resources when the original claim leaves its complete
 inventory. The agent owns delivery, acceptance, evidence and final claim-bound
 completion.
@@ -1270,7 +1273,13 @@ its migration sequence; the [SQLite migration requirements](../../docs/spec/cli-
 define atomicity, ownership blockers and supported starting formats.
 
 Each reconciliation obtains the complete own-claim inventory for configured and
-saved Projects. Still-owned local active tasks are queued for fresh target
+saved Projects using only workerId. Assignment does not filter this inventory:
+existing executions retain their recovery and cleanup authority. New candidates
+combine assignedTo=me, ready, automatic permission and actual platform before
+server pagination; the claim transaction rechecks the assignee against the
+authenticated user ID. Unassigned tasks and tasks assigned to another account
+are ineligible for automatic acquisition. Explicit manual resume retains its
+original execution-owner/admin rules. Still-owned local active tasks are queued for fresh target
 observation and recovery before global Git discovery, so a sibling checkout's
 filesystem error does not block an already-reserved task. New pending startup
 and new claims still require complete global resource discovery. Failed or

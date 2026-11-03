@@ -53,8 +53,11 @@ combinations fail before acquiring new work. The original report-free business
 completion decision still applies: Session event projection is native interaction
 evidence, not a second task acceptance engine.
 
-Eligibility combines `allowAgents=true`, ready state, optional platform
-compatibility and the absence of an active claim. The service checks these
+Eligibility combines assignment to the authenticated account,
+`allowAgents=true`, ready state, optional platform compatibility and the absence
+of an active claim. The [self-assigned acquisition
+decision](2026-11-03-worker-self-assigned-claims.md) owns the assignment condition
+and its separation from existing execution inventory. The service checks these
 conditions and the exact task version atomically. The [automatic-execution
 permission decision](2026-10-23-task-agent-automation.md) owns that field, its
 defaults and confirmed Web changes. The [platform

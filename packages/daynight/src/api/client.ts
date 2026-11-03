@@ -336,6 +336,7 @@ export const createApiClient = (options: {
 
   const taskAssignmentFilter = (value: string | undefined): string | undefined => {
     if (value === undefined || value === "me" || value === "unassigned") return value;
+    if (typeof value !== "string") throw new Error("Assigned-to filter must be a hyphenated UUID, me or unassigned.");
     const parsed = canonicalId(value);
     if (parsed === null) throw new Error("Assigned-to filter must be a hyphenated UUID, me or unassigned.");
     return parsed;

@@ -13,7 +13,7 @@ const time = "2026-10-20T01:02:03.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, assignedTo: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
 const refusal = (code = "not_found", details?: unknown) => ({ error: { code, message: "Actual server explanation.", requestId: "req-1", ...(details === undefined ? {} : { details }) } });
-const jsonResponse = (value: unknown, status = 200) => new Response(stringifyApiJson(value), { status, headers: { "Content-Type": "application/json" } });
+const jsonResponse = (value: unknown, status = 200, principal?: string) => new Response(stringifyApiJson(value), { status, headers: { "Content-Type": "application/json", ...(principal === undefined ? {} : { "Daynight-User-ID": principal }) } });
 const cleanups: (() => void | Promise<void>)[] = [];
 const operation = (limits: Parameters<typeof createOperation>[0] = {}): Operation => {
   const created = createOperation(limits);
@@ -100,6 +100,29 @@ describe("operation-scoped API access", () => {
     await expect(api.listTasks(projectId, { compatiblePlatform })).rejects.toMatchObject({ operation: "task.list", phase: "protocol" });
     await expect(api.listReadyTasks(projectId, 1, { compatiblePlatform })).rejects.toMatchObject({ operation: "task.ready", phase: "protocol" });
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["me", "unassigned", "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"])("preserves assignedTo=%s across every task page", async (assignedTo) => {
+    const principal = assignedTo === "me" ? otherId : undefined;
+    const selected = assignedTo === "unassigned" ? null : assignedTo === "me" ? otherId : assignedTo.toLowerCase();
+    const first = { ...task, assignedTo: selected };
+    const second = { ...first, id: otherId };
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(jsonResponse({ items: [first], nextCursor: "assigned cursor+/=" }, 200, principal))
+      .mockResolvedValueOnce(jsonResponse({ items: [second], nextCursor: null }, 200, principal));
+    await expect(client(fetch).listTasks(projectId, { assignedTo })).resolves.toEqual([first, second]);
+    expect(fetch.mock.calls.map(([url]) => Object.fromEntries(new URL(String(url)).searchParams))).toEqual([
+      { assignedTo: assignedTo.toLowerCase(), limit: "100" },
+      { assignedTo: assignedTo.toLowerCase(), limit: "100", cursor: "assigned cursor+/=" },
+    ]);
+  });
+
+  it.each(["", "invalid", "Me", "all", ` ${otherId}`, null, false, 1, {}, []])("rejects an invalid assignee filter %s before dispatch", (assignedTo) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const api = client(fetch);
+    expect(() => api.listTasks(projectId, { assignedTo } as never)).toThrow("Assigned-to filter must be a hyphenated UUID, me or unassigned.");
+    expect(() => api.listTaskPage(projectId, { assignedTo, limit: 1 } as never)).toThrow("Assigned-to filter must be a hyphenated UUID, me or unassigned.");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([undefined, "", "darwin", "win32", "Linux", true, 1, {}, []])("requires a nullable public platform in task and graph resources: %s", async (requiredPlatform) => {
