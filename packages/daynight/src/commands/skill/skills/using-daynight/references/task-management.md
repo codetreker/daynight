@@ -1,6 +1,6 @@
 # Task management
 
-Covers query scope, metadata, lifecycle, and dependency semantics.
+Covers query scope, discussion, metadata, lifecycle, and dependency semantics.
 See [authorization and scope](authorization.md) for operational permissions.
 Follow [write safety](write-safety.md) for all writes.
 Consult the relevant `--help` for arguments and field-clearing syntax.
@@ -14,6 +14,7 @@ Consult the relevant `--help` for arguments and field-clearing syntax.
 | `task show` | A single task's full description, metadata, and exact version. Read it before operating on the selected task. |
 | `task properties <task-id>` | The selected task's complete current property object and exact task version. |
 | `task properties --schema` | The authenticated service's property definitions; no project or Git repository is required. |
+| `task thread read <task-id>` | One bounded page of durable discussion, independent of task metadata and execution. |
 | `task graph <task-id>` | The target's full bidirectionally connected component of ordinary dependencies, plus one layer of external prerequisites for those tasks. Includes all statuses without recursively expanding external tasks. |
 
 Human-readable lists are summaries; JSON lists omit only `description`.
@@ -25,6 +26,40 @@ A candidate page or a single task cannot replace complete relationship verificat
 
 Lists group tasks into in-progress, ready todo, blocked todo, and, when explicitly included, done.
 These groups are not relevance rankings. See command help for filter syntax.
+
+## Discussion threads
+
+Use `task thread read <task-id>` for one bounded page of durable discussion,
+independent of the current executor or Controller. The default is the latest
+20 messages; `--count=N` accepts 1–100. Use exactly one of `--before-id` or
+`--after-id` with a complete message UUID to read history or continue forward.
+Pages display complete messages from old to new. A 256 KiB text limit can return
+fewer messages than requested without truncating bodies. Thread read and post
+accept `--project`; explicit selection does not read Task or Project first.
+
+Readable blocks show full message/account Ids, Author, CreatedAt, optional
+ReplyTo and Message. Agent authors include `Agent: True`; `--details` expands
+verified claim/worker/provider attribution. A missing or empty display name
+appears as Account with its actual account Id. There is no `--json` mode.
+Terminal controls are visibly escaped and multiline bodies retain LF/TAB with
+fixed indentation. More-before appears only above the page; more-after only
+below it. Continue history from its first displayed Id, forward reads from its
+last completely consumed Id. Empty forward reads preserve the input position.
+
+Post with `task thread post <task-id> --body <text>`, optionally `--reply-to
+<message-id>` and `--claim-id <active-claim-id>`. Body whitespace is preserved;
+use `--body=-example` for dash-prefixed text. The service supplies the message
+Id and author. Omit claim Id for an ordinary account; provide it explicitly for
+verified Agent attribution. It is not inferred from task state or environment.
+Messages are immutable and a reply must belong to the selected task.
+
+Posting does not change task status, version, timestamps, properties or
+dependencies, and does not trigger an Agent. Reading or posting discussion
+grants no execution or delivery permission. Keep effective requirements and
+results in their [content owners](task-content.md#task-thread-and-session-boundary).
+Follow [Thread write safety](write-safety.md#thread-posts) for unknown outcomes.
+A post receipt must not advance the continuously read position: after A, an
+unseen B and a local post C must still be read using `--after-id A`.
 
 ## Metadata
 

@@ -102,6 +102,37 @@ export const taskDefinition: CommandDefinition = {
       details: "Include every task connected through ordinary dependencies, in either direction and in every status, plus the chain members' direct external prerequisites. Do not expand those external tasks or include external dependents.\n--depends-only preserves the same task set and prints only id, dependsOn and externalDependsOn with complete UUIDs and dependency references, including references outside the returned task set. With --json, print an array containing only those three fields; otherwise print three labeled lines per task.",
     },
     {
+      name: "thread",
+      description: "Read and append immutable task discussion messages",
+      options: [helpOption],
+      commands: [
+        {
+          name: "read",
+          description: "Read one bounded page of complete messages, oldest first",
+          arguments: [taskArgument],
+          options: [
+            { names: ["--before-id"], description: "Read messages before this task-local message UUID", value: { name: "message-id", kind: "text" } },
+            { names: ["--after-id"], description: "Read messages after this task-local message UUID", value: { name: "message-id", kind: "text" } },
+            { names: ["--count"], description: "Maximum messages, from 1 to 100 (default: 20)", value: { name: "count", kind: "text" } },
+            { names: ["--details"], description: "Include verified Agent execution provenance" }, projectOption, helpOption,
+          ],
+          details: "Without a boundary, read the latest page. --before-id and --after-id are mutually exclusive. Return one page, bounded to 256 KiB of readable text, with complete bodies. Continue history with the first displayed Id; continue after with the last displayed Id. An empty page preserves the supplied boundary. Messages are never partially printed. Text options accept --option=value.",
+        },
+        {
+          name: "post",
+          description: "Append one message with optional same-task reply and Agent provenance",
+          arguments: [taskArgument],
+          options: [
+            { names: ["--body"], description: "Complete message body, preserving whitespace", value: { name: "text", kind: "text" }, required: true },
+            { names: ["--reply-to"], description: "Reply to this task-local message UUID", value: { name: "message-id", kind: "text" } },
+            { names: ["--claim-id"], description: "Identify this account's active Agent claim; never inferred", value: { name: "claim-id", kind: "text" } }, projectOption, helpOption,
+          ],
+          details: "Without --claim-id, post as the authenticated account with Agent=false. The service validates any supplied claim. Use --body=--text for dash-prefixed text. Preserve the original body until the result is known. An interrupted or invalid response may leave the outcome unknown; read the thread before explicitly sending again. Every new post appends a new message. No automatic retries. A post receipt cannot advance a continuous read position. Posting does not change task state or trigger execution.",
+        },
+      ],
+      details: "Message IDs are interpreted within the selected task. Without --project, resolve the current Git origin. Run daynight task thread <command> --help for usage.",
+    },
+    {
       name: "attachment",
       description: "Manage files attached to a task",
       commands: [

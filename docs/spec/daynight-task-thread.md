@@ -6,7 +6,7 @@
 
 Task 描述与附件保存有效要求、方案和正式成果；Thread 保存讨论；[Session](task-sessions.md) 保存原生执行内容及操作证据。发言只追加不可变消息，不触发 Agent，不改变 Task 状态、version、时间、属性、依赖或缓存 epoch，不进入 [task-sync](daynight-task-sync.md) 和任务图投影。
 
-本文定义已实现的服务端存储与 HTTP 契约；CLI 文本展示、Web Discussion 和其轮询状态由各自消费者交付。消息编辑/删除、reaction、附件、全局未读、收件箱、定向派发、回执、自动唤醒与通知恢复不属于本契约。正文提及始终是普通文本。
+本文定义已实现的服务端存储与HTTP契约；[CLI设计](../design/task-thread-cli.md)拥有显式read/post、完整文本及终端字节预算，Web Discussion与其轮询状态由浏览器消费者持有。消息编辑/删除、reaction、附件、全局未读、收件箱、定向派发、回执、自动唤醒与通知恢复不属于本契约。正文提及始终是普通文本。
 
 ## 消息与作者
 

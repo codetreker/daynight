@@ -4,6 +4,7 @@ import type { ApiClient, Operation, OperationLimits } from "../../api/index.js";
 import type { CliContext } from "../../cli/context.js";
 import { resolveConfigurationPaths } from "../../config/paths.js";
 import { loadServerConfiguration } from "../../config/server.js";
+import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 
 export type ServerSession = {
   readonly api: ApiClient;
@@ -11,7 +12,8 @@ export type ServerSession = {
   readonly serverUrl: string;
 };
 
-export type ServerCommand = (session: ServerSession) => Promise<string | void>;
+export type ConfirmedMutationOutput = { readonly kind: "confirmed-mutation"; readonly output: string; readonly identity: { readonly projectId: string; readonly taskId: string; readonly messageId: string } };
+export type ServerCommand = (session: ServerSession) => Promise<string | void | ConfirmedMutationOutput>;
 
 export type ServerCommandOptions = {
   readonly signalEmitter?: Pick<EventEmitter, "on" | "off">;
@@ -32,6 +34,8 @@ export const runServerCommand = async (
   const listeners: [NodeJS.Signals, () => void][] = [];
   let failed = false;
   let failure: unknown;
+  let confirmed: ConfirmedMutationOutput | undefined;
+  const confirmedFailure = (phase: "output" | "cleanup", cause: unknown): PublicDiagnosticError => new PublicDiagnosticError(`Message posted. Id: ${confirmed!.identity.messageId}\nThe message is confirmed, but local ${phase} failed.`, 1, { cause });
   try {
     for (const signal of signals) {
       const cancel = (): void => cancellation.abort(new Error(`Received ${signal}.`));
@@ -45,12 +49,17 @@ export const runServerCommand = async (
     operation.check();
     const api = createApiClient({ serverUrl, serverToken, operation, ...(options.fetch === undefined ? {} : { fetch: options.fetch }) });
     const output = await command({ api, operation, serverUrl });
-    operation.check();
-    if (typeof output === "string") context.stdout(output);
+    if (typeof output === "object" && output.kind === "confirmed-mutation") {
+      confirmed = output;
+      context.stdout(output.output);
+    } else {
+      operation.check();
+      if (typeof output === "string") context.stdout(output);
+    }
   } catch (cause) {
     failed = true;
-    failure = cause;
-    throw cause;
+    failure = confirmed === undefined ? cause : confirmedFailure("output", cause);
+    throw failure;
   } finally {
     const cleanup: unknown[] = [];
     try { await context.closeStdoutBytes?.(); }
@@ -61,6 +70,9 @@ export const runServerCommand = async (
     }
     try { operation.dispose(); }
     catch (cause) { cleanup.push(cause); }
-    if (cleanup.length !== 0) throw new AggregateError(failed ? [failure, ...cleanup] : cleanup, "Server command or cancellation cleanup failed.");
+    if (cleanup.length !== 0) {
+      const cause = new AggregateError(failed ? [failure, ...cleanup] : cleanup, "Server command or cancellation cleanup failed.");
+      throw confirmed === undefined ? cause : confirmedFailure("cleanup", cause);
+    }
   }
 };

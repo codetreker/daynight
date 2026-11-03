@@ -1,6 +1,14 @@
 import { formatSqliteError, SqliteAccessError } from "./sqlite-error.js";
 
+export class PublicDiagnosticError extends Error {
+  constructor(readonly publicText: string, readonly exitCode: 1 | 2, options: ErrorOptions) {
+    super(publicText, options);
+    this.name = "PublicDiagnosticError";
+  }
+}
+
 export const formatError = (error: unknown): string => {
+  if (error instanceof PublicDiagnosticError) return error.publicText;
   if (error instanceof SqliteAccessError) return formatSqliteError(error);
   if (!(error instanceof Error)) {
     return String(error);
