@@ -166,7 +166,8 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 
 | Path | Responsibility |
 |---|---|
-| `cmd/daynight-server/` | Environment, process signals, dependency assembly, exit status |
+| `cmd/daynight-server/` | Environment, process signals, dependency assembly, exit status and direct command tests |
+| `cmd/e2e_tests/` | Test-only package for built-process, installed-CLI and attachment-migration acceptance |
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
 | `internal/webui/` | Embedded production HTML/assets and static response policy |
 | `internal/core/store/` | PostgreSQL migrations, transactions, scoped writes and consistent reads |
@@ -350,11 +351,16 @@ runs `go vet`, prepares the pinned real-UniAuth integration fixture, and expires
 results so database changes cannot be hidden by cached coverage, and executes race-enabled package
 tests through `go-cov` pinned to commit
 `d6caf2759e330b48d69a543695e37002a48feb1d`. The checked-in `.go-cov.toml`
-requires at least 85% coverage per package and 80% per function, with critical
-blocks enforced and no production exclusions. A separate exact calculation over
-the raw coverage profile requires overall statement coverage **strictly greater
-than 90%**. Exactly 90% fails. The check also tests that calculation's boundary
-and malformed-profile behavior.
+requires at least 85% coverage per production package and 80% per function,
+with critical blocks enforced and no production exclusions. The Node
+orchestrator passes `--skip-result-packages cmd/e2e_tests` because this test-only
+package has no product statements and the pinned tool otherwise treats its
+`[no statements]` result as 0%. Only that package's result-summary row is omitted;
+its tests still run and failures still fail the gate. Production-package
+thresholds, critical checks and the raw coverage profile remain intact. A
+separate exact calculation over that profile requires overall statement coverage
+**strictly greater than 90%**. Exactly 90% fails. The check also tests that
+calculation's boundary and malformed-profile behavior.
 
 `scripts/env.sh` places downloaded tools, dependencies, caches, binaries, and
 temporary outputs under this module's `.tmp/`. Both Go-consuming CI jobs restore
@@ -1105,14 +1111,21 @@ URLs, bodies, SQL and credentials are excluded from logs.
 
 ## Built-process acceptance and CI evidence
 
-The same check retains the original actual-process scenarios, installed CLI
-project/task and attachment workflows, and the
-[installed lifecycle migration/race scenarios](cmd/daynight-server/acceptance_lifecycle_cli_test.go).
-The normal real-UniAuth fixture supplies sessions/PATs and explicit membership;
+The test-only [`cmd/e2e_tests/`](cmd/e2e_tests/) package owns the actual-process
+scenarios, installed CLI project/task and attachment workflows,
+[installed lifecycle migration/race scenarios](cmd/e2e_tests/acceptance_lifecycle_cli_test.go)
+and [offline attachment migration](cmd/e2e_tests/migrate_attachment_acceptance_test.go).
+The full check runs this package through the existing `go-cov` invocation;
+`go test ./...` also discovers it. After sourcing `scripts/env.sh` and preparing
+PostgreSQL, the UniAuth fixture and `DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT`, select
+only this suite with `go test -race -timeout 10m ./cmd/e2e_tests` from this module.
+The full check prepares UniAuth and the installed CLI after the caller supplies
+`DAYNIGHT_TEST_DATABASE_URL`. The normal real-UniAuth fixture supplies
+sessions/PATs and explicit membership;
 installed commands use private origin-matched PAT configuration. Authentication
-and authorization remain on the production resource path. TestMain freshly builds a
-race-enabled server, starts only owned loopback children against isolated real
-PostgreSQL schemas, and checks HTTP workflows, restart persistence, competing
+and authorization remain on the production resource path. The E2E package's
+`TestMain` freshly builds a race-enabled server, starts only owned loopback
+children against isolated real PostgreSQL schemas, and checks HTTP workflows, restart persistence, competing
 mutations, PR string/NUL/order/duplicate persistence, partial-write rollback,
 cancellation, graceful/forced SIGTERM,
 migration failures and simultaneous startup. This signal acceptance runs in the
@@ -1120,7 +1133,16 @@ Ubuntu Go CI job. Independent scenario subtests run with at most four concurrent
 slots within their sequential top-level test; each retains its own schema,
 processes, database barriers and cleanup. This keeps other top-level tests'
 process-wide environment changes outside the parallel scenario lifetime.
-Existing three-platform CLI validation remains separate. The
+Existing three-platform CLI validation remains separate.
+
+Direct tests of `main`, `run` and command-internal migration behavior remain in
+`cmd/daynight-server`. They own their temporary storage and lightweight helpers,
+so selecting that package does not invoke the E2E binary build, source checks or
+receipt initialization. Its integration tests still require PostgreSQL and the
+UniAuth fixture. With `scripts/env.sh` sourced and those inputs prepared, run
+`go test -race -timeout 10m ./cmd/daynight-server` without an installed CLI receipt.
+The [E2E package decision](../../.agents/notes/implemented/testing/2026-11-03-server-e2e-package.md)
+owns this separation; the
 [CI efficiency decision](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
 records the validation-cost trade-offs.
 
@@ -1136,8 +1158,8 @@ Every fixture also requires `storageRootRemoved`: the owned root is removed and
 its absence is checked before cleanup can pass. The temporary tested binary is removed after the run; its hash remains in the
 receipt.
 
-The [binary scenarios](cmd/daynight-server/acceptance_test.go) and their
-[process/evidence harness](cmd/daynight-server/acceptance_process_test.go) map to
+The [binary scenarios](cmd/e2e_tests/acceptance_test.go) and their
+[process/evidence harness](cmd/e2e_tests/acceptance_process_test.go) map to
 the [V1–V10 requirements](../../docs/spec/daynight-server.md) as follows:
 
 | Requirement | Observable evidence |
@@ -1162,7 +1184,7 @@ Other original bytes and nested requestId fields remain diagnostic content. The 
 explains why a legal opaque ID may contain the SQL marker.
 
 The installed CLI project/task scenario and its artifact/source validation live
-in [`acceptance_cli_test.go`](cmd/daynight-server/acceptance_cli_test.go). Its
+in [`acceptance_cli_test.go`](cmd/e2e_tests/acceptance_cli_test.go). Its
 mixed unfinished/completed fixture verifies the exact default and `--all` list
 membership and order. Each JSON array equals the complete task resources after
 removing only `description`, retaining raw PR strings, timestamps and exact int64
@@ -1172,7 +1194,7 @@ description, version and timestamps; `task show` retains those detail fields.
 Both detail and all-status list output preserve visible PR control-character
 escaping without emitting raw terminal controls.
 
-The [external-dependency write scenario](cmd/daynight-server/acceptance_external_dependency_write_cli_test.go)
+The [external-dependency write scenario](cmd/e2e_tests/acceptance_external_dependency_write_cli_test.go)
 waits for the parsed `http_request` records for both successful raw PATCHes,
 `external-flags-only` and `external-flags-noop`, before capturing the subsequent
 CLI refusal's mutation-count baseline. Each preparation record must match its
@@ -1183,7 +1205,7 @@ exactly one additional request, status 409 and the matching stderr request ID.
 The [request-log synchronization decision](../../.agents/notes/implemented/testing/2026-11-03-cli-request-log-synchronization.md)
 owns this ordering rationale and its regression boundaries.
 
-The independent [platform/status scenario](cmd/daynight-server/acceptance_platform_cli_test.go),
+The independent [platform/status scenario](cmd/e2e_tests/acceptance_platform_cli_test.go),
 `TestInstalledCLIPlatformAcceptance` / `installed_cli_platform_status_workflow`,
 owns a separate PostgreSQL fixture, installed CLI workspace and server process.
 It checks all four required-platform values across nine status pairs, exact +0/+1,
@@ -1197,7 +1219,7 @@ required; startup, request, CLI-operation and shutdown bounds remain independent
 success remains established by source-bound acceptance receipts, separately
 from this scenario inventory.
 
-The [attachment scenario](cmd/daynight-server/acceptance_attachment_cli_test.go)
+The [attachment scenario](cmd/e2e_tests/acceptance_attachment_cli_test.go)
 reuses the same packed/installed CLI and real-process fixture. It checks exact
 text, empty and multi-chunk binary bytes above 1 MiB; nested/special paths,
 different-directory basenames, overwrite metadata, a complete list of more than 100 files
@@ -1211,7 +1233,7 @@ K1 remains recorded only, without asserting cross-store rollback.
 The [combined acceptance decision](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
 records the original choices for this proof and the same-data CLI/browser journeys.
 
-The [status scenarios](cmd/daynight-server/acceptance_lifecycle_cli_test.go)
+The [status scenarios](cmd/e2e_tests/acceptance_lifecycle_cli_test.go)
 reuse the packed installation and actual-process fixture.
 `TestInstalledCLIStatusMigrationAcceptance` runs installed_cli_v12_status_migration_restart
 against genuine checked-in migrations 001–012, then lets the current service apply
