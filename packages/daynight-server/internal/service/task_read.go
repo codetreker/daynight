@@ -65,7 +65,11 @@ func (s *Tasks) List(ctx context.Context, principal core.Principal, projectID st
 	if request.CompatiblePlatform != nil && !request.CompatiblePlatform.Valid() {
 		return TaskPage{}, invalidInput("Compatible platform must be windows, linux or macos.")
 	}
-	scope := listScope{Kind: "tasks", ProjectID: projectID, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
+	assignedTo, err := taskAssignmentFilter(request.AssignedTo, principal.UserID)
+	if err != nil {
+		return TaskPage{}, err
+	}
+	scope := listScope{Kind: "tasks", ProjectID: projectID, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, AssignedTo: assignedTo}
 	var worker *store.WorkerQuery
 	if request.WorkerID != nil {
 		workerID, err := CanonicalID(*request.WorkerID)
@@ -93,7 +97,7 @@ func (s *Tasks) List(ctx context.Context, principal core.Principal, projectID st
 			return err
 		}
 		var err error
-		result, err = snapshot.Tasks(ctx, projectID, store.TaskQuery{Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Worker: worker})
+		result, err = snapshot.Tasks(ctx, projectID, store.TaskQuery{Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Worker: worker, AssignedTo: assignedTo})
 		if validation := propertyValidationFault(err); validation != nil {
 			missing = validation
 			return nil

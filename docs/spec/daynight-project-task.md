@@ -22,7 +22,7 @@ Web 附件管理亦已实现。
 
 [执行计时需求](daynight-task-timing.md)的任务起止字段与数据库图时钟已有严格 CLI 读取契约。
 JSON 保留真实时间或明确的 `null`；Project JSON 同步保留项目阈值及其精确嵌套版本。
-服务端的[负责人契约](daynight-task-assignment.md)另有顶层 assignedTo；当前 CLI 尚未提供该字段的负责人选项、解析和输出，本文的已实现输出描述指 CLI 当前任务模型。
+服务端的[负责人契约](daynight-task-assignment.md)已有顶层 assignedTo、任务筛选和人员读取；当前 CLI 尚未提供该字段的负责人选项、解析和输出，本文的已实现输出描述指 CLI 当前任务模型。
 这些计时事实不增加可读输出字段。Web 实时卡片消费同一计时与项目阈值事实，不增加 CLI 命令。
 
 [外部依赖需求](daynight-external-dependencies.md)的存储及读取准备已实现。完整 task 和图节点

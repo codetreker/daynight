@@ -45,6 +45,7 @@ type UpdateTask struct {
 }
 
 type TaskListRequest struct {
+	AssignedTo *string
 	PageRequest
 	Status             *core.TaskStatus
 	Ready              *bool
