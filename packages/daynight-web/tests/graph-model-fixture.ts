@@ -24,4 +24,3 @@ export const graph = (seeds: readonly Seed[]): TaskGraph => {
     },
   };
 };
-

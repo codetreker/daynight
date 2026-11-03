@@ -11,4 +11,3 @@ export const snapshot = (): DependencySnapshot => ({
   markers: [{ id: 'arrow', orient: 'auto-start-reverse', units: 'strokeWidth', viewBox: '-10 -10 20 20', width: '16', height: '16', refX: '0', refY: '0', points: '-5,-4 0,0 -5,4 -5,-4', stroke: color, fill: color, strokeWidth: 1, cap: 'round', join: 'round' }],
   declaredPieces: 1, viewport: true, passive: true,
 });
-

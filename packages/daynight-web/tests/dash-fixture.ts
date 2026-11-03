@@ -48,4 +48,3 @@ export const verifyDashes = (points: readonly CanvasPoint[]): readonly DashPiece
   expect(covered).toBeCloseTo(route.reduce((sum, curve) => sum + arcLength(curve), 0), 5);
   return compiled.pieces;
 };
-
