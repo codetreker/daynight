@@ -233,11 +233,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal core.Principal, projectID
 		header.Version++
 		result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, candidate)
 		if err != nil {
-			var limit *tasksteps.LimitError
-			if errors.As(err, &limit) {
-				return &Fault{Code: "steps_limit_exceeded", Message: "Task steps exceed the encoded resource limit.", StepsLimit: &StepsLimitDetails{EncodedBytes: limit.EncodedBytes, MaxEncodedBytes: tasksteps.MaxEncodedBytes}}
-			}
-			return err
+			return taskStepsEncodingFault(err)
 		}
 		result.Phase = "persist"
 		if err := tx.InsertTaskStep(ctx, taskID, candidate[position]); err != nil {
@@ -261,6 +257,15 @@ func (s *TaskSteps) Add(ctx context.Context, principal core.Principal, projectID
 	}
 	result.Phase, result.TransactionOutcome = "commit", store.TransactionCommitted
 	return result, nil
+}
+
+func taskStepsEncodingFault(err error) error {
+	var limit *tasksteps.LimitError
+	if errors.As(err, &limit) {
+		return &Fault{Code: "steps_limit_exceeded", Message: "Task steps exceed the encoded resource limit.", Cause: err,
+			StepsLimit: &StepsLimitDetails{EncodedBytes: limit.EncodedBytes, MaxEncodedBytes: tasksteps.MaxEncodedBytes}}
+	}
+	return err
 }
 
 // StepAbsence records only a child absence established after parent admission.

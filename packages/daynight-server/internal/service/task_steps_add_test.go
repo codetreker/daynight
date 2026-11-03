@@ -11,6 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 	"github.com/google/uuid"
 )
 
@@ -294,5 +295,30 @@ func TestTaskStepsAddQueryFailuresRemainInternal(t *testing.T) {
 				t.Fatal("query failure became a visibility/business refusal")
 			}
 		})
+	}
+}
+
+func TestTaskStepsEncodingFaultPreservesCapacityAndOriginalCause(t *testing.T) {
+	limit := &tasksteps.LimitError{EncodedBytes: tasksteps.MaxEncodedBytes + 1}
+	for _, original := range []error{limit, fmt.Errorf("candidate encoding: %w", limit)} {
+		converted := taskStepsEncodingFault(original)
+		fault, pure := TaskStepsFault(converted)
+		if !pure || fault.Code != "steps_limit_exceeded" || fault.Message == "" || fault.StepsLimit == nil || fault.StepsLimit.EncodedBytes != tasksteps.MaxEncodedBytes+1 || fault.StepsLimit.MaxEncodedBytes != tasksteps.MaxEncodedBytes {
+			t.Fatalf("capacity refusal lost its public details: %#v", converted)
+		}
+		var actual *tasksteps.LimitError
+		if fault.Cause != original || !errors.Is(converted, original) || !errors.Is(converted, limit) || !errors.As(converted, &actual) || actual != limit {
+			t.Fatal("capacity conversion lost the original encoding error chain")
+		}
+	}
+	failure := errors.New("unrelated encoding failure")
+	for _, original := range []error{failure, fmt.Errorf("candidate encoding: %w", failure)} {
+		converted := taskStepsEncodingFault(original)
+		if converted != original || !errors.Is(converted, failure) {
+			t.Fatal("unrelated encoding error was replaced or unwrapped")
+		}
+		if _, pure := TaskStepsFault(converted); pure {
+			t.Fatal("unrelated encoding failure became a business refusal")
+		}
 	}
 }
