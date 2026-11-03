@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 )
@@ -64,15 +65,24 @@ func TestInstalledCLIExternalDependencyWriteAcceptance(t *testing.T) {
 			}
 		}
 		before = target
-		target = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "externalDependsOn": []string{a.ID}}, "external-flags-only"), http.StatusOK)
+		const changedRequestID = "external-flags-only"
+		const noopRequestID = "external-flags-noop"
+		target = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "externalDependsOn": []string{a.ID}}, changedRequestID), http.StatusOK)
 		preserved := target
 		preserved.ExternalDependsOn, preserved.Version, preserved.UpdatedAt = before.ExternalDependsOn, before.Version, before.UpdatedAt
 		if target.Version != before.Version+1 || !target.UpdatedAt.After(before.UpdatedAt) || !reflect.DeepEqual(preserved, before) || !slices.Equal(target.ExternalDependsOn, []string{a.ID}) {
 			t.Fatal("public flags-only patch changed fields other than classification and version metadata")
 		}
-		noop := acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "externalDependsOn": target.ExternalDependsOn}, "external-flags-noop"), http.StatusOK)
+		noop := acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "externalDependsOn": target.ExternalDependsOn}, noopRequestID), http.StatusOK)
 		if !reflect.DeepEqual(noop, target) {
 			t.Fatal("public flags-only no-op changed metadata")
+		}
+		// An HTTP response can arrive before the process log pipe is drained.
+		setupContext, cancelSetup := context.WithTimeout(context.Background(), 8*time.Second)
+		setupErr := acceptanceCLIWaitSuccessfulPatchLogs(setupContext, process.logs, changedRequestID, noopRequestID)
+		cancelSetup()
+		if setupErr != nil {
+			t.Fatalf("installed raw PATCH logs did not complete: expected requestIds=%q observed=%+v: %v", []string{changedRequestID, noopRequestID}, acceptanceCLIMutations(process), setupErr)
 		}
 		cli.refuse(t, process, "version_conflict", target.ID, "task", "update", target.ID, "--project", projectID, "--external-depends-on", a.ID, "--if-version", strconv.FormatInt(before.Version, 10))
 		if after := cli.task(t, target.ID); !reflect.DeepEqual(after, target) {

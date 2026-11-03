@@ -30,6 +30,10 @@ establish controller startup or native session availability.
 
 Automatic acquisition rechecks member access, the exact task version, readiness,
 permission, platform and existing ownership before installing one active claim.
+The [self-assigned acquisition decision](2026-11-03-worker-self-assigned-claims.md)
+also requires the current assignee to match the authenticated user for automatic
+acquisition; existing execution authority and explicit manual resume remain
+claim-based.
 Claim-bound done uses the existing status resource; ordinary status changes
 cannot release active execution or start/finish released unfinished work.
 The foundation originally required release/resume/transfer to continue the source

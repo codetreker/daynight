@@ -92,7 +92,7 @@ worker identity. Create/update accept `--assigned-to <user-uuid>`; update also
 accepts `--clear-assigned-to` to send null. Setting and clearing conflict. Writes
 accept UUIDs only; `me` and `unassigned` are list filters. A real assignee change
 also sets `allowAgents=false`; an equal value preserves it. Assignment grants no
-project access or transfer an existing execution. The accepted automatic claim
+project access and does not transfer an existing execution. The automatic claim
 rule requires a non-null assignee matching the worker's authenticated account;
 permission alone is not sufficient. Existing claim and manual-resume authority
 remain separate.

@@ -1,6 +1,6 @@
 # Task 负责人契约
 
-状态：服务端负责人字段、HTTP 读写与查询、CLI 负责人命令和字段消费，以及 Web 负责人交互和 schema 4 字段消费已实现。本文拥有责任归属的数据、事务与界面行为；[设计](../design/daynight-task-assignment.md)拥有机制。
+状态：服务端负责人字段、HTTP 读写与查询、CLI 负责人命令、Web 负责人交互和 schema 4 字段消费，以及本人自动领取规则已实现。本文拥有责任归属的数据、事务、查询与界面行为；[设计](../design/daynight-task-assignment.md)拥有机制。
 
 ## 数据与读取
 
@@ -37,13 +37,13 @@ PATCH 仍要求精确正 int64 version 和至少一个可修改字段，单独�
 
 负责人写入、状态、许可、worker claim 和成员修改共享项目锁及任务版本。实际竞争只有一个同版本变更提交；等值请求先完成时可与后续 claim 均成功，但只有 claim 增加版本。目标先被移除则新分配拒绝；有效分配后再移除目标则保留该 UUID。
 
-已确认的自动领取合同要求 assignedTo 非空且等于当前认证账号的本地 userId，即使 allowAgents=true，未分配或他人任务也不能自动领取；运行时实现由待合并的[PR #322](https://github.com/codetreker/daynight/pull/322)交付。既有claim库存、恢复、完成、释放、撤回、显式人工resume及Session/archive权限仍按原执行身份和[认领设计](../design/daynight-worker-claims.md)处理；分配不自动转移或撤回既有执行。
+自动领取要求 assignedTo 等于当前认证账号的本地 userId。Worker 使用 assignedTo=me 发现候选，服务端 claim 在项目写事务中重新校验当前负责人；未分配和分配给他人的任务即使 allowAgents=true 也拒绝自动领取。已有 claim 的完整库存、恢复、完成、释放、撤回、显式人工 resume 和 Session/archive 权限仍按原执行身份与[认领设计](../design/daynight-worker-claims.md)处理；新规则不自动撤回既有执行。[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)保存资格规则与执行授权分离的原因。
 
 ## 任务筛选与游标
 
 `GET /api/v1/projects/{projectId}/tasks` 接受单值 `assignedTo=UUID|me|unassigned`。省略表示全部；空值、重复参数、非法 UUID 或其他 token 返回 400 invalid_input。UUID 在服务边界规范化，me 在游标核验前解析为认证 principal 的本地用户 ID。查询指定的已失权者不要求其当前仍是成员。
 
-负责人条件与 status、ready、allowAgents、compatiblePlatform、workerId 等显式条件按 AND 组合，使用原生 UUID 等值或 IS NULL，在排序、LIMIT 和最终 lookahead 之前筛选。workerId 仍只表示认证调用者自己的执行归属；增加负责人条件只得到该清单子集，不能据子集缺席清理其他执行。普通任务列表省略负责人条件仍为全部范围。已确认的worker新候选使用assignedTo=me，完整既有claim库存省略该条件；自动领取规则实现由PR #322交付。
+负责人条件与 status、ready、allowAgents、compatiblePlatform、workerId 等显式条件按 AND 组合，使用原生 UUID 等值或 IS NULL，在排序、LIMIT 和最终 lookahead 之前筛选。workerId 仍只表示认证调用者自己的执行归属；增加负责人条件只得到该清单子集，不能据子集缺席清理其他执行。普通任务列表省略负责人条件仍返回全部负责人范围；worker 新候选显式使用 assignedTo=me，完整既有 claim 库存省略该条件。
 
 | 列表资源 | 游标格式与范围 |
 |---|---|
@@ -105,6 +105,6 @@ Web Task、summary和GraphTask严格要求assignedTo:null或规范UUID，所有�
 
 ## 当前交付边界与验证
 
-本契约的服务端字段、POST/PATCH、任务筛选、人员资源，以及 Web 负责人交互和 schema 4 消费已实现。CLI 已消费必填 nullable assignedTo，支持设置/清空、当前 ID 展示及 UUID/me/unassigned 的 list 筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有；本人自动领取的运行时由待合并的 PR #322 单独交付。
+本契约的服务端字段、POST/PATCH、任务筛选、人员资源，以及 Web 负责人交互和 schema 4 消费已实现。CLI 已消费必填 nullable assignedTo，支持设置/清空、当前 ID 展示及 UUID/me/unassigned 的 list 筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有。本人自动领取规则已实现，其资格与既有执行授权分离由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有。
 
 验证覆盖原始 JSON 字段与白名单、三套任务投影、nullable 及规范化、实际/等值/陈旧版本、执行中拒绝、全部保留写入、真实项目锁竞态及回滚。查询验证多页过滤、完整游标 scope、版本隔离和权限；目录验证两种模式的资格、覆盖、隐私、资料缺失、快照一致性及失败优先级。查询计划和响应样本绑定被测修订，不把样本量当作生产容量上限。Web还验证字段/schema4一并升级、迟到与失权fence、未知结果只读核对、完整图筛选及双语桌面/390px/320px交互。CLI 验证严格 nullable 字段、设置/清空参数、list 筛选与逐页 principal 绑定、精确版本和 JSON/可读输出。适用 Go、CLI 与 Web 门禁由仓库验证命令拥有。

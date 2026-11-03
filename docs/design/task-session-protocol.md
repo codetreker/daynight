@@ -83,6 +83,8 @@ Journal 的 1→6 非零迁移由本库定义持有并保留原数据；版本 0
 
 Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并分页读取原生 items。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
 
+Codex 投影将原生 `sleep` 映射为已有 `tool_call`，名称为 `clock.sleep`，实时开始与完成分别使用 `running`、`completed`，历史读取复用完成路径。条目 ID 由原生会话和 item ID 生成。有限正数 `durationMs` 转换为秒并标注请求时长，其余值使用普通等待说明；不生成工具输出，也不从请求时长推断实际耗时。该处理复用现有工具行与归档格式，取舍见[等待投影决策](../../.agents/notes/implemented/bug-fix/2026-11-03-codex-sleep-timeline.md)。
+
 Codex/Claude 原生 user message 的 clientId 或 UUID 可证明某条持久输入已被接收。仅匹配已记录的输入 operationId 时，才把 dispatching/unknown 提升为 provider_accepted；空闲、文件出现或连接成功均不能证明输入受理。恢复不重放结果未知的操作。原生 turn 结果、Task 完成和 cleanup 完成具有各自独立的确认条件。
 
 Codex 原生进程意外退出、Claude SDK 意外 EOF 和 Copilot runtime 失联均进入 fatal 路径：撤销写能力，保留未确认操作，通知 Controller 清理 provider、relay 与 IPC 后退出。Task worker 独立确认旧进程停止后才按预算恢复原生 ID；独立 Test launcher 则停止并保留失败事实，不创建替代会话。
