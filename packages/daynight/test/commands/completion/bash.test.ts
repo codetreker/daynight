@@ -5,12 +5,11 @@ import type { CommandDefinition } from "../../../src/cli/schema.js";
 import { taskDefinition } from "../../../src/commands/task/definition.js";
 
 describe("Bash completion rendering", () => {
-  it("offers root skill reading and terminates after its single resource", () => {
+  it("offers the standalone root skill flag without a value state", () => {
     const script = renderBashCompletion(commandTree);
     expect(script).toContain("dn_options=('--skill' '-h' '--help' '-v' '--version')");
-    expect(script).toContain("dn_option_values=('text' '' '' '' '')");
+    expect(script).toContain("dn_option_values=('' '' '' '' '')");
     expect(script).toContain("dn_option_actions=('skill' 'help' 'help' 'version' 'version')");
-    expect(script).toContain("dn_index == ${#dn_words[@]}-2");
   });
 
   it("offers explicit login and logout with a boolean browser option", () => {

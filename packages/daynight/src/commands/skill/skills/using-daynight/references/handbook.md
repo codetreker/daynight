@@ -8,16 +8,12 @@ This file maps command entry points; consult that version's `--help` for argumen
 ```bash
 daynight --version
 daynight --help
-daynight --skill
-daynight --skill references/handbook.md
 daynight task --help
 daynight task update --help
 daynight task attachment put --help
 ```
 
 Navigate from top-level help down to the required command.
-Use `daynight --skill` to read the current package's entry and `daynight --skill references/<file>.md` to read a required reference without installing the skill.
-CLI resource paths are relative to the bundle root, even when a link in this reference names a sibling file.
 Do not treat this skill's workflow names as CLI commands or infer commands from field names.
 
 ## Command map

@@ -25,8 +25,7 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Keep the working material with the task.** Upload designs, screenshots and
   other files; read Markdown with Mermaid flowcharts, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
-- **Work with coding agents.** Read the bundled instructions with `daynight --skill`,
-  or install the `using-daynight` skill for Codex,
+- **Work with coding agents.** Install the `using-daynight` skill for Codex,
   Copilot CLI or Claude Code to register work, discuss designs, execute specified
   tasks and review handoffs. Ordinary execution handles one specified task.
   Worker-started agents use an explicitly assigned managed mode; task readiness
@@ -88,16 +87,15 @@ repository; otherwise it creates a project or reports an ambiguous match. Task
 commands discover the project from the repository. Use `--project <project-id>`
 to select one explicitly. Open the Web app to browse the same tasks and progress.
 
-Read the bundled agent instructions directly from the CLI:
+Read the complete CLI usage manual from the installed package:
 
 ```bash
 daynight --skill
-daynight --skill references/handbook.md
 ```
 
-These commands print the requested document from the current package without
-login, configuration or skill installation. Read references as needed using
-paths relative to the skill bundle, such as `references/run-task.md`.
+This prints one standalone command reference for coding agents, covering project
+and task operations, safe writes, attachments and the other CLI entry points.
+The command requires no login, configuration or interactive terminal.
 
 For agent integration, install a supported coding agent, then run:
 

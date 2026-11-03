@@ -23,7 +23,7 @@ export const runCli = async (
     }
     if (selection.kind === "skill") {
       const { runSkillRead } = await import("../commands/skill/read.js");
-      await runSkillRead(selection.resource, context);
+      await runSkillRead(context);
       return 0;
     }
     const registration = registry.find(({ name }) => name === selection.command.name)!;

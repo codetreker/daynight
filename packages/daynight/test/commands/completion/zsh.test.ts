@@ -5,12 +5,11 @@ import { renderZshCompletion } from "../../../src/commands/completion/zsh.js";
 import { taskDefinition } from "../../../src/commands/task/definition.js";
 
 describe("native zsh completion", () => {
-  it("declares a separate optional skill resource and accepts only its current value state", () => {
+  it("declares the standalone root skill flag with no value or positional completion", () => {
     const script = renderZshCompletion(commandTree);
-    expect(script).toContain("--skill[Print the bundled using-daynight skill or a Markdown resource]::resource:->text_value");
+    expect(script).toContain("(- *)--skill[Print the bundled CLI usage manual for coding agents]");
     expect(script).not.toContain("--skill=");
-    expect(script).toContain("(( CURRENT == 3 )) || return 1");
-    expect(script).toContain('information_option="${(Q)words[2]}"');
+    expect(script).not.toContain("::resource:");
   });
 
   it("offers explicit login and logout with a boolean browser option", () => {

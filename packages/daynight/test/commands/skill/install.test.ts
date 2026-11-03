@@ -2,8 +2,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { skillAgents } from "../../../src/commands/skill/agents.js";
-import { captureInstalledSkill } from "../../../src/commands/skill/bundle.js";
-import { installSkillTargets, SkillInstallationError } from "../../../src/commands/skill/install.js";
+import { captureInstalledSkill, installSkillTargets, SkillInstallationError } from "../../../src/commands/skill/install.js";
 import { planSkillTargets } from "../../../src/commands/skill/targets.js";
 
 const directories: string[] = [];

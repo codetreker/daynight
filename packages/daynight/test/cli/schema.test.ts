@@ -6,11 +6,12 @@ import type { CommandDefinition } from "../../src/cli/schema.js";
 import { taskDefinition } from "../../src/commands/task/definition.js";
 
 describe("shared command syntax", () => {
-  it("selects bundled skill reading with an optional resource and exposes its syntax", () => {
+  it("selects the standalone CLI usage manual only for a sole root flag", () => {
     expect(parseCommand(commandTree, ["--skill"])).toMatchObject({ kind: "skill" });
-    expect(parseCommand(commandTree, ["--skill", "references/handbook.md"])).toMatchObject({ kind: "skill", resource: "references/handbook.md" });
-    expect(renderCommandHelp(commandTree)).toContain("--skill [<resource>]");
-    expect(() => parseCommand(commandTree, ["--skill", "references/handbook.md", "extra"])).toThrow(UsageError);
+    const help = renderCommandHelp(commandTree);
+    expect(help).toContain("--skill");
+    expect(help).not.toContain("<resource>");
+    expect(() => parseCommand(commandTree, ["--skill", "references/handbook.md"])).toThrow(UsageError);
     expect(() => parseCommand(commandTree, ["skill", "--skill"])).toThrow(UsageError);
   });
 

@@ -12,11 +12,10 @@ const fixture = async () => {
   await mkdir(temporary, { recursive: true });
   const packageDirectory = await mkdtemp(path.join(temporary, "package 中文-"));
   directories.push(packageDirectory);
-  const source = path.join(packageDirectory, "dist/commands/skill/skills/using-daynight");
-  await mkdir(path.join(source, "references"), { recursive: true });
-  await writeFile(path.join(source, "SKILL.md"), "---\r\nname: using-daynight\r\ndescription: Read task work\r\n---\r\n# Skill 中文");
-  await writeFile(path.join(source, "references/handbook.md"), "# Handbook\r\nCommands 中文\r\n");
-  return { packageDirectory, source };
+  const manual = path.join(packageDirectory, "dist/commands/skill/usage.md");
+  await mkdir(path.dirname(manual), { recursive: true });
+  await writeFile(manual, "---\r\nname: daynight\r\ndescription: Use the Daynight CLI\r\n---\r\n# Manual 中文");
+  return { packageDirectory, manual };
 };
 const context = (packageDirectory: string) => {
   const denied = (): never => { throw new Error("User state must remain untouched."); };
@@ -32,51 +31,39 @@ const context = (packageDirectory: string) => {
   return { client, chunks, errors, close };
 };
 
-describe("root skill reading", () => {
-  it.each([undefined, "SKILL.md", "references/handbook.md"])("writes exact installed resource bytes for %j without loading commands or user state", async (resource) => {
-    const { packageDirectory, source } = await fixture();
+describe("root CLI usage reading", () => {
+  it("writes the exact installed manual bytes without loading commands, skill bundles or user state", async () => {
+    const { packageDirectory, manual } = await fixture();
     const { client, chunks, errors, close } = context(packageDirectory);
     const load = vi.fn(async () => { throw new Error("Command implementation must remain unloaded."); });
-    expect(await runCli(["--skill", ...(resource === undefined ? [] : [resource])], client, [{ name: "future", description: "Future command", load }])).toBe(0);
-    expect(Buffer.concat(chunks)).toEqual(await readFile(path.join(source, resource === undefined ? "SKILL.md" : resource)));
+    expect(await runCli(["--skill"], client, [{ name: "future", description: "Future command", load }])).toBe(0);
+    expect(Buffer.concat(chunks)).toEqual(await readFile(manual));
     expect(errors).toEqual([]);
     expect(close).toHaveBeenCalledExactlyOnceWith();
     expect(load).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["--skill", "--help"], ["--skill", "--version"], ["--help", "--skill"],
-    ["--skill", "references/handbook.md", "extra"], ["--skill", ""], ["--skill=references/handbook.md"],
-    ["--skill", "../SKILL.md"], ["--skill", "/SKILL.md"], ["--skill", "references\\handbook.md"],
-    ["--skill", "references//handbook.md"], ["--skill", "./SKILL.md"], ["--skill", "references/../SKILL.md"],
-    ["--skill", "C:/SKILL.md"], ["--skill", "references/handbook.md\0"], ["--skill", "resource.bin"],
-  ])("rejects invalid syntax and resource paths before reading a missing package: %j", async (...args) => {
-    const { client, chunks, errors, close } = context(path.resolve("unavailable skill package"));
+    ["--skill", "--help"], ["--skill", "--version"], ["--help", "--skill"], ["--skill", "--skill"],
+    ["--skill", "SKILL.md"], ["--skill", "references/handbook.md"], ["--skill", "extra"], ["--skill", ""],
+    ["--skill=references/handbook.md"], ["skill", "--skill"],
+  ])("rejects extra arguments before reading an unavailable package: %j", async (...args) => {
+    const { client, chunks, errors, close } = context(path.resolve("unavailable usage package"));
     expect(await runCli(args, client)).toBe(2);
-    expect(errors.join("")).toContain("Run daynight --help for usage.");
-    expect(errors.join("")).not.toContain("Cannot capture");
+    expect(errors.join("")).toContain("for usage.");
+    expect(errors.join("")).not.toContain("Cannot read");
     expect(chunks).toEqual([]);
     expect(close).not.toHaveBeenCalled();
   });
 
-  it("rejects unknown resources from a valid bundle with a usage error and no output", async () => {
-    const { packageDirectory } = await fixture();
-    const { client, chunks, errors, close } = context(packageDirectory);
-    expect(await runCli(["--skill", "references/unknown.md"], client)).toBe(2);
-    expect(errors.join("")).toContain('Unknown using-daynight skill resource "references/unknown.md".');
-    expect(chunks).toEqual([]);
-    expect(close).not.toHaveBeenCalled();
-  });
-
-  it.each(["missing", "frontmatter", "utf8"])("preserves %s resource errors before output", async (failure) => {
-    const { packageDirectory, source } = await fixture();
-    if (failure === "missing") await rm(path.join(source, "SKILL.md"));
-    if (failure === "frontmatter") await writeFile(path.join(source, "SKILL.md"), "# Missing frontmatter\n");
-    if (failure === "utf8") await writeFile(path.join(source, "references/handbook.md"), Buffer.from([0xff]));
+  it.each(["missing", "utf8"])("preserves %s manual failures before output", async (failure) => {
+    const { packageDirectory, manual } = await fixture();
+    if (failure === "missing") await rm(manual);
+    else await writeFile(manual, Buffer.from([0xff]));
     const { client, chunks, errors } = context(packageDirectory);
-    expect(await runCli(["--skill", ...(failure === "utf8" ? ["references/handbook.md"] : [])], client)).toBe(1);
+    expect(await runCli(["--skill"], client)).toBe(1);
     expect(errors.join("")).toContain("Caused by:");
-    expect(errors.join("")).toContain(failure === "utf8" ? "must be valid UTF-8" : "Cannot capture installed using-daynight skill bundle");
+    expect(errors.join("")).toContain("Cannot read the installed Daynight CLI usage manual");
     expect(chunks).toEqual([]);
   });
 
@@ -86,6 +73,6 @@ describe("root skill reading", () => {
     const output = new Error("Output failed"), cleanup = new Error("Cleanup failed");
     client.stdoutBytes = async () => { throw output; };
     client.closeStdoutBytes = async () => { throw cleanup; };
-    await expect(runSkillRead(undefined, client)).rejects.toMatchObject({ cause: output, errors: [output, cleanup] });
+    await expect(runSkillRead(client)).rejects.toMatchObject({ cause: output, errors: [output, cleanup] });
   });
 });

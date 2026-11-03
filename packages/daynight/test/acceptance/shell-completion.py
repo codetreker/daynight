@@ -424,8 +424,8 @@ def scenarios():
         ("Unicode cursor before following option", "daynight review add-repo --path 中 --bad\x01" + "\x06" * len("daynight review add-repo --path 中") + "\t", ["review", "add-repo", "--path", "中文目录/", "--bad"]),
     ]
     unchanged = [
-        ("skill resource is package text with no local file candidates", "daynight --skill ref"),
-        ("skill resource terminates following option completion", "daynight --skill references/handbook.md --he"),
+        ("standalone skill flag stops positional completion", "daynight --skill ref"),
+        ("standalone skill flag rejects resource and subsequent options", "daynight --skill references/handbook.md --he"),
         ("skill reading rejects a following help option", "daynight --skill --he"),
         ("skill root option is hidden in the install group", "daynight skill --ski"),
         ("short command text has no file fallback", "dn task create --title nor"),

@@ -1,7 +1,7 @@
 # Agent 项目任务管理 Skill 需求
 
 公开入口为随 `@codetreker/daynight` 发布的 `using-daynight` skill，包含 `handbook`、
-`create-task`、`handoff`、`run-task` 和 worker 专用 `autopilot-managed-task` 模式。本文拥有使用、文档读取、安装与覆盖的可观察
+`create-task`、`handoff`、`run-task` 和 worker 专用 `autopilot-managed-task` 模式。本文拥有使用、安装与覆盖的可观察
 要求；机制由[设计](../design/daynight-agent-skill.md)拥有。既有
 [客户端需求](daynight-project-task.md)与[附件需求](daynight-task-attachments.md)
 继续拥有命令、项目发现、版本和附件操作语义。
@@ -21,12 +21,9 @@
 `references/authorization.md`、`references/setup.md`、`references/project-management.md`、
 `references/task-management.md`、`references/write-safety.md` 和 `references/final-acceptance.md`
 一起包含在 npm 安装产物中。Codex、Copilot CLI、Claude Code 使用相同内容。
+`daynight --skill` 的独立 CLI 使用手册由[客户端需求](daynight.md#c2-命令组合与退出结果)拥有；公开 `using-daynight` 继续拥有任务编排工作流，CLI 手册不替代或展开这些引用。
 安装后不依赖源码仓库、仓库内部工作流 skill、未发布文档或包外临时文件；npm 包移动、
-升级或卸载不使已安装到 Agent scope 的资源失效。
-
-`daynight --skill` 与 `dn --skill` 必须将当前包内 `SKILL.md` 原样输出到 stdout 并成功退出，保留 frontmatter、换行和全部字节，不添加包装、标题或其他 references。`--skill <resource>` 按 slash 分隔的 bundle 根目录相对路径输出一个 Markdown 资源，例如 `references/handbook.md`。入口说明文件阅读和 CLI 读取两种方式；reference 内的相对链接仍按其文件目录解析，CLI 参数始终相对于 bundle 根目录。
-
-读取使用当前包的完整资源树及入口校验，与安装共用 bundle 所有权；不读取 User/Project 副本，不依赖源码仓库、cwd、登录、服务配置、Git、Agent launcher 或交互式终端，不创建配置、数据库、daemon 或安装目录。无效组合、额外参数、空路径、绝对路径、反斜杠、空段、`.` 或 `..` 段，以及非 Markdown 或不存在的资源以状态码 2 拒绝且不输出文档；路径语法拒绝发生在读取 bundle 前。包内 bundle 目录或入口缺失、资源树或入口校验失败、读取错误以状态码 1 退出并保留原因。资源读取与校验成功后才开始输出，输出失败可能留下部分 stdout。
+升级或卸载不使已安装资源失效。
 
 这些模式是 skill 的使用协议，不增加 CLI 子命令。入口提供概念、setup 导航与按目的读取的资料映射，不拥有共享约束或终验收细则，也不把所有模式的详细规则一并加载：
 
@@ -402,7 +399,6 @@ Claude Code personal 优先于 project，选择 Project 不修改 User。目录�
 | AS.V10 | 新名称发布后才清理所选根旧入口，覆盖旧叶节点链接、清理失败保留新 bundle、准确部分结果及重载提示。 |
 | AS.V11 | CLI typecheck、test、build、安装验收通过；Linux/macOS/Windows 分别提供适用检测、定位、取消、覆盖和链接的原生证据。 |
 | AS.V12 | 真实 npm 更新后已有 User/Project skill 与新包全文件字节一致，移除旧文件并保留缺失目标、无关 skill；当前或领先版本仍同步，失败非零且保留真实包状态；共享路径和叶链接符合 AS10。 |
-| AS.V13 | 实际 npm 安装包通过 `daynight` 和 `dn` 原样输出入口及指定 reference；在非仓库目录、无配置、无 launcher、非交互终端下可读取且无文件副作用。无效组合与路径在资源 I/O 前拒绝，不存在的合法资源退出 2；缺失或损坏 bundle 退出 1，保留原因且无文档输出。 |
 
 安装测试使用隔离目录与启动即写 sentinel 并失败的模拟 launcher，不安装或运行真实
 Agent、不读取账号、不调用模型、不启动 Daynight 服务或数据库。真实 PTY/ConPTY
