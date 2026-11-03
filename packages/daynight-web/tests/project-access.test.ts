@@ -132,3 +132,23 @@ it('ignores a captured history denial after a replacement sync applies, even bef
   expect(session.snapshot()).toMatchObject({ status: 'loading', access: member, error: null });
   expect(scope.getAuthorizedProject(projectId)!.manifest.cacheGeneration).toBe(generation);
 });
+
+it.each(['success', 'failure'] as const)('keeps confirmed revocation when an older access GET settles with %s', async (outcome) => {
+  const pending = deferred<ProjectAccess>();
+  vi.mocked(getProjectAccess).mockReturnValue(pending.promise);
+  const { session, scope } = mount();
+  const graph = graphFixture([detailFixture(projectId, '00000000-0000-4000-8000-000000000103')]);
+  const initialTicket = await scope.beginSync(projectId, scope.signal);
+  await scope.applySync(initialTicket, taskSyncFromGraph(graph, { versionForTask: () => 1n }), scope.signal);
+  session.publishSync(session.beginObservation(), admin);
+  const read = session.revalidate();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledOnce());
+  const deniedTicket = await scope.beginSync(projectId, scope.signal);
+  await scope.revokeProject(deniedTicket, scope.signal, false);
+  expect(session.snapshot()).toMatchObject({ status: 'unavailable', access: null });
+  if (outcome === 'success') pending.resolve(admin);
+  else pending.reject(new ApiError('network'));
+  expect(await read).toBeNull();
+  expect(scope.getAuthorizedProject(projectId)).toBeNull();
+  expect(session.snapshot()).toMatchObject({ status: 'unavailable', access: null, refreshing: false, error: { code: 'not_found' } });
+});

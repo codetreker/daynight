@@ -64,14 +64,14 @@ export class ProjectAccessSession {
         ticket = this.beginObservation();
         const access = await getProjectAccess(this.projectId, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
         await this.scope.ready(signal);
-        if (!this.live()) return null;
+        if (!this.live() || ticket < this.barrier) return null;
         if (ticket >= this.accepted) {
           this.accepted = ticket;
           this.update({ access, status: 'ready', refreshing: true, error: null });
         }
         return this.state.access;
       } catch (error) {
-        if (!this.live() || signal.aborted || isAbortError(error)) return null;
+        if (!this.live() || signal.aborted || isAbortError(error) || ticket < this.barrier) return null;
         if (ticket < this.accepted) return this.state.access;
         const denied = error instanceof ApiError && error.kind === 'server' && error.status === 404 && error.code === 'not_found';
         if (denied && (cacheTicket !== null ? !this.scope.canRevokeProject(cacheTicket) : this.scope.getAuthorizedProject(this.projectId) !== null)) {
@@ -79,20 +79,21 @@ export class ProjectAccessSession {
           return null;
         }
         this.barrier = this.beginObservation();
-        this.update({ access: denied ? null : this.state.access, status: denied ? 'unavailable' : 'error', refreshing: true, error });
+        this.lastObservation = performance.now();
+        this.update({ access: denied ? null : this.state.access, status: denied ? 'unavailable' : 'error', refreshing: false, error });
         if (denied && cacheTicket !== null) {
           try {
             await this.scope.revokeProject(cacheTicket, signal, true, error as ApiError);
           } catch (failure) {
-            if (this.live() && !isAbortError(failure)) this.update({ ...this.state, error: failure });
+            if (this.live() && !isAbortError(failure) && ticket >= this.barrier) this.update({ ...this.state, error: failure });
           }
         }
         return null;
       } finally {
         if (this.read === pending) {
           this.read = null;
-          this.lastObservation = performance.now();
-          this.update({ ...this.state, refreshing: false });
+          if (ticket >= this.barrier) this.lastObservation = performance.now();
+          if (ticket >= this.barrier || this.accepted >= this.barrier) this.update({ ...this.state, refreshing: false });
           this.schedule();
         }
       }
