@@ -64,7 +64,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, task := range raw.Tasks {
-		if len(task) != 14 {
+		if len(task) != 15 {
 			t.Fatalf("unexpected summary fields: %#v", task)
 		}
 		for _, field := range []string{"description", "blockedBy", "ready"} {

@@ -76,7 +76,7 @@ func TestPropertyRowsMigrationPreservesValuesAndTaskFacts(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(t)-'properties' ORDER BY id)::text FROM tasks t`).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:26]); err != nil {
 		t.Fatal(err)
 	}
 	var after string
@@ -103,10 +103,10 @@ func TestPropertyRowsMigrationPreservesValuesAndTaskFacts(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='tasks' AND column_name='properties')`).Scan(&oldColumn); err != nil || oldColumn {
 		t.Fatalf("old column retained: %v", err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:26]); err != nil {
 		t.Fatal(err)
 	}
-	changed := append([]migration(nil), schemaMigrations...)
+	changed := append([]migration(nil), schemaMigrations[:26]...)
 	changed[25].transformSource += "changed"
 	if err := migrate(ctx, pool, changed); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("transform source is not checksummed: %v", err)

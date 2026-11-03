@@ -80,7 +80,7 @@ PropertyResource 包含 projectId、taskId、version 和完整 properties；两�
 
 valueText 外壳复用正 int64 version、UTF-8 application/json 和严格字段解码。完整外壳沿用 1 MiB 请求限制，二次转义计入实际字节。该限制不等于一个属性可保存 1 MiB 内容；原生 JSON create/PATCH 保留一次事务修改普通字段、依赖和属性的能力，不重新解释 native JSON 字符串。
 
-写入在取得项目行锁后，先对父任务取得 FOR UPDATE，再读取当前属性和版本，验证完整候选并判断 no-op。实际变化在同一事务写属性差异、任务 version/updated_at，以及生命周期相关 Session 变化。任何一步失败完整回滚；新任务先创建父行，再写显式提供的属性。
+写入在取得项目行锁后，先对父任务取得 FOR UPDATE，再读取当前属性和版本，验证完整候选并判断 no-op。实际变化在同一事务写属性差异、任务 version/updated_at，以及生命周期相关 Session 变化。任何一步失败完整回滚；新任务先创建父行，再写显式提供的属性。普通属性 set/remove 从中性 currentTaskWrite 保留顶层 assignedTo；负责人不注册到属性目录，也不由属性资源设置或清除。
 
 公开 PATCH 的 omitted key 保留值，提供 key 替换完整值，properties:{} 没有修改意图；null 不承担删除语义。DELETE 的已缺失可写属性为 no-op，但仍先检查版本。相同值设置不改版本，陈旧等值请求仍冲突。未知或只读属性即使不存在也拒绝移除。
 

@@ -12,6 +12,7 @@ type TaskViewRecord struct {
 	DependsOn         []string       `json:"dependsOn"`
 	ExternalDependsOn []string       `json:"externalDependsOn"`
 	RequiredPlatform  *string        `json:"requiredPlatform"`
+	AssignedTo        *string        `json:"assignedTo"`
 	AllowAgents       bool           `json:"allowAgents"`
 	CreatedAt         time.Time      `json:"createdAt"`
 	UpdatedAt         time.Time      `json:"updatedAt"`

@@ -23,6 +23,7 @@ func NewTasks(database *store.Store) *Tasks {
 }
 
 type CreateTask struct {
+	AssignedTo        *string
 	RequiredPlatform  *core.TaskPlatform
 	ExternalDependsOn []string
 	Title             string
@@ -32,6 +33,7 @@ type CreateTask struct {
 }
 
 type UpdateTask struct {
+	AssignedTo        **string
 	RequiredPlatform  **core.TaskPlatform
 	ExternalDependsOn *[]string
 	AllowAgents       *bool
@@ -82,7 +84,11 @@ func (s *Tasks) Create(ctx context.Context, principal core.Principal, projectID 
 	if err != nil {
 		return core.Task{}, fmt.Errorf("generate task ID: %w", err)
 	}
-	values := store.TaskWrite{RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: core.TaskTodo, Properties: properties}
+	assignedTo, err := canonicalAssignedTo(input.AssignedTo)
+	if err != nil {
+		return core.Task{}, err
+	}
+	values := store.TaskWrite{AssignedTo: assignedTo, RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: core.TaskTodo, Properties: properties}
 	values.DependsOn, err = canonicalDependencies(input.DependsOn, id.String())
 	if err != nil {
 		return core.Task{}, err
@@ -117,7 +123,7 @@ func (s *Tasks) Update(ctx context.Context, principal core.Principal, projectID,
 	if input.Version < 1 {
 		return core.Task{}, invalidInput("Version must be a positive integer.")
 	}
-	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && len(input.Properties) == 0 && input.AllowAgents == nil && input.RequiredPlatform == nil {
+	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && len(input.Properties) == 0 && input.AllowAgents == nil && input.RequiredPlatform == nil && input.AssignedTo == nil {
 		return core.Task{}, invalidInput("At least one task field must be provided.")
 	}
 	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
@@ -151,7 +157,7 @@ func (s *Tasks) Update(ctx context.Context, principal core.Principal, projectID,
 		if err := validateCandidate(ctx, tx, id, values); err != nil {
 			return taskMutation{}, err
 		}
-		changed := !equalOptional(current.RequiredPlatform, values.RequiredPlatform) || current.AllowAgents != values.AllowAgents || current.Title != values.Title || current.Description != values.Description ||
+		changed := !equalOptional(current.AssignedTo, values.AssignedTo) || !equalOptional(current.RequiredPlatform, values.RequiredPlatform) || current.AllowAgents != values.AllowAgents || current.Title != values.Title || current.Description != values.Description ||
 			!slices.Equal(current.DependsOn, values.DependsOn) || !slices.Equal(current.ExternalDependsOn, values.ExternalDependsOn) || !taskproperties.Equal(current.Properties, values.Properties)
 		return taskMutation{id: id, current: current, values: values, changed: changed}, nil
 	})
@@ -168,14 +174,10 @@ func (s *Tasks) write(ctx context.Context, principal core.Principal, projectID s
 			return err
 		}
 		mutation, err := prepare(tx)
-		if errors.As(err, &refusal) {
-			return nil
-		}
-		if validation := propertyValidationFault(err); validation != nil {
-			refusal = validation
-			return nil
-		}
 		if err != nil {
+			if refusal = taskWriteFault(err); refusal != nil {
+				return nil
+			}
 			return err
 		}
 		if !mutation.changed {
@@ -184,6 +186,13 @@ func (s *Tasks) write(ctx context.Context, principal core.Principal, projectID s
 		}
 		if mutation.deleted {
 			return tx.DeleteTask(ctx, mutation.id, mutation.removeDepends)
+		}
+		mutation, err = enforceAssignmentTransition(ctx, tx, mutation)
+		if err != nil {
+			if refusal = taskWriteFault(err); refusal != nil {
+				return nil
+			}
+			return err
 		}
 		if mutation.create {
 			result, err = tx.CreateTask(ctx, mutation.id, mutation.values)
@@ -242,7 +251,14 @@ func (s *Tasks) versionedWrite(ctx context.Context, principal core.Principal, pr
 }
 
 func taskCandidate(current core.Task, input UpdateTask) (store.TaskWrite, error) {
-	values := store.TaskWrite{RequiredPlatform: current.RequiredPlatform, AllowAgents: current.AllowAgents, Title: current.Title, Description: current.Description, Status: current.Status, DependsOn: current.DependsOn, ExternalDependsOn: current.ExternalDependsOn, Properties: taskproperties.Clone(current.Properties)}
+	values := currentTaskWrite(current)
+	if input.AssignedTo != nil {
+		var err error
+		values.AssignedTo, err = canonicalAssignedTo(*input.AssignedTo)
+		if err != nil {
+			return store.TaskWrite{}, err
+		}
+	}
 	if input.RequiredPlatform != nil {
 		values.RequiredPlatform = *input.RequiredPlatform
 	}
