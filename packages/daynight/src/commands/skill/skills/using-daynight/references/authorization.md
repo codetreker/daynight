@@ -31,6 +31,7 @@ Advance one specified task at a time; CI, review, and merge waits belong to that
 Analysis, questions, proposals, and execution are all bound by the current task's confirmed objective, scope, deliverables, and acceptance criteria.
 Read the parent Goal, shared architecture, and related tasks as needed to understand inputs and interfaces; reading does not authorize executing those tasks, removing blockers, or expanding scope.
 Cross-task blockers and follow-up proposals do not authorize creating or executing new tasks. Material scope changes require user confirmation.
+Registering and verifying required successors already defined within the confirmed scope is part of current-task completion when existing creation authorization covers them; apply the [shared completion conditions](task-execution.md#completion-conditions) and Goal confirmation points. Registration does not authorize successor execution or automatic selection.
 
 Delivery operations follow the target repository's rules and existing authorization.
 Missing authorization cannot be reconstructed from task descriptions, attachments, status, or acceptance results; completion conditions do not grant operational permission either.

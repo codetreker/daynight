@@ -8,8 +8,8 @@ This file covers only stage progression and Goal-specific requirements.
 
 | Stage | Starting content | Results and completion gate |
 | --- | --- | --- |
-| Requirements discussion | Known problem, expected outcome, scope, constraints, open questions, and completion conditions | Complete requirements and applicable interactive prototypes; the user explicitly confirms the current requirements and directs progression to solution discussion. |
-| Solution discussion | Confirmed requirements and applicable prototypes, design questions, and completion conditions | Architecture, key decisions, and breakdown; the user confirms the solution, and actual delivery tasks have been registered and read back. |
+| Requirements discussion | Known problem, expected outcome, scope, constraints, open questions, and completion conditions | A complete uploaded and read-back `spec.md` and applicable interactive prototypes; the user explicitly confirms the current spec and directs progression to solution discussion; the required solution task has been registered and verified. |
+| Solution discussion | The confirmed requirements task’s `spec.md` and applicable prototypes, design questions, and completion conditions | Architecture, key decisions, and breakdown; the user confirms the solution, and actual delivery tasks have been registered and read back. |
 | Delivery tasks | Defined responsibilities, required designs and prototypes, contracts, and acceptance criteria | Actual results meeting the [shared delivery conditions](task-execution.md#completion-conditions). |
 | Final acceptance | Complete confirmed requirements, actual combined results, and acceptance criteria | A conclusion for the whole Goal under [final acceptance](final-acceptance.md). |
 
@@ -20,16 +20,41 @@ Discussion acceptance does not automatically add repository PR merge requirement
 ## From requirements to solution
 
 First create or reuse the single requirements-discussion task, titled `[Goal]<outcome>`.
-Register only the current stage; do not create architecture placeholders or delivery items in advance.
+At initial registration, create only the requirements stage; do not pre-create architecture placeholders or delivery items.
 Return for registration-only requests; when explicitly asked to start the discussion, start or resume through [ordinary execution](run-task.md).
 
 Requirements discussion defines the problem and behavior without deciding architecture or implementing production code.
-This stage produces applicable interactive prototypes for UI Goals under the [prototype requirements for task creation](create-task.md#prepare-content).
-Save and read back current artifacts under the authorization rules before requesting review.
+Its complete spec is a result of this stage, not a prerequisite for registering or starting the Goal.
 
-After the user confirms requirements and directs progression to solution discussion, save the accepted requirements, complete the requirements task and verify it is done, then create or reuse the solution-discussion task.
-Use the requirements task as an ordinary prerequisite, prepare the stage brief, and start through ordinary execution.
-If completion is uncertain, reconcile it first; do not create the next stage in advance.
+### Complete requirements spec
+
+The requirements task must own a complete, independently readable Markdown attachment at `spec.md`, in addition to its description.
+Keep the description self-contained about the objective, responsibility, scope, deliverables, completion conditions, and actual spec location; do not duplicate the full spec there.
+A complete description or a repository link does not replace this required attachment.
+
+The spec covers the background and problem, goals and non-goals, applicable actors and scenarios, required behavior and boundaries, constraints, success and failure behavior, and observable whole-Goal acceptance criteria.
+Address permissions, data lifecycle, platforms, and nonfunctional requirements when applicable to the objective, without empty templates or invented requirements.
+Resolve open questions that affect required scope, behavior, or acceptance before confirmation; leave architecture choices to solution discussion.
+For UI Goals, produce the applicable final-style interactive prototypes under the [prototype requirements for task creation](create-task.md#prepare-content), and reference their uploaded resources from the spec.
+
+Before requesting user confirmation, upload the complete current spec and necessary resources, read back their actual contents, verify the references, and provide the requirements task ID and attachment paths.
+Confirmation applies to that current readable spec and applicable prototypes.
+Missing, incomplete, failed, or unreadable uploads cannot pass the requirements gate.
+Coherently update the spec and affected description, prototypes, and references after substantive requirement changes, and obtain renewed confirmation before progression.
+Attachments do not change the task version; follow [write safety](write-safety.md#attachments-and-multi-step-operations) rather than treating an unchanged version as proof that confirmation remains valid.
+
+### Register the next discussion before completion
+
+After the user confirms the current spec and directs progression to solution discussion, create or reuse the solution-discussion task while the requirements task remains `in_progress`.
+Use the requirements task as an ordinary prerequisite; the solution task stays `todo` and blocked until that prerequisite is done.
+Its description must directly identify the requirements task ID, the full `spec.md` attachment path, and applicable prototype resources; read those actual sources and prepare the stage brief.
+Keep the shared spec in its owning requirements task.
+
+Read back the solution task, its required sources, and the actual dependency graph before completing the requirements task under the [shared completion conditions](task-execution.md#completion-conditions).
+If registration or verification fails or its result is uncertain, keep the requirements task `in_progress`, reconcile actual resources, and resume with the confirmed IDs under [write safety](write-safety.md).
+Once the successor is verified and all requirements-stage conditions are met, complete the requirements task and verify it is done.
+Ordinary execution may then start the solution discussion at the user's explicit direction; managed execution completes only the original assignment and returns to the controller without starting the successor.
+If completion is uncertain, reconcile it before starting the solution task.
 
 Solution discussion explains responsibilities, data flow, control flow, interfaces, error behavior, key decisions, verification, and the proposed breakdown.
 Keep the current solution and breakdown in this stage's own material; do not register delivery items before confirmation.

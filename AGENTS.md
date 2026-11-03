@@ -43,14 +43,20 @@ take precedence.
   follow its applicable workflow.
 - For a Goal, first create or reuse only its requirements-discussion task and
   enter `in_progress` when the user requests that discussion. After the user
-  confirms the requirements and asks to proceed, complete that task, then create
-  and start the solution or architecture discussion task. Create the actual
+  confirms the complete uploaded `spec.md` and asks to proceed, create or reuse
+  and read back the solution or architecture discussion task with an ordinary
+  dependency on the still-in-progress requirements task. Complete and verify the
+  requirements task before starting that successor discussion. Create the actual
   delivery subtasks and their dependencies only after the user confirms the
   solution. A request to start or advance a discussion authorizes setting that
   discussion task to `in_progress`; it grants no delivery-task execution permission. Discussion completion follows the confirmed Daynight material and
   phase acceptance. Repository delivery retains its own PR and merge requirements.
-- Complete authorized work and its verification. Report observed results and
-  material limitations; keep unverified assumptions distinct from evidence.
+- Complete authorized work and its verification. Before marking a task done,
+  verify both its own results and the actual registration of any required
+  successors within its confirmed scope and existing creation authorization.
+  Registration does not start successor execution; terminal tasks need no
+  invented successor. Report observed results and material limitations; keep
+  unverified assumptions distinct from evidence.
 - Mainline pushes and PR merges require explicit user authorization. Follow the
   session's authorization for commits, branch pushes, and external comments.
 
