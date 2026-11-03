@@ -93,8 +93,12 @@ continuous successor loop are removed. Ordinary execution returns after one
 specified task or an external wait. A user-directed Goal requirements-to-solution
 discussion transition retains the Goal protocol's confirmation gates. Managed
 autopilot returns to its controller after this task completes or needs external
-intervention, without selecting another task or advancing a Goal stage. The
-controller owns system-worktree, branch, and workspace cleanup; executors release
+intervention, without selecting, starting or executing successor work. The
+[specification and completion decision](../process/2026-11-02-goal-spec-confirmation.md)
+requires confirmed necessary successors to be registered and read back before
+completion when existing creation authority covers them. This is completion of
+the original assignment, not execution of another task. The controller owns
+system-worktree, branch, and workspace cleanup; executors release
 only attributable temporary resources within their authorization.
 
 The worker runtime constructs the startup or relaunch prompt, including the

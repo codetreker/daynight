@@ -35,6 +35,7 @@ The description and readable references together provide the following informati
 The description must identify this task's specific work and where to find its sources.
 When attachment delivery is not specified, complete inline content needs no primary attachment; references or a mix of inline content and references are also valid.
 Do not duplicate complete documents.
+The [Goal protocol](goal.md#complete-requirements-spec) requires a complete `spec.md` attachment for the requirements stage even when its description is complete.
 The [complete delivery standard](autopilot-managed-task.md#complete-delivery-standard) governs managed tasks' attachment and separate review-file requirements; the general inline-content rule cannot waive them.
 Generic questions, unexplained links, unreadable sources, or "see the previous discussion" are insufficient.
 

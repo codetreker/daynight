@@ -106,9 +106,13 @@ identity; locale changes translate interface messages without changing user
 Markdown, file inputs or pending-operation identity.
 
 Descriptions can contain complete task content or lead to its owning documents;
-a complete body needs no primary attachment. The original summary-and-attachment
-policy kept stable plans distinct from execution progress; the content/handoff
-successor preserves single ownership without requiring that storage split. A Markdown editor, generated heading anchors
+a complete body needs no primary attachment unless a stage or delivery contract
+requires one. The [Goal specification decision](../process/2026-11-02-goal-spec-confirmation.md)
+requires complete `spec.md` before requirements confirmation and architecture,
+while managed delivery keeps its required attachments. The original
+summary-and-attachment policy kept stable plans distinct from execution progress;
+the content/handoff successor preserves single ownership without imposing that
+storage split on every task. A Markdown editor, generated heading anchors
 and task-field editing are separate additive capabilities. Keeping raw strings,
 caller-supplied URL handling and explicit bases leaves those extensions possible
 without changing storage or replacing the controller structure.

@@ -21,8 +21,11 @@ The public `using-daynight` bundle has a `handoff <task-id>` mode and one shared
 `references/task-content.md` standard. The description identifies the current
 task, its responsibility and readable sources. Body content, required referenced
 documents and mixed organization meet the same sufficiency test; a complete
-description needs no primary attachment unless managed delivery explicitly
-requires attachments or a separate review file, as recorded by the
+description needs no primary attachment unless the Goal specification gate or
+managed delivery requires one. The
+[Goal specification decision](2026-11-02-goal-spec-confirmation.md) requires the
+requirements task to deliver complete `spec.md`; managed attachments and separate
+review files are recorded by the
 [reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md).
 Each detailed explanation has one owner.
 
@@ -138,8 +141,9 @@ One standard controls creation, Goal breakdown, handoff and execution, including
 stage-specific inputs and outputs. This removes the primary-file gate without
 weakening current-stage content, real dependencies, Goal confirmation or direct
 architecture-source indexing. Task inputs and resulting artifacts remain
-findable even when all requirements and design are in the description; session
-continuity does not become task material.
+findable through their actual owners. Ordinary tasks may keep complete content
+in the description; Goal requirements use the mandatory complete specification
+attachment. Session continuity does not become task material.
 
 The flag permits automatic selection but does not certify future document
 versions, pause scheduling or prove execution. Existing true tasks are not

@@ -53,7 +53,10 @@ six mandatory content categories and generic task-local confirmation/evidence
 requirement. Its isolated-reader rationale, single content owner, inline/reference/
 mixed organization, verified shared inputs, Goal architecture index and handoff
 concurrency safeguards remain. The [Goal stage decision](2026-10-24-user-confirmed-goal-discussions.md)
-retains human confirmation and stage transitions. All operation authorization,
+retains human confirmation and stage transitions, qualified by the
+[Goal specification decision](2026-11-02-goal-spec-confirmation.md): the
+requirements task owns complete `spec.md`, and architecture consumes its explicitly
+confirmed current contents through a direct task/path index. All operation authorization,
 exact-version, dependency, claim and delivery gates remain with the existing
 mode protocols; task material does not recreate missing authorization.
 
@@ -87,8 +90,9 @@ Task sufficiency does not depend on an agent execution plan. Missing required
 architecture, prototypes, contracts or acceptance decisions still blocks the
 appropriate stage. Descriptions and attachments remain valid forms and shared
 inputs keep their real owners. General content sufficiency imposes neither
-filename bans nor universal primary attachments; managed delivery retains its
-explicit attachment requirements.
+filename bans nor universal primary attachments; Goal requirements retain the
+complete `spec.md` stage output and managed delivery retains its explicit
+attachment requirements.
 
 Session continuity uses existing host state or local checkpoints. The content
 boundary provides no cross-host migration or replacement for missing assignment

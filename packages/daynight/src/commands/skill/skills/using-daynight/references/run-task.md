@@ -16,7 +16,7 @@ This workflow does not select candidate tasks or advance a queue automatically.
 
 ## Complete or wait
 
-Follow the shared execution rules.
+Follow the shared execution rules, including verifying required successor registration before completion.
 Once all completion conditions are met, reread the in-progress task, set it to done using its observed version, and confirm the service result.
 Handle all changes and uncertain responses under [write safety](write-safety.md); ordinary completion does not include a worker claim.
 

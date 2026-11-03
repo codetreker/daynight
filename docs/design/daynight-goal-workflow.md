@@ -3,7 +3,8 @@
 公开 skill 使用用户确认推进的需求讨论、方案讨论和实际交付协议，区分普通指定任务与
 worker-managed 执行，保留服务生命周期与安装机制。[Goal 需求](../spec/daynight-goal-workflow.md)拥有 GW1–GW13，
 [用户确认讨论决策](../../.agents/notes/implemented/process/2026-10-24-user-confirmed-goal-discussions.md)
-拥有当前阶段门槛；[原阶段设计决策](../../.agents/notes/implemented/process/2026-10-22-goal-workflow-design.md)
+拥有阶段顺序；[完整 spec 确认决策](../../.agents/notes/implemented/process/2026-11-02-goal-spec-confirmation.md)
+拥有需求附件与确认门槛；[原阶段设计决策](../../.agents/notes/implemented/process/2026-10-22-goal-workflow-design.md)
 保留阶段资料和共享来源的历史理由。当前发布结构由
 [Agent skill 设计](daynight-agent-skill.md)拥有。
 
@@ -54,7 +55,10 @@ packages/daynight/src/commands/skill/skills/using-daynight/
 
 阶段规则只由共享 Goal 协议拥有，各模式按需要读取输入与验收条件，避免通用执行或
 PR 规则覆盖讨论的确认门槛。普通入口执行用户明确要求的讨论转场；managed 入口只
-完成当前已指派阶段并返回 controller，不执行后续阶段创建或开始。Goal 拆分和整体完成引用 [Final acceptance](../../packages/daynight/src/commands/skill/skills/using-daynight/references/final-acceptance.md)
+完成当前已指派阶段并返回 controller，不开始或执行后继阶段。所有入口共用自身成果
+与必要后继登记的完成门槛，已有创建授权覆盖的已确认后继可在完成当前任务前登记
+并读回，包括方案 assignment 要求的交付拆分。缺少创建授权或必需内容时，沿既有
+人类介入流程补齐。Goal 拆分和整体完成引用 [Final acceptance](../../packages/daynight/src/commands/skill/skills/using-daynight/references/final-acceptance.md)
 的共同终验收规则，不另建验收协议。发布资源仍是完整 allowlist bundle；两种执行文件与共享资料一起复制，安装覆盖清除已移除的调度文件，没有新的安装分支或运行时 Markdown 解析。协议只依赖随包资料与已安装 CLI help，不依赖仓库内部 skill 或本机草稿。
 
 ## 用户可观察的流程
@@ -63,11 +67,13 @@ PR 规则覆盖讨论的确认门槛。普通入口执行用户明确要求的�
 flowchart TD
     A[用户要求开始 Goal 需求讨论] --> B[只建或复用需求 task]
     B --> C[按观察版本设置 in_progress]
-    C --> D[与用户讨论并持续保存需求及适用 UI 原型]
-    D --> E{用户确认需求并要求进入方案讨论}
+    C --> D[形成完整 spec.md 及适用 UI 原型]
+    D --> R[上传并读回当前 spec 与必需资源]
+    R --> E{用户确认当前 spec 并要求进入方案讨论}
     E -->|继续修改| D
-    E -->|确认| F[核验确认对应成果并 set-status done 需求 task]
-    F --> G[普通入口确认 done 后创建并开始方案讨论 task]
+    E -->|确认| N[创建并读回依赖需求的 todo 方案 task]
+    N --> F[核验自身成果与后继登记后完成需求 task]
+    F --> G[确认需求 done 后开始已登记方案 task]
     G --> H[讨论具体方案及候选成果拆分]
     H --> I{用户确认当前方案}
     I -->|继续修改| H
@@ -83,8 +89,12 @@ flowchart TD
 拆分登记为 task，都会使未确认内容变成持久执行范围。
 
 例如“可以了，进行架构讨论”同时表达了对当前需求的确认和下一阶段的开始指令。
-执行者核对当前成果与 session 中的确认，核验阶段验收，完成需求 task，并确认服务返回 done；随后
-才创建或复用依赖它的架构/方案 task，并以 set-status 启动当前讨论。该转场由用户的
+执行者先上传并读回完整 `spec.md` 及必需资源，向用户提供需求 task ID 和附件路径，
+核对当前内容与 session 中的确认，核验阶段验收；在需求仍 in_progress 时创建或复用
+普通依赖它的架构/方案 task，在 description 直接注明需求 task ID、`spec.md` 完整附件
+路径及适用原型来源，读回任务、真实内容与依赖。后继此时保持 todo，受需求前置阻塞。
+自身成果及后继登记均满足后完成需求 task，确认服务返回 done，再以 set-status 启动
+已登记的方案讨论。该转场由用户的
 明确指令驱动，保持下一讨论的指定身份；普通技能不自动选择交付后继。Managed 指派完成
 或等待始终返回 controller，不执行这条普通讨论转场。
 
@@ -104,21 +114,24 @@ flowchart TD
 |---|---|
 | task description | 当前任务身份、责任与资料入口；五类任务定义可直接提供，或由真实引用的文档提供。 |
 | 任务定义与成果 | description 或实际拥有文档保存目标与要求、范围与约束、输入与来源、交付物与契约、验收标准；当前和最终成果随产出保存，创建时不预填结果。 |
-| Goal 需求与原型 | 需求讨论 task 拥有当前及被接受的完整要求、适用原型和必要完成门槛。 |
+| Goal spec 与原型 | 需求讨论 task 拥有独立的完整 `spec.md` 附件、适用原型及必要完成门槛；description 保留自足任务说明与 spec 入口。 |
 | 架构、方案与拆分 | 方案讨论 task；先拥有当前设计和候选拆分，用户确认后登记真实交付任务并维护确定的拆分结果。 |
 | 交付任务材料 | 各交付 task 拥有自身定义、必要资源和实际成果；description 直接列出架构任务 ID，以及来源 description 全文或适用章节、真实附件完整路径或不可变仓库引用；共享输入仍归来源任务。 |
 | PR 资料 | 实际需要交付的任务使用完整 properties.pullRequests 保存真实 URL 与 title。 |
 | session 与本地检查点 | 执行或讨论计划、步骤、工具、协作、操作授权、确认经过、当前 ID、工作位置、阻塞、等待和恢复上下文；不写入任务描述、附件或任务管理专用仓库文件。 |
 
 description 让读者明确当前任务及责任，并定位真实可读的内容来源。内容标准由正文
-与引用的实际内容共同满足，未指定附件交付时正文完整无需主附件，详细材料保留唯一拥有位置。managed 按类型交付的报告、完整方案与验收证据附件，以及设计多方独立评审、无 Critical/Major 和另附剩余非阻塞问题 review 文件的要求，由 [Complete delivery standard](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#complete-delivery-standard) 拥有，不能由正文免除。
+与引用的实际内容共同满足，未指定附件交付时正文完整无需主附件，详细材料保留唯一拥有位置。Goal 需求阶段的完整 `spec.md` 是必需成果，不能由正文替代；managed 按类型交付的报告、完整方案与验收证据附件，以及设计多方独立评审、无 Critical/Major 和另附剩余非阻塞问题 review 文件的要求，由 [Complete delivery standard](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#complete-delivery-standard) 拥有，不能由正文免除。
 当前阶段定义待解决的问题、输入、预期成果及完成条件，不以尚待产出的最终要求或
 架构已经存在为前提，也不要求 agent 的执行计划、独立 solution 或通用证据位置。
 
 每次用户 review 前保存并读回当前成果，随后提供 task 和资源引用。session 核对确认
 所对应的可读材料；任务保存被接受的成果和有效状态，确认经过与操作授权留在 session。
-附件更新不改变 task 版本，因此不能仅凭 task version 假定确认仍覆盖所有材料。确认后
-出现实质修订，推进或登记前须重新确认当前内容。Agent 判断、独立审查或 CI 成功都
+需求确认针对已上传并读回的完整当前 spec，而非聊天摘要或附件文件名。附件更新不改变
+task 版本，因此不能仅凭 task version 假定确认仍覆盖所有材料。任一阶段成果确认后出现
+实质修订，推进或登记前重新确认当前内容；需求修订还须同步完整 spec、相关 description
+与适用原型。上传失败、
+附件不可读、内容不完整或尚未确认时，需求讨论保持 in_progress。Agent 判断、独立审查或 CI 成功都
 不能替代用户确认，保存成果也不授予操作权限。
 
 共享输入保留真实来源 task ID 和明确的读取入口。来源正文使用 description 全文或其中
@@ -140,13 +153,14 @@ description 让读者明确当前任务及责任，并定位真实可读的内�
 | 阶段 | 启动输入 | 产出与完成条件 |
 |---|---|---|
 | 仅登记 Goal | 已授权范围和当前需求 brief。 | 唯一需求 task 与当前资料可读，保持 todo 并返回。 |
-| 需求讨论 | 明确开始讨论的指令、已知问题和范围、阶段 brief。 | 完整要求及适用的最终样式纯前端交互原型；用户确认当前需求并要求进入方案讨论；当前成果已保存并核验、session 中的确认与阶段验收满足后 set-status done。 |
-| 方案讨论 | 服务确认已完成的需求 task、其已接受成果和适用原型、session 中的明确转场指令。 | 用户确认当前具体方案；确认后实际登记全部交付子任务；task、必需引用、实际成果和依赖读回核验后 set-status done。 |
+| 需求讨论 | 明确开始讨论的指令、已知问题和范围、阶段 brief；不要求完整 spec 已存在。 | 上传并读回完整 `spec.md` 及适用原型，提供任务和附件引用；用户确认当前 spec 并要求转场后，先登记并读回 todo 架构后继及其依赖，再 set-status done 需求任务。 |
+| 方案讨论 | 服务确认已完成的需求 task、其已确认完整 `spec.md` 和适用原型、session 中的明确转场指令；description 直接索引需求 task ID 和附件路径，并已读取内容。 | 用户确认当前具体方案；确认后实际登记全部交付子任务；task、必需引用、实际成果和依赖读回核验后 set-status done。 |
 | 实际交付 | 已完成的方案依赖，自身完整任务定义、所需设计输入、验收标准、共享来源和 session 的明确执行授权。 | 自身可观察成果、验证、独立审查及必要 PR 的授权合并，按普通交付任务完成。 |
 | 整个 Goal | 完整实际交付范围、原始需求与已确认变更后的整体验收。 | 所有交付任务完成，必要实现 PR 合并；需求对照结论与证据确认完整目标满足，缺陷和未验证项如实记录。 |
 
-需求讨论关注为什么需要、结果和行为、范围与约束、排除项及整体验收，不决定具体
-实现路径。涉及 UI 时讨论最终布局、视觉、交互和代表性数据状态，形成最终样式、
+需求讨论把为什么需要、结果和行为、范围与约束、排除项及整体验收组织为独立完整
+`spec.md`，完整性由 [Goal 需求](../spec/daynight-goal-workflow.md#阶段资料与确认)拥有。
+影响需求或验收的开放问题在确认前解决，具体实现路径留给方案讨论。涉及 UI 时讨论最终布局、视觉、交互和代表性数据状态，形成最终样式、
 可纯前端运行的交互原型并查看操作；原型是需求表达的产物，供方案和交付任务复用。
 原型数据与交互状态只保存在当前页面内存，不使用 localStorage、sessionStorage、Cookie、IndexedDB 或其他本地持久化，依赖库也不得间接执行；刷新或重新打开恢复初始状态。完整规则由随包 create-task 的原型要求拥有。
 
@@ -167,7 +181,7 @@ done 不能冒充仓库变更已交付，也不授予合并权限。
 
 ## 依赖与授权
 
-方案讨论通过普通 dependsOn 依赖已完成的需求 task。交付根直接依赖方案 task，其他
+方案讨论登记时通过普通 dependsOn 依赖仍 in_progress 的需求 task，需求完成核验后才启动。交付根直接依赖方案 task，其他
 必要直接依赖表达真实成果顺序，每条实施路径都经过方案完成。登记前按随包 [Task management 的 Dependency reduction](../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-management.md#dependency-reduction) 规则检查相关路径，省略已有其他保留路径覆盖的直接边；后继
 沿保留路径继承前置，无替代路径的独立前置保持直接关系。普通边只可由全普通路径
 替代，保持链归属与设计门禁；经内容确认归其他同项目链所有的真实前置保留
@@ -189,10 +203,11 @@ managed 按 [Request user interaction](../../packages/daynight/src/commands/skil
 
 ## 写入、恢复与并发
 
-每步创建、附件上传、元数据、set-status in_progress 和 set-status done 都是独立写入。先保存并
-读回当前成果，在 session 核验用户确认与阶段验收，再执行当前任务的生命周期动作；需求 set-status done 返回不
-确定时先核对，不能据此创建方案 task。方案或交付子任务创建部分成功时保留已确认
-ID，只恢复余下操作。相似标题不足以认定成功，失败响应也不证明服务没有写入。
+每步创建、附件上传、元数据、set-status in_progress 和 set-status done 都是独立写入。
+先保存并读回当前成果，核对用户确认与阶段验收，在当前任务仍 in_progress 时登记
+已确认范围内的必要后继并读回核验，然后才完成当前任务。需求完成返回不确定时先
+核对，不启动已登记方案，也不重复创建。后继登记失败或结果未确认时保持前置
+in_progress，保留已确认 ID，只恢复余下操作。相似标题不足以认定成功，失败响应也不证明服务没有写入。
 
 元数据与生命周期命令携带决策时读取的完整 int64 版本，冲突后重新读取并判断，不能
 仅替换版本重发。description 与 PR 列表完整替换；依赖按完整两类集合编译。附件
@@ -208,7 +223,10 @@ ID，只恢复余下操作。相似标题不足以认定成功，失败响应也
 
 检查正文、规范、技能引用和决策所有者的一致性；核验本地链接、资料身份、当前确认
 与版本操作。独立情境审查覆盖唯一初始任务、仅登记、明确开始讨论、提前阶段阻断、
-用户确认转场、确认前候选拆分、确认后真实 todo 子任务、实质修订重确认、适用
+description 完整但缺 spec、上传失败、spec 不可读或未确认时阻断、用户确认当前 spec 后
+先登记 todo 架构后继再完成需求、后继登记失败保持前置 in_progress、已有后继复用、终端任务无后继、
+确认旧内容后同路径覆盖附件须重确认、架构正文直接索引需求来源且先读内容、来源不可读时阻断、
+确认前候选拆分、确认后真实 todo 子任务、实质修订重确认、适用
 UI 原型、讨论与 PR 交付区分、交付授权、部分登记、不确定状态写入和整体验收。
 内容情境双向检查 session 计划、操作授权及过程的排除，以及真实输入、当前设计稿、
 验收结论和用户要求的方法型成果的保留；正文、附件和引用采用同一分类。
