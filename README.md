@@ -338,8 +338,22 @@ tests and that gate; every `main` push runs full application validation. See the
 
 `pnpm check` covers CLI type checking and tests; `pnpm acceptance` exercises the
 installed package. Server and Web checks have separate commands and require
-statement coverage strictly greater than 90%. For document changes, check local
-links and anchors, newly created files and `git diff --check`.
+statement coverage strictly greater than 90%. Routine CI suites exclude stress
+workloads. Run the corresponding explicit local command when full-scale evidence
+is required:
+
+| Local workload | Command from the repository root |
+|---|---|
+| CLI rendering and Session-v2 archive limits | `pnpm test:stress` |
+| Installed CLI production decoded-byte budgets | `pnpm test:stress:budgets` |
+| Go query, archive and repeated-write workloads | `pnpm server:test:stress` |
+| Web graph and geometry workloads | `pnpm web:test:stress` |
+| Production browser capacity and timing matrix | `pnpm web:acceptance:stress` |
+
+These stress entrypoints refuse a CI environment. The
+[development guide](docs/development.md#local-stress-validation) owns their
+prerequisites and evidence boundaries. For document changes, check local links
+and anchors, newly created files and `git diff --check`.
 
 Acceptance results belong to their tested revision, artifacts, environment and
 execution scope. Controlled process fixtures do not prove live Copilot/GitHub

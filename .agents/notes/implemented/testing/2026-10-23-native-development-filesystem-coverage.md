@@ -29,7 +29,10 @@ of differently cased names on an insensitive filesystem.
 Default Web acceptance uses an owned ordinary directory on macOS and records the
 measured case-sensitivity capability. Its native attachment fixture avoids the
 directory-case collision when that capability is absent. The same functional,
-authentication, capacity, and cleanup scenarios still execute. Linux and the
+authentication and cleanup scenarios execute. The
+[local stress decision](2026-11-03-local-stress-suites.md) separates capacity
+from ordinary acceptance; explicit local stress mode keeps the same matrix on
+both platforms and may be combined with APFS storage. Linux and the
 production container retain the original case-sensitive fixture; a Mac ordinary
 directory pass does not establish native case-sensitive storage coverage.
 Real-storage case-coexistence tests are separate from ordinary storage and service
