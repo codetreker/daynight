@@ -28,15 +28,6 @@ Save the URLs and titles of all required delivery PRs in the complete `propertie
 
 ## Completion conditions
 
-Completion requires both this task's own accepted results and verified registration of any required successors in its confirmed scope.
-When those results require follow-on work, create or reuse the concrete successor tasks under existing creation authorization, give them sufficient definitions, readable required sources, and real dependencies, then read back the tasks, sources, and dependency graph before marking this task done.
-A candidate breakdown, a future registration list, or a chat promise does not satisfy this condition.
-Terminal tasks need no successor; speculative improvements, unrelated work, and session execution steps do not create a registration requirement.
-
-Apply the [Goal confirmation points and stage ordering](goal.md) before registering a next discussion or delivery breakdown.
-Required successor registration is part of closing the current task, including a managed assignment when existing authorization covers that registration; it does not select, start, execute, or enable automatic execution of those successors.
-Missing authority, incomplete definitions, failed or unreadable registration, or uncertain writes leave the current task `in_progress`; reconcile partial results under [write safety](write-safety.md) using the existing IDs and the selected mode's waiting rules.
-
 | Task type | Completion conditions |
 | --- | --- |
 | Goal discussion | The user confirms the current material, and the corresponding Goal stage requirements are met; generic PR rules cannot replace or add confirmation requirements. |

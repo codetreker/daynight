@@ -40,10 +40,12 @@ remain requirements-owned resources referenced from the specification.
 Task completion requires both the current result and verified registration of
 required successors when the confirmed scope contains following work. Existing
 creation authority must cover those registrations. A terminal task needs no
-invented successor, and routine execution steps do not become tasks. The shared
-[completion conditions](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-execution.md#completion-conditions)
-own this gate for both execution modes; it grants no additional registration or
-successor-execution authority.
+invented successor, and routine execution steps do not become tasks. The
+[Goal protocol](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/goal.md#register-the-next-discussion-before-completion)
+owns the stage-specific registration gates, while
+[authorization and scope](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/authorization.md#scope-and-continuity)
+keeps required registration within current-task closure and existing authority.
+The gates grant no additional registration or successor-execution authority.
 
 After specification confirmation and explicit direction to enter architecture,
 create or reuse the architecture task while requirements remain in_progress.

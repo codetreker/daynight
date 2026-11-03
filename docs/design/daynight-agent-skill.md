@@ -318,10 +318,11 @@ commit 后继续关闭，默认不增加合并后主线 CI 等待。该循环由
 直接执行，不再请求确认；用户明确的暂停和限制继续生效，授权范围始终是原 assignment。
 
 共同完成准备由 [Shared execution](../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-execution.md#completion-conditions)
-拥有：本任务成果满足，且已确认范围内确有后续工作时，必要后继已经登记并读回核验。
-终端任务无需制造后继；登记不启动后继或增加权限。Managed 同样在已有创建授权
-覆盖的已确认范围内登记并读回必要后继，仍只完成原 assignment 与 claim 后返回
-controller。缺少创建授权或必需内容时保持未完成，沿既有介入流程补齐。
+拥有；Goal 讨论的必要后继登记由 [Goal protocol](../../packages/daynight/src/commands/skill/skills/using-daynight/references/goal.md#register-the-next-discussion-before-completion)
+拥有，在用户确认当前成果后先登记并读回必要后继，再完成当前阶段。终端任务无需
+制造后继；登记不启动后继或增加权限。Managed 在已有创建授权覆盖的已确认范围内
+完成阶段要求的登记，仍只完成原 assignment 与 claim 后返回 controller。缺少创建授权
+或必需内容时保持未完成，沿既有介入流程补齐。
 Goal 讨论还要求用户确认和自身阶段验收。独立代码、文档、原型交付以及
 用户明确纳入讨论验收的 PR，仍须所有必要 PR 平台确认合并并满足验收。没有合并权限、
 PR 未合并或人工/验收门槛未满足时保持未完成；CI、review 和合并等待留在当前任务。
