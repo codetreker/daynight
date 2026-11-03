@@ -85,7 +85,20 @@ executables with real Git and SQLite. The self-update suite uses real npm and an
 isolated, task-local global prefix with a controlled HTTP registry. Neither suite
 changes the operator's installed CLI or requires live review credentials.
 Project/task acceptance is a third native installed suite using a reusable
-pack/install fixture, real Git and controlled HTTP.
+pack/install fixture, real Git and controlled HTTP. Repeated private consumers
+use PNPM's supported POSIX executable-link preference; the independent e2e
+consumer still exercises default PNPM shims, and npm global updates remain real.
+
+Project/task installation preparation and self-update's initial package/global
+installation belong to case-owned setup hooks. The complete ordered business
+scenarios remain in their callbacks. Both use the existing 180-second hook and
+180-second callback limits, while the native job keeps its 10-minute limit.
+Separating these allowances changes budget ownership; it does not mean the old
+scenario-total allowance or total runtime is unchanged. Teardown aborts and
+awaits pending preparation/behavior, reaps owned processes, closes registries
+and removes private trees before publishing successful cleanup receipts. The
+[hosted-runner and preparation decision](../.agents/notes/implemented/testing/2026-11-03-macos-hosted-runner-capacity.md)
+records the platform, linking and lifecycle rationale.
 
 Shell completion has a separate real-shell acceptance command. It requires
 Python 3 on a POSIX host, Bash 4.2, a modern Bash, and zsh. Linux hosts can prepare
@@ -119,8 +132,12 @@ matrix; its result belongs to the tested revision. The
 [completion design](../docs/design/daynight-completion.md) owns its coverage and
 loading guarantees.
 
-GitHub Actions runs type checking, build, and tests on native Linux, macOS, and
-Windows runners. Each native job resolves the latest available Node.js 24 patch.
+GitHub Actions runs type checking, build, and tests on native Linux, macOS 26
+Intel x64, and Windows runners. The macOS job uses the standard
+`macos-26-intel` label; the
+[runner decision](../.agents/notes/implemented/testing/2026-11-03-macos-hosted-runner-capacity.md)
+records the hosted capacity failure and architecture covered by this lane.
+Each native job resolves the latest available Node.js 24 patch.
 A separate runtime matrix builds the package with Node.js 24 and checks the packed
 artifact with Node.js `22.14.0`, the latest `22` and `24` releases, and current
 `node`. Each runtime installs it in a fresh npm consumer with `--engine-strict`
