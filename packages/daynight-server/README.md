@@ -35,6 +35,12 @@ implements persistent users, browser-bound login transactions, sessions, PATs an
 callable HTTP handlers. NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The [membership foundation](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
 adds NewMemberships/NewMembershipRoutes, transaction-scoped access checks, private
 project creation, filtered project lists, administrator changes and invitations.
+Stored `ProjectGrant` facts and their real observation versions are distinct from
+computed `ProjectAccess`. Resource admission and accessible-project filtering use
+the canonical direct-authorization source; the existing member response joins
+grant facts with nullable profile fields without changing its public JSON.
+Worker administrator checks consume access, while claim ownership and acquisition
+assignment requirements retain their separate rules.
 The project settings API provides a versioned execution-warning threshold that
 administrators save and members read.
 The application mux mounts all of these modules and requires authentication for
@@ -367,7 +373,15 @@ temporary outputs under this module's `.tmp/`. Both Go-consuming CI jobs restore
 module and compiler caches using `go.sum`; `go clean -testcache` still invalidates
 server test results before validation so database and coverage observations run
 again. Both local validation and CI use
-`scripts/check.sh` and the same coverage configuration. The tests cover real
+`scripts/check.sh` and the same coverage configuration. Ordinary Go discovery
+excludes stress-tagged files. With an isolated test database configured, run
+`bash scripts/stress.sh` explicitly for the 10,000-task/100-person query sample,
+full-scale Session-v2 archives and repeated concurrent overwrite workload. It
+uses race detection and selects only `TestStress*` in the three owning packages.
+The script and raw tagged test entrypoints refuse a nonempty `CI` environment.
+CI retains compact archive boundary checks and a deterministic two-writer
+publication test. The query sample remains source-bound local evidence, rather
+than a production capacity limit. The tests cover real
 database connection/query cancellation, HTTP cancellation, graceful and forced
 drain, listener/pool reuse, process configuration/exit status, and log redaction.
 
@@ -1263,13 +1277,19 @@ or a mocked client as runtime proof.
 The [cross-layer decision](../../.agents/notes/implemented/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 owns these methods and their relationship to production browser journeys.
 
-The Node orchestrator reuses that installation for six budget probes after the
-Go coverage gate. Deadline probes load a test-only preload with 1-second request
-and 3-second operation deadlines, while separately asserting the installed
-production defaults of 30 seconds and five minutes. Four decoded-byte probes use
-the unchanged 128 MiB/256 MiB defaults and exact-limit/+1-byte pairs. Each probe's
-`deadlines` records `totalMs`, `requestMs` and whether it was mocked in the root
-`.tmp/project-task-service-evidence.json` receipt. Successful package-level
+The Node orchestrator reuses that installation for two deadline probes after
+the Go coverage gate. They load a test-only preload with 1-second request and
+3-second operation deadlines, while separately asserting the installed production
+defaults of 30 seconds and five minutes. Their `deadlines` records `totalMs`,
+`requestMs` and whether it was mocked in the root
+`.tmp/project-task-service-evidence.json` receipt.
+
+The explicit local `bash scripts/check.sh --stress-budgets` command retains the
+same setup and Go coverage gate, then selects the four decoded-byte probes using
+the unchanged 128 MiB/256 MiB defaults and exact-limit/+1-byte pairs. It writes
+`.tmp/project-task-stress-evidence.json`; the script and raw probe entrypoints
+refuse CI before stress setup. The CLI package's `pnpm test:stress:budgets` and
+repository-root command of the same name forward to this entrypoint. Successful package-level
 coverage and actual process results are separate evidence: binary HTTP tests
 supplement the store/service/server package tests.
 The owning store/service tests retain deterministic snapshot and lock proofs:

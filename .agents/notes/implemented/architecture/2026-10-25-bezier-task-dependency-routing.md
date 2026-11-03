@@ -78,7 +78,9 @@ rather than leaving a single unbounded dashed curve.
 
 The renderer still represents every visible real dependency. Curves can overlap
 or cross other curves; this decision preserves node placement and does not add an
-edge-crossing minimizer. Existing production opening and interaction budgets,
-full capacity inputs and cleanup rules continue to apply. Historical rounded-route
+edge-crossing minimizer. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+retains production opening and interaction budgets and full capacity inputs in
+explicit local stress suites. Compact routing correctness, complete product
+coverage and cleanup remain part of ordinary CI. Historical rounded-route
 receipts establish only their tested source; cubic browser, geometry and timing
 results require source-bound verification.

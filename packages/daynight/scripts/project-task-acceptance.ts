@@ -3,11 +3,10 @@ import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { InstalledCliReceipt } from "../test/fixtures/installed-cli.js";
-import type { BudgetProbeReceipt } from "./project-task-budgets.js";
+import type { BudgetProbeReceipt, BudgetProbeSuite } from "./project-task-budgets.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
 const serverRoot = path.join(repositoryRoot, "packages/daynight-server");
-const receiptPath = path.join(repositoryRoot, ".tmp/project-task-service-evidence.json");
 // Test-only packages have no coverage denominator. Skip their result summary while retaining test execution and failures.
 // https://github.com/codetreker/go-cov/blob/d6caf2759e330b48d69a543695e37002a48feb1d/internal/coverage/parse.go#L295-L300
 const coverageArgs = ["run", "github.com/codetreker/go-cov/cmd/go-cov@d6caf2759e330b48d69a543695e37002a48feb1d", "--config", ".go-cov.toml", "--ci", "--coverprofile", ".tmp/coverage.out", "--skip-result-packages", "cmd/e2e_tests"];
@@ -15,6 +14,7 @@ const coverageArgs = ["run", "github.com/codetreker/go-cov/cmd/go-cov@d6caf2759e
 type CommandReceipt = { command: string; args: readonly string[]; elapsedMs: number; exitCode: number | null; signal: NodeJS.Signals | null };
 type ServiceEvidence = {
   schemaVersion: 1;
+  suite: BudgetProbeSuite;
   passed: boolean;
   installed?: InstalledCliReceipt;
   build?: CommandReceipt;
@@ -67,11 +67,13 @@ const runCommand = async (command: string, args: readonly string[], cwd: string,
   }
 };
 
-export const runProjectTaskAcceptance = async (): Promise<void> => {
+export const runProjectTaskAcceptance = async (suite: BudgetProbeSuite = "deadlines"): Promise<void> => {
+  if (suite === "stress-budgets" && process.env.CI) throw new Error("CLI resource-budget stress tests run only on local machines.");
+  const receiptPath = path.join(repositoryRoot, suite === "deadlines" ? ".tmp/project-task-service-evidence.json" : ".tmp/project-task-stress-evidence.json");
   await rm(receiptPath, { force: true });
   const fixtureModule: typeof import("../test/fixtures/installed-cli.js") = await import(new URL("../test/fixtures/installed-cli.ts", import.meta.url).href);
   const budgets: typeof import("./project-task-budgets.js") = await import(new URL("./project-task-budgets.ts", import.meta.url).href);
-  const evidence: ServiceEvidence = { schemaVersion: 1, passed: false, probes: [], installedFixtureRemoved: false, failures: [] };
+  const evidence: ServiceEvidence = { schemaVersion: 1, suite, passed: false, probes: [], installedFixtureRemoved: false, failures: [] };
   const failures: unknown[] = [];
   const fail = (error: unknown): void => { failures.push(error); evidence.failures.push(budgets.describeAcceptanceError(error)); };
   const cancellation = new AbortController();
@@ -104,7 +106,7 @@ export const runProjectTaskAcceptance = async (): Promise<void> => {
     }
     const serverToken = await readBudgetToken(budgetTokenFile);
     await rm(budgetTokenFile);
-    try { evidence.probes = await budgets.runProductionBudgetProbes(fixture.receipt, repositoryRoot, serverToken, cancellation.signal); }
+    try { evidence.probes = await budgets.runBudgetProbes(suite, fixture.receipt, repositoryRoot, serverToken, cancellation.signal); }
     catch (error) {
       if (error instanceof budgets.BudgetAcceptanceError) evidence.probes = error.receipts;
       throw error;
@@ -117,7 +119,8 @@ export const runProjectTaskAcceptance = async (): Promise<void> => {
       try { await fixture.cleanup(); evidence.installedFixtureRemoved = true; }
       catch (error) { fail(error); }
     }
-    evidence.passed = evidence.failures.length === 0 && evidence.installedFixtureRemoved && evidence.probes.length === 6 && evidence.probes.every((probe) => probe.passed);
+    const expectedProbes = budgets.budgetProbeNames(suite);
+    evidence.passed = evidence.failures.length === 0 && evidence.installedFixtureRemoved && evidence.probes.length === expectedProbes.length && expectedProbes.every((name) => evidence.probes.some((probe) => probe.name === name && probe.passed));
     try {
       await mkdir(path.dirname(receiptPath), { recursive: true });
       await writeFile(receiptPath, `${JSON.stringify(evidence, null, 2)}\n`);
@@ -128,6 +131,7 @@ export const runProjectTaskAcceptance = async (): Promise<void> => {
 };
 
 if (import.meta.main) {
-  if (process.argv.length !== 2) throw new Error("Usage: node packages/daynight/scripts/project-task-acceptance.ts");
-  await runProjectTaskAcceptance();
+  const args = process.argv.slice(2);
+  if (!(args.length === 0 || args.length === 1 && args[0] === "--stress-budgets")) throw new Error("Usage: node packages/daynight/scripts/project-task-acceptance.ts [--stress-budgets]");
+  await runProjectTaskAcceptance(args.length === 0 ? "deadlines" : "stress-budgets");
 }

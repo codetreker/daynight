@@ -79,7 +79,7 @@ func TestTaskPropertiesConcurrentVersionAndSnapshot(t *testing.T) {
 		t.Fatalf("concurrent property result: %+v, %v", before, err)
 	}
 	traced := tracedTasks(t, databaseURL, taskQueryAction{
-		match: func(sql string) bool { return strings.Contains(sql, "FROM project_members m") },
+		match: func(sql string) bool { return strings.Contains(sql, "FROM project_members") },
 		end: func() {
 			if err := database.WriteProject(context.Background(), project.ID, func(tx *store.ProjectTx) error {
 				_, err := tx.UpdateTask(context.Background(), before.ID, store.TaskWrite{Title: "New snapshot", Status: before.Status, Properties: propertyPatch([]core.PullRequestProperty{{URL: "new", Title: "New"}}...)})

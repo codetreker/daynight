@@ -13,11 +13,14 @@ survive the platform extension.
 
 ## Decision
 
-Keep one pipeline for Linux and macOS with the same functional and capacity
-inventories, combined authentication checks, four fixed capacity datasets, five
-measurements and existing latency limits. Linux remains
-the full CI platform; macOS local acceptance requires native execution and does
-not imply a macOS CI job.
+Keep one pipeline for Linux and macOS with the same functional inventory,
+combined authentication and resource ownership. The
+[local stress decision](2026-11-03-local-stress-suites.md) partially supersedes
+the original all-in-one acceptance requirement: ordinary CI and local acceptance
+run the functional inventory, while explicit local stress mode retains the four
+fixed capacity datasets, five measurements and existing latency limits.
+Linux remains the full CI platform; macOS local acceptance requires native
+execution and does not imply a macOS CI job.
 The [bounded-line rendering decision](../bug-fix/2026-10-22-bounded-dashed-dependency-lines.md)
 owns the GPU paint correction needed to retain those capacity budgets on macOS.
 

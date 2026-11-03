@@ -183,7 +183,7 @@ func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 	}{
 		{"project", "FROM projects WHERE id =", false, false, false}, {"epoch", "SELECT task_cache_epoch::text", false, false, false},
 		{"count", "SELECT count(*) FROM tasks", false, false, false}, {"rows", "left(t.title, $2)", false, false, false}, {"properties", "SELECT task_id::text,name,value FROM task_properties", false, false, false}, {"clock", "SELECT statement_timestamp()", false, false, false},
-		{"missing completion", "FROM project_members m", true, false, true}, {"limit completion", "SELECT count(*) FROM tasks", false, true, true}, {"success completion", "SELECT statement_timestamp()", false, false, true},
+		{"missing completion", "FROM project_members", true, false, true}, {"limit completion", "SELECT count(*) FROM tasks", false, true, true}, {"success completion", "SELECT statement_timestamp()", false, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tasks, database, project, url, principal := taskService(t)

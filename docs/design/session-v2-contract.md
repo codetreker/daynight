@@ -303,7 +303,11 @@ Go 通过 `DecodeMessage([]byte) (Message,error)` 与
 Go 消息与输入操作的序列化拒绝 nil payload，以及外层 type/kind 与具体 payload
 类型不一致的组合；这不替代 decoder 对其余字段、引用和完整性的验证。
 
-两种语言对 manifest 中每个原始 fixture 执行对应 decoder。大边界由测试构造，
-避免提交数十 MiB 文件。既有 v1 fixtures 与 archive 回归保持运行。验证不仅
-检查字段类型，还检查排序、归属、完整性和非法终态，CI 采用仓库标准 CLI 与 Go gate。
+两种语言对 manifest 中每个原始 fixture 执行对应 decoder。常规 CI 采用仓库标准
+CLI 与 Go gate，保留紧凑归档、256 KiB 帧边界、快速数量/字节拒绝以及排序、归属、
+完整性和非法终态；既有 v1 fixtures 与 archive 回归保持运行。
+完整 100000 帧、60 MiB 录制、64 MiB 归档及其他规模边界由显式本地压力套件构造，
+避免提交数十 MiB 文件。仓库根 `pnpm test:stress` 运行 TS 压力套件，
+`pnpm server:test:stress` 运行 Go 压力套件；相应配置、构建标签测试入口在 CI 中拒绝。
+生产协议限额与完整规模的精确边界断言保持不变。
 原生副作用与性能承诺必须由真实隔离运行另行验证。

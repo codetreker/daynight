@@ -38,8 +38,10 @@ native joins, arrowheads, accessibility and interaction semantics remain intact.
 This extends the original paint decision with a length bound; its historical
 CPU raster evidence still explains the local coordinate representation. The
 [macOS acceptance decision](../testing/2026-10-22-macos-web-acceptance.md) owns
-platform execution and recovery. Fixed capacity datasets, five repetitions,
-event-to-feedback timing and the 3,000ms/300ms budgets remain unchanged.
+platform execution and recovery. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+retains fixed capacity datasets, five repetitions, event-to-feedback timing and
+the 3,000ms/300ms budgets in explicit local stress acceptance. Ordinary CI keeps
+compact line/curve seam and endpoint correctness checks.
 
 ## Alternatives
 
@@ -66,4 +68,5 @@ renewed geometry, pixel and performance verification before changing the bound.
 Tests cover full arc coverage, rotation/translation, dash phase at internal cuts,
 exact canonical geometry retention and short final pieces. Browser comparisons must verify
 complete canonical edges and visible output. Local diagnostic improvements do
-not replace native production and Linux CI acceptance evidence.
+not replace native production and Linux CI functional acceptance evidence;
+full-scale latency claims require the explicit local stress matrix.
