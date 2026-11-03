@@ -1679,10 +1679,13 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   const automation = dialog.getByRole('switch', { name: '自动执行', exact: true });
   const overviewTab = dialog.getByRole('tab', { name: '概览', exact: true });
   const executionPlatform = dialog.getByRole('combobox', { name: '执行平台', exact: true });
+  const assignment = dialog.getByRole('button', { name: '负责人：未分配', exact: true });
   await expect(dialog.getByRole('button', { name: '保存平台', exact: true })).toHaveCount(0);
   const copyTaskId = dialog.getByRole('button', { name: '复制任务 ID', exact: true });
   await page.keyboard.press('Tab');
   await expect(statusAction).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(assignment).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(executionPlatform).toBeFocused();
   await page.keyboard.press('Tab');
@@ -1697,6 +1700,8 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(automation).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(executionPlatform).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(assignment).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(statusAction).toBeFocused();
   await page.keyboard.press('Shift+Tab');

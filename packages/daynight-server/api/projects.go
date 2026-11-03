@@ -32,11 +32,13 @@ type ProjectPage struct {
 }
 
 type ErrorDetails struct {
-	TaskIDs   []string `json:"taskIds,omitempty"`
-	NodeCount *int64   `json:"nodeCount,omitempty"`
-	EdgeCount *int64   `json:"edgeCount,omitempty"`
-	MaxNodes  *int64   `json:"maxNodes,omitempty"`
-	MaxEdges  *int64   `json:"maxEdges,omitempty"`
+	EncodedBytes    *int64   `json:"encodedBytes,omitempty"`
+	MaxEncodedBytes *int64   `json:"maxEncodedBytes,omitempty"`
+	TaskIDs         []string `json:"taskIds,omitempty"`
+	NodeCount       *int64   `json:"nodeCount,omitempty"`
+	EdgeCount       *int64   `json:"edgeCount,omitempty"`
+	MaxNodes        *int64   `json:"maxNodes,omitempty"`
+	MaxEdges        *int64   `json:"maxEdges,omitempty"`
 }
 
 type Error struct {

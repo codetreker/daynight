@@ -49,11 +49,12 @@ selects four real 128 MiB/256 MiB exact-limit and +1-byte probes. The separate
 source, installation, precise scenario inventory and cleanup. Production limits
 and full-size boundary assertions are unchanged.
 
-Default browser acceptance requires twenty-nine native and twenty-nine container
-functional scenarios, both combined-authentication receipts, source/browser
+Default browser acceptance requires thirty-one native and thirty-one container
+functional scenarios (62 total), both eleven-check combined-authentication
+receipts, source/browser
 identity and all existing resource cleanup. Explicit local `--stress` adds five
-native capacity/limit scenarios after functional execution and container/browser
-cleanup. It preserves all complete API datasets, five repetitions, timing
+native capacity/limit scenarios (36 native / 31 container, 67 total) after
+functional execution and container/browser cleanup. It preserves all complete API datasets, five repetitions, timing
 budgets, strict performance receipts and browser diagnostics. Schema 3 evidence
 records `mode: functional` or `mode: stress`; exact report validation follows
 that mode. Raw Playwright discovery excludes the capacity spec by default.

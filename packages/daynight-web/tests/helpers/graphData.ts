@@ -17,7 +17,7 @@ const graph = (number: number, name: string, seeds: readonly TaskSeed[]): TaskGr
     const createdAt = new Date(Date.UTC(2026, 9, 21, 9, task.number * 10)).toISOString();
     return {
       id: id(task.number), titlePreview: task.title, titleTruncated: false, status: task.status,
-      requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+      assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
       dependsOn: task.dependencies.map(id).sort(), externalDependsOn: task.externalDependencies.map(id).sort(), blockedBy,
       ready: task.status === 'todo' && blockedBy.length === 0, createdAt, updatedAt: createdAt,
     };

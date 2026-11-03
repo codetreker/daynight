@@ -2,6 +2,7 @@ import { isTaskVersion } from "./json";
 import { parseTaskProperties } from "./task-properties";
 import { array, boolean, id, malformed, project, record, string, timestamp, executionPlatform } from "./parse";
 import type { TaskSummary, TaskSync } from "./types";
+import { nullableId } from "./validation";
 
 const ids = (value: unknown): string[] => {
   const result = array(value, id);
@@ -24,6 +25,7 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
     titlePreview: string(data.titlePreview), titleTruncated: boolean(data.titleTruncated),
     status: data.status, dependsOn, externalDependsOn,
     allowAgents: boolean(data.allowAgents),
+    assignedTo: nullableId(data.assignedTo),
     requiredPlatform: data.requiredPlatform === null ? null : executionPlatform(data.requiredPlatform),
     startedAt: data.startedAt === null ? null : timestamp(data.startedAt),
     completedAt: data.completedAt === null ? null : timestamp(data.completedAt),

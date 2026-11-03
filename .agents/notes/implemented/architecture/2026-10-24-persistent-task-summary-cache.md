@@ -24,16 +24,18 @@ values without property tombstones. Older rows cannot advance coverage or revive
 removed properties. Graph projections explicitly drop properties while the
 summary map retains them.
 
-The origin-local daynight-task-cache database uses schema 3 and idb 8.0.4. The
+The origin-local daynight-task-cache database uses schema 4 and idb 8.0.4. The
 [property-row model](2026-10-30-task-property-rows.md) made property absence
 observable without changing task versions during migration; its 1-to-2 upgrade
 cleared rebuildable stores to prevent conflicts with old worker:null or
 mandatory-PR details. The
 [full-property synchronization decision](2026-10-30-task-property-sync.md)
-adds complete properties to summary rows. Upgrades from 2 or directly from 1 to 3
-clear rebuildable project/summary/detail stores, rotate user fences and clear old
-watermarks before a complete snapshot. A missing field in an old row cannot be
-inferred as an empty property object. Its userScopes store owns durable user
+introduced complete properties to summary rows and a schema-3 rebuild. The
+[assignment decision](2026-11-03-task-assignment-foundation.md) adds the required
+nullable assignedTo field and schema 4. Direct upgrades from 1, 2 or 3 clear
+rebuildable project/summary/detail stores, rotate user fences and clear old
+watermarks before a complete snapshot. Missing properties or assignedTo cannot
+be inferred as an empty object or null. Its userScopes store owns durable user
 fences; projects owns project manifests and cache generations; summaries owns intrinsic task rows; details establishes the
 shared intrinsic-detail record and transaction shape. Manifest counts, edges,
 maximum time, ownership and graph validity are checked against the complete

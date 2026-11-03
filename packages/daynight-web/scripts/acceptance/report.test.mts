@@ -41,15 +41,22 @@ test('rejects retries, flaky tests, global errors, and invalid result evidence',
 const functionalNames = ['project-list', 'project-graph', 'detail-navigation', 'refresh-staleness',
   'failure-recovery', 'deep-links', 'keyboard-focus', 'narrow-layout', 'task-attachments', 'task-detail-page', 'project-view-tabs',
   'language-startup-preferences', 'language-state-preservation', 'language-errors-and-narrow',
-  'task-description-markdown', 'task-status', 'task-status-conflicts', 'task-status-recovery', 'task-status-transitions', 'task-agent-permission', 'task-platform',
+  'task-description-markdown', 'task-status', 'task-status-conflicts', 'task-status-recovery', 'task-status-transitions', 'task-agent-permission', 'task-platform', 'task-assignment', 'task-assignment-layout',
   'auth-login-session', 'auth-project-isolation', 'auth-project-members', 'auth-personal-tokens', 'auth-invitations', 'auth-resource-session', 'project-settings', 'task-execution-time'] as const;
 const capacityNames = ['capacity-chain', 'capacity-merge', 'capacity-shared', 'capacity-external', 'capacity-limits'] as const;
-const nativeNames = [...functionalNames, ...capacityNames];
+const stressNativeNames = [...functionalNames, ...capacityNames];
 const scenario = (name: string): Scenario => ({ name, title: name, durationMs: 12, screenshots: [`/owned/${name}.png`] });
 
-test('verifies exactly twenty-nine functional scenarios for the container target', () => {
+test('keeps functional and explicit local stress inventory totals distinct', () => {
+  assert.equal(functionalNames.length, 31);
+  assert.equal(functionalNames.length * 2, 62);
+  assert.equal(stressNativeNames.length, 36);
+  assert.equal(stressNativeNames.length + functionalNames.length, 67);
+});
+
+test('verifies exactly thirty-one functional scenarios for the container target', () => {
   const scenarios = readReport(report([...functionalNames]), functionalNames);
-  assert.equal(scenarios.length, 29);
+  assert.equal(scenarios.length, functionalNames.length);
   assert.deepEqual(scenarios.map(({ name }) => name), functionalNames);
 });
 
@@ -60,15 +67,15 @@ test('normal native acceptance requires exactly the functional inventory and rej
   assert.throws(() => aggregateScenarios([functional.slice(1)], functionalNames), /Required acceptance scenario missing: project-list/);
 });
 
-test('local stress acceptance aggregates native functional and capacity reports into exactly thirty-four scenarios', () => {
+test('local stress acceptance aggregates the complete native functional and capacity inventories', () => {
   const functional = readReport(report([...functionalNames]), functionalNames);
   const capacity = readReport(report([...capacityNames]), capacityNames);
   const phases: readonly (readonly Scenario[])[] = [functional, capacity];
-  const scenarios = aggregateScenarios(phases, nativeNames);
-  assert.equal(scenarios.length, 34);
-  assert.deepEqual(scenarios.map(({ name }) => name), nativeNames);
+  const scenarios = aggregateScenarios(phases, stressNativeNames);
+  assert.equal(scenarios.length, stressNativeNames.length);
+  assert.deepEqual(scenarios.map(({ name }) => name), stressNativeNames);
   assert.equal(scenarios[0], functional[0]);
-  assert.equal(scenarios[29], capacity[0]);
+  assert.equal(scenarios[functionalNames.length], capacity[0]);
 });
 
 test('requires the automatic-execution journey in each complete target report', () => {
@@ -76,38 +83,47 @@ test('requires the automatic-execution journey in each complete target report', 
   assert.throws(() => readReport(report(withoutPermission), functionalNames), /Required acceptance scenario missing: task-agent-permission/);
   const incompleteFunctional = withoutPermission.map(scenario);
   const capacity = capacityNames.map(scenario);
-  assert.throws(() => aggregateScenarios([incompleteFunctional, capacity], nativeNames), /Required acceptance scenario missing: task-agent-permission/);
+  assert.throws(() => aggregateScenarios([incompleteFunctional, capacity], stressNativeNames), /Required acceptance scenario missing: task-agent-permission/);
 });
 
 test('requires the platform journey in each complete target report', () => {
   const withoutPlatform = functionalNames.filter((name) => name !== 'task-platform');
   assert.throws(() => readReport(report(withoutPlatform), functionalNames), /Required acceptance scenario missing: task-platform/);
-  assert.throws(() => aggregateScenarios([withoutPlatform.map(scenario), capacityNames.map(scenario)], nativeNames), /Required acceptance scenario missing: task-platform/);
+  assert.throws(() => aggregateScenarios([withoutPlatform.map(scenario), capacityNames.map(scenario)], stressNativeNames), /Required acceptance scenario missing: task-platform/);
 });
+
+for (const name of ['task-assignment', 'task-assignment-layout'] as const) {
+  test(`requires the ${name} journey in each complete target report`, () => {
+    const incomplete = functionalNames.filter((candidate) => candidate !== name);
+    assert.throws(() => readReport(report(incomplete), functionalNames), new RegExp(`Required acceptance scenario missing: ${name}`));
+    assert.throws(() => aggregateScenarios([incomplete.map(scenario)], functionalNames), new RegExp(`Required acceptance scenario missing: ${name}`));
+    assert.throws(() => aggregateScenarios([incomplete.map(scenario), capacityNames.map(scenario)], stressNativeNames), new RegExp(`Required acceptance scenario missing: ${name}`));
+  });
+}
 
 test('requires the standalone task detail journey in each complete target report', () => {
   const withoutPage = functionalNames.filter((name) => name !== 'task-detail-page');
   assert.throws(() => readReport(report(withoutPage), functionalNames), /Required acceptance scenario missing: task-detail-page/);
-  assert.throws(() => aggregateScenarios([withoutPage.map(scenario), capacityNames.map(scenario)], nativeNames), /Required acceptance scenario missing: task-detail-page/);
+  assert.throws(() => aggregateScenarios([withoutPage.map(scenario), capacityNames.map(scenario)], stressNativeNames), /Required acceptance scenario missing: task-detail-page/);
 });
 
 test('rejects missing and unexpected scenarios across phases', () => {
   const functional = functionalNames.map(scenario);
   const capacity = capacityNames.map(scenario);
-  assert.throws(() => aggregateScenarios([functional, capacity.slice(1)], nativeNames), /Required acceptance scenario missing: capacity-chain/);
-  assert.throws(() => aggregateScenarios([functional, [...capacity, scenario('extra-flow')]], nativeNames), /Unexpected acceptance scenario: extra-flow/);
-  assert.throws(() => aggregateScenarios([functional, [...capacity.slice(1), scenario('extra-flow')]], nativeNames), /Unexpected acceptance scenario: extra-flow/);
+  assert.throws(() => aggregateScenarios([functional, capacity.slice(1)], stressNativeNames), /Required acceptance scenario missing: capacity-chain/);
+  assert.throws(() => aggregateScenarios([functional, [...capacity, scenario('extra-flow')]], stressNativeNames), /Unexpected acceptance scenario: extra-flow/);
+  assert.throws(() => aggregateScenarios([functional, [...capacity.slice(1), scenario('extra-flow')]], stressNativeNames), /Unexpected acceptance scenario: extra-flow/);
 });
 
 test('rejects duplicate scenarios within and across phases', () => {
   const functional = functionalNames.map(scenario);
   const capacity = capacityNames.map(scenario);
-  assert.throws(() => aggregateScenarios([[...functional, functional[0]!], capacity], nativeNames), /Duplicate acceptance scenario name: project-list/);
-  assert.throws(() => aggregateScenarios([functional, [...capacity, functional[0]!]], nativeNames), /Duplicate acceptance scenario name: project-list/);
-  assert.throws(() => aggregateScenarios([functional, [capacity[0]!, capacity[0]!, ...capacity.slice(2)]], nativeNames), /Duplicate acceptance scenario name: capacity-chain/);
+  assert.throws(() => aggregateScenarios([[...functional, functional[0]!], capacity], stressNativeNames), /Duplicate acceptance scenario name: project-list/);
+  assert.throws(() => aggregateScenarios([functional, [...capacity, functional[0]!]], stressNativeNames), /Duplicate acceptance scenario name: project-list/);
+  assert.throws(() => aggregateScenarios([functional, [capacity[0]!, capacity[0]!, ...capacity.slice(2)]], stressNativeNames), /Duplicate acceptance scenario name: capacity-chain/);
 });
 
 test('rejects an empty aggregate and duplicate required scenario names', () => {
-  assert.throws(() => aggregateScenarios([[], []], nativeNames), /No acceptance scenarios ran/);
+  assert.throws(() => aggregateScenarios([[], []], stressNativeNames), /No acceptance scenarios ran/);
   assert.throws(() => aggregateScenarios([[scenario('sample-flow')]], ['sample-flow', 'sample-flow']), /Duplicate required acceptance scenario names/);
 });

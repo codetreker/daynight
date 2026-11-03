@@ -7,7 +7,7 @@ export const indexOf = (seeds: readonly Seed[], defaultStatus: TaskStatus = 'tod
   const tasks: GraphTask[] = seeds.map(({ id, dependsOn = [], externalDependsOn = [] }) => {
     const status = statuses.get(id)!;
     const blockedBy = dependsOn.filter((source) => statuses.get(source) !== 'done');
-    return { requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null,
+    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null,
       id, dependsOn, blockedBy, ready: status === 'todo' && blockedBy.length === 0, status,
       titlePreview: id, titleTruncated: false, createdAt: '2026-10-22T00:00:00Z', updatedAt: '2026-10-22T00:00:00Z',
     };
