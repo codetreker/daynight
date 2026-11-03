@@ -63,6 +63,13 @@ export class CodexProjection {
       const activity = codexSubagentActivity(item)!;
       this.emit({ ...base, kind: "tool_call", callId: id, name: activity.name, input: limited(activity.input), output: [], status: completed ? "completed" : "running", truncated: activity.input.length > 200_000 });
     }
+    else if (type === "sleep") {
+      const duration = item.durationMs;
+      const seconds = typeof duration === "number" && Number.isFinite(duration) && duration > 0 ? duration / 1000 : undefined;
+      // New input can end a sleep early; requested duration is not elapsed time.
+      const input = seconds === undefined ? "Wait" : `Wait up to ${seconds} ${seconds === 1 ? "second" : "seconds"} (requested)`;
+      this.emit({ ...base, kind: "tool_call", callId: id, name: "clock.sleep", input, output: [], status: completed ? "completed" : "running", truncated: false });
+    }
     else if (["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "imageView", "collabAgentToolCall"].includes(type)) {
       const output = readable(item.aggregatedOutput ?? item.result ?? item.error ?? item.changes ?? "");
       const entry: Extract<ProviderEntry, { kind: "tool_call" }> = { ...base, kind: "tool_call", callId: id, name: string(item.tool) || type, input: limited(readable(item.command ?? item.arguments ?? item.query ?? item.changes ?? item)), output: [{ type: "text", text: limited(output) }], status: ["failed", "declined"].includes(string(item.status)) || item.error ? "failed" : completed ? "completed" : "running", truncated: output.length > 200_000 };
