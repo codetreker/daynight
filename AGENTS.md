@@ -162,6 +162,9 @@ For code changes, verify observable behavior and relevant failure paths using
 the repository's documented commands. Preserve acceptance criteria and expose
 errors. Run meaningful coverage checks when coverage tooling exists; a green
 check alone does not prove backend, lifecycle, concurrency, or browser behavior.
+CI unit, integration, and other routine test suites must not run stress-test
+cases. Run stress tests separately from these CI suites: slower CI runners make
+these cases expensive and delay PR delivery across the repository.
 
 Diagnose a failing check before retrying. Repeat an unchanged failure only after
 confirming a transient infrastructure cause. Add time bounds to commands that
