@@ -138,8 +138,10 @@ redact credentials.
 
 The ordinary Playwright trace and capacity override are therefore off. Secret
 screens are captured only after closing or masking the one-time value. Existing
-PNG/compositor oracles, custom CDP timing/frame/GC diagnostics, all assertions,
-raw report validators, capacity inputs, deadlines and resource budgets remain.
+PNG/compositor oracles, raw report validators, functional assertions and cleanup
+remain in ordinary CI. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+retains custom capacity CDP timing/frame/GC diagnostics, full inputs and timing
+budgets in explicit local stress mode; trace privacy rules apply in both modes.
 The cost is loss of Playwright action/network trace replay on failures. The
 narrow authenticated Playwright API wrapper replaces request and response-reading
 failures with safe operation/method/path/category/status/request-ID metadata;

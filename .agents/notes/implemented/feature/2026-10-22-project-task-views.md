@@ -117,8 +117,11 @@ opening initializes its pan and zoom. Keyboard tabs,
 native row actions and active-view focus restoration are
 part of the delivered interaction, including empty and all-completed views.
 The actual-backend `project-view-tabs` scenario runs on native and production
-container targets. Strict inventory validation and the original capacity/limit
-scenarios remain required, following the choices recorded in the
-[acceptance pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md).
+container targets. Strict functional inventory validation remains required in
+CI. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+retains the original complete capacity/limit scenarios behind explicit local
+stress acceptance; the
+[acceptance pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md)
+records the original combined scheduling choices.
 The [complete context decision](2026-10-22-complete-prerequisite-context.md) adds
 dense external ancestry without changing tab classification or chain membership.

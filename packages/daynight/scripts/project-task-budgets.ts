@@ -347,7 +347,16 @@ const runProbe = async (definition: ProbeDefinition, installed: InstalledCliRece
   return { receipt, errors };
 };
 
-export const runProductionBudgetProbes = async (installed: InstalledCliReceipt, repositoryRoot: string, serverToken: string, signal?: AbortSignal): Promise<BudgetProbeReceipt[]> => {
+export type BudgetProbeSuite = "deadlines" | "stress-budgets";
+const probeDefinitions: Record<BudgetProbeSuite, readonly ProbeDefinition[]> = {
+  deadlines: [progressPage, stalledBody],
+  "stress-budgets": [singleResponse(false), singleResponse(true), cumulativeResponses(false), cumulativeResponses(true)],
+};
+
+export const budgetProbeNames = (suite: BudgetProbeSuite): readonly string[] => probeDefinitions[suite].map((definition) => definition.name);
+
+export const runBudgetProbes = async (suite: BudgetProbeSuite, installed: InstalledCliReceipt, repositoryRoot: string, serverToken: string, signal?: AbortSignal): Promise<BudgetProbeReceipt[]> => {
+  if (suite === "stress-budgets" && process.env.CI) throw new Error("CLI resource-budget stress tests run only on local machines.");
   requireCondition(typeof serverToken === "string" && /^[\x21-\x7e]+$/.test(serverToken), "Budget probes require a header-safe PAT issued by the normal service fixture.");
   const fixture: typeof import("../test/fixtures/installed-cli.js") = await import(new URL("../test/fixtures/installed-cli.ts", import.meta.url).href);
   let temporaryRoot: string | undefined;
@@ -356,7 +365,6 @@ export const runProductionBudgetProbes = async (installed: InstalledCliReceipt, 
   try {
     await mkdir(path.join(repositoryRoot, ".tmp"), { recursive: true });
     temporaryRoot = await mkdtemp(path.join(repositoryRoot, ".tmp/project-task-budgets-"));
-    const byteProbes = [singleResponse(false), singleResponse(true), cumulativeResponses(false), cumulativeResponses(true)];
     const run = async (definition: ProbeDefinition): Promise<void> => {
       try {
         const outcome = await runProbe(definition, installed, temporaryRoot!, fixture.terminateInstalledProcess, serverToken, signal);
@@ -364,10 +372,13 @@ export const runProductionBudgetProbes = async (installed: InstalledCliReceipt, 
         errors.push(...outcome.errors);
       } catch (error) { errors.push(error); }
     };
-    // Byte boundaries measure correctness, so their compression and parsing do not compete with one another.
-    const byteSequence = async (): Promise<void> => { for (const definition of byteProbes) await run(definition); };
-    const outcomes = await Promise.allSettled([run(progressPage), run(stalledBody), byteSequence()]);
-    for (const outcome of outcomes) if (outcome.status === "rejected") errors.push(outcome.reason);
+    if (suite === "stress-budgets") {
+      // Full byte-boundary probes run serially so compression and parsing do not compete.
+      for (const definition of probeDefinitions[suite]) await run(definition);
+    } else {
+      const outcomes = await Promise.allSettled(probeDefinitions[suite].map(run));
+      for (const outcome of outcomes) if (outcome.status === "rejected") errors.push(outcome.reason);
+    }
   } catch (error) { errors.push(error); }
   if (temporaryRoot !== undefined) {
     try { await rm(temporaryRoot, { recursive: true, force: true }); }

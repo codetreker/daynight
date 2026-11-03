@@ -100,7 +100,9 @@ delivery reviewable and responsible for its own observable acceptance.
 ## Consequences
 
 Complete ancestry can make one open chain graph approach the complete-project
-limit, so the existing capacity matrix and performance budgets remain required.
+limit, so the existing capacity matrix and performance budgets remain required
+for explicit local stress verification. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+separates that full-scale evidence from ordinary CI correctness and coverage.
 Many nodes and edges may change style during selection; the former two-node
 selection cost assumption no longer establishes feedback time. Curved dash
 length and independent geometry validation are substantive work.

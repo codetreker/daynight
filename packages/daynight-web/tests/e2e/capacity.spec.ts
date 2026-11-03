@@ -11,6 +11,10 @@ import { panPoint } from './graph-pan';
 import { captureStableDependencyGeometry, checkDependencyGeometry, type GeometryExpectation } from './dependency-geometry';
 import { expectedBatch, expectedDependencyTopology, expectedNodeHeights, expectedOverview, type ChainTopology } from './visible-topology';
 
+if (process.env.CI !== undefined || process.env.DAYNIGHT_ACCEPTANCE_STRESS !== '1') {
+  throw new Error('Capacity browser tests require explicit local stress acceptance.');
+}
+
 // Repeated DOM snapshots of capacity views add controller work between
 // measured interactions. Dedicated CDP timelines and scenario PNGs retain the
 // rendering evidence alongside Playwright's action and network trace.
