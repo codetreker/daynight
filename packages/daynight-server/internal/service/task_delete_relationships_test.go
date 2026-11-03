@@ -128,6 +128,7 @@ func TestTaskDeletionRemoveDependsRefusalsAndFailuresAreAtomic(t *testing.T) {
 			ctx := context.Background()
 			target := createTask(t, tasks, principal, project.ID, "Target")
 			if scenario == "target-worker" {
+				target = updateTask(t, tasks, principal, target, UpdateTask{AssignedTo: assignmentChange(&principal.UserID)})
 				target = updateTask(t, tasks, principal, target, UpdateTask{AllowAgents: pointer(true)})
 				target = claimWorkerTask(t, tasks, principal, target, workerDescriptor())
 			}

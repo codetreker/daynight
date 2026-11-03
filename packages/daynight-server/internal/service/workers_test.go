@@ -79,7 +79,7 @@ func TestWorkerSnapshotsNormalizeClaimsAndFilterCurrentPermissions(t *testing.T)
 	owner := workerMember(t, database, project.ID)
 	descriptor := workerDescriptor()
 	descriptor.Agent, descriptor.AgentControlMode = core.AgentClaude, core.AgentControlModeWeb
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), descriptor)
+	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
 	task = updateTask(t, tasks, admin, task, UpdateTask{Properties: propertyPatch(core.PullRequestProperty{URL: "opaque\x00", Title: "Unrelated PR"})})
 	before := task
 	workers := NewWorkers(database)
