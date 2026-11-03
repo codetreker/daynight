@@ -24,9 +24,8 @@ lifecycle. The client HTTP foundation targets this service's API.
 The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
 Task assignee. Ordinary task creation/PATCH and full Task, summary and graph
-producers carry it. Assignee filters, people-directory reads and CLI/Web
-assignment consumers are separate capabilities, not implemented by this server
-field foundation.
+producers carry it. Native assignee filtering and project-scoped people reads
+are implemented; CLI/Web assignment consumers remain separate capabilities.
 
 The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define UniAuth identity
@@ -782,14 +781,19 @@ remain significant. Readiness changes do not advance dependent task revisions.
 
 Expected refusals are returned only after the lock-only transaction succeeds;
 transaction/cleanup failures preserve operational errors. Reads use an RR snapshot.
-Task cursors bind project and optional status/ready/allowAgents/compatiblePlatform
-filters, retaining absent/false and absent/each-enum distinctions. Optional UUID
+Task cursors use version 2 and bind project, the resolved
+all/unassigned/user:UUID assignee selection and optional
+status/ready/allowAgents/compatiblePlatform filters, retaining absent/false and
+absent/each-enum distinctions. Optional UUID
 workerId also binds the implicit authenticated user ID and matches only that
 user/worker active claim. Ordinary eligibility filters remain SQL predicates;
 worker ownership is matched by decoding each candidate’s worker property row
 before collecting the final limit+1 matches; complete properties are batch-loaded
-for selected tasks. No bounded output page hides later matches, and opaque PR
-strings are not converted through PostgreSQL JSON types.
+for selected tasks. Assignee equality/IS NULL applies before this worker
+matching and final pagination. No bounded output page hides later matches, and
+opaque PR strings are not converted through PostgreSQL JSON types. Project and
+account-Worker cursors stay at version 1; old version-1 task cursors are refused.
+The assignee filter is explicit and does not change automatic worker eligibility.
 
 ## Task-chain graph
 
@@ -934,6 +938,7 @@ user/worker active-claim inventory; no claim table is introduced.
 | `POST` | `/api/v1/projects/{projectId}/tasks` | `201`, task and `Location` |
 | `GET` | `/api/v1/projects/{projectId}/tasks` | `200`, task page |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | `200`, task |
+| `GET` | `/api/v1/projects/{projectId}/task-assignees` | `200`, scoped minimal people catalogue or bounded userId resolution |
 | `GET` | `/api/v1/task-properties/schema` | `200`, authenticated server-wide definitions without project discovery |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | `200`, projectId/taskId/version and complete properties |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version/valueText; `200`, property resource after setting one complete value |
@@ -1008,10 +1013,13 @@ and an explicit `pullRequests: []` remains distinct from absence. A missing
 project or a task outside the specified project returns 404. The initialized
 empty project returns `items: []`, `nextCursor: null`.
 
-Lists support `limit`, `cursor`, `status`, `ready`, `allowAgents`,
-`compatiblePlatform` and UUID `workerId`, once each.
+Task lists support `limit`, `cursor`, `status`, `ready`, `allowAgents`,
+`compatiblePlatform`, `assignedTo` and UUID `workerId`, once each.
 Both boolean filters accept literal `true` or `false`; compatibility accepts
 `windows`, `linux` or `macos` and includes null requirements and exact matches.
+assignedTo accepts a UUID, `me` or `unassigned`; omission means all assignments.
+`me` resolves to the admitted principal before cursor checking, while unassigned
+matches native NULL. A former assignee UUID remains a valid filter.
 Explicit filters combine with AND before final pagination and lookahead and stay
 bound to the cursor's canonical project scope. workerId includes only current
 active claims for the authenticated user and that worker; it adds no implicit
@@ -1019,6 +1027,34 @@ status, readiness, permission or platform eligibility condition. Only a workerId
 query aggregated successfully across all relevant projects/pages supplies a complete
 ownership inventory. Partial pages, additional filters and failed traversals cannot
 authorize cleanup by absence. HTTP input retains strict query validation.
+Task cursor version 2 includes the resolved assignee scope; me and its concrete
+UUID may share that scope, but another account's me cannot. Project and
+account-owned Worker list cursors remain version 1.
+
+The project-scoped task-assignees GET returns `items` and `unresolvedUserIds`
+as non-null arrays. With no query it enumerates current members and assignees
+retained by undeleted tasks. Repeated `userId` query arguments select a bounded
+resolution mode: 1–100 distinct canonical UUIDs, with no empty, duplicate,
+malformed or unknown parameters. Both arrays are sorted; in resolution mode
+they are disjoint and cover the requested IDs exactly. The complete catalogue
+has an empty unresolved array. HEAD and method refusal retain the authenticated
+GET/no-store/Allow contract.
+
+Each item has only userId, nullable name, nullable avatarUrl and boolean
+hasProjectAccess. Values preserve the canonical profile; no name or email
+fallback is synthesized, and email, external identity, role, version and
+execution records are not returned. No scoped membership or live-task reference
+means unresolved, regardless of whether a global user exists. A raw qualifying
+reference whose users row is missing is an internal integrity failure, not an
+unresolved ID or a null name. Both modes authorize and read references/profiles
+within one repeatable-read snapshot and fail as a whole on query, scan, rows,
+cancellation or transaction-completion errors.
+
+Full catalogue reads are intended for explicit selection/retry. Recurring
+consumers resolve their rendered/selected IDs in batches of at most 100; an empty
+set sends no request rather than omitting arguments and enumerating everything.
+The [assignment contract](../../docs/spec/daynight-task-assignment.md) owns the
+privacy, qualification and error rules. Neither mode mutates Task versions.
 
 Lifecycle POST bodies require only the positive int64 expected version, as a
 JSON number. Missing, null, fractional, nonpositive and out-of-range versions fail.

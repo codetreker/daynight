@@ -30,6 +30,8 @@ func taskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *Authentication, 
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
 	workerRoutes(mux, handler, auth, logger)
 	propertyRoutes(mux, handler, auth, logger)
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-assignees", auth.Require(handler.assignees))
+	mux.HandleFunc("/api/v1/projects/{projectId}/task-assignees", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-graph", auth.Require(handler.graph))
 	mux.HandleFunc("/api/v1/projects/{projectId}/task-graph", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
@@ -207,7 +209,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 }
 
 func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
-	values, err := queryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "workerId")
+	values, err := queryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "workerId", "assignedTo")
 	if err != nil {
 		return service.TaskListRequest{}, err
 	}
@@ -216,6 +218,9 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 		return service.TaskListRequest{}, err
 	}
 	result := service.TaskListRequest{PageRequest: page}
+	if value, exists := values["assignedTo"]; exists {
+		result.AssignedTo = &value[0]
+	}
 	if value, exists := values["status"]; exists {
 		status := core.TaskStatus(value[0])
 		result.Status = &status

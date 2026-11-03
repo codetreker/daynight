@@ -21,6 +21,7 @@ type listCursor struct {
 	CompatiblePlatform *core.TaskPlatform `json:"compatiblePlatform"`
 	WorkerID           *string            `json:"workerId"`
 	WorkerUserID       *string            `json:"workerUserId"`
+	AssignedTo         json.RawMessage    `json:"assignedTo,omitempty"`
 	CreatedAt          time.Time          `json:"createdAt"`
 	ID                 string             `json:"id"`
 }
@@ -34,6 +35,7 @@ type listScope struct {
 	CompatiblePlatform *core.TaskPlatform
 	WorkerID           *string
 	WorkerUserID       *string
+	AssignedTo         core.TaskAssignmentFilter
 }
 
 func projectListPage(request PageRequest) (store.Page, error) {
@@ -61,8 +63,22 @@ func listPage(request PageRequest, scope listScope) (store.Page, error) {
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return store.Page{}, invalidInput("Cursor is invalid for this list.")
 	}
+	expectedVersion := 1
+	if scope.Kind == "tasks" {
+		expectedVersion = 2
+		expectedAssignment, err := taskAssignmentScope(scope.AssignedTo)
+		if err != nil {
+			return store.Page{}, err
+		}
+		var assignment string
+		if len(cursor.AssignedTo) == 0 || json.Unmarshal(cursor.AssignedTo, &assignment) != nil || assignment != expectedAssignment {
+			return store.Page{}, invalidInput("Cursor is invalid for this list.")
+		}
+	} else if cursor.AssignedTo != nil {
+		return store.Page{}, invalidInput("Cursor is invalid for this list.")
+	}
 	id, err := CanonicalID(cursor.ID)
-	if err != nil || id != cursor.ID || cursor.Version != 1 || cursor.Kind != scope.Kind ||
+	if err != nil || id != cursor.ID || cursor.Version != expectedVersion || cursor.Kind != scope.Kind ||
 		cursor.ProjectID != scope.ProjectID || !equalOptional(cursor.Status, scope.Status) ||
 		!equalOptional(cursor.Ready, scope.Ready) || !equalOptional(cursor.AllowAgents, scope.AllowAgents) || !equalOptional(cursor.CompatiblePlatform, scope.CompatiblePlatform) || !equalOptional(cursor.WorkerID, scope.WorkerID) || !equalOptional(cursor.WorkerUserID, scope.WorkerUserID) || cursor.CreatedAt.IsZero() {
 		return store.Page{}, invalidInput("Cursor is invalid for this list.")
@@ -78,6 +94,17 @@ func encodeProjectCursor(project core.Project) (string, error) {
 func encodeListCursor(scope listScope, createdAt time.Time, id string) (string, error) {
 	cursor := listCursor{Version: 1, Kind: scope.Kind, ProjectID: scope.ProjectID, Status: scope.Status,
 		Ready: scope.Ready, AllowAgents: scope.AllowAgents, CompatiblePlatform: scope.CompatiblePlatform, WorkerID: scope.WorkerID, WorkerUserID: scope.WorkerUserID, CreatedAt: createdAt, ID: id}
+	if scope.Kind == "tasks" {
+		assignment, err := taskAssignmentScope(scope.AssignedTo)
+		if err != nil {
+			return "", err
+		}
+		cursor.Version = 2
+		cursor.AssignedTo, err = json.Marshal(assignment)
+		if err != nil {
+			return "", err
+		}
+	}
 	data, err := json.Marshal(cursor)
 	if err != nil {
 		return "", err

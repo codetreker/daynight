@@ -30,6 +30,7 @@ type WorkerQuery struct {
 }
 
 type TaskQuery struct {
+	AssignedTo         core.TaskAssignmentFilter
 	Page               Page
 	Status             *core.TaskStatus
 	Ready              *bool
