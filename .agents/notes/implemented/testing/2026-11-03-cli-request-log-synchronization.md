@@ -21,10 +21,10 @@ adds an event only after parsing its complete newline-terminated JSON record.
 
 ## Decision
 
-The [external-dependency write fixture](../../../../packages/daynight-server/cmd/daynight-server/acceptance_external_dependency_write_cli_test.go)
+The [external-dependency write fixture](../../../../packages/daynight-server/cmd/e2e_tests/acceptance_external_dependency_write_cli_test.go)
 waits for both `external-flags-only` and `external-flags-noop` before invoking the
 stale CLI refusal. A small `acceptanceCLIWaitSuccessfulPatchLogs` helper in the
-[existing CLI acceptance owner](../../../../packages/daynight-server/cmd/daynight-server/acceptance_cli_test.go)
+[existing CLI acceptance owner](../../../../packages/daynight-server/cmd/e2e_tests/acceptance_cli_test.go)
 composes the existing `acceptanceEventually` and `acceptanceLogs.matches`
 functions. All specified IDs must have parsed `http_request` records with method
 PATCH and status 200. The caller supplies the existing eight-second log-wait
