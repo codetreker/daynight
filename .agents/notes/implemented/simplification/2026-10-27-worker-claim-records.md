@@ -28,8 +28,9 @@ adds claim-frozen mode routing and a separate Web-only evidence store. The
 resource-derived recovery and process-local execution rules below apply to Herdr;
 they do not replace the Controller journal or authorize uncertain Web replay.
 The [SQLite format migration decision](../architecture/2026-10-30-cli-sqlite-migrations.md)
-versions this same index independently without adding business columns or another
-recovery ledger.
+versions the index independently. The [cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md)
+partially supersedes this note's process-local cleanup choice with a separate
+claim/worktree-bound schedule; business execution recovery remains process-local.
 
 The service supplies complete current own-claim inventory. Git and the private
 Herdr instance supply actual resources. Startup resolves configured Projects and
@@ -111,8 +112,9 @@ counting an old business turn as the requested cleanup. The
 that criterion: successful notification followed by a fresh idle observation
 allows stopping, without requiring counters or interactive readiness. Notification
 failures and unknown results retain the bounded deadline and visible error.
-Input observations and cleanup progress remain process-local. This criterion
-applies to normal terminal cleanup. The
+Business input observations remain process-local. Terminal-cleanup notification
+state and its first deadline survive restart under the cleanup retry decision.
+This criterion applies to normal terminal cleanup. The
 [direct shutdown decision](../bug-fix/2026-10-28-worker-direct-shutdown.md)
 owns worker process exit: cancel and join all jobs, including terminal cleanup,
 then directly stop agents and close workspaces without a cleanup prompt or turn.
@@ -120,11 +122,15 @@ Claims, worktrees, native session IDs and unfinished rows remain even for ended
 owners; the next normal inventory re-enters their terminal cleanup. Stop errors
 remain visible and uncertain stopping retains the private daemon.
 
-Configuration and recovery/cleanup state are process-local. A restarted process
-uses the current applicable model/args for the recorded agent type. Cleanup has
-a ten-minute deadline within its current attempt; after interruption, a new
-inventory and resource observation starts another attempt. Recovery counts reset
-with the process. Logs diagnose operations and never supply a recovery ledger.
+Configuration and business recovery state are process-local. A restarted process
+uses the current applicable model/args for the recorded agent type. The original
+choice also made cleanup progress process-local to avoid a second resource-state
+model. Repeated failures showed that restarting its deadline and notification
+could repeat an irreversible input without changing the cleanup obstruction.
+The cleanup retry decision preserves the first cleanup deadline, notification
+state and retry eligibility independently of actual resource observations.
+Business recovery counts still reset with the process. Logs diagnose operations
+and never supply a recovery ledger.
 
 Manual commands require a stopped runner and acquire its same instance lock.
 They synchronously operate on one claim. Release stops the agent and
@@ -162,8 +168,10 @@ a process must be resumed. Two explicit columns provide that index.
 **Keep the detailed persistent execution model.** Durable receipts and intent
 retain stronger cross-restart timing, configuration and uncertainty guarantees.
 They also require numerous parsers and transition conditions at every caller.
-The worker now rebuilds actions from current facts and accepts the narrower
-restart semantics instead.
+The simplification rebuilt actions from current facts and accepted narrower
+restart semantics. The cleanup retry decision restores only the timing and
+notification guarantee needed for terminal cleanup, without restoring the
+retired execution model.
 
 **Reuse a restored inactive pane directly.** Its retained native reference does
 not establish that the restored shell has the task's native environment. Fresh
@@ -177,7 +185,9 @@ while keeping failures local to their actual resource.
 
 **Move the removed state into another file or remote ledger.** That keeps the
 same synchronization and recovery protocol while hiding it from the table
-shape. There is one business index and no alternate execution journal.
+shape. Business execution still has one claim index and no alternate Herdr execution
+journal. The explicit cleanup schedule is a limited exception documented by its
+own decision, rather than a hidden copy of the retired model.
 
 ## Consequences
 
@@ -187,15 +197,17 @@ versions and errors. A failed or partial read is not an empty resource set.
 Old claim resources still block the same task's new execution and retain
 capacity until actual cleanup completes.
 
-Restart does not preserve the first cleanup deadline, accumulated recovery
-budget, old model/args or an interrupted management decision. A NULL native ID
+Restart preserves the terminal-cleanup deadline and notification state, but not
+the accumulated business recovery budget, old model/args or an interrupted
+management decision. A NULL native ID
 starts a fresh conversation with an `info` event; if a prior conversation existed,
 its continuity can be lost. Management takes the runner offline. The state
 directory is for one configured service/account/worker identity; changes require completing
 old executions and rebuilding local state.
 
 The [SQLite format migration decision](../architecture/2026-10-30-cli-sqlite-migrations.md)
-sets the index's format version to 5. Version 0 discards its schema and rows, then
+provides the version 5 index baseline; the cleanup retry decision adds the
+version 6 schedule while preserving the original index rows. Version 0 discards its schema and rows, then
 rebuilds through the baseline and numbered upgrades after admission.
 Retired detailed nonzero versions 1–4 still have no conversion or automatic
 deletion: an operator stops the old worker and removes that SQLite before
