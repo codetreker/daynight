@@ -757,13 +757,13 @@ Go 的 `installed_cli_task_attachment_workflow` 使用既有安装回执与实�
 必须确认 `storageRootRemoved`。
 
 Web 新增 `task-attachments` 功能场景，在原生和实际生产容器上让同一次安装的 CLI
-与页面操作同一批数据；原有八个图功能场景及四个原生容量/超限场景保持完整。
+与页面操作同一批数据；图功能场景属于常规 CI，完整原生容量/超限矩阵由显式本地压力验收保留。
 完整上下文交付另加入 `capacity-external`，原生容量/超限共五个场景；机制与统计
 由[看板设计](daynight-web.md#验证与-ci)拥有。
 另有 `project-view-tabs` 验证项目内任务视图；[双语界面](daynight-web-i18n.md)增加三个功能场景，
 [三状态架构](daynight-task-status.md)拥有当前状态设置。状态、冲突、恢复与组合场景只允许
 登记资源和精确次数的 PUT status；附件写入保持自己的 fixture-scoped allowlist。
-当前严格 inventory 为原生 33 个、容器 28 个，共 61 个结果，任务描述阅读、鉴权、设置、
+当前常规严格 inventory 为原生、容器各 29 个功能场景，共 58 个；显式本地压力模式另加五项原生容量/超限，共 63 个结果。任务描述阅读、鉴权、设置、
 许可和计时场景仍保有独立的写入边界。
 
 附件场景与
@@ -782,7 +782,7 @@ compositor 像素中的 fixture 专用色块。判断器将匹配像素按连通
 
 运行回执校验 Git SHA/dirty 标记及实际 tarball/entry 摘要；dirty 标记不是脏源码内容
 指纹。CI 继续要求干净 checkout 等于 `GITHUB_SHA`。浏览器、CLI 和辅助子进程/组均
-归本次 run 管理，失败或取消也必须清理。Web CI 完成生产浏览器、容量及恢复后，
+归本次 run 管理，失败或取消也必须清理。Web CI 完成功能生产浏览器及恢复后，
 再运行一次既有真实部署附件检查，保留配套备份恢复回执。所有通过结论须绑定
 对应实际运行的源码、产物及环境回执。
 

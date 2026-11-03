@@ -329,18 +329,33 @@ SQL resources and bundled Markdown. Other documentation exclusions apply before 
 changes selecting several modules run their union. The Web selector enables
 parallel quality and browser jobs, each with a 20-minute bound; both are required
 by `checks`. Selected jobs retain their complete integration and coverage gates.
-The final `checks` job runs unless the workflow is cancelled and accepts only
-`success` or `skipped` from all preceding jobs. A newer run on the same ref cancels
-the older workflow. Documentation-only PRs run routing tests and that gate;
-every `main` push runs full application validation. See the
+The final `checks` job uses `always()` and accepts only `success` or `skipped`
+from all preceding jobs. A newer PR run cancels the older run for that PR.
+New `main` pushes queue behind an active `main` run without cancelling it.
+Documentation-only PRs run routing tests and that gate; every `main` push selects
+full application validation. See the
 [CI guide](docs/development.md#ci-selection) for routing and execution details.
 
 ## Validation
 
 `pnpm check` covers CLI type checking and tests; `pnpm acceptance` exercises the
 installed package. Server and Web checks have separate commands and require
-statement coverage strictly greater than 90%. For document changes, check local
-links and anchors, newly created files and `git diff --check`.
+statement coverage strictly greater than 90%. Routine CI suites exclude stress
+workloads. Run the corresponding explicit local command when full-scale evidence
+is required:
+
+| Local workload | Command from the repository root |
+|---|---|
+| CLI rendering and Session-v2 archive limits | `pnpm test:stress` |
+| Installed CLI production decoded-byte budgets | `pnpm test:stress:budgets` |
+| Go query, archive and repeated-write workloads | `pnpm server:test:stress` |
+| Web graph and geometry workloads | `pnpm web:test:stress` |
+| Production browser capacity and timing matrix | `pnpm web:acceptance:stress` |
+
+These stress entrypoints refuse a CI environment. The
+[development guide](docs/development.md#local-stress-validation) owns their
+prerequisites and evidence boundaries. For document changes, check local links
+and anchors, newly created files and `git diff --check`.
 
 Acceptance results belong to their tested revision, artifacts, environment and
 execution scope. Controlled process fixtures do not prove live Copilot/GitHub

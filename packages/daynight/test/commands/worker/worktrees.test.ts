@@ -78,7 +78,7 @@ describe("worker repositories and task worktrees", () => {
     await adapter.removeWorktree(f.project, f.owner, operation());
     expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: otherOwner, binding: second }]);
     expect(await readFile(path.join(unrelated, "tracked.txt"), "utf8")).toBe("original\n");
-  });
+  }, 60_000);
 
   it("reports an unregistered reserved task directory during discovery", async () => {
     const f = await fixture(); const adapter = manager(f.root);

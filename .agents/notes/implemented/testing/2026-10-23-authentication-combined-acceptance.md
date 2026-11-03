@@ -86,12 +86,14 @@ then verifies the same pending input, single submission and same revealed token
 element across English/Simplified Chinese. The response remains the actual
 server result. Screenshots happen only after closing or masking the secret.
 
-The current 53 Playwright cases comprise 24 native functional, 24 container
-functional and 5 native capacity, including the later task-unapproval scenario. Native and container each require a separate
-combined receipt. These receipts do not renumber the Playwright inventory or
-replace its fixed data, five samples, geometry checks, zero retries, raw report
-validation or time/request/memory budgets. Capacity remains isolated from
-competing preparation, restart and container cleanup.
+The current ordinary inventory contains twenty-nine native and twenty-nine
+container functional scenarios. Both targets require a separate combined receipt.
+The [local stress decision](2026-11-03-local-stress-suites.md) moves the five
+native capacity/limit scenarios behind explicit local stress acceptance while
+preserving fixed data, five samples, geometry checks and timing budgets. Both
+modes retain exact raw report validation, zero retries and complete cleanup.
+Local capacity remains isolated from competing preparation, restart and
+container cleanup.
 
 ### Safe evidence and failure ownership
 

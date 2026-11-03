@@ -1,3 +1,5 @@
+//go:build stress
+
 package server
 
 import (
@@ -83,7 +85,10 @@ func assigneePlanIndexes(value any, result map[string]bool) {
 	}
 }
 
-func TestTaskAssigneeProductionQuerySample(t *testing.T) {
+func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
+	if os.Getenv("CI") != "" {
+		t.Fatal("stress tests are local-only and cannot run in CI")
+	}
 	base := projectTestStore(t)
 	recorder := &assigneeQueryRecorder{}
 	config := base.Pool.Config()

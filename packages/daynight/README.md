@@ -8,8 +8,15 @@ share configuration and behavior.
 
 See the [project overview](../../README.md) for the browser workspace and service,
 and the [development guide](../../docs/development.md) for source builds,
-validation, package versions and npm publication. Each command's `--help` owns
-its exact usage. Review execution additionally requires Git, an authenticated
+validation, package versions and npm publication. Ordinary test and installed
+acceptance suites exclude stress workloads. From this package, `pnpm test:stress`
+builds the CLI and runs the rendering and full Session-v2 `.stress.ts` suites;
+`pnpm test:stress:budgets` runs the server validation gate with the four full
+128 MiB/256 MiB installed-CLI byte probes. The latter requires an isolated
+`DAYNIGHT_TEST_DATABASE_URL` and the [server validation prerequisites](../daynight-server/README.md#validate).
+Both commands are explicit local-only validation and refuse CI. The
+[local stress guide](../../docs/development.md#local-stress-validation) owns
+selection and receipt interpretation. Each command's `--help` owns its exact usage. Review execution additionally requires Git, an authenticated
 GitHub CLI and Copilot CLI on `PATH`.
 
 - [Install and update](#install-and-update)

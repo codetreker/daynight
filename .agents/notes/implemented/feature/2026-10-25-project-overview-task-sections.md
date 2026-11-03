@@ -98,8 +98,10 @@ content in the hidden panel.
 Browser verification must distinguish outer retention from inner category
 remounting, and prove scroll isolation with real document geometry. Layout tests
 also cover empty projects, recoverable refresh failure, long content, responsive
-orientation and visible focus restoration. Existing production acceptance and
-capacity scenarios retain their gates and measurement boundaries. Explicit
+orientation and visible focus restoration. Existing production functional
+acceptance retains its gates. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+retains capacity scenarios and measurement boundaries in explicit local stress
+acceptance. Explicit
 Task list entry remains part of cold start without a saved section preference
 where measurement already begins before project navigation; warm graph operation
 measurements remain unchanged.

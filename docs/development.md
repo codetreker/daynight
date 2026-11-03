@@ -46,7 +46,10 @@ pnpm daynight --version
 `pnpm check` runs type checking and tests. Standalone `pnpm test` and
 `pnpm acceptance` build the package before exercising the compiled CLI. Native CI
 typechecks and builds once, then invokes both Vitest configurations against that
-same compiled output. `pnpm build` clears the package's `dist/`, compiles
+same compiled output. Ordinary suites exclude `.stress.ts` files; explicit
+local stress commands select those workloads separately, as described in
+[local stress validation](#local-stress-validation). `pnpm build` clears the
+package's `dist/`, compiles
 `packages/daynight/dist/main.js`, then runs `scripts/copy-resources.ts`. That step
 copies the explicit review and public skill bundles, plus the five SQLite owner
 resource directories, into matching dist paths. Skill bundles retain their full
@@ -345,13 +348,13 @@ Go job contributes its result to the final `checks` job. PostgreSQL absence is a
 failure, not a skipped test. The gate includes an installed-CLI service path and
 resource-budget probes. A Node orchestrator shares one real installation across
 the Go command scenarios and, after the unchanged go-cov/strict-profile checks,
-public-command probes outside Go's default ten-minute timer. Test-only deadline
+public-command deadline probes outside Go's default ten-minute timer. Test-only
 mocks use a 1-second request and 3-second operation budget while separately
 asserting the installed production defaults of 30 seconds and five minutes.
-The 128 MiB single-response and 256 MiB cumulative decoded-byte probes keep
-real exact-limit and +1-byte tests. Each receipt identifies actual deadlines and
-mock status. The Go job retains its 20-minute bound and complete validation
-workload. The [acceptance design](../docs/design/daynight-project-task.md#验证与交付证据)
+The four 128 MiB single-response and 256 MiB cumulative decoded-byte probes run
+only through the explicit local stress entrypoint, preserving real exact-limit
+and +1-byte tests. Each receipt identifies actual deadlines and mock status. The
+Go job retains its 20-minute bound, race checks and strict coverage gates. The [acceptance design](../docs/design/daynight-project-task.md#验证与交付证据)
 owns the mechanism and source-bound evidence. The
 [server validation guide](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence) maps
 requirements to tests and describes the CI receipt containing tested source and
@@ -417,11 +420,49 @@ and records cleanup failures.
 
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. It runs native functional workflows, then the container workflows and
-complete container cleanup, and finally the fixed native capacity cases. It
-requires Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and Playwright Chromium. The
+parallel. It runs twenty-nine native functional workflows, then the same
+container workflows and complete container cleanup. The explicit local
+`pnpm web:acceptance:stress` command adds the fixed native capacity cases after
+those phases. Both modes require Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and
+Playwright Chromium. The
 [web README](../packages/daynight-web/README.md#production-browser-acceptance) owns
 browser setup, required gates and receipt interpretation.
+
+## Local stress validation
+
+Routine CI validates observable behavior, failures, concurrency and complete
+product-source coverage without executing stress workloads. Full-scale graph,
+archive, rendering and decoded-byte workloads use explicit local entrypoints:
+
+| Workload | Repository-root command | Prerequisites and output |
+|---|---|---|
+| CLI rendering and full Session-v2 archives | `pnpm test:stress` | Builds the CLI and selects `.stress.ts` files with `vitest.stress.config.ts` |
+| Installed CLI production byte budgets | `pnpm test:stress:budgets` | Requires the server validation prerequisites and isolated `DAYNIGHT_TEST_DATABASE_URL`; writes `.tmp/project-task-stress-evidence.json` |
+| Go query, archive and repeated-write checks | `pnpm server:test:stress` | Requires isolated PostgreSQL and the server test environment; invokes the explicit stress-tagged packages with race detection |
+| Web graph/model/geometry scale checks | `pnpm web:test:stress` | Selects Web `.stress.ts` files with `vitest.stress.config.ts` |
+| Production browser capacity matrix | `pnpm web:acceptance:stress` | Uses the production browser prerequisites and adds five native capacity/limit scenarios with their original measurements and budgets |
+
+The stress configs, raw workload entrypoints and Go stress tests reject a
+nonempty `CI` environment before creating stress fixtures. Ordinary Go discovery
+omits files with the `stress` build tag; ordinary Vitest discovery omits
+`.stress.ts` files, and ordinary Playwright discovery excludes the capacity spec.
+The package-local commands are documented by their owners. From the server
+module, `bash scripts/stress.sh` runs its query, archive and repeated-write
+workloads; `bash scripts/check.sh --stress-budgets` selects the installed CLI's
+four full-byte probes after the usual Go gate.
+
+Default CLI service acceptance retains two bounded deadline probes and
+`.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
+the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
+claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
+functional mode requires twenty-nine scenarios per target; stress mode adds the
+five native capacity scenarios and `native/capacity/performance.json`. Both
+modes retain strict source/browser identity, combined authentication and owned
+resource cleanup. Local measurements prove only their recorded source and host;
+they do not establish hosted PR latency.
+
+The [local stress decision](../.agents/notes/implemented/testing/2026-11-03-local-stress-suites.md)
+records the workload split and retained correctness guarantees.
 
 ## Package versions
 
@@ -554,8 +595,9 @@ module ownership or the unclassified-path fallback. An excluded path does not
 suppress jobs selected by other changed files. New modules and unclassified
 patches select all jobs until their consumers are explicitly assigned.
 
-Selected jobs keep their complete checks, coverage thresholds, acceptance suites,
-timeouts and cleanup requirements. The Go job still builds real web assets and
+Selected jobs keep their ordinary functional checks, coverage thresholds,
+timeouts and cleanup requirements. Stress workloads have explicit local-only
+entrypoints and are excluded from routine CI selection. The Go job still builds real web assets and
 exercises the installed CLI; the web job still builds and exercises the Go
 service and production deployment. Selecting one module does not split these
 existing integration suites. The same Web selector enables quality and browser
@@ -574,7 +616,7 @@ browser acceptance run in parallel jobs, `verify-web-quality` and `verify-web`, 
 changes retain all-module selection.
 
 The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness
-and the complete Vitest/V8 suite with its strict statement checker serially,
+and the ordinary Vitest/V8 suite with its strict statement checker serially,
 each with a 180-second deadline. Only the coverage subprocess uses four workers
 through its copied environment, retaining the `forks` pool and file isolation.
 The [worker capacity decision](../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
@@ -589,9 +631,11 @@ The core has no quality/browser preparation callbacks or readiness-admission
 observer. Local acceptance uses its existing installed browser. Native and
 container preparation still overlap; native functional checks and browser cleanup
 precede the container browser permission release. The permission wait remains
-900 seconds. Core preparation, functional phases, full container cleanup and
-browser recovery finish before native capacity. Independent quality checks run
-on their own runner and do not add empty core phases or split browser scenarios.
+900 seconds. Ordinary CI completes after both functional targets, combined
+authentication, full container cleanup and browser recovery. Explicit local
+stress acceptance adds native capacity only after those phases finish.
+Independent quality checks run on their own runner and do not add empty core
+phases or split functional browser scenarios.
 The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
 records the responsibility and budget boundaries without claiming a measured
 CPU/I/O cause or guaranteed hosted speedup.
@@ -608,13 +652,17 @@ records the scheduling and phase-evidence choices; the
 [CI efficiency decision](../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
 retains the other workload optimizations and their limits.
 
-The final `checks` job uses `!cancelled()` to run after routing and application
-jobs even when a preceding job fails. It accepts only `success` or `skipped` from
-every preceding job; any other result fails the gate when it runs. The workflow's
-concurrency group cancels an older run when a newer run starts on the same ref.
-Workflow cancellation skips a pending final gate and cancels a running one, so
-superseded runs retain their cancelled outcome without a separate gate failure.
-The gate uses job results without comparing module selection flags.
+The final `checks` job uses `always()` to run after routing and application jobs,
+including failed or cancelled validation. It accepts only `success` or `skipped`
+from every preceding job; any other result fails the gate. The gate uses job
+results without comparing module selection flags.
+
+Workflow concurrency groups runs by workflow and ref. A newer PR run cancels an
+older run for that PR. For `refs/heads/main`, `cancel-in-progress` is false: new
+pushes queue behind the active run without cancelling it. GitHub may replace an
+older pending run with a newer pending run in the same group.
+The [main CI continuity decision](../.agents/notes/implemented/process/2026-11-03-main-ci-continuity.md)
+records the concurrency and aggregation policy.
 Documentation-only PRs run routing tests and this final gate
 without installing application dependencies or running application tests. Every
 `main` push retains full application validation. npm publication runs its own
@@ -625,7 +673,7 @@ records the routing alternatives and maintenance costs; the
 [CI simplification decision](../.agents/notes/archived/simplification/2026-10-21-ci-gate-simplification.md)
 records the version-check timing and final job-result gate choices. The
 [cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
-explains the final gate's cancellation condition.
+preserves the earlier rationale for stopping aggregation during cancellation.
 
 To validate the routing rules locally without application dependencies, run:
 
