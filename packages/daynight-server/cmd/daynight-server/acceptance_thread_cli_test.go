@@ -123,8 +123,12 @@ func acceptanceThreadReadIDs(t *testing.T, output string) []string {
 
 func acceptanceThreadAgentCLI(t *testing.T, fixture *acceptanceFixture, process *acceptanceProcess, cli *acceptanceCLI, project api.Project, userID string) {
 	t.Helper()
-	task := process.task(t, project, "Explicit Agent source")
-	task = process.update(t, task, map[string]any{"allowAgents": true, "assignedTo": userID})
+	created := process.request(context.Background(), http.MethodPost, acceptanceTasksPath(project.ID), map[string]any{"title": "Explicit Agent source", "assignedTo": userID}, "thread-agent-task")
+	task := acceptanceDecode[api.Task](t, created, http.StatusCreated)
+	if created.header.Get("Location") != acceptanceTaskPath(task) || task.ProjectID != project.ID || task.Version != 1 || task.Status != "todo" || task.Ready != (len(task.BlockedBy) == 0) || task.AssignedTo == nil || *task.AssignedTo != userID || task.AllowAgents {
+		t.Fatal("Agent source task creation lost its metadata, assigned account or disabled initial permission")
+	}
+	task = process.update(t, task, map[string]any{"allowAgents": true})
 	claimID, workerID := uuid.NewString(), uuid.NewString()
 	task = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPost, acceptanceTaskPath(task)+"/worker-claim", map[string]any{
 		"version": task.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Thread acceptance"},
