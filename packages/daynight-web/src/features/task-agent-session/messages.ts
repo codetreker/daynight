@@ -14,6 +14,26 @@ const en = {
   accepted: 'Received by relay; awaiting controller', offered: 'Delivering to controller', dispatching: 'Submitting to provider', provider_accepted: 'Accepted by provider', confirmed: 'Confirmed', failed: 'Failed', rejected: 'Rejected', check: 'Check original operation', checking: 'Checking…', operationUnknown: 'Delivery outcome is unknown. Check this operation; do not resend it.',
   reasoning: 'Reasoning', input: 'Input', output: 'Output', truncated: 'Output is truncated; available resources are listed below.', compaction: 'Conversation compacted', todo: 'Tasks', resourcePending: 'Resource is being transferred', resourceUnavailable: 'Resource unavailable', download: 'Download', error: 'Session error', web: 'Web execution', herdr: 'Herdr execution',
 };
+// These native controls and activity labels stay English in every UI locale.
+export const sessionNativeLabels = Object.freeze({
+  initializing: en.initializing,
+  idle: en.idle,
+  working: en.working,
+  waiting_input: en.waiting_input,
+  stopped: en.stopped,
+  unknown: en.unknown,
+  disconnected: en.disconnected,
+  synchronizing: en.synchronizing,
+  archived: en.archived,
+  permissions: en.permissions,
+  send: en.send,
+  steer: en.steer,
+  pending: en.pending,
+  executingCommand: en.executingCommand,
+  interrupt: en.interrupt,
+  interrupting: en.interrupting,
+  interruptRequested: en.interruptRequested,
+});
 type SessionMessages = { readonly [K in keyof typeof en]: string };
 const zh: SessionMessages = {
   archivePreparing: '会话正在结束，等待历史归档。',

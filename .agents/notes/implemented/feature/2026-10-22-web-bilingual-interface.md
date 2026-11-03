@@ -41,7 +41,11 @@ access while the page is inert. The
 use that same Provider and selector outside the workspace shell, with its own
 localized route title and ordinary browser keyboard behavior.
 
-The two typed catalogs cover all shipped first-party components. `common`
+The two typed catalogs cover all shipped first-party components. The
+[Session operation label decision](../bug-fix/2026-11-04-english-session-operation-labels.md)
+defines a deliberate English-only subset at specific Session control and
+activity positions; surrounding explanations and errors remain localized.
+`common`
 owns task status labels and the request ID label; `workspace`, `graph` and
 `inspection` own their domain messages. The
 [authenticated workspace](2026-10-22-web-auth-workspace.md) extends the same
@@ -111,8 +115,9 @@ of language.
 ## Consequences
 
 English and Simplified Chinese use one saved origin-local preference across
-the shipped workspace. Modal controls, errors and asynchronous results follow
-the same language as navigation. Existing per-project browsing formats, URLs,
+the shipped workspace. Except for the explicitly defined Session operation
+labels, modal controls, errors and asynchronous results follow the same language
+as navigation. Existing per-project browsing formats, URLs,
 protocols, user data and attachment execution rules remain intact. This adds
 presentation capability without authentication, CLI, backend or new business
 operations.
