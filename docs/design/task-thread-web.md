@@ -93,7 +93,7 @@ composer 保存完整原始 body，不 trim、重排换行或破坏代码缩进�
 
 ## 阅读、键盘与验证
 
-Discussion 沿用任务详情公共页头和操作。时间线与 composer 分配独立可用空间，长正文换行，代码/表格局部横向滚动，窄屏消息动作始终可达。忙碌、禁用和选中由控件表达，实际错误清楚展示；双语文案由 typed inspection catalogs 拥有。
+Discussion沿用任务详情公共页头和操作。宽屏横向留白按讨论区所在容器宽度计算；普通960px详情弹层保留30px边距，独立页/全屏保留原有1080px默认、1280px宽屏阅读上限；600px及以下的窄屏间距和发送按钮10px字号保持。时间线与composer分配独立可用空间，长正文换行，代码/表格局部横向滚动，窄屏消息动作始终可达。忙碌、禁用和选中由控件表达，实际错误清楚展示；双语文案由typed inspection catalogs拥有。
 
 Markdown 使用共享安全聊天 renderer，保留 GFM、软换行和隔离的 footnote ID，不接收 raw HTML。外链仅 http/https/mailto，使用 noopener noreferrer；图片呈现替代内容，不加载附件或原生资源。滚动复用阅读意图与文本锚点；向上阅读停止跟随，历史 prepend 和 composer 变高保留锚点，明确查看新消息才恢复底部跟随。
 

@@ -109,7 +109,7 @@
 .thread-metadata-message { border-top: 1px solid #edf0f4; padding-top: 13px; font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; color: #53617a; }
 .thread-metadata-dialog .thread-icon-button { width: 26px; height: 26px; }
 @media (min-width: 1450px) {
-  .thread-bar, .thread-timeline, .thread-composer-wrap { padding-left: max(30px, calc((100vw - 1280px) / 2)); padding-right: max(30px, calc((100vw - 1280px) / 2)); }
+  .thread-bar, .thread-timeline, .thread-composer-wrap { padding-left: max(30px, calc((100% - 1280px) / 2)); padding-right: max(30px, calc((100% - 1280px) / 2)); }
   .thread-timeline-content, .thread-composer-inner { max-width: none; }
 }
 @media (max-width: 600px) {

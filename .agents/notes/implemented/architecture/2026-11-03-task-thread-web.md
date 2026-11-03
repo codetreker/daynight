@@ -100,6 +100,12 @@ messages remain on the service. Incoming counts describe retained messages,
 not the service's total backlog. Explicit navigation can replace displayed
 history, which remains reachable through existing before/after ID pagination.
 
+Horizontal gutters use the Discussion container width. An ordinary 960px task
+modal retains 30px gutters; standalone and fullscreen views retain the 1080px
+default and 1280px wide reading limits. Existing narrow-screen spacing and the
+10px send label remain. Viewport-derived gutters would consume or clip the
+reading area inside a fixed 960px modal on a wide screen.
+
 Safe error details expose only a validated code and request ID on demand. A
 private console warning records task scope, phase/direction, bounded code/status,
 validated request ID, a fixed cause category and the known remote outcome. It
