@@ -32,6 +32,10 @@ func (s *Tasks) Get(ctx context.Context, principal core.Principal, projectID, id
 		}
 		var err error
 		result, err = snapshot.Task(ctx, projectID, id)
+		if validation := propertyValidationFault(err); validation != nil {
+			missing = validation
+			return nil
+		}
 		if errors.Is(err, core.ErrNotFound) {
 			missing = taskNotFound(err)
 			return nil
@@ -90,6 +94,10 @@ func (s *Tasks) List(ctx context.Context, principal core.Principal, projectID st
 		}
 		var err error
 		result, err = snapshot.Tasks(ctx, projectID, store.TaskQuery{Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Worker: worker})
+		if validation := propertyValidationFault(err); validation != nil {
+			missing = validation
+			return nil
+		}
 		return err
 	})
 	if err != nil {

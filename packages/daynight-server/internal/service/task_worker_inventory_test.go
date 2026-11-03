@@ -28,12 +28,12 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	add(other, workerID)
 	released := add(owner, workerID)
 	var err error
-	released, err = tasks.ReleaseWorker(ctx, owner, project.ID, released.ID, ReleaseWorker{Version: released.Version, ClaimID: released.Properties.Worker.ClaimID, StoppedConfirmed: true})
+	released, err = tasks.ReleaseWorker(ctx, owner, project.ID, released.ID, ReleaseWorker{Version: released.Version, ClaimID: testWorker(t, released.Properties).ClaimID, StoppedConfirmed: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	completed := add(owner, workerID)
-	_, err = tasks.SetStatus(ctx, owner, project.ID, completed.ID, SetTaskStatus{Version: completed.Version, Status: core.TaskDone, ClaimID: &completed.Properties.Worker.ClaimID})
+	_, err = tasks.SetStatus(ctx, owner, project.ID, completed.ID, SetTaskStatus{Version: completed.Version, Status: core.TaskDone, ClaimID: &testWorker(t, completed.Properties).ClaimID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	add(other, workerID)
 	second := add(owner, workerID)
 	manual := add(owner, workerID)
-	previous := *manual.Properties.Worker
+	previous := *testWorker(t, manual.Properties)
 	manual, err = tasks.ReleaseWorker(ctx, owner, project.ID, manual.ID, ReleaseWorker{Version: manual.Version, ClaimID: previous.ClaimID, StoppedConfirmed: true})
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 			if len(page.Items) != 0 || page.NextCursor != nil {
 				t.Fatalf("old ownership remains in inventory: %#v", page)
 			}
-		} else if len(page.Items) != 1 || page.Items[0].ID != task.ID || page.Items[0].Properties.Worker.ClaimID != wantClaim || page.NextCursor != nil {
+		} else if len(page.Items) != 1 || page.Items[0].ID != task.ID || testWorker(t, page.Items[0].Properties).ClaimID != wantClaim || page.NextCursor != nil {
 			t.Fatalf("wrong current claim: %#v", page)
 		}
 	}
@@ -151,7 +151,7 @@ func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 		t.Fatal(err)
 	}
 	inventory(owner, "")
-	if task.Properties.Worker != nil || task.AllowAgents {
+	if testWorker(t, task.Properties) != nil || task.AllowAgents {
 		t.Fatal("withdrawn claim remained eligible or retained ownership")
 	}
 	task = updateTask(t, tasks, admin, task, UpdateTask{AllowAgents: pointer(true)})
@@ -181,10 +181,11 @@ func TestTaskWorkerInventoryRejectsInvalidFilterAndPreservesReadFailures(t *test
 	_, err := tasks.List(ctx, servicePrincipal(t, database), project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 1}, WorkerID: &workerID})
 	requireFault(t, err, "not_found")
 	task := createTask(t, tasks, owner, project.ID, "Invalid stored worker")
-	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET properties='{"pullRequests":[],"worker":{}}' WHERE id=$1`, task.ID); err != nil {
+	if _, err := database.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker','{}')`, task.ID); err != nil {
 		t.Fatal(err)
 	}
 	_, err = tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 1}, WorkerID: &workerID})
+	requireFault(t, err, "invalid_input")
 	var stored *store.Error
 	if !errors.As(err, &stored) || errors.Unwrap(err) == nil {
 		t.Fatalf("invalid stored ownership became a successful empty inventory: %v", err)

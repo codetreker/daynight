@@ -24,7 +24,8 @@ const initial: TaskDetail = {
   properties: { worker, pullRequests: [{ title: 'Implementation', url: 'https://example.com/pull/42' }] },
   startedAt: time, completedAt: null, createdAt: time, updatedAt: time,
 };
-const reset: TaskDetail = { ...initial, status: 'todo', allowAgents: false, ready: true, properties: { ...initial.properties, worker: null },
+const { worker: _initialWorker, ...resetProperties } = initial.properties;
+const reset: TaskDetail = { ...initial, status: 'todo', allowAgents: false, ready: true, properties: resetProperties,
   startedAt: null, completedAt: null, version: initial.version + 1n, updatedAt: '2026-10-24T00:01:00Z' };
 const reads = vi.mocked(getTask);
 const writes = vi.mocked(withdrawWorkerClaim);
@@ -103,9 +104,9 @@ describe('worker claim withdrawal mutation ownership', () => {
     expect(sessions.snapshot(projectId, taskId).detail).toEqual(reset);
   });
 
-  it.each([null, { ...worker, state: 'completed' as const }])('refuses withdrawal without an unfinished claim %#', async (claim) => {
+  it.each([undefined, { ...worker, state: 'completed' as const }])('refuses withdrawal without an unfinished claim %#', async (claim) => {
     const sessions = createSessions();
-    const detail: TaskDetail = { ...initial, status: 'todo', ready: true, startedAt: null, properties: { ...initial.properties, worker: claim } };
+    const detail: TaskDetail = { ...initial, status: 'todo', ready: true, startedAt: null, properties: { ...resetProperties, ...(claim === undefined ? {} : { worker: claim }) } };
     await open(sessions, detail);
     expect(canWithdrawClaim(sessions.snapshot(projectId, taskId))).toBe(false);
     sessions.withdrawClaim(projectId, taskId, claimId, initial.version);
@@ -132,7 +133,7 @@ describe('worker claim withdrawal mutation ownership', () => {
     writes.mockRejectedValueOnce(failure);
     sessions.withdrawClaim(projectId, taskId, claimId, initial.version);
     await synchronize(sessions, reset);
-    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.properties.worker).toBeNull());
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.properties.worker).toBeUndefined());
     expect(reads).toHaveBeenCalledTimes(2);
     expect(writes).toHaveBeenCalledOnce();
     expect(sessions.snapshot(projectId, taskId).mutation.phase).toBe(failure.kind === 'network' ? 'reconciled' : 'conflict');
@@ -162,7 +163,7 @@ describe('worker claim withdrawal mutation ownership', () => {
   it.each([
     { ...reset, title: 'Replaced title' },
     { ...reset, description: '' },
-    { ...reset, properties: { worker: null, pullRequests: [] } },
+    { ...reset, properties: { pullRequests: [] } },
     { ...reset, requiredPlatform: null },
     { ...reset, allowAgents: true },
   ])('rejects a response that changes materials outside the reset %#', async (contradiction) => {

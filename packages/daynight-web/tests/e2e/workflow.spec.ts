@@ -1,3 +1,4 @@
+import { readPullRequests } from '../../src/api/task-properties';
 import { readProjectSnapshot } from './project-snapshot';
 import { closeChain, expectClosedChain, expectOpenChain, openChain } from './chain-dialog';
 import { selectOverview, selectTaskList } from './project-view';
@@ -229,7 +230,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     await expect(goal).toHaveAttribute('aria-expanded', 'true');
     await expect(members).toBeVisible();
     expect(await members.locator('.goal-task-row').evaluateAll((rows) => rows.map((row) => row.querySelector('.root-title')!.textContent))).toEqual(
-      [b, f, g, c, d, e].map((task) => task.title),
+      [b, f, g, e, d, c].map((task) => task.title),
     );
     await expect(members.locator('.goal-task-row')).toHaveCount(6);
     const taskRow = page.locator(`#chain-task-${a.id}-${b.id}`);
@@ -1626,7 +1627,7 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await page.keyboard.press('Tab');
   await expect(overviewTab).toBeFocused();
   await page.keyboard.press('Tab');
-  await expect(dialog.getByRole('link', { name: b.properties.pullRequests[0]!.url, exact: true })).toBeFocused();
+  await expect(dialog.getByRole('link', { name: readPullRequests(b.properties)![0]!.url, exact: true })).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(overviewTab).toBeFocused();
   await page.keyboard.press('Shift+Tab');

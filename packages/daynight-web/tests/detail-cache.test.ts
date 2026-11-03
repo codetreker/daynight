@@ -1,7 +1,7 @@
 import { openDB, type IDBPDatabase } from "idb";
 import { afterEach, expect, it, vi } from "vitest";
 import type { TaskDetail } from "../src/api/types";
-import { TASK_CACHE_DATABASE, type TaskCacheSchema } from "../src/features/task-cache/database";
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from "../src/features/task-cache/database";
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { DETAIL_CACHE_LIMITS, detailByteSize, materializeDetail, readCachedDetail, saveDetail } from "../src/features/task-detail/detail-cache";
 import { detailFixture, graphFixture } from "./helpers/taskDetail";
@@ -17,15 +17,15 @@ const connections: IDBPDatabase<TaskCacheSchema>[] = [];
 const seed = async (details: readonly TaskDetail[]) => {
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
   const graph = graphFixture(details);
-  await scope.applySync(await scope.beginSync(projectId, signal()), taskSyncFromGraph(graph, { versionForTask: (task) => details.find((detail) => detail.id === task.id)!.version }), signal());
+  await scope.applySync(await scope.beginSync(projectId, signal()), taskSyncFromGraph(graph, { versionForTask: (task) => details.find((detail) => detail.id === task.id)!.version, propertiesForTask: (task) => details.find((detail) => detail.id === task.id)!.properties }), signal());
   return scope;
 };
-const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 1); connections.push(connection); return connection; };
+const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA); connections.push(connection); return connection; };
 const record = async (n = 1) => (await inspect()).get("details", [TEST_VIEWER_ID, projectId, taskId(n)]);
 afterEach(() => { scopes.splice(0).forEach((scope) => scope.dispose()); connections.splice(0).forEach((connection) => connection.close()); });
 
 it("stores only intrinsic complete content and exact bigint, without advancing the project watermark", async () => {
-  const detail = body(1, { version: 9_007_199_254_740_993n, description: "汉字🙂", properties: { worker: null, pullRequests: [{ url: "https://example.test/1", title: "PR" }] } });
+  const detail = body(1, { version: 9_007_199_254_740_993n, description: "汉字🙂", properties: { pullRequests: [{ url: "https://example.test/1", title: "PR" }] } });
   const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
   expect(await saveDetail(scope, ticket, detail, signal())).toMatchObject({ kind: "matching" });
   const saved = (await record())!;
@@ -85,11 +85,21 @@ it("enforces the byte budget and accepts an exact 2 MiB row while leaving oversi
 
 it("rejects captured tickets after snapshot rotation or project invalidation", async () => {
   const detail = body(); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
-  await scope.applySync(ticket, taskSyncFromGraph(graphFixture([detail]), { epoch: "30000000-0000-4000-8000-000000000002", versionForTask: () => detail.version }), signal());
+  await scope.applySync(ticket, taskSyncFromGraph(graphFixture([detail]), { epoch: "30000000-0000-4000-8000-000000000002", versionForTask: () => detail.version, propertiesForTask: () => detail.properties }), signal());
   await expect(saveDetail(scope, ticket, detail, signal())).rejects.toMatchObject({ name: "AbortError" });
   const active = await scope.beginSync(projectId, signal()); await scope.invalidateProject(projectId, signal());
   await expect(saveDetail(scope, active, detail, signal())).rejects.toMatchObject({ name: "AbortError" });
   expect(await record()).toBeUndefined();
+});
+
+it("rejects malformed cached PR data before publishing it and clears the corrupted details", async () => {
+  const detail = body(); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal()); await saveDetail(scope, ticket, detail, signal());
+  const saved = (await record())!;
+  const malformed = { ...saved.detail, properties: { ...saved.detail.properties, pullRequests: [{ url: 1, title: "Invalid" }] } };
+  await (await inspect()).put("details", { ...saved, detail: malformed, byteSize: detailByteSize(malformed) });
+  await expect(readCachedDetail(scope, ticket, detail.id, signal())).rejects.toMatchObject({ category: "corrupt" });
+  expect(await record()).toBeUndefined();
+  expect(await readCachedDetail(scope, ticket, detail.id, signal())).toBeNull();
 });
 
 it("exposes malformed stored records rather than publishing a private body", async () => {
@@ -131,4 +141,15 @@ it("treats equivalent timestamp precision as the same intrinsic content", async 
   await saveDetail(scope, ticket, detail, signal()); const first = (await record())!;
   expect(await saveDetail(scope, ticket, { ...detail, updatedAt: detail.updatedAt.replace("Z", ".000000000Z") }, signal())).toMatchObject({ kind: "matching" });
   expect(await record()).toEqual(first);
+});
+
+it("checks same-version detail properties against complete summaries while accepting object-key reordering", async () => {
+  const detail = body(1, { properties: { future: { first: 1, second: ["a", "b"] }, pullRequests: [] } });
+  const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
+  const equivalent = { ...detail, properties: { pullRequests: [], future: { second: ["a", "b"], first: 1 } } };
+  await expect(saveDetail(scope, ticket, equivalent, signal())).resolves.toMatchObject({ kind: "matching" });
+  const saved = (await record())!;
+  await expect(saveDetail(scope, ticket, { ...detail, properties: {} }, signal())).rejects.toMatchObject({ kind: "protocol" });
+  expect(await record()).toEqual(saved);
+  expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(ticket.maxUpdatedAt);
 });

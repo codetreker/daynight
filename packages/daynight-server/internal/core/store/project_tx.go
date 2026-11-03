@@ -50,7 +50,7 @@ func (s *Store) WriteProject(ctx context.Context, projectID string, operation fu
 }
 
 func (tx *ProjectTx) Task(ctx context.Context, id string) (core.Task, error) {
-	return readTask(ctx, tx.tx, tx.projectID, id)
+	return readTaskWithLock(ctx, tx.tx, tx.projectID, id, " FOR UPDATE OF t")
 }
 
 func (tx *ProjectTx) TasksByID(ctx context.Context, ids []string) ([]core.Task, error) {
@@ -66,6 +66,9 @@ func (tx *ProjectTx) tasks(ctx context.Context, condition string, value any, pha
 	tasks, err := collectTasks(rows)
 	if err != nil {
 		return nil, queryError(phase, err)
+	}
+	if err := attachTaskProperties(ctx, tx.tx, tasks); err != nil {
+		return nil, err
 	}
 	return tasks, nil
 }
@@ -105,10 +108,18 @@ func (tx *ProjectTx) Reachable(ctx context.Context, from, to string, replacement
 }
 
 func (tx *ProjectTx) CreateTask(ctx context.Context, id string, values TaskWrite) (core.Task, error) {
-	_, err := tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, properties, allow_agents, required_platform)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, tx.projectID, values.Title, values.Description, values.Status, taskproperties.Encode(values.Properties), values.AllowAgents, values.RequiredPlatform)
+	properties, err := taskproperties.Normalize(values.Properties, false)
+	if err != nil {
+		return core.Task{}, queryError("validate task properties", err)
+	}
+	values.Properties = properties
+	_, err = tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, allow_agents, required_platform)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`, id, tx.projectID, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform)
 	if err != nil {
 		return core.Task{}, queryError("create task", err)
+	}
+	if err := writeTaskProperties(ctx, tx.tx, id, values.Properties); err != nil {
+		return core.Task{}, err
 	}
 	if err := tx.insertDependencies(ctx, id, values.DependsOn, values.ExternalDependsOn); err != nil {
 		return core.Task{}, err
@@ -117,7 +128,12 @@ func (tx *ProjectTx) CreateTask(ctx context.Context, id string, values TaskWrite
 }
 
 func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite) (core.Task, error) {
-	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET title = $3, description = $4, status = $5, properties = $6, allow_agents = $7, required_platform = $8,
+	properties, err := taskproperties.Normalize(values.Properties, false)
+	if err != nil {
+		return core.Task{}, queryError("validate task properties", err)
+	}
+	values.Properties = properties
+	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET title = $3, description = $4, status = $5, allow_agents = $6, required_platform = $7,
 		started_at = CASE
 			WHEN status <> $5 AND $5 = 'in_progress' THEN statement_timestamp()
 			WHEN status <> $5 AND $5 = 'todo' THEN NULL
@@ -128,15 +144,22 @@ func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite
 			WHEN status <> $5 AND $5 IN ('todo', 'in_progress') THEN NULL
 			ELSE completed_at END,
 		version = version + 1, updated_at = statement_timestamp() WHERE project_id = $1 AND id = $2`,
-		tx.projectID, id, values.Title, values.Description, values.Status, taskproperties.Encode(values.Properties), values.AllowAgents, values.RequiredPlatform)
+		tx.projectID, id, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform)
 	if err != nil {
 		return core.Task{}, queryError("update task", err)
 	}
 	if result.RowsAffected() == 0 {
 		return core.Task{}, queryError("update task", core.ErrNotFound)
 	}
+	if err := writeTaskProperties(ctx, tx.tx, id, values.Properties); err != nil {
+		return core.Task{}, err
+	}
+	worker, err := taskproperties.Worker(values.Properties)
+	if err != nil {
+		return core.Task{}, queryError("decode updated worker", err)
+	}
 	var activeClaim *string
-	if worker := values.Properties.Worker; values.Status == core.TaskInProgress && worker != nil && worker.State == core.WorkerActive && worker.AgentControlMode == core.AgentControlModeWeb {
+	if values.Status == core.TaskInProgress && worker != nil && worker.State == core.WorkerActive && worker.AgentControlMode == core.AgentControlModeWeb {
 		activeClaim = &worker.ClaimID
 	}
 	if err := tx.freezeTaskSessions(ctx, id, activeClaim); err != nil {

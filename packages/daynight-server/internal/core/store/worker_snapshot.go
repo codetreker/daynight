@@ -51,10 +51,11 @@ func (w *WorkerTx) ReportTaskSnapshots(ctx context.Context, userID, workerID str
 		ids[index] = reference.TaskID
 		references[reference.TaskID] = reference
 	}
-	rows, err := w.tx.Query(ctx, `SELECT t.id::text, t.project_id::text, t.title, t.status, t.properties, p.name
+	rows, err := w.tx.Query(ctx, `SELECT t.id::text, t.project_id::text, t.title, t.status, worker_property.value, p.name
 		FROM tasks t
 		JOIN project_members m ON m.project_id=t.project_id AND m.user_id=$2
 		JOIN projects p ON p.id=t.project_id
+ LEFT JOIN task_properties worker_property ON worker_property.task_id=t.id AND worker_property.name='worker'
 		WHERE t.id=ANY($1::uuid[]) AND t.deleted_at IS NULL`, ids, userID)
 	if err != nil {
 		return nil, queryError("read reported task sources", err)
@@ -63,19 +64,25 @@ func (w *WorkerTx) ReportTaskSnapshots(ctx context.Context, userID, workerID str
 	matched := make(map[string]core.WorkerObservedTask, len(inventory.Claims))
 	for rows.Next() {
 		var task core.WorkerObservedTask
-		var properties string
+		var properties *string
 		if err := rows.Scan(&task.TaskID, &task.ProjectID, &task.Title, &task.Status, &properties, &task.ProjectName); err != nil {
 			return nil, queryError("read reported task sources", err)
 		}
 		if !task.Status.Valid() {
 			return nil, queryError("read reported task sources", fmt.Errorf("stored task status is invalid"))
 		}
-		value, err := taskproperties.Decode([]byte(properties))
+		if properties == nil {
+			continue
+		}
+		value, err := taskproperties.NormalizeValue("worker", json.RawMessage(*properties), false)
 		if err != nil {
 			return nil, queryError("decode reported task source", err)
 		}
 		reference := references[task.TaskID]
-		claim := value.Worker
+		claim, err := taskproperties.Worker(core.TaskProperties{"worker": value})
+		if err != nil {
+			return nil, queryError("decode reported worker", err)
+		}
 		if task.ProjectID != reference.ProjectID || task.Status != core.TaskInProgress || claim == nil ||
 			claim.State != core.WorkerActive || claim.UserID != userID || claim.WorkerID != workerID || claim.ClaimID != reference.ClaimID {
 			continue

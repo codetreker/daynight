@@ -141,7 +141,7 @@ func TestTaskDeletionProtectsVersionDependenciesAndWorker(t *testing.T) {
 	}
 	active := claimWorkerTask(t, tasks, principal, claimableTask(t, tasks, principal, project.ID), workerDescriptor())
 	requireFault(t, tasks.Delete(ctx, principal, project.ID, active.ID, DeleteTask{Version: active.Version}), "invalid_transition")
-	released, err := tasks.ReleaseWorker(ctx, principal, project.ID, active.ID, ReleaseWorker{Version: active.Version, ClaimID: active.Properties.Worker.ClaimID, StoppedConfirmed: true})
+	released, err := tasks.ReleaseWorker(ctx, principal, project.ID, active.ID, ReleaseWorker{Version: active.Version, ClaimID: testWorker(t, active.Properties).ClaimID, StoppedConfirmed: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestTaskDeletionRollsBackWhenEpochInvalidationFails(t *testing.T) {
 func TestTaskDeletionPreservesCompletedWorkerHistory(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	task := claimWorkerTask(t, tasks, principal, claimableTask(t, tasks, principal, project.ID), workerDescriptor())
-	completed, err := tasks.SetStatus(context.Background(), principal, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: core.TaskDone, ClaimID: &task.Properties.Worker.ClaimID})
+	completed, err := tasks.SetStatus(context.Background(), principal, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: core.TaskDone, ClaimID: &testWorker(t, task.Properties).ClaimID})
 	if err != nil {
 		t.Fatal(err)
 	}

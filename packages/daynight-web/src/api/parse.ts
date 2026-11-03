@@ -1,97 +1,19 @@
 import type {
   Attachment,
   AttachmentPage,
-  ExecutionPlatform,
   GraphLimitDetails,
   GraphTask,
   Project,
   ProjectPage,
-  PullRequestProperty,
   TaskDetail,
   TaskGraph,
   TaskGraphSummary,
-  TaskProperties,
-  TaskStatus,
-  WorkerClaim,
-  WorkerPhase,
 } from "./types";
 import { isTaskVersion } from "./json";
 
-export const malformed = (): never => {
-  throw new Error("The server returned an invalid response.");
-};
-
-export const record = (value: unknown): Record<string, unknown> => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return malformed();
-  return value as Record<string, unknown>;
-};
-
-export const string = (value: unknown): string => {
-  if (typeof value !== "string") return malformed();
-  return value;
-};
-
-export const nonemptyString = (value: unknown): string => {
-  const parsed = string(value);
-  if (parsed.trim() === "" || parsed.includes("\0")) return malformed();
-  return parsed;
-};
-
-export const boolean = (value: unknown): boolean => {
-  if (typeof value !== "boolean") return malformed();
-  return value;
-};
-
-const count = (value: unknown): number => {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return malformed();
-  return value;
-};
-
-export const canonicalId = (value: string): string | null =>
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
-    ? value.toLowerCase()
-    : null;
-
-export const id = (value: unknown): string => {
-  const parsed = canonicalId(string(value));
-  if (parsed === null) return malformed();
-  return parsed;
-};
-
-export const timestamp = (value: unknown): string => {
-  const parsed = string(value);
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(parsed)) return malformed();
-  const milliseconds = Date.parse(parsed);
-  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString().slice(0, 19) !== parsed.slice(0, 19)) {
-    return malformed();
-  }
-  return parsed;
-};
-
-const nullableTimestamp = (value: unknown): string | null => value === null ? null : timestamp(value);
-
-export const array = <T>(value: unknown, parse: (item: unknown) => T): T[] => {
-  if (!Array.isArray(value)) return malformed();
-  return value.map(parse);
-};
-
-const ids = (value: unknown): string[] => {
-  const values = array(value, id);
-  if (new Set(values).size !== values.length) return malformed();
-  return values;
-};
-
-export const executionPlatform = (value: unknown): ExecutionPlatform => {
-  if (value !== "windows" && value !== "linux" && value !== "macos") return malformed();
-  return value;
-};
-
-const requiredPlatform = (value: unknown): ExecutionPlatform | null => value === null ? null : executionPlatform(value);
-
-const status = (value: unknown): TaskStatus => {
-  if (value !== "todo" && value !== "in_progress" && value !== "done") return malformed();
-  return value;
-};
+export { array, boolean, canonicalId, executionPlatform, id, malformed, nonemptyString, record, string, timestamp } from "./validation";
+import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableTimestamp, record, requiredPlatform, status, string, timestamp } from "./validation";
+import { parseTaskProperties, readPullRequests, readWorkerClaim } from "./task-properties";
 
 const projectSettings = (value: unknown): Project["settings"] => {
   const data = record(value);
@@ -170,43 +92,6 @@ export const parseTaskGraph = (value: unknown, projectId: string): TaskGraph => 
   return parsed;
 };
 
-const pullRequest = (value: unknown): PullRequestProperty => {
-  const data = record(value);
-  return { url: string(data.url), title: string(data.title) };
-};
-
-const fields = (value: unknown, names: readonly string[]): Record<string, unknown> => {
-  const data = record(value);
-  if (Object.keys(data).some((key) => !names.includes(key))) return malformed();
-  return data;
-};
-const workerText = (value: unknown): string => {
-  const parsed = string(value);
-  if (!parsed.isWellFormed() || parsed.includes("\0") || !/[^\p{White_Space}]/u.test(parsed)) return malformed();
-  return parsed;
-};
-const workerPhase = (value: unknown): WorkerPhase => value === "preparing" || value === "executing" || value === "verifying" || value === "completing" || value === "waiting" || value === "paused" ? value : malformed();
-const workerClaim = (value: unknown): WorkerClaim | null => {
-  if (value === null) return null;
-  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
-  const machine = fields(data.machine, ["id", "name"]);
-  const herdr = data.herdr === null ? null : fields(data.herdr, ["session", "workspaceId", "paneId"]);
-  const agentControlMode = !Object.hasOwn(data, "agentControlMode") ? "herdr" : data.agentControlMode;
-  if (agentControlMode !== "herdr" && agentControlMode !== "web") return malformed();
-  if (agentControlMode === "web" && herdr !== null) return malformed();
-  return {
-    claimId: id(data.claimId), state: data.state === "active" || data.state === "released" || data.state === "completed" ? data.state : malformed(),
-    userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: workerText(machine.name) }, platform: executionPlatform(data.platform),
-    agent: data.agent === "codex" || data.agent === "copilot" || data.agent === "claude" ? data.agent : malformed(), agentControlMode, worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
-    herdr: herdr === null ? null : { session: workerText(herdr.session), workspaceId: workerText(herdr.workspaceId), paneId: workerText(herdr.paneId) },
-    nativeSessionId: data.nativeSessionId === null ? null : workerText(data.nativeSessionId), claimedAt: timestamp(data.claimedAt),
-  };
-};
-const properties = (value: unknown): TaskProperties => {
-  const data = record(value);
-  return { pullRequests: array(data.pullRequests, pullRequest), worker: workerClaim(data.worker) };
-};
-
 export const parseTaskDetail = (value: unknown, projectId: string, taskId: string): TaskDetail => {
   const data = record(value);
   const version = data.version;
@@ -216,7 +101,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
     projectId: id(data.projectId),
     title: nonemptyString(data.title),
     description: string(data.description),
-    properties: properties(data.properties),
+    properties: parseTaskProperties(data.properties),
     status: status(data.status),
     version,
     ...taskDependencies(data),
@@ -230,8 +115,10 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
     updatedAt: timestamp(data.updatedAt),
   };
   if (parsed.projectId !== projectId || parsed.id !== taskId) return malformed();
-  if (parsed.properties.worker?.state === "active" && parsed.status !== "in_progress") return malformed();
-  if (parsed.properties.worker?.state === "released" && parsed.status !== "todo") return malformed();
+  readPullRequests(parsed.properties);
+  const worker = readWorkerClaim(parsed.properties);
+  if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
+  if (worker?.state === "released" && parsed.status !== "todo") return malformed();
   return parsed;
 };
 

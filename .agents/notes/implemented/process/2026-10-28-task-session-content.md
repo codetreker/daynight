@@ -35,8 +35,11 @@ Execution and discussion plans, steps, tool choices, collaboration, operational
 authorization, review/CI/merge history, progress, blockers and recovery context
 remain in the session or its existing local checkpoint. The
 [reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md)
-qualifies this boundary with structured task-local `worker.signaling` for managed
-intervention; full execution logs and checkpoints remain session context.
+and [task pause decision](../feature/2026-11-02-task-paused-worker-pings.md) keep a
+managed agent's `paused` boolean on its task to control periodic continuation.
+The earlier reason-carrying signal prescription made intervention visible;
+problem text, replies, authorization, full execution logs and waiting checkpoints
+remain session context.
 An accepted requirement
 or design and its effective state remain task content; the confirmation exchange
 and permission to perform an operation do not. Necessary source revisions can

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
-import type { ExecutionDependencies, WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
+import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import type { ResourceOwner } from "../../../src/commands/worker/types.js";
@@ -33,7 +33,7 @@ const fixture = () => {
   const herdr = { tasks: { pendingStops: vi.fn(() => []), submitPrompt, stopAndClose } } as unknown as WorkerHerdrAdapter;
   const git = { removeWorktree } as unknown as WorkerGitManager;
   let time = 1_000;
-  const deps: ExecutionDependencies = { store, git, herdr, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(6), buildPrompt: () => "managed", emit: (event) => events.push(event), now: () => time };
+  const deps: Parameters<typeof createCleanupDriver>[0] = { store, git, herdr, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(6), buildPrompt: () => "managed", emit: (event) => events.push(event), now: () => time };
   const driver = createCleanupDriver(deps);
   const advance = (current: HerdrAgentObservation) => driver.advance({ owner, project, task }, resources(current), true);
   return { store, task, owner, driver, advance, observation, submitPrompt, stopAndClose, removeWorktree, order, events, clock: (value: number) => { time = value; } };

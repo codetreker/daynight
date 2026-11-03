@@ -37,7 +37,7 @@ const returnFromAnotherWindow = () => {
 };
 const initial = (projectId = project): TaskDetail => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: projectId === project ? task : otherTask, projectId,
   version: 9007199254740993n, title: `${currentUser.name} task ${projectId === project ? 'P' : 'Q'}`, description: `${currentUser.name} reviewed content`,
-  properties: { worker: null, pullRequests: [] }, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: stamp, updatedAt: stamp });
+  properties: { pullRequests: [] }, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: stamp, updatedAt: stamp });
 const serverDetails = new Map<string, TaskDetail>();
 const serverDetail = (projectId: string): TaskDetail => {
   const key = `${currentUser.id}:${projectId}`;
@@ -60,7 +60,7 @@ beforeEach(() => {
   serverDetails.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, userId, signal) => {
     expect(userId).toBe(currentUser.id);
-    return taskSyncFromGraph(await graphRequest(projectId, signal), { query, epoch: taskSyncEpoch(`${currentUser.id}:${projectId}`), versionForTask: () => serverDetail(projectId).version });
+    return taskSyncFromGraph(await graphRequest(projectId, signal), { query, epoch: taskSyncEpoch(`${currentUser.id}:${projectId}`), versionForTask: () => serverDetail(projectId).version, propertiesForTask: () => serverDetail(projectId).properties });
   });
 });
 

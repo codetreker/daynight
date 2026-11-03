@@ -20,13 +20,14 @@ workerId alone adds no task status, readiness, permission or platform condition.
 The cursor binds both workerId and the implicit user ID whenever this filter is
 present. An ordinary unfiltered cursor retains its existing user-neutral scope.
 
-Storage scans ordered candidates through the existing task properties decoder
-and collects matching records before the final page limit and lookahead. Ordinary
-queries retain their SQL limit. This preserves the opaque TEXT storage contract
-without converting an entire properties value through PostgreSQL JSON types or
-adding a worker projection, index or claim table.
+Storage scans ordered candidates and decodes each candidate’s worker property
+before the final page limit and lookahead. Ordinary queries retain their SQL
+limit. The [property-row decision](2026-10-30-task-property-rows.md) stores that
+value separately and batch-loads complete properties for selected tasks. This
+preserves JSON-text character semantics without PostgreSQL JSON conversion or
+an independent claim authority table.
 
-The typed client carries workerId across pages and rejects responses with null,
+The typed client carries workerId across pages and rejects responses with absent,
 inactive or different-worker claims. `listTasks` succeeds only after all pages;
 errors, duplicate identities and repeated cursors do not produce a partial
 success. `listTaskPage` remains an explicitly partial operation. No public task
@@ -55,9 +56,9 @@ execution, but cannot discover a successful claim whose local insert never
 committed. A current ownership query closes that discovery gap while leaving
 resource recovery explicit.
 
-**Convert stored properties in SQL.** The field intentionally retains opaque PR
-JSON text and existing special-character semantics. Reusing its decoder avoids
-introducing a separate database JSON interpretation solely to select ownership.
+**Convert stored properties in SQL.** Opaque property JSON text retains existing
+special-character semantics. Decoding the worker row in Go avoids introducing a
+separate database JSON interpretation solely to select ownership.
 
 **Add worker projection columns or a claim table.** They could make a selective
 inventory query cheaper, but introduce another stored representation and

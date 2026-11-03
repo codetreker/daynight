@@ -173,4 +173,24 @@ describe("native zsh completion", () => {
     expect(script).toContain("option_value=\"${word#*=}\"");
     expect(script).toContain("'--status='*");
   });
+
+  it("renders optional property reads and permits the completed empty value", () => {
+    const properties = renderZshCompletion(taskDefinition.commands!.find(({ name }) => name === "properties")!);
+    expect(properties).toContain("1::Task UUID:->argument_1");
+    expect(properties).toContain("--schema");
+    const set = renderZshCompletion(taskDefinition.commands!.find(({ name }) => name === "set-property")!);
+    expect(set).toContain("3:Raw JSON or string value text:->argument_3");
+    expect(set).toContain("2)\n              ;;");
+    expect(set).toContain('_arguments -C -S');
+    expect(set).not.toContain("_files");
+    const script = renderZshCompletion(commandTree);
+    expect(script).not.toContain("--pull-request-url");
+    expect(script).not.toContain("--pull-request-title");
+    expect(script).not.toContain("--clear-pull-requests");
+  });
+
+  it("rejects ambiguous optional argument definitions", () => {
+    expect(() => renderZshCompletion({ name: "invalid", description: "", arguments: [{ name: "a", description: "", optional: true }, { name: "b", description: "" }] })).toThrow("required argument after an optional argument");
+  });
+
 });

@@ -38,9 +38,9 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 	assertHTTPWorkerMode(t, task, "web")
 	claimPath := taskPath(task) + "/worker-claim"
 	for _, patch := range []map[string]any{
-		{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "agentControlMode": "herdr"},
-		{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "agentControlMode": "web", "phase": "executing"},
-		{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "herdr": map[string]any{"session": "s", "workspaceId": "w", "paneId": "p"}},
+		{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "agentControlMode": "herdr"},
+		{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "agentControlMode": "web", "phase": "executing"},
+		{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "herdr": map[string]any{"session": "s", "workspaceId": "w", "paneId": "p"}},
 	} {
 		assertProjectError(t, projectRequest(handler, http.MethodPatch, claimPath, jsonBody(t, patch)), http.StatusBadRequest, "invalid_input")
 	}
@@ -48,10 +48,10 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 		t.Fatal("rejected mode or resource patch changed the frozen execution")
 	}
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPatch, claimPath, jsonBody(t, map[string]any{
-		"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "phase": "executing", "nativeSessionId": "claude-session", "herdr": nil,
+		"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "phase": "executing", "nativeSessionId": "claude-session", "herdr": nil,
 	})), http.StatusOK)
 	assertHTTPWorkerMode(t, readHTTPTask(t, handler, task), "web")
-	oldClaim := task.Properties.Worker.ClaimID
+	oldClaim := apiWorker(t, task.Properties).ClaimID
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, claimPath+"/release", jsonBody(t, map[string]any{
 		"version": task.Version, "claimId": oldClaim, "stoppedConfirmed": true,
 	})), http.StatusOK)
@@ -61,8 +61,8 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, claimPath+"/resume", jsonBody(t, resume)), http.StatusOK)
 	assertHTTPWorkerMode(t, task, "herdr")
 	// Withdrawal releases the server claim without asserting a native stop.
-	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, claimPath+"/withdraw", jsonBody(t, map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID})), http.StatusOK)
-	if task.Properties.Worker != nil || task.AllowAgents {
+	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, claimPath+"/withdraw", jsonBody(t, map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID})), http.StatusOK)
+	if apiWorker(t, task.Properties) != nil || task.AllowAgents {
 		t.Fatal("withdrawal retained claim or automatic execution")
 	}
 	task = updateHTTPTask(t, handler, task, map[string]any{"allowAgents": true})
@@ -70,10 +70,10 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 	next["agentControlMode"] = "web"
 	task = claimHTTPWorker(t, handler, task, next)
 	assertHTTPWorkerMode(t, task, "web")
-	if task.Properties.Worker.ClaimID != next["claimId"] || task.Properties.Worker.Herdr != nil || task.Properties.Worker.NativeSessionID != nil {
+	if apiWorker(t, task.Properties).ClaimID != next["claimId"] || apiWorker(t, task.Properties).Herdr != nil || apiWorker(t, task.Properties).NativeSessionID != nil {
 		t.Fatal("new execution inherited old resource identity")
 	}
-	claimID := task.Properties.Worker.ClaimID
+	claimID := apiWorker(t, task.Properties).ClaimID
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPut, taskPath(task)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version, Status: "done", ClaimID: &claimID})), http.StatusOK)
 	assertHTTPWorkerMode(t, task, "web")
 }
@@ -93,7 +93,7 @@ func TestWorkerHTTPModeLegacyDefaultAndInvalidInputs(t *testing.T) {
 	assertProjectError(t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim", jsonBody(t, body)), http.StatusBadRequest, "invalid_input")
 	task = claimHTTPWorker(t, handler, task, workerClaimBody(task.Version))
 	assertHTTPWorkerMode(t, task, "herdr")
-	oldClaim := task.Properties.Worker.ClaimID
+	oldClaim := apiWorker(t, task.Properties).ClaimID
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": oldClaim, "stoppedConfirmed": true})), http.StatusOK)
 	for _, mode := range []any{nil, "", "unknown"} {
 		resume := workerClaimBody(task.Version)
@@ -115,13 +115,13 @@ func TestWorkerHTTPCopilotWebClaimAndResume(t *testing.T) {
 	body["agentControlMode"], body["agent"] = "web", "copilot"
 	task = claimHTTPWorker(t, handler, task, body)
 	assertHTTPWorkerMode(t, task, "web")
-	oldClaim := task.Properties.Worker.ClaimID
+	oldClaim := apiWorker(t, task.Properties).ClaimID
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": oldClaim, "stoppedConfirmed": true})), http.StatusOK)
 	resume := workerClaimBody(task.Version)
 	resume["previousClaimId"], resume["agentControlMode"], resume["agent"] = oldClaim, "web", "copilot"
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/resume", jsonBody(t, resume)), http.StatusOK)
 	assertHTTPWorkerMode(t, readHTTPTask(t, handler, task), "web")
-	if string(task.Properties.Worker.Agent) != "copilot" {
+	if string(apiWorker(t, task.Properties).Agent) != "copilot" {
 		t.Fatal("Copilot provider changed during resume")
 	}
 }

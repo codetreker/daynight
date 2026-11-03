@@ -13,6 +13,8 @@ export type CommandArgument = {
   name: string;
   description: string;
   choices?: readonly string[];
+  optional?: boolean;
+  allowEmpty?: boolean;
 };
 
 export type CommandDefinition = {
@@ -24,6 +26,14 @@ export type CommandDefinition = {
   arguments?: readonly CommandArgument[];
   allowOptionsTerminator?: boolean;
   details?: string;
+};
+
+export const validateCommandArguments = (definition: CommandDefinition): void => {
+  let optional = false;
+  for (const argument of definition.arguments ?? []) {
+    if (optional && argument.optional !== true) throw new Error(`Command ${definition.name} has a required argument after an optional argument.`);
+    optional = argument.optional === true;
+  }
 };
 
 type CommandLocation = { command: CommandDefinition; path: readonly string[] };
@@ -66,6 +76,7 @@ export const parseCommand = (
   path: readonly string[] = [definition.name],
   helpCommand = `${path.join(" ")} --help`,
 ): ParsedCommand => {
+  validateCommandArguments(definition);
   if (definition.commands !== undefined) {
     const selection = selectCommand(definition, args, path, helpCommand);
     if (selection.kind !== "selected") return selection;
@@ -112,13 +123,13 @@ export const parseCommand = (
     }
     const positional = definition.arguments?.[values.length];
     if (positional === undefined) throw new UsageError(`Unexpected ${path.join(" ")} argument ${JSON.stringify(argument)}.`, helpCommand);
-    if (argument === "") throw new UsageError(`${path.join(" ")} requires a ${positional.name} value.`, helpCommand);
+    if (argument === "" && positional.allowEmpty !== true) throw new UsageError(`${path.join(" ")} requires a ${positional.name} value.`, helpCommand);
     if (positional.choices !== undefined && !positional.choices.includes(argument)) {
       throw new UsageError(`Unknown ${positional.name} ${JSON.stringify(argument)}. Expected ${positional.choices.join(" or ")}.`, helpCommand);
     }
     values.push(argument);
   }
-  const missing = definition.arguments?.[values.length];
+  const missing = definition.arguments?.slice(values.length).find((argument) => argument.optional !== true);
   if (missing !== undefined) throw new UsageError(`${path.join(" ")} requires a ${missing.name} value.`, helpCommand);
   for (const option of definition.options ?? []) {
     const name = option.names[0]!;
@@ -142,8 +153,9 @@ export const renderCommandHelp = (
   definition: CommandDefinition,
   path: readonly string[] = [definition.name],
 ): string => {
+  validateCommandArguments(definition);
   const suffix = definition.commands !== undefined ? " <command>" : [
-    ...(definition.arguments ?? []).map(({ name }) => ` <${name}>`),
+    ...(definition.arguments ?? []).map(({ name, optional }) => optional === true ? ` [<${name}>]` : ` <${name}>`),
     ...(definition.options ?? []).filter(({ action }) => action === undefined).map((option) =>
       option.required === true ? ` ${optionUsage(option)}` : ` [${optionUsage(option)}]`),
   ].join("");
@@ -151,7 +163,7 @@ export const renderCommandHelp = (
   const sections = [paths.map((parts, index) => `${index === 0 ? "Usage: " : "       "}${parts.join(" ")}${suffix}`).join("\n")];
   if (definition.commands === undefined) sections.push(definition.description);
   if (definition.commands !== undefined) sections.push(`Commands:\n${renderRows(definition.commands.map((command) => [[command.name, ...(command.aliases ?? [])].join(", "), command.description]))}`);
-  if (definition.arguments !== undefined) sections.push(`Arguments:\n${renderRows(definition.arguments.map(({ name, description }) => [`<${name}>`, description]))}`);
+  if (definition.arguments !== undefined) sections.push(`Arguments:\n${renderRows(definition.arguments.map(({ name, description, optional }) => [optional === true ? `[<${name}>]` : `<${name}>`, description]))}`);
   if (definition.options !== undefined) sections.push(`Options:\n${renderRows(definition.options.map((option) => [optionLabel(option), option.description]))}`);
   if (definition.details !== undefined) sections.push(definition.details);
   return `${sections.join("\n\n")}\n`;

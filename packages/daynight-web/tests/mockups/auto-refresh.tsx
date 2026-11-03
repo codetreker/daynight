@@ -62,7 +62,7 @@ const detail = (task: GraphTask): TaskDetail => ({
   description: fixture.content === 'long'
     ? Array.from({ length: 24 }, (_, index) => `验收记录 ${index + 1}：任务状态与服务器快照同步，当前任务版本 ${taskRevision(task)}。浏览中的任务链、缩放、滚动位置和详情焦点继续保留。附件页签内可以选择文件、编辑上传路径并预览内容。`).join('\n\n')
     : `当前任务版本 ${taskRevision(task)}。\n\n页面每 5 秒同步任务摘要。切换到其他浏览器页签后暂停，返回页面时立即检查最新状态。\n\n使用上方“推进服务端状态”修改模拟服务端数据，然后观察统计、任务链和已打开详情自动更新。附件表单和预览保持可操作。`,
-  properties: { worker: null, pullRequests: [] },
+  properties: { pullRequests: [] },
 });
 const attachmentFiles = new Map<string, { readonly body: string; readonly contentType: string }>([
   ['acceptance/status.md', { body: '# 自动更新验收\n\n- 每 5 秒同步任务摘要\n- 隐藏页面暂停，返回立即刷新\n- 保留任务浏览和附件表单\n\n本文件仅保存在预览页面内存中。', contentType: 'text/markdown' }],
@@ -97,7 +97,7 @@ const installFixture = () => {
       while (fixture.response === 'loading') await delay(100, signal);
       if (fixture.response === 'error') return Response.json({ error: { code: 'internal_error', message: 'Preview service is temporarily unavailable.', requestId: 'preview-auto-refresh' } }, { status: 500 });
       const snapshot = graph();
-      if (graphRequest) return taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: taskSyncEpoch(`${fixtureEpoch}:${fixture.content}`), versionForTask: (task) => BigInt(taskRevision(task)), viewerId: TEST_VIEWER_ID });
+      if (graphRequest) return taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: taskSyncEpoch(`${fixtureEpoch}:${fixture.content}`), versionForTask: (task) => BigInt(taskRevision(task)), propertiesForTask: (task) => detail(task).properties, viewerId: TEST_VIEWER_ID });
       const task = snapshot.tasks.find((candidate) => candidate.id === taskRequest![1]);
       return task === undefined ? Response.json({ error: { code: 'not_found', message: 'Task no longer exists.', requestId: 'preview-task-missing' } }, { status: 404 }) : new Response(stringifyApiJson(detail(task)), { headers: { 'Content-Type': 'application/json' } });
     }

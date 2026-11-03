@@ -82,19 +82,56 @@ describe('Goal task lists', () => {
     expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^0 in progress$/);
   });
 
-  it('orders children by status while retaining snapshot order within each status', () => {
+  it('prioritizes status and sorts done children by completion rather than creation time', () => {
     const index = indexOf([
-      task('Goal', 'done'), task('Done first', 'done', ['Goal']), task('Todo first', 'todo', ['Goal']),
-      task('Active first', 'in_progress', ['Goal']), task('Done second', 'done', ['Goal']),
+      task('Goal', 'done'),
+      { ...task('Done first', 'done', ['Goal']), createdAt: '2026-10-19T12:00:00Z', completedAt: '2026-10-22T12:00:00Z' },
+      task('Todo first', 'todo', ['Goal']), task('Active first', 'in_progress', ['Goal']),
+      { ...task('Done second', 'done', ['Goal']), createdAt: '2026-10-20T12:00:00Z', completedAt: '2026-10-21T12:00:00Z' },
+      { ...task('Done third', 'done', ['Goal']), createdAt: '2026-10-18T12:00:00Z', completedAt: '2026-10-23T12:00:00Z' },
       task('Active second', 'in_progress', ['Goal']), task('Todo second', 'todo', ['Goal']),
     ]);
     const snapshotOrder = [...index.nodes.keys()];
     render(list(index));
     fireEvent.click(disclosure());
     expect([...children().querySelectorAll('.goal-task-row .root-title')].map((title) => title.textContent)).toEqual([
-      'Active first', 'Active second', 'Todo first', 'Todo second', 'Done first', 'Done second',
+      'Active first', 'Active second', 'Todo first', 'Todo second', 'Done third', 'Done first', 'Done second',
     ]);
     expect([...index.nodes.keys()]).toEqual(snapshotOrder);
+  });
+
+  it('compares all completion nanoseconds and keeps equal instants and nulls in snapshot order', () => {
+    render(list(indexOf([
+      task('Goal', 'done'), task('Unknown first', 'done', ['Goal']),
+      { ...task('Earlier nanosecond', 'done', ['Goal']), completedAt: '2026-10-21T12:00:00.123456788Z' },
+      { ...task('Equal first', 'done', ['Goal']), completedAt: '2026-10-21T12:00:00.1Z' },
+      task('Unknown second', 'done', ['Goal']),
+      { ...task('Later nanosecond', 'done', ['Goal']), completedAt: '2026-10-21T12:00:00.123456789Z' },
+      { ...task('Equal second', 'done', ['Goal']), completedAt: '2026-10-21T12:00:00.100000000Z' },
+    ])));
+    fireEvent.click(disclosure());
+    expect([...children().querySelectorAll('.goal-task-row .root-title')].map((title) => title.textContent)).toEqual([
+      'Later nanosecond', 'Earlier nanosecond', 'Equal first', 'Equal second', 'Unknown first', 'Unknown second',
+    ]);
+  });
+
+  it('reorders completed children from refreshed timestamps and snapshot order while staying expanded', () => {
+    const first = { ...task('First', 'done', ['Goal']), completedAt: '2026-10-21T12:00:00Z' };
+    const second = { ...task('Second', 'done', ['Goal']), completedAt: '2026-10-22T12:00:00Z' };
+    const waiting = task('Waiting', 'todo', ['Goal']);
+    const goal = task('Goal', 'done');
+    const view = render(list(indexOf([goal, first, second, waiting])));
+    fireEvent.click(disclosure());
+    const titles = () => [...children().querySelectorAll('.goal-task-row .root-title')].map((title) => title.textContent);
+    expect(titles()).toEqual(['Waiting', 'Second', 'First']);
+    view.rerender(list(indexOf([
+      goal, { ...first, completedAt: '2026-10-23T12:00:00Z' }, second,
+      { ...waiting, status: 'done', completedAt: '2026-10-24T12:00:00Z' },
+    ])));
+    expect(titles()).toEqual(['Waiting', 'First', 'Second']);
+    view.rerender(list(indexOf([goal, second, { ...first, completedAt: second.completedAt }, waiting])));
+    expect(titles()).toEqual(['Waiting', 'Second', 'First']);
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('keeps a partly completed chain in progress without any executing member', () => {

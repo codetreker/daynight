@@ -11,8 +11,11 @@ need a durable source for deciding whether a task has a Web session.
 
 ## Decision
 
-The worker configuration and claim carry `agentControlMode: herdr | web`, with
-missing legacy values normalized to `herdr`. Mode is frozen with the claim; Web also freezes execution
+The worker configuration and claim carry `agentControlMode: herdr | web`.
+Existing request negotiation can omit the mode under its Herdr semantics; stored
+claims always include it. The [property-row migration](2026-10-30-task-property-rows.md)
+freezes normalization of missing legacy record values to `herdr`, without runtime
+stored-data fallback. Mode is frozen with the claim; Web also freezes execution
 configuration and protected from summary and general task-property updates.
 Provider and mode are validated together. The
 [claim design](../../../../docs/design/daynight-worker-claims.md) owns storage and

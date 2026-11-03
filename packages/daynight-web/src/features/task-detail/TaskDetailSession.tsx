@@ -1,3 +1,4 @@
+import { readPullRequests, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, setTaskAgentPermission, setTaskRequiredPlatform, setTaskStatus, withdrawWorkerClaim } from "../../api/client";
 import { isTaskStale } from "./freshness";
@@ -48,10 +49,10 @@ type Entry = {
 };
 const preserveCollection = (previous: TaskDetail | null, detail: TaskDetail): TaskDetail => {
   if (previous === null) return detail;
-  const old = previous.properties.pullRequests;
-  const fresh = detail.properties.pullRequests;
-  if (old === fresh) return detail;
-  const unchanged = old.length === fresh.length && old.every((item, index) => item.url === fresh[index]!.url && item.title === fresh[index]!.title);
+  const old = readPullRequests(previous.properties);
+  const fresh = readPullRequests(detail.properties);
+  if (old === undefined || fresh === undefined || old === fresh) return detail;
+  const unchanged = sameTaskProperties({ pullRequests: old }, { pullRequests: fresh });
   return unchanged ? { ...detail, properties: { ...detail.properties, pullRequests: old } } : detail;
 };
 const idleMutation = (): TaskMutationState => ({ operation: null, phase: "idle", error: null, reconciling: false, reconciliationError: null });
@@ -62,20 +63,16 @@ export const canDeleteTask = (state: DetailState): boolean => canMutate(state);
 export const canSetStatus = (state: DetailState): boolean => canMutate(state);
 export const canSetAgentPermission = (state: DetailState): boolean => state.detail !== null && state.detail.status !== "in_progress" && canMutate(state);
 export const canSetRequiredPlatform = canSetAgentPermission;
-export const canWithdrawClaim = (state: DetailState): boolean => canMutate(state) && state.detail!.properties.worker !== null && state.detail!.properties.worker.state !== "completed";
+export const canWithdrawClaim = (state: DetailState): boolean => {
+  if (!canMutate(state)) return false;
+  const worker = readWorkerClaim(state.detail!.properties);
+  return worker !== undefined && worker.state !== "completed";
+};
 
 const sameIds = (left: readonly string[], right: readonly string[]): boolean => left.length === right.length && left.every((id) => right.includes(id));
-const workerDescriptor = (worker: TaskDetail["properties"]["worker"]): string => JSON.stringify(worker === null ? null : [
-  worker.claimId, worker.state, worker.userId, worker.workerId, worker.machine.id, worker.machine.name,
-  worker.platform, worker.agent, worker.agentControlMode, worker.worktreeId, worker.phase,
-  worker.herdr === null ? null : [worker.herdr.session, worker.herdr.workspaceId, worker.herdr.paneId], worker.nativeSessionId, worker.claimedAt,
-]);
 const preservesMaterials = (before: TaskDetail, after: TaskDetail, preserveWorker = true): boolean => before.title === after.title && before.description === after.description &&
-  before.createdAt === after.createdAt && (!preserveWorker || workerDescriptor(before.properties.worker) === workerDescriptor(after.properties.worker)) &&
-  before.properties.pullRequests.length === after.properties.pullRequests.length && before.properties.pullRequests.every((item, index) => {
-    const other = after.properties.pullRequests[index]!;
-    return item.url === other.url && item.title === other.title;
-  }) && sameIds(before.dependsOn, after.dependsOn) && sameIds(before.externalDependsOn, after.externalDependsOn);
+  before.createdAt === after.createdAt && sameTaskProperties(before.properties, after.properties, !preserveWorker) &&
+  sameIds(before.dependsOn, after.dependsOn) && sameIds(before.externalDependsOn, after.externalDependsOn);
 const validStatusTiming = (before: TaskDetail, after: TaskDetail, target: TaskStatus): boolean => {
   if (before.status === target) return before.updatedAt === after.updatedAt && before.startedAt === after.startedAt && before.completedAt === after.completedAt;
   if (target === "todo") return after.startedAt === null && after.completedAt === null;
@@ -415,7 +412,7 @@ export class TaskDetailSessions {
   }
   withdrawClaim(projectId: string, taskId: string, claimId: string, version: bigint): void {
     const state = this.writableState(projectId, taskId);
-    if (!canWithdrawClaim(state) || state.detail!.version !== version || state.detail!.properties.worker!.claimId !== claimId) return;
+    if (!canWithdrawClaim(state) || state.detail!.version !== version || readWorkerClaim(state.detail!.properties)!.claimId !== claimId) return;
     this.performMutation(projectId, taskId, { action: "withdraw", claimId, version });
   }
   deleteTask(projectId: string, taskId: string, version: bigint, removeDepends: boolean): void {
@@ -553,7 +550,7 @@ export class TaskDetailSessions {
           }
           const preservesTiming = detail.startedAt === previous.startedAt && detail.completedAt === previous.completedAt;
           const validResult = operation.action === "withdraw"
-            ? detail.status === "todo" && !detail.allowAgents && detail.properties.worker === null && detail.startedAt === null && detail.completedAt === null && detail.requiredPlatform === previous.requiredPlatform
+            ? detail.status === "todo" && !detail.allowAgents && readWorkerClaim(detail.properties) === undefined && detail.startedAt === null && detail.completedAt === null && detail.requiredPlatform === previous.requiredPlatform
             : operation.action === "allowAgents"
             ? detail.status === previous.status && detail.allowAgents === operation.allowAgents && detail.requiredPlatform === previous.requiredPlatform && preservesTiming
             : operation.action === "requiredPlatform"

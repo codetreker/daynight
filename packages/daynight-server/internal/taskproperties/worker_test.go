@@ -27,7 +27,7 @@ func workerJSON(t *testing.T) map[string]json.RawMessage {
 	t.Helper()
 	worker := workerFixture()
 	var root map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(Encode(core.TaskProperties{Worker: &worker})), &root); err != nil {
+	if err := json.Unmarshal([]byte(encodedProperties(t, propertyFixture(t, nil, &worker))), &root); err != nil {
 		t.Fatal(err)
 	}
 	var result map[string]json.RawMessage
@@ -54,8 +54,8 @@ func TestWorkerCodecRetainsEverySupportedExecutionValue(t *testing.T) {
 					t.Run(fmt.Sprintf("%s/%s/%s/%s", state, platform, agent, phase), func(t *testing.T) {
 						worker := workerFixture()
 						worker.State, worker.Platform, worker.Agent, worker.Phase = state, platform, agent, phase
-						properties := core.TaskProperties{PullRequests: []core.PullRequestProperty{{URL: "opaque\x00", Title: "  preserved\n中文  "}}, Worker: &worker}
-						actual, err := Decode([]byte(Encode(properties)))
+						properties := propertyFixture(t, []core.PullRequestProperty{{URL: "opaque\x00", Title: "  preserved\n中文  "}}, &worker)
+						actual, err := Decode([]byte(encodedProperties(t, properties)))
 						if err != nil || !reflect.DeepEqual(actual, properties) {
 							t.Fatalf("worker resource changed during serialization: expected %#v actual %#v error %v", properties, actual, err)
 						}
@@ -69,10 +69,10 @@ func TestWorkerCodecRetainsEverySupportedExecutionValue(t *testing.T) {
 		value.Herdr, value.NativeSessionID = nil, nil
 		return &value
 	}()} {
-		properties := core.TaskProperties{PullRequests: []core.PullRequestProperty{}, Worker: worker}
-		encoded := Encode(properties)
-		if !strings.Contains(encoded, `"worker":`) {
-			t.Fatal("a full task omitted its required nullable worker field")
+		properties := propertyFixture(t, []core.PullRequestProperty{}, worker)
+		encoded := encodedProperties(t, properties)
+		if strings.Contains(encoded, `"worker":`) != (worker != nil) {
+			t.Fatal("worker presence changed during serialization")
 		}
 		actual, err := Decode([]byte(encoded))
 		if err != nil || !reflect.DeepEqual(actual, properties) {
@@ -82,7 +82,7 @@ func TestWorkerCodecRetainsEverySupportedExecutionValue(t *testing.T) {
 }
 
 func TestWorkerCodecRequiresCompleteStrictReadStructure(t *testing.T) {
-	for _, field := range []string{"claimId", "state", "userId", "workerId", "machine", "platform", "agent", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"} {
+	for _, field := range []string{"claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"} {
 		t.Run("missing "+field, func(t *testing.T) {
 			worker := workerJSON(t)
 			delete(worker, field)
@@ -131,7 +131,7 @@ func TestWorkerCodecRequiresCompleteStrictReadStructure(t *testing.T) {
 	if _, err := Decode([]byte(duplicate)); err == nil {
 		t.Fatal("duplicate worker identity was accepted")
 	}
-	for _, data := range []string{`{"pullRequests":[]}`, `{"pullRequests":[],"worker":{}}`, `{"pullRequests":[],"worker":[]}`, `{"pullRequests":[],"worker":true}`} {
+	for _, data := range []string{`{"pullRequests":[],"worker":null}`, `{"pullRequests":[],"worker":{}}`, `{"pullRequests":[],"worker":[]}`, `{"pullRequests":[],"worker":true}`} {
 		if _, err := Decode([]byte(data)); err == nil {
 			t.Fatalf("invalid nullable worker read field accepted: %s", data)
 		}
@@ -145,7 +145,7 @@ func TestWorkerPropertyCannotEnterWritablePatch(t *testing.T) {
 		}
 	}
 	patch, err := DecodePatch([]byte(`{"pullRequests":[{"url":"opaque\u0000","title":""}]}`))
-	if err != nil || patch.PullRequests == nil || len(*patch.PullRequests) != 1 || (*patch.PullRequests)[0].URL != "opaque\x00" {
+	if err != nil || len(pullRequestsValue(t, patch)) != 1 || pullRequestsValue(t, patch)[0].URL != "opaque\x00" {
 		t.Fatalf("public PR patch changed while worker became protected: %#v %v", patch, err)
 	}
 }

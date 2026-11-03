@@ -48,7 +48,7 @@ packages/daynight/src/commands/skill/skills/using-daynight/
 | `references/handoff.md` | 明确指定的移交审查与许可更新；不替代 Goal 确认和执行门槛。 |
 | `references/create-task.md` | 在授权范围内复用或登记具体工作；仅登记请求返回，明确开始讨论时按协议进入当前阶段。 |
 | `references/run-task.md` | 普通指定任务的开始、恢复、普通完成和返回；拥有用户明确要求的普通 Goal 讨论转场。 |
-| `references/autopilot-managed-task.md` | Worker prompt 显式激活后核对原 assignment，拥有按类型的必需附件、独立评审与 review 文件门槛、worker.signaling 交互流程；使用当前任务已有的充分交付与合并授权，最终 claim-bound done。 |
+| `references/autopilot-managed-task.md` | Worker prompt 显式激活后核对原 assignment，拥有按类型的必需附件、独立评审与 review 文件门槛、paused 人类介入流程；使用当前任务已有的充分交付与合并授权，最终 claim-bound done。 |
 | `references/task-execution.md` | 两种入口共同读取的任务/阶段输入、范围、交付、成果和完成准备；不包含普通或 managed 状态转换。 |
 | `references/handbook.md` | CLI 命令用途、help 与规则所有者导航。 |
 
@@ -185,7 +185,7 @@ allowAgents 默认 false，只约束自动发现选择；普通明确指定的�
 复审失败时保持许可并报告，撤销/停止仍需明确授权。自动发现与连续调度归 worker，
 继续要求 allowAgents=true、ready 和真实平台；公开 skill 不提供候选选择循环。
 讨论等待确认时保持当前任务，不能换做后继。整个 Goal 仍须所有实际交付与原始验收完成。
-managed 按 [Request user interaction](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction) 将需介入的问题设置为 worker.signaling，同时输出到终端、保存等待上下文并退出执行循环，保持 in_progress；收到反馈后核验原 assignment 与问题已解决，移除信号并确认后才恢复，未解决则保留信号等待。信号写入和移除遵守 write-safety，不执行其他阶段。
+managed 按 [Request user interaction](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction) 在确需用户介入时读取完整 task、核验原 active claim，并用精确观察版本设置自身任务 paused=true，回读确认后报告问题、保存 Session 上下文并退出循环等待。任务保持 in_progress，用户自行选择介入方式。反馈后重新核验原 assignment、问题解决和当前授权，解除暂停并回读确认 false 或缺席后恢复；未解决时保留暂停。属性写入、冲突和未知结果遵守 write-safety，普通 CI/review 继续等待，不执行其他阶段。
 
 ## 写入、恢复与并发
 

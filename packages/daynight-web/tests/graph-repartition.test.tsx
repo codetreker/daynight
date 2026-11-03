@@ -33,7 +33,7 @@ const graph = (tasks: readonly GraphTask[]): TaskGraph => ({
 let root: HTMLDivElement;
 let overflow: string;
 
-const syncFixture = createGraphSyncFixture();
+const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullRequests: [] }) });
 beforeEach(() => {
   syncFixture.reset();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => syncFixture.toSync(await graphRequest(projectId, signal), query));
@@ -63,8 +63,8 @@ it('resets membership visibility and inspection while retaining fullscreen and a
   graphRequest.mockResolvedValueOnce(graph(before)).mockReturnValue(refreshed.promise);
   const detached = after.find((task) => task.id === B)!;
   const initial = before.find((task) => task.id === B)!;
-  vi.mocked(getTask).mockResolvedValueOnce({ ...initial, blockedBy: [], ready: true, projectId, title: initial.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: 1n })
-    .mockResolvedValue({ ...detached, projectId, title: detached.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: 2n });
+  vi.mocked(getTask).mockResolvedValueOnce({ ...initial, blockedBy: [], ready: true, projectId, title: initial.titlePreview, description: '', properties: { pullRequests: [] }, version: 1n })
+    .mockResolvedValue({ ...detached, projectId, title: detached.titlePreview, description: '', properties: { pullRequests: [] }, version: 2n });
   const view = render(<ProjectPage projectId={projectId} />, { container: root });
   await selectTaskList();
   await screen.findByRole('button', { name: /Root.*查看依赖关系/ });

@@ -51,7 +51,7 @@ let previousOverflow: string;
 
 const replacementEpochs = new WeakMap<TaskGraph, string>();
 const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
-const syncFixture = createGraphSyncFixture();
+const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullRequests: [] }) });
 const servedGraphs = new Map<string, TaskGraph>();
 const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
@@ -77,7 +77,7 @@ beforeEach(() => {
   detailRequest.mockImplementation(async (project, id) => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id)!;
     const blockedBy = task.blockedBy.length === 0 ? task.dependsOn : [];
-    return { ...task, id, projectId: project, title: task.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)!,
+    return { ...task, id, projectId: project, title: task.titlePreview, description: '', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)!,
       blockedBy, ready: task.status === 'todo' && blockedBy.length === 0 };
   });
 });

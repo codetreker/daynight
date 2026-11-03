@@ -54,12 +54,16 @@ design or architecture solutions after multiple independent reviews with no
 Critical/Major issues, separate files for remaining nonblocking review issues,
 and acceptance evidence are task attachments; development requires actual PR
 merges and task acceptance. General inline sufficiency does not waive these
-artifact requirements. Necessary user intervention uses `worker.signaling`:
-record the reason on the task and print it, retain session waiting context and
-`in_progress`, then exit the execution loop. After feedback, verify the original
-assignment and resolution, remove the signal and confirm removal before resuming
-the same task. The structured signal is not permission to copy full execution
-logs or checkpoints into task material or to select other work.
+artifact requirements. Necessary user intervention follows the
+[task pause decision](../feature/2026-11-02-task-paused-worker-pings.md): the agent
+sets its own task's `paused=true` with an observed exact version and verifies the
+same assignment and pause before waiting. It reports the problem, retains session
+waiting context and `in_progress`, then exits the loop. After feedback it verifies
+the original assignment, resolution and valid resume authorization, clears the
+pause and confirms false or absence before continuing. Ordinary CI/review waits
+do not invoke this intervention pause. Problems, replies and checkpoints remain
+session context. The earlier reason-carrying signal prescription aimed to expose
+waiting explicitly; pause now owns only continuation control.
 
 This decision partially supersedes the reference placement and affected current
 rules in the [managed execution decision](2026-10-26-managed-task-skill.md),
@@ -68,7 +72,7 @@ rules in the [managed execution decision](2026-10-26-managed-task-skill.md),
 [tracking and design-review decision](../process/2026-10-24-daynight-tracking-and-design-review.md)
 and [Goal workflow decision](../process/2026-10-22-goal-workflow-design.md).
 Their historical rationale, genuine alternatives and unaffected decisions remain
-active; managed artifact and signal requirements qualify the general boundaries.
+active; managed artifact and pause-workflow requirements qualify the general boundaries.
 
 ## Alternatives
 

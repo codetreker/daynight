@@ -1,9 +1,11 @@
 import path from "node:path";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
+import { readTaskPaused, readWorkerClaim } from "../../api/task-properties.js";
 import type { TaskPlatform } from "../../api/types.js";
 import { HerdrAgentActionError } from "./herdr.js";
-import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "./herdr.js";
+import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrPromptGuard, HerdrTaskBinding, WorkerHerdrAdapter } from "./herdr.js";
+import type { WorkerRemote } from "./remote.js";
 import type { ManagedAssignment } from "./prompts.js";
 import { workerPingPrompt } from "./prompts.js";
 import type { WorkerStore } from "./store.js";
@@ -17,6 +19,7 @@ export type ExecutionDependencies = {
   store: WorkerStore;
   git: WorkerGitManager;
   herdr: WorkerHerdrAdapter;
+  readTask: WorkerRemote["readTask"];
   platform: TaskPlatform;
   workerId: string;
   serverOrigin: string;
@@ -73,14 +76,25 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
     const { session, workspaceId, paneId, terminalId } = observation.binding;
     return JSON.stringify([session, workspaceId, paneId, terminalId, observation.status, observation.stateChangeSeq, observation.completionSeq]);
   };
-  const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal): Promise<HerdrAgentObservation> => {
+  const continuationGuard = (task: LocalTask, context: HerdrExecutionContext): HerdrPromptGuard => async (operation) => {
+    const remote = await deps.readTask(task.projectId, task.taskId, operation.signal);
+    const paused = readTaskPaused(remote.properties);
+    const claim = readWorkerClaim(remote.properties);
+    const current = deps.store.getTask(task);
+    return paused !== true && remote.projectId === task.projectId && remote.id === task.taskId
+      && claim !== undefined && claim.state === "active" && claim.claimId === task.claimId
+      && claim.workerId === deps.workerId && claim.worktreeId === context.worktreeId
+      && claim.agent === task.agent && claim.agentControlMode === (task.agentControlMode ?? "herdr")
+      && current !== null && current.status === "active";
+  };
+  const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal, beforeSubmit?: HerdrPromptGuard): Promise<HerdrAgentObservation> => {
     const identity = key(task);
-    lastInput.set(identity, inputState(observed));
-    const receipt = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation), signal).catch((error: unknown) => {
+    const receipt = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation, beforeSubmit), signal).catch((error: unknown) => {
       if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") lastInput.delete(identity);
       else lastInput.set(identity, null);
       throw error;
     });
+    if (receipt.submission === "skipped") return receipt.observation;
     lastInput.set(identity, inputState(receipt.observation));
     return workerOperation((operation) => deps.herdr.tasks.observe(context, observed.binding, operation), signal);
   };
@@ -132,7 +146,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
             throw error;
           }
         } else if (pending === undefined && (observed.status === "idle" || observed.status === "done") && observed.interactiveReady && !observed.launchPending && lastInput.get(identity) !== inputState(observed)) {
-          observed = await submitInput(task, context, observed, workerPingPrompt(task), signal);
+          observed = await submitInput(task, context, observed, workerPingPrompt(task), signal, continuationGuard(task, context));
         }
         assertNativeSession(task, observed);
         if (observed.nativeSession !== null) task = deps.store.setSessionId(task, observed.nativeSession.sessionId);

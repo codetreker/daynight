@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseTaskDetail } from "../src/api/parse";
+import { readWorkerClaim } from "../src/api/task-properties";
 import type { TaskDetail, WorkerClaim } from "../src/api/types";
 
 const projectId = "11111111-1111-1111-1111-111111111111";
@@ -16,20 +17,19 @@ const task: TaskDetail = {
   startedAt: time, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
 };
 const invalidWorkers: unknown[] = [
-  undefined, {}, [], false, { ...worker, state: "expired" }, { ...worker, claimId: "bad" }, { ...worker, userId: "bad" },
+  undefined, null, {}, [], false, { ...worker, state: "expired" }, { ...worker, claimId: "bad" }, { ...worker, userId: "bad" },
   { ...worker, workerId: "bad" }, { ...worker, worktreeId: "bad" }, { ...worker, machine: { id: claimId, name: "" } },
   { ...worker, machine: { id: "bad", name: "Machine" } }, { ...worker, machine: { ...worker.machine, unexpected: true } },
   { ...worker, platform: null }, { ...worker, platform: "win32" }, { ...worker, agent: "other" }, { ...worker, phase: "done" },
   { ...worker, herdr: {} }, { ...worker, herdr: { session: "w", workspaceId: "ws", paneId: "" } },
   { ...worker, nativeSessionId: "" }, { ...worker, claimedAt: "2026-02-30T00:00:00Z" }, { ...worker, unexpected: true },
-  ...Object.keys(worker).filter((key) => key !== "agentControlMode").map((key) => Object.fromEntries(Object.entries(worker).filter(([field]) => field !== key))),
+  ...Object.keys(worker).map((key) => Object.fromEntries(Object.entries(worker).filter(([field]) => field !== key))),
 ];
 
 describe("worker ownership detail reads", () => {
-  it("normalizes missing legacy claim mode without guessing from native identity", () => {
+  it("rejects missing claim mode instead of supplying a legacy default", () => {
     const { agentControlMode: _mode, ...legacy } = worker;
-    const parsed = parseTaskDetail({ ...task, properties: { ...task.properties, worker: legacy } }, projectId, taskId);
-    expect(parsed.properties.worker).toEqual(worker);
+    expect(() => parseTaskDetail({ ...task, properties: { ...task.properties, worker: legacy } }, projectId, taskId)).toThrow("invalid response");
   });
   it.each(["codex", "claude", "copilot"])("accepts explicit Web claims for %s", (agent) => {
     const value = { ...task, properties: { ...task.properties, worker: { ...worker, agent, agentControlMode: "web", herdr: null } } };
@@ -58,9 +58,11 @@ describe("worker ownership detail reads", () => {
     const taskWithNames = { ...task, properties: { ...task.properties, worker: { ...worker, machine: { ...worker.machine, name: "\uFEFF" }, nativeSessionId: "\uFEFF", herdr: { session: "\uFEFF", workspaceId: "\uFEFF", paneId: "\uFEFF" } } } };
     expect(parseTaskDetail(taskWithNames, projectId, taskId)).toEqual(taskWithNames);
   });
-  it("accepts explicit unclaimed null and retains inactive completed history after reopening", () => {
-    const neverClaimed = { ...task, properties: { ...task.properties, worker: null } };
+  it("accepts absent ownership and retains inactive completed history after reopening", () => {
+    const { worker: _claim, ...properties } = task.properties;
+    const neverClaimed = { ...task, properties };
     expect(parseTaskDetail(neverClaimed, projectId, taskId)).toEqual(neverClaimed);
+    expect(readWorkerClaim(properties)).toBeUndefined();
     const reopened = { ...task, status: "todo", ready: true, properties: { ...task.properties, worker: { ...worker, state: "completed" } } };
     expect(parseTaskDetail(reopened, projectId, taskId)).toEqual(reopened);
   });

@@ -20,7 +20,7 @@ func TestTaskPlatformUpdatesPreserveStatusAndLockExecution(t *testing.T) {
 		if err != nil || !equalOptional(task.RequiredPlatform, platform) || task.Status != core.TaskTodo || task.AllowAgents || !task.Ready {
 			t.Fatalf("platform creation: %#v, %v", task, err)
 		}
-		task = updateTask(t, tasks, principal, task, UpdateTask{Description: pointer("Preserved metadata"), AllowAgents: pointer(true), Properties: core.TaskPropertiesPatch{PullRequests: pointer([]core.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Evidence"}})}})
+		task = updateTask(t, tasks, principal, task, UpdateTask{Description: pointer("Preserved metadata"), AllowAgents: pointer(true), Properties: propertyPatch([]core.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Evidence"}}...)})
 		if !equalOptional(task.RequiredPlatform, platform) {
 			t.Fatal("omitted platform changed requirement")
 		}
@@ -207,7 +207,7 @@ func TestTaskPlatformSurvivesEveryStatusAssignment(t *testing.T) {
 					name = string(*platform)
 				}
 				t.Run(name+"_"+string(from)+"_to_"+string(to), func(t *testing.T) {
-					task, err := tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Preserved platform", Description: "Preserved materials", RequiredPlatform: platform, DependsOn: []string{prerequisite.ID}, ExternalDependsOn: []string{prerequisite.ID}, Properties: core.TaskProperties{PullRequests: []core.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Evidence"}}}})
+					task, err := tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Preserved platform", Description: "Preserved materials", RequiredPlatform: platform, DependsOn: []string{prerequisite.ID}, ExternalDependsOn: []string{prerequisite.ID}, Properties: propertyPatch([]core.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Evidence"}}...)})
 					if err != nil {
 						t.Fatal(err)
 					}

@@ -26,7 +26,7 @@ process-local lifecycle.
 A dedicated workers row atomically stores server observation time, validated
 telemetry and a server-normalized task snapshot. Client reports carry task
 references, not authoritative task status or titles. Primary-key batch reads
-and the existing text property codec validate current claim ownership without
+and the worker property-row codec validate current claim ownership without
 scanning every project's tasks or converting opaque task properties to JSONB.
 
 Report writes use their own READ COMMITTED transaction and compete only for the

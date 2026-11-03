@@ -75,7 +75,7 @@ func TestArchiveImmutableReadAfterControllerAndClaimDisappear(t *testing.T) {
 	if status, err = f.s.UpdateArchive(ctx, f.p, f.project, f.task, v.SessionID, update); err != nil || status.State != "ready" {
 		t.Fatal("ready downgraded", status, err)
 	}
-	if _, err = f.s.DB.Pool.Exec(ctx, `UPDATE tasks SET properties=jsonb_set(properties::jsonb,'{worker,claimId}',to_jsonb($2::text)) WHERE id=$1`, f.task, uuid.NewString()); err != nil {
+	if _, err = f.s.DB.Pool.Exec(ctx, `UPDATE task_properties SET value=jsonb_set(value::jsonb,'{claimId}',to_jsonb($2::text))::text WHERE task_id=$1 AND name='worker'`, f.task, uuid.NewString()); err != nil {
 		t.Fatal(err)
 	}
 	// A fresh service has no controller connection or live in-memory session state.

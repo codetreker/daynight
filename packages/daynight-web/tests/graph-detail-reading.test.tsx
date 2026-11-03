@@ -25,7 +25,7 @@ const selectedId = graph.tasks.find((task) => task.titlePreview === '外部前�
 const detailNode = graph.tasks.find((task) => task.titlePreview === '链内最终交付')!;
 const detail: TaskDetail = {
   ...detailNode, version: 2n, projectId: graph.project.id, title: detailNode.titlePreview,
-  description: '# Delivery notes\n\n[Read acceptance guide](docs/guide.md)', properties: { worker: null, pullRequests: [] },
+  description: '# Delivery notes\n\n[Read acceptance guide](docs/guide.md)', properties: { pullRequests: [] },
 };
 const attachment: Attachment = {
   path: 'docs/guide.md', contentType: 'text/markdown', sizeBytes: 64,
@@ -34,7 +34,7 @@ const attachment: Attachment = {
 let root: HTMLDivElement;
 
 beforeEach(() => {
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => task.id === detail.id ? detail.version : 1n }));
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => task.id === detail.id ? detail.version : 1n, propertiesForTask: (task) => task.id === detail.id ? detail.properties : {} }));
 });
 
 beforeEach(() => {

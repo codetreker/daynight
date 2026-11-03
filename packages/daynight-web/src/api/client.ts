@@ -1,3 +1,4 @@
+import { readWorkerClaim } from "./task-properties";
 import mime from "mime";
 import { parseTaskSync } from "./task-sync";
 import { timestamp } from "./parse";
@@ -266,7 +267,7 @@ export const withdrawWorkerClaim = async (
   if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
     const result = parseTaskDetail(data, project, task);
-    if (response.status !== 200 || result.version !== exactVersion + 1n || result.properties.worker !== null ||
+    if (response.status !== 200 || result.version !== exactVersion + 1n || readWorkerClaim(result.properties) !== undefined ||
       result.status !== "todo" || result.allowAgents || result.startedAt !== null || result.completedAt !== null) throw new ApiError("protocol", response.status);
     return result;
   });

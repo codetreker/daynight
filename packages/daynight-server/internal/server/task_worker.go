@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
 func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth *Authentication, logger *slog.Logger) {
@@ -65,12 +66,22 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 		return
 	}
 	logger = logger.With("claim_id", claimID)
-	if worker := task.Properties.Worker; worker != nil {
+	worker, err := taskproperties.Worker(task.Properties)
+	if err != nil {
+		writeError(w, request, logger, "worker_claim", phase, err)
+		return
+	}
+	if worker != nil {
 		logger = logger.With("worker_id", worker.WorkerID, "state", worker.State)
 	}
 	logger.InfoContext(request.Context(), "worker claim operation applied", "type", "resource", "component", "worker_claim", "phase", phase,
 		"request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, taskResponse(task, request))
+	response, err := taskResponse(task, request)
+	if err != nil {
+		writeError(w, request, logger, "worker_claim", phase, err)
+		return
+	}
+	writeJSON(w, request, logger, http.StatusOK, response)
 }
 
 func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {

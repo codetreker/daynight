@@ -54,5 +54,17 @@ func (s *Snapshot) TaskSyncTasks(ctx context.Context, projectID string, lower *t
 	if err := rows.Err(); err != nil {
 		return nil, queryError("read task sync", err)
 	}
+	rows.Close()
+	ids := make([]string, len(tasks))
+	for index := range tasks {
+		ids[index] = tasks[index].ID
+	}
+	properties, err := loadTaskProperties(ctx, s.tx, ids)
+	if err != nil {
+		return nil, queryError("read task sync properties", err)
+	}
+	for index := range tasks {
+		tasks[index].Properties = properties[tasks[index].ID]
+	}
 	return tasks, nil
 }

@@ -12,6 +12,8 @@ Consult the relevant `--help` for arguments and field-clearing syntax.
 | `task ready` | One capped page of candidate `todo` tasks whose direct prerequisites are all complete, ordered by creation, not relevance. An empty page does not rule out in-progress or blocked work. |
 | `task list` | Traverse all matching pages. Excludes `done` by default; explicitly include completed tasks when checking for duplicates or inspecting history. |
 | `task show` | A single task's full description, metadata, and exact version. Read it before operating on the selected task. |
+| `task properties <task-id>` | The selected task's complete current property object and exact task version. |
+| `task properties --schema` | The authenticated service's property definitions; no project or Git repository is required. |
 | `task graph <task-id>` | The target's full bidirectionally connected component of ordinary dependencies, plus one layer of external prerequisites for those tasks. Includes all statuses without recursively expanding external tasks. |
 
 Human-readable lists are summaries; JSON lists omit only `description`.
@@ -27,8 +29,8 @@ These groups are not relevance rankings. See command help for filter syntax.
 ## Metadata
 
 `task update` cannot change status.
-A supplied description or PR reference list fully replaces that field; retain content that must remain and omit unrelated fields.
-PR URLs are paired with titles; see help for syntax.
+A supplied description fully replaces that field; retain content that must remain and omit unrelated fields.
+Property values use the [property commands](#properties), independently of metadata updates.
 See the [task content standard](task-content.md) for organizing descriptions and attachments.
 
 | Field | Semantics and limits |
@@ -48,6 +50,31 @@ Preserve filters across pages; do not locally filter a capped, unfiltered ready 
 Ordinary execution explicitly targeted by the user is not restricted by automatic-selection permission or platform compatibility, but must still satisfy dependency, input, and authorization requirements.
 Automatic execution must use the actual runtime platform and recheck full task eligibility before starting.
 Query arguments do not prove the actual environment; a Linux runtime in WSL is Linux.
+
+## Properties
+
+Use `task properties <task-id>` to read current values and `task properties --schema` to inspect the service's definitions.
+`task show` also contains properties. Schema discovery works without project discovery; property value operations use the selected task's project.
+
+`task set-property <task-id> <property> <value>` replaces one complete value.
+`task remove-property <task-id> <property>` removes that property record, so reads omit its key.
+Setting `pullRequests` to `[]` retains an explicit empty array; it is different from removal.
+A missing key, JSON null and an empty array are distinct, and the service definition decides whether null is allowed.
+
+Names are complete, case-sensitive literal property names. A dot does not select a nested object path.
+The service owns the property catalog, public writability and all value validation; a generic command does not create custom properties or bypass a read-only property.
+The CLI forwards the value argument unchanged. Use JSON for structured values; a string property also accepts raw text under the service's parsing rule.
+Use the command's `--` argument terminator when a positional value begins with a dash; keep options before the terminator.
+
+To save PR references, provide the complete ordered JSON array of `{"url":"...","title":"..."}` objects as `pullRequests`, retaining every still-needed entry.
+`task create` and `task update` do not accept property-specific PR options.
+Use `--if-version` with the task version read for the decision; a conflict or uncertain result follows [write safety](write-safety.md), without automatic replay.
+The CLI's default pre-submit property read does not protect a decision made from older material.
+A same-value set or already-absent removal with the current version changes no stored fields; a stale version still conflicts.
+
+Read commands support JSON output. Property reads and successful writes return the current property resource with task/project IDs, version and all properties.
+Unknown attributes, malformed values, read-only writes and illegal stored property values are service `400 invalid_input` failures; database/internal faults remain `500 internal_error`.
+Do not replace either failure with empty properties or silently drop a key.
 
 ## Status and timing
 

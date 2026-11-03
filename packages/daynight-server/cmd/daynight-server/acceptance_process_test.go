@@ -248,13 +248,12 @@ func acceptanceCase(t *testing.T, name string, requirements []string, operation 
 }
 
 type acceptanceFixture struct {
-	admin          *pgxpool.Pool
-	schema         string
-	databaseURL    string
-	storageRoot    string
-	applications   []string
-	scenario       *acceptanceScenario
-	serverLifetime time.Duration
+	admin        *pgxpool.Pool
+	schema       string
+	databaseURL  string
+	storageRoot  string
+	applications []string
+	scenario     *acceptanceScenario
 }
 
 func newAcceptanceFixture(t *testing.T, scenario *acceptanceScenario) *acceptanceFixture {
@@ -269,7 +268,7 @@ func newAcceptanceFixture(t *testing.T, scenario *acceptanceScenario) *acceptanc
 	if err != nil {
 		t.Fatal("cannot configure acceptance database")
 	}
-	fixture := &acceptanceFixture{schema: "acceptance_" + strings.ToLower(rand.Text()), databaseURL: base, storageRoot: newTestStorageRoot(t), scenario: scenario, serverLifetime: 45 * time.Second}
+	fixture := &acceptanceFixture{schema: "acceptance_" + strings.ToLower(rand.Text()), databaseURL: base, storageRoot: newTestStorageRoot(t), scenario: scenario}
 	t.Cleanup(func() {
 		if err := os.RemoveAll(fixture.storageRoot); err != nil {
 			t.Error("cannot remove owned acceptance storage root")
@@ -478,7 +477,13 @@ func (f *acceptanceFixture) launch(t *testing.T, configuration map[string]string
 	for key, value := range configuration {
 		values[key] = value
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), f.serverLifetime)
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		t.Fatal("acceptance processes require a bounded test deadline")
+	}
+	// The scenario owns the binary until cleanup. Readiness and shutdown retain
+	// their own bounds; the test deadline is the final process-lifetime guard.
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	process := &acceptanceProcess{logs: &acceptanceLogs{ready: make(chan string, 1)}, application: application, done: make(chan struct{}), cancel: cancel, scenario: f.scenario, fixture: f, configuration: configuration, origin: origin, appSecret: gateway.AppSecret, gateway: gateway}
 	process.command = exec.CommandContext(ctx, binaryAcceptance.Binary)
 	process.command.Env, process.command.Stdout, process.command.Stderr = acceptanceEnvironment(values), process.logs, process.logs

@@ -8,7 +8,7 @@ const timestamp = '2026-10-22T10:00:00Z';
 export const detailFixture = (projectId: string, taskId: string, changes: Partial<TaskDetail> = {}): TaskDetail => ({
   id: taskId, projectId, title: '完整任务详情', description: '', status: 'todo', version: 1n,
   allowAgents: false, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
-  startedAt: null, completedAt: null, properties: { worker: null, pullRequests: [] }, createdAt: timestamp, updatedAt: timestamp, ...changes,
+  startedAt: null, completedAt: null, properties: { pullRequests: [] }, createdAt: timestamp, updatedAt: timestamp, ...changes,
 });
 export const graphFixture = (details: readonly TaskDetail[]): TaskGraph => {
   const projectId = details[0]!.projectId;
@@ -36,7 +36,7 @@ export const withDetailResources = (projectId: string, taskId: string, fallback:
   (url: string, options?: RequestInit): Response | Promise<Response> => {
     const task = detailFixture(projectId, taskId, changes);
     const parsed = new URL(url, location.origin);
-    if (parsed.pathname === `/api/v1/projects/${projectId}/task-sync`) return taskSyncResponse(graphFixture([task]), { query: taskSyncQuery(parsed), versionForTask: () => task.version, viewerId: typeof viewer === 'string' ? viewer : viewer() });
+    if (parsed.pathname === `/api/v1/projects/${projectId}/task-sync`) return taskSyncResponse(graphFixture([task]), { query: taskSyncQuery(parsed), versionForTask: () => task.version, propertiesForTask: () => task.properties, viewerId: typeof viewer === 'string' ? viewer : viewer() });
     if (url === `/api/v1/projects/${projectId}/tasks/${taskId}`) return resourceResponse(task, typeof viewer === 'string' ? viewer : viewer());
     return fallback(url, options);
   };

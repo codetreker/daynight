@@ -16,10 +16,6 @@ const requiredPlatformOption: CommandOption = { names: ["--required-platform"], 
 const compatiblePlatformOption: CommandOption = { names: ["--compatible-platform"], description: "Include unrestricted tasks and tasks requiring this execution platform", value: { name: "platform", kind: "text", choices: platformChoices } };
 const versionOption: CommandOption = { names: ["--if-version"], description: "Use this expected task version without reading a newer version", value: { name: "version", kind: "text" } };
 const claimOption: CommandOption = { names: ["--claim-id"], description: "Complete this active worker claim; valid only with done", value: { name: "claim-id", kind: "text" } };
-const pullRequestOptions: readonly CommandOption[] = [
-  { names: ["--pull-request-url"], description: "PR URL text; repeat for the complete list", value: { name: "text", kind: "text", allowEmpty: true }, repeatable: true },
-  { names: ["--pull-request-title"], description: "PR title text; pair by position with each URL", value: { name: "text", kind: "text", allowEmpty: true }, repeatable: true },
-];
 const taskArgument = { name: "task-id", description: "Task UUID" };
 
 export const taskDefinition: CommandDefinition = {
@@ -28,9 +24,9 @@ export const taskDefinition: CommandDefinition = {
   commands: [
     {
       name: "create",
-      description: "Create a todo task with optional dependencies and PR references",
-      options: [{ ...titleOption, required: true }, descriptionOption, requiredPlatformOption, dependencyOption, externalDependencyOption, ...pullRequestOptions, projectOption, helpOption],
-      details: `New tasks start in todo with automatic execution disabled. Creating a task does not start execution. Without --required-platform, execution has no platform restriction. Omitting both dependency options creates a task with no prerequisites.\n${dependencyDetails}\nPR URL and title counts must match; the nth URL pairs with the nth title. Empty values are accepted, and all text is stored as supplied.`,
+      description: "Create a todo task with optional dependencies",
+      options: [{ ...titleOption, required: true }, descriptionOption, requiredPlatformOption, dependencyOption, externalDependencyOption, projectOption, helpOption],
+      details: `New tasks start in todo with automatic execution disabled. Creating a task does not start execution. Without --required-platform, execution has no platform restriction. Omitting both dependency options creates a task with no prerequisites.\n${dependencyDetails}`,
     },
     {
       name: "list",
@@ -51,17 +47,38 @@ export const taskDefinition: CommandDefinition = {
       options: [projectOption, jsonOption, helpOption],
     },
     {
+      name: "properties",
+      description: "Read task properties or server-defined property schemas",
+      arguments: [{ ...taskArgument, optional: true }],
+      options: [{ names: ["--schema"], description: "Read server-defined property schemas and write permissions" }, projectOption, jsonOption, helpOption],
+      details: "Provide a task ID to read its current property values, or --schema to read the server's definitions without project discovery. The task ID and --schema are mutually exclusive; --project cannot be supplied with --schema. Missing property keys remain absent. --json preserves the complete property resource or schema directory.",
+    },
+    {
+      name: "set-property",
+      description: "Set one task property using server-side value parsing and validation",
+      arguments: [taskArgument, { name: "property", description: "Literal property name" }, { name: "value", description: "Raw JSON or string value text", allowEmpty: true }],
+      allowOptionsTerminator: true,
+      options: [versionOption, projectOption, helpOption],
+      details: "Replace one complete property value and preserve every other property. The server interprets JSON and accepts direct text when the property requires a string; the CLI forwards the value unchanged. Property names are literal, not object paths. Use -- before dash-prefixed text or negative JSON numbers, placing options before the terminator. Without --if-version, read the current property resource's version before submitting. Conflicts and mutations are not retried.",
+    },
+    {
+      name: "remove-property",
+      description: "Remove one task property and omit its key from later reads",
+      arguments: [taskArgument, { name: "property", description: "Literal property name" }],
+      allowOptionsTerminator: true,
+      options: [versionOption, projectOption, helpOption],
+      details: "Delete the property record, preserving other properties. An absent key differs from an explicitly empty array or JSON null. Unknown or read-only property names are rejected by the server. Without --if-version, read the current property resource's version before submitting. Conflicts and mutations are not retried.",
+    },
+    {
       name: "update",
-      description: "Atomically update task fields, dependencies, and PR references",
+      description: "Atomically update task fields and dependencies",
       arguments: [taskArgument],
       options: [titleOption, descriptionOption, allowAgentsOption, requiredPlatformOption,
         { names: ["--clear-required-platform"], description: "Remove the execution-platform requirement" }, dependencyOption, externalDependencyOption,
         { names: ["--clear-dependencies"], description: "Clear the complete dependency set" },
-        ...pullRequestOptions,
-        { names: ["--clear-pull-requests"], description: "Clear the complete PR reference list" },
         versionOption,
         projectOption, helpOption],
-      details: `Provide at least one changed field. --allow-agents changes the automatic-execution permission independently of status. --required-platform sets the execution-platform requirement; --clear-required-platform removes it and conflicts with --required-platform. Omitting both platform options preserves the requirement. Actual permission or platform changes are locked during in_progress; exact-version same-value updates keep version and timestamps. Use daynight task set-status to change status.\n${dependencyDetails}\nOmitting both dependency options preserves all dependencies and classifications. --clear-dependencies clears both sets and conflicts with either dependency option.\nPR URL and title counts must match; the nth URL pairs with the nth title. Pairs replace the complete list; empty values are accepted. --clear-pull-requests conflicts with either PR option. Omitted PR options preserve the current list.\nWithout --if-version, read the current version before submitting the update. Conflicts are not retried.`,
+      details: `Provide at least one changed field. --allow-agents changes the automatic-execution permission independently of status. --required-platform sets the execution-platform requirement; --clear-required-platform removes it and conflicts with --required-platform. Omitting both platform options preserves the requirement. Actual permission or platform changes are locked during in_progress; exact-version same-value updates keep version and timestamps. Use daynight task set-status to change status.\n${dependencyDetails}\nOmitting both dependency options preserves all dependencies and classifications. --clear-dependencies clears both sets and conflicts with either dependency option.\nWithout --if-version, read the current version before submitting the update. Conflicts are not retried.`,
     },
     {
       name: "set-status",

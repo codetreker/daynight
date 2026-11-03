@@ -504,6 +504,10 @@ daynight task list --ready
 daynight task list --all --json
 daynight task list --status in_progress --json
 daynight task show <task-id> --json
+daynight task properties <task-id> --json
+daynight task properties --schema --json
+daynight task set-property <task-id> pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"Fix synchronization"}]' --if-version <observed-version>
+daynight task remove-property <task-id> pullRequests --if-version <observed-version>
 daynight task update <task-id> --description=
 daynight task update <task-id> --allow-agents true --if-version <version>
 daynight task create --title "Check Windows build" --required-platform windows
@@ -534,8 +538,9 @@ only `ID`, `Depends on` and `External dependencies`, with full UUIDs and `none`
 for empty sets. With `--json`, this mode returns a bare array of objects containing
 only `id`, `dependsOn` and `externalDependsOn`.
 
-Every operation accepts `--project <project-id>`, which selects a project for one
-invocation without reading Git or local bindings. Otherwise, the CLI reads the
+Project-scoped operations accept `--project <project-id>`, which selects a project
+for one invocation without reading Git or local bindings. `task properties --schema`
+uses only the authenticated service and rejects project selection. Otherwise, the CLI reads the
 current worktree's effective `origin`, normalizes equivalent HTTPS/SSH/SCP
 addresses, and matches the configured server's projects. A missing match fails
 with `Project does not exist`; multiple matches require explicit selection.
@@ -545,7 +550,8 @@ in the root `.gitignore`. A cached binding is verified against the server on eac
 use and remains stable if another project later shares that repository.
 
 Creation starts in `todo` with `allowAgents=false` and unrestricted
-`requiredPlatform=null` unless explicitly set. `task set-status <id> <status>`
+`requiredPlatform=null` unless explicitly set. Unset properties remain absent;
+creation does not inject a PR array or worker null. `task set-status <id> <status>`
 sets `todo`, `in_progress` or `done`, including reopening and direct completion.
 Every project member may use ordinary status setting. Active worker completion
 requires the current owner and an explicit `--claim-id <claim-id>` with target
@@ -705,7 +711,8 @@ splits at the first equals sign and supports leading dashes, such as
 starting with a dash are rejected. Directory options, switches and help reject
 inline assignment. Attachment `put` declares its `--path` as text, accepting
 `--path=value`; attachment `put/read/remove` also accept `--` before positional
-paths starting with a dash. Other task operations retain their declared syntax.
+paths starting with a dash. Property set/remove also accept this terminator for
+literal property/value positionals; other operations retain their declared syntax.
 
 The internal typed ApiClient accepts optional `workerId` on TaskFilters and
 TaskPageQuery. It requests only the authenticated user/worker active claims and
@@ -715,8 +722,10 @@ traversal across all relevant projects provides ownership inventory; extra filte
 or incomplete pages cannot authorize cleanup. This field is not a public task CLI
 option.
 
-Human task lists use labeled blocks containing ID, project, title, PR references,
-status, readiness, automatic-execution permission, required platform, dependencies and blocking.
+Human task lists use labeled blocks containing ID, project, title, complete
+properties, status, readiness, automatic-execution permission, required platform,
+dependencies and blocking. Property rows are ordered by name and rendered as
+terminal-safe JSON; missing keys are not replaced with default values.
 Description, version and timestamps
 remain available in show, ready, create and update output. Graph nodes include
 state, permission, required platform, dependencies, blocking and title-preview truncation flags.
@@ -740,12 +749,81 @@ the full production limits. [PR #55](https://github.com/codetreker/daynight/pull
 records the original integration and real-default-budget validation, with its
 historical source identity.
 
+## Task properties
+
+`task properties <task-id>` reads the task's complete current values;
+`task properties --schema` reads the service's definitions without project or
+Git discovery. The two modes are exclusive, and schema mode does not accept
+`--project`. Both read modes support `--json`. Task show continues to include
+properties.
+
+`task set-property <task-id> <property> <value>` replaces one complete value.
+`task remove-property <task-id> <property>` deletes its record, so reads omit
+that key. Setting `pullRequests` to `[]` retains an explicit empty array; null is
+an actual value only where the service definition permits it, never a delete
+marker.
+
+Names are complete case-sensitive literal names; dots do not select nested
+object paths. Exact dot-only names `.` and `..` fail before dispatch because URL
+normalization cannot preserve their resource path; this is a transport error,
+not property-schema validation. Other representable names reach the service. The CLI forwards value unchanged as valueText and does not parse
+JSON, fetch the schema before writes, or validate a property-specific structure.
+The server owns JSON/string interpretation and read-only protection. A string
+property accepts raw text or JSON string syntax; structured values use JSON.
+Generic commands do not introduce custom attributes or make worker publicly
+writable. To set PR references, supply the whole ordered array of url/title
+objects, preserving every entry still needed.
+
+The writable boolean property `paused` controls periodic worker continuation
+pings. Set it to `true` to suppress those pings, or set it to `false` or remove
+it to restore the usual policy. An absent key remains absent in reads. The
+property can change during an active claim without changing task status,
+execution ownership or timing:
+
+```bash
+daynight task set-property <task-id> paused true --if-version <observed-version>
+daynight task set-property <task-id> paused false --if-version <observed-version>
+daynight task remove-property <task-id> paused --if-version <observed-version>
+```
+
+The value positional argument can be empty. Use `--` before a positional
+argument beginning with a dash, with options before the terminator. For example,
+`task set-property <task-id> <property> -- -123` forwards the exact text to the
+service; it does not assert that any current property accepts a number.
+Shared Bash/zsh completion follows the same argument schema without a remote
+catalog lookup or hardcoded property choices.
+
+Both writes support `--if-version`. With it, submit once without a pre-read;
+without it, GET the property resource once for the task version, then submit
+once. An explicit project is sent directly to that property request; absent
+project selection uses normal repository discovery. Conflicts and uncertain
+results are never automatically replayed. A default pre-read cannot protect a
+decision formed from older task material.
+
+Read JSON returns the complete projectId/taskId/version/properties resource or
+the complete definition catalog. Human output prints identifiers, exact version
+and property JSON sorted by name; successful writes return the current property
+resource, including unchanged versions for no-ops. Terminal control characters
+remain safely escaped, and missing keys are not filled. Invalid or read-only
+values and invalid stored properties remain service 400 invalid_input failures;
+database/internal faults remain 500 internal_error.
+
+The version/valueText JSON envelope shares the server's 1 MiB request limit.
+Extra escaping counts toward that limit, so it is not a property-content
+allowance. Creation/update expose ordinary metadata; property-specific PR
+options are not accepted. The native HTTP create/PATCH operations still support
+atomic fields/dependencies/properties mutations.
+
 ## Task deletion
 
 Read the task and use its observed version when deleting it:
 
 ```bash
 daynight task show <task-id> --json
+daynight task properties <task-id> --json
+daynight task properties --schema --json
+daynight task set-property <task-id> pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"Fix synchronization"}]' --if-version <observed-version>
+daynight task remove-property <task-id> pullRequests --if-version <observed-version>
 daynight task delete <task-id> --if-version <version>
 ```
 
@@ -1135,22 +1213,43 @@ The saved SQLite session_id still selects resume or fresh startup; an inactive
 pane's retained reference is not saved as a newly observed session ID. A live
 agent keeps its current connection.
 
-Startup and recovery prompts identify the assignment as a background task: the
-agent asks no questions and makes decisions within the task scope and existing
-authorization. While waiting for review or CI, it waits, checks for results and
-continues delivery without ending its execution turn. Fixed native full access
-and folder trust apply to every fresh/resumed process; task delivery remains
-within its existing business authorization.
+Startup, recovery and continuation prompts require autonomous decisions within
+the task scope and existing authorization. When human intervention is necessary,
+the managed agent sets its own task's `paused` property to true with an observed
+exact version and confirms the same assignment and pause before waiting. It
+reports the issue and retains session context; the user chooses how to respond.
+After verifying resolution, the original assignment and permission to resume,
+it clears the pause and confirms false or absence before continuing. Independent
+user restrictions still apply. The [managed workflow](src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction)
+owns readback, failure and conflict handling.
+
+Ordinary review and CI waits remain ongoing execution: the agent waits, checks
+results and continues delivery without ending its turn or setting a pause just
+because a poll times out. Fixed native full access and folder trust apply to
+every fresh/resumed process; task delivery remains within its business authorization.
 
 For a still-owned active claim, each patrol observes the live agent. An
 interactive-ready agent that is not launching and has no first input pending
-receives a continuation ping when idle or done. Working, blocked, unknown and
-not-ready agents remain under observation. The ping preserves the original task,
-claim, worktree and authorization; idle or done does not complete the business
-task. The driver retains the last input observation in memory and suppresses
+receives a continuation ping when idle or done and its task is not paused.
+Working, blocked, unknown and not-ready agents remain under observation. The
+entire ping is enclosed in literal `<system remider>` and `</system remider>`
+tags and preserves the original task, claim, worktree and authorization; idle or
+done does not complete the business task. The driver retains the last input observation in memory and suppresses
 repeated input while it is unchanged. Unknown submission results require
 observation before another decision, without blind replay. Terminal cleanup
 suppresses business pings.
+
+Before a periodic ping reaches the native agent, the worker rereads the task
+from the service after workspace serialization and native readiness checks,
+verifies the original active claim, worker and worktree, and checks
+`properties.paused`. A true value skips that input without advancing its
+submission baseline. Setting false or removing the property therefore permits
+a later ping even when native observation counters have not changed. Read
+failures remain visible and send no ping. The last service read and native
+submission are separate operations; pausing does not retract input already sent.
+This property controls only periodic continuation. It preserves current native
+execution, initial or deferred assignments, observation, recovery and cleanup.
+Web execution currently sends no such periodic pings.
 
 A non-NULL saved session ID remains the recovery identity. A different native
 ID reported during startup, live reconnection or before deferred input is an
