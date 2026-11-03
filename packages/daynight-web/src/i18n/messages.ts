@@ -13,7 +13,10 @@ import type { Locale, LocaleIssue } from "./locale";
 import { en } from "./messages/en";
 import { zhCN } from "./messages/zh-CN";
 
+import type { AssignmentMessages } from "./messages/assignment";
+
 export type Messages = {
+  readonly assignment: AssignmentMessages;
   readonly common: {
     readonly retrySave: string;
     readonly status: Readonly<Record<TaskStatus, string>>;

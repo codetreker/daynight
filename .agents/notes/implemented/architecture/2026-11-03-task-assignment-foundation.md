@@ -51,6 +51,25 @@ profiles. A qualified reference without a user row is an internal integrity
 failure; a request with no scoped qualification is explicitly unresolved without
 revealing a global profile. Nullable names and avatars remain actual data.
 
+Web Task/detail/summary/graph consumers require the nullable field, and schema 4
+rebuilds old task material from versions 1, 2 and 3. The detail session owns one
+normal Task PATCH and read-only reconciliation of unknown outcomes. It predicts
+same-value versions separately and preserves assignment across all other
+mutations.
+
+A scope-owned, session-memory people owner coalesces rendered/detail/filter ID
+demands and successful mount-local receipts. Batches contain at most 100 IDs;
+empty demand sends no request, and full catalogues are opened explicitly. Each
+person has an accepted dispatch sequence, while project/user fences protect
+history and authorization. A trusted parent-project denial is processed even
+when presentation demand changes, without letting an old history revoke a new
+one.
+
+The Web keeps status and assignee in one compact control group and matches
+assignees only in displayed list selections. Full chain progress, dependencies,
+readiness and overview facts retain the complete index. Mutable profile data
+never enters Task versions or persistent task records.
+
 The CLI requires nullable assignedTo on every Task and graph input, preserves it
 in JSON and shows its current UUID or unassigned in text. Ordinary create/update
 flags own assignment and null clearing; list alone accepts UUID/me/unassigned
@@ -106,6 +125,20 @@ to the requested set; full enumeration remains an explicit catalogue operation.
 qualified references. Retaining raw candidate IDs and nullable joined user IDs
 lets the service expose integrity failure instead of successful partial output.
 
+**Filter task-sync or rebuild the graph from matches.** Hidden prerequisites
+would disappear from readiness and progress. Matching displayed rows before
+pagination retains navigation context without changing authoritative graph
+facts.
+
+**Publish directory results only against the latest visible demand.** That
+would drop an already observed project denial when a menu closes or a person
+set changes. Scope/ticket-bound negative admission remains distinct from
+positive profile publication.
+
+**Store only a largest receipt revision.** Re-mounted graph owners start their
+local counter again. Owner identity plus revision preserves successful-refresh
+semantics without a false global sequence.
+
 **Infer me from a task or cached client identity.** An empty page has no task
 from which to infer it, and an unconfigured client has no expected principal.
 Per-response metadata validates the actual successful response and detects
@@ -129,8 +162,8 @@ People reads return minimal fields and explicit unresolved IDs. They neither
 create membership nor change task versions, and errors never publish a partial
 set. Complete catalogue cost remains a measured consideration; the bounded mode
 has direct cardinality, qualification and query-plan checks. CLI assignment
-operations are implemented with required nullable parsing, direct mutation and
-principal-bound list validation. Web assignment and browser cache consumption
-remain separate consumer capabilities.
+operations use required nullable parsing, direct mutation and principal-bound
+list validation. Web assignment and schema-4 consumption are implemented
+together, with session-memory people data and complete graph facts.
 Migration, raw-wire, snapshot, privacy, race and rollback checks retain these
 boundaries.

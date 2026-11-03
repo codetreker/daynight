@@ -1,6 +1,6 @@
 import { readPullRequests, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, setTaskAgentPermission, setTaskRequiredPlatform, setTaskStatus, withdrawWorkerClaim } from "../../api/client";
+import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, withdrawWorkerClaim } from "../../api/client";
 import { isTaskStale } from "./freshness";
 import type { ExecutionPlatform, GraphTask, TaskDetail, TaskStatus } from "../../api/types";
 import { TaskCacheError } from "../task-cache/database";
@@ -8,7 +8,7 @@ import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import type { SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
 import { materializeDetail, readCachedDetail, saveDetail, validateDetailSummary, type DetailAdmission } from "./detail-cache";
 
-export type TaskMutationOperation = { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint };
+export type TaskMutationOperation = { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
 type TaskMutationReview = { readonly detail: TaskDetail; readonly cacheGeneration: string };
 class TaskMutationReviewExpired extends Error {}
 export type TaskMutationState = {
@@ -63,6 +63,7 @@ export const canDeleteTask = (state: DetailState): boolean => canMutate(state);
 export const canSetStatus = (state: DetailState): boolean => canMutate(state);
 export const canSetAgentPermission = (state: DetailState): boolean => state.detail !== null && state.detail.status !== "in_progress" && canMutate(state);
 export const canSetRequiredPlatform = canSetAgentPermission;
+export const canSetAssignedTo = canSetAgentPermission;
 export const canWithdrawClaim = (state: DetailState): boolean => {
   if (!canMutate(state)) return false;
   const worker = readWorkerClaim(state.detail!.properties);
@@ -70,8 +71,9 @@ export const canWithdrawClaim = (state: DetailState): boolean => {
 };
 
 const sameIds = (left: readonly string[], right: readonly string[]): boolean => left.length === right.length && left.every((id) => right.includes(id));
-const preservesMaterials = (before: TaskDetail, after: TaskDetail, preserveWorker = true): boolean => before.title === after.title && before.description === after.description &&
+const preservesMaterials = (before: TaskDetail, after: TaskDetail, preserveWorker = true, preserveAssignment = true): boolean => before.title === after.title && before.description === after.description &&
   before.createdAt === after.createdAt && sameTaskProperties(before.properties, after.properties, !preserveWorker) &&
+  (!preserveAssignment || before.assignedTo === after.assignedTo) &&
   sameIds(before.dependsOn, after.dependsOn) && sameIds(before.externalDependsOn, after.externalDependsOn);
 const validStatusTiming = (before: TaskDetail, after: TaskDetail, target: TaskStatus): boolean => {
   if (before.status === target) return before.updatedAt === after.updatedAt && before.startedAt === after.startedAt && before.completedAt === after.completedAt;
@@ -410,6 +412,12 @@ export class TaskDetailSessions {
     if (!canSetRequiredPlatform(state) || state.detail!.version !== version || state.detail!.requiredPlatform === requiredPlatform) return;
     this.performMutation(projectId, taskId, { action: "requiredPlatform", requiredPlatform, version });
   }
+  setAssignedTo(projectId: string, taskId: string, assignedTo: string | null, version: bigint): void {
+    const state = this.writableState(projectId, taskId);
+    if (!canSetAssignedTo(state) || state.detail!.version !== version) return;
+    const target = assignedTo === null ? null : requestId(assignedTo);
+    this.performMutation(projectId, taskId, { action: "assignedTo", assignedTo: target, version });
+  }
   withdrawClaim(projectId: string, taskId: string, claimId: string, version: bigint): void {
     const state = this.writableState(projectId, taskId);
     if (!canWithdrawClaim(state) || state.detail!.version !== version || readWorkerClaim(state.detail!.properties)!.claimId !== claimId) return;
@@ -500,7 +508,8 @@ export class TaskDetailSessions {
       let submitted = false;
       let confirmed = false;
       let validated = false;
-      const changed = operation.action !== "status" || previous.status !== operation.status;
+      const changed = operation.action === "status" ? previous.status !== operation.status
+        : operation.action === "assignedTo" ? previous.assignedTo !== operation.assignedTo : true;
       const committedVersion = operation.version + (changed ? 1n : 0n);
       const signal = this.scope.signal;
       let ticket: SyncTicket | null = null;
@@ -537,6 +546,8 @@ export class TaskDetailSessions {
             ? setTaskAgentPermission(projectId, taskId, operation.allowAgents, operation.version, signal, admission)
             : operation.action === "requiredPlatform"
               ? setTaskRequiredPlatform(projectId, taskId, operation.requiredPlatform, operation.version, signal, admission)
+              : operation.action === "assignedTo"
+              ? setTaskAssignedTo(projectId, taskId, operation.assignedTo, operation.version, signal, admission)
               : setTaskStatus(projectId, taskId, operation.status, operation.version, signal, admission);
         });
         if (response === null) return;
@@ -555,8 +566,11 @@ export class TaskDetailSessions {
             ? detail.status === previous.status && detail.allowAgents === operation.allowAgents && detail.requiredPlatform === previous.requiredPlatform && preservesTiming
             : operation.action === "requiredPlatform"
               ? detail.status === previous.status && detail.requiredPlatform === operation.requiredPlatform && detail.allowAgents === previous.allowAgents && preservesTiming
+              : operation.action === "assignedTo"
+              ? detail.status === previous.status && detail.assignedTo === operation.assignedTo && detail.requiredPlatform === previous.requiredPlatform &&
+                detail.allowAgents === (changed ? false : previous.allowAgents) && preservesTiming && (changed || detail.updatedAt === previous.updatedAt)
               : detail.status === operation.status && detail.allowAgents === previous.allowAgents && detail.requiredPlatform === previous.requiredPlatform && validStatusTiming(previous, detail, operation.status);
-          if (detail.projectId !== projectId || detail.id !== taskId || !validResult || !preservesMaterials(previous, detail, operation.action !== "withdraw") || detail.version !== committedVersion) throw new ApiError("protocol");
+          if (detail.projectId !== projectId || detail.id !== taskId || !validResult || !preservesMaterials(previous, detail, operation.action !== "withdraw", operation.action !== "assignedTo") || detail.version !== committedVersion) throw new ApiError("protocol");
           validated = true;
           confirmed = true;
           entry.committedVersion = detail.version;

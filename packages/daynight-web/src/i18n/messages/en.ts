@@ -1,3 +1,4 @@
+import { assignment } from "./en/assignment";
 import { workers } from "./en/workers";
 import { workspace } from "./en/workspace";
 import { graph } from "./en/graph";
@@ -11,6 +12,7 @@ import { landing } from "./en/landing";
 import type { Messages } from "../messages";
 
 export const en: Messages = {
+  assignment,
   workspace,
   workers,
   graph,
