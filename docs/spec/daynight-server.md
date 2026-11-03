@@ -5,12 +5,14 @@
 定义验证范围、要求与测试映射和 CI 产物解释；逐次运行结果随对应 PR 与 CI 保存。
 
 本文定义 `daynight-server` 面向本机 CLI 和内部程序的任务管理行为。
+[Thread 需求](daynight-task-thread.md)定义任务范围内的持久讨论、引用回复、作者快照、Id 分页与独立的 HTTP 读写；它不改变 Task 版本或执行状态。
 [技术设计](../design/daynight-server.md)拥有分层、存储和并发机制；
 [设计决策](../../.agents/notes/archived/architecture/2026-10-19-daynight-server-task-design.md)
 记录取舍和范围。
 
 [预定义属性需求](daynight-task-properties.md)扩展本文的 task 资源，PR 引用的
 服务端存储、更新与迁移已实现；[架构](../design/daynight-task-properties.md)拥有机制。
+[负责人契约](daynight-task-assignment.md)定义原生 assignedTo 字段、普通 HTTP 写入、任务筛选和项目内人员读取；它与属性及执行领取归属独立。
 
 [附件需求](daynight-task-attachments.md)扩展本文的服务基线：本地内容、PG 元数据、
 单文件 API 和固定预览路径已实现，CLI 与 Web 管理界面按其任务继续交付。其
@@ -89,6 +91,7 @@ Task 包含以下持久化字段：
 | `status` | `todo / in_progress / done`，创建时为 todo；普通设置使用状态资源，受控 worker 操作原子改变对应状态 |
 | `allowAgents` | 必填布尔自动执行许可，新任务为 `false`；与状态、依赖、实际执行者独立 |
 | `requiredPlatform` | 字段必填，值为 `null`、`windows`、`linux` 或 `macos`；`null` 表示不限制，新旧任务默认均不限制 |
+| `assignedTo` | 字段必填，值为规范本地用户 UUID 或 null；表示人的责任归属，新旧任务默认未分配 |
 | `version` | 从 `1` 开始的正整数，每次实际变更增加一次 |
 | `createdAt`、`updatedAt` | UTC 创建和最后实际变更时间 |
 | `startedAt`、`completedAt` | 只读 UTC 执行起止时间，字段必填但允许 `null`，未知事实不补造 |
@@ -108,7 +111,7 @@ todo 可有未完成前置，in_progress/done 的前置必须全部完成；状�
 ## 状态与更新规则
 
 新建 task 和数据库默认值均为 `todo`，初始版本为 1，执行起止为 null，`allowAgents=false`。
-创建只接受 `title`、可选 `description`、`dependsOn`、`externalDependsOn`、`requiredPlatform` 和 `properties`；
+创建只接受 `title`、可选 `description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo` 和 `properties`；
 禁止提交 status、allowAgents 和执行时间。省略描述与依赖分别为空字符串与空集合；省略属性不创建默认属性行。
 任务登记不启动执行，也不提供实现、部署、发布、合并或主线 push 的权限。
 创建的 requiredPlatform 省略或 null 表示不限制，三个枚举可设置要求。迁移 013 只为旧行
@@ -131,22 +134,22 @@ todo 可有未完成前置，in_progress/done 的前置必须全部完成；状�
 执行时间由锁后的数据库 statement 时间产生：进入 in_progress 替换起点并清空终点；
 退回 todo 清空两端；in_progress→done 保留可空起点并写终点；todo→done 的起点为 null，
 仅写真实终点。普通编辑和同状态保留时间，未知历史起点不从其他时间戳推算。
-状态写入保留标题、正文、PR、allowAgents、requiredPlatform、全部依赖及外部分类和附件；claim-bound done 同时把当前 worker 记录置为 completed。普通状态写入不能替代 active 释放或 released 接续，具体授权由[认领架构](../design/daynight-worker-claims.md)拥有。
+状态写入保留标题、正文、PR、allowAgents、requiredPlatform、assignedTo、全部依赖及外部分类和附件；claim-bound done 同时把当前 worker 记录置为 completed。普通状态写入不能替代 active 释放或 released 接续，具体授权由[认领架构](../design/daynight-worker-claims.md)拥有。
 
 新增迁移将全部历史 proposed 改为 todo，只对转换行增加一次 version 并更新 updatedAt，
 保留其他字段及历史起止时间。归类迁移不调用运行时 todo 清空规则；其他状态行保持不变。
 默认值、转换、三状态 CHECK 与迁移 ledger 同一事务，失败回滚，重复启动不重复转换。
 已应用迁移及 checksum 不变，运行时拒绝旧状态，不提供兼容读取映射。
 
-PATCH 可修改 `title`、`description`、`dependsOn`、`externalDependsOn`、`allowAgents`、`requiredPlatform` 和预定义属性，
+PATCH 可修改 `title`、`description`、`dependsOn`、`externalDependsOn`、`allowAgents`、`requiredPlatform`、`assignedTo` 和预定义属性，
 必须带读取到的 version 并至少包含一个可修改字段。status 不属于 PATCH；即使同时提交合法字段也整体拒绝。
-省略字段保留，只有 requiredPlatform 允许 null 清除，其他字段 null 拒绝；空描述、`dependsOn: []`、`properties.pullRequests: []` 明确清空对应内容。
+省略字段保留，requiredPlatform 与 assignedTo 允许 null 清除，其他字段 null 拒绝；空描述、`dependsOn: []`、`properties.pullRequests: []` 明确清空对应内容。
 空 properties 不算修改。todo 可有未完成前置；in_progress/done 的完整候选仍须全部直接前置完成。
 引用须存在于同 project，不能重复、自身引用或成环。依赖 D/E 独立 PATCH 语义由
 [外部依赖需求](daynight-external-dependencies.md)拥有；任何无关写入均保留完整分类。
 
 版本匹配的语义空编辑保持版本和 updatedAt；过期等值仍冲突。依赖顺序不构成变化；
-PR 顺序、重复项与字符串参与比较。allowAgents 省略保留，false 关闭，null/非布尔拒绝；
+PR 顺序、重复项与字符串参与比较。负责人不变时 allowAgents 省略保留；负责人实际变化时原子关闭许可，组合请求中的 true 也不能覆盖该结果。显式 false 关闭，null/非布尔拒绝；
 in_progress 实际切换许可仍返回 `409 invalid_transition`，同值精确版本不写入。
 许可、状态、元数据和依赖编辑共用项目锁及版本规则。许可只约束自动发现选择，明确指定的执行可采用任一值。
 [worker 要求](daynight-worker.md)中的唯一 claim 仍属独立计划，状态设置不提供归属或停止进程。
@@ -171,7 +174,8 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 | `GET` | `/api/v1/projects/{projectId}` | 返回 project，缺失时 `404` |
 | `PATCH` | `/api/v1/projects/{projectId}/settings` | 管理员按精确设置 version 修改阈值，返回 `200` 和完整 Project |
 | `POST` | `/api/v1/projects/{projectId}/tasks` | 创建 task，返回 `201` 和资源 |
-| `GET` | `/api/v1/projects/{projectId}/tasks` | 返回 task 分页列表 |
+| `GET` | `/api/v1/projects/{projectId}/tasks` | 返回 task 分页列表，支持显式负责人筛选 |
+| `GET` | `/api/v1/projects/{projectId}/task-assignees` | 返回项目成员与保留负责人目录，或限定 userId 解析；始终有 items/unresolvedUserIds |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 返回 task，缺失或不属于该 project 时 `404` |
 | `GET` | `/api/v1/task-properties/schema` | 认证后读取全服务属性定义，无项目参数 |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | 返回 projectId、taskId、version 和完整 properties |
@@ -220,12 +224,14 @@ Task 更新示例：
 
 列表使用 `limit`、`cursor`。`limit` 默认 `50`，允许 `1..100`；按
 `createdAt ASC, id ASC` 稳定排序，返回 `items` 和 `nextCursor`，末页后者为 `null`。
-Task 列表支持单个三状态 status、ready/allowAgents 布尔值、compatiblePlatform=windows|linux|macos，以及可选 UUID workerId。布尔只接受 true/false，兼容匹配包含 null 或同值要求；省略不筛选。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/released/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
+Task 列表支持单个三状态 status、ready/allowAgents 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false，兼容匹配包含 null 或同值要求；省略不筛选。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/released/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
 
 仅以 workerId 筛选并成功读完该 runner 全部项目和分页，才得到用于资源对账的完整自有 claim 清单。额外显式条件得到的是子集，不能据其缺席清理其他执行；读取失败或部分页不能视为空清单。
-Cursor 必须绑定列表类型、所属 project 和规范化筛选条件；指定 workerId 时还绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
+Task 列表 cursor 使用版本2，必需 scope 包含解析后的 all/unassigned/user:UUID 选择；项目列表和账号级 `/api/v1/me/workers` 保持版本1。me 与同一 UUID 的 scope 相同，其他账号的 me 不得续用；旧版本1 Task cursor 拒绝并从第一页重读。Cursor 还绑定列表类型、所属 project 和其他规范化筛选；指定 workerId 时绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
 输入错误拒绝；`limit` 的默认值仅用于未提供该参数。
 单次响应中的 task、依赖和派生字段保持一致；多次翻页不承诺跨请求快照。
+
+项目内 task-assignees 采用单个只读快照验证项目读取权限，并返回最小 userId/name/avatarUrl/hasProjectAccess 条目。无参数为当前成员与未删除任务保留负责人的完整并集；一个或多个 userId 参数为最多100个互异规范UUID的限定解析。两种模式始终返回非null items/unresolvedUserIds，完整目录的未解数组为空；限定结果互斥且精确覆盖请求。无作用域资格的ID只列为未解，不透露全局资料；有原始成员/任务资格但users行缺失是500完整性错误。资料nullable值不合成姓名或邮箱，任何查询/事务错误不返回局部集合。详细输入、资格和隐私规则由[负责人契约](daynight-task-assignment.md#项目内人员资源)拥有。
 
 ### 账号级 Worker 快照
 
@@ -242,7 +248,7 @@ Worker 资源归属来自认证 principal，报告不能提供 userId 或权威�
 
 Project、缓存 epoch、完整容量检查、匹配任务和 observedAt 来自一次只读快照；
 即使窗口只命中少量任务，项目超过 1,000/5,000 上限也明确拒绝。摘要的业务 version
-使用精确十进制字符串，包含 requiredPlatform 与完整 properties，省略 description 及派生 ready/blockedBy。
+使用精确十进制字符串，包含 requiredPlatform、明确 nullable 的 assignedTo 与完整 properties，省略 description 及派生 ready/blockedBy。
 任务行与批量属性来自同一快照，缺失属性不补默认值。非法存储属性使整个请求返回 400 invalid_input；数据库或事务完成故障仍返回 500 internal_error，且优先于已发现的属性拒绝。
 纳秒下界向上对齐到 PostgreSQL 微秒精度，避免驱动截断造成边界外记录进入结果。
 身份/权限、HEAD、no-store 和错误优先级服从既有合同。完整行为由
@@ -276,7 +282,7 @@ blocked 只计入前置未全部完成的 todo；查询不改变任务状态、�
 
 图节点返回 `id`、`titlePreview`、`titleTruncated`、`status`、`dependsOn`、
 `externalDependsOn`、`blockedBy`、`ready`、必填布尔 `allowAgents`、必填可空枚举
-`requiredPlatform`、`createdAt`、`updatedAt` 以及明确可空的 `startedAt`、`completedAt`。
+`requiredPlatform`、明确 nullable 的 `assignedTo`、`createdAt`、`updatedAt` 以及明确可空的 `startedAt`、`completedAt`。
 顶层 `observedAt` 是图数据与统计读取后的数据库 UTC RFC 3339 时间样本，不是事务开始时间
 或任务更新时间。标题预览最多 160 Unicode code points，截短时标记 titleTruncated；
 不返回完整标题、description 或 version。完整任务继续使用既有详情接口。节点按
@@ -302,7 +308,7 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | `404` | `not_found` | 路径资源缺失、当前用户不是项目成员或 task 不属于指定 project |
 | `405` | `method_not_allowed` | 已知路径使用不支持的方法，并返回 `Allow` |
 | `409` | `version_conflict` | 任务元数据、生命周期或项目设置的期望版本过期 |
-| `409` | `invalid_transition` | in_progress 中禁止实际切换 allowAgents/requiredPlatform，或删除目标仍有 active worker 归属 |
+| `409` | `invalid_transition` | in_progress 中禁止实际切换 allowAgents/requiredPlatform/assignedTo，或删除目标仍有 active worker 归属 |
 | `409` | `dependency_cycle` | 候选依赖图成环 |
 | `409` | `dependency_unsatisfied` | 进入 active/done 或元数据候选违反前置完成规则、done 重开存在 active/done 直接后继，或严格删除存在未删除引用者 |
 | `409` | `graph_limit_exceeded` | 任务链查询的返回集合或 task-sync 的全项目集合超过节点或依赖上限，返回精确数量和支持上限 |
@@ -354,6 +360,8 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | V10 | 请求日志可按 request ID 关联业务和存储失败，记录错误类别、组件和阶段，敏感值不进入日志 |
 | V11 | 自动执行许可覆盖旧行迁移/新行默认、所有 task/graph 资源的布尔字段、创建拒绝与 PATCH 省略/false/null/类型语义、双值筛选与 cursor、精确版本同值与旧值、in_progress 拒绝、同版本状态/许可竞争及时间/PR/依赖保全 |
 | V12 | 平台要求覆盖迁移保全、默认null、创建/PATCH省略/设置/清除/非法值、必填nullable资源、四种要求×三查询平台并组合ready/许可、分页前筛选/cursor、精确版本no-op/运行锁/状态竞争及全部字段保全；自动worker事务与实际记录按worker验收 |
+| V13 | assignedTo 覆盖历史及软删除行NULL、三套同快照响应的必填nullable键、创建/PATCH三态与规范化、实际变更原子关闭许可、等值/陈旧值/运行锁、访问变化、全部写入保留、真实竞态及回滚；具体契约由负责人需求拥有 |
+| V14 | 负责人多页原生筛选和解析后scope、Task cursor2与其他列表版本1、项目人员两种模式的资格/隐私/nullable/完整覆盖、原始引用缺失资料的500、真实快照并发/取消及查询计划样本 |
 
 实际进程与安装 CLI 验收通过固定的真实 UniAuth gateway 夹具取得浏览器会话与 PAT，
 再执行 V1–V12 业务场景。受控外部 provider 响应与真实上游登录具有不同证据

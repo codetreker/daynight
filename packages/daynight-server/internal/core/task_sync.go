@@ -12,6 +12,7 @@ type TaskViewRecord struct {
 	DependsOn         []string
 	ExternalDependsOn []string
 	RequiredPlatform  *TaskPlatform
+	AssignedTo        *string
 	AllowAgents       bool
 	CreatedAt         time.Time
 	UpdatedAt         time.Time

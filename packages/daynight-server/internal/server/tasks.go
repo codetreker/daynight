@@ -30,6 +30,8 @@ func taskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *Authentication, 
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
 	workerRoutes(mux, handler, auth, logger)
 	propertyRoutes(mux, handler, auth, logger)
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-assignees", auth.Require(handler.assignees))
+	mux.HandleFunc("/api/v1/projects/{projectId}/task-assignees", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-graph", auth.Require(handler.graph))
 	mux.HandleFunc("/api/v1/projects/{projectId}/task-graph", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
@@ -40,7 +42,7 @@ func taskResponse(task core.Task, request *http.Request) (api.Task, error) {
 	result := api.Task{ID: task.ID, ProjectID: task.ProjectID, Title: task.Title, Description: task.Description,
 		Properties: propertiesResponse(task.Properties), Status: string(task.Status), Version: task.Version, CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(),
 		StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt),
-		DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), BlockedBy: append([]string{}, task.BlockedBy...), Ready: task.Ready, AllowAgents: task.AllowAgents, RequiredPlatform: platformResponse(task.RequiredPlatform)}
+		DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), BlockedBy: append([]string{}, task.BlockedBy...), Ready: task.Ready, AllowAgents: task.AllowAgents, RequiredPlatform: platformResponse(task.RequiredPlatform), AssignedTo: task.AssignedTo}
 	if extendedWorkerProtocol(request) {
 		return result, nil
 	}
@@ -87,7 +89,11 @@ func optionalProperties(fields map[string]json.RawMessage) (*api.TaskPropertiesP
 }
 
 func (h *taskHandler) resource(request *http.Request, principal core.Principal) (string, string, *slog.Logger, error) {
-	logger := h.logger.With("user_id", principal.UserID)
+	return taskResource(request, principal, h.logger)
+}
+
+func taskResource(request *http.Request, principal core.Principal, base *slog.Logger) (string, string, *slog.Logger, error) {
+	logger := base.With("user_id", principal.UserID)
 	projectID, err := service.CanonicalID(request.PathValue("projectId"))
 	if err != nil {
 		return "", "", logger, err
@@ -146,6 +152,13 @@ func createTaskInput(fields map[string]json.RawMessage) (api.CreateTaskRequest, 
 	if platform != nil {
 		input.RequiredPlatform = *platform
 	}
+	assignedTo, err := optionalAssignedTo(fields)
+	if err != nil {
+		return api.CreateTaskRequest{}, err
+	}
+	if assignedTo != nil {
+		input.AssignedTo = *assignedTo
+	}
 	return input, nil
 }
 
@@ -184,7 +197,11 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 	if err != nil {
 		return api.UpdateTaskRequest{}, err
 	}
-	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && input.AllowAgents == nil && input.RequiredPlatform == nil &&
+	input.AssignedTo, err = optionalAssignedTo(fields)
+	if err != nil {
+		return api.UpdateTaskRequest{}, err
+	}
+	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && input.AllowAgents == nil && input.RequiredPlatform == nil && input.AssignedTo == nil &&
 		(input.Properties == nil || len(*input.Properties) == 0) {
 		return api.UpdateTaskRequest{}, invalidInput("at least one task field must be provided")
 	}
@@ -192,7 +209,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 }
 
 func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
-	values, err := queryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "workerId")
+	values, err := queryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "workerId", "assignedTo")
 	if err != nil {
 		return service.TaskListRequest{}, err
 	}
@@ -201,6 +218,9 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 		return service.TaskListRequest{}, err
 	}
 	result := service.TaskListRequest{PageRequest: page}
+	if value, exists := values["assignedTo"]; exists {
+		result.AssignedTo = &value[0]
+	}
 	if value, exists := values["status"]; exists {
 		status := core.TaskStatus(value[0])
 		result.Status = &status
@@ -236,7 +256,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 		writeError(w, request, logger, "task", "create", err)
 		return
 	}
-	fields, err := decodeObject(w, request, "title", "description", "dependsOn", "externalDependsOn", "properties", "requiredPlatform")
+	fields, err := decodeObject(w, request, "title", "description", "dependsOn", "externalDependsOn", "properties", "requiredPlatform", "assignedTo")
 	if err != nil {
 		writeError(w, request, logger, "task", "create", err)
 		return
@@ -247,7 +267,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 		return
 	}
 	task, err := h.tasks.Create(request.Context(), principal, projectID, service.CreateTask{
-		RequiredPlatform: platformValue(input.RequiredPlatform), Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn, Properties: propertyValues(input.Properties),
+		AssignedTo: input.AssignedTo, RequiredPlatform: platformValue(input.RequiredPlatform), Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn, Properties: propertyValues(input.Properties),
 	})
 	if err != nil {
 		writeError(w, request, logger, "task", "create", err)
@@ -329,7 +349,7 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 		writeError(w, request, logger, "task", "update", err)
 		return
 	}
-	fields, err := decodeObject(w, request, "version", "title", "description", "dependsOn", "externalDependsOn", "properties", "allowAgents", "requiredPlatform")
+	fields, err := decodeObject(w, request, "version", "title", "description", "dependsOn", "externalDependsOn", "properties", "allowAgents", "requiredPlatform", "assignedTo")
 	if err != nil {
 		writeError(w, request, logger, "task", "update", err)
 		return
@@ -339,7 +359,7 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 		writeError(w, request, logger, "task", "update", err)
 		return
 	}
-	values := service.UpdateTask{RequiredPlatform: platformPatch(input.RequiredPlatform), AllowAgents: input.AllowAgents, Version: input.Version, Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn}
+	values := service.UpdateTask{AssignedTo: input.AssignedTo, RequiredPlatform: platformPatch(input.RequiredPlatform), AllowAgents: input.AllowAgents, Version: input.Version, Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn}
 	if input.Properties != nil {
 		values.Properties = core.TaskPropertiesPatch(*input.Properties)
 	}

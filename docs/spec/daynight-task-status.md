@@ -26,7 +26,7 @@ ready 仍为 todo 且全部前置完成。统计满足 `total = todo + inProgres
 
 时间描述当前一次执行区间：进入 in_progress 生成新起点并清空终点；实际退回 todo 清空两端；in_progress→done 保留可空起点并记录真实终点；todo→done 仅记录终点，耗时未知。普通编辑与同状态不改变时间，不从其他时间戳推算历史。
 
-状态、时间、版本与依赖规则在同一项目写事务内完成。权限、版本、依赖、取消或存储失败不能留下部分结果。状态修改保留全部其他资料和附件；claim-bound done 同一事务把当前归属置为 completed。
+状态、时间、版本与依赖规则在同一项目写事务内完成。权限、版本、依赖、取消或存储失败不能留下部分结果。状态修改保留 assignedTo、全部其他资料和附件；claim-bound done 同一事务把当前归属置为 completed。
 
 ## TS4：Web 交互
 

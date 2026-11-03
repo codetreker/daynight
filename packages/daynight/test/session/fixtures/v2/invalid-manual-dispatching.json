@@ -1,0 +1,30 @@
+{
+  "protocol": "daynight.session.v2",
+  "schemaVersion": 2,
+  "projectionVersion": 1,
+  "sessionId": "00000000-0000-4000-8000-000000000006",
+  "claimId": "00000000-0000-4000-8000-000000000007",
+  "executionGeneration": "1",
+  "agentControlMode": "herdr",
+  "contentKind": "terminal_recording",
+  "type": "control_state",
+  "payload": {
+    "connectionEpoch": "1",
+    "controlEpoch": "1",
+    "state": "manual",
+    "lease": {
+      "leaseId": "00000000-0000-4000-8000-000000000011",
+      "holderUserId": "00000000-0000-4000-8000-000000000005",
+      "browserClientId": "00000000-0000-4000-8000-000000000012",
+      "controlEpoch": "1",
+      "expiresAt": "2026-11-03T10:00:30Z"
+    },
+    "initialAssignment": "dispatching",
+    "availableActions": [
+      "paste",
+      "keys",
+      "release_control"
+    ],
+    "unavailableReason": null
+  }
+}

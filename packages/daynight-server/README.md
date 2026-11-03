@@ -21,6 +21,12 @@ the [design](../../docs/design/daynight-server.md) owns architecture and concurr
 The TypeScript review command retains its separate configuration, storage and
 lifecycle. The client HTTP foundation targets this service's API.
 
+The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
+[design](../../docs/design/daynight-task-assignment.md) define the native nullable
+Task assignee. Ordinary task creation/PATCH and full Task, summary and graph
+producers carry it. Native assignee filtering and project-scoped people reads
+are implemented; CLI/Web assignment consumers remain separate capabilities.
+
 The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define UniAuth identity
 handoff, local users, browser sessions, personal access tokens and project
@@ -49,9 +55,9 @@ and [architecture](../../docs/design/daynight-task-sync.md) define the implement
 `GET /api/v1/projects/{projectId}/task-sync` endpoint. It returns a complete summary
 snapshot or current records whose `updatedAt` is at least the supplied task
 watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
-exact decimal strings; each intrinsic summary includes the complete current
-properties object, while descriptions, derived blockers and readiness remain
-outside these summaries. Task rows and batched property rows share one
+exact decimal strings; each intrinsic summary includes explicit nullable
+assignedTo and the complete current properties object, while descriptions,
+derived blockers and readiness remain outside these summaries. Task rows and batched property rows share one
 repeatable-read snapshot. Missing keys propagate removal through whole-summary
 replacement; ordinary property changes preserve the epoch. Invalid stored
 properties fail the complete request with 400 invalid_input. Database and
@@ -60,7 +66,9 @@ a saved property validation refusal. A stored project epoch invalidates caches a
 history replacement and transactional task soft deletion. The Web persists
 summaries and details and replaces them atomically after an epoch change. Its
 schema-3 upgrade rebuilds project, summary and detail stores, rotates user fences
-and clears old watermarks before a complete snapshot; absent properties in old
+and clears old watermarks before a complete snapshot. That browser projection
+does not yet consume assignedTo; new-field consumers and their cache-format
+upgrade must be delivered together. Absent properties in old
 summaries cannot be inferred as an empty object. Graph nodes omit properties,
 and cached values grant no detail or mutation admission. Complete properties
 increase transport, parsing and summary storage costs: node/edge limits and the
@@ -708,12 +716,16 @@ additionally manages members, invitations and project settings. Status PUT and
 method-refusal handlers authenticate, require exact Cookie Origin and use no-store.
 
 Creation uses todo, version 1, nullable execution endpoints, allowAgents=false
-and unrestricted requiredPlatform=null unless explicitly supplied.
+and unrestricted requiredPlatform=null unless explicitly supplied. Its
+assignedTo defaults to null; an explicitly supplied UUID must identify a current
+project member in the creation transaction.
 It rejects caller-supplied status, timing and permission; platform creation accepts
 null or windows/linux/macos. PATCH retains field presence separately from nullable value. Properties/PRs and both
 dependency collections have explicit empty defaults. Updates require a positive
 expected int64 version and at least one mutable field; omitted pointers preserve
-values, while empty description/dependency/PR lists clear them. Only requiredPlatform accepts null to clear; other JSON null input is rejected.
+values, while empty description/dependency/PR lists clear them.
+requiredPlatform and assignedTo accept null to clear; other JSON null input is
+rejected.
 Dependencies are canonical sorted UUIDs, checked for duplicate identity,
 self-reference, missing/cross-project tasks and cycles. Active/done metadata
 candidates require all predecessors done; todo may have unfinished predecessors.
@@ -725,7 +737,7 @@ version and only then handles same-state. A current same-state request returns
 the full current Task without a stored write; stale same-state conflicts. Actual
 change increments once. Entering active/done requires all direct predecessors
 done, including external edges; reopening done refuses sorted direct active/done
-dependent IDs. No dependent is changed. Status preserves requiredPlatform, PRs,
+dependent IDs. No dependent is changed. Status preserves requiredPlatform, assignedTo, PRs,
 other task fields, dependency classifications and attachments. Claim-bound done atomically marks
 the current worker completed; its owner and claim ID must match. Active execution
 returns to todo only through release. Released tasks begin a new execution through eligible automatic acquisition or
@@ -743,6 +755,12 @@ Migration 014 converts historical proposed rows to todo, advancing only their
 version/update time and preserving every other field, including timing. It
 atomically changes the default, rows, CHECK and ledger; restart does not rerun it.
 Applied historical migrations are immutable. Runtime input and readers reject proposed.
+
+Migration 028_task_assignment.sql adds nullable assigned_to and a partial
+project/assignee/keyset index for undeleted tasks. All existing and soft-deleted
+tasks receive NULL without changes to versions, business timestamps, properties
+or execution identity. Task, summary and graph responses always emit assignedTo
+as null or a canonical local user UUID.
 
 Migration 013_task_required_platform.sql adds nullable required_platform with its
 enum CHECK, preserving old versions, timestamps and other fields. Full tasks and
@@ -763,14 +781,19 @@ remain significant. Readiness changes do not advance dependent task revisions.
 
 Expected refusals are returned only after the lock-only transaction succeeds;
 transaction/cleanup failures preserve operational errors. Reads use an RR snapshot.
-Task cursors bind project and optional status/ready/allowAgents/compatiblePlatform
-filters, retaining absent/false and absent/each-enum distinctions. Optional UUID
+Task cursors use version 2 and bind project, the resolved
+all/unassigned/user:UUID assignee selection and optional
+status/ready/allowAgents/compatiblePlatform filters, retaining absent/false and
+absent/each-enum distinctions. Optional UUID
 workerId also binds the implicit authenticated user ID and matches only that
 user/worker active claim. Ordinary eligibility filters remain SQL predicates;
 worker ownership is matched by decoding each candidate’s worker property row
 before collecting the final limit+1 matches; complete properties are batch-loaded
-for selected tasks. No bounded output page hides later matches, and opaque PR
-strings are not converted through PostgreSQL JSON types.
+for selected tasks. Assignee equality/IS NULL applies before this worker
+matching and final pagination. No bounded output page hides later matches, and
+opaque PR strings are not converted through PostgreSQL JSON types. Project and
+account-Worker cursors stay at version 1; old version-1 task cursors are refused.
+The assignee filter is explicit and does not change automatic worker eligibility.
 
 ## Task-chain graph
 
@@ -798,7 +821,8 @@ projection. Graph reads do not change stored status, revisions or timestamps.
 
 Nodes contain `id`, `titlePreview`, `titleTruncated`, `status`, `dependsOn`,
 `externalDependsOn`, `blockedBy`, `ready`, required boolean `allowAgents`, required
-nullable enum `requiredPlatform`, UTC creation/update timestamps and explicit
+nullable enum `requiredPlatform`, required nullable user UUID `assignedTo`,
+UTC creation/update timestamps and explicit
 nullable `startedAt`/`completedAt`. SQL produces at most 160 Unicode code points
 of each title without selecting descriptions, properties or full titles. Use the
 task detail endpoint for complete content. Node order is `(createdAt, id)`;
@@ -827,6 +851,67 @@ project identity and graph counts without recording task content, repository
 addresses or query strings. The CLI uses this endpoint; the Web dashboard uses
 `task-sync` and computes its graphs locally.
 
+## Task Thread API
+
+Persistent discussion belongs to each task independently of its execution.
+The [Thread requirements](../../docs/spec/daynight-task-thread.md) and
+[design](../../docs/design/daynight-task-thread.md) own the complete contract.
+Thread never changes Task version, timestamps, state, properties, dependencies,
+cache epoch or task-sync. It remains readable and writable before execution,
+while the Controller is offline, and after completion. Deleted tasks retain
+messages but refuse access through their task resource.
+
+For `T=/api/v1/projects/{projectId}/tasks/{taskId}`:
+
+| Method | Path | Result |
+| --- | --- | --- |
+| `POST` | `T/thread/messages` | `201`, committed default message; body, optional replyTo/claimId |
+| `GET` / `HEAD` | `T/thread/messages` | `200`, messages and actual-boundary hasMoreBefore/hasMoreAfter |
+
+GET accepts only beforeId/afterId (mutually exclusive), count=1..100 (default 50),
+details=true/false and internal fromBeginning=true/false. An explicit
+fromBeginning cannot accompany an Id boundary. Without a boundary, ordinary
+reads select the latest page; fromBeginning=true selects the oldest page. Pages
+always display oldest first. Unknown, repeated or empty query keys fail; POST
+accepts no query and strictly decodes one UTF-8 JSON object within 1 MiB.
+
+A message contains id, author.userId/displayName/Agent, body, fixed-three-digit
+UTC createdAt and optional replyTo. displayName is always present and may be
+null. Author name and verified execution attribution are immutable snapshots.
+A supplied claimId must be active and owned by the authenticated account;
+otherwise Agent=false. details=true exposes only verified claimId, workerId and
+provider under author.execution for Agent authors. Neither default messages nor
+ordinary users expose that object. The database generates message_id once; its
+primary key is (task_id,message_id), with no single-column uniqueness guarantee.
+Reply and pagination IDs are always resolved within the selected task.
+
+The shared codec admits both default/detailed message encodings at <= 65,536
+bytes and complete pages at <= 262,144 bytes. HTTP writes exactly those escaped
+JSON bytes without an added LF. Full bodies and names are never truncated.
+Service operations have a 10-second ceiling with shorter parent deadlines taking
+precedence; actual-clock advancement has a 100 ms sub-budget, and rollback uses
+an independent 5-second cleanup context. These bounds do not claim a whole-handler
+latency SLA.
+
+POST success follows confirmed commit. A failed cleanup remains 500 even with a
+nested business refusal. Unknown COMMIT returns 503 message_outcome_unknown;
+clients keep drafts and must not automatically repeat POST. A post-commit
+response failure is logged once at response phase without another append.
+Clock-budget exhaustion returns 503 clock_not_advanced; encoded oversize is 413
+payload_too_large. Missing local messages are 404 message_not_found. Invalid or
+expired credentials are 401, missing project membership or source-owner mismatch
+is 403, invalid/stale claim is 409, and deleted tasks are 410. Existing PAT/Cookie,
+Origin, no-store and Daynight-User-ID behavior applies.
+
+Store/service tests use real isolated PostgreSQL schemas to check composite
+identity, millisecond ordering, rollback/commit stages, expiry, authorization,
+immutable attribution, byte admission and ID paging. HTTP tests verify strict
+input, real Cookie/PAT authentication, actual response lengths and safe failure
+logs. Private clock seams and injected commit-response loss make failure paths
+deterministic; these are bounded observations, not proof of every network fault.
+Run the full server gate under [Validate](#validate). CLI rendering and browser
+Discussion are separate consumers of this API.
+
 ## Task HTTP API
 
 Worker operations return complete Task resources with 200 and no-store, preserving
@@ -853,6 +938,7 @@ user/worker active-claim inventory; no claim table is introduced.
 | `POST` | `/api/v1/projects/{projectId}/tasks` | `201`, task and `Location` |
 | `GET` | `/api/v1/projects/{projectId}/tasks` | `200`, task page |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | `200`, task |
+| `GET` | `/api/v1/projects/{projectId}/task-assignees` | `200`, scoped minimal people catalogue or bounded userId resolution |
 | `GET` | `/api/v1/task-properties/schema` | `200`, authenticated server-wide definitions without project discovery |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | `200`, projectId/taskId/version and complete properties |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version/valueText; `200`, property resource after setting one complete value |
@@ -866,9 +952,10 @@ user/worker active-claim inventory; no claim table is introduced.
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/resume` | `200`, explicit manual new execution of a released task |
 
 Creation accepts required `title`, optional `description`, `dependsOn`,
-`externalDependsOn`, `requiredPlatform` and `properties`; omitted optional values
-mean empty text, empty complete/external dependency sets, unrestricted platform
-and no property rows. Status, version and identity are server-owned on creation.
+`externalDependsOn`, `requiredPlatform`, `assignedTo` and `properties`; omitted
+optional values mean empty text, empty complete/external dependency sets,
+unrestricted platform, no assignee and no property rows. Status, version and
+identity are server-owned on creation.
 The external subset must belong to the final complete dependency set. On PATCH,
 omitting both fields preserves relationships; dependsOn-only replaces IDs and
 keeps surviving classifications with new edges ordinary; externalDependsOn-only
@@ -878,13 +965,28 @@ preserve unrelated classification and execution timing. Exact write examples
 belong to the [external dependency design](../../docs/design/daynight-external-dependencies.md).
 PATCH accepts a positive integer `version` and at least one mutation of `title`,
 `description`, `dependsOn`, `externalDependsOn`, `allowAgents`,
-`requiredPlatform` or `properties.pullRequests`; a status field is rejected
+`requiredPlatform`, `assignedTo` or a writable defined property; a status field
+is rejected
 even alongside otherwise valid metadata. Omitted fields
-stay unchanged; explicit `requiredPlatform: null` clears the requirement. Null
-for other fields, including dependency or PR elements, fails.
+stay unchanged; explicit `requiredPlatform: null` clears the requirement and
+`assignedTo: null` clears responsibility. Null for other fields, including
+dependency or PR elements, fails.
 Empty description, `dependsOn: []` or `properties: {"pullRequests": []}` clears
 that value. `properties: {}` has no mutation intent and is accepted only with
 another mutable field. Fractions, exponents, strings and out-of-range versions fail.
+
+Assignment is top-level task metadata, independent of properties and worker
+claims. Non-null UUID input is normalized before candidate equality and target
+membership is checked in the project transaction only for a newly selected
+person. A real assignment change atomically sets allowAgents=false, including a
+combined PATCH requesting true; in_progress rejects the complete change. An
+equal assignment preserves permission and does not requalify a retained former
+member. Ordinary metadata, status, property and worker writes share one complete
+current-task copy and preserve assignment. The common policy runs after
+definitive no-op/deletion handling; domain refusals retain transaction-failure
+priority. Assignment grants neither project access nor control of a claim,
+Session or archive, and does not limit another eligible worker after automatic
+selection is enabled.
 
 Full read `properties` is a generic object of defined property names to complete
 JSON values. Keys may be absent; no default PR array or worker:null is injected.
@@ -902,7 +1004,8 @@ additional count or string-length limits. The complete API behavior is owned by
 the [task properties requirements](../../docs/spec/daynight-task-properties.md).
 
 Task responses contain identity, project, title, description, status, required
-boolean `allowAgents`, nullable enum `requiredPlatform`, version,
+boolean `allowAgents`, nullable enum `requiredPlatform`, explicit nullable user
+UUID `assignedTo`, version,
 UTC creation/update timestamps, explicit nullable execution timestamps
 `startedAt`/`completedAt`, sorted `dependsOn`/`externalDependsOn`/`blockedBy` arrays, `ready` and complete
 `properties` with its actual present keys. An empty object means no properties,
@@ -910,10 +1013,13 @@ and an explicit `pullRequests: []` remains distinct from absence. A missing
 project or a task outside the specified project returns 404. The initialized
 empty project returns `items: []`, `nextCursor: null`.
 
-Lists support `limit`, `cursor`, `status`, `ready`, `allowAgents`,
-`compatiblePlatform` and UUID `workerId`, once each.
+Task lists support `limit`, `cursor`, `status`, `ready`, `allowAgents`,
+`compatiblePlatform`, `assignedTo` and UUID `workerId`, once each.
 Both boolean filters accept literal `true` or `false`; compatibility accepts
 `windows`, `linux` or `macos` and includes null requirements and exact matches.
+assignedTo accepts a UUID, `me` or `unassigned`; omission means all assignments.
+`me` resolves to the admitted principal before cursor checking, while unassigned
+matches native NULL. A former assignee UUID remains a valid filter.
 Explicit filters combine with AND before final pagination and lookahead and stay
 bound to the cursor's canonical project scope. workerId includes only current
 active claims for the authenticated user and that worker; it adds no implicit
@@ -921,6 +1027,34 @@ status, readiness, permission or platform eligibility condition. Only a workerId
 query aggregated successfully across all relevant projects/pages supplies a complete
 ownership inventory. Partial pages, additional filters and failed traversals cannot
 authorize cleanup by absence. HTTP input retains strict query validation.
+Task cursor version 2 includes the resolved assignee scope; me and its concrete
+UUID may share that scope, but another account's me cannot. Project and
+account-owned Worker list cursors remain version 1.
+
+The project-scoped task-assignees GET returns `items` and `unresolvedUserIds`
+as non-null arrays. With no query it enumerates current members and assignees
+retained by undeleted tasks. Repeated `userId` query arguments select a bounded
+resolution mode: 1–100 distinct canonical UUIDs, with no empty, duplicate,
+malformed or unknown parameters. Both arrays are sorted; in resolution mode
+they are disjoint and cover the requested IDs exactly. The complete catalogue
+has an empty unresolved array. HEAD and method refusal retain the authenticated
+GET/no-store/Allow contract.
+
+Each item has only userId, nullable name, nullable avatarUrl and boolean
+hasProjectAccess. Values preserve the canonical profile; no name or email
+fallback is synthesized, and email, external identity, role, version and
+execution records are not returned. No scoped membership or live-task reference
+means unresolved, regardless of whether a global user exists. A raw qualifying
+reference whose users row is missing is an internal integrity failure, not an
+unresolved ID or a null name. Both modes authorize and read references/profiles
+within one repeatable-read snapshot and fail as a whole on query, scan, rows,
+cancellation or transaction-completion errors.
+
+Full catalogue reads are intended for explicit selection/retry. Recurring
+consumers resolve their rendered/selected IDs in batches of at most 100; an empty
+set sends no request rather than omitting arguments and enumerating everything.
+The [assignment contract](../../docs/spec/daynight-task-assignment.md) owns the
+privacy, qualification and error rules. Neither mode mutates Task versions.
 
 Lifecycle POST bodies require only the positive int64 expected version, as a
 JSON number. Missing, null, fractional, nonpositive and out-of-range versions fail.

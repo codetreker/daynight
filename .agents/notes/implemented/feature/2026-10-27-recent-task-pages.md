@@ -105,6 +105,8 @@ a domain graph.
 
 Page changes can unmount rows, so row-local disclosure follows its existing
 reset-on-unmount lifetime. Page retention is limited to the project visit; saved
-category, Show all and scroll preferences preserve their established shapes.
+category and Show all preferences preserve their established shapes. The
+[shared-scroll decision](../bug-fix/2026-11-03-shared-task-list-scroll.md) replaces
+the original per-category scroll records with one shared task-list offset.
 Cross-page focus and expiry without new data require behavioral validation in
 addition to isolated range calculations.

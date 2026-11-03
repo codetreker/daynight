@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
@@ -68,6 +69,24 @@ func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery)
 		projection += ", worker_property.value"
 		join = " LEFT JOIN task_properties worker_property ON worker_property.task_id=t.id AND worker_property.name='worker'"
 	}
+	arguments := []any{projectID, afterTime, afterID, query.Status, query.Ready, query.AllowAgents, query.CompatiblePlatform, limit}
+	assignmentCondition := ""
+	switch query.AssignedTo.Mode {
+	case core.TaskAssignmentAll:
+		if query.AssignedTo.UserID != "" {
+			return TaskPage{}, queryError("list tasks", fmt.Errorf("task assignment filter is invalid"))
+		}
+	case core.TaskAssignmentUnassigned:
+		if query.AssignedTo.UserID != "" {
+			return TaskPage{}, queryError("list tasks", fmt.Errorf("task assignment filter is invalid"))
+		}
+		assignmentCondition = " AND t.assigned_to IS NULL"
+	case core.TaskAssignmentUser:
+		assignmentCondition = " AND t.assigned_to = $9::uuid"
+		arguments = append(arguments, query.AssignedTo.UserID)
+	default:
+		return TaskPage{}, queryError("list tasks", fmt.Errorf("task assignment filter is invalid"))
+	}
 	rows, err := s.tx.Query(ctx, `SELECT `+projection+` FROM tasks t`+join+`
   WHERE t.project_id = $1 AND t.deleted_at IS NULL
   AND ($2::timestamptz IS NULL OR (t.created_at, t.id) > ($2, $3::uuid))
@@ -75,7 +94,7 @@ func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery)
   AND ($5::boolean IS NULL OR `+taskReady+` = $5)
   AND ($6::boolean IS NULL OR t.allow_agents = $6)
   AND ($7::text IS NULL OR t.required_platform IS NULL OR t.required_platform = $7)
-  ORDER BY t.created_at, t.id LIMIT $8`, projectID, afterTime, afterID, query.Status, query.Ready, query.AllowAgents, query.CompatiblePlatform, limit)
+  `+assignmentCondition+` ORDER BY t.created_at, t.id LIMIT $8`, arguments...)
 	if err != nil {
 		return TaskPage{}, queryError("list tasks", err)
 	}

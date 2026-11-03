@@ -1,5 +1,7 @@
 # Task Session 需求
 
+本页描述已接入的 Web v1 执行与页面行为。Herdr 的[Session v2 协议要求](session-v2.md)另行定义终端内容、控制和归档的生产消费保证；仅有契约库不启用 Herdr 页面或原生控制能力。
+
 ## 目标与模式
 
 任务执行采用 `herdr` 或 `web` 中的一种控制方式。两者复用现有任务资格、认领、worktree、managed assignment、进度及完成规则。模式在执行开始前确定，同一 claim 不热切换、不双启动，也不因连接失败自动降级。
@@ -60,6 +62,8 @@ Chatbox 按 Provider 发现的真实能力提供模型、reasoning effort 和权
 设置、命令和普通输入共享当前执行与权限约束，多个网页同时操作须拒绝旧目录版本。中断和审批不能被等待中的设置阻塞。账号核验、失焦连接保留、断线与恢复继续遵守下述可靠性要求。
 
 ## 内容归属与结束后历史
+
+[任务 Thread](daynight-task-thread.md)独立保存参与者显式发言与引用回复，不属于原生 Session 内容，不依赖 Controller 在线，也不触发 Agent 或改变执行状态。任务描述与附件继续保存有效要求和正式成果。
 
 执行中的消息、reasoning、工具参数和结果、资源及 Session View 动态状态由对应 Agent 执行环境及 Controller 保存。Controller 以标准化 timeline 更新和已登记资源作为归档来源，正文写入本机待归档文件；SQLite 只保留执行身份、完整操作证据、内容索引和有界投递 outbox，不另存整份 timeline 或资源正文。旧 SQLite 正文必须先可靠导出，再清除原内容表；已停止执行的受支持旧 journal 也必须能够自动补齐结构迁移后归档，不能要求重新启动 Agent。没有完整历史来源的旧 journal 在自动升级后仍须保持不完整状态，不能将迁移新建的空表当作完整空历史。Daynight 服务端负责经过鉴权的在线转发和有界临时缓存，不将会话正文写入 PostgreSQL。
 

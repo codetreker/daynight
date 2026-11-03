@@ -305,7 +305,3 @@ func requireWorkerOperator(ctx context.Context, tx *store.ProjectTx, principal c
 	}
 	return requireProjectAdmin(member)
 }
-
-func currentTaskWrite(current core.Task) store.TaskWrite {
-	return store.TaskWrite{RequiredPlatform: current.RequiredPlatform, AllowAgents: current.AllowAgents, Title: current.Title, Description: current.Description, Properties: taskproperties.Clone(current.Properties), Status: current.Status, DependsOn: current.DependsOn, ExternalDependsOn: current.ExternalDependsOn}
-}

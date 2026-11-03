@@ -83,8 +83,10 @@ monotonic time and visibility recovery keep deadline work independent of polling
 success; local calendar interpretation still belongs to the browser time zone.
 
 Explicit navigation overrides saved scroll for one activation only, including
-when its Goal is on another task-list page. Ordinary browsing restores
-independent positions, and graph opening remains a separate operation. Regression
+when its Goal is on another task-list page. Overview and Task list restore
+independent section positions. The [shared-scroll decision](../bug-fix/2026-11-03-shared-task-list-scroll.md)
+keeps one task-list offset across category switches; graph opening remains a
+separate operation. Regression
 coverage exercises local calendar expiry without new data, first-use mounting,
 old saved positions, changed representatives, unavailable targets, cross-page
 focus, both languages and narrow layouts.

@@ -29,7 +29,6 @@ const showAllPreference = (value: unknown): boolean => {
 
 export type ProjectSection = "overview" | "tasks";
 export type TaskView = "standalone" | "chains";
-type ScrollPositions = Readonly<Record<TaskView, number>>;
 
 const projectSectionPreference = (value: unknown): ProjectSection => {
   if (value !== "overview" && value !== "tasks") throw new Error("Invalid project section preference.");
@@ -41,13 +40,11 @@ const taskViewPreference = (value: unknown): TaskView => {
   return value;
 };
 
-const scrollPreference = (value: unknown): ScrollPositions => {
-  if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).length !== 2 ||
-    !("chains" in value) || !("standalone" in value) || typeof value.chains !== "number" || typeof value.standalone !== "number" ||
-    !Number.isFinite(value.chains) || !Number.isFinite(value.standalone) || value.chains < 0 || value.standalone < 0) {
-    throw new Error("Invalid project task view scroll positions.");
+const scrollPreference = (value: unknown): number => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error("Invalid project task list scroll position.");
   }
-  return { chains: value.chains, standalone: value.standalone };
+  return value;
 };
 
 const useNamedPreference = <Value,>(key: string, decode: (value: unknown) => Value, defaultValue: Value) => {
@@ -86,34 +83,32 @@ export const useTaskView = (projectId: string) => {
   return { activeView: value, onViewChange: save, issue };
 };
 
-export const useTaskViewScroll = (projectId: string, activeView: TaskView, active: boolean) => {
-  const key = `daynight:task-view-scroll:${projectId}`;
+export const useTaskListScroll = (projectId: string, active: boolean) => {
+  const key = `daynight:task-list-scroll:${projectId}`;
   const [initial] = useState(() => readPreference(key, scrollPreference));
-  const positions = useRef<ScrollPositions>(initial.value === undefined ? { chains: 0, standalone: 0 } : initial.value);
+  const position = useRef(initial.value === undefined ? 0 : initial.value);
   const [writeIssue, setWriteIssue] = useState<PreferenceIssue | null>(null);
   const savePosition = useCallback(() => {
-    if (!active) return;
-    const next = { ...positions.current, [activeView]: window.scrollY };
-    if (next[activeView] === positions.current[activeView]) return;
-    positions.current = next;
+    if (!active || window.scrollY === position.current) return;
+    position.current = window.scrollY;
     try {
-      window.localStorage.setItem(key, JSON.stringify(next));
+      window.localStorage.setItem(key, JSON.stringify(position.current));
       setWriteIssue(null);
     } catch (cause) {
       setWriteIssue({ kind: "write", cause });
     }
-  }, [key, activeView, active]);
+  }, [key, active]);
 
   useLayoutEffect(() => {
     if (!active) return;
-    window.scrollTo({ top: positions.current[activeView], behavior: "instant" });
+    window.scrollTo({ top: position.current, behavior: "instant" });
     window.addEventListener("scroll", savePosition, { passive: true });
     window.addEventListener("pagehide", savePosition);
     return () => {
       window.removeEventListener("scroll", savePosition);
       window.removeEventListener("pagehide", savePosition);
     };
-  }, [active, activeView, savePosition]);
+  }, [active, savePosition]);
 
   return { savePosition, issue: writeIssue ?? initial.issue };
 };

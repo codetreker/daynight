@@ -105,7 +105,7 @@ func (s *Tasks) SetStatus(
 4. 对实际改变检查 worker 归属；active 完成匹配 owner/claim，释放与 released 接续使用专用入口。
 5. 实际进入 in_progress/done，要求全部直接前置完成。
 6. done 返回其他状态，要求没有 in_progress/done 直接后继。
-7. 构造完整 TaskWrite，一次写入状态、归属终态、时间、版本和 updatedAt，保留全部其他字段。
+7. 从中性的 currentTaskWrite 构造完整候选，一次写入状态、归属终态、时间、版本和 updatedAt，保留 assignedTo 及全部其他字段。同状态 no-op 可直接返回 current，不将缺失候选交给负责人规则。
 
 事务错误优先于暂存的领域拒绝，提交或回滚失败不能伪装为成功/资源不存在。invalid_transition 仍服务于 in_progress 中禁止实际改变 allowAgents 的既有规则，不因删除动作前态判断而全局删掉。
 
