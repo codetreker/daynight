@@ -78,7 +78,7 @@ func (f *membershipFixture) member(t *testing.T, p core.Principal, projectID str
 	var member core.ProjectMember
 	if err := f.database.ReadSnapshot(context.Background(), func(snapshot *store.Snapshot) error {
 		var err error
-		member, err = snapshot.ProjectMember(context.Background(), p, projectID)
+		member, err = snapshot.DirectProjectMember(context.Background(), p.UserID, projectID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestPrivateProjectsAtomicCreationAndMemberFilteredPagination(t *testing.T) 
 	b := f.project(t, alice, "B")
 	f.project(t, bob, "Hidden after B")
 	c := f.project(t, alice, "C")
-	if m := f.member(t, alice, a.ID); m.Role != core.ProjectAdmin {
+	if m := f.member(t, alice, a.ID); m.Grant.Role != core.ProjectAdmin {
 		t.Fatalf("creator: %#v", m)
 	}
 	var names []string
@@ -147,35 +147,35 @@ func TestMembershipRoleAuthorizationAndObservedVersions(t *testing.T) {
 	}
 	_, err := f.memberships.List(ctx, outsider, p.ID)
 	requireFault(t, err, "not_found")
-	_, err = f.memberships.SetRole(ctx, member, p.ID, owner.UserID, f.member(t, owner, p.ID).Version, core.ProjectMemberRole)
+	_, err = f.memberships.SetRole(ctx, member, p.ID, owner.UserID, f.member(t, owner, p.ID).Grant.Version, core.ProjectMemberRole)
 	requireFault(t, err, "forbidden")
-	_, err = f.memberships.SetRole(ctx, outsider, p.ID, member.UserID, joined.Version, core.ProjectAdmin)
+	_, err = f.memberships.SetRole(ctx, outsider, p.ID, member.UserID, joined.Grant.Version, core.ProjectAdmin)
 	requireFault(t, err, "not_found")
-	unchanged, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Version, core.ProjectMemberRole)
-	if err != nil || unchanged.Version != joined.Version {
+	unchanged, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Grant.Version, core.ProjectMemberRole)
+	if err != nil || !reflect.DeepEqual(unchanged, joined) {
 		t.Fatalf("same role: %#v %v", unchanged, err)
 	}
-	promoted, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Version, core.ProjectAdmin)
-	if err != nil || promoted.Version <= joined.Version {
+	promoted, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Grant.Version, core.ProjectAdmin)
+	if err != nil || promoted.Grant.Version <= joined.Grant.Version {
 		t.Fatalf("promotion: %#v %v", promoted, err)
 	}
-	_, err = f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Version, core.ProjectMemberRole)
+	_, err = f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Grant.Version, core.ProjectMemberRole)
 	requireFault(t, err, "version_conflict")
-	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, joined.Version), "version_conflict")
-	if err := f.memberships.Remove(ctx, owner, p.ID, member.UserID, promoted.Version); err != nil {
+	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, joined.Grant.Version), "version_conflict")
+	if err := f.memberships.Remove(ctx, owner, p.ID, member.UserID, promoted.Grant.Version); err != nil {
 		t.Fatal(err)
 	}
 	rejoined := f.join(t, owner, member, p.ID)
-	if rejoined.Version <= promoted.Version {
+	if rejoined.Grant.Version <= promoted.Grant.Version {
 		t.Fatal("rejoin reused an observed version")
 	}
-	_, err = f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Version, core.ProjectAdmin)
+	_, err = f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Grant.Version, core.ProjectAdmin)
 	requireFault(t, err, "version_conflict")
-	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, promoted.Version), "version_conflict")
-	if f.member(t, member, p.ID).Role != core.ProjectMemberRole {
+	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, promoted.Grant.Version), "version_conflict")
+	if f.member(t, member, p.ID).Grant.Role != core.ProjectMemberRole {
 		t.Fatal("stale observation changed rejoined member")
 	}
-	if err := f.memberships.Remove(ctx, owner, p.ID, member.UserID, rejoined.Version); err != nil {
+	if err := f.memberships.Remove(ctx, owner, p.ID, member.UserID, rejoined.Grant.Version); err != nil {
 		t.Fatal(err)
 	}
 	_, err = f.memberships.List(ctx, member, p.ID)
@@ -183,10 +183,10 @@ func TestMembershipRoleAuthorizationAndObservedVersions(t *testing.T) {
 	_, err = f.memberships.CreateInvitation(ctx, member, p.ID)
 	requireFault(t, err, "not_found")
 	ownerMember := f.member(t, owner, p.ID)
-	_, err = f.memberships.SetRole(ctx, owner, p.ID, owner.UserID, ownerMember.Version, core.ProjectMemberRole)
+	_, err = f.memberships.SetRole(ctx, owner, p.ID, owner.UserID, ownerMember.Grant.Version, core.ProjectMemberRole)
 	requireFault(t, err, "last_admin")
-	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, owner.UserID, ownerMember.Version), "last_admin")
-	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, rejoined.Version), "not_found")
+	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, owner.UserID, ownerMember.Grant.Version), "last_admin")
+	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, rejoined.Grant.Version), "not_found")
 	_, err = f.memberships.List(ctx, owner, uuid.NewString())
 	requireFault(t, err, "not_found")
 	legacy, err := f.database.CreateProject(ctx, uuid.NewString(), "Legacy", "host:repo")
@@ -204,7 +204,7 @@ func TestMembershipConcurrentLastAdministratorChanges(t *testing.T) {
 			a, b := f.user(t), f.user(t)
 			p := f.project(t, a, "Admin race")
 			bm := f.join(t, a, b, p.ID)
-			bm, err := f.memberships.SetRole(context.Background(), a, p.ID, b.UserID, bm.Version, core.ProjectAdmin)
+			bm, err := f.memberships.SetRole(context.Background(), a, p.ID, b.UserID, bm.Grant.Version, core.ProjectAdmin)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -212,16 +212,16 @@ func TestMembershipConcurrentLastAdministratorChanges(t *testing.T) {
 			results := competeTaskWrites(t, f.database, p.ID,
 				func(ctx context.Context) (core.Task, error) {
 					if remove {
-						return core.Task{}, f.memberships.Remove(ctx, a, p.ID, a.UserID, am.Version)
+						return core.Task{}, f.memberships.Remove(ctx, a, p.ID, a.UserID, am.Grant.Version)
 					}
-					_, err := f.memberships.SetRole(ctx, a, p.ID, a.UserID, am.Version, core.ProjectMemberRole)
+					_, err := f.memberships.SetRole(ctx, a, p.ID, a.UserID, am.Grant.Version, core.ProjectMemberRole)
 					return core.Task{}, err
 				},
 				func(ctx context.Context) (core.Task, error) {
 					if remove {
-						return core.Task{}, f.memberships.Remove(ctx, b, p.ID, b.UserID, bm.Version)
+						return core.Task{}, f.memberships.Remove(ctx, b, p.ID, b.UserID, bm.Grant.Version)
 					}
-					_, err := f.memberships.SetRole(ctx, b, p.ID, b.UserID, bm.Version, core.ProjectMemberRole)
+					_, err := f.memberships.SetRole(ctx, b, p.ID, b.UserID, bm.Grant.Version, core.ProjectMemberRole)
 					return core.Task{}, err
 				})
 			assertOneTaskWinner(t, results, "last_admin")
@@ -254,8 +254,9 @@ func TestInvitationsLifecycleAndProjectOwnership(t *testing.T) {
 	}
 	_, err := f.memberships.List(ctx, member, p.ID)
 	requireFault(t, err, "not_found")
+	original := f.member(t, owner, p.ID)
 	existing, err := f.memberships.AcceptInvitation(ctx, owner, invitation.Secret)
-	if err != nil || existing.Role != core.ProjectAdmin {
+	if err != nil || !reflect.DeepEqual(existing, original) {
 		t.Fatalf("existing admin: %#v %v", existing, err)
 	}
 	active, err := f.memberships.ListInvitations(ctx, owner, p.ID)
@@ -263,7 +264,7 @@ func TestInvitationsLifecycleAndProjectOwnership(t *testing.T) {
 		t.Fatalf("existing member consumed: %#v %v", active, err)
 	}
 	joined, err := f.memberships.AcceptInvitation(ctx, member, invitation.Secret)
-	if err != nil || joined.Role != core.ProjectMemberRole {
+	if err != nil || joined.Grant.Role != core.ProjectMemberRole {
 		t.Fatalf("accept: %#v %v", joined, err)
 	}
 	_, err = f.memberships.AcceptInvitation(ctx, other, invitation.Secret)
@@ -280,15 +281,15 @@ func TestInvitationsLifecycleAndProjectOwnership(t *testing.T) {
 		t.Fatalf("consumed list: %#v %v", active, err)
 	}
 	replacement := f.invite(t, owner, p.ID)
-	promoted, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Version, core.ProjectAdmin)
+	promoted, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Grant.Version, core.ProjectAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.memberships.Remove(ctx, member, p.ID, owner.UserID, f.member(t, owner, p.ID).Version); err != nil {
+	if err := f.memberships.Remove(ctx, member, p.ID, owner.UserID, f.member(t, owner, p.ID).Grant.Version); err != nil {
 		t.Fatal(err)
 	}
 	inspection, err := f.memberships.InspectInvitation(ctx, member, replacement.Secret)
-	if err != nil || inspection.Member == nil || inspection.Member.Version != promoted.Version {
+	if err != nil || inspection.Member == nil || inspection.Member.Grant.Version != promoted.Grant.Version {
 		t.Fatalf("member inspection: %#v %v", inspection, err)
 	}
 	if _, err := f.memberships.AcceptInvitation(ctx, other, replacement.Secret); err != nil {

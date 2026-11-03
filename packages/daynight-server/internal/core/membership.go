@@ -9,16 +9,26 @@ const (
 	ProjectMemberRole ProjectRole = "member"
 )
 
-type ProjectMember struct {
+type ProjectGrant struct {
 	ProjectID string
 	UserID    string
 	Role      ProjectRole
 	Version   int64
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type ProjectMember struct {
+	Grant     ProjectGrant
 	Email     *string
 	Name      *string
 	AvatarURL *string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+}
+
+type ProjectAccess struct {
+	ProjectID string
+	UserID    string
+	Role      ProjectRole
 }
 
 type ProjectInvitation struct {

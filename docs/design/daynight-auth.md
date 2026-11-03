@@ -59,8 +59,8 @@ flowchart LR
     S --> F[现有文件存储]
 ```
 
-core 保存用户/成员/凭据结构，现有 core/store 拥有迁移和事务；service 增加身份、
-成员与邀请模块，现有业务服务显式接收调用者；server 拥有 HTTP/Cookie/错误映射。
+core 分别表达用户、凭据、独立项目授权和当前项目准入；core/store 拥有迁移、查询与
+事务，service 在业务事务内作授权决定，server 拥有 HTTP/Cookie/错误映射。
 复用一个 store 和既有文件存储，不复制业务实现或增加通用权限引擎。
 
 Principal 形状为 `{UserID, CredentialID, Kind}`，Kind 只有 session/PAT。认证代码
@@ -68,13 +68,25 @@ Principal 形状为 `{UserID, CredentialID, Kind}`，Kind 只有 session/PAT。�
 业务边界授权，不提供可信用户捷径。PAT 不能管理个人令牌，会话可以管理自己的 PAT；
 CLI 退出接口仅允许当前 PAT 撤销自身，不提供其他令牌管理能力。
 
-读取在原 repeatable-read 快照中检查成员再读取资源；写入取得现有项目行锁后重查
-成员/角色/观察版本与领域约束。列表以 membership JOIN 在原 SQL cursor/LIMIT 前
-筛选。Tasks.SetStatus(ctx, principal, projectID, taskID, input)
-沿用同一项目锁，并在取锁后检查当前成员，再校验观察版本、目标状态与依赖。admin 和
-member 都可执行这些资源操作；管理员角色额外管理成员、邀请与项目提醒设置。创建默认
-todo，通用元数据更新不接收 status，没有旧状态写入旁路。任务版本、int64、
-图容量和现有分页合同保持。
+### 项目准入与独立授权
+
+`ProjectGrant` 表达实际存储的 project/user ID、角色、真实版本和加入/更新时间。
+`ProjectMember` 是该 grant 与用户可空姓名、邮箱、头像的联合读取投影，供现有成员、
+邀请和授权修改响应使用；HTTP 仍展平为既有成员 JSON。修改授权只比较真实 grant
+版本，邀请判断已有直接关系也读取这一投影，不用计算的准入结果代替。
+
+`ProjectAccess` 只表达当前主体的 project/user ID 和准入角色，不携带资料、可写版本或
+存储时间。`RequireProjectRead`、`RequireProjectWrite` 及 Worker 的非 claim owner
+管理员检查消费该投影。当前准入与可见项目列表共用 Store 的直接授权关系，列表在
+SQL cursor/LIMIT 前筛选；这种类型分离保持当前直接授权语义。
+
+读取在原 repeatable-read 快照中计算准入再读取资源；写入取得现有项目行锁后重算
+准入，再校验授权目标的真实版本与领域约束。Tasks.SetStatus(ctx, principal,
+projectID, taskID, input) 沿用同一项目锁，在取锁后检查当前准入，再校验任务观察
+版本、目标状态与依赖。admin 和 member 都可执行这些资源操作；管理员角色额外
+管理成员、邀请与项目提醒设置。Worker 的 claim owner 操作路径和领取时的任务
+负责人要求保持各自原有规则。创建默认 todo，通用元数据更新不接收 status，没有
+旧状态写入旁路。任务版本、int64、图容量和现有分页合同保持。
 
 ## 认证响应归属
 

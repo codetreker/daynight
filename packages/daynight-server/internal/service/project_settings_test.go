@@ -110,7 +110,7 @@ func TestProjectSettingsChecksCurrentAdministratorAfterProjectLock(t *testing.T)
 			project := f.project(t, owner, "Queued administrator")
 			other := f.project(t, owner, "Other project remains available")
 			membership := f.join(t, owner, target, project.ID)
-			if _, err := f.memberships.SetRole(context.Background(), owner, project.ID, target.UserID, membership.Version, core.ProjectAdmin); err != nil {
+			if _, err := f.memberships.SetRole(context.Background(), owner, project.ID, target.UserID, membership.Grant.Version, core.ProjectAdmin); err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
