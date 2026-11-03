@@ -107,8 +107,9 @@ integration. A replacement rebuilt from current main owns independent body/
 Details actions, full/hidden ancestor semantics and smooth routes. The abandoned
 PR's runtime results remain historical.
 
-The four complete API capacity inputs retain 1,000 tasks each and their exact
-999/5,000 edges, with five samples. The browser workload now requires bounded
+The [local stress decision](../testing/2026-11-03-local-stress-suites.md) places
+the four complete API capacity inputs behind explicit local stress acceptance.
+They retain 1,000 tasks each and their exact 999/5,000 edges, with five samples. The browser workload now requires bounded
 initial S, all real induced visible edges and explicit expansion/reset, rather
 than all input tasks/edges simultaneously in the DOM. `openMs ≤ 3000` and existing
 detail/zoom/pan feedback ≤300ms remain. The original overview retained 31

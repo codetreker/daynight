@@ -15,6 +15,13 @@ a moved recognized registration. The claim-resource case checks live worktrees,
 a missing leaf and removal while an unrelated locked worktree remains intact.
 Those state transitions need the same manager and registrations throughout.
 
+The combined claim-resource callback received a
+[60-second native workflow budget](https://github.com/codetreker/daynight/commit/63e8d573efabe014bfc94d3a610bb22a579c28df)
+while it still owned both preparation and discovery. That budget accommodated
+serial native setup without changing individual Git or operation deadlines.
+Separating preparation allows the discovery sequence to use the standard
+behavior budget independently of bootstrap cost.
+
 ## Decision
 
 The [discovery cases](../../../../packages/daynight/test/commands/worker/worktrees.test.ts)
@@ -28,8 +35,9 @@ The marker callback retains its marker permutations, read-only checks,
 ownership verification refusals, marker restoration and moved-registration
 detection. The claim-resource callback retains its ordered live, missing-leaf
 and removed-registration discovery checks, including the unrelated file's
-unchanged bytes. Each sequence uses its original manager under the existing
-five-second behavior budget.
+unchanged bytes. Each sequence uses its original manager under the standard
+five-second behavior budget. The combined scenario's explicit 60-second
+override is removed; preparation retains the existing hook budget.
 
 The existing per-test cleanup disposes operations and Git managers and removes
 the case-owned directories. Other worktree tests do not run these preparation
@@ -38,8 +46,11 @@ uses the same budget separation for a real npm operation.
 
 ## Alternatives
 
-**Raise the test timeout.** A larger shared budget would continue mixing
-bootstrap and assertion costs and weaken the existing behavior bound.
+**Keep preparation in a larger callback budget.** The 60-second budget covered
+the combined native workflow while leaving individual Git and operation
+limits intact. It continued to mix bootstrap and behavior costs. Case-owned
+preparation gives those responsibilities their existing separate runner budgets
+and restores the standard bound on discovery behavior.
 
 **Split each state transition into an independent test.** Separate cases would
 duplicate preparation and lose the same-manager transitions from unrecognized
@@ -49,9 +60,10 @@ regression condition.
 
 ## Consequences
 
-Repository preparation and behavior checks have separate, existing runner
-budgets. The tests execute real Git and retain every original assertion; slow
-setup fails as setup rather than being mistaken for slow discovery. The separate
+The tests execute real Git and retain every original assertion; slow setup
+fails as setup rather than being mistaken for slow discovery. The separate
 empty-state case adds one private repository bootstrap instead of sharing
-mutable state across tests. Production worktree behavior, platform selection
-and timeout values remain unchanged.
+mutable state across tests. The claim-resource callback again uses the standard
+five-second deadline after preparation moves to its existing hook deadline.
+Production worktree behavior, platform selection, individual Git deadlines
+and operation deadlines remain unchanged.

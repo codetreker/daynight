@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if (( $# != 0 )); then
+  if (( $# != 1 )) || [[ "$1" != --stress-budgets ]]; then
+    printf '%s\n' 'Usage: bash scripts/check.sh [--stress-budgets]' >&2
+    exit 1
+  fi
+  if [[ -n "${CI:-}" ]]; then
+    printf '%s\n' 'Stress budget probes are local-only and cannot run in CI.' >&2
+    exit 1
+  fi
+fi
+
 source "$(dirname -- "${BASH_SOURCE[0]}")/env.sh"
 cd -- "$DAYNIGHT_MODULE_ROOT"
 : "${DAYNIGHT_TEST_DATABASE_URL:?Set DAYNIGHT_TEST_DATABASE_URL to the required PostgreSQL test database}"
@@ -24,4 +35,4 @@ node --test scripts/auth-fixture.test.mts scripts/preparation-lock.test.mts
 # Database state is outside Go's test-result cache key.
 # https://github.com/golang/go/blob/go1.27.2/src/cmd/go/internal/test/test.go#L1867-L1869
 go clean -testcache
-node "$DAYNIGHT_MODULE_ROOT/../daynight/scripts/project-task-acceptance.ts"
+node "$DAYNIGHT_MODULE_ROOT/../daynight/scripts/project-task-acceptance.ts" "$@"

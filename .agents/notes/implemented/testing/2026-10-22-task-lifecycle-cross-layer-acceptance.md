@@ -92,9 +92,11 @@ cases use actual GET/PUT digits and database results independently of multi-hop
 version growth. Graph failures use owned real failure paths. Redacting request
 forwarding preserves original method, headers, body and Origin validation.
 
-Production inventory remains 28 functional scenarios per target plus five native
-capacity/limit cases (33 native, 28 container). Source-bound runtime receipts,
-strict coverage, performance, one-worker/no-retry and cleanup gates are unchanged.
+Production CI requires twenty-nine functional scenarios per target, source-bound
+runtime receipts, strict coverage, one worker, zero retries and complete cleanup.
+The [local stress decision](2026-11-03-local-stress-suites.md) separately retains
+five native capacity/limit cases and their performance budgets in explicit local
+stress mode.
 Transport barriers and offline fixtures establish their declared boundaries;
 they do not replace actual status-changing database requests.
 
