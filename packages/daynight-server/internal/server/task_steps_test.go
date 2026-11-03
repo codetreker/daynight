@@ -70,11 +70,11 @@ func TestStepsHTTPReadResourcesAndRefusals(t *testing.T) {
 		assertProjectError(t, projectRequest(handler, "GET", path+"/"+id, ""), 400, "invalid_input")
 	}
 	assertProjectError(t, projectRequest(handler, "GET", path+"/11111111", ""), 404, "not_found")
-	for _, method := range []string{"PUT", "DELETE", "OPTIONS"} {
+	for _, method := range []string{"PUT", "OPTIONS"} {
 		for _, endpoint := range []string{path, path + "/abcdef01"} {
 			refusal := projectRequest(handler, method, endpoint, "")
 			assertProjectError(t, refusal, 405, "method_not_allowed")
-			allow := "GET, HEAD, PATCH"
+			allow := "GET, HEAD, PATCH, DELETE"
 			if endpoint == path {
 				allow = "GET, HEAD, POST"
 			}
