@@ -76,4 +76,6 @@
 
 ## 范围边界
 
+[任务 Thread](daynight-task-thread.md)采用独立消息 Id 分页；发言不改变 Task version、updatedAt、properties、依赖或 epoch，不进入摘要及图投影。消息连续读取位置不能使用 task-sync 水位替代。
+
 保留在线写入与服务端权限、版本、依赖检查。当前不包含绕过身份核验的离线冷启动、离线写入、即时推送或扩大图容量。时间窗口重复传输是主动接受的取舍；不增加变更日志、同步递增序号或独立的事后 updatedAt 写入。

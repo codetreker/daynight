@@ -5,6 +5,7 @@
 定义验证范围、要求与测试映射和 CI 产物解释；逐次运行结果随对应 PR 与 CI 保存。
 
 本文定义 `daynight-server` 面向本机 CLI 和内部程序的任务管理行为。
+[Thread 需求](daynight-task-thread.md)定义任务范围内的持久讨论、引用回复、作者快照、Id 分页与独立的 HTTP 读写；它不改变 Task 版本或执行状态。
 [技术设计](../design/daynight-server.md)拥有分层、存储和并发机制；
 [设计决策](../../.agents/notes/archived/architecture/2026-10-19-daynight-server-task-design.md)
 记录取舍和范围。

@@ -135,7 +135,7 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 
 ## 领域模型与存储结构
 
-所有资源 ID 使用应用生成的 UUID，HTTP 将其作为不透明字符串处理。时间由数据库
+Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-thread.md)的 message_id 由数据库 DEFAULT gen_random_uuid() 生成，并与 task_id 共同标识消息。HTTP 将 UUID 作为不透明字符串处理。时间由数据库
 生成，存为 `timestamptz`，API 输出 UTC RFC 3339。任务版本使用正整数，初始值为 1。
 
 | 对象 | 字段与含义 |
