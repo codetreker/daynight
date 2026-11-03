@@ -41,6 +41,11 @@ usable. Input deduplication metadata survives restarts; raw pending input remain
 bounded process memory. Unknown delivery is never replayed. One physical Worker
 channel consumes each connection epoch; browser identity remains reserved through
 release so old disconnect callbacks cannot revoke replacement connections.
+Viewer cleanup also matches its captured claim, Worker connection epoch and relay
+instance. A subscription ends on connection replacement rather than following it;
+generation advancement on the same connection retains that viewer's cleanup duty.
+Process-local browser reservations alone cannot fence a delayed callback after
+another relay has taken over the Worker connection.
 Preview entries expire by connection liveness, and pending input expires by its
 durable operation deadline. Allocation reclaims expired entries independently of
 archive success or credential validity; connection-fenced cleanup preserves newer

@@ -955,8 +955,14 @@ func (s *Service) DisconnectTerminal(ctx context.Context, p core.Principal, proj
 
 // DisconnectTerminalViewer revokes only the departing browser's lease. It never
 // resumes automation or sends terminal keystrokes to discard a user's draft.
-func (s *Service) DisconnectTerminalViewer(ctx context.Context, p core.Principal, project, taskID, id, browserClientID string) error {
+func (s *Service) DisconnectTerminalViewer(ctx context.Context, p core.Principal, project, taskID, id, browserClientID, claimID, connectionEpoch string) error {
 	return s.terminalAccess(ctx, p, project, taskID, id, false, func(tx pgx.Tx, r *terminalRecord, _ task, _ bool) error {
+		// A browser identity may be reused after Worker reconnect. Release only
+		// the connection captured when this viewer subscribed; a run advancing on
+		// that same connection does not transfer the viewer to a different owner.
+		if r.Envelope.SessionID != id || r.Envelope.ClaimID != claimID || r.ConnectionEpoch != connectionEpoch || r.ServerInstance != s.instance {
+			return nil
+		}
 		held := r.Control != nil && r.Control.Lease != nil && r.Control.Lease.HolderUserID == p.UserID && r.Control.Lease.BrowserClientID == browserClientID
 		var pending bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_operations WHERE session_id=$1 AND actor_user_id=$2 AND command->'request'->>'browserClientId'=$3 AND receipt->>'state' IN ('queued','dispatching'))`, id, p.UserID, browserClientID).Scan(&pending); err != nil {

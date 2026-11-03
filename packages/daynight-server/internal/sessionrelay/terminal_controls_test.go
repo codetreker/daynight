@@ -759,6 +759,103 @@ func TestTerminalForeignRelaySuspendsOnlyAfterHeartbeatLossOrClaimEnd(t *testing
 	}
 }
 
+func TestTerminalOldViewerCannotRevokeReconnectedWorkerControl(t *testing.T) {
+	for _, differentInstance := range []bool{false, true} {
+		for _, pendingAcquire := range []bool{false, true} {
+			t.Run(map[bool]string{false: "same instance", true: "other instance"}[differentInstance]+map[bool]string{false: "/lease and input", true: "/pending acquire"}[pendingAcquire], func(t *testing.T) {
+				f := terminalControlSetup(t)
+				f.acquire(t)
+				original := f.s
+				if differentInstance {
+					f.s = New(original.DB)
+					f.s.now, f.s.Origin = original.now, original.Origin
+				}
+				f.now = f.now.Add(HeartbeatTimeout + time.Second)
+				reg := f.message.Payload.(v2.Registration)
+				reg.Mode = "reconnect"
+				previous := "1"
+				reg.ConnectionEpoch = &previous
+				if _, err := f.s.RegisterTerminal(context.Background(), f.p, f.project, f.task, f.msg("registration", reg)); err != nil {
+					t.Fatal(err)
+				}
+				f.worker(t, "2", f.msg("control_state", v2.ControlState{ConnectionEpoch: "2", ControlEpoch: "2", State: "suspended", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}))
+				req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "2", ControlEpoch: "2", Action: "acquire_control", BrowserClientID: f.browser}
+				f.submit(t, f.msg("control_request", req))
+				opID := req.OperationID
+				if !pendingAcquire {
+					dispatch := f.poll(t, "2")[0].Payload.(v2.ControlDispatch)
+					lease := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: f.p.UserID, BrowserClientID: f.browser, ControlEpoch: "3", ExpiresAt: terminalTime(f.now.Add(30 * time.Second))}
+					state := v2.ControlState{ConnectionEpoch: "2", ControlEpoch: "3", State: "manual", Lease: &lease, InitialAssignment: "transport_completed", AvailableActions: []string{"paste", "release_control"}}
+					f.worker(t, "2", f.msg("control_ack", v2.ControlAck{RequestDigest: dispatch.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}))
+					input := f.input(lease, "1", "new connection input").Payload.(v2.Operation)
+					input.ConnectionEpoch = "2"
+					f.submit(t, f.msg("operation", input))
+					opID = input.OperationID
+				}
+				var before, after string
+				ctx := context.Background()
+				if err := original.DB.Pool.QueryRow(ctx, `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, f.message.SessionID).Scan(&before); err != nil {
+					t.Fatal(err)
+				}
+				if err := original.DisconnectTerminalViewer(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "1"); err != nil {
+					t.Fatal(err)
+				}
+				if err := original.DB.Pool.QueryRow(ctx, `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, f.message.SessionID).Scan(&after); err != nil {
+					t.Fatal(err)
+				}
+				if before != after {
+					t.Fatal("old viewer revoked reconnected Worker state")
+				}
+				got, err := f.s.TerminalOperation(ctx, f.p, f.project, f.task, f.message.SessionID, opID)
+				if err != nil || got.Payload.(v2.OperationResult).State != "queued" {
+					t.Fatal("old viewer rejected the new operation", got, err)
+				}
+				if err := f.s.DisconnectTerminalViewer(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "2"); err != nil {
+					t.Fatal(err)
+				}
+				got, err = f.s.TerminalOperation(ctx, f.p, f.project, f.task, f.message.SessionID, opID)
+				if err != nil || got.Payload.(v2.OperationResult).State != "rejected" {
+					t.Fatal("current viewer did not release its operation", got, err)
+				}
+			})
+		}
+	}
+}
+
+func TestTerminalViewerStillReleasesLeaseAfterSameConnectionGenerationAdvance(t *testing.T) {
+	f := terminalControlSetup(t)
+	ctx := context.Background()
+	// Observing a native identity permits a stopped run to advance while keeping
+	// the same Worker connection and browser subscription.
+	nativeID := "native-session"
+	binding := f.binding
+	binding.NativeSessionID = &nativeID
+	f.worker(t, "1", f.msg("snapshot", v2.Snapshot{ConnectionEpoch: "1", SegmentID: f.segment, SegmentOrdinal: "1", Binding: binding, Recorded: true, Frame: v2.Frame{FrameSeq: "1", CapturedAt: terminalTime(f.now), ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{{Text: "observed"}}}}}))
+	var run v2.Run
+	if err := f.s.terminalAccess(ctx, f.p, f.project, f.task, f.message.SessionID, false, func(_ pgx.Tx, r *terminalRecord, _ task, _ bool) error { run = r.Runs[0]; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	stopped := terminalTime(f.now)
+	run.StoppedAt = &stopped
+	run.StopProof = &v2.StopProof{RecordID: uuid.NewString(), ExecutionGeneration: "1", Binding: binding, BootID: "boot", StoppedAt: stopped, Method: "instances_exited", TerminalStopped: true, Processes: []v2.ProcessProof{{Role: "shell", PID: 1, BirthToken: "shell", BootID: "boot"}, {Role: "agent", PID: 2, BirthToken: "agent", BootID: "boot"}}}
+	f.message.ExecutionGeneration = "2"
+	newRun := v2.Run{ExecutionGeneration: "2", Owner: run.Owner, Binding: binding, StartedAt: stopped, SegmentIDs: []string{uuid.NewString()}}
+	if _, err := f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("generation_ledger", v2.GenerationLedger{Runs: []v2.Run{run, newRun}})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.UpdateTerminalRecording(ctx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("recording_responsibility", v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true})); err != nil {
+		t.Fatal(err)
+	}
+	f.worker(t, "1", f.msg("control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "suspended", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}))
+	f.acquire(t)
+	if err := f.s.DisconnectTerminalViewer(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "1"); err != nil {
+		t.Fatal(err)
+	}
+	if control := f.control(t); control.State != "suspended" || control.Lease != nil {
+		t.Fatal("same-connection generation advance lost viewer cleanup responsibility", control)
+	}
+}
+
 func TestTerminalInputCannotDispatchToPriorCollectionSegment(t *testing.T) {
 	f := terminalControlSetup(t)
 	lease := f.acquire(t)
@@ -912,7 +1009,7 @@ func TestTerminalPendingAcquireIsRevokedWhenItsBrowserDisconnects(t *testing.T) 
 	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
 	f.submit(t, f.msg("control_request", req))
 	f.poll(t, "1")
-	if err := f.s.DisconnectTerminalViewer(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.browser); err != nil {
+	if err := f.s.DisconnectTerminalViewer(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.browser, f.message.ClaimID, "1"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, f.message.SessionID, req.OperationID)
@@ -1191,7 +1288,7 @@ func TestTerminalInputRejectsStaleFencesTargetsSequencesAndActors(t *testing.T) 
 	if err := f.s.DisconnectTerminal(context.Background(), f.p, f.project, f.task, good.SessionID, f.message.Envelope, "2"); err != nil {
 		t.Fatal("stale disconnect affected current channel", err)
 	}
-	if err := f.s.DisconnectTerminalViewer(context.Background(), f.p, f.project, f.task, good.SessionID, uuid.NewString()); err != nil {
+	if err := f.s.DisconnectTerminalViewer(context.Background(), f.p, f.project, f.task, good.SessionID, uuid.NewString(), good.ClaimID, "1"); err != nil {
 		t.Fatal(err)
 	}
 	if f.control(t).Lease == nil {

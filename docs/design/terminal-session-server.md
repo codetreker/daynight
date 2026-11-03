@@ -48,6 +48,9 @@ Worker HTTP 消息必须携带 `Daynight-Connection-Epoch`。WebSocket 从握手
 该值；旧连接不能更新新连接状态。控制 HTTP 请求必须携带 UUID
 `Daynight-Browser-Client`，与 control_request 或 lease 的 browserClientId 一致。
 它用于浏览器实例关联，不是抵抗同一认证用户主动伪造的秘密凭据。
+浏览器订阅捕获建立时的 claim 与 Worker connection epoch；该身份改变即结束旧订阅，
+不跟随替代连接。断线清理还须匹配所属 relay 实例，旧回调不撤销新连接的租约或操作。
+同一连接内合法推进 generation 不改变该订阅责任。
 
 状态读取是 HTTP 主机响应，消息输入输出使用 v2 严格联合。归档 PUT 限额
 64 MiB；在线消息限额 4 MiB；帧、输入和元数据继续遵守共同契约的更小限额。

@@ -60,6 +60,40 @@ func TestTerminalStateReadOnForeignLiveRelayReturnsRoutingError(t *testing.T) {
 	}
 }
 
+func TestTerminalViewerClosesWhenWorkerConnectionIsReplaced(t *testing.T) {
+	f := terminalHTTPSetup(t)
+	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	path := f.base + "/" + f.message.SessionID
+	browser, _, err := websocket.Dial(ctx, f.server.URL+path+"/channel?browserClientId="+uuid.NewString(), &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + f.h.token}}, Subprotocols: []string{v2.Protocol}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browser.CloseNow()
+	initial := sessionWSRead(t, browser)
+	if string(initial["connectionEpoch"]) != `"1"` {
+		t.Fatal(initial)
+	}
+	reg := f.message.Payload.(v2.Registration)
+	reg.Mode = "reconnect"
+	epoch := "1"
+	reg.ConnectionEpoch = &epoch
+	m := f.message
+	m.Payload = reg
+	ack := terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, m), v2.Protocol))
+	if ack.Payload.(v2.RegistrationAck).ConnectionEpoch != "2" {
+		t.Fatal(ack)
+	}
+	if _, _, err := browser.Read(ctx); err == nil {
+		t.Fatal("old viewer followed the replacement Worker connection")
+	}
+	current := terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol)
+	if current.Code != http.StatusOK || !strings.Contains(current.Body.String(), `"connectionEpoch":"2"`) || !strings.Contains(current.Body.String(), `"connected":true`) {
+		t.Fatal(current.Code, current.Body.String())
+	}
+}
+
 func TestTerminalProtocolSelection(t *testing.T) {
 	for _, tc := range []struct {
 		header    []string

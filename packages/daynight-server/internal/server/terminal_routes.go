@@ -402,6 +402,8 @@ func (h *sessionRoutes) terminalBrowserChannel(w http.ResponseWriter, r *http.Re
 		h.failure(w, r, err)
 		return
 	}
+	claimID := state["claimId"].(string)
+	connectionEpoch := state["connectionEpoch"].(string)
 	conn, ctx, cleanup, err := h.accept(w, r)
 	if err != nil {
 		return
@@ -423,7 +425,7 @@ func (h *sessionRoutes) terminalBrowserChannel(w http.ResponseWriter, r *http.Re
 	defer func() {
 		release, cancel := context.WithTimeout(context.Background(), relayWriteTimeout)
 		defer cancel()
-		_ = h.service.DisconnectTerminalViewer(release, p, project, task, id, browserID)
+		_ = h.service.DisconnectTerminalViewer(release, p, project, task, id, browserID, claimID, connectionEpoch)
 		h.mutex.Lock()
 		if h.terminalViewers[key] == conn {
 			delete(h.terminalViewers, key)
@@ -444,6 +446,9 @@ func (h *sessionRoutes) terminalBrowserChannel(w http.ResponseWriter, r *http.Re
 		case <-tick.C:
 			next, e := h.service.TerminalState(ctx, p, project, task, id)
 			if e != nil {
+				return
+			}
+			if next["claimId"] != claimID || next["connectionEpoch"] != connectionEpoch {
 				return
 			}
 			if !reflect.DeepEqual(next, state) {
