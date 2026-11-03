@@ -1,10 +1,9 @@
 # Web 工作空间设计
 
-生产 Web 由公开入口、认证工作空间、项目任务看板、任务详情和账号级 Worker 观测组成，使用同一 Go 内嵌资源管线。本文拥有它们的页面组合、请求生命周期与交付机制；[需求](../spec/daynight-web.md)拥有可见结果。运行结果按对应源码保留在 PR、CI 或实际验收材料中。本地回执与设计预览不能代替实际产品组合验收；[早期看板决策](../../.agents/notes/archived/architecture/2026-10-20-task-dashboard-mvp-design.md)、[任务视图预览](mockups/task-views.html)和[原始看板预览](mockups/task-dashboard.html)保留原始设计背景。
+生产 Web 由公开入口、认证工作空间、项目任务看板、任务详情和账号级 Worker 观测组成，使用同一 Go 内嵌资源管线。本文拥有它们的页面组合、请求生命周期与交付机制；[需求](../spec/daynight-web.md)拥有可见结果。运行结果按对应源码保留在 PR、CI 或实际验收材料中。本地回执与设计预览不能代替实际产品组合验收；[早期看板决策](../../.agents/notes/archived/architecture/2026-10-20-task-dashboard-mvp-design.md)保留原始设计背景。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、CLI 和任务详情中的
-只读 PR 区域已实现。[需求](../spec/daynight-task-properties.md)与
-[交互预览](mockups/task-properties.html)分别拥有行为和样式。
+只读 PR 区域已实现。[需求](../spec/daynight-task-properties.md)拥有行为。
 
 已实现的[附件架构](daynight-task-attachments.md)扩展 task 详情，提供文件树、
 单文件上传/覆盖/删除、下载及同源预览。[附件需求](../spec/daynight-task-attachments.md)
@@ -337,9 +336,7 @@ generation 和 confirmed-version floor 防止旧读取覆盖确认结果。
 操作、复制、读取错误、保留数据和过期快照反馈统一使用详情提示层；持久错误/核对入口不能因超时、附件独立阅读或页签切换而丢失。
 
 [三状态架构](daynight-task-status.md)拥有 service、依赖、计时、迁移和完整响应分支。
-[实际组件夹具](../../packages/daynight-web/tests/mockups/browsing.html)复用生产会话与样式，
-纯前端场景不能代替真实服务与 PostgreSQL 的跨端验收。历史只读[任务视图预览](mockups/task-views.html)
-保存当时的视觉样本，当前状态交互以生产组件及[三状态原型](mockups/task-status/index.html)为准。
+当前状态交互以生产组件为准，验收须验证真实服务与 PostgreSQL 的跨端行为。
 
 ## 图投影与统计
 
@@ -537,7 +534,6 @@ packages/daynight-web/
   src/styles/                      设计变量、排版与样式
   scripts/                         构建发布、严格覆盖率、生产验收及布局差分检查
   tests/                           组件、算法与真实浏览器验收
-  tests/mockups/                   仅开发使用的实际看板、附件、语言组件及前端 fixture
 
 packages/daynight-server/
   api/task_graph.go                 HTTP 图 DTO
@@ -1122,31 +1118,8 @@ Worker 定向验证使用严格 DTO、完整游标读取和真实组件，覆盖
 ## 实施与验收边界
 
 各组件保留有效测试与覆盖率，组合验收验证真实进程。设计预览不是实际 API、覆盖率、Docker 或集成完成证据。
-
-近期展示与分页的[实际组件预览](../../packages/daynight-web/tests/mockups/recent-tasks.html)通过
-`pnpm web:dev` 下的 `/tests/mockups/recent-tasks.html` 打开，复用真实 `ProjectPage`、
-生产样式和语言目录，以只读 task-sync fixture 提供 `#mixed`、`#completed`、`#empty`、
-`#loading`、`#failure`。混合场景包含跨三页的 Goal 和独立任务、33 个子任务的完整 Goal、
-旧代表与近期成员、日期边界及未知历史；完成场景展示保留的 100% 行。等待响应可显式
-释放，失败可恢复后重试。该入口不依赖 Go 或 PostgreSQL，不进入生产构建，也不能替代
-真实服务验收。
-
-任务浏览的前端 mockup 通过 `pnpm web:dev` 下的 `/tests/mockups/browsing.html` 打开，
-挂载实际 `ProjectPage`、生产 CSS 和内存图/详情/空附件列表 fixture。场景以 URL hash
-保留读取与状态场景；覆盖混合图、全部完成、空项目、项目隔离、三状态转换、直接完成、重开、
-同状态、状态/许可确认与平台显式保存、pending、版本冲突、并发修改、结果未知、图刷新失败与任务切换；无保存记录时显示概览，刷新及返回项目恢复已选外层视图，进入任务列表后展示两个内层页签、
-拓扑分类、独立行详情、倒序条目、Goal 子任务披露与详情、独立依赖图按钮、两类完成显示及浏览位置偏好、
-紧凑条目与长标题换行，并区分类别为空、全部完成和没有任务；外层切换保留已挂载任务区并隔离滚动位置。[自包含任务视图预览](mockups/task-views.html)
-保留早期内层分类的中文视觉基线，不代表当前项目入口与状态操作；实际组件入口与生产共享英语和简体中文目录。该开发入口不进入生产构建，真实服务验收仍由既有
-原生、容器和容量场景拥有。
-
-附件的前端 mockup 通过 `pnpm web:dev` 下的 `/tests/mockups/attachments.html` 打开，
-复用实际组件、CSS、内存 fixture API 和原生资源文件，不请求 Go API 或 PG。生产构建
-只保留应用单一 index，排除该开发入口。组件/状态测试覆盖附件交互；本地真实浏览器
-探针验证 CSS 隐藏、contenteditable、frame Tab/Esc、portal/inert 和被动焦点恢复。
-JSDOM 使用上游 `tabbable` 测试包装，不能提供可见性证据。本机 Chromium override
-的回执只证明该环境的前端行为，不等同锁定 CI 浏览器或真实后端验收。
-新增附件后端旅程纳入组合 CI inventory；既有看板的原生/容器功能场景继续属于 CI，容量场景及其门槛由显式本地压力验收拥有。
+组件与状态测试覆盖附件交互；真实浏览器验证 CSS 隐藏、contenteditable、frame Tab/Esc、portal/inert 和焦点恢复。
+JSDOM 不提供可见性证据。附件后端旅程纳入组合 CI inventory；既有看板的原生/容器功能场景继续属于 CI，容量场景及其门槛由显式本地压力验收拥有。
 
 ## 风险与重审条件
 

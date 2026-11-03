@@ -84,6 +84,11 @@ and the rationale needed to understand them. Notes hold detailed alternatives
 and decision history. Create documents when needed and link to their owners
 without duplicating explanations.
 
+Do not commit UI mockups, `mockui` pages, their resource bundles, or tests that
+target them. This includes interactive previews composed from production
+components. Keep local prototypes in the task worktree's Git-ignored `.tmp/`
+and save reviewable prototypes as attachments of their owning Daynight task.
+
 Rewrite edited documents as coherent wholes and synchronize related active
 documents in the same change. Preserve historical statements about a decision's
 original circumstances. Explicit archives remain immutable.

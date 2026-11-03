@@ -1,6 +1,6 @@
 # 任务依赖追踪与详情阅读
 
-完整前置上下文、渐进概览、图局部依赖检查、独立详情入口和平滑路线已实现。Markdown 描述、附件导航与 bundled skill 指引已实现。本文拥有行为要求；[设计](../design/daynight-task-inspection.md)和[原型](../design/mockups/task-inspection/index.html)分别拥有机制与视觉。
+完整前置上下文、渐进概览、图局部依赖检查、独立详情入口和平滑路线已实现。Markdown 描述、附件导航与 bundled skill 指引已实现。本文拥有行为要求；[设计](../design/daynight-task-inspection.md)拥有机制。
 
 ## 目的与适用范围
 

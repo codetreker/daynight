@@ -5,6 +5,7 @@
 定义验证范围、要求与测试映射和 CI 产物解释；逐次运行结果随对应 PR 与 CI 保存。
 
 本文定义 `daynight-server` 面向本机 CLI 和内部程序的任务管理行为。
+[Steps 读取契约](daynight-task-steps.md)定义独立的完整有序集合、单项资源、父版本快照和编码容量；常规 Task 投影保持独立。
 [Thread 需求](daynight-task-thread.md)定义任务范围内的持久讨论、引用回复、作者快照、Id 分页与独立的 HTTP 读写；它不改变 Task 版本或执行状态。
 [技术设计](../design/daynight-server.md)拥有分层、存储和并发机制；
 [设计决策](../../.agents/notes/archived/architecture/2026-10-19-daynight-server-task-design.md)
@@ -177,6 +178,8 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 | `GET` | `/api/v1/projects/{projectId}/tasks` | 返回 task 分页列表，支持显式负责人筛选 |
 | `GET` | `/api/v1/projects/{projectId}/task-assignees` | 返回项目成员与保留负责人目录，或限定 userId 解析；始终有 items/unresolvedUserIds |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 返回 task，缺失或不属于该 project 时 `404` |
+| `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps` | 返回完整有序 StepsResource，合法空集合为 [] |
+| `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps/{stepId}` | 返回同一父版本及 Task 内指定 Step |
 | `GET` | `/api/v1/task-properties/schema` | 认证后读取全服务属性定义，无项目参数 |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | 返回 projectId、taskId、version 和完整 properties |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version/valueText，服务端解析与校验后设置完整单值，返回 200 属性资源 |

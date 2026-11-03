@@ -71,11 +71,11 @@ decision](../../archived/feature/2026-10-20-task-graph-projection.md); the [chai
 decision](../bug-fix/2026-10-22-task-chain-status.md) continues to own
 aggregate status. Required behavior and current mechanisms belong in the
 [specification](../../../../docs/spec/daynight-web.md) and
-[design](../../../../docs/design/daynight-web.md). The original [interactive
-mockup](../../../../docs/design/mockups/task-views.html) retains the earlier
-inner-category visual baseline; the production-component browsing fixture
-demonstrates current Goal lists, independent graph dialogs and category
-behavior.
+[design](../../../../docs/design/daynight-web.md). The original standalone
+mockup illustrated the earlier inner-category visual baseline. Its repository
+retention is superseded by the [prototype ownership decision](../process/2026-11-03-ui-mockup-ownership.md).
+The production-component browsing fixture also illustrated Goal lists,
+independent graph dialogs and category behavior before removal under that policy.
 
 ## Alternatives
 

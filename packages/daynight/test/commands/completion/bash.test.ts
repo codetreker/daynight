@@ -58,13 +58,22 @@ describe("Bash completion rendering", () => {
   it("offers unified status command and three-state filtering without metadata status updates", () => {
     const script = renderBashCompletion(commandTree);
     expect(script).toContain("complete -F _daynight_completion 'daynight' 'dn'\n");
-    expect(script).toContain("dn_children=('create' 'list' 'ready' 'show' 'properties' 'set-property' 'remove-property' 'update' 'set-status' 'delete' 'graph' 'attachment')");
+    expect(script).toContain("dn_children=('create' 'list' 'ready' 'show' 'properties' 'set-property' 'remove-property' 'update' 'set-status' 'delete' 'graph' 'thread' 'attachment')");
     expect(script).toContain("dn_value_choices=('todo' 'in_progress' 'done')");
     const update = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
     expect(update).not.toContain("'--status'");
     expect(update).toContain("'--if-version'");
     expect(update).toContain("'--depends-on'");
     expect(update).toContain("'--external-depends-on'");
+  });
+
+  it("discovers Thread read/post options through the registered command tree", () => {
+    const thread = taskDefinition.commands!.find(({ name }) => name === "thread")!;
+    const script = renderBashCompletion(thread);
+    expect(script).toContain("dn_children=('read' 'post')");
+    expect(script).toContain("dn_options=('--before-id' '--after-id' '--count' '--details' '--project' '-h' '--help')");
+    expect(script).toContain("dn_options=('--body' '--reply-to' '--claim-id' '--project' '-h' '--help')");
+    expect(script).not.toContain("'--json'");
   });
 
   it("completes deletion with a task ID and exact-version/project text options", () => {
