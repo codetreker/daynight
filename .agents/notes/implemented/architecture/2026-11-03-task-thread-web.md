@@ -34,7 +34,11 @@ one latest confirmed receipt and one in-flight POST reservation can be fixed.
 New receipts release previous receipt pins, and explicit window navigation can
 evict already displayed own receipts before a forward GET covers them. Such
 eviction never advances continuity. Revealing all retained incoming messages plus
-the fixed set leaves capacity for another complete forward page.
+the fixed set leaves capacity for another complete forward page. History tickets
+belong to a captured window revision, direction and actual boundary. Explicit
+reference navigation or incoming reveal replaces that window, aborts its history
+request and releases the slot. Admission, merge and error handling reject stale
+tickets so an old result cannot alter the replacement window or its requests.
 
 The API distinguishes waiting for authentication from dispatch, validates a 201
 and its body/reply/actor echo, and records the confirmed remote result before

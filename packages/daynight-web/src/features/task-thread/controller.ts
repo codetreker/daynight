@@ -15,7 +15,9 @@ const bytes = (messages: Iterable<ThreadMessage>): number => [...messages].reduc
 const combine = (a: ThreadMessage | undefined, b: ThreadMessage): ThreadMessage => a === undefined ? b : mergeThreadMessage(a, b);
 
 type ReadKind = 'forward' | 'history' | 'reference';
-type Ticket = { readonly kind: ReadKind; readonly controller: AbortController; readonly generation: number };
+// History pages belong to their captured window even when the account and task remain unchanged.
+type HistoryWindow = { readonly revision: number; readonly direction: 'older' | 'newer'; readonly boundary: Pick<ThreadMessage, 'id' | 'createdAt'> };
+type Ticket = { readonly kind: ReadKind; readonly controller: AbortController; readonly generation: number; readonly window?: HistoryWindow };
 export type ThreadPostOutcome = 'idle' | 'waiting_auth' | 'sending' | 'confirmed' | 'refused' | 'unknown';
 export type ThreadRemoteOutcome = 'idle' | 'not_sent' | 'dispatched' | 'confirmed' | 'refused' | 'unknown';
 export type ThreadView = {
@@ -70,6 +72,7 @@ export class ThreadController {
   private references = new Map<string, ThreadMessage>();
   // POST echoes do not extend the fetched history range; its next boundary must still expose interleaved messages.
   private windowIds = new Set<string>();
+  private windowRevision = 0;
   private cursor: Pick<ThreadMessage, 'id' | 'createdAt'> | null = null;
   private initialized = false;
   private active = false;
@@ -148,13 +151,20 @@ export class ThreadController {
     for (const kind of ['forward', 'history', 'reference'] as const) { this.generations[kind]++; this.tickets.get(kind)?.controller.abort(); this.tickets.delete(kind); }
     this.forwardTask = null; this.historyTask = null; this.referenceTask = null; this.referenceTarget = null; this.historyDirection = null;
   };
-  private ticket = (kind: ReadKind): Ticket => {
-    const ticket = { kind, controller: new AbortController(), generation: ++this.generations[kind] };
+  private ticket = (kind: ReadKind, window?: HistoryWindow): Ticket => {
+    const ticket = { kind, controller: new AbortController(), generation: ++this.generations[kind], ...(window === undefined ? {} : { window }) };
     this.tickets.set(kind, ticket); return ticket;
   };
-  private assertTicket = (ticket: Ticket): void => {
-    this.live(); ticket.controller.signal.throwIfAborted();
-    if (!this.readable() || this.generations[ticket.kind] !== ticket.generation) aborted();
+  private currentTicket = (ticket: Ticket): boolean => {
+    if (!this.readable() || this.lifetime.signal.aborted || this.options.lifetime.aborted || ticket.controller.signal.aborted || this.generations[ticket.kind] !== ticket.generation) return false;
+    if (ticket.window === undefined) return true;
+    const boundary = this.boundary(ticket.window.direction);
+    return ticket.window.revision === this.windowRevision && boundary !== undefined && compare(boundary, ticket.window.boundary) === 0;
+  };
+  private assertTicket = (ticket: Ticket): void => { if (!this.currentTicket(ticket)) aborted(); };
+  private replaceHistoryWindow = (): void => {
+    this.windowRevision++; this.generations.history++; this.tickets.get('history')?.controller.abort(); this.tickets.delete('history');
+    this.historyTask = null; this.historyDirection = null; this.historyError = null;
   };
   private admission = (assertCurrent: () => void, boundary?: Pick<ThreadMessage, 'id' | 'createdAt'>) => ({
     assertCurrent,
@@ -301,12 +311,13 @@ export class ThreadController {
     if (this.historyTask !== null) return this.historyTask;
     const boundary = this.boundary(direction); if (boundary === undefined) return Promise.resolve();
     this.historyError = null; this.historyDirection = direction;
-    const ticket = this.ticket('history');
+    const ticket = this.ticket('history', { revision: this.windowRevision, direction, boundary });
     const task = this.runHistory(ticket, direction, boundary); this.historyTask = task; this.emit(); return task;
   };
   private runHistory = async (ticket: Ticket, direction: 'older' | 'newer', boundary: ThreadMessage): Promise<void> => {
     try {
       const page = await this.read(ticket, direction === 'older' ? { beforeId: boundary.id, count: 50 } : { afterId: boundary.id, count: 50 }, boundary);
+      this.assertTicket(ticket);
       const items = this.normalize(page.items), next = new Map(this.visible);
       for (const item of items) next.set(item.id, item);
       const trimmed = this.pruned(next, direction === 'older' ? 'newest' : 'oldest', true);
@@ -314,7 +325,7 @@ export class ThreadController {
       this.viewingHistory = true; this.following = false;
       if (direction === 'older') this.hasMoreBefore = page.hasMoreBefore; else this.hasMoreAfter = page.hasMoreAfter;
       this.applyVisible(trimmed, new Set([...this.windowIds, ...items.map(item => item.id)])); for (const item of items) this.incoming.delete(item.id); this.enrich(items); this.emit();
-    } catch (error) { this.handle(error, 'history'); }
+    } catch (error) { if (this.currentTicket(ticket)) this.handle(error, 'history'); }
     finally { if (this.generations.history === ticket.generation) { this.historyTask = null; this.historyDirection = null; this.tickets.delete('history'); this.emit(); } }
   };
   // Buffered pages remain represented when their cursor advances; only already shown entries may be displaced.
@@ -325,6 +336,7 @@ export class ThreadController {
     const ids = new Set(next.keys());
     for (const id of [this.readingAnchor, this.latestReceipt]) { const item = id === null ? null : this.getMessage(id); if (item !== null) next.set(item.id, item); }
     if (!this.fitsVisible(next)) protocol();
+    this.replaceHistoryWindow();
     this.hasMoreBefore ||= this.visible.size > next.size;
     this.applyVisible(next, ids); this.incoming = new Map(); this.viewingHistory = false; this.following = true; this.catchupPaused = false; this.emit();
     if (this.readable()) void this.refresh();
@@ -366,6 +378,7 @@ export class ThreadController {
   private presentReference = (message: ThreadMessage, reveal: boolean): void => {
     if (this.references.has(message.id)) this.cacheReference(message);
     if (reveal && !this.visible.has(message.id)) {
+      this.replaceHistoryWindow();
       this.latestReceipt = null;
       this.hasMoreBefore = true; this.hasMoreAfter = true;
       this.applyVisible(new Map([[message.id, message]]), new Set([message.id]));

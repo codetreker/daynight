@@ -246,3 +246,45 @@ it('cancels a superseded reference without letting its late result replace the c
   old.resolve(page([message(9)])); await first;
   expect(controller.snapshot().detailsMessage?.id).toBe(id(11)); expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(20)]);
 });
+
+it('retires pending history when a reference replaces the window, preserving the intervening navigation range', async () => {
+  const { controller, list } = make(); list.mockResolvedValueOnce(page([message(151)], true)); await start(controller);
+  const old = deferred<ThreadPage>(); list.mockReturnValueOnce(old.promise);
+  const history = controller.loadOlder(); await flush(); const admission = list.mock.calls.at(-1)![3];
+  list.mockResolvedValueOnce(page([message(9)], true, true)).mockResolvedValueOnce(page([message(10)], true, true));
+  await controller.showReference(id(10));
+  expect(() => admission.assertCurrent()).toThrow(); expect(controller.snapshot().loadingOlder).toBe(false);
+  list.mockResolvedValueOnce(page([message(11)], true, true)); await controller.loadWindowNewer();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ afterId: id(10), count: 50 });
+  old.resolve(page([message(150)], true, true)); await history;
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(10), id(11)]);
+  expect(controller.snapshot().historyError).toBeNull(); expect(controller.snapshot().consumedAfterId).toBe(id(151));
+});
+
+it('releases pending history for a new reveal window and ignores its late terminal failure', async () => {
+  const { controller, list } = make(); list.mockResolvedValueOnce(page([message(151)], true)); await start(controller);
+  controller.setFollowing(false); list.mockResolvedValueOnce(page([message(152)])); await controller.refresh();
+  const old = deferred<ThreadPage>(); list.mockReturnValueOnce(old.promise);
+  const history = controller.loadOlder(); await flush();
+  controller.revealIncoming(); await controller.refresh();
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(152)]); expect(controller.snapshot().loadingOlder).toBe(false);
+  const fresh = deferred<ThreadPage>(); list.mockReturnValueOnce(fresh.promise); const newHistory = controller.loadOlder(); await flush();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ beforeId: id(152), count: 50 });
+  old.reject(new ApiError('server', 404, 'not_found')); await history;
+  expect(controller.snapshot().retired).toBe(false); expect(controller.snapshot().historyError).toBeNull(); expect(controller.snapshot().loadingOlder).toBe(true);
+  fresh.resolve(page([message(151)], true, true)); await newHistory;
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(151), id(152)]); expect(controller.snapshot().consumedAfterId).toBe(id(152));
+});
+
+it('rejects a history result when its captured boundary was evicted by concurrent forward admission', async () => {
+  const { controller, list } = make({ limits: { ...THREAD_LIMITS, visibleCount: 2 } });
+  list.mockResolvedValueOnce(page([message(151)], true)); await start(controller);
+  const old = deferred<ThreadPage>(); list.mockReturnValueOnce(old.promise);
+  const history = controller.loadOlder(); await flush(); const admission = list.mock.calls.at(-1)![3];
+  list.mockResolvedValueOnce(page([message(152), message(153)])); await controller.refresh();
+  expect(() => admission.assertCurrent()).toThrow();
+  old.resolve(page([message(150)], true, true)); await history;
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(152), id(153)]); expect(controller.snapshot().historyError).toBeNull();
+  list.mockResolvedValueOnce(page([message(151)], true, true)); await controller.loadOlder();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ beforeId: id(152), count: 50 }); expect(controller.snapshot().consumedAfterId).toBe(id(153));
+});
