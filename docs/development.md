@@ -625,13 +625,17 @@ records the scheduling and phase-evidence choices; the
 [CI efficiency decision](../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
 retains the other workload optimizations and their limits.
 
-The final `checks` job uses `!cancelled()` to run after routing and application
-jobs even when a preceding job fails. It accepts only `success` or `skipped` from
-every preceding job; any other result fails the gate when it runs. The workflow's
-concurrency group cancels an older run when a newer run starts on the same ref.
-Workflow cancellation skips a pending final gate and cancels a running one, so
-superseded runs retain their cancelled outcome without a separate gate failure.
-The gate uses job results without comparing module selection flags.
+The final `checks` job uses `always()` to run after routing and application jobs,
+including failed or cancelled validation. It accepts only `success` or `skipped`
+from every preceding job; any other result fails the gate. The gate uses job
+results without comparing module selection flags.
+
+Workflow concurrency groups runs by workflow and ref. A newer PR run cancels an
+older run for that PR. For `refs/heads/main`, `cancel-in-progress` is false: new
+pushes queue behind the active run without cancelling it. GitHub may replace an
+older pending run with a newer pending run in the same group.
+The [main CI continuity decision](../.agents/notes/implemented/process/2026-11-03-main-ci-continuity.md)
+records the concurrency and aggregation policy.
 Documentation-only PRs run routing tests and this final gate
 without installing application dependencies or running application tests. Every
 `main` push retains full application validation. npm publication runs its own
@@ -642,7 +646,7 @@ records the routing alternatives and maintenance costs; the
 [CI simplification decision](../.agents/notes/archived/simplification/2026-10-21-ci-gate-simplification.md)
 records the version-check timing and final job-result gate choices. The
 [cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
-explains the final gate's cancellation condition.
+preserves the earlier rationale for stopping aggregation during cancellation.
 
 To validate the routing rules locally without application dependencies, run:
 
