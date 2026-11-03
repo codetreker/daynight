@@ -596,14 +596,12 @@ PR 控制字符可见转义及无原始终端控制字符输出。
 安装来操作同组真实数据。机制与证据字段见[附件验证设计](daynight-task-attachments.md#实现验证)，
 其选择依据记录在
 [附件跨层验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)；
-原有 PT 场景和六个预算探针保持完整。
+原有 PT 场景保持完整，预算探针按常规/本地压力选择。
 
 编排层执行固定版本 go-cov，以 `--skip-result-packages cmd/e2e_tests` 省略没有
 产品语句的 E2E 测试包结果汇总行；该包测试仍完整执行，测试失败仍向上传递。
 生产包及函数的覆盖率门槛、critical 检查和原始 coverage profile 保持完整。
-strict raw coverage 检查通过后，才在 Go 默认 10 分钟计时器之外运行六个公开安装
-CLI 场景：持续推进 cursor 的总期限、
-响应开始后停顿的单次期限，以及两组 gzip 解码字节边界配对。两个期限场景使用
+strict raw coverage 检查通过后，才在 Go 计时器之外运行所选公开安装 CLI 探测。默认常规 CI 只运行持续推进 cursor 的总期限和响应开始后停顿的单次期限；显式本地 check.sh --stress 再加入四个 gzip 解码物理字节边界探测，同时以 stress tag 选择 Go 协议规模测试。常规 Go 包/外层期限保持 10/12 分钟，本地压力使用 20/22 分钟；race、覆盖率分母和门槛不变。两个期限场景使用
 测试侧 Node.js `registerHooks` preload，只包装安装产物的 `api/operation.js` 导出，
 复用原有 `createOperation` 实现并注入 3 秒总期限和 1 秒单次期限。preload 先断言
 安装产物的生产默认值仍为 300,000/30,000 ms 和 128/256 MiB；测试不改写安装文件、
@@ -616,9 +614,8 @@ project，各页均满足列表协议，失败 stdout 必须为空。
 累计场景的三页分别为 96、96、64 MiB，超限场景只在最后一页增加 1 字节，
 每页均低于单响应上限。两种期限场景并行运行，四个字节边界场景依次执行；
 四个字节场景使用完整生产默认值，不加载期限 mock；两个期限场景仍验证实际等待、
-正确错误分类、持续分页、空 stdout 和清理。已有 20 分钟 Go 作业保留其全部 gate。
-根目录 `.tmp/project-task-service-evidence.json` 记录共享安装身份、Go 命令/覆盖率
-结果、解码与传输字节、探针结果和进程/socket/目录清理。每个预算场景的
+正确错误分类、持续分页、空 stdout 和清理。CI 原有 20 分钟 Go job 继续运行常规集合并保留全部 gate。
+根目录 `.tmp/project-task-service-evidence.json` 使用 schemaVersion 2，明确 routine/stress mode 与 selectedProbes，记录共享安装身份、实际 Go 参数/期限和覆盖率、解码与传输字节、探针结果和进程/socket/目录清理。默认必需两个 deadline ID，压力必需全部六个 ID；结果集合须唯一且精确等于所选集合，不能按并行完成顺序比较。常规回执不声称物理字节上限覆盖。每个预算场景的
 `deadlines` 记录实际 `totalMs`、`requestMs` 与 `mocked`，避免将短期限行为证据
 误解为实际等待了生产期限。本地 `c19b064` dirty receipt 与
 [PR #55](https://github.com/codetreker/daynight/pull/55) 的干净托管 receipt 保留真实

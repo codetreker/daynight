@@ -8,8 +8,12 @@ UTF-8, surrogate escapes, original frame bytes and receipt digests are part of
 the test subject. Negative JSON files may deliberately be invalid JSON.
 
 `limits.json` binds both implementations to the same byte, count and timing
-constants. The test suites construct large exact-limit and one-over-limit cases
-in memory instead of committing multi-megabyte payloads.
+constants. All 129 raw manifest cases remain ordinary protocol tests, alongside
+the real single-frame 256 KiB boundary. Test suites construct large exact/+1
+cases in memory instead of committing multi-megabyte payloads; Go stress tags
+and the CLI .stress.ts configuration select those cases only for explicit local
+scale validation. The [development guide](../../../../../../docs/development.md#validation)
+owns the commands and CI/local evidence distinction.
 
 Valid examples include opaque `term_...` terminal IDs, nullable provider session
 identity, native numeric pane IDs, full styled frames, manual control, stopped

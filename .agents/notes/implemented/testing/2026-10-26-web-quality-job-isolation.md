@@ -36,7 +36,9 @@ isolation and full product-source manifest remain unchanged.
 Browser mode installs pinned Chromium with Linux dependencies under the existing
 600-second bound, then invokes ordinary core acceptance. That runner owns native
 and container preparation, functional browser order, atomic permission release,
-capacity, recovery and cleanup. It has no quality/browser preparation callbacks,
+recovery and cleanup. The later [CI/local stress policy](2026-11-03-ci-stress-separation.md)
+keeps capacity behind explicit local --stress; ordinary CI registers no capacity
+callback. The runner has no quality/browser preparation callbacks,
 empty success phases or readiness-admission observer. Local acceptance continues
 to use its preinstalled browser through the same ordinary core. The existing
 `ready.json` remains diagnostic; it does not grant browser execution.
@@ -48,9 +50,9 @@ process-group cleanup failure remains a failure; combined errors are preserved.
 This guard is not replaced by the command leader's exit status.
 
 The container's 900-second permission wait, native-before-container browser
-release, one browser worker, zero retries, complete capacity inputs and all
-geometry/performance thresholds remain unchanged. Within browser acceptance,
-capacity waits for its own preparation, functional phases, complete container
+release, one browser worker and zero retries remain unchanged. When explicit
+local stress selects capacity, its complete inputs and geometry/performance
+thresholds remain; capacity waits for its own preparation, functional phases, complete container
 cleanup and browser recovery. Quality runs on a separate runner and does not
 alter those timing conditions. Artifacts keep their quality or acceptance
 ownership, source identity and retention policy.
@@ -70,8 +72,9 @@ historical contention conditions rather than prescribing the current budget.
 
 **Keep quality and browser preparation on one runner.** It can hide some setup
 time, but shares both preparation conditions and one job budget. The complete
-quality report, browser targets, capacity and cleanup all remain required, so
-successful child output cannot substitute for whole-job completion.
+quality report, browser targets, capacity and cleanup were all required at the
+time of this decision, so successful child output could not substitute for
+whole-job completion. Stress selection now follows its separate policy.
 
 **Gate coverage on prepared state inside the same job.** A lazy gate was
 considered to keep harness overlap while waiting for native and container
@@ -86,8 +89,8 @@ contract without separating the competing responsibilities. Both jobs retain
 
 **Shard browser scenarios across runners.** Shards duplicate target preparation
 and require new scenario, artifact and permission aggregation. The full native,
-container and capacity journey remains together; only independent quality work
-has a separate job.
+container journey remains together; explicitly selected local capacity retains
+the same resource barriers. Only independent quality work has a separate job.
 
 ## Consequences
 
@@ -97,9 +100,9 @@ cancelled. The core acceptance runner expresses only its actual browser and
 resource dependencies, and local use gains no new quality work or preparation
 wait. Internal CI modes do not add a product CLI or deployment interface.
 
-This costs a second Node/pnpm setup and a separate quality artifact upload. It
-does not omit tests, weaken the strict coverage comparison, bypass process-group
-cleanup or replace protected merge checks. Wrapper tests cover full commands and
+This costs a second Node/pnpm setup and a separate quality artifact upload.
+The strict coverage comparison, process-group cleanup and protected merge checks
+remain. Stress cases retain explicit local entries under the later policy. Wrapper tests cover full commands and
 errors; core tests retain native/container ordering, permission and capacity
 ownership without obsolete quality placeholders.
 

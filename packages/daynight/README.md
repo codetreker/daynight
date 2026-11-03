@@ -796,8 +796,13 @@ three dependency fields. An empty human ready result is `No ready tasks.`
 and empty JSON is `[]`. Versions remain JSON numbers with full int64 precision.
 Local preparation fails before any task mutation; a lost write response is
 reported as unconfirmed. Installed CLI integration uses the real Go/PostgreSQL
-service; deadline behavior uses short test-only budgets and byte probes retain
-the full production limits. [PR #55](https://github.com/codetreker/daynight/pull/55)
+service. Ordinary validation retains the 129-file Session v2 corpus, single-frame
+256 KiB boundaries and small-budget byte/cancellation checks; six scale cases run
+only with `pnpm --filter @codetreker/daynight exec vitest run --config test/stress/vitest.config.ts`.
+The server check runs two deadline probes with short test-only budgets by default;
+its explicit local `--stress` mode also runs physical production-byte probes. The
+[validation policy](../../.agents/notes/implemented/testing/2026-11-03-ci-stress-separation.md)
+owns the CI/local responsibility split. [PR #55](https://github.com/codetreker/daynight/pull/55)
 records the original integration and real-default-budget validation, with its
 historical source identity.
 

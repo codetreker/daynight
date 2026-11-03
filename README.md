@@ -338,7 +338,8 @@ tests and that gate; every `main` push runs full application validation. See the
 
 `pnpm check` covers CLI type checking and tests; `pnpm acceptance` exercises the
 installed package. Server and Web checks have separate commands and require
-statement coverage strictly greater than 90%. For document changes, check local
+statement coverage strictly greater than 90%. CI runs routine functional, protocol,
+deadline, race and coverage checks; stress workloads require explicit local commands. For document changes, check local
 links and anchors, newly created files and `git diff --check`.
 
 Acceptance results belong to their tested revision, artifacts, environment and

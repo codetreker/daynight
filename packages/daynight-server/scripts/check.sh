@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  echo "Usage: bash packages/daynight-server/scripts/check.sh [--stress]" >&2
+  exit 2
+}
+case "$#" in
+  0) ;;
+  1) [[ "$1" == "--stress" ]] || usage ;;
+  *) usage ;;
+esac
+
 source "$(dirname -- "${BASH_SOURCE[0]}")/env.sh"
 cd -- "$DAYNIGHT_MODULE_ROOT"
 : "${DAYNIGHT_TEST_DATABASE_URL:?Set DAYNIGHT_TEST_DATABASE_URL to the required PostgreSQL test database}"
@@ -24,4 +34,4 @@ node --test scripts/auth-fixture.test.mts scripts/preparation-lock.test.mts
 # Database state is outside Go's test-result cache key.
 # https://github.com/golang/go/blob/go1.27.2/src/cmd/go/internal/test/test.go#L1867-L1869
 go clean -testcache
-node "$DAYNIGHT_MODULE_ROOT/../daynight/scripts/project-task-acceptance.ts"
+node "$DAYNIGHT_MODULE_ROOT/../daynight/scripts/project-task-acceptance.ts" "$@"

@@ -344,14 +344,42 @@ excluded. When [CI selection](#ci-selection) selects the server, the complete
 Go job contributes its result to the final `checks` job. PostgreSQL absence is a
 failure, not a skipped test. The gate includes an installed-CLI service path and
 resource-budget probes. A Node orchestrator shares one real installation across
-the Go command scenarios and, after the unchanged go-cov/strict-profile checks,
-public-command probes outside Go's default ten-minute timer. Test-only deadline
-mocks use a 1-second request and 3-second operation budget while separately
-asserting the installed production defaults of 30 seconds and five minutes.
-The 128 MiB single-response and 256 MiB cumulative decoded-byte probes keep
-real exact-limit and +1-byte tests. Each receipt identifies actual deadlines and
-mock status. The Go job retains its 20-minute bound and complete validation
-workload. The [acceptance design](../docs/design/daynight-project-task.md#验证与交付证据)
+the Go command scenarios and, after go-cov/strict-profile checks, two public-command
+deadline probes outside Go's ten-minute package timer. Test-only preload budgets
+use a one-second request and three-second operation limit while asserting the
+installed defaults of 30 seconds, five minutes and 128/256 MiB. Routine Go race,
+coverage and the twelve-minute outer watchdog stay unchanged.
+
+CI does not run stress workloads. From the repository root, explicit local
+selections are:
+
+```bash
+# Full server gate plus tagged Go scale cases and all six budget probes
+bash packages/daynight-server/scripts/check.sh --stress
+# CLI protocol scale cases only
+pnpm --filter @codetreker/daynight exec vitest run --config test/stress/vitest.config.ts
+```
+
+For Go protocol scale cases only, from `packages/daynight-server/`:
+
+```bash
+source scripts/env.sh
+go test -tags=stress -race -covermode=atomic -count=1 -timeout=20m ./internal/sessionprotocol/v2
+```
+
+The full server command still needs its isolated PostgreSQL and build/install
+prerequisites. Its local stress Go command uses a twenty-minute package limit and
+twenty-two-minute outer watchdog. The pure protocol command needs no database.
+The ordinary CLI suite keeps the 129-file corpus, one 256 KiB frame boundary and
+small-budget behavior; six scale cases use the separate configuration.
+Stress adds four unchanged physical byte probes: 128 MiB single-response and
+256 MiB cumulative exact/+1 pairs. They retain their 60/150-second watchdogs.
+Service evidence schema 2 records `mode` and exact `selectedProbes`; routine mode
+requires the two deadline results, stress mode all six. Selected results and
+resource cleanup must all pass, and routine evidence makes no physical-limit
+claim. The [validation policy](../.agents/notes/implemented/testing/2026-11-03-ci-stress-separation.md)
+owns classification and historical evidence boundaries.
+The [acceptance design](../docs/design/daynight-project-task.md#验证与交付证据)
 owns the mechanism and source-bound evidence. The
 [server validation guide](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence) maps
 requirements to tests and describes the CI receipt containing tested source and
@@ -435,7 +463,11 @@ and records cleanup failures.
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
 parallel. It runs native functional workflows, then the container workflows and
-complete container cleanup, and finally the fixed native capacity cases. It
+complete container cleanup, and both eleven-check combined-auth journeys. Only
+explicit local `node packages/daynight-web/scripts/acceptance.mts --stress` adds
+the five fixed native capacity cases and performance receipt; `--apfs --stress`
+combines explicit Mac filesystem and stress coverage. Ordinary runs contain 58
+functional scenarios, local stress 63, with 22 auth checks separate. It
 requires Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and Playwright Chromium. The
 [web README](../packages/daynight-web/README.md#production-browser-acceptance) owns
 browser setup, required gates and receipt interpretation.
@@ -607,7 +639,8 @@ observer. Local acceptance uses its existing installed browser. Native and
 container preparation still overlap; native functional checks and browser cleanup
 precede the container browser permission release. The permission wait remains
 900 seconds. Core preparation, functional phases, full container cleanup and
-browser recovery finish before native capacity. Independent quality checks run
+browser recovery finish before any explicitly selected local native capacity.
+CI invokes the ordinary runner without registering capacity. Independent quality checks run
 on their own runner and do not add empty core phases or split browser scenarios.
 The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
 records the responsibility and budget boundaries without claiming a measured

@@ -6,11 +6,12 @@ process.once('SIGINT', cancel);
 process.once('SIGTERM', cancel);
 
 try {
-  if (process.argv.length === 3 && process.argv[2] === '--container') await runContainerCallback(cancellation);
-  else if ((process.argv.length === 3 || process.argv.length === 4) && process.argv[2] === '--cleanup') await recoverAcceptance(cancellation, process.argv[3]);
-  else if (process.argv.length === 3 && process.argv[2] === '--apfs') await runAcceptance(cancellation, { allowApfsImage: true });
-  else if (process.argv.length === 2) await runAcceptance(cancellation);
-  else throw new Error('Usage: node scripts/acceptance.mts [--apfs | --cleanup [run-id]]');
+  const args = process.argv.slice(2);
+  if (args.length === 1 && args[0] === '--container') await runContainerCallback(cancellation);
+  else if ((args.length === 1 || args.length === 2 && !args[1]!.startsWith('--')) && args[0] === '--cleanup') await recoverAcceptance(cancellation, args[1]);
+  else if (args.every((value) => value === '--apfs' || value === '--stress') && new Set(args).size === args.length) {
+    await runAcceptance(cancellation, { allowApfsImage: args.includes('--apfs'), stress: args.includes('--stress') });
+  } else throw new Error('Usage: node scripts/acceptance.mts [--apfs] [--stress] | --cleanup [run-id]');
 } catch (error) {
   console.error(error);
   process.exitCode = 1;

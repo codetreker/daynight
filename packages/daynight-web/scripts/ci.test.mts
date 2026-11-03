@@ -8,14 +8,18 @@ import test from 'node:test';
 import { runCi, runCiCommand } from './ci.mts';
 import { isGroupStopped, processIdentity, requireGroupStopped } from './acceptance/identity.mts';
 import { commandBytes, terminateGroup, type CommandOptions } from './acceptance/process.mts';
+import type { AcceptanceOptions } from './acceptance/runner.mts';
 
 const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const operations = () => {
   const calls: { file: string; args: readonly string[]; options: CommandOptions }[] = [];
   const accepted: AbortController[] = [];
-  return { calls, accepted, command: async (file: string, args: readonly string[], options: CommandOptions) => {
+  const acceptanceOptions: (AcceptanceOptions | undefined)[] = [];
+  return { calls, accepted, acceptanceOptions, command: async (file: string, args: readonly string[], options: CommandOptions) => {
     calls.push({ file, args, options }); return '';
-  }, acceptance: async (controller: AbortController) => { accepted.push(controller); } };
+  }, acceptance: async (controller: AbortController, options?: AcceptanceOptions) => {
+    accepted.push(controller); acceptanceOptions.push(options);
+  } };
 };
 
 test('quality mode keeps full checks and deadlines with four coverage workers', async () => {
@@ -35,7 +39,7 @@ test('quality mode keeps full checks and deadlines with four coverage workers', 
   assert.deepEqual(observed.accepted, []);
 });
 
-test('browser mode installs its browser with the original bound before ordinary acceptance', async () => {
+test('browser mode installs its browser before default acceptance without opting into stress', async () => {
   const observed = operations();
   const controller = new AbortController();
   const installing = Promise.withResolvers<string>();
@@ -53,6 +57,7 @@ test('browser mode installs its browser with the original bound before ordinary 
   assert.equal(observed.calls[0]!.options.timeoutMs, 600_000);
   assert.equal(observed.calls[0]!.options.signal, controller.signal);
   assert.deepEqual(observed.accepted, [controller]);
+  assert.deepEqual(observed.acceptanceOptions, [undefined]);
 });
 
 test('invalid CI modes start no command or acceptance', async () => {

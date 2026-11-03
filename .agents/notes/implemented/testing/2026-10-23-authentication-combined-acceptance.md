@@ -86,12 +86,15 @@ then verifies the same pending input, single submission and same revealed token
 element across English/Simplified Chinese. The response remains the actual
 server result. Screenshots happen only after closing or masking the secret.
 
-The current 53 Playwright cases comprise 24 native functional, 24 container
-functional and 5 native capacity, including the later task-unapproval scenario. Native and container each require a separate
-combined receipt. These receipts do not renumber the Playwright inventory or
-replace its fixed data, five samples, geometry checks, zero retries, raw report
-validation or time/request/memory budgets. Capacity remains isolated from
-competing preparation, restart and container cleanup.
+The combined-auth delivery used 53 Playwright cases: 24 functional per target
+and five native capacity cases, including task-unapproval. Current registered
+functional IDs belong to the [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance),
+and the [CI/local stress policy](2026-11-03-ci-stress-separation.md) selects
+capacity only for explicit local stress. Native and container each still require
+a separate eleven-check combined receipt in both modes. These do not renumber
+the Playwright inventory or replace selected capacity data, five samples,
+geometry checks, zero retries, raw validation or time/request/memory budgets.
+Selected capacity stays isolated from preparation, restart and container cleanup.
 
 ### Safe evidence and failure ownership
 

@@ -61,9 +61,11 @@ fork isolation contract. Worker-count calibration leaves the pool unchanged.
 
 The quality command can use its dedicated standard runner's four CPUs while
 preserving every command, coverage, process-group cleanup and browser gate.
-The browser job still owns its complete native/container/capacity journey with
-one browser worker and zero retries. No shards, input reductions or larger
-allowances are introduced.
+The browser job owns both complete functional targets and combined-auth journeys
+with one browser worker and zero retries. The later
+[CI/local stress policy](2026-11-03-ci-stress-separation.md) selects capacity only
+through explicit local --stress, retaining its original inputs and thresholds.
+The calibration itself introduces no shards, input reductions or larger allowances.
 
 More concurrent test processes can increase peak memory and expose shared test
 resources. The configured runner capacity and matched complete-suite comparison

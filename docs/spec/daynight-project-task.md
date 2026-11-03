@@ -383,14 +383,10 @@ V1–V15 继续约束完整 CLI 交付。CLI 必须通过三原生平台的安�
 累计响应 256 MiB，并由测试单独断言。期限行为通过公开安装命令与流式 HTTP
 验证；测试应仅对期限注入合理的较小值，覆盖响应开始后停顿，以及每页均在单次
 期限内且 cursor 持续推进仍耗尽总期限。回执必须标明实际期限与 mock 状态。
-响应和累计解码字节使用真实生产上限，均须提供精确边界成功及增加 1 字节拒绝的
-配对证据，使用合法 gzip JSON 和空白补齐以保留小型结果输出。既有 review/update
-安装验收和 Go 覆盖率门槛全部保留；完整 Go 工作负载与预算探针分别运行，后者
-不占用 Go 默认 10 分钟计时器。
+常规 CI 保留两项真实 deadline/stall 探测与小预算字节、取消验证；生产物理字节上限和协议最大规模属于显式本地压力验证。check.sh --stress 才选择 Go stress tag 与全部六项探测；单响应 128 MiB 和累计 256 MiB 的精确边界成功/+1 拒绝均保留真实合法 gzip JSON 与空白补齐，常规结果不声称物理边界覆盖。CLI 的 129 个原始 corpus 和单帧 256 KiB 检查仍常规执行，六个规模用例由独立 .stress.ts 配置选择。既有 review/update 安装验收、race 和覆盖率门槛保留；预算探测在 Go 计时器之外。常规 Go 包/外层期限仍为 10/12 分钟，本地压力为 20/22 分钟。
 
 原生安装结果写入仓库根 `.tmp/project-task-evidence.json`，服务及预算结果写入
-`.tmp/project-task-service-evidence.json`；每份证据标识源码、pack/安装身份、场景
-和清理。Go 原有 receipt 及 raw coverage 保留其归属，CLI 要求编号使用 `PT.V*` 命名
+`.tmp/project-task-service-evidence.json`；后者 schemaVersion 2 明确 mode 与 selectedProbes，结果须与所选集合精确一致并全部清理成功。每份证据标识源码、pack/安装身份、场景和清理。Go 原有 receipt 及 raw coverage 保留其归属，CLI 要求编号使用 `PT.V*` 命名
 空间。[PR #55](https://github.com/codetreker/daynight/pull/55) 保留真实 Go/PostgreSQL 联调及真实默认预算的历史源码验证结果；期限 mock 及验证成本的取舍记录在
 [CI 验证效率决策](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)，
 逐次结果随对应 PR 与 CI 保存。受控 HTTP、真实服务与原生平台证据分别证明其对应要求，不能互相替代。

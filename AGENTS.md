@@ -158,6 +158,10 @@ changes, validate frontmatter, local links, lifecycle/path agreement, mandatory
 note sections, and skill discovery. Check newly created files as well as
 `git diff --check`; Git does not include untracked files in an ordinary diff.
 
+CI runs routine validation. Keep stress workloads behind explicit local commands;
+do not add stress tests to CI. The [validation policy](.agents/notes/implemented/testing/2026-11-03-ci-stress-separation.md)
+owns classification and evidence boundaries.
+
 For code changes, verify observable behavior and relevant failure paths using
 the repository's documented commands. Preserve acceptance criteria and expose
 errors. Run meaningful coverage checks when coverage tooling exists; a green

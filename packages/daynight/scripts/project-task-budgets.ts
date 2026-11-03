@@ -46,6 +46,8 @@ export type BudgetProbeReceipt = {
   failures: string[];
 };
 
+export type BudgetMode = "routine" | "stress";
+
 export const describeAcceptanceError = (error: unknown): string => {
   if (!(error instanceof Error)) return String(error).slice(0, 16_384);
   return [error.message,
@@ -238,11 +240,24 @@ const cumulativeResponses = (overLimit: boolean): ProbeDefinition => ({
   },
 });
 
+const byteProbeDefinitions = (mode: BudgetMode): ProbeDefinition[] => mode === "stress"
+  ? [singleResponse(false), singleResponse(true), cumulativeResponses(false), cumulativeResponses(true)]
+  : [];
+
+export const budgetProbeNames = (mode: BudgetMode): string[] => [progressPage, stalledBody, ...byteProbeDefinitions(mode)].map(({ name }) => name);
+
+export const budgetProbesPassed = (mode: BudgetMode, receipts: readonly BudgetProbeReceipt[]): boolean => {
+  const expected = new Set(budgetProbeNames(mode));
+  return receipts.length === expected.size && new Set(receipts.map(({ name }) => name)).size === expected.size &&
+    receipts.every((receipt) => expected.has(receipt.name) && receipt.passed && receipt.failures.length === 0 &&
+      receipt.childReaped && receipt.socketsClosed && receipt.serverClosed && receipt.fixtureRemoved);
+};
+
 export class BudgetAcceptanceError extends AggregateError {
   readonly receipts: BudgetProbeReceipt[];
 
   constructor(receipts: BudgetProbeReceipt[], errors: unknown[]) {
-    super(errors, "Installed CLI production resource-budget acceptance failed.");
+    super(errors, "Installed CLI resource-budget acceptance failed.");
     this.receipts = receipts;
     this.name = "BudgetAcceptanceError";
   }
@@ -347,7 +362,7 @@ const runProbe = async (definition: ProbeDefinition, installed: InstalledCliRece
   return { receipt, errors };
 };
 
-export const runProductionBudgetProbes = async (installed: InstalledCliReceipt, repositoryRoot: string, serverToken: string, signal?: AbortSignal): Promise<BudgetProbeReceipt[]> => {
+export const runBudgetProbes = async (installed: InstalledCliReceipt, repositoryRoot: string, serverToken: string, mode: BudgetMode, signal?: AbortSignal): Promise<BudgetProbeReceipt[]> => {
   requireCondition(typeof serverToken === "string" && /^[\x21-\x7e]+$/.test(serverToken), "Budget probes require a header-safe PAT issued by the normal service fixture.");
   const fixture: typeof import("../test/fixtures/installed-cli.js") = await import(new URL("../test/fixtures/installed-cli.ts", import.meta.url).href);
   let temporaryRoot: string | undefined;
@@ -356,7 +371,7 @@ export const runProductionBudgetProbes = async (installed: InstalledCliReceipt, 
   try {
     await mkdir(path.join(repositoryRoot, ".tmp"), { recursive: true });
     temporaryRoot = await mkdtemp(path.join(repositoryRoot, ".tmp/project-task-budgets-"));
-    const byteProbes = [singleResponse(false), singleResponse(true), cumulativeResponses(false), cumulativeResponses(true)];
+    const byteProbes = byteProbeDefinitions(mode);
     const run = async (definition: ProbeDefinition): Promise<void> => {
       try {
         const outcome = await runProbe(definition, installed, temporaryRoot!, fixture.terminateInstalledProcess, serverToken, signal);

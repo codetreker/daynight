@@ -31,6 +31,8 @@ const functionalScenarios = ['project-list', 'project-graph', 'detail-navigation
   'auth-login-session', 'auth-project-isolation', 'auth-project-members', 'auth-personal-tokens',
   'auth-invitations', 'auth-resource-session', 'project-settings', 'task-execution-time'] as const;
 const capacityScenarios = ['capacity-chain', 'capacity-merge', 'capacity-shared', 'capacity-external', 'capacity-limits'] as const;
+export const nativeAcceptanceScenarios = (stress: boolean): readonly string[] =>
+  stress ? [...functionalScenarios, ...capacityScenarios] : functionalScenarios;
 
 const json = async (path: string, value: unknown): Promise<void> => {
   await mkdir(dirname(path), { recursive: true });
@@ -39,7 +41,7 @@ const json = async (path: string, value: unknown): Promise<void> => {
 };
 const readJson = async (path: string): Promise<unknown> => JSON.parse(await readFile(path, 'utf8'));
 export type AcceptanceCommand = (file: string, args: readonly string[], options?: Omit<CommandOptions, 'cwd'> & { cwd?: string }) => Promise<string>;
-export type AcceptanceOptions = { allowApfsImage?: boolean };
+export type AcceptanceOptions = { allowApfsImage?: boolean; stress?: boolean };
 
 type InstalledPreparation = { receipt: InstalledCliReceipt; receiptPath: string; cleanup(): Promise<void> };
 type InstalledFactoryOptions = { signal: AbortSignal; temporaryRoot: string; rootDirectory: string; onSpawn(child: ChildProcess): Promise<void> };
@@ -167,6 +169,7 @@ export const launchNativeServer = async (options: NativeLaunchOptions): Promise<
 };
 
 const createRunner = (cancellation: AbortController, options: AcceptanceOptions = {}) => {
+  const stress = options.stress === true;
   const expectedServerShutdowns = new WeakSet<ChildProcess>();
   const run = (file: string, args: readonly string[], options: Omit<CommandOptions, 'cwd'> & { cwd?: string } = {}): Promise<string> =>
     command(file, args, { cwd: repositoryRoot, signal: cancellation.signal, ...options });
@@ -200,7 +203,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     return { ...installed, receiptPath: installed.receiptPath, receipt: installed.receipt };
   };
   type Evidence = {
-    schemaVersion: 3; runId: string; source: Source; startedAt: string; result: 'running' | 'passed' | 'failed';
+    schemaVersion: 3; runId: string; source: Source; stress: boolean; startedAt: string; result: 'running' | 'passed' | 'failed';
     native: NativeEvidence; targets: Target[]; stages: Stage[]; container?: unknown; performance?: unknown;
     cleanup: 'pending' | 'passed' | 'failed'; finishedAt?: string; error?: string; cleanupErrors?: string[];
     installedCli?: InstalledEvidence;
@@ -690,7 +693,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     const owner = `daynight-web-${runId}`;
     const runner = await processIdentity(process.pid);
     if (runner === null) throw new Error('Acceptance runner process identity disappeared.');
-    const evidence: Evidence = { schemaVersion: 3, runId, source: await sourceIdentity(), startedAt: new Date().toISOString(),
+    const evidence: Evidence = { schemaVersion: 3, runId, source: await sourceIdentity(), stress, startedAt: new Date().toISOString(),
       result: 'running', native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`,
         binary: join(directory, 'daynight-server'), storageRoot: join(directory, 'native-storage'),
         postgresImage, cleanup: 'pending' }, targets: [], stages: [], cleanup: 'pending', runner, authCombined: [] };
@@ -928,16 +931,16 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
           evidence.targets.push(target);
           await save();
         }),
-        capacity: () => stage('native-capacity', async () => {
+        ...(stress ? { capacity: () => stage('native-capacity', async () => {
           const phase = nativePhase('capacity');
           await save();
           await playwright(phase, join(directory, 'native/capacity'), installedEvidence());
           evidence.performance = await readJson(join(directory, 'native/capacity/performance.json'));
           validatePerformance(evidence.performance);
-          aggregate(native(), [...functionalScenarios, ...capacityScenarios]);
           await save();
-        }),
+        }) } : {}),
       });
+      aggregate(native(), nativeAcceptanceScenarios(stress));
       if (evidence.authCombined?.length !== 2 || new Set(evidence.authCombined.map((entry) => entry.target)).size !== 2) throw new Error('Both owned targets must pass their combined authentication journey.');
       evidence.result = 'passed';
     } catch (error) {

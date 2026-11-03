@@ -679,7 +679,7 @@ pnpm web:acceptance
 DAYNIGHT_TEST_DATABASE_URL=... bash scripts/check.sh
 ```
 
-`web:dev`、`web:typecheck`、`web:test`、`web:build` 和 `web:acceptance` 已实现。共享 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，完成整目录暂存与替换，替换失败时尝试恢复先前目录；恢复也失败时保留先前产物并传播两个原因。`web:test` 串行组合包内 `test:harness` 与 `test:coverage`：前者执行全部 Node 验收/工具 harness，后者执行完整 Vitest/V8 单元及组件测试与严格覆盖率检查；任何一段失败都使完整命令失败。`web:acceptance` 自行创建有所有权标记的 PostgreSQL 容器及卷，并与正常 dev-ci 生产构建并行准备原生 Go 进程；浏览器按原生功能、容器功能、原生容量的顺序完成验证，需要 Docker、Go 工具链与 Playwright Chromium。浏览器本机优先复用，CI 下载及全部临时 profile 放在项目 `.tmp/`。`web:build` 不调用 Go，避免循环依赖。Go `scripts/check.sh` 在执行需要内嵌资源的 Go 命令前，从仓库根调用该命令；Go 测试中重新构建的进程使用同一份真实资源。缺少 pnpm、依赖、index 或资源时明确失败。
+`web:dev`、`web:typecheck`、`web:test`、`web:build` 和 `web:acceptance` 已实现。共享 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，完成整目录暂存与替换，替换失败时尝试恢复先前目录；恢复也失败时保留先前产物并传播两个原因。`web:test` 串行组合包内 `test:harness` 与 `test:coverage`：前者执行全部 Node 验收/工具 harness，后者执行完整 Vitest/V8 单元及组件测试与严格覆盖率检查；任何一段失败都使完整命令失败。`web:acceptance` 自行创建有所有权标记的 PostgreSQL 容器及卷，并与正常 dev-ci 生产构建并行准备原生 Go 进程；浏览器默认完成原生与容器功能及 combined-auth；显式本地 --stress 才追加原生容量验证，需要 Docker、Go 工具链与 Playwright Chromium。浏览器本机优先复用，CI 下载及全部临时 profile 放在项目 `.tmp/`。`web:build` 不调用 Go，避免循环依赖。Go `scripts/check.sh` 在执行需要内嵌资源的 Go 命令前，从仓库根调用该命令；Go 测试中重新构建的进程使用同一份真实资源。缺少 pnpm、依赖、index 或资源时明确失败。
 
 开发模式的 Vite 将 `/api` 代理到本机 Go，不引入 CORS 通配配置；生产使用 `http://127.0.0.1:8787/`。运行机器只需要服务二进制与 PostgreSQL；源码构建固定使用 Node 24 与 pnpm 11.28.6。根目录现有 CLI build/test/acceptance 命令的含义保持独立，新增 web 命令显式选择 `@codetreker/daynight-web`。
 
@@ -776,8 +776,7 @@ runner 原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的�
 容器 callback 登记身份后等待并验证该许可，保留 900 秒等待上限，再记录浏览器 inventory
 并执行原有全部功能场景。`ready.json` 保留准备时间的诊断用途，不授予浏览器执行权。
 
-原生准备、功能阶段、完整 dev-ci 退出清理与容器浏览器回收结束后，才在仍存活的原生
-Go/PostgreSQL 上执行全部容量/超限场景。任一 core 失败取消并排空所有已启动任务；
+普通 CI 不注册 PipelinePhases.capacity callback。显式本地 --stress 选中它后，原生准备、功能阶段、完整 dev-ci 退出清理与容器浏览器回收结束，才在仍存活的原生 Go/PostgreSQL 上执行全部容量/超限场景。任一 core 失败取消并排空所有已启动任务；
 原生进程意外退出同样取消其他任务。容量保留单浏览器 worker、零 retries、固定输入、
 几何与时间门槛，并与本 runner 的构建、功能检查和清理隔离。质量命令位于另一个 runner，
 不分片浏览器场景，也不为容量增加跨 job 准入协议。
@@ -966,8 +965,7 @@ API 数据和固定图集。
 gateway 夹具取得正常浏览器会话和 PAT，数据准备与安装 CLI 使用同一授权通道。
 App 与用户凭据只保存在私有 0600 元数据，公开回执和截图不包含秘密。受控外部
 provider 响应证明 gateway/SDK 协议，不等同于真实上游账号登录。
-原生目标分成二十九个功能场景和五个容量/超限场景，容器目标经实际生产镜像 gateway
-执行同一个二十九场景功能集合。`refresh-staleness` 验证自动读取后图、统计和当前详情
+普通入口在原生与容器目标各执行二十九个功能场景，共五十八个；显式本地 --stress 追加五个原生容量/超限场景，共六十三个。容器目标经实际生产镜像 gateway 执行同一个功能集合，容量工作不进入 CI。`refresh-staleness` 验证自动读取后图、统计和当前详情
 的一致更新，以及保留浏览、焦点和附件状态的故障恢复；定时器、可见性、请求串行与
 资源切换另由 hook/组件测试验证。浏览器顺序和清理屏障由[CI 构建归属](#ci-构建归属)定义。日常 localhost 栈
 不参与测试。`project-view-tabs` 覆盖两类分类及依赖迁移、独立任务直接详情、独立完成筛选、
@@ -989,7 +987,7 @@ PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` �
 runner 的服务重启 callback 与显式安装回执路径；目标 probe 在校验 run/source/
 容器标记后读取实际 staging/SQL，客户端发送成功不作为服务端准入证据。详细机制由
 [组合鉴权验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)拥有。
-这两份回执与现有 63 项 Playwright 场景并列，不复制容量矩阵或改变测量、预算和
+这两份各十一项的回执与所选 58 项常规或 63 项本地压力 Playwright 场景并列，不复制容量矩阵或改变测量、预算和
 清理屏障；运行结果与真实上游人工登录分别留证。
 
 双语功能的三个稳定场景由[语言设计](daynight-web-i18n.md#验证与证据归属)定义，使用同一受监控页面与场景级 locale；首屏和偏好、图/详情/附件状态、错误及窄屏布局分别提供定向检查。语言不会复制容量矩阵或改变阶段与清理屏障。
@@ -1004,11 +1002,10 @@ runner 的服务重启 callback 与显式安装回执路径；目标 probe 在�
 
 Playwright 固定单 worker、零 retry；报告必须包含全部要求的唯一场景、一次成功
 执行、有效 PNG 附件及一致的汇总，跳过、重试、flaky、缺失、多余或重复场景及
-全局错误均失败。原生 functional/capacity 两份报告严格合并为三十四个唯一场景，
-容器目标严格要求二十九个；原生与容器及同目标各阶段浏览器身份必须一致。
+全局错误均失败。native 汇总在所选 pipeline 完成后执行：默认仅要求二十九个 functional ID，本地 --stress 才要求与五个 capacity ID 的精确 union，共三十四个；容器始终严格要求二十九个。未选容量不生成空成功或 skipped phase，performance artifact 只在实际执行容量后用原 validator 校验；原生与容器及同目标各阶段浏览器身份必须一致。
 CI 要求当前 Linux 或 macOS 平台与浏览器回执一致、锁定 Playwright 的完整 Chromium channel `chromium`、干净 checkout，且 git SHA 必须
 等于 `GITHUB_SHA`；本机可以显式选择现有 Chromium，回执必须记录这一差异。
-完整 CI 工作流仍在 Linux 上执行；macOS 本机运行相同功能、容量与恢复验收，不放宽预算。
+完整 CI 工作流仍在 Linux 上执行；macOS 本机运行相同功能和恢复验收，显式 --stress 运行相同容量且不放宽预算。
 Linux 进程身份由 procfs 提供；macOS 使用项目临时目录内编译的 Apple SDK helper，
 通过内核读取微秒级启动时间、实际 executable、PGID、argv 和精确环境标记。
 浏览器 profile 按 argv 项匹配，macOS inventory 包含 Chromium bundle 内的 Helper 与 Crashpad。
@@ -1032,7 +1029,7 @@ PDF 预览通过轮询 iframe 的实际 compositor 截图，验证 fixture 专�
 
 chain、merge 和 external 夹具保留从源向末端的节点创建批次，先通过真实 API 创建无依赖任务，再从末端向源补齐依赖。merge/external 按逆拓扑层执行完整 PATCH 批次，同层最多六请求，层间等待；每次保留返回的新 Task/version。merge 的额外边探针使用最终任务版本，external 在依赖补齐后以最终 sink 版本执行既有外部依赖分类。shared 保留直接构造。完整 API 读回仍逐 ID 校验普通/外部依赖，以实际快照顺序选择可见概览；构造顺序不改变图规模、五次测量或独立超限检查。[夹具构造决策](../../.agents/notes/implemented/testing/2026-10-28-web-capacity-fixture-construction.md)记录新增写请求的成本与选择依据。
 
-每次从 trusted 输入到完整可见概览、根可操作和两次 animation frame，openMs≤3,000；select/detail/zoom/pan≤300。普通 Details→关闭→立即缩放/平移之后，可信选择可见任务，再执行高亮态同序列；每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。依赖检查验证完整 H、隐藏祖先去重及独立曲线/paint/marker。`visibility[5]` 逐次保留 repetition、overviewNodes/Edges、addedNodes/Edges、expandedNodes/Edges、resetNodes/Edges、selectedId 和 hiddenUpstream，要求顺序、预算、精确增量和 reset 计数正确。布局/渲染诊断与网络独立计量，1,001 节点和 5,001 边仍完整 409 拒绝。63 场景（原生 34、容器 29）、锁定浏览器、coverage、timeout、零 retry 和清理保持。鉴权和生命周期合并后源码仍需完整运行回执。
+每次从 trusted 输入到完整可见概览、根可操作和两次 animation frame，openMs≤3,000；select/detail/zoom/pan≤300。普通 Details→关闭→立即缩放/平移之后，可信选择可见任务，再执行高亮态同序列；每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。依赖检查验证完整 H、隐藏祖先去重及独立曲线/paint/marker。`visibility[5]` 逐次保留 repetition、overviewNodes/Edges、addedNodes/Edges、expandedNodes/Edges、resetNodes/Edges、selectedId 和 hiddenUpstream，要求顺序、预算、精确增量和 reset 计数正确。布局/渲染诊断与网络独立计量，1,001 节点和 5,001 边仍完整 409 拒绝。显式本地压力的 63 场景（原生 34、容器 29）、锁定浏览器、coverage、timeout、零 retry 和清理保持。鉴权和生命周期合并后源码仍需完整运行回执。
 
 每个容量 dataset 的 `feedbackDiagnostics` 增量保存每次 open/detail/zoom/pan 的
 `kind`、`repetition`、`start`、`capturedAt`、`conditionAt`、`frame1At`、
@@ -1064,7 +1061,7 @@ CDP timeline、User Timing、frame 与 GC 事件关联浏览器内的输入/条�
 等待；正常 ready/count 判定与全部预算保持原义。
 
 回执增量写入 `packages/daynight-web/.tmp/acceptance/<run-id>/`，顶层
-`evidence.json` 指向最近一次结果，顶层 `schemaVersion: 3` 包含源码、二进制、
+`evidence.json` 指向最近一次结果，顶层 `schemaVersion: 3` 增加实际 `stress:boolean` 选择，并包含源码、二进制、
 数据库/浏览器版本、两目标结果、生产镜像与清理状态。已安装 CLI 回执核对 Git SHA、
 dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty 标记不代表工作区文件
 内容指纹，CI 的干净源码与 `GITHUB_SHA` 检查继续承担源码归属。`stages` 逐阶段记录名称、
@@ -1072,7 +1069,7 @@ dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty �
 `commandGroups`；短命令仍记录其组，不能伪造已消失进程的身份。目标包含
 `phases` 和严格合并的 `scenarios`；每个浏览器阶段记录 functional/capacity、
 起止时间、Playwright 进程/组、浏览器身份及 `browserCleanup`。
-`native/functional/`、`container/`、`native/capacity/` 分别保留原始 Playwright JSON、
+`native/functional/`、`container/` 与实际压力运行才存在的 `native/capacity/` 分别保留原始 Playwright JSON、
 场景截图和浏览器身份；容量的原 schema 1 性能回执位于
 `native/capacity/performance.json`。额外必需的 schema 1 `kind: auth-combined` 回执为
 `native/auth-combined/target.json` 和 `container/auth-combined/target.json`；每份
@@ -1085,7 +1082,7 @@ dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty �
 恢复命令为 `node packages/daynight-web/scripts/acceptance.mts --cleanup [run-id]`，
 默认读取最近一次回执，缺失回执不操作资源。恢复只接受顶层 schema 3，schema 1、schema 2
 及未知版本明确失败。恢复先确认原 runner、阶段命令身份和全部登记进程组均停止；
-浏览器按 `native/capacity`、`container`、`native/functional` 的逆序检查和回收。
+浏览器按已记录的可选 `native/capacity`、`container`、`native/functional` 的逆序检查和回收；恢复不新增版本分支，也不从缺失 stress 字段推断覆盖。
 两个 `auth-combined/` 目录同样加入已有浏览器与命令进程恢复扫描。callback 和
 Playwright 的进程及其组必须已停止，再依据记录的平台、PID、
 executable、内核启动身份与源码身份处理资源。仍存活的原生服务必须额外匹配二进制摘要，Docker 只按本次精确标记
@@ -1112,7 +1109,7 @@ Worker 定向验证使用严格 DTO、完整游标读取和真实组件，覆盖
 4. 两个模块分别大于 90%，因此加权总体也大于 90%；不能靠 Go 的高覆盖率掩盖 web 缺口。现有 Go package/function/critical-block 与所有 CLI 原生平台门槛保持。
 5. 浏览器验收使用 Playwright、构建后的真实页面、真实服务与隔离 PostgreSQL。通过 API 建立项目和任务，验证完整点击路径、共享/外部前置、空项目、局部失败与重试、深链接刷新、键盘节点操作，以及居中详情的实际几何、概览独立滚动、附件左右分屏与唯一右侧纵向滚动、焦点进入/Tab 循环/Esc、遮罩/关闭按钮和关闭后恢复焦点；收集截图、测试 SHA、通过结果和资源清理证据。
 6. PR 按[仓库 CI 路由](../../README.md#ci-selection)选择受影响模块，main push 执行全量应用检查。最终 `checks` 只接受所有前置 job 的 `success` 或 `skipped`，失败、取消及其他结果使汇总失败；未选中的 job 为 `skipped`。Go job 与 web job 被选中时，各自在干净 checkout 中生成真实 UI 产物并完成既有集成验收；跨模块构建前置不改变模块路由。依赖变更遵守现有 workspace 与 PR 的 CLI 版本检查规则。
-7. 性能验收使用 Linux CI 的固定 Chromium、生产构建和四个完整输入的渐进可见图，覆盖 1,000 节点的单链，以及恰好同时具有 1,000 节点和 5,000 边的分叉合流、多根共享和外部祖先密集图；外部图的链内 2 项与上下文 998 项分别计数。每次从图浮层关闭状态打开，重复五次，最慢一次从点击到可操作概览不超过 3,000ms；布局后打开详情、缩放或平移的可见反馈不超过 300ms。单独保存布局/渲染耗时和完整测试环境，接口耗时与详情网络时间分开记录。失败必须优化或重新评审支持上限，不能把超时结果当成已支持，也不默认引入后台 worker。
+7. 显式本地压力性能验收使用锁定 Chromium、生产构建和四个完整输入的渐进可见图，覆盖 1,000 节点的单链，以及恰好同时具有 1,000 节点和 5,000 边的分叉合流、多根共享和外部祖先密集图；外部图的链内 2 项与上下文 998 项分别计数。每次从图浮层关闭状态打开，重复五次，最慢一次从点击到可操作概览不超过 3,000ms；布局后打开详情、缩放或平移的可见反馈不超过 300ms。单独保存布局/渲染耗时和完整测试环境，接口耗时与详情网络时间分开记录。失败必须优化或重新评审支持上限，不能把超时结果当成已支持，也不默认引入后台 worker。
 
 ## 实施与验收边界
 
@@ -1141,7 +1138,7 @@ Worker 定向验证使用严格 DTO、完整游标读取和真实组件，覆盖
 探针验证 CSS 隐藏、contenteditable、frame Tab/Esc、portal/inert 和被动焦点恢复。
 JSDOM 使用上游 `tabbable` 测试包装，不能提供可见性证据。本机 Chromium override
 的回执只证明该环境的前端行为，不等同锁定 CI 浏览器或真实后端验收。
-新增附件后端旅程纳入组合 CI inventory，既有看板的原生/容器/容量场景及其门槛继续有效。
+新增附件后端旅程纳入组合 CI inventory，既有看板的原生/容器常规场景与显式本地容量场景及其门槛继续有效。
 
 ## 风险与重审条件
 

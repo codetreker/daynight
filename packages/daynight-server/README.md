@@ -1258,15 +1258,43 @@ or a mocked client as runtime proof.
 The [cross-layer decision](../../.agents/notes/implemented/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 owns these methods and their relationship to production browser journeys.
 
-The Node orchestrator reuses that installation for six budget probes after the
-Go coverage gate. Deadline probes load a test-only preload with 1-second request
-and 3-second operation deadlines, while separately asserting the installed
-production defaults of 30 seconds and five minutes. Four decoded-byte probes use
-the unchanged 128 MiB/256 MiB defaults and exact-limit/+1-byte pairs. Each probe's
-`deadlines` records `totalMs`, `requestMs` and whether it was mocked in the root
-`.tmp/project-task-service-evidence.json` receipt. Successful package-level
-coverage and actual process results are separate evidence: binary HTTP tests
-supplement the store/service/server package tests.
+The Node orchestrator reuses that installation for selected budget probes after
+the Go coverage gate. Ordinary `bash scripts/check.sh` runs the two deadline/stall
+probes. They use a test-only preload with one-second request and three-second
+operation deadlines while separately asserting the installed defaults of
+30 seconds, five minutes and 128/256 MiB. Routine Go keeps its ten-minute package
+limit, twelve-minute outer watchdog, race and complete strict coverage gate.
+
+Explicit local `bash scripts/check.sh --stress` selects Go's native `stress` build
+tag with a twenty-minute package limit and twenty-two-minute outer watchdog,
+then runs all six probes. The four physical byte probes retain the production
+128 MiB/256 MiB limits and exact/+1 pairs, with their original 60/150-second
+watchdogs. Unknown or repeated options fail before preparation; ambient
+BUILD_TAGS is still cleared. CI uses the ordinary entry and runs no stress tests.
+For protocol-only local scale validation, from this module run:
+
+```bash
+source scripts/env.sh
+go test -tags=stress -race -covermode=atomic -count=1 -timeout=20m ./internal/sessionprotocol/v2
+```
+
+That command needs no PostgreSQL or installed CLI. Ordinary protocol tests retain
+raw fixtures, scalar/integrity errors and a real 256 KiB frame exact/+1 check;
+maximum counts and multi-MiB archive/recording cases live in tagged stress tests.
+The [validation policy](../../.agents/notes/implemented/testing/2026-11-03-ci-stress-separation.md)
+owns this separation.
+
+The root `.tmp/project-task-service-evidence.json` receipt uses schemaVersion 2,
+records `mode: routine|stress`, exact `selectedProbes`, source/installation/Go
+identity, actual Go arguments and `watchdogMs`, and resource cleanup. Required deadline IDs are
+`command-deadline-with-progress` and `request-deadline-after-headers`; stress also
+requires the four `decoded-single-response-*` / `decoded-cumulative-response-*`
+at-limit and over-limit results. Results must uniquely equal the selected set,
+independent of parallel deadline completion order. Each probe's `deadlines`
+records actual `totalMs`, `requestMs` and mock status. Historical schema-1 receipts
+retain their original source-bound meaning; a routine result makes no physical
+maximum-byte claim. Package coverage and actual process results remain separate
+evidence: binary HTTP tests supplement store/service/server package tests.
 The owning store/service tests retain deterministic snapshot and lock proofs:
 `TestQueriesSnapshotRetainsCompleteOldGraph` in [query tests](internal/core/store/query_test.go),
 `TestTaskSnapshotKeepsProjectAndDerivedTaskStateConsistent` in

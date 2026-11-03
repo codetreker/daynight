@@ -1541,7 +1541,7 @@ Linux runner's four CPUs. No file or assertion is omitted.
 Linux dependencies under the
 existing 600-second bound, then calls the same ordinary core acceptance runner
 as `pnpm web:acceptance`. This job retains real embedded Go builds, the complete
-native/container/capacity journey, dev-ci lifecycle fixtures, persistence checks
+native/container functional and combined-auth journeys, dev-ci lifecycle fixtures, persistence checks
 and recovery. Browser installation precedes core preparation; the core has no
 quality/browser preparation hooks, empty success phases or readiness gate. Local
 acceptance keeps its preinstalled-browser behavior.
@@ -1558,9 +1558,9 @@ official Ubuntu archives before installation, as delivered in
 
 Native functional checks start after the native process and browser are ready.
 Their browser cleanup must pass before an atomic, run/source-bound permission
-releases the container's twenty-nine functional checks. Capacity runs last, after all
-its preparation commands, container checks, full dev-ci cleanup and container
-browser recovery have finished. Every browser phase retains one
+releases the container's twenty-nine functional checks. Only explicit local
+`--stress` registers native capacity; it runs last after its preparation commands,
+container checks, full dev-ci cleanup and container browser recovery have finished. Every browser phase retains one
 worker and zero retries. Browser CI runs controlled deployment fixtures before
 core acceptance and keys outer recovery and its acceptance artifact upload to
 that attempt. The quality artifact upload follows the quality command attempt.
@@ -1581,6 +1581,29 @@ controlled lifecycle fixtures and full production-browser suite. Manual Docker
 fault testing and controlled fixtures each retain their own evidence scope.
 
 ## Production browser acceptance
+
+The ordinary entry, including CI, runs 29 functional scenarios on each target
+(58 combined), plus two independent combined-auth journeys with eleven checks
+each. Stress is local and explicit; it adds five native capacity/limit scenarios
+(34 native / 29 container, 63 combined), with the original datasets and performance
+budgets. Counts derive from registered IDs, and the 22 auth checks stay separate.
+Run from the repository root:
+
+```bash
+node packages/daynight-web/scripts/acceptance.mts --stress
+# Explicit case-sensitive APFS coverage on macOS, with stress:
+node packages/daynight-web/scripts/acceptance.mts --apfs --stress
+```
+
+Ordinary `--apfs`, internal `--container` and `--cleanup [run-id]` keep their roles.
+Capacity is an optional callback registered only for stress. Native aggregation
+runs after the selected pipeline and requires the exact registered functional IDs
+plus capacity IDs only when selected; ordinary runs create no capacity placeholder
+or performance artifact. Stress cannot combine with internal container callbacks
+or cleanup; unknown,
+repeated or incompatible options fail before preparation. The
+[validation policy](../../.agents/notes/implemented/testing/2026-11-03-ci-stress-separation.md)
+owns the routine/local classification.
 
 On a Linux or macOS host, with Go 1.27.2, Docker Engine 28+, Compose 2.20+ and Linux
 containers available, run from the repository root to install the pinned browser
@@ -1626,8 +1649,8 @@ ownership revalidation. Uncertain ownership fails without recursive removal.
 Existing recovery commands remain available without opting into new attachment.
 
 The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same 63 scenarios, additional combined
-authentication checks and fixed performance budgets, with native filesystem
+macOS ordinary acceptance runs the same 58 functional scenarios and both combined
+authentication journeys; explicit local --stress runs 63 scenarios with the fixed performance budgets, with native filesystem
 coverage qualified by its recorded capability. A local pass does not establish
 macOS CI coverage. The [filesystem coverage decision](../../.agents/notes/implemented/testing/2026-10-23-native-development-filesystem-coverage.md)
 owns this distinction. For networks requiring an npm mirror, use
@@ -1640,10 +1663,10 @@ The command builds real embedded assets and a new Go executable and owns a
 separate PostgreSQL container/volume and ephemeral loopback listener. In parallel,
 the normal dev-ci runner builds and starts the actual production image. Browser
 execution proceeds through twenty-nine native functional scenarios, the same twenty-nine
-functional scenarios through the production image's stream gateway, then five
-native capacity/limit scenarios. The native process and PostgreSQL remain alive
-through the capacity phase; other preparation commands and the complete
-container stack have finished before that phase starts. No normal localhost service or dataset is used. Functional and
+functional scenarios through the production image's stream gateway. Local
+--stress then adds five native capacity/limit scenarios. The native process and
+PostgreSQL remain alive through any selected capacity phase; other preparation
+commands and the complete container stack finish before it starts. No normal localhost service or dataset is used. Functional and
 capacity fixtures use normal UniAuth-acquired sessions/PATs and real write APIs.
 The shared gateway fixture is pinned to
 `0978963813fcefd9d553f6cb9bcc319084c764b3`; App credentials, browser session and PAT
@@ -1712,7 +1735,7 @@ or an iframe load cannot satisfy this check. The
 records the original data-sharing, rendering and independent-reading proof choices.
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
-requires a separate receipt on each runtime target, alongside the 63
+requires a separate receipt on each runtime target, alongside the selected functional/stress
 Playwright cases. It reuses the same installed package and normal Alice/Bob
 identities, records their initial project sets, and crosses browser and CLI data
 through shared/private projects, original-credential service restart, logout/PAT
@@ -1817,7 +1840,7 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The 63-scenario inventory (34 native, 29 container), current manual/periodic refresh,
+The selected inventory (58 ordinary; 63 with local stress), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -1867,7 +1890,8 @@ scenario annotations validated in each target's report.
 
 Receipts live in `packages/daynight-web/.tmp/acceptance/<run-id>/`, with the
 latest aggregate at `.tmp/acceptance/evidence.json` inside this package. They
-use top-level `schemaVersion: 3` and record source identity, including required
+use top-level `schemaVersion: 3`, record the actual `stress: boolean` selection,
+and record source identity, including required
 `source.gitTreeSha` from actual `git rev-parse HEAD^{tree}`, the installed CLI
 receipt and raw artifact identities, native binary
 SHA-256, PostgreSQL/browser versions, pipeline stages, target phases, capacity
@@ -1882,14 +1906,14 @@ combined receipts are `native/auth-combined/target.json` and
 They require all eleven named checks, source/browser/installed-package identity,
 old/new restart process identity and passed browser/resource cleanup. They retain
 safe observations and hashes, not credential/configuration bodies or raw logs.
-The 63-case report validator remains independent. `CI` requires a clean checkout matching
+The selected-scenario report validator remains independent. `CI` requires a clean checkout matching
 `GITHUB_SHA` and the pinned browser for the current Linux or macOS host. Playwright uses one worker and no
 retries; skipped, flaky, duplicate/missing or incomplete scenarios fail validation.
 When selected, the web CI job archives `daynight-web-acceptance` separately from raw
 coverage for 30 days. Inspect the artifact from the exact workflow run and its
 tested checkout identity, which is normally a merge revision for PR runs. A pass
-requires the strict union of twenty-nine native functional and five native capacity/limit
-scenarios (34 native total), plus the twenty-nine container functional scenarios. Every
+requires twenty-nine functional scenarios per target. Local stress requires the
+strict native union with five capacity/limit scenarios (34 native total). Every
 phase and target rejects missing, extra or duplicate scenarios and skipped/flaky/retried results.
 Installed-CLI handoff, container callbacks and recovery require matching source
 commit/tree/dirty state as well as existing package/artifact ownership. A missing
@@ -1898,8 +1922,9 @@ identifies committed source and does not fingerprint local modifications or prov
 an executed platform/gate. Lifecycle attachments to each status scenario retain
 CLI arguments/outputs/exits, raw-byte digests, task/graph snapshots, captured Web
 requests/responses and declared controlled faults under the same run identity.
-Browser identities must agree across a target's phases; every fixed graph's five
-timing repetitions, independent size refusals and cleanup/recovery must pass.
+Browser identities must agree across a target's selected phases. When stress is
+selected, every fixed graph's five timing repetitions and independent size
+refusals must pass; cleanup/recovery always applies.
 Local receipts retain their source and browser identity; they do not establish
 clean hosted delivery results. The
 [paint decision](../../.agents/notes/archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
@@ -1959,7 +1984,9 @@ schema 1, schema 2 and unknown versions fail without a compatibility fallback. V
 receipts constrain recovery to recorded run/source identities, exact Docker labels and names, and host platform/PID/executable/start-time
 identity. Linux uses procfs ticks; macOS uses kernel start time in microseconds,
 actual executable paths and process groups. Receipts from another platform are rejected. It verifies recorded stage command identities/groups and visits browser
-phases in reverse order: `native/capacity`, `container`, `native/functional`.
+recorded phases in reverse order: `native/capacity` when present, `container`,
+`native/functional`. Recovery uses recorded resource identities and never infers
+stress coverage from an absent phase or option.
 A still-running native Go process also requires its recorded binary
 hash before targeted termination. Browser recovery checks its recorded executable,
 process group and profile marker; ambiguous startup processes, orphan-only groups

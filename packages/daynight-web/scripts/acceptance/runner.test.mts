@@ -130,13 +130,17 @@ test('importing the acceptance runner executes no commands or signal registratio
   });
 });
 
-test('the thin CLI rejects unknown arguments before starting acceptance', { skip: process.platform === 'win32' }, async () => {
+test('the thin CLI rejects unknown, duplicate, and mixed mode arguments before starting acceptance', { skip: process.platform === 'win32' }, async () => {
   await fixture(async (value) => {
-    const result = await start([cli, '--unknown'], value).done;
-    assert.equal(result.timedOut, false);
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /Usage: node scripts\/acceptance\.mts \[--apfs \| --cleanup \[run-id\]\]/);
-    assert.equal(await readFile(value.commands, 'utf8'), '');
+    for (const args of [['--unknown'], ['--stress', '--stress'], ['--apfs', '--apfs'],
+      ['--container', '--stress'], ['--stress', '--container'], ['--cleanup', '--stress'],
+      ['--stress', '--cleanup', runId()], ['--apfs', '--cleanup'], ['unexpected']]) {
+      const result = await start([cli, ...args], value).done;
+      assert.equal(result.timedOut, false);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /Usage: node scripts\/acceptance\.mts \[--apfs\] \[--stress\]/);
+      assert.equal(await readFile(value.commands, 'utf8'), '');
+    }
   });
 });
 
@@ -151,7 +155,7 @@ case "$*" in
   *) exit 91 ;;
 esac
 `);
-    for (const args of [[], ['--apfs']]) {
+    for (const args of [[], ['--apfs'], ['--stress'], ['--apfs', '--stress'], ['--stress', '--apfs']]) {
       await writeFile(value.commands, '');
       const result = await start([cli, ...args], value).done;
       assert.equal(result.timedOut, false);

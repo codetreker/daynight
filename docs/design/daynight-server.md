@@ -533,14 +533,12 @@ project/task 操作、依赖推进、重启持久化及版本竞争。Node 编�
 `--skip-result-packages cmd/e2e_tests`，仅省略无产品语句测试包的结果汇总行；测试仍
 执行且失败仍使 gate 失败，生产覆盖率、race、critical 与 strict raw profile 检查保持
 原义。机制见[E2E 测试包决策](../../.agents/notes/implemented/testing/2026-11-03-server-e2e-package.md)。预算探针运行在 Go 默认
-10 分钟 test timer 之外；公开安装命令的两个期限场景通过测试侧 preload 使用
-1 秒单次和 3 秒总期限，生产默认 30 秒/5 分钟由测试单独断言。四个字节场景保留
-真实 128 MiB/256 MiB 限制及精确边界和 +1 字节配对。原有 Go 作业仍为 20 分钟。
+Go test timer 之外；常规入口仅运行两个真实期限场景，通过测试侧 preload 使用 1 秒单次和 3 秒总期限，并单独断言生产默认 30 秒/5 分钟及字节限额。本地显式 check.sh --stress 才运行原四个真实 128 MiB/256 MiB exact/+1 字节场景并选择 Go stress tag。常规 Go 的 10 分钟包期限、12 分钟外层 watchdog、race、覆盖率和原有 20 分钟 CI job 不变；本地压力的包/外层期限为 20/22 分钟。
 独立实际进程场景在其顶层测试内最多四个并发，各自保留 schema、进程、数据库
 屏障及清理；顶层测试间的全局环境修改仍串行。原始服务场景不被 CLI 场景替换，细节见
 [安装联调决策](../../.agents/notes/archived/testing/2026-10-20-installed-project-task-acceptance.md)及
 [CLI 设计](daynight-project-task.md#验证与交付证据)。根目录
-`.tmp/project-task-service-evidence.json` 记录安装身份、Go/预算结果与清理。CI
+`.tmp/project-task-service-evidence.json` 的 schemaVersion 2 记录实际 routine/stress mode、selectedProbes、安装身份、Go 参数/预算结果与清理，结果必须精确覆盖所选集合。CI
 发布 `.tmp/acceptance-evidence.json` 和同次 `.tmp/coverage.out`；前者记录源版本、
 binary hash、场景及资源清理，CI 要求 checkout 干净且 Git revision 与 `GITHUB_SHA`
 一致。V1–V10 的证据归属与 receipt 解释见

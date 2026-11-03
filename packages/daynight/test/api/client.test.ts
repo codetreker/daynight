@@ -517,6 +517,32 @@ describe("operation-scoped API access", () => {
     await expect(api.getProject(projectId)).rejects.toMatchObject({ cause: { kind: "response_limit" } });
   });
 
+  it.each([false, true])("enforces an exact decoded gzip response budget with one extra byte=%s", async (extraByte) => {
+    const decoded = stringifyApiJson(project) + " ".repeat(1024);
+    const limit = Buffer.byteLength(decoded);
+    const compressed = gzipSync(decoded + (extraByte ? " " : ""));
+    expect(compressed.length).toBeLessThan(limit);
+    const url = await server((_request, response) => {
+      response.writeHead(200, { "Content-Type": "application/json", "Content-Encoding": "gzip", "Content-Length": compressed.length });
+      response.end(compressed);
+    });
+    const api = createApiClient({ serverUrl: url, operation: operation({ limits: { responseBytes: limit } }) });
+    if (extraByte) await expect(api.getProject(projectId)).rejects.toMatchObject({ cause: { kind: "response_limit" } });
+    else await expect(api.getProject(projectId)).resolves.toEqual(project);
+  });
+
+  it.each([false, true])("enforces an exact cumulative page budget with one extra byte=%s", async (extraByte) => {
+    const projects = [project, { ...project, id: otherId }, { ...project, id: normalId }];
+    const pages = projects.map((value, index) => stringifyApiJson({ items: [value], nextCursor: index < projects.length - 1 ? `page-${index + 2}` : null }) + " ".repeat(1024));
+    const limit = pages.reduce((total, page) => total + Buffer.byteLength(page), 0);
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    for (const [index, page] of pages.entries()) fetch.mockResolvedValueOnce(new Response(page + (extraByte && index === pages.length - 1 ? " " : ""), { headers: { "Content-Type": "application/json" } }));
+    const api = client(fetch, operation({ limits: { totalBytes: limit } }));
+    if (extraByte) await expect(api.listProjects()).rejects.toMatchObject({ cause: { kind: "total_limit" } });
+    else await expect(api.listProjects()).resolves.toEqual(projects);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
   it("accumulates success and error bodies within a shared operation", async () => {
     const first = stringifyApiJson(project);
     const fetch = vi.fn<typeof globalThis.fetch>()

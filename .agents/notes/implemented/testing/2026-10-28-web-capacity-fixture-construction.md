@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-Production browser capacity acceptance builds its complete graphs through real
+Explicit local production-browser stress acceptance builds its complete graphs through real
 authenticated APIs. Creating a dependent task after its upstream layers exist
 makes every dependency admission traverse that accumulated ancestry. Dense
 merge and external graphs therefore spend substantial setup time before browser
@@ -72,4 +72,6 @@ there is no direct-database fallback or reduced-input success path.
 Creation and dependency attachment have separate ordering responsibilities.
 Keeping them explicit preserves task versions, logical graph identity and
 the actual API order used by visible-topology checks. Browser phase scheduling
-and performance isolation are unchanged.
+and performance isolation remain unchanged when capacity is selected. The
+[CI/local stress policy](2026-11-03-ci-stress-separation.md) owns that selection;
+ordinary CI does not construct these scale datasets.

@@ -238,14 +238,6 @@ Go 通过 `DecodeMessage([]byte) (Message,error)` 与
 Go 消息与输入操作的序列化拒绝 nil payload，以及外层 type/kind 与具体 payload
 类型不一致的组合；这不替代 decoder 对其余字段、引用和完整性的验证。
 
-两种语言对 manifest 中每个原始 fixture 执行对应 decoder。大边界由测试构造，
-避免提交数十 MiB 文件。Go 的 60 MiB 录制预算夹具先独立计算受控小型
-`{files,index}` scaffold 的 JSON 长度，再加入尾随 ASCII 空格和 byteLength
-十进制位数变化；生成器拒绝不能证明与规范 JSON 等长的字符。夹具准备不调用
-生产 canonical 来决定大型输入的大小。真实 DecodeArchive 仍验证完整的 exact
-与 exact+1 内容，检查同步后的原始帧长度和 hash，且 +1 保持在单帧限额内，
-确保超限确实发生在录制预算。100000 帧及其他最大数量和字节边界保持完整规模。
-小型计数回归覆盖引号、反斜杠、填充与十进制位数变化，并和直接长度预期、
-规范编码交叉核对。既有 v1 fixtures 与 archive 回归保持运行。验证不仅
-检查字段类型，还检查排序、归属、完整性和非法终态，CI 采用仓库标准 CLI 与 Go gate。
-原生副作用与性能承诺必须由真实隔离运行另行验证。
+两种语言对 manifest 中全部 129 个原始 fixture 执行对应 decoder；常规验证还保留单帧 256 KiB exact/+1、真实长度与 hash、1 KiB 原始字节 helper 和轻量结构、排序、归属、完整性及非法终态检查。既有 v1 fixtures 与 archive 回归保持运行。
+
+最大帧数、1000 个完整 segment/gap 和多 MiB 录制、metadata、message/archive 边界由测试构造，避免提交大文件。Go 用原生 stress build tag，CLI 的六个规模案例用独立 .stress.ts 配置，仅显式本地压力命令发现；原始规模和 decoder/hash 断言保留。CI 使用常规 Go/CLI gate，race、覆盖率分母和产品限额不变。命令与证据归属由[开发指南](../development.md#validation)及[验证策略](../../.agents/notes/implemented/testing/2026-11-03-ci-stress-separation.md)拥有，原生副作用与性能承诺仍须真实隔离运行验证。

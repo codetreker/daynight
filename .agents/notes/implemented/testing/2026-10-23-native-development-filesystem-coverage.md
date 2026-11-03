@@ -29,14 +29,17 @@ of differently cased names on an insensitive filesystem.
 Default Web acceptance uses an owned ordinary directory on macOS and records the
 measured case-sensitivity capability. Its native attachment fixture avoids the
 directory-case collision when that capability is absent. The same functional,
-authentication, capacity, and cleanup scenarios still execute. Linux and the
+authentication and cleanup scenarios still execute; the
+[CI/local stress policy](2026-11-03-ci-stress-separation.md) makes capacity an
+explicit local --stress selection on both supported hosts. Linux and the
 production container retain the original case-sensitive fixture; a Mac ordinary
 directory pass does not establish native case-sensitive storage coverage.
 Real-storage case-coexistence tests are separate from ordinary storage and service
 tests. The Linux gate must execute them on a capable filesystem.
 
-`pnpm web:acceptance:apfs` explicitly requests the complete native Web pipeline
-with case-sensitive storage, using an owned APFS image only when necessary.
+`pnpm web:acceptance:apfs` explicitly requests the ordinary native Web pipeline
+with case-sensitive storage; the direct acceptance entry accepts --apfs --stress
+to combine that coverage with scale checks. It uses an owned APFS image only when necessary.
 `pnpm web:test:storage-native` retains the image lifecycle checks. CLI review-path
 image tests are also explicit through `pnpm test:apfs`; ordinary CLI tests keep
 the non-mounting path and recovery tests. No routine command or CI environment

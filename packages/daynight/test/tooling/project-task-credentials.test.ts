@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readBudgetToken } from "../../scripts/project-task-acceptance.js";
-import { runProductionBudgetProbes } from "../../scripts/project-task-budgets.js";
+import { runBudgetProbes } from "../../scripts/project-task-budgets.js";
 import type { InstalledCliReceipt } from "../fixtures/installed-cli.js";
 
 const directories: string[] = [];
@@ -61,6 +61,6 @@ describe("normally issued budget credential handoff", () => {
   });
 
   it.each([undefined, "", "invalid secret", "invalid\nsecret"])("rejects absent or unsafe credentials before starting any budget fixtures %#", async (token) => {
-    await expect(runProductionBudgetProbes({} as InstalledCliReceipt, ".", token as string)).rejects.toThrow("header-safe PAT");
+    await expect(runBudgetProbes({} as InstalledCliReceipt, ".", token as string, "routine")).rejects.toThrow("header-safe PAT");
   });
 });
