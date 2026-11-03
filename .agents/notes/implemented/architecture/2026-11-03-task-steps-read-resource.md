@@ -19,7 +19,7 @@ position uniqueness constraint is deferred to permit atomic final-order updates.
 The table follows existing task-property ownership without adding a foreign key.
 Existing task rows and migration checksums remain unchanged.
 
-The [read contract](../../../../docs/spec/daynight-task-steps.md) exposes dedicated
+The [resource contract](../../../../docs/spec/daynight-task-steps.md) exposes dedicated
 collection and item HTTP resources. One repeatable-read snapshot performs normal
 project admission, reads a narrow parent header and loads the requested Steps.
 The header avoids hydrating properties, dependencies or execution policy.
@@ -55,5 +55,6 @@ Old tasks naturally read as empty collections without backfill. Members can read
 Steps regardless of Task state or session ownership. Complete reads remain
 linear in collection size and can reach 64 MiB; ordinary routine CI excludes the
 opt-in real HTTP capacity stress scenario. The dedicated single-item resource
-loads only its target. The schema and codec are shared foundations for later
-operations, while the registered routes currently expose reads only.
+loads only its target. The schema and codec also serve
+[atomic collection additions](2026-11-04-task-steps-atomic-add.md), which preserve
+this read resource and its existing snapshot and capacity guarantees.

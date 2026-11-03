@@ -70,11 +70,15 @@ func TestStepsHTTPReadResourcesAndRefusals(t *testing.T) {
 		assertProjectError(t, projectRequest(handler, "GET", path+"/"+id, ""), 400, "invalid_input")
 	}
 	assertProjectError(t, projectRequest(handler, "GET", path+"/11111111", ""), 404, "not_found")
-	for _, method := range []string{"POST", "PATCH", "PUT", "DELETE", "OPTIONS"} {
+	for _, method := range []string{"PATCH", "PUT", "DELETE", "OPTIONS"} {
 		for _, endpoint := range []string{path, path + "/abcdef01"} {
 			refusal := projectRequest(handler, method, endpoint, "")
 			assertProjectError(t, refusal, 405, "method_not_allowed")
-			if refusal.Header().Get("Allow") != "GET, HEAD" || refusal.Header().Get("Cache-Control") != "no-store" {
+			allow := "GET, HEAD"
+			if endpoint == path {
+				allow = "GET, HEAD, POST"
+			}
+			if refusal.Header().Get("Allow") != allow || refusal.Header().Get("Cache-Control") != "no-store" {
 				t.Fatal("unsupported method metadata is invalid")
 			}
 		}
@@ -118,19 +122,19 @@ func TestStepsResponseReportsWriteFailureAndCanceledOutput(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	request := httptest.NewRequest("GET", "/steps", nil)
-	writeStepsJSON(stepsFailureWriter{httptest.NewRecorder()}, request, logger, []byte("{}\n"))
+	writeStepsJSON(stepsFailureWriter{httptest.NewRecorder()}, request, logger, 200, []byte("{}\n"))
 	if !strings.Contains(logs.String(), `"response_outcome":"failed"`) {
 		t.Fatal("short response write was reported as success")
 	}
 	ctx, cancel := context.WithCancel(request.Context())
 	cancel()
 	response := httptest.NewRecorder()
-	writeStepsJSON(response, request.WithContext(ctx), logger, []byte("{}\n"))
-	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "" || !strings.Contains(logs.String(), `"response_outcome":"canceled_before_write"`) {
+	writeStepsJSON(response, request.WithContext(ctx), logger, 200, []byte("{}\n"))
+	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "" || !strings.Contains(logs.String(), `"response_outcome":"canceled_before_body"`) {
 		t.Fatal("canceled response was written or treated as complete")
 	}
 	response = httptest.NewRecorder()
-	writeStepsError(response, request, logger, errors.Join(&service.Fault{Code: "not_found", Message: "Business refusal"}, errors.New("cleanup-secret-sentinel")))
+	writeStepsError(response, request, logger, "read", errors.Join(&service.Fault{Code: "not_found", Message: "Business refusal"}, errors.New("cleanup-secret-sentinel")))
 	if response.Code != 500 || !strings.Contains(response.Body.String(), `"code":"internal_error"`) || strings.Contains(logs.String(), "cleanup-secret-sentinel") {
 		t.Fatal("cleanup failure downgraded or disclosed")
 	}
