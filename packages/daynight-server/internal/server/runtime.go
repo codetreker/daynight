@@ -103,10 +103,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 	defer cancel()
 	err := r.http.Shutdown(shutdown)
 	if err != nil {
-		// Close transports before cancellation lets a handler return and flush a
-		// default success response for work that exceeded the drain deadline.
-		err = errors.Join(err, r.http.Close())
 		r.cancelRequests()
+		err = errors.Join(err, r.http.Close())
 	}
 	if !serveFinished {
 		serveError = <-result
