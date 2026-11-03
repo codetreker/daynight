@@ -391,14 +391,16 @@ V1–V16 继续约束完整 CLI 交付。CLI 必须通过三原生平台的安�
 累计响应 256 MiB，并由测试单独断言。期限行为通过公开安装命令与流式 HTTP
 验证；测试应仅对期限注入合理的较小值，覆盖响应开始后停顿，以及每页均在单次
 期限内且 cursor 持续推进仍耗尽总期限。回执必须标明实际期限与 mock 状态。
-响应和累计解码字节使用真实生产上限，均须提供精确边界成功及增加 1 字节拒绝的
-配对证据，使用合法 gzip JSON 和空白补齐以保留小型结果输出。既有 review/update
-安装验收和 Go 覆盖率门槛全部保留；完整 Go 工作负载与预算探针分别运行，后者
-不占用 Go 默认 10 分钟计时器。
+响应和累计解码字节的完整规模验证使用显式本地 `pnpm test:stress:budgets`，保留真实
+生产上限、精确边界成功及增加 1 字节拒绝的配对证据，使用合法 gzip JSON 和空白
+补齐以保留小型结果输出。常规 CI 排除这些压力探针，继续验证两个有界期限场景、
+正常错误处理与生产默认值。既有 review/update 安装验收和 Go 覆盖率门槛全部保留；
+Go 工作负载与所选预算套件分别运行，后者不占用 Go 默认 10 分钟计时器。
 
-原生安装结果写入仓库根 `.tmp/project-task-evidence.json`，服务及预算结果写入
-`.tmp/project-task-service-evidence.json`；每份证据标识源码、pack/安装身份、场景
-和清理。Go 原有 receipt 及 raw coverage 保留其归属，CLI 要求编号使用 `PT.V*` 命名
+原生安装结果写入仓库根 `.tmp/project-task-evidence.json`，服务及常规期限结果写入
+`.tmp/project-task-service-evidence.json`，本地完整字节预算结果写入
+`.tmp/project-task-stress-evidence.json`；每份证据标识源码、pack/安装身份、所选套件、
+精确场景和清理。本地压力入口必须在 CI 环境中拒绝。Go 原有 receipt 及 raw coverage 保留其归属，CLI 要求编号使用 `PT.V*` 命名
 空间。[PR #55](https://github.com/codetreker/daynight/pull/55) 保留真实 Go/PostgreSQL 联调及真实默认预算的历史源码验证结果；期限 mock 及验证成本的取舍记录在
 [CI 验证效率决策](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)，
 逐次结果随对应 PR 与 CI 保存。受控 HTTP、真实服务与原生平台证据分别证明其对应要求，不能互相替代。

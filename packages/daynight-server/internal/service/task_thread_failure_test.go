@@ -201,7 +201,7 @@ func TestThreadReadCancellationAndServiceDeadlineAreBounded(t *testing.T) {
 	task := createTask(t, tasks, principal, project.ID, "Read cancellation")
 	threads := NewTaskThreads(database)
 	first := postThread(t, threads, principal, task, CreateThreadMessage{Body: "first"})
-	for _, fragment := range []string{"SELECT expires_at FROM sessions", "FROM project_members m", "SELECT deleted_at FROM tasks", "FROM task_thread_messages WHERE task_id=$1 AND message_id=$2", "ORDER BY created_at", "EXISTS(SELECT 1 FROM task_thread_messages"} {
+	for _, fragment := range []string{"SELECT expires_at FROM sessions", "FROM project_members", "SELECT deleted_at FROM tasks", "FROM task_thread_messages WHERE task_id=$1 AND message_id=$2", "ORDER BY created_at", "EXISTS(SELECT 1 FROM task_thread_messages"} {
 		t.Run(fragment, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

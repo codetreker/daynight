@@ -44,7 +44,7 @@ func enforceAssignmentTransition(ctx context.Context, tx *store.ProjectTx, mutat
 		return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Task assignment cannot change while the task is in progress."}
 	}
 	if mutation.values.AssignedTo != nil {
-		if _, err := tx.Member(ctx, *mutation.values.AssignedTo); err != nil {
+		if _, err := tx.DirectProjectMember(ctx, *mutation.values.AssignedTo); err != nil {
 			if errors.Is(err, core.ErrNotFound) {
 				return taskMutation{}, &Fault{Code: "invalid_input", Message: "Assigned user must have access to the project.", Cause: err}
 			}

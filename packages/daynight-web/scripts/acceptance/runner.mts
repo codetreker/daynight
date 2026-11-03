@@ -39,7 +39,7 @@ const json = async (path: string, value: unknown): Promise<void> => {
 };
 const readJson = async (path: string): Promise<unknown> => JSON.parse(await readFile(path, 'utf8'));
 export type AcceptanceCommand = (file: string, args: readonly string[], options?: Omit<CommandOptions, 'cwd'> & { cwd?: string }) => Promise<string>;
-export type AcceptanceOptions = { allowApfsImage?: boolean };
+export type AcceptanceOptions = { allowApfsImage?: boolean; stress?: boolean };
 
 type InstalledPreparation = { receipt: InstalledCliReceipt; receiptPath: string; cleanup(): Promise<void> };
 type InstalledFactoryOptions = { signal: AbortSignal; temporaryRoot: string; rootDirectory: string; onSpawn(child: ChildProcess): Promise<void> };
@@ -167,6 +167,8 @@ export const launchNativeServer = async (options: NativeLaunchOptions): Promise<
 };
 
 const createRunner = (cancellation: AbortController, options: AcceptanceOptions = {}) => {
+  const stress = options.stress === true;
+  if (stress && process.env.CI !== undefined) throw new Error('Browser stress acceptance is local-only and cannot run in CI.');
   const expectedServerShutdowns = new WeakSet<ChildProcess>();
   const run = (file: string, args: readonly string[], options: Omit<CommandOptions, 'cwd'> & { cwd?: string } = {}): Promise<string> =>
     command(file, args, { cwd: repositoryRoot, signal: cancellation.signal, ...options });
@@ -200,7 +202,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     return { ...installed, receiptPath: installed.receiptPath, receipt: installed.receipt };
   };
   type Evidence = {
-    schemaVersion: 3; runId: string; source: Source; startedAt: string; result: 'running' | 'passed' | 'failed';
+    schemaVersion: 3; mode: 'functional' | 'stress'; runId: string; source: Source; startedAt: string; result: 'running' | 'passed' | 'failed';
     native: NativeEvidence; targets: Target[]; stages: Stage[]; container?: unknown; performance?: unknown;
     cleanup: 'pending' | 'passed' | 'failed'; finishedAt?: string; error?: string; cleanupErrors?: string[];
     installedCli?: InstalledEvidence;
@@ -234,7 +236,8 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
         target.phase === 'capacity' ? '--grep' : '--grep-invert', '@capacity'], {
         cwd: packageRoot, timeoutMs: 900_000,
         env: { ...process.env, TMPDIR: '.tmp', DAYNIGHT_BASE_URL: target.baseUrl, DAYNIGHT_ACCEPTANCE_TARGET: target.target,
-          DAYNIGHT_ACCEPTANCE_DIRECTORY: directory, DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT: installed.receiptPath, PLAYWRIGHT_JSON_OUTPUT_FILE: join(directory, 'playwright.json') },
+          DAYNIGHT_ACCEPTANCE_DIRECTORY: directory, DAYNIGHT_ACCEPTANCE_STRESS: target.phase === 'capacity' ? '1' : undefined,
+          DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT: installed.receiptPath, PLAYWRIGHT_JSON_OUTPUT_FILE: join(directory, 'playwright.json') },
         onSpawn: (child) => {
           target.playwrightGroup = child.pid!;
           identitySaved = (async () => {
@@ -690,7 +693,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     const owner = `daynight-web-${runId}`;
     const runner = await processIdentity(process.pid);
     if (runner === null) throw new Error('Acceptance runner process identity disappeared.');
-    const evidence: Evidence = { schemaVersion: 3, runId, source: await sourceIdentity(), startedAt: new Date().toISOString(),
+    const evidence: Evidence = { schemaVersion: 3, mode: stress ? 'stress' : 'functional', runId, source: await sourceIdentity(), startedAt: new Date().toISOString(),
       result: 'running', native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`,
         binary: join(directory, 'daynight-server'), storageRoot: join(directory, 'native-storage'),
         postgresImage, cleanup: 'pending' }, targets: [], stages: [], cleanup: 'pending', runner, authCombined: [] };
@@ -928,16 +931,18 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
           evidence.targets.push(target);
           await save();
         }),
-        capacity: () => stage('native-capacity', async () => {
-          const phase = nativePhase('capacity');
-          await save();
-          await playwright(phase, join(directory, 'native/capacity'), installedEvidence());
-          evidence.performance = await readJson(join(directory, 'native/capacity/performance.json'));
-          validatePerformance(evidence.performance);
-          aggregate(native(), [...functionalScenarios, ...capacityScenarios]);
-          await save();
-        }),
+        ...(stress ? {
+          capacity: () => stage('native-capacity', async () => {
+            const phase = nativePhase('capacity');
+            await save();
+            await playwright(phase, join(directory, 'native/capacity'), installedEvidence());
+            evidence.performance = await readJson(join(directory, 'native/capacity/performance.json'));
+            validatePerformance(evidence.performance);
+            await save();
+          }),
+        } : {}),
       });
+      aggregate(native(), stress ? [...functionalScenarios, ...capacityScenarios] : functionalScenarios);
       if (evidence.authCombined?.length !== 2 || new Set(evidence.authCombined.map((entry) => entry.target)).size !== 2) throw new Error('Both owned targets must pass their combined authentication journey.');
       evidence.result = 'passed';
     } catch (error) {

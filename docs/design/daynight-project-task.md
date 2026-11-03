@@ -556,9 +556,9 @@ stderr 错误包含操作名、已确定的 project/task ID、失败阶段和可
 及写入结果继续使用包含描述的完整资源输出。
 真实服务验收保留服务 request ID 与目标 ID，便于将错误对应到 API 及数据库事实。
 
-预算验证使用可控制时钟和流式响应，覆盖每页均在单次期限内且 cursor 唯一推进、
-最终仍耗尽总期限的服务；分别跨越 128 MiB 单响应及 256 MiB 累计边界，并验证按
-解码后字节计数。锁验证使用真实并发进程观察即时竞争失败，覆盖取消发生于获取前
+常规预算验证使用可控制时钟和流式响应，覆盖每页均在单次期限内且 cursor 唯一推进、
+最终仍耗尽总期限的服务。显式本地压力验收另跨越 128 MiB 单响应及 256 MiB 累计边界，
+验证按解码后字节计数；生产上限和精确边界断言保持。锁验证使用真实并发进程观察即时竞争失败，覆盖取消发生于获取前
 或持有后的清理。不能用缩短线上常量、截断数据或跳过真实 Git/服务语义替代验收。
 
 Project 命令的实际编译入口已在受控 HTTP 条件下验证创建、完整分页、
@@ -582,8 +582,10 @@ fixture [`installed-cli.ts`](../../packages/daynight/test/fixtures/installed-cli
 `node packages/daynight/scripts/project-task-acceptance.ts`，由 Go 检查脚本调用；
 [`project-task-budgets.ts`](../../packages/daynight/scripts/project-task-budgets.ts)
 拥有期限与解码字节预算场景。
-它构建并安装 CLI 一次，将安装身份传给 Go command-package 验收，复用既有 fresh
-race binary、隔离 PostgreSQL schema、listener、重启和数据库等待屏障。新场景
+它构建并安装 CLI 一次，将安装身份传给独立 Go 测试包 `cmd/e2e_tests`，复用其 fresh
+race binary、隔离 PostgreSQL schema、listener、重启和数据库等待屏障。该包拥有
+跨进程验收的 `TestMain` 与辅助设施，由既有 `go-cov` 入口和 `go test ./...`
+发现执行；主命令包保留直接调用内部函数的测试并独立管理临时资源。场景
 `installed_cli_project_task_workflow` 通过要求编号 `PT.V1`、`PT.V3`、`PT.V5`、
 `PT.V6`、`PT.V7`、`PT.V8`、`PT.V9`、`PT.V10` 与 CLI 验收对应，保留原有服务
 场景及所属 package 覆盖率。Go receipt 的 `installedCli` 保存共享 helper 的 schema、
@@ -601,11 +603,17 @@ PR 控制字符可见转义及无原始终端控制字符输出。
 安装来操作同组真实数据。机制与证据字段见[附件验证设计](daynight-task-attachments.md#实现验证)，
 其选择依据记录在
 [附件跨层验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)；
-原有 PT 场景和六个预算探针保持完整。
+原有 PT 场景与两个常规期限探针保持；四个完整字节预算探针由显式本地压力入口拥有。
 
-编排层原样执行固定 go-cov 参数及 strict raw coverage 检查，通过后才在 Go 默认
-10 分钟计时器之外运行六个公开安装 CLI 场景：持续推进 cursor 的总期限、
-响应开始后停顿的单次期限，以及两组 gzip 解码字节边界配对。两个期限场景使用
+编排层执行固定版本 go-cov，以 `--skip-result-packages cmd/e2e_tests` 省略没有
+产品语句的 E2E 测试包结果汇总行；该包测试仍完整执行，测试失败仍向上传递。
+生产包及函数的覆盖率门槛、critical 检查和原始 coverage profile 保持完整。
+strict raw coverage 检查通过后，才在 Go 默认 10 分钟计时器之外运行所选公开安装
+CLI 预算套件。常规 `scripts/check.sh` 和 CI 选择 `deadlines` 的两个期限场景：
+持续推进 cursor 的总期限和响应开始后停顿的单次期限。
+显式本地 `scripts/check.sh --stress-budgets` 选择 `stress-budgets` 的四个 gzip 解码
+字节边界场景；CLI 包的 `test:stress:budgets` 和仓库根同名命令转发该入口。该选项与
+原始探针入口在非空 `CI` 环境下于压力准备之前拒绝。两个期限场景使用
 测试侧 Node.js `registerHooks` preload，只包装安装产物的 `api/operation.js` 导出，
 复用原有 `createOperation` 实现并注入 3 秒总期限和 1 秒单次期限。preload 先断言
 安装产物的生产默认值仍为 300,000/30,000 ms 和 128/256 MiB；测试不改写安装文件、
@@ -616,13 +624,16 @@ PR 控制字符可见转义及无原始终端控制字符输出。
 以空白补齐字节数；单响应成功结果为一个小型 project，累计成功结果为三个唯一
 project，各页均满足列表协议，失败 stdout 必须为空。
 累计场景的三页分别为 96、96、64 MiB，超限场景只在最后一页增加 1 字节，
-每页均低于单响应上限。两种期限场景并行运行，四个字节边界场景依次执行；
-四个字节场景使用完整生产默认值，不加载期限 mock；两个期限场景仍验证实际等待、
-正确错误分类、持续分页、空 stdout 和清理。已有 20 分钟 Go 作业保留其全部 gate。
-根目录 `.tmp/project-task-service-evidence.json` 记录共享安装身份、Go 命令/覆盖率
-结果、解码与传输字节、探针结果和进程/socket/目录清理。每个预算场景的
-`deadlines` 记录实际 `totalMs`、`requestMs` 与 `mocked`，避免将短期限行为证据
-误解为实际等待了生产期限。本地 `c19b064` dirty receipt 与
+每页均低于单响应上限。常规套件的两种期限场景并行运行，本地压力套件的四个
+字节边界场景依次执行。四个字节场景使用完整生产默认值，不加载期限 mock；两个
+期限场景仍验证实际等待、正确错误分类、持续分页、空 stdout 和清理。
+已有 20 分钟 Go 作业保留 build/vet/race 与严格 coverage gate。
+根目录 `.tmp/project-task-service-evidence.json` 拥有常规期限证据，
+`.tmp/project-task-stress-evidence.json` 拥有本地完整字节证据；schema 1 中的 `suite`
+和精确场景名集合验证所选工作负载。回执记录共享安装身份、Go 命令/覆盖率结果、
+解码与传输字节、探针结果和进程/socket/目录清理。每个预算场景的 `deadlines`
+记录实际 `totalMs`、`requestMs` 与 `mocked`，避免将短期限行为证据误解为实际等待了
+生产期限。本地 `c19b064` dirty receipt 与
 [PR #55](https://github.com/codetreker/daynight/pull/55) 的干净托管 receipt 保留真实
 30 秒/5 分钟预算的历史证据；它们不代表当前源码的运行结果。逐次结果随对应 PR 与 CI 保存；
 [仓库验证说明](../../README.md#validation)拥有 receipt 解释。

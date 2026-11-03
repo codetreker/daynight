@@ -91,7 +91,9 @@ store 先投影任务自身的 160 字符标题预览、业务 version、状态�
 ```text
 packages/daynight-server/
 ├── go.mod
-├── cmd/daynight-server/main.go
+├── cmd/
+│   ├── daynight-server/main.go
+│   └── e2e_tests/                 独立的真实进程与安装 CLI 验收测试包
 ├── api/
 └── internal/
     ├── server/
@@ -105,7 +107,9 @@ packages/daynight-server/
             └── migrations/
 ```
 
-`cmd/daynight-server` 解析启动配置并组装依赖。`api` 拥有 HTTP 请求、响应和错误
+`cmd/daynight-server` 解析启动配置并组装依赖，保留直接调用命令内部函数的测试。
+`cmd/e2e_tests` 是独立的 Go 测试包，拥有真实服务进程、安装 CLI 和附件迁移的
+集成验收及其 `TestMain`；两个测试包分别拥有临时资源和辅助函数。`api` 拥有 HTTP 请求、响应和错误
 结构；`internal/server` 使用标准库 `net/http` 处理路由、JSON、请求大小限制、
 HTTP 错误映射和服务生命周期。`internal/service` 拥有 project/task 用例、业务
 校验与事务编排。`internal/core` 拥有领域模型；`internal/core/store` 使用具体的
@@ -515,22 +519,31 @@ Go、web、CLI 和 shell completion 各自的检查内容及门槛保持。
 统一验证入口为模块内的 `bash scripts/check.sh`，要求显式设置
 `DAYNIGHT_TEST_DATABASE_URL`。干净 checkout 先从根目录 frozen 安装 Node 24/pnpm
 11.28.6 依赖，Go 检查在任何 build/vet/race 前调用共享 `pnpm web:build` 发布
-资源；缺少工具、依赖或真实产物直接失败。命令 package 的 TestMain 每次构建新的 race binary，
-通过真实 HTTP、PostgreSQL、信号和进程重启执行验收，不复用旧的可执行文件。
+资源；缺少工具、依赖或真实产物直接失败。独立 `cmd/e2e_tests` 测试包的 `TestMain`
+每次构建新的 race binary，通过真实 HTTP、PostgreSQL、信号和进程重启执行验收。
+`go test ./...` 和既有 `go-cov` 入口都包含这个测试包。主命令包测试自行管理临时
+存储与轻量辅助函数，单独选择该包时不触发 E2E 构建、源码身份核验或证据初始化；
+其中直接运行服务的测试仍需真实 PostgreSQL 和 UniAuth。测试包归属与选择方式见
+[服务端验证说明](../../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)。
 
-安装 CLI 验收复用此 command-package fixture，新增
+安装 CLI 验收复用此 E2E 测试包的 fixture，包含
 `installed_cli_project_task_workflow` 场景，通过 `PT.V*` 要求编号对应 CLI 的真实
 project/task 操作、依赖推进、重启持久化及版本竞争。Node 编排入口在 Go
-覆盖率 gate 前准备一次安装，将同一产物用于 Go 场景及随后预算探针；原有 go-cov
-参数、race、critical 与 strict raw profile 检查保持原义。预算探针运行在 Go 默认
-10 分钟 test timer 之外；公开安装命令的两个期限场景通过测试侧 preload 使用
-1 秒单次和 3 秒总期限，生产默认 30 秒/5 分钟由测试单独断言。四个字节场景保留
-真实 128 MiB/256 MiB 限制及精确边界和 +1 字节配对。原有 Go 作业仍为 20 分钟。
+覆盖率 gate 前准备一次安装，将同一产物用于 Go 场景及随后预算探针。编排层固定传入
+`--skip-result-packages cmd/e2e_tests`，仅省略无产品语句测试包的结果汇总行；测试仍
+执行且失败仍使 gate 失败，生产覆盖率、race、critical 与 strict raw profile 检查保持
+原义。机制见[E2E 测试包决策](../../.agents/notes/implemented/testing/2026-11-03-server-e2e-package.md)。预算探针运行在 Go 默认
+10 分钟 test timer 之外；常规入口与 CI 选择两个期限场景，通过测试侧 preload 使用
+1 秒单次和 3 秒总期限，生产默认 30 秒/5 分钟由测试单独断言。显式本地
+`bash scripts/check.sh --stress-budgets` 另选择四个完整字节场景，保留真实
+128 MiB/256 MiB 限制及精确边界和 +1 字节配对，并在 CI 环境中拒绝。
+原有 Go 作业仍为 20 分钟，严格覆盖率门槛保持。
 独立实际进程场景在其顶层测试内最多四个并发，各自保留 schema、进程、数据库
 屏障及清理；顶层测试间的全局环境修改仍串行。原始服务场景不被 CLI 场景替换，细节见
 [安装联调决策](../../.agents/notes/archived/testing/2026-10-20-installed-project-task-acceptance.md)及
 [CLI 设计](daynight-project-task.md#验证与交付证据)。根目录
-`.tmp/project-task-service-evidence.json` 记录安装身份、Go/预算结果与清理。CI
+`.tmp/project-task-service-evidence.json` 记录安装身份、Go/期限结果与清理；本地完整字节
+套件写入 `.tmp/project-task-stress-evidence.json`，两者均校验所选 suite 和精确场景集合。CI
 发布 `.tmp/acceptance-evidence.json` 和同次 `.tmp/coverage.out`；前者记录源版本、
 binary hash、场景及资源清理，CI 要求 checkout 干净且 Git revision 与 `GITHUB_SHA`
 一致。V1–V10 的证据归属与 receipt 解释见

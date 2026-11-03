@@ -520,11 +520,14 @@ zsh 目录选择、重复安装及启动后的注册与 Tab；使用任务内的
 GitHub Actions 保留原生 Linux、macOS、Windows 的普通测试与既有 review/update
 安装验收，并在独立 Linux 作业中执行补全的真实 shell 验收。独立
 project/task 安装 suite 以受控 HTTP 和真实 Git 证明三个原生平台的仓库选择与
-文件行为；真实 Go/PostgreSQL 流程复用 Go command-package 的 fresh race binary。
-服务验证的编排层只安装一次 CLI，原样执行 Go 覆盖率 gate，再在 Go 默认 10 分钟
-计时器之外运行期限与真实解码字节预算探针。期限场景通过测试侧 preload 使用
-1 秒单次、3 秒总期限，生产默认 30 秒/5 分钟单独断言；字节场景保留真实
-128/256 MiB 边界和 +1 字节拒绝。职责与证据见
+文件行为；真实 Go/PostgreSQL 流程复用独立 Go 测试包 `cmd/e2e_tests` 的 fresh
+race binary。该包集中拥有跨进程验收、`TestMain` 和资源清理；服务主命令包保留
+直接调用内部函数的测试，两边各自管理测试辅助设施。
+服务验证的编排层只安装一次 CLI，执行 Go 覆盖率 gate，再在 Go 默认 10 分钟
+计时器之外运行所选预算套件。常规 CI 运行两个期限场景，通过测试侧 preload 使用
+1 秒单次、3 秒总期限，生产默认 30 秒/5 分钟单独断言；四个完整字节场景通过
+显式本地 `pnpm test:stress:budgets` 运行，保留真实 128/256 MiB 边界和 +1 字节拒绝，
+并在 CI 环境中拒绝。职责与证据见
 [project/task 设计](daynight-project-task.md#验证与交付证据)。
 [仓库验证说明](../../README.md#validation)定义本地及原生 receipt 的源码身份、
 受控 GitHub/Copilot 行为与真实服务验收的证据边界。运行结果随对应 PR 与 CI 保存；

@@ -49,9 +49,9 @@ func membershipCompleted(request *http.Request, logger *slog.Logger, phase strin
 }
 
 func memberResponse(member core.ProjectMember) api.ProjectMember {
-	return api.ProjectMember{ProjectID: member.ProjectID, UserID: member.UserID, Email: member.Email,
-		Name: member.Name, AvatarURL: member.AvatarURL, Role: string(member.Role), Version: member.Version,
-		CreatedAt: member.CreatedAt.UTC(), UpdatedAt: member.UpdatedAt.UTC()}
+	return api.ProjectMember{ProjectID: member.Grant.ProjectID, UserID: member.Grant.UserID, Email: member.Email,
+		Name: member.Name, AvatarURL: member.AvatarURL, Role: string(member.Grant.Role), Version: member.Grant.Version,
+		CreatedAt: member.Grant.CreatedAt.UTC(), UpdatedAt: member.Grant.UpdatedAt.UTC()}
 }
 
 func invitationResponse(invitation core.ProjectInvitation) api.ProjectInvitation {
@@ -248,7 +248,7 @@ func (h *MembershipRoutes) acceptInvitation(w http.ResponseWriter, request *http
 		writeError(w, request, logger, "membership", "accept_invitation", err)
 		return
 	}
-	logger = logger.With("project_id", member.ProjectID)
+	logger = logger.With("project_id", member.Grant.ProjectID)
 	membershipCompleted(request, logger, "accept_invitation")
 	writeJSON(w, request, logger, http.StatusOK, memberResponse(member))
 }

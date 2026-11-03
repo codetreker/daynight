@@ -68,11 +68,12 @@ the [design](../../../../docs/design/daynight-web.md#请求刷新与故障) owns
 component responsibilities. Hook and component validation cover scheduling,
 visibility, request priority, late responses, recovery and retained state. The
 existing production `refresh-staleness` journey covers task changes from the
-real service without manual refresh, retaining the native/container inventory
-and its existing performance and cleanup gates.
+real service without manual refresh, retaining the native/container functional
+inventory and cleanup gates. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+separately owns the explicit local capacity matrix and its performance budgets.
 
 Attachment and language isolation checks control the browser clock when counting
-requests attributable to an action. Capacity checks keep native browser timers
+requests attributable to an action. Explicit local capacity checks keep native browser timers
 and performance clocks: test-side instrumentation labels each project-sync request as
 an initial read or a five-second callback read, proving collapse/reopen adds no
 read while periodic requests remain observable. This avoids replacing a causal

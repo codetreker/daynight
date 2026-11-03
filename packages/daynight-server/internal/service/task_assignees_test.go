@@ -150,7 +150,7 @@ func TestTaskAssigneesReadOneMembershipAndProfileSnapshot(t *testing.T) {
 		}
 		var once sync.Once
 		writes := 0
-		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_members m") }, end: func() {
+		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_members") }, end: func() {
 			once.Do(func() {
 				writes++
 				if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error { return tx.RemoveMember(ctx, target.UserID) }); err != nil {
@@ -201,7 +201,7 @@ func TestTaskAssigneesReadOneAssignmentSnapshot(t *testing.T) {
 		}
 		var after core.Task
 		var once sync.Once
-		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_members m") }, end: func() {
+		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_members") }, end: func() {
 			once.Do(func() { after = updateTask(t, tasks, admin, before, UpdateTask{AssignedTo: assignmentChange(nil)}) })
 		}})
 		request := TaskAssigneesRequest{}
@@ -235,7 +235,7 @@ func TestTaskAssigneesReaderRemovalUsesSnapshotThenHidesProject(t *testing.T) {
 	ctx := context.Background()
 	reader := workerMember(t, database, project.ID)
 	var once sync.Once
-	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_members m") }, end: func() {
+	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_members") }, end: func() {
 		once.Do(func() {
 			if _, err := database.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, reader.UserID); err != nil {
 				t.Fatal(err)
@@ -302,7 +302,7 @@ func TestTaskAssigneesFailuresNeverReturnPartialProfiles(t *testing.T) {
 	outsider := servicePrincipal(t, database)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_members m") }, end: cancel})
+	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_members") }, end: cancel})
 	result, err := traced.Assignees(ctx, outsider, project.ID, TaskAssigneesRequest{})
 	assertOperational(t, err)
 	if !errors.Is(err, context.Canceled) || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {

@@ -1,32 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { GraphTask, TaskGraph, TaskStatus } from "../src/api/types";
 import { buildGraphIndex, GraphDataError, projectChain, tracePrerequisites } from "../src/features/task-graph/model";
+import { graph } from "./graph-model-fixture";
 
 const id = (letter: string): string => `00000000-0000-0000-0000-${letter.charCodeAt(0).toString(16).padStart(12, "0")}`;
 const [A, B, C, D, E, F, G, H, I] = ["A", "B", "C", "D", "E", "F", "G", "H", "I"].map(id) as [string, string, string, string, string, string, string, string, string];
-const time = "2026-10-20T00:00:00.123456Z";
-type Seed = { readonly id: string; readonly status?: TaskStatus; readonly dependsOn?: readonly string[]; readonly externalDependsOn?: readonly string[] };
-const graph = (seeds: readonly Seed[]): TaskGraph => {
-  const tasks: GraphTask[] = seeds.map((seed) => {
-    const dependsOn = seed.dependsOn ?? [];
-    const status = seed.status ?? "todo";
-    const blockedBy = dependsOn.filter((predecessor) => seeds.find((item) => item.id === predecessor)?.status !== "done");
-    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null,
-      id: seed.id, status, dependsOn, blockedBy, ready: status === "todo" && blockedBy.length === 0,
-      titlePreview: "Private task text", titleTruncated: false, createdAt: time, updatedAt: time,
-    };
-  });
-  const todo = tasks.filter((task) => task.status === "todo");
-  return { observedAt: "2026-10-20T12:00:00Z",
-    project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: id("P"), name: "Private project", repoUrl: "git@github.com:owner/repo.git", createdAt: time, updatedAt: time },
-    tasks,
-    summary: {
-      total: tasks.length, todo: todo.length, inProgress: tasks.filter((task) => task.status === "in_progress").length,
-      done: tasks.filter((task) => task.status === "done").length,
-      ready: todo.filter((task) => task.ready).length, blocked: todo.filter((task) => !task.ready).length,
-    },
-  };
-};
 
 const changedTask = (input: TaskGraph, taskId: string, change: Partial<GraphTask>): TaskGraph => ({
   ...input, tasks: input.tasks.map((task) => task.id === taskId ? { ...task, ...change } : task),
@@ -192,14 +170,14 @@ describe("ordinary dependency components", () => {
     expect(index.components.get(A)!.progress).toEqual({ total: 3, done: 0, status: "todo" });
   });
 
-  it("handles a long permitted ordinary chain iteratively", () => {
-    const seeds = Array.from({ length: 1000 }, (_, position) => ({
+  it("follows an ordinary chain and counts each member once", () => {
+    const seeds = Array.from({ length: 8 }, (_, position) => ({
       id: `00000000-0000-0000-0000-${position.toString(16).padStart(12, "0")}`,
       ...(position === 0 ? {} : { dependsOn: [`00000000-0000-0000-0000-${(position - 1).toString(16).padStart(12, "0")}`] }),
     }));
     const index = buildGraphIndex(graph(seeds));
-    expect(projectChain(index, seeds[0]!.id).mainIds.size).toBe(1000);
-    expect(index.components.get(seeds[0]!.id)!.progress).toEqual({ total: 1000, done: 0, status: "todo" });
+    expect(projectChain(index, seeds[0]!.id).mainIds.size).toBe(8);
+    expect(index.components.get(seeds[0]!.id)!.progress).toEqual({ total: 8, done: 0, status: "todo" });
   });
 });
 
@@ -287,8 +265,8 @@ describe("complete prerequisite projection", () => {
     expect(index.components.get(B)!.progress).toEqual({ total: 1, done: status === "done" ? 1 : 0, status });
   });
 
-  it("deduplicates completed shared ancestors and follows deep external context iteratively", () => {
-    const ancestors = Array.from({ length: 996 }, (_, position) => ({
+  it("deduplicates completed shared ancestors across recursive external context", () => {
+    const ancestors = Array.from({ length: 4 }, (_, position) => ({
       id: `external-${position}`, status: "done" as const,
       dependsOn: position === 0 ? [] : [`external-${position - 1}`],
     }));
@@ -300,8 +278,8 @@ describe("complete prerequisite projection", () => {
     ]));
     const projection = projectChain(index, A);
     expect(projection.mainIds).toEqual(new Set([A, D]));
-    expect(projection.externalIds.size).toBe(998);
-    expect(projection.edges).toHaveLength(1000);
+    expect(projection.externalIds.size).toBe(6);
+    expect(projection.edges).toHaveLength(8);
     expect(projection.completed).toBe(0);
     expect(index.components.get(A)!.progress).toEqual({ total: 2, done: 0, status: "todo" });
     expect(projection.edges.filter((edge) => edge.external)).toHaveLength(2);
@@ -328,12 +306,12 @@ describe("complete prerequisite inspection", () => {
     expect(input.tasks.find((task) => task.id === D)!.dependsOn).toEqual([B, C]);
   });
 
-  it("traverses the full index iteratively even when nearly every ancestor is folded", () => {
-    const seeds = Array.from({ length: 1000 }, (_, position) => ({
+  it("traces ancestors beyond the selected task without requiring their visibility", () => {
+    const seeds = Array.from({ length: 6 }, (_, position) => ({
       id: `ancestor-${position}`, dependsOn: position === 0 ? [] : [`ancestor-${position - 1}`],
     }));
     const index = buildGraphIndex(graph(seeds));
-    expect(tracePrerequisites(index, "ancestor-999")).toEqual(new Set(seeds.map((seed) => seed.id)));
+    expect(tracePrerequisites(index, "ancestor-5")).toEqual(new Set(seeds.map((seed) => seed.id)));
     expect(tracePrerequisites(index, "ancestor-0")).toEqual(new Set(["ancestor-0"]));
   });
 

@@ -258,7 +258,7 @@ func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T)
 		if _, err := snapshot.Credential(ctx, principal); err != nil {
 			return err
 		}
-		if _, err := snapshot.ProjectMember(ctx, principal, project.ID); err != nil {
+		if _, err := snapshot.ProjectAccess(ctx, principal, project.ID); err != nil {
 			return err
 		}
 		appendStoredThread(t, database, task.ID, principal.UserID, "outside snapshot")
@@ -268,7 +268,7 @@ func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T)
 		if err != nil || !presence.Found || presence.DeletedAt != nil {
 			t.Fatalf("snapshot presence changed: %#v %v", presence, err)
 		}
-		if _, err := snapshot.ProjectMember(ctx, principal, project.ID); err != nil {
+		if _, err := snapshot.ProjectAccess(ctx, principal, project.ID); err != nil {
 			t.Fatalf("snapshot membership changed: %v", err)
 		}
 		items, err := snapshot.ThreadCandidates(ctx, task.ID, nil, false, 10)
@@ -284,7 +284,7 @@ func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T)
 		if err != nil || presence.DeletedAt == nil {
 			t.Fatalf("new snapshot missed deletion: %#v %v", presence, err)
 		}
-		if _, err := snapshot.ProjectMember(ctx, principal, project.ID); err == nil {
+		if _, err := snapshot.ProjectAccess(ctx, principal, project.ID); err == nil {
 			t.Fatal("new snapshot retained revoked membership")
 		}
 		return nil

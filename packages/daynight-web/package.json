@@ -17,7 +17,9 @@
     "preview": "vite preview --host 127.0.0.1",
     "test:acceptance:apfs": "node scripts/acceptance.mts --apfs",
     "test:acceptance": "node scripts/acceptance.mts",
-    "test:storage-native": "DAYNIGHT_TEST_APFS=1 node --test scripts/acceptance/storage-native.test.mts"
+    "test:storage-native": "DAYNIGHT_TEST_APFS=1 node --test scripts/acceptance/storage-native.test.mts",
+    "test:stress": "vitest run --config vitest.stress.config.ts",
+    "test:stress:browser": "node scripts/acceptance.mts --stress"
   },
   "dependencies": {
     "@dagrejs/dagre": "3.1.1",

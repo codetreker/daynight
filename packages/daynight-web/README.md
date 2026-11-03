@@ -1568,8 +1568,12 @@ The existing root `build`, `test` and `acceptance` commands retain their CLI sco
 
 `web:test` serially composes two required package commands. `test:harness` runs
 all Node acceptance/tooling harness tests, including the coverage checker,
-asset publication and acceptance receipts. `test:coverage` runs the full Vitest
-suite with V8 coverage and then the exact statement gate. Either command can be
+asset publication and acceptance receipts. `test:coverage` runs the ordinary
+Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,
+model and geometry workloads live in `.stress.ts` files and run only through
+`pnpm test:stress` from this package (`pnpm web:test:stress` from the repository
+root). Its dedicated `vitest.stress.config.ts` refuses CI; ordinary discovery
+excludes those files while retaining compact correctness and boundary cases. Either command can be
 run directly with `pnpm --filter @codetreker/daynight-web test:harness` or
 `pnpm --filter @codetreker/daynight-web test:coverage`; `pnpm web:test` remains the
 complete local gate. All `src/**/*.ts` and `src/**/*.tsx` files belong
@@ -1600,14 +1604,17 @@ Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=4`, retai
 its `forks` pool, per-file isolation, full product manifest and strict statement
 gate. The [worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
 calibrates this existing resource setting for the dedicated public standard
-Linux runner's four CPUs. No file or assertion is omitted.
+Linux runner's four CPUs. The complete product-source coverage manifest and
+strict gate apply to the ordinary suite; scale workloads use the separate local
+stress configuration.
 
 `node packages/daynight-web/scripts/ci.mts browser` installs pinned Chromium and
 Linux dependencies under the
 existing 600-second bound, then calls the same ordinary core acceptance runner
-as `pnpm web:acceptance`. This job retains real embedded Go builds, the complete
-native/container/capacity journey, dev-ci lifecycle fixtures, persistence checks
-and recovery. Browser installation precedes core preparation; the core has no
+as `pnpm web:acceptance`. This job retains real embedded Go builds, both
+native/container functional targets, dev-ci lifecycle fixtures, persistence
+checks and recovery. Capacity and timing workloads run through the explicit
+local stress command, which refuses CI. Browser installation precedes core preparation; the core has no
 quality/browser preparation hooks, empty success phases or readiness gate. Local
 acceptance keeps its preinstalled-browser behavior.
 
@@ -1623,9 +1630,10 @@ official Ubuntu archives before installation, as delivered in
 
 Native functional checks start after the native process and browser are ready.
 Their browser cleanup must pass before an atomic, run/source-bound permission
-releases the container's thirty-one functional checks. Capacity runs last, after all
-its preparation commands, container checks, full dev-ci cleanup and container
-browser recovery have finished. Every browser phase retains one
+releases the container's thirty-one functional checks. Ordinary acceptance
+finishes after those functional targets, combined authentication and cleanup.
+When explicitly requested locally, capacity runs last after all its preparation
+commands, container checks, full dev-ci cleanup and container browser recovery. Every browser phase retains one
 worker and zero retries. Browser CI runs controlled deployment fixtures before
 core acceptance and keys outer recovery and its acceptance artifact upload to
 that attempt. The quality artifact upload follows the quality command attempt.
@@ -1655,7 +1663,19 @@ into the project:
 export PLAYWRIGHT_BROWSERS_PATH="$PWD/.tmp/playwright-browsers"
 pnpm --filter @codetreker/daynight-web exec playwright install chromium
 pnpm web:acceptance
+# Explicit local capacity and timing matrix:
+pnpm web:acceptance:stress
 ```
+
+The ordinary command and CI require thirty-one functional scenarios on each
+native/container target, sixty-two in total. The explicit local stress command adds five native
+capacity/limit scenarios and their performance receipt. From this package, use
+`pnpm test:stress:browser`, or invoke `node scripts/acceptance.mts --stress`;
+`--apfs --stress` combines the local capacity matrix with explicit APFS storage.
+Stress mode is refused in CI before fixture preparation. Raw Playwright
+selection also excludes the capacity spec by default and rejects a stress
+selection in CI. Both modes retain combined authentication, exact source/browser
+identity and full cleanup.
 
 Use Node 24, pnpm 11.28.6 and a frozen dependency install first. Chromium requires
 its normal runtime libraries on Linux; CI installs them with Playwright's
@@ -1691,9 +1711,11 @@ ownership revalidation. Uncertain ownership fails without recursive removal.
 Existing recovery commands remain available without opting into new attachment.
 
 The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same 67 scenarios, additional combined
-authentication checks and fixed performance budgets, with native filesystem
-coverage qualified by its recorded capability. A local pass does not establish
+macOS local acceptance runs the same sixty-two functional scenarios and
+additional combined authentication checks, with native filesystem coverage
+qualified by its recorded capability. Explicit local stress acceptance adds the
+same five capacity/limit scenarios and fixed performance budgets on Linux and
+macOS. A local pass does not establish
 macOS CI coverage. The [filesystem coverage decision](../../.agents/notes/implemented/testing/2026-10-23-native-development-filesystem-coverage.md)
 owns this distinction. For networks requiring an npm mirror, use
 `pnpm install --frozen-lockfile --registry=https://mirrors.cloud.tencent.com/npm/`
@@ -1704,11 +1726,12 @@ npm registry unless the build variable is explicitly supplied.
 The command builds real embedded assets and a new Go executable and owns a
 separate PostgreSQL container/volume and ephemeral loopback listener. In parallel,
 the normal dev-ci runner builds and starts the actual production image. Browser
-execution proceeds through thirty-one native functional scenarios, the same thirty-one
-functional scenarios through the production image's stream gateway, then five
-native capacity/limit scenarios. The native process and PostgreSQL remain alive
-through the capacity phase; other preparation commands and the complete
-container stack have finished before that phase starts. No normal localhost service or dataset is used. Functional and
+execution proceeds through thirty-one native functional scenarios and the same
+thirty-one functional scenarios through the production image's stream gateway.
+Explicit local stress mode then runs five native capacity/limit scenarios. In
+that mode, the native process and PostgreSQL remain alive through capacity;
+other preparation commands and the complete container stack finish before it
+starts. No normal localhost service or dataset is used. Functional and
 capacity fixtures use normal UniAuth-acquired sessions/PATs and real write APIs.
 The shared gateway fixture is pinned to
 `0978963813fcefd9d553f6cb9bcc319084c764b3`; App credentials, browser session and PAT
@@ -1767,8 +1790,9 @@ the confirmed detail and restore the owned fixture table afterward. Timing barri
 control response delivery without fabricating status-changing responses. The
 [cross-layer decision](../../.agents/notes/implemented/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 distinguishes installed-process races, production journeys and offline fixtures.
-No annotation, target topology,
-capacity, coverage or cleanup gate is added or removed by this extension.
+The status journeys retain their annotations, target topology, coverage and
+cleanup checks. Capacity selection is owned separately by the
+[local stress decision](../../.agents/notes/implemented/testing/2026-11-03-local-stress-suites.md).
 
 One packed/installed CLI is shared by the whole web run. On each target,
 `task-attachments` uploads through that CLI and consumes the same task/files in
@@ -1787,8 +1811,8 @@ or an iframe load cannot satisfy this check. The
 records the original data-sharing, rendering and independent-reading proof choices.
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
-requires a separate receipt on each runtime target, alongside the 67
-Playwright cases. It reuses the same installed package and normal Alice/Bob
+requires a separate eleven-check receipt on each runtime target, alongside the
+62 ordinary Playwright cases or 67 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
 identities, records their initial project sets, and crosses browser and CLI data
 through shared/private projects, original-credential service restart, logout/PAT
 independence, revocation, admitted upload, real socket interruption and normally
@@ -1827,7 +1851,9 @@ and all owned browser, service, database and storage resources require confirmed
 cleanup. First-party fixture checks remain distinct from source-bound probes. The probe's local browser identity
 is recorded and is not a hosted-CI browser claim.
 
-The chain, merge and external fixtures create independent tasks in their
+The explicit local browser stress matrix retains the complete capacity fixtures,
+five repetitions and fixed latency budgets. Its chain, merge and external
+fixtures create independent tasks in their
 source-first batches, then attach dependencies with versioned PATCH requests
 from sinks toward sources. Merge and external attach one complete layer at a
 time, with at most six requests within that layer; predecessors have no upstream
@@ -1892,7 +1918,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The 67-scenario inventory (36 native, 31 container), current manual/periodic refresh,
+The selected inventory (62 ordinary cases; local stress adds five native cases
+for 36 native / 31 container, 67 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -1914,7 +1941,9 @@ The [graph functional scenarios](tests/e2e/workflow.spec.ts),
 [W1–W15 requirements](../../docs/spec/daynight-web.md) and
 [language requirements](../../docs/spec/daynight-web-i18n.md) and
 [execution-timing requirements](../../docs/spec/daynight-task-timing.md) as follows. Names are stable
-scenario annotations validated in each target's report.
+scenario annotations validated in each target's report. `capacity-*` annotations
+belong only to explicit local browser stress acceptance; ordinary CI validates
+the remaining functional scenarios.
 
 | Requirement | Production checks |
 |---|---|
@@ -1925,7 +1954,7 @@ scenario annotations validated in each target's report.
 | W8, TI12–TI14 | `detail-navigation`, `refresh-staleness`, `task-detail-page`: shared complete dialog/page content and actions, title-bar/attachment popouts, task/tab/file history, query-preserving login, nested confirmations, precise/conflicting/unknown writes, automatic full-detail reads and retained geometry/state |
 | W9 | `refresh-staleness`, `failure-recovery`, `deep-links`, `capacity-limits`: periodic status updates and automatic recovery, owned-database failure/restoration, cached content with correlated refresh errors across reload, cold-cache initial failure/loading, empty/not-found states, cached project navigation during delayed sync with request cancellation, and complete size refusal |
 | W10 | Native and container functional targets, exact image identity and dev-ci cleanup receipt |
-| W11 | Strict raw Go/V8 coverage reports, validated complete browser/performance receipts and the final `checks` result |
+| W11 | Strict raw Go/V8 coverage reports, validated functional browser receipts and the final `checks` result; explicit local stress mode additionally validates complete performance receipts |
 | W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |
 | W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
 | W20 | `task-assignment`, `task-assignment-layout`: native field propagation, real exact-version assignment/clear PATCHes, same-value zero writes, conflict and committed-response-loss GET-only recovery, people identity/access presentation, local filters with full-chain facts, bilingual desktop/narrow menu, focus, scroll and fullscreen behavior |
@@ -1946,27 +1975,32 @@ latest aggregate at `.tmp/acceptance/evidence.json` inside this package. They
 use top-level `schemaVersion: 3` and record source identity, including required
 `source.gitTreeSha` from actual `git rev-parse HEAD^{tree}`, the installed CLI
 receipt and raw artifact identities, native binary
-SHA-256, PostgreSQL/browser versions, pipeline stages, target phases, capacity
-measurements, container image identity and cleanup outcomes. Each stage records
+SHA-256, PostgreSQL/browser versions, `mode: functional` or `mode: stress`, pipeline
+stages, target phases, container image identity and cleanup outcomes. Stress
+mode additionally records capacity measurements. Each stage records
 its result, start/end times, observed command process identities and spawned
 process groups. Each browser phase records its own result, browser identity,
 Playwright process/group and `browserCleanup` result. Raw reports and screenshots
-live under `native/functional/`, `container/` and `native/capacity/`; the unchanged
-schema 1 capacity receipt is `native/capacity/performance.json`. Additional mandatory
+live under `native/functional/` and `container/`; stress runs additionally create
+`native/capacity/` and its unchanged schema 1 `performance.json` receipt.
+Additional mandatory
 combined receipts are `native/auth-combined/target.json` and
 `container/auth-combined/target.json`, both schema 1 with `kind: auth-combined`.
 They require all eleven named checks, source/browser/installed-package identity,
 old/new restart process identity and passed browser/resource cleanup. They retain
 safe observations and hashes, not credential/configuration bodies or raw logs.
-The 67-case report validator remains independent. `CI` requires a clean checkout matching
+The report validator remains independent and validates the exact selected
+functional or stress inventory. `CI` requires a clean checkout matching
 `GITHUB_SHA` and the pinned browser for the current Linux or macOS host. Playwright uses one worker and no
 retries; skipped, flaky, duplicate/missing or incomplete scenarios fail validation.
 When selected, the web CI job archives `daynight-web-acceptance` separately from raw
 coverage for 30 days. Inspect the artifact from the exact workflow run and its
 tested checkout identity, which is normally a merge revision for PR runs. A pass
-requires the strict union of thirty-one native functional and five native capacity/limit
-scenarios (36 native total), plus the thirty-one container functional scenarios. Every
-phase and target rejects missing, extra or duplicate scenarios and skipped/flaky/retried results.
+requires exactly thirty-one native and thirty-one container functional
+scenarios. Explicit local stress mode requires the strict native union of those
+thirty-one functional and five capacity/limit scenarios, plus the same
+thirty-one container scenarios. Every phase and target rejects missing, extra
+or duplicate scenarios and skipped/flaky/retried results.
 Installed-CLI handoff, container callbacks and recovery require matching source
 commit/tree/dirty state as well as existing package/artifact ownership. A missing
 or mismatched tree field fails; no old-receipt fallback is introduced. The tree
@@ -1974,8 +2008,9 @@ identifies committed source and does not fingerprint local modifications or prov
 an executed platform/gate. Lifecycle attachments to each status scenario retain
 CLI arguments/outputs/exits, raw-byte digests, task/graph snapshots, captured Web
 requests/responses and declared controlled faults under the same run identity.
-Browser identities must agree across a target's phases; every fixed graph's five
-timing repetitions, independent size refusals and cleanup/recovery must pass.
+Browser identities must agree across a target's phases. In local stress mode,
+every fixed graph's five timing repetitions and independent size refusals must
+pass. Cleanup and recovery remain required in both modes.
 Local receipts retain their source and browser identity; they do not establish
 clean hosted delivery results. The
 [paint decision](../../.agents/notes/archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
@@ -2035,7 +2070,8 @@ schema 1, schema 2 and unknown versions fail without a compatibility fallback. V
 receipts constrain recovery to recorded run/source identities, exact Docker labels and names, and host platform/PID/executable/start-time
 identity. Linux uses procfs ticks; macOS uses kernel start time in microseconds,
 actual executable paths and process groups. Receipts from another platform are rejected. It verifies recorded stage command identities/groups and visits browser
-phases in reverse order: `native/capacity`, `container`, `native/functional`.
+recorded phases in reverse order: optional `native/capacity`, then `container`
+and `native/functional`.
 A still-running native Go process also requires its recorded binary
 hash before targeted termination. Browser recovery checks its recorded executable,
 process group and profile marker; ambiguous startup processes, orphan-only groups

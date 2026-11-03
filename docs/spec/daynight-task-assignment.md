@@ -107,4 +107,4 @@ Web Task、summary和GraphTask严格要求assignedTo:null或规范UUID，所有�
 
 本契约的服务端字段、POST/PATCH、任务筛选、人员资源，以及 Web 负责人交互和 schema 4 消费已实现。CLI 已消费必填 nullable assignedTo，支持设置/清空、当前 ID 展示及 UUID/me/unassigned 的 list 筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有。本人自动领取规则已实现，其资格与既有执行授权分离由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有。
 
-验证覆盖原始 JSON 字段与白名单、三套任务投影、nullable 及规范化、实际/等值/陈旧版本、执行中拒绝、全部保留写入、真实项目锁竞态及回滚。查询验证多页过滤、完整游标 scope、版本隔离和权限；目录验证两种模式的资格、覆盖、隐私、资料缺失、快照一致性及失败优先级。查询计划和响应样本绑定被测修订，不把样本量当作生产容量上限。Web还验证字段/schema4一并升级、迟到与失权fence、未知结果只读核对、完整图筛选及双语桌面/390px/320px交互。CLI 验证严格 nullable 字段、设置/清空参数、list 筛选与逐页 principal 绑定、精确版本和 JSON/可读输出。适用 Go、CLI 与 Web 门禁由仓库验证命令拥有。
+验证覆盖原始 JSON 字段与白名单、三套任务投影、nullable 及规范化、实际/等值/陈旧版本、执行中拒绝、全部保留写入、真实项目锁竞态及回滚。查询验证多页过滤、完整游标 scope、版本隔离和权限；目录验证两种模式的资格、覆盖、隐私、资料缺失、快照一致性及失败优先级。完整规模的查询计划和响应样本由显式本地压力入口运行，绑定被测修订；常规 CI 保留查询正确性验证，不把样本量当作生产容量上限。Web还验证字段/schema4一并升级、迟到与失权fence、未知结果只读核对、完整图筛选及双语桌面/390px/320px交互。CLI 验证严格 nullable 字段、设置/清空参数、list 筛选与逐页 principal 绑定、精确版本和 JSON/可读输出。适用 Go、CLI 与 Web 门禁，以及 Go 严格大于 90% 的总语句覆盖率由仓库验证命令拥有。

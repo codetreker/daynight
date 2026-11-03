@@ -302,9 +302,9 @@ func requireWorkerOperator(ctx context.Context, tx *store.ProjectTx, principal c
 	if principal.UserID == worker.UserID {
 		return nil
 	}
-	member, err := tx.ProjectMember(ctx, principal)
+	access, err := tx.ProjectAccess(ctx, principal)
 	if err != nil {
 		return err
 	}
-	return requireProjectAdmin(member)
+	return requireProjectAdmin(access)
 }
