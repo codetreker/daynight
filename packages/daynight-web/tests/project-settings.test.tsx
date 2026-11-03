@@ -28,7 +28,7 @@ const install = (handler: (url: string, init: RequestInit) => Response | Promise
     if (!url.endsWith("/access")) { if (url === "/api/v1/me" && response.ok) serverActor = (await response.clone().json()).id; return response; }
     if (!response.ok) { response.headers.set("Daynight-User-ID", userId); return response; }
     const row = (await response.json()).items.find((item: { userId: string }) => item.userId === serverActor);
-    return row === undefined ? wireResponse({ error: { code: "not_found", message: "Denied" } }, { status: 404, headers: { "Daynight-User-ID": serverActor } }) : wireResponse({ effectiveRole: row.role, directGrant: { projectId: row.projectId, userId: row.userId, role: row.role, version: BigInt(row.version), createdAt: row.createdAt, updatedAt: row.updatedAt } }, { headers: { "Daynight-User-ID": row.userId } });
+    return row === undefined ? wireResponse({ error: { code: "not_found", message: "Denied", requestId: "missing-project-access" } }, { status: 404, headers: { "Daynight-User-ID": serverActor } }) : wireResponse({ effectiveRole: row.role, directGrant: { projectId: row.projectId, userId: row.userId, role: row.role, version: BigInt(row.version), createdAt: row.createdAt, updatedAt: row.updatedAt } }, { headers: { "Daynight-User-ID": row.userId } });
   });
   vi.stubGlobal("fetch", fetcher); return fetcher;
 };
@@ -104,7 +104,11 @@ describe("project settings form", () => {
   it("shows members a read-only saved threshold and rejects missing self membership", async () => {
     install((url) => url.endsWith("/members") ? json(members("member")) : json(project(45))); const view = mount();
     await screen.findByText(/只有项目管理员可以修改/); expect(screen.getByLabelText("提醒阈值")).toHaveValue(45); expect(screen.getByLabelText("提醒阈值")).toBeDisabled(); expect(screen.queryByRole("button", { name: "保存设置" })).toBeNull(); view.unmount();
-    install((url) => url.endsWith("/members") ? json(members("admin", other)) : json(project())); mount(); await screen.findByRole("alert"); expect(screen.queryByLabelText("提醒阈值")).toBeNull(); expect(screen.queryByText("私有项目 Alpha")).toBeNull();
+    install((url) => url.endsWith("/members") ? json(members("admin", other)) : json(project())); mount();
+    const denials = await screen.findAllByText("项目不存在或你没有访问权限。");
+    expect(denials.some((message) => message.closest('[role="alert"]') !== null)).toBe(true);
+    expect(screen.queryByLabelText("提醒阈值")).toBeNull(); expect(screen.queryByText("私有项目 Alpha")).toBeNull();
+    expect(screen.queryByRole("button", { name: "保存设置" })).toBeNull();
   });
 
   it("rereads a conflict without replaying the draft, then permits a deliberate new edit", async () => {

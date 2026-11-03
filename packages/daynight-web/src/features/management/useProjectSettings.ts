@@ -24,31 +24,49 @@ export const useProjectSettings = (projectId: string, userId: string) => {
   const [invalid, setInvalid] = useState(false);
   const [notice, setNotice] = useState<SettingsNotice>(null);
   const controller = useRef<AbortController | null>(null);
+  const readController = useRef<AbortController | null>(null);
+  const reloadAfterRevocation = useRef(false);
   const generation = useRef(0);
   const submitting = useRef(false);
 
   const clearPrivate = () => { setProject(null); setDraft(""); setUncertain(false); setUnavailable(true); };
-  const load = async (signal: AbortSignal, nextNotice: SettingsNotice = null) => {
+  const load = async (lifetime: AbortSignal, nextNotice: SettingsNotice = null) => {
+    readController.current?.abort();
+    const read = new AbortController(); readController.current = read;
+    const signal = AbortSignal.any([lifetime, read.signal, access.session.scope.signal]);
     const current = ++generation.current;
     setLoading(true); setError(null);
     try {
-      const [saved, admitted] = await Promise.all([getProject(projectId, signal), access.session.revalidate()]);
-      if (signal.aborted || current !== generation.current) return;
-      if (admitted === null) return;
+      const [saved] = await Promise.all([getProject(projectId, signal), access.session.revalidate()]);
+      if (signal.aborted || current !== generation.current || access.session.snapshot().status === "unavailable") return;
       setProject(saved); setDraft(String(saved.settings.executionWarningMinutes));
       setUnavailable(false); setUncertain(false); setInvalid(false); setNotice(nextNotice);
     } catch (failure) {
       if (signal.aborted || current !== generation.current || isAbortError(failure)) return;
       if (failure instanceof ApiError && (failure.status === 404 || failure.status === 403)) clearPrivate();
       else setError(failure);
-    } finally { if (!signal.aborted && current === generation.current) setLoading(false); }
+    } finally {
+      if (readController.current === read) readController.current = null;
+      if (!signal.aborted && current === generation.current) setLoading(false);
+    }
   };
 
+  useEffect(() => access.session.scope.subscribe((event) => {
+    if (event.projectId !== projectId || !event.accessRevoked) return;
+    ++generation.current; readController.current?.abort();
+    reloadAfterRevocation.current = true;
+    setProject(null); setDraft(""); setUnavailable(true); setLoading(false); setError(null);
+  }), [projectId, access.session]);
   useEffect(() => {
     const active = new AbortController(); controller.current = active;
     void load(active.signal);
-    return () => { active.abort(); ++generation.current; };
+    return () => { active.abort(); readController.current?.abort(); ++generation.current; };
   }, [projectId, userId]);
+  useEffect(() => {
+    if (!access.ready || !reloadAfterRevocation.current || controller.current === null) return;
+    reloadAfterRevocation.current = false;
+    void load(controller.current.signal);
+  }, [access.ready, unavailable, access.session]);
 
   const save = async () => {
     const admitted = access.session.snapshot();
@@ -76,7 +94,7 @@ export const useProjectSettings = (projectId: string, userId: string) => {
   };
 
   return {
-    project: access.status === "unavailable" ? null : project, role, draft, loading: loading || access.status === "loading", pending, unavailable: unavailable || access.status === "unavailable", uncertain, error: error ?? access.error, invalid, notice,
+    project: unavailable || access.status === "unavailable" ? null : project, role, draft, loading: loading || access.status === "loading", pending, unavailable: unavailable || access.status === "unavailable", uncertain, error: error ?? access.error, invalid, notice,
     dirty: project !== null && draft !== String(project.settings.executionWarningMinutes),
     change: (value: string) => { setDraft(value); setInvalid(false); setNotice(null); setError(null); },
     cancel: () => { if (project !== null && !pending && !uncertain) { setDraft(String(project.settings.executionWarningMinutes)); setInvalid(false); setError(null); setNotice("cancelled"); } },

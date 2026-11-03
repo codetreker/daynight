@@ -33,6 +33,14 @@ cannot reauthorize cached private details. Replacement generations reject stale
 denials. Lifecycle or storage preparation errors remain visible and block
 management until retry; network errors preserve their separate meaning.
 
+Member/settings resource reads retain independent loading, failure and retry
+ownership. Confirmed access withdrawal invalidates their pending read generation
+or lifetime before a late response can republish private content, with an
+unavailable render guard as well. This does not cancel accepted writes or erase
+unknown outcomes. Temporary access failure cannot discard the only recoverable
+resource result or retry path; successful authority refresh must expose a usable
+resource or start a fresh read without replacing a valid settings draft.
+
 Access stays outside persistent Project and Task records. Existing member reads
 retain claim-owner name/email, loading, failure/retry and former-member display;
 the caller's controls use access independently. Nested grant versions are decoded

@@ -839,6 +839,13 @@ TaskNode 保留主体检查与 Details/展开独立控件，底部 42px 预留�
 路由/项目/身份切换取消旧请求并忽略晚到结果，但不把 abort 当作远端回滚；重新进入时必须完成初始权威读取。
 共享 request 边界保持前台身份核验隔离，同用户后台确认不卸载表单，换号 generation 使旧结果失效。
 
+共享 access 与设置/成员资源的加载分别归各自所有者。确认撤权必须使现有资源请求的
+generation 或读取寿命失效，响应发布时再次核对当前准入；渲染也排除 unavailable，
+防止旧成功响应恢复私有名册。该读取失效不把已接受的写入当作回滚或释放 unknown。
+资源读取已成功而并发 access 暂时失败时，保留可恢复资源或资源自己的失败状态；后续
+access 恢复必须呈现已保存资源或触发明确重读。资源仍缺失时，保留可见错误与重试，
+不能因 access.error 被清除而留下无资源、无重试的页面。普通角色刷新不覆盖用户草稿。
+
 Project、分页 Project 与图内 Project.settings 的版本通过专用 `project-json.ts` envelope 解码：
 复用鉴权与根版本读取的 `json-source.ts` 原始片段定位，只对已知 settings 子对象调用根版本解码，
 分别覆盖 root Project、items[] 和 graph.project；原生 JSON 先验证完整正文，未知嵌套对象保持原有语义。

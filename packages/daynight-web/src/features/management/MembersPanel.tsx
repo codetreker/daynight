@@ -36,31 +36,35 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
   const [dialogError, setDialogError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
   const controller = useRef<AbortController | null>(null);
+  const readController = useRef<AbortController | null>(null);
+  const reloadAfterRevocation = useRef(false);
   const generation = useRef(0);
   const unavailableNotified = useRef(false);
   const notifyUnavailable = () => { if (!unavailableNotified.current) { unavailableNotified.current = true; callbacks.current.onUnavailable?.(); } };
   const callbacks = useRef({ onUnavailable, onMembershipChange });
   callbacks.current = { onUnavailable, onMembershipChange };
 
-  const load = async (signal: AbortSignal) => {
+  const load = async (lifetime: AbortSignal) => {
+    readController.current?.abort();
+    const read = new AbortController(); readController.current = read;
+    const signal = AbortSignal.any([lifetime, read.signal, access.session.scope.signal]);
     const request = ++generation.current;
     setLoading(true); setError(null); setUnavailable(false);
     try {
-      const [result, admitted] = await Promise.all([listMembers(projectId, signal, { userId: access.session.scope.userId, onPrincipalMismatch: access.session.scope.principalMismatch }), access.session.revalidate()]);
-      if (signal.aborted || request !== generation.current) return;
-      if (admitted === null) return;
+      const [result] = await Promise.all([listMembers(projectId, signal, { userId: access.session.scope.userId, onPrincipalMismatch: access.session.scope.principalMismatch }), access.session.revalidate()]);
+      if (signal.aborted || request !== generation.current || access.session.snapshot().status === 'unavailable') return;
       setMembers(result);
-      if (admitted.effectiveRole === 'admin') {
+      const admitted = access.session.snapshot();
+      if (admitted.status === 'ready' && !admitted.refreshing && admitted.access!.effectiveRole === 'admin') {
         try {
           const invitations = await listInvitations(projectId, signal);
-          if (!signal.aborted && request === generation.current) setInvitations(invitations);
+          if (!signal.aborted && request === generation.current && access.session.snapshot().status !== 'unavailable') setInvitations(invitations);
         } catch (failure) {
           if (!(failure instanceof ApiError) || failure.status !== 403) throw failure;
           setMembers(null); setInvitations(null);
-          const current = await access.session.revalidate();
-          if (signal.aborted || request !== generation.current) return;
-          if (current === null) { setUnavailable(true); notifyUnavailable(); }
-          else setMembers(result);
+          await access.session.revalidate();
+          if (signal.aborted || request !== generation.current || access.session.snapshot().status === 'unavailable') return;
+          setMembers(result);
           callbacks.current.onMembershipChange?.();
           setNotice('permissionReloaded');
         }
@@ -73,18 +77,31 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
           if (failure.status === 404) { setUnavailable(true); notifyUnavailable(); }
         }
       }
-    } finally { if (!signal.aborted && request === generation.current) setLoading(false); }
+    } finally {
+      if (readController.current === read) readController.current = null;
+      if (!signal.aborted && request === generation.current) setLoading(false);
+    }
   };
+  useEffect(() => access.session.scope.subscribe((event) => {
+    if (event.projectId !== projectId || !event.accessRevoked) return;
+    ++generation.current; readController.current?.abort();
+    reloadAfterRevocation.current = true;
+    setMembers(null); setInvitations(null); setUnavailable(true); setLoading(false); setError(null); notifyUnavailable();
+  }), [projectId, access.session]);
   useEffect(() => {
     const active = new AbortController(); controller.current = active;
     setMembers(null); setInvitations(null); setDialog(null); setNotice(null);
     void load(active.signal);
-    return () => active.abort();
+    return () => { active.abort(); readController.current?.abort(); ++generation.current; };
   }, [projectId, user.id]);
   useEffect(() => {
-    if (access.status === 'unavailable') { setMembers(null); setInvitations(null); setUnavailable(true); notifyUnavailable(); }
-    else if (access.ready) unavailableNotified.current = false;
-  }, [access.status, access.ready]);
+    if (!access.ready || controller.current === null) return;
+    unavailableNotified.current = false;
+    const missingInvitations = access.access!.effectiveRole === 'admin' && members !== null && invitations === null && !loading && error === null;
+    if (!reloadAfterRevocation.current && !missingInvitations) return;
+    reloadAfterRevocation.current = false;
+    void load(controller.current.signal);
+  }, [access.ready, access.access?.effectiveRole, unavailable, members, invitations, loading, error, access.session]);
   const admin = access.access?.effectiveRole === 'admin';
   const adminCount = members?.filter((member) => member.role === 'admin').length;
   const open = (next: MemberDialog) => { setDialogError(null); setDialog(next); void access.session.revalidate(); };
@@ -136,8 +153,8 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
     {(error !== null || access.error !== null) && <ManagementError error={error ?? access.error} retry={() => { void load(controller.current!.signal); }} />}
     {loading && <div className="empty-inline" role="status">{m.loading}</div>}
     {(unavailable || access.status === "unavailable") && error === null && access.error === null && <div className="notice error" role="alert">{common.notFound}</div>}
-    {!loading && members !== null && <>
-      {!admin && <div className="notice">{m.memberNotice}</div>}
+    {!loading && members !== null && !unavailable && access.status !== 'unavailable' && <>
+      {access.ready && !admin && <div className="notice">{m.memberNotice}</div>}
       <section className="panel" aria-labelledby="members-title"><div className="panel-heading"><div><h2 id="members-title">{m.membersTitle} <span className="badge">{format.number(members.length)}</span></h2><p>{m.accessDescription}</p></div></div>
         <div className="row head" aria-hidden="true"><span>{m.memberColumn}</span><span>{m.roleColumn}</span><span>{m.actionColumn}</span></div>
         {members.map((member) => {
@@ -151,7 +168,7 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
       <div className="role-legend"><div><h3>{common.roleAdmin}</h3><p>{m.adminDescription}</p></div><div><h3>{common.roleMember}</h3><p>{m.memberDescription}</p></div></div>
     </>}
     {dialog?.kind === 'secret' && <SecretDialog kind="invitation" secret={dialog.secret} onClose={() => setDialog(null)} />}
-    {dialog !== null && dialog.kind !== 'secret' && <ManagementDialog title={dialogTitle} busy={pending} onClose={() => setDialog(null)} footer={<><button className="button" type="button" disabled={pending} onClick={() => setDialog(null)}>{common.cancel}</button><button className={`button${dialog.kind === 'remove' || dialog.kind === 'revoke' ? ' danger' : ' primary'}`} type="button" disabled={pending || !access.ready} onClick={() => { void submit(dialog); }}>{pending ? common.submitPending : confirm}</button></>}>
+    {dialog !== null && dialog.kind !== 'secret' && !unavailable && access.status !== 'unavailable' && <ManagementDialog title={dialogTitle} busy={pending} onClose={() => setDialog(null)} footer={<><button className="button" type="button" disabled={pending} onClick={() => setDialog(null)}>{common.cancel}</button><button className={`button${dialog.kind === 'remove' || dialog.kind === 'revoke' ? ' danger' : ' primary'}`} type="button" disabled={pending || !access.ready} onClick={() => { void submit(dialog); }}>{pending ? common.submitPending : confirm}</button></>}>
       {dialog.kind === 'role' && <p>{dialog.role === 'admin' ? m.roleAdminBody : m.roleMemberBody}{dialog.member.userId === user.id && dialog.role === 'member' && m.selfDemotionBody}</p>}
       {dialog.kind === 'remove' && <p>{dialog.member.userId === user.id ? m.selfRemovalBody : m.otherRemovalBody}</p>}
       {dialog.kind === 'invite' && <><p>{m.inviteBody}</p><div className="notice">{m.inviteTerms}</div></>}
