@@ -8,7 +8,9 @@ import type { BudgetProbeReceipt } from "./project-task-budgets.js";
 const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
 const serverRoot = path.join(repositoryRoot, "packages/daynight-server");
 const receiptPath = path.join(repositoryRoot, ".tmp/project-task-service-evidence.json");
-const coverageArgs = ["run", "github.com/codetreker/go-cov/cmd/go-cov@d6caf2759e330b48d69a543695e37002a48feb1d", "--config", ".go-cov.toml", "--ci", "--coverprofile", ".tmp/coverage.out"];
+// Test-only packages have no coverage denominator. Skip their result summary while retaining test execution and failures.
+// https://github.com/codetreker/go-cov/blob/d6caf2759e330b48d69a543695e37002a48feb1d/internal/coverage/parse.go#L295-L300
+const coverageArgs = ["run", "github.com/codetreker/go-cov/cmd/go-cov@d6caf2759e330b48d69a543695e37002a48feb1d", "--config", ".go-cov.toml", "--ci", "--coverprofile", ".tmp/coverage.out", "--skip-result-packages", "cmd/e2e_tests"];
 
 type CommandReceipt = { command: string; args: readonly string[]; elapsedMs: number; exitCode: number | null; signal: NodeJS.Signals | null };
 type ServiceEvidence = {
