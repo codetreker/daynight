@@ -34,7 +34,7 @@ func protocolRequest(handler http.Handler, method, path, body, protocol string) 
 func TestWorkerProtocolLegacyAndExtendedResponses(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Legacy worker"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Legacy worker"), map[string]any{"allowAgents": true})
 	response := protocolRequest(handler, "POST", taskPath(task)+"/worker-claim", jsonBody(t, workerClaimBody(task.Version)), "")
 	claimed := decodeResponse[api.Task](t, response, http.StatusOK)
 	if strings.Contains(response.Body.String(), "agentControlMode") {
@@ -59,7 +59,7 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 		t.Run(configuration.provider+"-"+configuration.mode, func(t *testing.T) {
 			handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 			project := taskProject(t, handler)
-			task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Extended worker"), map[string]any{"allowAgents": true})
+			task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Extended worker"), map[string]any{"allowAgents": true})
 			body := workerClaimBody(task.Version)
 			body["agent"], body["agentControlMode"] = configuration.provider, configuration.mode
 			assertProjectError(t, protocolRequest(handler, "POST", taskPath(task)+"/worker-claim", jsonBody(t, body), ""), http.StatusConflict, "invalid_transition")
@@ -122,7 +122,7 @@ func TestWorkerProtocolLegacyCandidatesAdvanceAcrossUnsupportedPages(t *testing.
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	project := taskProject(t, handler)
 	makeTask := func(extended bool) api.Task {
-		task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Candidate"), map[string]any{"allowAgents": true})
+		task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Candidate"), map[string]any{"allowAgents": true})
 		if !extended {
 			return task
 		}

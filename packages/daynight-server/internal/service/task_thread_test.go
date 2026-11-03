@@ -178,7 +178,7 @@ func TestThreadAgentSourceRequiresCurrentExecutionOwnerAndFreezesDetails(t *test
 	owner := workerMember(t, database, project.ID)
 	threads := NewTaskThreads(database)
 	descriptor := workerDescriptor()
-	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), descriptor)
+	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
 	ctx := context.Background()
 	postThread(t, threads, owner, task, CreateThreadMessage{Body: "ordinary message during execution"})
 	agent := postThread(t, threads, owner, task, CreateThreadMessage{Body: "agent message", ClaimID: pointer(strings.ToUpper(descriptor.ClaimID))})
@@ -211,6 +211,7 @@ func TestThreadExactMessageBudgetsAndRollback(t *testing.T) {
 			var claimID *string
 			author := core.ThreadAuthor{UserID: principal.UserID}
 			if agent {
+				task = updateTask(t, tasks, principal, task, UpdateTask{AssignedTo: assignmentChange(&principal.UserID)})
 				task = updateTask(t, tasks, principal, task, UpdateTask{AllowAgents: pointer(true)})
 				descriptor := workerDescriptor()
 				task = claimWorkerTask(t, tasks, principal, task, descriptor)

@@ -49,7 +49,7 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	identityRequest(t, alice, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, http.StatusOK)
-	_, data = identityRequest(t, alice, http.MethodPost, integration.server.URL+taskCollection(project.ID), `{"title":"Hidden after revoke"}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, alice, http.MethodPost, integration.server.URL+taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Hidden after revoke", "assignedTo": aliceUser.ID}), origin, http.StatusCreated)
 	task := identityDecode[api.Task](t, data)
 	_, data = identityRequest(t, alice, http.MethodPatch, integration.server.URL+taskPath(task), jsonBody(t, map[string]any{"version": task.Version, "allowAgents": true}), origin, http.StatusOK)
 	task = identityDecode[api.Task](t, data)

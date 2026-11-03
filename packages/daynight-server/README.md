@@ -775,7 +775,12 @@ remains available regardless of automatic eligibility.
 Permission PATCH distinguishes omission from false, rejects null/nonboolean,
 checks version before same-value handling and rejects actual changes while
 in_progress as invalid_transition. Explicit task execution accepts either value;
-automatic discovery requires true. The [claim foundation](../../docs/design/daynight-worker-claims.md)
+automatic discovery requires true and assignedTo matching the authenticated
+local user ID. Unassigned or other-user tasks fail automatic claim with
+409 invalid_transition, preserving fields, version and timestamps. Worker
+candidates use assignedTo=me before pagination; complete claim inventory omits
+assignment filtering, and explicit manual resume retains its owner/admin rules.
+The [claim foundation](../../docs/design/daynight-worker-claims.md)
 rechecks eligibility and ownership in the same transaction. PR order and duplicates
 remain significant. Readiness changes do not advance dependent task revisions.
 

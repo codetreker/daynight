@@ -31,7 +31,7 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	extendedWorkerTestHandler(handler)
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Web execution"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Web execution"), map[string]any{"allowAgents": true})
 	body := workerClaimBody(task.Version)
 	body["agent"], body["agentControlMode"] = "claude", "web"
 	task = claimHTTPWorker(t, handler, task, body)
@@ -82,7 +82,7 @@ func TestWorkerHTTPModeLegacyDefaultAndInvalidInputs(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	extendedWorkerTestHandler(handler)
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Mode validation"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Mode validation"), map[string]any{"allowAgents": true})
 	for _, mode := range []any{nil, false, "", "WEB", "other", "web "} {
 		body := workerClaimBody(task.Version)
 		body["agentControlMode"] = mode
@@ -110,7 +110,7 @@ func TestWorkerHTTPCopilotWebClaimAndResume(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	extendedWorkerTestHandler(handler)
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Copilot Web execution"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Copilot Web execution"), map[string]any{"allowAgents": true})
 	body := workerClaimBody(task.Version)
 	body["agentControlMode"], body["agent"] = "web", "copilot"
 	task = claimHTTPWorker(t, handler, task, body)
