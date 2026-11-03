@@ -876,6 +876,53 @@ project identity and graph counts without recording task content, repository
 addresses or query strings. The CLI uses this endpoint; the Web dashboard uses
 `task-sync` and computes its graphs locally.
 
+## Task Steps read API
+
+Task-owned Steps persist independently from Sessions and expose dedicated reads.
+The [read contract](../../docs/spec/daynight-task-steps.md) owns field, identity,
+permission, snapshot, encoding and refusal semantics. Migration 030 adds
+normalized rows without changing existing Task fields or migration checksums.
+Steps remain outside ordinary Task, list, graph and synchronization projections.
+
+For `T = /api/v1/projects/{projectId}/tasks/{taskId}`:
+
+| Method | Path | Result |
+|---|---|---|
+| `GET` / `HEAD` | `T/steps` | Complete ordered projectId/taskId/version/steps resource; empty is `[]`. |
+| `GET` / `HEAD` | `T/steps/{stepId}` | Parent identity/version and complete `step`; the eight-hex input is case-insensitive. |
+
+Reads accept no query, including a trailing empty `?`. Other methods return
+an authenticated `405` with `Allow: GET, HEAD`. Both project roles can read;
+normal Task nonmembership/missing scope is `404`, parent soft deletion is `410`,
+and a missing child is `404`. Responses retain `no-store` and principal/request
+receipts. Parent version and content share one repeatable-read snapshot through
+a narrow Task header, independent from properties and execution policy.
+
+`internal/tasksteps` is the only public DTO/codec owner. Exact Encoder output
+includes default escaping and a terminal LF, with 19 version digits reserved
+within 67,108,864 bytes. Invalid storage or failed cleanup returns an internal
+error; the service never substitutes a partial or empty result. Reads preserve
+all parent metadata and timestamps.
+
+The routine gate covers migration preservation/constraints, scoped reads,
+snapshot interleaving, raw text and precise int64 encoding, auth/HEAD/query/
+method refusals, malformed storage and actual binary restart persistence in
+`TestBuiltBinaryStepsReadPersistence`. The maximum-resource HTTP test uses the
+`stress` build tag and is excluded from routine CI. After preparing the normal
+auth fixture and an isolated PostgreSQL database, run it separately:
+
+```bash
+source scripts/env.sh
+export DAYNIGHT_TEST_DATABASE_URL='postgres://.../isolated-test-database'
+export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
+go test -tags=stress ./internal/server -run '^TestStepsHTTPExactCapacityStress$' -count=1 -timeout=3m
+```
+
+The stress case seeds legitimate bounded individual records, observes complete
+64 MiB HTTP bytes at the maximum int64 version, checks the same content at a
+one-digit version, and refuses an illegally seeded over-capacity collection.
+Run-specific results and source identity belong to the corresponding PR evidence.
+
 ## Task Thread API
 
 Persistent discussion belongs to each task independently of its execution.
