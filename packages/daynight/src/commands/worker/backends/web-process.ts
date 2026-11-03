@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { open, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
+import { resolveConfigurationPaths } from "../../../config/paths.js";
+import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
 import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { requestController } from "../../controller/local-client.js";
@@ -38,10 +40,7 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
       const previous = readControllerSnapshot(path.join(directory, "journal.sqlite"));
       const stop = previous !== null && previous.executionGeneration !== execution.executionGeneration && previous.nativeStopped && previous.stoppedAt !== null ? { generation: previous.executionGeneration, instanceId: previous.controllerInstanceId, recordId: execution.launchId, stoppedAt: previous.stoppedAt } : undefined;
       const grant = await options.sessionApi.grant(task, execution, signal, stop); await writeControllerCredential(credentialFile, grant);
-      const endpointKey = createHash("sha256").update(`${options.homeDirectory}:${execution.launchId}`).digest("hex").slice(0, 20);
-      const ipcEndpoint = process.platform === "win32" ? `\\\\.\\pipe\\daynight-${endpointKey}` : path.join(options.homeDirectory, ".daynight", "c", `${endpointKey}.sock`);
-      if (process.platform !== "win32" && Buffer.byteLength(ipcEndpoint) > (process.platform === "darwin" ? 103 : 107)) throw new Error("The controller IPC endpoint exceeds this platform's socket path limit.");
-      if (process.platform !== "win32") await mkdir(path.dirname(ipcEndpoint), { recursive: true, mode: 0o700 });
+      const ipcEndpoint = await prepareControllerIpcEndpoint(options.homeDirectory, execution.launchId);
       if (task.resources.worktree === null || task.configuration === null || task.userId === null) throw new Error("The frozen launch binding disappeared.");
       const nativeHome = execution.nativeHome ?? (task.configuration.agent === "codex" ? process.env.CODEX_HOME ?? path.join(options.homeDirectory, ".codex")
         : task.configuration.agent === "claude" ? process.env.CLAUDE_CONFIG_DIR ?? path.join(options.homeDirectory, ".claude")
@@ -62,7 +61,7 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
       try {
         signal.throwIfAborted();
         task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now());
-        const child = spawn(process.execPath, [path.join(options.packageDirectory, "dist", "main.js"), "controller", ticket.provider, "--launch-id", ticket.launchId], { cwd: ticket.cwd, env: { ...process.env, HOME: options.homeDirectory, USERPROFILE: options.homeDirectory }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true });
+        const child = spawn(process.execPath, [path.join(options.packageDirectory, "dist", "main.js"), "controller", ticket.provider, "--launch-id", ticket.launchId], { cwd: ticket.cwd, env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(options.homeDirectory).stateDirectory }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true });
         await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
         child.unref();
         if (child.pid === undefined) throw new Error("Controller spawn did not establish its process identity.");

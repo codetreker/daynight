@@ -2,7 +2,7 @@ import path from "node:path";
 import { open, realpath } from "node:fs/promises";
 import { gte } from "semver";
 import type { Operation } from "../../../api/operation.js";
-import { codexProjectTrustArguments, nativeAgentPermissionArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
+import { codexConfigurationArguments, codexProjectTrustArguments, nativeAgentPermissionArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
 import { runHerdrCommand } from "./command.js";
 import type { HerdrCommand, HerdrCommandResult } from "./command.js";
 import { probeNativeAgentVersion } from "./version-probe.js";
@@ -118,22 +118,6 @@ const configuredHook = (hooks: Record<string, unknown>, expected: string, agent:
       return hook.type === "command" && hook.enabled !== false && hook[agent !== "copilot" ? "command" : platform === "win32" ? "powershell" : "bash"] === expected;
     });
   });
-};
-
-const codexConfigurationArguments = (args: readonly string[]): { arguments: string[]; profile: boolean } => {
-  const relevant = new Set(["-c", "--config", "--enable", "--disable", "-p", "--profile"]);
-  const selected: string[] = [];
-  let profile = false;
-  for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
-    const equals = argument.indexOf("=");
-    const option = equals < 0 ? argument : argument.slice(0, equals);
-    if (!relevant.has(option)) continue;
-    profile ||= option === "-p" || option === "--profile";
-    selected.push(argument);
-    if (equals < 0) selected.push(args[++index]!);
-  }
-  return { arguments: selected, profile };
 };
 
 export const nativeHookRuntimeChecks = (options: {

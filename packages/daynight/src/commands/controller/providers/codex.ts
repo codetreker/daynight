@@ -1,3 +1,4 @@
+import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CodexControls } from "./controls-codex.js";
@@ -83,7 +84,10 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   };
   try {
     await rpc.request("initialize", { clientInfo: { name: "daynight", title: "Daynight Controller", version: "0.22.0" }, capabilities: { experimentalApi: true } }); rpc.notify("initialized");
-    const response = record(await rpc.request(options.resumeNativeSessionId ? "thread/resume" : "thread/start", { ...(options.resumeNativeSessionId ? { threadId: options.resumeNativeSessionId, excludeTurns: true } : {}), cwd: options.cwd, ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && options.unattended ? { sandbox: "danger-full-access", approvalPolicy: "never" } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.sandbox ? { sandbox: config.sandbox } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.approvalPolicy ? { approvalPolicy: config.approvalPolicy } : {}), config: { "features.default_mode_request_user_input": true } }));
+    const aliasOverrides = options.agentCliEnvironment
+      ? codexAgentCliOverrides(options.agentCliEnvironment, await rpc.request("config/read", { cwd: options.cwd, includeLayers: false }))
+      : {};
+    const response = record(await rpc.request(options.resumeNativeSessionId ? "thread/resume" : "thread/start", { ...(options.resumeNativeSessionId ? { threadId: options.resumeNativeSessionId, excludeTurns: true } : {}), cwd: options.cwd, ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && options.unattended ? { sandbox: "danger-full-access", approvalPolicy: "never" } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.sandbox ? { sandbox: config.sandbox } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.approvalPolicy ? { approvalPolicy: config.approvalPolicy } : {}), config: { "features.default_mode_request_user_input": true, ...aliasOverrides } }));
     const thread = record(response.thread); nativeId = string(thread.id);
     if (!nativeId || options.resumeNativeSessionId && nativeId !== options.resumeNativeSessionId || await realpath(string(thread.cwd)) !== await realpath(options.cwd)) throw new Error("Native Codex session identity or working directory mismatch.");
     controls.seed({ ...response, ...(!options.resumeNativeSessionId && config.effort ? { effort: config.effort } : {}) });

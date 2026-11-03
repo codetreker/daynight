@@ -1,4 +1,6 @@
+import { readCodexConfiguration } from "./herdr/codex-config.js";
 import type { WorkerPaths } from "./paths.js";
+import type { HerdrWorkspaceEnvironment } from "./herdr/agents.js";
 import { createHerdrAgentManager } from "./herdr/agents.js";
 import { createHerdrInstance, createHerdrNativeEnvironment } from "./herdr/instance.js";
 import { createHerdrPreflight } from "./herdr/preflight.js";
@@ -25,11 +27,12 @@ export const createWorkerHerdr = (options: {
   homeDirectory: string;
   executable?: string;
   environment?: NodeJS.ProcessEnv;
+  agentEnvironment?: Readonly<{ PATH?: string; DN_CONFIG_DIR?: string }>;
 }) => {
   const inheritedEnvironment = options.environment === undefined ? process.env : options.environment;
   const instance = createHerdrInstance({ ...options, environment: inheritedEnvironment });
   const nativeEnvironment = createHerdrNativeEnvironment(options.paths, inheritedEnvironment);
-  const workspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" };
+  const workspaceEnvironment: { -readonly [K in keyof HerdrWorkspaceEnvironment]: HerdrWorkspaceEnvironment[K] } = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", ...options.agentEnvironment };
   for (const key of ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const) {
     const value = inheritedEnvironment[key];
     // Herdr's workspace map cannot remove keys; empty XDG values select the user's defaults.
@@ -46,7 +49,7 @@ export const createWorkerHerdr = (options: {
     verifyStart: (input, operation) => {
       return preflight.verifyStart({ ...input, configuration: { ...input.configuration, agent: input.configuration.agent } }, operation);
     },
-  }, workspaceEnvironment });
+  }, workspaceEnvironment, readCodexConfig: (args, cwd, operation) => readCodexConfiguration({ args, cwd, environment: { ...nativeEnvironment, ...workspaceEnvironment } }, operation) });
   return {
     ensureInstance: instance.ensure,
     stopInstance: instance.stop,
