@@ -14,8 +14,7 @@ export function SessionView({ client, active, current }: { readonly client: Task
   const s = view.state.snapshot;
   const connected = current && view.connected;
   if (!s || view.status === 'unavailable') return <div className="session-empty" role="status"><p>{view.status === 'loading' ? m.loading : view.status === 'not_registered' ? m.notRegistered : view.status === 'unavailable' ? m.unavailable : view.error}</p><button className="button" disabled={view.authPaused} onClick={client.refresh}>{m.refresh}</button></div>;
-  // Provider acceptance completes input delivery, but controls still need confirmation.
-  const operations = [...view.state.operations.values()].filter(operation => operation.error !== null || !(operation.state === 'confirmed' || operation.state === 'provider_accepted' && ['send_message', 'execute_command'].includes(operation.kind))).slice(-12);
+  const operations = [...view.state.operations.values()].slice(-12);
   const readOnly = s.lifecycle !== 'active';
   const archiveLabel = view.archiveState === 'ready' ? m.archived : view.archiveState === 'failed' ? m.archiveFailed : view.archiveState === 'unavailable' ? (s.lifecycle === 'draining' ? m.archivePreparing : m.archiveUnavailable) : view.archiveState === 'pending' ? m.archivePending : m.archiveLoading;
   const runtimeReady = connected && s.synchronized && s.connectionState === 'connected';
