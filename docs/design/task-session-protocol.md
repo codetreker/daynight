@@ -145,7 +145,7 @@ Controller journal v6 将旧 projection/resources 表导出到待归档文件，
 
 Task 路径为 /api/v1/projects/P/tasks/T/sessions/S/archive，Test 路径为 /api/v1/test-sessions/S/archive。GET 返回 pending/ready/failed/unavailable；POST 记录 pending 或 failed；PUT 上传完整 JSON；GET /archive/content 读取正文。ready 回执含 SHA-256 和十进制 byteLength。上传按原始请求字节计算哈希，相同正文重试幂等，ready 后拒绝不同正文覆盖。写入要求原 owner 的有效 PAT、原执行 fence 与 Controller 身份，以及终态执行；若断网导致服务端尚未记录 nativeSessionId，可在提交 ready 的同一事务中从归档建立该身份，已有非空 ID 必须相同；读取要求对应项目成员或 Test owner 的有效访问权，不能用旧 claim 归档获得新执行的控制权。
 
-服务端复用 filestorage，将正文保存在 session-archives bucket，以 Session ID 和内容哈希构造对象位置。PostgreSQL 的 session_archives 仅保存归档状态、对象位置、大小、哈希与枚举错误。本地文件存储在重命名前同步文件，发布后同步父目录；文件可靠写入后才提交 ready，数据库事务失败可重试同对象；读取时重新验证对象大小、SHA-256 和归档结构。迁移不新增消息正文表。正文及数据库元信息需要一起备份；多实例读取要求共享文件存储。
+服务端复用 filestorage，将正文保存在 session-archives bucket，以 Session ID 和内容哈希构造对象位置。PostgreSQL 的 session_archives 仅保存归档状态、对象位置、大小、哈希与枚举错误。本地文件存储在重命名前同步文件，发布后同步父目录；初始化存储根时，逐级同步本次新建目录及其直接父目录，已有根目录不要求祖先目录具有读取权限。目录同步失败后移除本次新建的空目录，使重试仍执行该同步屏障；不递归删除可能被其他进程使用的目录，清理失败明确返回。文件可靠写入后才提交 ready，数据库事务失败可重试同对象；读取时重新验证对象大小、SHA-256 和归档结构。迁移不新增消息正文表。正文及数据库元信息需要一起备份；多实例读取要求共享文件存储。
 
 完整 JSON 最多 64 MiB、100000 个条目、1000 个资源，单资源最多 8 MiB。条目身份唯一且 entrySeq 严格递增；资源引用必须存在，available 数据须符合长度及哈希，pending 资源不能封存成完整归档。超限和缺失明确失败，保留本机源；不裁剪后宣称完整。归档源及上传回执位于原 execution 目录，上传失败只重试文件传输，不重放业务输入。
 

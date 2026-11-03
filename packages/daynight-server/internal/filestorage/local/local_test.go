@@ -383,6 +383,111 @@ func TestPermissionFailuresRemainIdentifiable(t *testing.T) {
 	}
 }
 
+func TestExistingRootBelowSearchOnlyAncestor(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses filesystem permission checks")
+	}
+	ancestor := t.TempDir()
+	root := filepath.Join(ancestor, "storage")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ancestor, 0o111); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(ancestor, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if file, err := os.Open(ancestor); err == nil {
+		file.Close()
+		t.Skip("filesystem does not enforce search-only directory permissions")
+	} else if !errors.Is(err, fs.ErrPermission) {
+		t.Fatal(err)
+	}
+	storage, err := New(root)
+	if err != nil {
+		t.Fatal("existing accessible root rejected:", err)
+	}
+	t.Cleanup(func() {
+		if err := storage.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	put(t, storage, "archives", "session/file", []byte("archive"))
+	if got := string(read(t, storage, "archives", "session/file")); got != "archive" {
+		t.Fatal(got)
+	}
+	nested, err := New(filepath.Join(root, "new", "storage"))
+	if err != nil {
+		t.Fatal("new nested root traversed beyond its existing writable parent:", err)
+	}
+	if err := nested.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewRootSyncsOnlyCreatedDirectoryEntries(t *testing.T) {
+	parent := t.TempDir()
+	first := filepath.Join(parent, "first")
+	root := filepath.Join(first, "storage")
+	var synced []string
+	if err := makeRoot(root, func(file *os.File) error {
+		synced = append(synced, file.Name())
+		return file.Sync()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{first, parent, root, first}; !reflect.DeepEqual(synced, want) {
+		t.Fatalf("directory persistence barriers: got %v, want %v", synced, want)
+	}
+	if err := makeRoot(root, func(*os.File) error {
+		t.Fatal("existing root requires no ancestor synchronization")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewRootSyncFailureCanRetryWithoutSkippingBarrier(t *testing.T) {
+	for _, failAt := range []int{1, 2, 3, 4} {
+		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
+			parent := t.TempDir()
+			first := filepath.Join(parent, "first")
+			root := filepath.Join(first, "storage")
+			calls := 0
+			failure := errors.New("directory sync failed")
+			if err := makeRoot(root, func(file *os.File) error {
+				calls++
+				if calls == failAt {
+					return failure
+				}
+				return file.Sync()
+			}); !errors.Is(err, failure) {
+				t.Fatal("failed directory synchronization acknowledged:", err)
+			}
+			if _, err := os.Stat(root); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatal("failed initialization left a reusable root:", err)
+			}
+			var retried []string
+			if err := makeRoot(root, func(file *os.File) error {
+				retried = append(retried, file.Name())
+				return file.Sync()
+			}); err != nil {
+				t.Fatal(err)
+			}
+			want := []string{root, first}
+			if failAt <= 2 {
+				want = append([]string{first, parent}, want...)
+			}
+			if !reflect.DeepEqual(retried, want) {
+				t.Fatalf("retry skipped failed barriers: got %v, want %v", retried, want)
+			}
+		})
+	}
+}
+
 func TestFailedPublicationKeepsConflictingDirectory(t *testing.T) {
 	storage, root := newStorage(t)
 	source := &observingReader{Reader: strings.NewReader("content"), observe: func() {

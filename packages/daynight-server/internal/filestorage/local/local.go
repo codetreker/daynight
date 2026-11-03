@@ -30,12 +30,7 @@ type Storage struct {
 var _ filestorage.Storage = (*Storage)(nil)
 
 func New(root string) (*Storage, error) {
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, err
-	}
-	// Sync the root and its ancestors before publishing objects below it. New
-	// storage roots may themselves have been created by MkdirAll above.
-	if err := syncRootParents(root); err != nil {
+	if err := makeRoot(root, (*os.File).Sync); err != nil {
 		return nil, err
 	}
 	directory, err := os.OpenRoot(root)
@@ -335,25 +330,51 @@ func createProbeFile(root *os.Root, name string) error {
 	return file.Close()
 }
 
-// The caller may supply a newly created nested storage root. Syncing only its
-// children would not persist the root's own name in its parent directory.
-func syncRootParents(root string) error {
-	directory, err := filepath.Abs(root)
+// Existing roots need only searchable ancestors. Each directory created here
+// must persist its own inode and parent entry before creating children in it.
+func makeRoot(root string, fileSync func(*os.File) error) (result error) {
+	info, err := os.Stat(root)
+	if err == nil {
+		if !info.IsDir() {
+			return &os.PathError{Op: "mkdir", Path: root, Err: syscall.ENOTDIR}
+		}
+		return nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) || root == "" {
+		return err
+	}
+	parent := filepath.Dir(root)
+	if err := makeRoot(parent, fileSync); err != nil {
+		return err
+	}
+	// Open before creation so insufficient parent read permission cannot leave
+	// an unsynchronized child that a later initialization mistakes for an old root.
+	directory, err := os.Open(parent)
 	if err != nil {
 		return err
 	}
-	for {
-		file, err := os.Open(directory)
-		if err != nil {
+	created := false
+	defer func() {
+		result = errors.Join(result, directory.Close())
+		if result != nil && created {
+			// No child has been created through this call yet. Never recursively
+			// remove the directory: another process may have started using it.
+			result = errors.Join(result, os.Remove(root))
+		}
+	}()
+	if err := os.Mkdir(root, 0o700); err != nil {
+		if info, statErr := os.Stat(root); !errors.Is(err, fs.ErrExist) || statErr != nil || !info.IsDir() {
 			return err
 		}
-		if err = errors.Join(file.Sync(), file.Close()); err != nil {
-			return err
-		}
-		parent := filepath.Dir(directory)
-		if parent == directory {
-			return nil
-		}
-		directory = parent
+	} else {
+		created = true
 	}
+	child, err := os.Open(root)
+	if err != nil {
+		return err
+	}
+	if err := errors.Join(fileSync(child), child.Close()); err != nil {
+		return err
+	}
+	return fileSync(directory)
 }

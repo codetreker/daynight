@@ -34,6 +34,14 @@ terminal finalization; their terminal responsibility survives for normal
 reconciliation after restart. Completed archives are
 immutable display records; they do not carry control or native resume authority.
 
+Local storage initialization persists each directory it creates and its entry
+in the immediate parent before creating the next directory. Existing storage
+roots need only searchable ancestors; initialization does not open those
+ancestors for reading. A failed directory barrier removes the newly created
+empty directory so a retry cannot bypass that barrier by treating it as an
+existing root. Cleanup never recursively removes a directory that another
+process may have populated, and cleanup errors remain visible.
+
 This partially supersedes the
 [Controller-owned content decision](2026-10-28-local-session-content.md). That
 decision deliberately accepted online-only reading to remove PostgreSQL content
@@ -62,6 +70,13 @@ view. Capturing the common timeline preserves the data already shown to users.
 sudden container loss but adds remote checkpoints, event synchronization and
 retention policy to the execution path. Normal-completion archival does not
 require that guarantee; failed final uploads retain the local source.
+
+**Synchronize every ancestor of an existing storage root.** This also covers new
+nested root entries, but requires read access to pre-existing directories that
+the service only needs to traverse. A usable private storage root below a
+search-only ancestor would prevent the entire service from starting. Tracking
+directory creation keeps the persistence barriers at the entries initialization
+actually creates.
 
 ## Consequences
 
