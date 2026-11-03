@@ -13,6 +13,7 @@ type TaskDetailReadingProps = {
   readonly projectId: string;
   readonly taskId: string;
   readonly description: string;
+  readonly discussion?: ReactNode | ((active: boolean) => ReactNode);
   readonly session?: ReactNode | ((active: boolean) => ReactNode);
   readonly overview: (description: ReactNode) => ReactNode;
   readonly keyboardOwner?: AttachmentKeyboardOwner;
@@ -23,7 +24,7 @@ type TaskDetailReadingProps = {
   readonly urls?: AttachmentUrls;
 };
 
-export const TaskDetailReading = ({ projectId, taskId, description, overview, session, keyboardOwner, api, urls, selection: controlledSelection, onSelectionChange, requireCompleteInventory = false }: TaskDetailReadingProps) => {
+export const TaskDetailReading = ({ projectId, taskId, description, overview, discussion, session, keyboardOwner, api, urls, selection: controlledSelection, onSelectionChange, requireCompleteInventory = false }: TaskDetailReadingProps) => {
   const { messages } = useI18n();
   const attachments = useAttachments(projectId, taskId, api, { requireCompleteInventory });
   const [localSelection, setLocalSelection] = useState<TaskDetailNavigation>({ tab: 'overview', path: null });
@@ -49,7 +50,7 @@ export const TaskDetailReading = ({ projectId, taskId, description, overview, se
   const previewRoot = urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot;
   const base = { kind: 'root' } as const;
 
-  return <TaskDetailPanels {...(session === undefined ? {} : { session })} active={selection.tab} onChange={(tab) => select({ ...selection, tab })} overview={() => overview(description === ''
+  return <TaskDetailPanels {...(discussion === undefined ? {} : { discussion })} {...(session === undefined ? {} : { session })} active={selection.tab} onChange={(tab) => select({ ...selection, tab })} overview={() => overview(description === ''
     ? <p className="task-detail-description">{messages.inspection.detail.noDescription}</p>
     : <MarkdownContent className="task-description" text={description} resolveUrl={(value) => resolveMarkdownAttachmentUrl(value, base, previewRoot)} onLinkClick={(value, event) => {
       if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.currentTarget.hasAttribute('download') || event.currentTarget.target !== '' || /[?#]/.test(value)) return;

@@ -12,10 +12,12 @@ was committed. Client parsing and post-processing must preserve these facts.
 
 ## Decision
 
-The CLI owns thin Thread decoding and readable rendering, consuming the
+The CLI owns command invocation and readable rendering, consuming the
 [service contract](../../../../docs/spec/daynight-task-thread.md) independently
-of the browser. CLI source-scanning primitives preserve raw JSON resource
-spans and reject duplicate members before object decoding. Every read item
+of browser lifecycle. Browser-safe Thread source and resource parsing lives in
+the CLI API library and is reused by [Web Discussion](2026-11-03-task-thread-web.md).
+Its source-scanning primitives preserve raw JSON resource spans and reject
+duplicate members before object decoding. Every read item
 retains the service's 64 KiB resource bound; complete pages retain its 256 KiB
 bound. Measurement uses actual Go-encoded source bytes, including HTML escapes,
 not a different client serialization.
@@ -58,9 +60,11 @@ explicit before/after message IDs, so it has its own page decoder and renderer.
 can expand output, especially DEL and C1. A separate exact text budget and an
 implementation-enforced expansion proof prevent truncation of legal messages.
 
-**Share a Thread feature module through one client.** This couples independent
-browser and CLI delivery. Pure source primitives can be reused without moving
-client-owned validation or creating a feature dependency between clients.
+**Share a Thread feature module through one client.** At CLI delivery, a shared
+feature owner would couple independent browser and CLI behavior. The API parser
+was kept browser-safe; its later Web reuse preserves separate network admission,
+controller and renderer lifecycles, as recorded by the
+[Web decision](2026-11-03-task-thread-web.md).
 
 **Retry uncertain posts or reconcile equal bodies.** Both can append duplicate
 messages or mistake another message for the failed request. The service has no

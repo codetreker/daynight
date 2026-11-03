@@ -68,6 +68,42 @@ const picture = async (page: Page, info: TestInfo, name: string): Promise<void> 
   await info.attach('scenario-screenshot', { path, contentType: 'image/png' });
 };
 
+const discussionLayout = async (page: Page, root: Locator, messageId: string, draft: string, expectedWidth: number, info: TestInfo, name: string) => {
+  const discussion = root.locator('.task-discussion');
+  await expect(discussion.locator(`[data-entry-key="${messageId}"]`)).toHaveCount(1);
+  const input = discussion.getByRole('textbox', { name: '讨论消息', exact: true });
+  await expect(input).toBeEnabled(); await expect(input).toHaveValue(draft); await input.click({ trial: true });
+  const geometry = await root.evaluate((element, id) => {
+    const bounds = element.getBoundingClientRect();
+    const selectors = ['.thread-bar', '.thread-timeline', '.thread-timeline-content', '.thread-composer-wrap', '.thread-composer-inner', '.thread-composer', '.thread-composer textarea', '.thread-send-button', '.thread-bar button', `[data-entry-key="${id}"] .thread-message-markdown`];
+    const parts = selectors.map(selector => {
+      const target = element.querySelector<HTMLElement>(selector);
+      if (target === null) throw new Error(`Discussion layout element is absent: ${selector}`);
+      const box = target.getBoundingClientRect();
+      return { selector, left: box.left, right: box.right, width: box.width, height: box.height };
+    });
+    return { surface: { left: bounds.left, right: bounds.right, width: bounds.width }, parts };
+  }, messageId);
+  for (const part of geometry.parts) {
+    expect(part.left, `${name}: ${part.selector} starts within its task surface`).toBeGreaterThanOrEqual(geometry.surface.left - 1);
+    expect(part.right, `${name}: ${part.selector} ends within its task surface`).toBeLessThanOrEqual(geometry.surface.right + 1);
+    expect(part.width, `${name}: ${part.selector} has readable width`).toBeGreaterThan(20);
+    expect(part.height, `${name}: ${part.selector} has visible height`).toBeGreaterThan(0);
+  }
+  for (const selector of ['.thread-timeline-content', '.thread-composer-inner']) {
+    const part = geometry.parts.find(value => value.selector === selector)!;
+    expect(Math.abs(part.width - expectedWidth), `${name}: ${selector} preserves its reading width`).toBeLessThanOrEqual(20);
+  }
+  expect(geometry.parts.find(value => value.selector === '.thread-composer textarea')!.width).toBeGreaterThan(700);
+  expect(geometry.parts.find(value => value.selector.includes('thread-message-markdown'))!.width).toBeGreaterThan(600);
+  const send = discussion.getByRole('button', { name: '发送', exact: true }), refresh = discussion.getByRole('button', { name: '刷新讨论', exact: true });
+  await expect(input).toBeInViewport({ ratio: 1 }); await expect(send).toBeInViewport({ ratio: 1 }); await expect(refresh).toBeInViewport({ ratio: 1 });
+  await input.click(); await expect(input).toBeFocused(); await expect(send).toBeEnabled();
+  await refresh.click(); await expect(refresh).toBeEnabled(); await expect(input).toHaveValue(draft);
+  await picture(page, info, name);
+  return { name, viewport: page.viewportSize(), ...geometry };
+};
+
 const loginReturn = async (browser: Browser, origin: string, target: string, title: string): Promise<void> => {
   const context = await browser.newContext({ baseURL: origin, locale: 'zh-CN' });
   const page = await context.newPage();
@@ -124,6 +160,10 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
   const title = `完整任务详情：${'可独立阅读并保留现有操作 '.repeat(14)}`;
   let task = await createTask(api, project.id, { title, description, properties: { pullRequests: [{ title: 'Review reference', url: 'https://github.com/example/project/pull/7' }] } });
   const next = await createTask(api, project.id, { title: '关联任务历史', dependsOn: [task.id] });
+  const threadResponse = await api.post(`${taskPath(project.id, task.id)}/thread/messages`, { data: { body: 'Discussion container layout acceptance.\n\nMessages and the composer remain usable inside the task surface.' } });
+  expect(threadResponse.status()).toBe(201);
+  const threadMessage = await threadResponse.json() as { readonly id: string };
+
   const guide = `# 独立详情附件\n\n${Array.from({ length: 60 }, (_, index) => `段落 ${index + 1}：附件与任务详情共享生命周期。`).join('\n\n')}`;
   for (const [path, content] of [['docs/guide.md', guide], ['docs/next.txt', 'Another task attachment\n'], ['folded/reference.txt', 'Directory disclosure fixture\n']]) {
     const response = await api.put(attachmentDownloadUrl(project.id, task.id, path!), { headers: { 'Content-Type': path!.endsWith('.md') ? 'text/markdown' : 'text/plain' }, data: content });
@@ -140,6 +180,7 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
   const writes: string[] = [];
   const errors: string[] = [];
   const pages: Page[] = [];
+  const discussionLayouts: unknown[] = [];
   const watch = (request: Request): void => { if (!['GET', 'HEAD'].includes(request.method())) writes.push(`${request.method()} ${request.url()}`); };
   context.on('request', watch);
   const opened = async (trigger: Locator): Promise<Page> => {
@@ -160,6 +201,26 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     await page.locator(`.react-flow__node[data-id="${task.id}"] .task-node-details`).click();
     const modal = page.locator('.task-detail-dialog');
     await expect(modal.locator('.task-detail-title')).toHaveText(title);
+    const modalViewport = page.viewportSize();
+    if (modalViewport === null) throw new Error('Discussion layout acceptance requires an explicit viewport.');
+    await modal.getByRole('tab', { name: '讨论', exact: true }).click();
+    const modalDraft = '  Modal layout draft\n\n  preserved indentation\n';
+    await modal.getByRole('textbox', { name: '讨论消息', exact: true }).fill(modalDraft);
+    for (const width of [2560, 3840]) {
+      await page.setViewportSize({ width, height: 1100 });
+      discussionLayouts.push(await discussionLayout(page, modal, threadMessage.id, modalDraft, 900, info, `task-discussion-modal-${width}`));
+      await modal.getByRole('button', { name: '进入全屏', exact: true }).click();
+      await expect(modal).toHaveClass(/task-detail-fullscreen/);
+      discussionLayouts.push(await discussionLayout(page, modal, threadMessage.id, modalDraft, 1280, info, `task-discussion-fullscreen-${width}`));
+      await modal.getByRole('button', { name: '退出全屏', exact: true }).click();
+      await expect(modal).not.toHaveClass(/task-detail-fullscreen/);
+      await modal.getByRole('tab', { name: '概览', exact: true }).click();
+      await modal.getByRole('tab', { name: '讨论', exact: true }).click();
+      await expect(modal.getByRole('textbox', { name: '讨论消息', exact: true })).toHaveValue(modalDraft);
+    }
+    await page.setViewportSize(modalViewport);
+    await modal.getByRole('tab', { name: '概览', exact: true }).click();
+
     const originalAddress = page.url(); const originalHistory = await page.evaluate(() => history.length);
     const popout = modal.locator('.task-detail-popout');
     const moreActions = modal.getByRole('button', { name: '更多任务操作', exact: true });
@@ -339,6 +400,20 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     const loginTarget = `${attachmentPageUrl(project.id, task.id, 'docs/guide.md')}?tab=overview`;
     await loginReturn(browser, origin, loginTarget, title);
 
+    const readerViewport = reader.viewportSize();
+    if (readerViewport === null) throw new Error('Discussion layout acceptance requires an explicit viewport.');
+    await surface(reader).getByRole('tab', { name: '讨论', exact: true }).click();
+    const pageDraft = '  Standalone layout draft\n\n  preserved indentation\n';
+    await surface(reader).getByRole('textbox', { name: '讨论消息', exact: true }).fill(pageDraft);
+    for (const width of [1440, 2560, 3840]) {
+      await reader.setViewportSize({ width, height: 1100 });
+      discussionLayouts.push(await discussionLayout(reader, surface(reader), threadMessage.id, pageDraft, width === 1440 ? 1080 : 1280, info, `task-discussion-page-${width}`));
+      await tab(reader, 'overview').click();
+      await surface(reader).getByRole('tab', { name: '讨论', exact: true }).click();
+      await expect(surface(reader).getByRole('textbox', { name: '讨论消息', exact: true })).toHaveValue(pageDraft);
+    }
+    await reader.setViewportSize(readerViewport); await tab(reader, 'overview').click();
+
     const layouts: unknown[] = [];
     for (const locale of ['zh-CN', 'en']) {
       await surface(reader).getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
@@ -364,7 +439,7 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     expect(errors).toEqual([]);
     for (const [key, count] of expectedWrites) expect(writes.filter(write => write === key), `Exact standalone browser writes: ${key}`).toHaveLength(count);
     expect(writes.filter(write => !expectedWrites.has(write))).toEqual([]);
-    await info.attach('standalone-task-detail-evidence', { contentType: 'application/json', body: JSON.stringify({ project: project.id, task: task.id, next: next.id, writes, platformWrites, statusWrites, layouts, errors }, null, 2) });
+    await info.attach('standalone-task-detail-evidence', { contentType: 'application/json', body: JSON.stringify({ project: project.id, task: task.id, next: next.id, writes, platformWrites, statusWrites, layouts, discussionLayouts, errors }, null, 2) });
   } finally {
     context.removeListener('request', watch);
     if (reader !== undefined && !reader.isClosed()) await reader.unroute(endpoint);

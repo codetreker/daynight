@@ -126,7 +126,10 @@ export const createInstalledCli = async (options: { readonly signal?: AbortSigna
     await pnpm(["pack", "--out", tarballPath], packageDirectory);
     await writeFile(path.join(consumer, "package.json"), `${JSON.stringify({ name: "daynight-project-task-acceptance", private: true, dependencies: { "@codetreker/daynight": `file:${tarballPath.replaceAll("\\", "/")}` } })}\n`);
     check();
-    await pnpm(["install", "--prod", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile", "--store-dir", storeDirectory, "--reporter", "append-only"], consumer);
+    // Default PNPM shims read whole executables as UTF-8 before inspecting the shebang.
+    // Private POSIX consumers use symlinks; the independent e2e fixture retains default shim coverage.
+    // https://github.com/pnpm/pnpm/blob/fe4a0c232384289de82be3d502896ca7e070050c/pnpm11/bins/cmd-shim/src/index.ts#L236-L252
+    await pnpm(["install", "--prod", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile", "--store-dir", storeDirectory, "--config.prefer-symlinked-executables=true", "--reporter", "append-only"], consumer);
     const installedPackage = path.join(consumer, "node_modules/@codetreker/daynight");
     check();
     const installed = JSON.parse(await readFile(path.join(installedPackage, "package.json"), "utf8")) as { name: string; version: string; bin: { daynight: string } };

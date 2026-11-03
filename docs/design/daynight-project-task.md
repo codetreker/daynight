@@ -603,7 +603,12 @@ Project 命令的实际编译入口已在受控 HTTP 条件下验证创建、完
 fixture [`installed-cli.ts`](../../packages/daynight/test/fixtures/installed-cli.ts) 统一
 拥有打包、安装、launcher 身份和任务目录；原生 suite 为
 [`project-task.acceptance.ts`](../../packages/daynight/test/cli/project-task.acceptance.ts)。根目录
-`.tmp/project-task-evidence.json` 记录该路径的来源、场景与清理。
+`.tmp/project-task-evidence.json` 记录该路径的来源、场景与清理。打包、私有安装与来源回执
+由该案例的 beforeAll 准备，callback 保留完整的有状态业务序列。afterAll 先取消并等待
+仍在运行的准备和业务，再终止自有子进程、关闭 HTTP server、移除安装树；实际清理
+验证完成后才写入成功回执。准备与业务使用各自既有的 hook/callback 期限，数字门槛
+保持，场景总墙钟预算的归属发生变化。重复私有安装采用 PNPM 支持的 POSIX executable
+symlink 偏好；独立 e2e 仍验证默认 PNPM shim，生产依赖与真实 npm 更新不变。
 
 服务路径的 Node 编排入口为
 `node packages/daynight/scripts/project-task-acceptance.ts`，由 Go 检查脚本调用；
