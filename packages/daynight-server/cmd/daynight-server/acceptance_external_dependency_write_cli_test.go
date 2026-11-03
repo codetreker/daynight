@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 )
@@ -64,13 +65,31 @@ func TestInstalledCLIExternalDependencyWriteAcceptance(t *testing.T) {
 			}
 		}
 		before = target
-		target = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "externalDependsOn": []string{a.ID}}, "external-flags-only"), http.StatusOK)
+		// HTTP responses and stdout logs use separate transports. Observe each
+		// direct PATCH before measuring the next CLI invocation's mutation delta.
+		patch := func(input map[string]any, requestID string) api.Task {
+			response := process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), input, requestID)
+			result := acceptanceDecode[api.Task](t, response, http.StatusOK)
+			ids := response.header.Values("X-Request-ID")
+			if len(ids) != 1 || ids[0] != requestID {
+				t.Fatal("direct classification PATCH lost its response request identity")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			if err := acceptanceEventually(ctx, func() (bool, error) {
+				return process.logs.matches(map[string]any{"type": "http_request", "request_id": ids[0], "method": http.MethodPatch, "status": float64(http.StatusOK)}), nil
+			}); err != nil {
+				t.Fatal("direct classification PATCH did not complete its correlated request log")
+			}
+			return result
+		}
+		target = patch(map[string]any{"version": target.Version, "externalDependsOn": []string{a.ID}}, "external-flags-only")
 		preserved := target
 		preserved.ExternalDependsOn, preserved.Version, preserved.UpdatedAt = before.ExternalDependsOn, before.Version, before.UpdatedAt
 		if target.Version != before.Version+1 || !target.UpdatedAt.After(before.UpdatedAt) || !reflect.DeepEqual(preserved, before) || !slices.Equal(target.ExternalDependsOn, []string{a.ID}) {
 			t.Fatal("public flags-only patch changed fields other than classification and version metadata")
 		}
-		noop := acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "externalDependsOn": target.ExternalDependsOn}, "external-flags-noop"), http.StatusOK)
+		noop := patch(map[string]any{"version": target.Version, "externalDependsOn": target.ExternalDependsOn}, "external-flags-noop")
 		if !reflect.DeepEqual(noop, target) {
 			t.Fatal("public flags-only no-op changed metadata")
 		}
