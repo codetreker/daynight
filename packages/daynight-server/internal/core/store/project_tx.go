@@ -16,6 +16,7 @@ type ProjectTx struct {
 }
 
 type TaskWrite struct {
+	AssignedTo        *string
 	RequiredPlatform  *core.TaskPlatform
 	AllowAgents       bool
 	Title             string
@@ -113,8 +114,8 @@ func (tx *ProjectTx) CreateTask(ctx context.Context, id string, values TaskWrite
 		return core.Task{}, queryError("validate task properties", err)
 	}
 	values.Properties = properties
-	_, err = tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, allow_agents, required_platform)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`, id, tx.projectID, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform)
+	_, err = tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, allow_agents, required_platform, assigned_to)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, tx.projectID, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
 	if err != nil {
 		return core.Task{}, queryError("create task", err)
 	}
@@ -133,7 +134,7 @@ func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite
 		return core.Task{}, queryError("validate task properties", err)
 	}
 	values.Properties = properties
-	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET title = $3, description = $4, status = $5, allow_agents = $6, required_platform = $7,
+	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET title = $3, description = $4, status = $5, allow_agents = $6, required_platform = $7, assigned_to = $8,
 		started_at = CASE
 			WHEN status <> $5 AND $5 = 'in_progress' THEN statement_timestamp()
 			WHEN status <> $5 AND $5 = 'todo' THEN NULL
@@ -144,7 +145,7 @@ func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite
 			WHEN status <> $5 AND $5 IN ('todo', 'in_progress') THEN NULL
 			ELSE completed_at END,
 		version = version + 1, updated_at = statement_timestamp() WHERE project_id = $1 AND id = $2`,
-		tx.projectID, id, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform)
+		tx.projectID, id, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
 	if err != nil {
 		return core.Task{}, queryError("update task", err)
 	}

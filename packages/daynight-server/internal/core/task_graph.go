@@ -11,6 +11,7 @@ type GraphTask struct {
 	ExternalDependsOn []string
 	BlockedBy         []string
 	RequiredPlatform  *TaskPlatform
+	AssignedTo        *string
 	AllowAgents       bool
 	Ready             bool
 	CreatedAt         time.Time

@@ -30,6 +30,7 @@ type Task struct {
 	ExternalDependsOn []string
 	BlockedBy         []string
 	RequiredPlatform  *TaskPlatform
+	AssignedTo        *string
 	AllowAgents       bool
 	Ready             bool
 }

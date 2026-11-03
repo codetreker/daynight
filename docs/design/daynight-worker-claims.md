@@ -6,6 +6,8 @@
 
 完整 Task 的 `properties` 是保留所有键的通用 JSON 对象。`worker` 缺失表示没有保留的执行归属，包括从未认领或已经强制撤回；存在时是最后一条合法认领记录，`state` 为 `active`、`released` 或 `completed`。读取不补 null，现有旧 worker:null 在属性行迁移中转为缺失。task-sync 摘要携带同快照的完整属性并按任务版本替换，包含 Worker 生命周期变化；服务端图和浏览器图节点保持不含属性的精简投影。摘要属性不代替执行身份核对所需的实时 Task GET。
 
+顶层 `assignedTo` 是独立的人的责任归属，机制由[负责人设计](daynight-task-assignment.md)拥有。claim、摘要更新、release、withdraw、resume、完成及其 no-op 保留该列；改派不转移旧 worker、Session 或 archive 身份。负责人不参与自动候选或 claim 资格，许可开启后其他人的合格 worker 仍可领取。
+
 ```json
 {
   "claimId": "536f264f-83a1-49e1-a585-a0c9024c0402",
