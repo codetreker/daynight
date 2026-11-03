@@ -6,6 +6,7 @@ package v2
 import (
 	"encoding/json"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"reflect"
 )
 
 const (
@@ -49,10 +50,20 @@ type Envelope struct {
 	ContentKind         string `json:"contentKind"`
 }
 
-type Payload interface{ sessionPayload() }
+type Payload interface{ sessionPayload() string }
 type Message struct {
 	Envelope
 	Payload Payload `json:"payload"`
+}
+
+// MarshalJSON prevents producers from labeling a typed payload as another
+// message variant. Field constraints remain the responsibility of DecodeMessage.
+func (message Message) MarshalJSON() ([]byte, error) {
+	if message.Payload == nil || reflect.ValueOf(message.Payload).Kind() == reflect.Pointer && reflect.ValueOf(message.Payload).IsNil() || message.Type != message.Payload.sessionPayload() {
+		return nil, invalid("invalid_payload")
+	}
+	type wireMessage Message
+	return json.Marshal(wireMessage(message))
 }
 
 // NativePaneID preserves the RPC's opaque string or the native layout's uint32.
@@ -207,7 +218,7 @@ type ControlRequest struct {
 	DraftHandled              bool    `json:"draftHandled"`
 	InitialUnknownDisposition *string `json:"initialUnknownDisposition"`
 }
-type InputPayload interface{ inputPayload() }
+type InputPayload interface{ inputPayload() string }
 type Paste struct {
 	Text string `json:"text"`
 }
@@ -215,8 +226,8 @@ type Keys struct {
 	Key string `json:"key"`
 }
 
-func (Paste) inputPayload() {}
-func (Keys) inputPayload()  {}
+func (Paste) inputPayload() string { return "paste" }
+func (Keys) inputPayload() string  { return "keys" }
 
 type Operation struct {
 	OperationID     string       `json:"operationId"`
@@ -229,6 +240,16 @@ type Operation struct {
 	Kind            string       `json:"kind"`
 	Payload         InputPayload `json:"payload"`
 }
+
+// MarshalJSON preserves the input payload's paste/keys meaning on the wire.
+func (operation Operation) MarshalJSON() ([]byte, error) {
+	if operation.Payload == nil || reflect.ValueOf(operation.Payload).Kind() == reflect.Pointer && reflect.ValueOf(operation.Payload).IsNil() || operation.Kind != operation.Payload.inputPayload() {
+		return nil, invalid("invalid_payload")
+	}
+	type wireOperation Operation
+	return json.Marshal(wireOperation(operation))
+}
+
 type OperationResult struct {
 	OperationID string  `json:"operationId"`
 	State       string  `json:"state"`
@@ -270,18 +291,18 @@ type Receipt struct {
 type NativeSnapshot struct{ sp.Snapshot }
 
 func (v NativeSnapshot) MarshalJSON() ([]byte, error) { return sp.MarshalWire(v.Snapshot) }
-func (Registration) sessionPayload()                  {}
-func (RegistrationAck) sessionPayload()               {}
-func (Snapshot) sessionPayload()                      {}
-func (ControlState) sessionPayload()                  {}
-func (ControlRequest) sessionPayload()                {}
-func (Operation) sessionPayload()                     {}
-func (OperationResult) sessionPayload()               {}
-func (GenerationLedger) sessionPayload()              {}
-func (Finalization) sessionPayload()                  {}
-func (ArchiveStatus) sessionPayload()                 {}
-func (Receipt) sessionPayload()                       {}
-func (NativeSnapshot) sessionPayload()                {}
+func (Registration) sessionPayload() string           { return "registration" }
+func (RegistrationAck) sessionPayload() string        { return "registration_ack" }
+func (Snapshot) sessionPayload() string               { return "snapshot" }
+func (ControlState) sessionPayload() string           { return "control_state" }
+func (ControlRequest) sessionPayload() string         { return "control_request" }
+func (Operation) sessionPayload() string              { return "operation" }
+func (OperationResult) sessionPayload() string        { return "operation_result" }
+func (GenerationLedger) sessionPayload() string       { return "generation_ledger" }
+func (Finalization) sessionPayload() string           { return "finalization" }
+func (ArchiveStatus) sessionPayload() string          { return "archive_status" }
+func (Receipt) sessionPayload() string                { return "receipt" }
+func (NativeSnapshot) sessionPayload() string         { return "native_snapshot" }
 
 type RecordingPolicy struct {
 	SampleIntervalMs     int `json:"sampleIntervalMs"`

@@ -499,3 +499,53 @@ func TestExactMetadataBudget(t *testing.T) {
 		t.Fatal("metadata budget exceeded")
 	}
 }
+
+func TestProducerRejectsMismatchedDiscriminators(t *testing.T) {
+	registration, err := DecodeMessage(fixtureBytes(t, "valid-registration"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name    string
+		payload Payload
+		kind    string
+	}{
+		{"wrong message type", registration.Payload, "snapshot"},
+		{"missing message payload", nil, "registration"},
+		{"nil concrete payload", (*Registration)(nil), "registration"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			message := registration
+			message.Type = test.kind
+			message.Payload = test.payload
+			if _, err := json.Marshal(message); err == nil {
+				t.Fatal("message discriminator did not describe its payload")
+			}
+		})
+	}
+	keysMessage, err := DecodeMessage(fixtureBytes(t, "valid-keys"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := keysMessage.Payload.(Operation)
+	for _, test := range []struct {
+		name    string
+		payload InputPayload
+		kind    string
+	}{
+		{"keys encoded as paste", original.Payload, "paste"},
+		{"paste encoded as keys", Paste{Text: "hello"}, "keys"},
+		{"missing operation payload", nil, "keys"},
+		{"nil concrete operation payload", (*Keys)(nil), "keys"},
+		{"nil concrete paste payload", (*Paste)(nil), "paste"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			operation := original
+			operation.Kind = test.kind
+			operation.Payload = test.payload
+			if _, err := json.Marshal(operation); err == nil {
+				t.Fatal("operation discriminator did not describe its payload")
+			}
+		})
+	}
+}

@@ -74,7 +74,15 @@ func TestSharedFixtures(t *testing.T) {
 			}
 			switch fixture.Type {
 			case "message":
-				_, err = DecodeMessage(raw)
+				var message Message
+				message, err = DecodeMessage(raw)
+				if fixture.Valid && err == nil {
+					var encoded []byte
+					encoded, err = json.Marshal(message)
+					if err == nil {
+						_, err = DecodeMessage(encoded)
+					}
+				}
 			case "archive":
 				_, err = DecodeArchive(raw)
 			default:

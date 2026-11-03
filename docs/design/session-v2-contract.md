@@ -235,6 +235,8 @@ Go 通过 `DecodeMessage([]byte) (Message,error)` 与
 `Finalization`、`ArchiveStatus`、`Receipt`、`Archive` 是主要消费者类型。
 `Protocol`、`ProtocolHeader` 与 `Max*`/`*Millis` 常量由同一 limits fixture 校验。
 公开的辅助构造函数和基本值不能替代整个消息/归档 decoder。
+Go 消息与输入操作的序列化拒绝 nil payload，以及外层 type/kind 与具体 payload
+类型不一致的组合；这不替代 decoder 对其余字段、引用和完整性的验证。
 
 两种语言对 manifest 中每个原始 fixture 执行对应 decoder。大边界由测试构造，
 避免提交数十 MiB 文件。既有 v1 fixtures 与 archive 回归保持运行。验证不仅
