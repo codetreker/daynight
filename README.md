@@ -352,6 +352,7 @@ for decision history.
 |---|---|
 | `README.md` | Project purpose, capabilities, setup, development entry points and documentation conventions |
 | Package READMEs and `docs/development.md` | Component usage, development, release procedures and validation methods |
+| [`docs/ui-design.md`](docs/ui-design.md) | Shared UI design principles, examples and information boundaries |
 | `docs/spec/` | Required product behavior and observable guarantees |
 | `docs/design/` | Current structure, mechanisms, rationale and implementation boundaries |
 | `docs/research/` | Investigations, evidence, sources and observation conditions |
