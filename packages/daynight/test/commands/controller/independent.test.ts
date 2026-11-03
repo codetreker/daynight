@@ -11,13 +11,21 @@ vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ readCont
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: f.capture, stopControllerProcesses: f.stop }));
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: f.archive }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
+import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { runIndependentController } from "../../../src/commands/controller/independent.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { SESSION_PROTOCOL } from "../../../src/session/protocol.js";
 import type { CliContext } from "../../../src/cli/context.js";
 const id = "11111111-1111-4111-8111-111111111111";
 const roots: string[] = [];
-afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => {
+  vi.restoreAllMocks(); vi.unstubAllGlobals();
+  for (const root of roots.splice(0)) {
+    if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(root, id)), { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+  vi.unstubAllEnvs();
+});
 beforeEach(() => vi.clearAllMocks());
 const setup = async (prompt: string | null, archiveFailure = false) => {
   // Keep the native socket below the platform limit even inside a task worktree.
@@ -451,6 +459,21 @@ test("archive-only retry marks pending before stop and tolerates metadata public
   expect(order).toEqual(["pending", "stop"]);
   expect(f.archive).toHaveBeenCalledTimes(2);
   expect(f.spawn).toHaveBeenCalledOnce();
+});
+
+test("isolates standalone state and child root without changing native home", async () => {
+  const v = await setup(null), root = path.join(v.home, "dev-state");
+  vi.stubEnv("DN_CONFIG_DIR", root);
+  vi.stubEnv("HOME", "/real/user/home");
+  vi.stubEnv("USERPROFILE", "/real/user/profile");
+  vi.stubEnv("CODEX_HOME", undefined);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  const launch = (await readdir(path.join(root, "controller", "launches")))[0]!;
+  const ticket = JSON.parse(await readFile(path.join(root, "controller", "launches", launch), "utf8"));
+  expect(ticket.nativeHome).toBe(path.join(v.home, ".codex"));
+  expect(ticket.credentialFile).toContain(path.join(root, "controller", "executions"));
+  expect(f.spawn.mock.calls[0]![2].env).toMatchObject({ DN_CONFIG_DIR: root, HOME: "/real/user/home", USERPROFILE: "/real/user/profile" });
+  await expect(readdir(path.join(v.home, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 test("journal observation failure still stops its owned child without fabricating stop evidence", async () => {

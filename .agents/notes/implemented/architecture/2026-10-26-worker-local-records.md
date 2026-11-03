@@ -22,6 +22,8 @@ The following records the original detailed storage decision and why its stronge
 restart guarantees were adopted; its numbered schemas describe that retired
 model rather than the current minimal index.
 
+The [local development CLI decision](2026-10-29-local-development-cli.md) adds an optional `DN_CONFIG_DIR` root for configuration and companion state. The original default paths below remain the default; resource ownership is unchanged.
+
 ### Original implementation and rationale
 
 The [worker design](../../../../docs/design/daynight-worker.md#配置与目录) fixes

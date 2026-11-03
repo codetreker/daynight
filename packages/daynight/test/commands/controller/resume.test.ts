@@ -15,7 +15,7 @@ const roots: string[] = [];
 const identity = { pid: 789, parentPid: 1, processGroupId: 789, startedAt: "original", commandHash: "a".repeat(64) };
 const config = { serverUrl: "https://daynight.example", serverToken: "secret" };
 beforeEach(() => { vi.clearAllMocks(); proof.capture.mockResolvedValue(identity); proof.stopped.mockResolvedValue(true); });
-afterEach(async () => { vi.unstubAllGlobals(); await Promise.all(roots.splice(0).map(home => rm(home, { recursive: true, force: true }))); });
+afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map(home => rm(home, { recursive: true, force: true }))); });
 async function fixture() {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/resume-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
@@ -108,6 +108,18 @@ test("a symlink journal is refused before it can authorize a native writer", asy
   expect(proof.capture).not.toHaveBeenCalled();
 });
 
+
+test("resume reads only the selected state root and puts its lease there", async () => {
+  const f = await fixture(), root = path.join(f.home, "dev-state");
+  vi.stubEnv("DN_CONFIG_DIR", root);
+  const input = { provider: "codex" as const, sessionId: f.ticket.sessionId };
+  await expect(acquireResume(input, f.context, config)).rejects.toThrow(/No stopped local/);
+  await f.save(f.ticket);
+  const lease = await acquireResume(input, f.context, config);
+  expect(await readdir(path.join(root, "controller"))).toContain("native-resume-leases.sqlite");
+  expect(await readdir(path.join(f.home, ".daynight", "controller"))).not.toContain("native-resume-leases.sqlite");
+  await lease.release();
+});
 
 test.each([false, true])("unversioned native leases reset only when no retained ownership exists (%s)", async retained => {
   const f = await fixture(), file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite");
