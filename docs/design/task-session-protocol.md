@@ -195,6 +195,8 @@ client 持有 `{text, revision, submission}` 草稿，`submission` 关联 operat
 
 composer 通过实际 scrollHeight 与宽度变化调整高度并遵守最大高度，保留 timeline 阅读空间。发送过程中记录焦点是否仍属于该输入操作，仅在页面可见、组件 active 且未转移到其他控件时恢复焦点。IME、Shift+Enter 和原生 capability gating 继续独立生效。
 
+composer 的表单保留提交、快捷键和设置面板的所有权；内部共同容器提供输入区、设置入口、活动状态、操作按钮的统一边框；快捷键说明作为发送操作的可访问提示，不占常驻布局行。textarea 使用透明背景且不单独绘制边框，焦点样式由共同容器与各可聚焦控件承担。底部布局按可用容器宽度允许设置、状态和动作分组换行，不使用视觉重排改变键盘顺序。设置与命令面板继续使用原有生命周期和关闭逻辑。选择理由见[统一 Chatbox 分组决策](../../.agents/notes/implemented/bug-fix/2026-11-04-unified-session-chatbox.md)。
+
 阅读与草稿决策的替代方案和限制见[Session 阅读与草稿决策](../../.agents/notes/implemented/bug-fix/2026-10-28-session-reading-and-draft-ownership.md)。
 
 ## 关闭与清理
