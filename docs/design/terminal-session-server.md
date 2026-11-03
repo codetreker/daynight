@@ -62,7 +62,9 @@ reconnect 获得新代次，不能用重复注册同时拥有两条有效输入�
 
 运行账本从 generation 1 连续增长。已有 owner、启动时间、绑定和段归属不能替换；
 nativeSessionId 只允许一致补齐。停止后的运行不可改写。新 generation 以前一运行
-已停止为前提，更新原 Session 的当前绑定。正常网络重连不创建运行。
+已停止且经校验的账本已确认原生身份为前提；身份可以首次出现在 stopProof.binding，
+不要求回写冻结运行的 binding 或额外重连。后继运行必须沿用该原生身份，并更新
+原 Session 的当前绑定。正常网络重连不创建运行。
 
 所有相关事务保持 task-before-session 锁序。finalization 核对 claim 已不能继续、
 所有运行已停止且录制证据已闭合，在同一锁下冻结 finalizationId。新 generation

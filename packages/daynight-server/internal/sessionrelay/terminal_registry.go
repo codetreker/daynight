@@ -314,7 +314,11 @@ func (s *Service) UpdateTerminalLedger(ctx context.Context, p core.Principal, pr
 				return err
 			}
 		} else if generationChanged {
-			if !terminalActive(t, r) || len(in.Runs) != len(r.Runs)+1 || number(m.ExecutionGeneration) != number(r.Envelope.ExecutionGeneration)+1 || in.Runs[len(r.Runs)-1].StopProof == nil || r.Binding.NativeSessionID == nil {
+			// The validated ledger carries native identity forward from both run
+			// bindings and stop proofs. A proof may first learn it at shutdown;
+			// recovering from that identity must not rewrite the frozen run.
+			previousProof := in.Runs[len(r.Runs)-1].StopProof
+			if !terminalActive(t, r) || len(in.Runs) != len(r.Runs)+1 || number(m.ExecutionGeneration) != number(r.Envelope.ExecutionGeneration)+1 || previousProof == nil || previousProof.Binding.NativeSessionID == nil {
 				return conflict()
 			}
 			if err := invalidateTerminalOperations(ctx, tx, id); err != nil {

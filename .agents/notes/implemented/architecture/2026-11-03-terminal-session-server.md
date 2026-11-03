@@ -16,6 +16,9 @@ The shared registry dispatches by backend. Herdr stores its own typed state and
 continuous run ledger, with task-before-session transaction ordering. Generation
 grants and immutable finalization use the same row lock. A Worker channel advances
 its polling and disconnect fence only after that transactional grant succeeds.
+Recovery uses the native identity established by the validated prior run, including
+an identity first learned in its stop proof. The frozen run binding remains intact;
+requiring it to be rewritten or reconnected would prevent otherwise valid recovery.
 Explicit v2 selection
 preserves strict v1 producers, responses and historical files.
 

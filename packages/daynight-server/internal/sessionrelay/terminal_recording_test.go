@@ -279,6 +279,73 @@ func TestTerminalGenerationRecoveryRequiresStoppedOriginalAndKeepsItsLedger(t *t
 		t.Fatal("native session identity erased")
 	}
 }
+
+func TestTerminalGenerationRecoveryUsesIdentityFirstLearnedAtStop(t *testing.T) {
+	for _, persistStopFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "stop and recovery together", true: "already frozen stop"}[persistStopFirst], func(t *testing.T) {
+			f, m, run, _ := terminalRunFixture(t, true)
+			ctx := context.Background()
+			native := "native-learned-at-stop"
+			stoppedAt := "2026-01-01T00:01:00Z"
+			stopped := run
+			stopped.StoppedAt = &stoppedAt
+			proofBinding := run.Binding
+			proofBinding.NativeSessionID = &native
+			stopped.StopProof = &v2.StopProof{RecordID: uuid.NewString(), ExecutionGeneration: "1", Binding: proofBinding, BootID: "boot", StoppedAt: stoppedAt, Method: "instances_exited", TerminalStopped: true, Processes: []v2.ProcessProof{{Role: "shell", PID: 1, BirthToken: "shell-birth", BootID: "boot"}, {Role: "agent", PID: 2, BirthToken: "agent-birth", BootID: "boot"}}}
+			ledger := m
+			ledger.Type = "generation_ledger"
+			ledger.Payload = v2.GenerationLedger{Runs: []v2.Run{stopped}}
+			if persistStopFirst {
+				if _, err := f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, m.SessionID, "1", ledger); err != nil {
+					t.Fatal("persist stop with newly learned native identity", err)
+				}
+			}
+			recovery := run
+			recovery.ExecutionGeneration = "2"
+			recovery.StartedAt = "2026-01-01T00:02:00Z"
+			recovery.Binding.TerminalID = "term_recovery"
+			ledger.ExecutionGeneration = "2"
+			differentNative := "different-native"
+			for _, invalidNative := range []*string{nil, &differentNative} {
+				recovery.Binding.NativeSessionID = invalidNative
+				ledger.Payload = v2.GenerationLedger{Runs: []v2.Run{stopped, recovery}}
+				if _, err := f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, m.SessionID, "1", ledger); err == nil {
+					t.Fatal("recovery erased or replaced the stop proof's native identity")
+				}
+			}
+			recovery.Binding.NativeSessionID = &native
+			ledger.Payload = v2.GenerationLedger{Runs: []v2.Run{stopped, recovery}}
+			if _, err := f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, m.SessionID, "1", ledger); err != nil {
+				t.Fatal("recovery rejected identity learned by the original stop proof", err)
+			}
+			state, err := f.s.TerminalState(ctx, f.p, f.project, f.task, m.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runs := state["ledger"].(v2.GenerationLedger).Runs
+			if state["executionGeneration"] != "2" || len(runs) != 2 || !reflect.DeepEqual(runs[0], stopped) || runs[0].Binding.NativeSessionID != nil || !reflect.DeepEqual(runs[1], recovery) {
+				t.Fatal("recovery changed the original frozen run", state)
+			}
+		})
+	}
+}
+
+func TestTerminalGenerationRecoveryStillRequiresPreviouslyLearnedIdentity(t *testing.T) {
+	f, m, run, _ := terminalRunFixture(t, true)
+	stopped := stopTerminalRun(t, f, m, run)
+	recovery := run
+	recovery.ExecutionGeneration = "2"
+	recovery.Binding.TerminalID = "term_recovery"
+	inventedNative := "newly-invented-native"
+	recovery.Binding.NativeSessionID = &inventedNative
+	ledger := m
+	ledger.Type = "generation_ledger"
+	ledger.ExecutionGeneration = "2"
+	ledger.Payload = v2.GenerationLedger{Runs: []v2.Run{stopped, recovery}}
+	if _, err := f.s.UpdateTerminalLedger(context.Background(), f.p, f.project, f.task, m.SessionID, "1", ledger); err == nil {
+		t.Fatal("recovery invented a native identity absent from the stopped run and its proof")
+	}
+}
 func TestTerminalHistoryPaginationFindsOldClaimsAndHonorsDeletion(t *testing.T) {
 	f, m := terminalFixture(t)
 	ctx := context.Background()

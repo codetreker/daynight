@@ -524,10 +524,21 @@ func TestTerminalArchiveDownloadPreservesReceiptBytes(t *testing.T) {
 }
 
 func TestTerminalWorkerChannelAdvancesStoppedGeneration(t *testing.T) {
+	testTerminalWorkerChannelAdvancesStoppedGeneration(t, false)
+}
+
+func TestTerminalWorkerChannelRecoversNativeIdentityLearnedAtStop(t *testing.T) {
+	testTerminalWorkerChannelAdvancesStoppedGeneration(t, true)
+}
+
+func testTerminalWorkerChannelAdvancesStoppedGeneration(t *testing.T, learnedAtStop bool) {
+	t.Helper()
 	f := terminalHTTPSetup(t)
 	native := "native-conversation"
 	reg := f.message.Payload.(v2.Registration)
-	reg.Binding.NativeSessionID = &native
+	if !learnedAtStop {
+		reg.Binding.NativeSessionID = &native
+	}
 	f.message.Payload = reg
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -553,9 +564,11 @@ func TestTerminalWorkerChannelAdvancesStoppedGeneration(t *testing.T) {
 	stopped := "2026-01-01T00:00:01Z"
 	first.StoppedAt = &stopped
 	first.StopProof = &v2.StopProof{RecordID: uuid.NewString(), ExecutionGeneration: "1", Binding: first.Binding, BootID: "boot", StoppedAt: stopped, Method: "instances_exited", TerminalStopped: true, Processes: []v2.ProcessProof{{Role: "shell", PID: 1, BirthToken: "shell", BootID: "boot"}, {Role: "agent", PID: 2, BirthToken: "agent", BootID: "boot"}}}
+	first.StopProof.Binding.NativeSessionID = &native
 	send("1", "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{first}})
 	next := v2.Run{ExecutionGeneration: "2", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:02Z", SegmentIDs: []string{uuid.NewString()}}
 	next.Binding.TerminalID = "term_recovered"
+	next.Binding.NativeSessionID = &native
 	ack := send("2", "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{first, next}})
 	if string(ack["executionGeneration"]) != `"2"` {
 		t.Fatal(ack)
