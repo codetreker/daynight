@@ -532,7 +532,7 @@ func TestTerminalOldDisconnectPreservesNewConnectionBody(t *testing.T) {
 	s := &Service{now: time.Now}
 	fence := v2.Envelope{SessionID: "session", ClaimID: "claim", ExecutionGeneration: "1"}
 	r := &terminalRecord{Envelope: fence, ConnectionEpoch: "2", Owner: v2.Owner{OwnerUserID: "owner"}}
-	if err := s.storeTerminalBody(r, "operation", []byte("new input"), time.Now().Add(time.Second)); err != nil {
+	if _, err := s.storeTerminalBody(r, "operation", []byte("new input"), time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	s.forgetTerminalConnection("owner", fence, "1")
@@ -557,6 +557,112 @@ func TestTerminalDeadlineObservationReclaimsExpiredBody(t *testing.T) {
 	}
 	if len(f.s.terminalPending) != 0 {
 		t.Fatal("observed operation deadline retained its body")
+	}
+}
+
+func TestTerminalRolledBackBodyCleanupCannotDeleteSuccessfulSameIDRetry(t *testing.T) {
+	f := terminalControlSetup(t)
+	ctx := context.Background()
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	m := f.msg("control_request", req)
+	native, err := f.s.DB.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Rollback(ctx)
+	r, err := loadTerminal(ctx, native, m.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelFailedWrite, err := f.s.storeTerminalBody(r, req.OperationID, encode(m), f.now.Add(time.Duration(v2.InputTimeoutMillis)*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// SubmitTerminal releases the database row lock on rollback before its
+	// caller can clean up the transient write. A same-ID retry can commit first.
+	if err = native.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.submit(t, m).Payload.(v2.OperationResult); got.State != "queued" {
+		t.Fatal(got)
+	}
+	cancelFailedWrite()
+	if offered := f.poll(t, "1"); len(offered) != 1 || offered[0].Payload.(v2.ControlDispatch).Request.OperationID != req.OperationID {
+		t.Fatal("rollback cleanup deleted the successfully retried body", offered)
+	}
+	if offered := f.poll(t, "1"); len(offered) != 0 {
+		t.Fatal("successful retry was replayed", offered)
+	}
+}
+
+func TestTerminalSuspensionOfRolledBackBodyCannotDeleteSameIDRetry(t *testing.T) {
+	f := terminalControlSetup(t)
+	ctx := context.Background()
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	native, err := f.s.DB.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Rollback(ctx)
+	r, err := loadTerminal(ctx, native, f.message.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.s.storeTerminalBody(r, req.OperationID, encode(f.msg("control_request", req)), f.now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// A second transaction can suspend while the failed request's cache entry
+	// remains. Its callback must capture that write, not just its reusable ID.
+	native, err = f.s.DB.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Rollback(ctx)
+	tx := &relayTx{Tx: native}
+	r, err = loadTerminal(ctx, tx, f.message.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.s.suspendTerminal(ctx, tx, r); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.worker(t, "1", f.msg("control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "suspended", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}))
+	req.ControlEpoch = "2"
+	f.submit(t, f.msg("control_request", req))
+	for _, cleanup := range tx.committed {
+		cleanup()
+	}
+	if offered := f.poll(t, "1"); len(offered) != 1 || offered[0].Payload.(v2.ControlDispatch).Request.OperationID != req.OperationID {
+		t.Fatal("suspension cleanup deleted a same-ID replacement", offered)
+	}
+}
+
+func TestTerminalFailedInsertCancelsItsBodyAndPermitsRetry(t *testing.T) {
+	f := terminalControlSetup(t)
+	ctx := context.Background()
+	if _, err := f.s.DB.Pool.Exec(ctx, `CREATE FUNCTION reject_terminal_operation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'operation insert refused'; END $$; CREATE TRIGGER reject_terminal_operation BEFORE INSERT ON session_operations FOR EACH ROW EXECUTE FUNCTION reject_terminal_operation()`); err != nil {
+		t.Fatal(err)
+	}
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	m := f.msg("control_request", req)
+	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, m.SessionID, f.browser, m); err == nil {
+		t.Fatal("injected insert failure unexpectedly committed")
+	}
+	if len(f.s.terminalPending) != 0 {
+		t.Fatal("failed insert retained its body reservation")
+	}
+	if _, err := f.s.DB.Pool.Exec(ctx, `DROP TRIGGER reject_terminal_operation ON session_operations; DROP FUNCTION reject_terminal_operation()`); err != nil {
+		t.Fatal(err)
+	}
+	f.submit(t, m)
+	if offered := f.poll(t, "1"); len(offered) != 1 {
+		t.Fatal("same-ID retry after failure was not dispatched", offered)
 	}
 }
 
@@ -1190,5 +1296,6 @@ func storeTerminalTestBody(s *Service, id, operationID string, raw []byte) error
 	if s.now == nil {
 		s.now = time.Now
 	}
-	return s.storeTerminalBody(&terminalRecord{Envelope: v2.Envelope{SessionID: id, ClaimID: "claim", ExecutionGeneration: "1"}, ConnectionEpoch: "1", Owner: v2.Owner{OwnerUserID: "owner"}}, operationID, raw, s.now().Add(time.Duration(v2.InputTimeoutMillis)*time.Millisecond))
+	_, err := s.storeTerminalBody(&terminalRecord{Envelope: v2.Envelope{SessionID: id, ClaimID: "claim", ExecutionGeneration: "1"}, ConnectionEpoch: "1", Owner: v2.Owner{OwnerUserID: "owner"}}, operationID, raw, s.now().Add(time.Duration(v2.InputTimeoutMillis)*time.Millisecond))
+	return err
 }

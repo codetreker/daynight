@@ -267,7 +267,7 @@ func terminalHash(m v2.Message) ([]byte, error) {
 	return hash[:], nil
 }
 
-func (s *Service) storeTerminalBody(r *terminalRecord, operationID string, raw []byte, deadline time.Time) error {
+func (s *Service) storeTerminalBody(r *terminalRecord, operationID string, raw []byte, deadline time.Time) (cancel func(), err error) {
 	s.terminalMutex.Lock()
 	defer s.terminalMutex.Unlock()
 	id := r.Envelope.SessionID
@@ -279,14 +279,29 @@ func (s *Service) storeTerminalBody(r *terminalRecord, operationID string, raw [
 	entries := s.terminalPending[id]
 	if entries == nil {
 		if len(s.terminalPending) >= maxLiveSessions {
-			return fault("rate_limited", "Terminal relay capacity is unavailable.")
+			return nil, fault("rate_limited", "Terminal relay capacity is unavailable.")
 		}
 		entries = map[string]*terminalBodyWrite{}
 		s.terminalPending[id] = entries
 	}
 	clear(entries)
-	entries[operationID] = &terminalBodyWrite{raw: bytes.Clone(raw), fence: r.Envelope, epoch: r.ConnectionEpoch, owner: r.Owner.OwnerUserID, deadline: deadline}
-	return nil
+	write := &terminalBodyWrite{raw: bytes.Clone(raw), fence: r.Envelope, epoch: r.ConnectionEpoch, owner: r.Owner.OwnerUserID, deadline: deadline}
+	entries[operationID] = write
+	// Rollback releases the database lock before caller cleanup. Cancel only
+	// this reservation, because a same-ID retry may already have replaced it.
+	return func() { s.cancelTerminalBody(id, operationID, write) }, nil
+}
+
+func (s *Service) cancelTerminalBody(id, operationID string, write *terminalBodyWrite) {
+	s.terminalMutex.Lock()
+	defer s.terminalMutex.Unlock()
+	if s.terminalPending[id][operationID] != write {
+		return
+	}
+	delete(s.terminalPending[id], operationID)
+	if len(s.terminalPending[id]) == 0 {
+		delete(s.terminalPending, id)
+	}
 }
 func (s *Service) expireTerminalBodiesLocked(now time.Time) {
 	// The durable operation deadline also bounds its transient body. Reclamation
@@ -379,14 +394,14 @@ func (s *Service) suspendTerminal(ctx context.Context, tx pgx.Tx, r *terminalRec
 		return err
 	}
 	s.terminalMutex.Lock()
-	pendingIDs := make([]string, 0, len(s.terminalPending[r.Envelope.SessionID]))
-	for id := range s.terminalPending[r.Envelope.SessionID] {
-		pendingIDs = append(pendingIDs, id)
+	pending := make(map[string]*terminalBodyWrite, len(s.terminalPending[r.Envelope.SessionID]))
+	for id, write := range s.terminalPending[r.Envelope.SessionID] {
+		pending[id] = write
 	}
 	s.terminalMutex.Unlock()
 	afterCommit(tx, func() {
-		for _, id := range pendingIDs {
-			s.forgetTerminalBody(r.Envelope.SessionID, id)
+		for id, write := range pending {
+			s.cancelTerminalBody(r.Envelope.SessionID, id, write)
 		}
 	})
 	return saveTerminal(ctx, tx, r)
@@ -529,7 +544,7 @@ func (s *Service) SubmitTerminal(ctx context.Context, p core.Principal, project,
 		return v2.Message{}, err
 	}
 	var out v2.Message
-	stored := false
+	var cancelBody func()
 	err = s.terminalAccess(ctx, p, project, taskID, id, false, func(tx pgx.Tx, r *terminalRecord, t task, write bool) error {
 		if !write {
 			return denied()
@@ -581,10 +596,9 @@ func (s *Service) SubmitTerminal(ctx context.Context, p core.Principal, project,
 			return e
 		}
 		deadline := s.now().Add(time.Duration(v2.InputTimeoutMillis) * time.Millisecond).Truncate(time.Microsecond)
-		if e = s.storeTerminalBody(r, operationID, raw, deadline); e != nil {
+		if cancelBody, e = s.storeTerminalBody(r, operationID, raw, deadline); e != nil {
 			return e
 		}
-		stored = true
 		result := terminalResult(operationID, "queued", "")
 		r.OperationSeq++
 		if c.Input != nil {
@@ -597,8 +611,8 @@ func (s *Service) SubmitTerminal(ctx context.Context, p core.Principal, project,
 		out = terminalResultMessage(terminalOperation{Command: c, Result: result})
 		return saveTerminal(ctx, tx, r)
 	})
-	if err != nil && stored {
-		s.forgetTerminalBody(id, operationID)
+	if err != nil && cancelBody != nil {
+		cancelBody()
 	}
 	return out, err
 }

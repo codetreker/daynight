@@ -38,6 +38,10 @@ Preview entries expire by connection liveness, and pending input expires by its
 durable operation deadline. Allocation reclaims expired entries independently of
 archive success or credential validity; connection-fenced cleanup preserves newer
 connections and valid pending writes.
+Failed submissions and suspension callbacks cancel only their captured body
+reservations. The transaction releases its row lock before cleanup, so operation
+identity alone cannot distinguish a rolled-back write from a successful same-ID
+retry.
 
 See the [server design](../../../../docs/design/terminal-session-server.md) for
 routes, authorization, state transitions and validation, and the
