@@ -41,11 +41,6 @@
 .session-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .session-actions .button-primary { background: #6262ba; color: white; border-color: #6262ba; }
 .session-actions .button-primary:disabled { background: #ededf5; color: #7e8398; border-color: #dce0e8; }
-.session-composer { padding: 12px 26px 16px; border-top: 1px solid #e5e8ef; flex: none; background: #fff; }
-.session-composer textarea { display: block; width: 100%; resize: vertical; min-height: 70px; max-height: 180px; padding: 12px; font: inherit; line-height: 1.5; border: 1px solid #d9deea; border-radius: 8px; outline-offset: 3px; }
-.session-composer textarea:focus { border-color: #8585cf; }
-.session-composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 9px; }
-.session-composer-footer small { color: #7a8497; font-size: 10px; }
 .session-notice { color: #7a6539; background: #fff9ea; padding: 7px 10px; border-radius: 5px; font-size: 11px; margin: 0 0 9px; overflow-wrap: anywhere; }
 .session-error { margin: 8px 12px; color: #9c3d48; font-size: 12px; overflow-wrap: anywhere; }
 .session-receipts { flex: none; max-height: 72px; overflow: auto; padding: 4px 26px; background: #fafbfe; font-size: 10px; color: #758096; }
@@ -60,10 +55,6 @@
 @media (max-width: 600px) {
   .session-header { padding: 9px 12px; }
   .session-timeline { padding: 16px 12px; }
-  .session-composer { padding: 10px 12px; }
-  .session-composer textarea { resize: none; min-height: 64px; max-height: 120px; }
-  .session-composer-footer { flex-wrap: wrap; }
-  .session-composer-footer > small { flex: 1; min-width: 110px; }
   .session-interaction { padding: 12px; }
   .session-receipts { padding-inline: 12px; max-height: 48px; }
 }
