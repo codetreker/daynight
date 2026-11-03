@@ -18,9 +18,10 @@ const disposals: (() => void)[] = [];
 afterEach(() => { disposals.splice(0).forEach((dispose) => dispose()); });
 const fixture = () => {
   const operation = createOperation(); disposals.push(() => operation.dispose());
+  const stdout = vi.fn<(text: string) => void>();
   const context = {
     version: "0.0.0", packageDirectory: "unused", homeDirectory: vi.fn(() => { throw new Error("Unexpected config read"); }), workingDirectory: vi.fn(() => "caller"),
-    stdout: vi.fn<(text: string) => void>(), stderr: vi.fn<(text: string) => void>(), stdoutBytes: vi.fn(async () => {}),
+    stdout, stderr: vi.fn<(text: string) => void>(), stdoutBytes: vi.fn(async (chunk: Uint8Array) => { stdout(Buffer.from(chunk).toString("utf8")); }),
   } satisfies CliContext;
   const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ items: [message], hasMoreBefore: true, hasMoreAfter: false }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } }));
   const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch });
@@ -114,6 +115,18 @@ describe("Thread command boundaries", () => {
     expect(error.cause).toBe(original);
     expect(formatError(error)).toContain("The posting outcome is unknown.");
     expect(formatError(error)).not.toContain("secret");
+  });
+
+  it("awaits read output failures without exposing stream diagnostics or marking a page consumed", async () => {
+    const f = fixture(), failure = new Error("private asynchronous output failure");
+    f.context.stdoutBytes.mockRejectedValue(failure);
+    const error = await runTaskCommand(["thread", "read", taskId, `--project=${projectId}`], f.context, f.dependencies).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PublicDiagnosticError);
+    expect((error as Error).cause).toBe(failure);
+    expect(formatError(error)).toContain("phase=output");
+    expect(formatError(error)).not.toContain("private");
+    expect(f.context.stdout).not.toHaveBeenCalled();
+    expect(f.fetch).toHaveBeenCalledOnce();
   });
 
   it("keeps preparation diagnostics safe while preserving the original cause", async () => {

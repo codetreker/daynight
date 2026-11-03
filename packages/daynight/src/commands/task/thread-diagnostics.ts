@@ -17,7 +17,7 @@ export const classifyThreadPostFailure = (cause: unknown): "confirmed" | "unknow
 };
 
 export class ThreadCommandError extends PublicDiagnosticError {
-  constructor(cause: unknown, operation: "read" | "post", phase: "prepare" | "request" | "render", projectId?: string, taskId?: string) {
+  constructor(cause: unknown, operation: "read" | "post", phase: "prepare" | "request" | "render" | "output", projectId?: string, taskId?: string) {
     const outcome = operation === "post" ? classifyThreadPostFailure(cause) : "failed";
     const failures = apiFailures(cause);
     const api = failures.find((error) => error.confirmedMessageId !== undefined) ?? failures.find((error) => error.outcomeUnconfirmed) ?? failures[0];

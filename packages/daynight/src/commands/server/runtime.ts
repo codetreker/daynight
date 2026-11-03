@@ -51,7 +51,9 @@ export const runServerCommand = async (
     const output = await command({ api, operation, serverUrl });
     if (typeof output === "object" && output.kind === "confirmed-mutation") {
       confirmed = output;
-      context.stdout(output.output);
+      const receipt = createOperation({ limits: { totalMs: 5_000 } });
+      try { await context.stdoutBytes(Buffer.from(output.output, "utf8"), receipt.signal); }
+      finally { receipt.dispose(); }
     } else {
       operation.check();
       if (typeof output === "string") context.stdout(output);

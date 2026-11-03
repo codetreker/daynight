@@ -115,6 +115,9 @@ hasMoreBefore 为 true 时仅顶部显示 `... Has more messages before`，hasMo
 取后缀，最终都升序展示。遗漏前部/后部分别与服务两侧标记作 OR，不截断或跳过消息，
 不补发请求。实际输出第一项供历史继续，最后完整消费项供增量继续。
 
+Thread读取在完整校验、渲染和计字节后等待现有stdoutBytes写入确认，使用本次网络与读取
+Operation的取消信号；输出失败由Thread安全诊断出口报告，不能将部分输出视为已消费页。
+
 单消息保证依赖逐项 64 KiB 验证与固定包装约束。可变正文/名字最多为服务 JSON 对应
 内容的四倍：最坏 DEL 从一字节变四字节，C1 从两字节变六字节。固定资源部分至少
 183 字节，最大全部终端包装为 473 字节，因而：
@@ -142,8 +145,11 @@ Thread 再决定是否发送，CLI 不保存或删除调用者草稿，不自动
 证明特定请求成功。
 
 已确认结果携带 project/task/message Id 跨越 runtime 的输出与 finally。后续取消检查
-不能改写远端提交事实；stdout 或清理失败仍暴露为退出 1，保留确认 Id 并说明本地失败。
-Operation、流、信号 listener 和 timer 仍完整清理，没有 detached 异步任务。
+不能改写远端提交事实。回执复用现有stdoutBytes可等待写入器，等待实际写入确认并捕获
+异步stdout错误；独立5秒本地输出Operation让已经取消的网络scope不阻止输出已确认回执。
+该输出scope在写入后dispose，原网络Operation、输出helper、流、signal listener和timer
+仍完整清理。stdout或清理失败退出1，保留确认Id及内部cause并说明本地失败；没有
+detached异步任务。
 
 PublicDiagnosticError 保留内部 cause 和安全 publicText/exitCode；最终 formatter 只打印
 安全说明。诊断可含规范 operation/phase/Id/status/code/requestId，不输出正文、账号名、

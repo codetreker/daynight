@@ -1,10 +1,12 @@
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { OperationError } from "../../../src/api/index.js";
 import type { CliContext } from "../../../src/cli/context.js";
+import { writeOutputBytes } from "../../../src/cli/byte-output.js";
 import { runServerCommand } from "../../../src/commands/server/runtime.js";
 import type { ConfirmedMutationOutput, ServerSession } from "../../../src/commands/server/runtime.js";
 import { formatError, PublicDiagnosticError } from "../../../src/platform/diagnostics.js";
@@ -34,7 +36,7 @@ const fixture = async () => {
   const context = {
     version: "0.0.0", packageDirectory: "unused", homeDirectory: () => home,
     workingDirectory: () => { throw new Error("An explicit project must not discover Git"); },
-    stdout: vi.fn<(text: string) => void>(), stdoutBytes: vi.fn(async () => {}),
+    stdout: vi.fn<(text: string) => void>(), stdoutBytes: vi.fn<CliContext["stdoutBytes"]>(async () => {}),
     stderr: vi.fn<(text: string) => void>(), closeStdoutBytes: vi.fn(async () => {}),
   } satisfies CliContext;
   return { context, config, signals: new EventEmitter(), fetch: vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response()) };
@@ -47,13 +49,16 @@ describe("confirmed Thread post runtime lifecycle", () => {
   it("keeps a fully validated POST confirmed when cancellation arrives before callback completion", async () => {
     const f = await fixture();
     let session: ServerSession | undefined;
+    f.context.stdoutBytes.mockImplementation(async (_chunk, signal) => { expect(signal.aborted).toBe(false); });
     await runServerCommand(f.context, async (current) => {
       session = current;
       expect(await current.api.postTaskThreadMessage(projectId, taskId, { body })).toEqual(message);
       f.signals.emit("SIGINT");
       return confirmed();
     }, { signalEmitter: f.signals, fetch: f.fetch });
-    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(receipt);
+    expect(f.context.stdoutBytes).toHaveBeenCalledExactlyOnceWith(Buffer.from(receipt), expect.any(AbortSignal));
+    expect(f.context.stdoutBytes.mock.calls[0]![1].aborted).toBe(true);
+    expect(f.context.stdout).not.toHaveBeenCalled();
     expect(f.context.stderr).not.toHaveBeenCalled();
     expect(f.fetch).toHaveBeenCalledOnce();
     expect(session!.operation.signal.aborted).toBe(true);
@@ -74,7 +79,7 @@ describe("confirmed Thread post runtime lifecycle", () => {
   it("exposes a local stdout failure with the confirmed message Id and original cause", async () => {
     const f = await fixture();
     const failure = new Error("private stdout error");
-    f.context.stdout.mockImplementation(() => { throw failure; });
+    f.context.stdoutBytes.mockRejectedValue(failure);
     const result = runServerCommand(f.context, async ({ api }) => {
       await api.postTaskThreadMessage(projectId, taskId, { body });
       return confirmed();
@@ -86,6 +91,30 @@ describe("confirmed Thread post runtime lifecycle", () => {
       expect(formatError(error)).toContain("local output failed");
       expect(formatError(error)).not.toMatch(/unknown|retry|private stdout error/i);
     });
+    expectReleased(f.signals);
+    expect(f.context.closeStdoutBytes).toHaveBeenCalledOnce();
+    expect(f.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("captures a Writable callback failure and its following error event without an unhandled error", async () => {
+    const f = await fixture();
+    const failure = new Error("private asynchronous stdout error");
+    const output = new Writable({ write(_chunk, _encoding, callback) { queueMicrotask(() => callback(failure)); } });
+    f.context.stdoutBytes.mockImplementation((chunk, signal) => writeOutputBytes(output, chunk, signal));
+    const result = runServerCommand(f.context, async ({ api }) => {
+      await api.postTaskThreadMessage(projectId, taskId, { body });
+      return confirmed();
+    }, { signalEmitter: f.signals, fetch: f.fetch });
+    await expect(result).rejects.toMatchObject({ exitCode: 1, cause: failure });
+    await result.catch((error: unknown) => {
+      expect(error).toBeInstanceOf(PublicDiagnosticError);
+      expect(formatError(error)).toContain(`Message posted. Id: ${messageId}`);
+      expect(formatError(error)).toContain("local output failed");
+      expect(formatError(error)).not.toMatch(/unknown|retry|private asynchronous stdout error/i);
+    });
+    expect(f.context.stdout).not.toHaveBeenCalled();
+    expect(output.listenerCount("error")).toBe(0);
+    expect(output.listenerCount("close")).toBe(0);
     expectReleased(f.signals);
     expect(f.context.closeStdoutBytes).toHaveBeenCalledOnce();
     expect(f.fetch).toHaveBeenCalledOnce();
@@ -108,7 +137,8 @@ describe("confirmed Thread post runtime lifecycle", () => {
       expect((error as Error).cause).toBeInstanceOf(AggregateError);
       expect(((error as Error).cause as AggregateError).errors).toContain(failure);
     });
-    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(receipt);
+    expect(f.context.stdoutBytes).toHaveBeenCalledExactlyOnceWith(Buffer.from(receipt), expect.any(AbortSignal));
+    expect(f.context.stdout).not.toHaveBeenCalled();
     expectReleased(f.signals);
     expect(f.fetch).toHaveBeenCalledOnce();
   });
@@ -124,7 +154,8 @@ describe("confirmed Thread post runtime lifecycle", () => {
     expect(f.fetch).toHaveBeenCalledOnce();
     expect(String(f.fetch.mock.calls[0]![0])).toBe(`http://127.0.0.1:8787/api/v1/projects/${projectId}/tasks/${taskId}/thread/messages`);
     expect(f.fetch.mock.calls[0]![1]!.headers).toMatchObject({ Authorization: "Bearer fixture-token" });
-    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(receipt);
+    expect(f.context.stdoutBytes).toHaveBeenCalledExactlyOnceWith(Buffer.from(receipt), expect.any(AbortSignal));
+    expect(f.context.stdout).not.toHaveBeenCalled();
     expectReleased(f.signals);
   });
 
@@ -136,6 +167,7 @@ describe("confirmed Thread post runtime lifecycle", () => {
       return confirmed();
     }, { signalEmitter: f.signals, fetch: f.fetch })).rejects.toMatchObject({ outcomeUnconfirmed: true });
     expect(f.context.stdout).not.toHaveBeenCalled();
+    expect(f.context.stdoutBytes).not.toHaveBeenCalled();
     expectReleased(f.signals);
     expect(f.fetch).toHaveBeenCalledOnce();
   });

@@ -32,7 +32,10 @@ other participants' unseen messages.
 A successful response admits a canonical account header; POST author identity
 must match it. Origin and PAT are captured once per invocation. Strictly
 validated 201 confirms a message before receipt output and cleanup, retaining
-its identity through later local failures. Dispatched uncertain POSTs remain
+its identity through later local failures. Receipt output awaits the existing
+byte writer's acknowledgement, including asynchronous stream errors. An owned
+five-second output operation remains independent of an already cancelled network
+scope and is disposed after the write. Dispatched uncertain POSTs remain
 unknown and are never replayed. A verified clock refusal is definite failure;
 generic server errors cannot establish rollback.
 

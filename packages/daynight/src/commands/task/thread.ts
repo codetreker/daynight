@@ -38,7 +38,7 @@ export const compileThreadPost = (command: Command): PostThreadMessageInput => {
 export const runTaskThreadCommand = async (command: Command, context: CliContext, dependencies: TaskCommandDependencies): Promise<void> => {
   const name = command.command.name as "read" | "post";
   let projectId: string | undefined, taskId: string | undefined;
-  let phase: "prepare" | "request" | "render" = "prepare";
+  let phase: "prepare" | "request" | "render" | "output" = "prepare";
   let confirmedMessageId: string | undefined;
   try {
     const help = `${command.path.join(" ")} --help`;
@@ -55,7 +55,10 @@ export const runTaskThreadCommand = async (command: Command, context: CliContext
         const page = await api.readTaskThread(projectId, taskId!, read);
         operation.check();
         phase = "render";
-        return renderThreadPage(page, read.afterId === undefined ? read.beforeId === undefined ? "latest" : "before" : "after", () => operation.check());
+        const output = renderThreadPage(page, read.afterId === undefined ? read.beforeId === undefined ? "latest" : "before" : "after", () => operation.check());
+        phase = "output";
+        await context.stdoutBytes(Buffer.from(output, "utf8"), operation.signal);
+        return;
       }
       const message = await api.postTaskThreadMessage(projectId, taskId!, post!);
       confirmedMessageId = message.id;
