@@ -362,7 +362,7 @@ func TestTaskAssignmentFailuresPreserveAtomicityAndCause(t *testing.T) {
 		var memberships atomic.Int32
 		traced := tracedTasks(t, databaseURL, taskQueryAction{
 			match: func(sql string) bool {
-				return strings.Contains(sql, "FROM project_members m") && memberships.Add(1) == 2
+				return strings.Contains(sql, "FROM project_members") && memberships.Add(1) == 2
 			}, end: cancel,
 		})
 		_, err := traced.Update(ctx, admin, project.ID, before.ID, UpdateTask{Version: before.Version, AssignedTo: assignmentChange(&outsider.UserID)})

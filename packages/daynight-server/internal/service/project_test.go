@@ -133,7 +133,7 @@ func TestProjectSnapshotQueryFailuresRemainOperational(t *testing.T) {
 type cancelAfterProjectQuery struct{ cancel context.CancelFunc }
 
 func (t cancelAfterProjectQuery) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	return context.WithValue(ctx, queryContextKey{}, strings.Contains(data.SQL, "FROM project_members m"))
+	return context.WithValue(ctx, queryContextKey{}, strings.Contains(data.SQL, "FROM project_members"))
 }
 
 type queryContextKey struct{}

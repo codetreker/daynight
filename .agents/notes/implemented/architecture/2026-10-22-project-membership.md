@@ -18,12 +18,27 @@ membership and project invitations. Existing production resource entry points
 remain unchanged until coordinated activation. Callable membership handlers use
 the existing authentication module rather than a second identity mechanism.
 
-Read admission checks the current member within the existing read snapshot.
-Writes use the existing project row lock before checking actor authority,
-observed target version and administrator count. The same project lock orders
-membership mutations and invitation acceptance. Accessible project SQL filters
-by membership before cursor and LIMIT; it never filters an already fetched page.
-Private project creation and its first admin membership commit together.
+Stored `ProjectGrant` records own project/user IDs, role, the real observation
+version and membership timestamps. `ProjectMember` is a joined response projection
+with a named grant and nullable profile fields. It is returned by roster reads,
+grant mutations and invitation acceptance; HTTP flattens it into the existing
+member JSON. Explicit direct-relation reads determine invitation no-ops and
+versioned mutation targets without extra profile queries.
+
+Read admission returns `ProjectAccess` within the existing read snapshot. This
+computed projection has project/user IDs and the current role, without profile,
+version or storage timestamps. Point admission and accessible-project filtering
+use the same canonical direct-authorization source. Resource services and Worker
+non-owner administrator checks consume access; claim ownership and task-assignee
+requirements keep their separate rules.
+
+Writes use the existing project row lock before checking actor access, the target
+grant's observed version and administrator count. The same project lock orders
+grant mutations and invitation acceptance. Accessible project SQL filters before
+cursor and LIMIT; it never filters an already fetched page. Private project
+creation and its first admin grant commit together. This separation preserves
+the current direct-only policy, physical tables and sequence, HTTP responses and
+last-administrator protection.
 
 Member observation versions come from one PostgreSQL bigint sequence on insertion
 and real role changes. They are opaque, positive and noncontiguous; a no-op keeps
@@ -48,6 +63,12 @@ now makes ordinary Create/List principal-aware, removes those aliases and mounts
 principals. Existing projects receive no automatic membership.
 
 ## Alternatives
+
+**Use the joined member record as the authorization result.** This couples
+resource admission to profile projection and exposes a writable grant version as
+though it described the computed access decision. Separate access and grant
+values give these consumers explicit responsibilities while preserving the
+existing response query and wire format.
 
 **Check permission before opening an unrelated business transaction.** A role
 could change between the check and mutation. Checking inside the existing project

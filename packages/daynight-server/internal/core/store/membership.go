@@ -12,51 +12,23 @@ const memberProjection = `m.project_id::text,m.user_id::text,m.role,m.version,u.
 
 func scanMember(row pgx.Row) (core.ProjectMember, error) {
 	var member core.ProjectMember
-	err := row.Scan(&member.ProjectID, &member.UserID, &member.Role, &member.Version, &member.Email, &member.Name, &member.AvatarURL, &member.CreatedAt, &member.UpdatedAt)
+	err := row.Scan(&member.Grant.ProjectID, &member.Grant.UserID, &member.Grant.Role, &member.Grant.Version, &member.Email, &member.Name, &member.AvatarURL, &member.Grant.CreatedAt, &member.Grant.UpdatedAt)
 	return member, err
 }
 
-func readMember(ctx context.Context, tx pgx.Tx, userID string, projectID string) (core.ProjectMember, error) {
+func readDirectProjectMember(ctx context.Context, tx pgx.Tx, userID string, projectID string) (core.ProjectMember, error) {
 	member, err := scanMember(tx.QueryRow(ctx, `SELECT `+memberProjection+` FROM project_members m
         JOIN users u ON u.id=m.user_id JOIN projects p ON p.id=m.project_id
         WHERE m.project_id=$1 AND m.user_id=$2`, projectID, userID))
 	return member, authQueryError("read project member", err)
 }
 
-func (s *Snapshot) ProjectMember(ctx context.Context, principal core.Principal, projectID string) (core.ProjectMember, error) {
-	return readMember(ctx, s.tx, principal.UserID, projectID)
+func (s *Snapshot) DirectProjectMember(ctx context.Context, userID, projectID string) (core.ProjectMember, error) {
+	return readDirectProjectMember(ctx, s.tx, userID, projectID)
 }
 
-func (tx *ProjectTx) ProjectMember(ctx context.Context, principal core.Principal) (core.ProjectMember, error) {
-	return readMember(ctx, tx.tx, principal.UserID, tx.projectID)
-}
-
-func (s *Snapshot) AccessibleProjects(ctx context.Context, principal core.Principal, page Page) (ProjectPage, error) {
-	afterTime, afterID := pageValues(page)
-	rows, err := s.tx.Query(ctx, `SELECT `+projectProjection+` FROM projects p
-        WHERE EXISTS (SELECT 1 FROM project_members m WHERE m.project_id=p.id AND m.user_id=$1)
-        AND ($2::timestamptz IS NULL OR (p.created_at,p.id)>($2,$3::uuid))
-        ORDER BY p.created_at,p.id LIMIT $4`, principal.UserID, afterTime, afterID, page.Limit+1)
-	if err != nil {
-		return ProjectPage{}, queryError("list accessible projects", err)
-	}
-	defer rows.Close()
-	items := []core.Project{}
-	for rows.Next() {
-		project, err := scanProject(rows)
-		if err != nil {
-			return ProjectPage{}, queryError("list accessible projects", err)
-		}
-		items = append(items, project)
-	}
-	if err := rows.Err(); err != nil {
-		return ProjectPage{}, queryError("list accessible projects", err)
-	}
-	more := len(items) > page.Limit
-	if more {
-		items = items[:page.Limit]
-	}
-	return ProjectPage{Items: items, HasMore: more}, nil
+func (tx *ProjectTx) DirectProjectMember(ctx context.Context, userID string) (core.ProjectMember, error) {
+	return readDirectProjectMember(ctx, tx.tx, userID, tx.projectID)
 }
 
 func (s *Store) CreatePrivateProject(ctx context.Context, principal core.Principal, id, name, repoURL string) (core.Project, error) {
@@ -100,10 +72,6 @@ func (s *Snapshot) ProjectMembers(ctx context.Context, projectID string) ([]core
 	return members, authQueryError("list project members", rows.Err())
 }
 
-func (tx *ProjectTx) Member(ctx context.Context, userID string) (core.ProjectMember, error) {
-	return readMember(ctx, tx.tx, userID, tx.projectID)
-}
-
 func (tx *ProjectTx) AdminCount(ctx context.Context) (int64, error) {
 	var count int64
 	err := tx.tx.QueryRow(ctx, `SELECT count(*) FROM project_members WHERE project_id=$1 AND role='admin'`, tx.projectID).Scan(&count)
@@ -115,7 +83,7 @@ func (tx *ProjectTx) SetMemberRole(ctx context.Context, userID string, role core
         updated_at=statement_timestamp() WHERE project_id=$1 AND user_id=$2`, tx.projectID, userID, role); err != nil {
 		return core.ProjectMember{}, queryError("update member role", err)
 	}
-	return tx.Member(ctx, userID)
+	return tx.DirectProjectMember(ctx, userID)
 }
 
 func (tx *ProjectTx) RemoveMember(ctx context.Context, userID string) error {
@@ -128,7 +96,7 @@ func (tx *ProjectTx) AddInvitedMember(ctx context.Context, userID string) (core.
 	if err != nil {
 		return core.ProjectMember{}, queryError("add invited member", err)
 	}
-	return tx.Member(ctx, userID)
+	return tx.DirectProjectMember(ctx, userID)
 }
 
 const invitationProjection = `id::text,project_id::text,created_by::text,token_hash,created_at,expires_at,consumed_by::text,consumed_at,revoked_at`

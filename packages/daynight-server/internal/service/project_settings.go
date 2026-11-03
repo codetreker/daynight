@@ -27,11 +27,11 @@ func (s *Projects) UpdateSettings(ctx context.Context, principal core.Principal,
 	var refusal *Fault
 	err = s.store.WriteProject(ctx, id, func(tx *store.ProjectTx) error {
 		return completeMembershipOperation(func() error {
-			member, err := RequireProjectWrite(ctx, tx, principal)
+			access, err := RequireProjectWrite(ctx, tx, principal)
 			if err != nil {
 				return err
 			}
-			if err := requireProjectAdmin(member); err != nil {
+			if err := requireProjectAdmin(access); err != nil {
 				return err
 			}
 			project, err = tx.Project(ctx)

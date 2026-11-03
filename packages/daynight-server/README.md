@@ -35,6 +35,12 @@ implements persistent users, browser-bound login transactions, sessions, PATs an
 callable HTTP handlers. NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The [membership foundation](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
 adds NewMemberships/NewMembershipRoutes, transaction-scoped access checks, private
 project creation, filtered project lists, administrator changes and invitations.
+Stored `ProjectGrant` facts and their real observation versions are distinct from
+computed `ProjectAccess`. Resource admission and accessible-project filtering use
+the canonical direct-authorization source; the existing member response joins
+grant facts with nullable profile fields without changing its public JSON.
+Worker administrator checks consume access, while claim ownership and acquisition
+assignment requirements retain their separate rules.
 The project settings API provides a versioned execution-warning threshold that
 administrators save and members read.
 The application mux mounts all of these modules and requires authentication for
