@@ -78,6 +78,12 @@ export const useProjectSettings = (projectId: string, userId: string) => {
     try {
       const saved = await saveProjectSettings(projectId, { version: project.settings.version, executionWarningMinutes: minutes }, signal);
       if (signal.aborted) return;
+      ++generation.current; readController.current?.abort();
+      setLoading(false); setError(null);
+      const currentAccess = access.session.snapshot();
+      const freshlyAdmitted = currentAccess.status === "ready" && !currentAccess.refreshing;
+      reloadAfterRevocation.current = !freshlyAdmitted;
+      if (freshlyAdmitted) setUnavailable(false);
       setProject(saved); setDraft(String(saved.settings.executionWarningMinutes)); setNotice("saved");
     } catch (failure) {
       if (signal.aborted || isAbortError(failure)) return;

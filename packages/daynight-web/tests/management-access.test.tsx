@@ -119,3 +119,39 @@ it('invalidates revoked reads without cancelling an already submitted settings w
     expect(writeSignal!.aborted).toBe(false);
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
 });
+
+it('keeps an acknowledged settings write when an older recovery read arrives later', async () => {
+  let allowed = true;
+  let server = project;
+  let resourceReads = 0;
+  let writes = 0;
+  const heldWrite = Promise.withResolvers<Response>();
+  const heldResource = Promise.withResolvers<Response>();
+  const mounted = mount('settings', (url, init) => {
+    if (url === `${root}/access`) return allowed ? json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin')) : failure(404);
+    if (url === root) return ++resourceReads === 2 ? heldResource.promise : json(server);
+    if (url === `${root}/settings` && init?.method === 'PATCH') { writes++; return heldWrite.promise; }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  try {
+    const field = await screen.findByLabelText('Alert threshold');
+    await waitFor(() => expect(field).not.toBeDisabled());
+    fireEvent.change(field, { target: { value: '90' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Save settings' }).closest('form')!);
+    await waitFor(() => expect(writes).toBe(1));
+    allowed = false;
+    await focus(mounted.access());
+    expect(screen.queryByLabelText('Alert threshold')).toBeNull();
+    allowed = true;
+    await focus(mounted.access());
+    await waitFor(() => expect(resourceReads).toBe(2));
+    await waitFor(() => expect(mounted.access().snapshot()).toMatchObject({ status: 'ready', refreshing: false }));
+    server = { ...project, settings: { version: 4n, executionWarningMinutes: 90 } };
+    await act(async () => { heldWrite.resolve(json(server)); await nextEventLoopTurn(); });
+    await act(async () => { heldResource.resolve(json(project)); await nextEventLoopTurn(); });
+    await waitFor(() => expect(screen.getByLabelText('Alert threshold')).toHaveValue(90));
+    expect(screen.getByLabelText('Alert threshold')).not.toBeDisabled();
+    expect(screen.getByText('Settings saved.')).toBeVisible();
+    expect(writes).toBe(1);
+  } finally { mounted.view.unmount(); mounted.scope.dispose(); }
+});
