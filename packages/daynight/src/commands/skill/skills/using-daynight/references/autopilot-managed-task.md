@@ -28,7 +28,6 @@ Verify inputs, scope, and completion conditions using [shared task execution](ta
 These requirements supplement the [shared completion conditions](task-execution.md#completion-conditions).
 Task descriptions and source organization follow the [task content standard](task-content.md); inline content cannot replace attachments explicitly required by this table.
 Goal confirmation points still require human confirmation; the assignment does not authorize executing other stages.
-Before completing the original claim, register or verify required confirmed successors under the [shared completion conditions](task-execution.md#completion-conditions) when existing creation authorization covers them. Keep those successors unstarted and preserve the original assignment; the controller owns subsequent selection and execution.
 
 ## Sustain complete delivery
 
