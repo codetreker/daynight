@@ -1,10 +1,9 @@
 # Web 工作空间
 
-本文拥有项目任务看板、任务详情和账号级 Worker 观测的可见行为。生产页面与 API 由同一 Go 服务交付；看板、附件、认证和 Worker 页面共享工作空间及语言状态。运行结果按对应源码保留在 PR、CI 或实际验收材料中，设计预览不构成产品整体验收结果。[设计](../design/daynight-web.md)说明机制，[任务视图交互预览](../design/mockups/task-views.html)保留早期内层任务分类页签的中文视觉基线，[原始看板预览](../design/mockups/task-dashboard.html)保留初始基线。
+本文拥有项目任务看板、任务详情和账号级 Worker 观测的可见行为。生产页面与 API 由同一 Go 服务交付；看板、附件、认证和 Worker 页面共享工作空间及语言状态。运行结果按对应源码保留在 PR、CI 或实际验收材料中，设计预览不构成产品整体验收结果。[设计](../design/daynight-web.md)说明机制。
 
 [预定义属性需求](daynight-task-properties.md)的 server 接口、CLI 和任务详情中的
-只读 PR 引用区域已实现。[架构](../design/daynight-task-properties.md)与
-[交互预览](../design/mockups/task-properties.html)分别拥有该扩展的机制和样式。
+只读 PR 引用区域已实现。[架构](../design/daynight-task-properties.md)拥有该扩展的机制。
 
 [附件需求](daynight-task-attachments.md)拥有已实现的文件树、单文件上传、覆盖、
 删除、下载及预览行为，机制见[附件架构](../design/daynight-task-attachments.md)。
@@ -473,7 +472,5 @@ CI 回执必须来自干净测试源码且等于对应 `GITHUB_SHA`，保留生�
 和邀请隐私而关闭，场景 PNG、定制 CDP 诊断、完整图校验、性能与清理门槛保持，
 理由由[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)拥有。
 
-现有生产浏览器 inventory 验证看板基线。附件前端 mockup 使用实际组件、CSS 和内存
-fixture，不依赖 Go/PG，其外观、状态和焦点探针不能证明真实后端旅程。
-新增附件生产浏览器场景、安装 CLI 与服务的组合验收纳入对应 CI inventory；保留现有看板性能与覆盖率门槛，
+现有生产浏览器 inventory 验证看板基线。附件生产浏览器场景、安装 CLI 与服务的组合验收纳入对应 CI inventory；保留现有看板性能与覆盖率门槛，
 不为附件增加新的性能门槛。

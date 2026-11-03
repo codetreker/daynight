@@ -1,6 +1,6 @@
 # Task 预定义属性设计
 
-状态：服务端通用属性模型、独立存储、属性 HTTP 资源、通用 CLI 命令和客户端读取适配已实现。[属性需求](../spec/daynight-task-properties.md)拥有行为与验收；[属性行决策](../../.agents/notes/implemented/architecture/2026-10-30-task-property-rows.md)保存取舍，并链接不可变的[原属性列决策](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)。[交互预览](mockups/task-properties.html)继续拥有只读 PR 区域的视觉示例。
+状态：服务端通用属性模型、独立存储、属性 HTTP 资源、通用 CLI 命令和客户端读取适配已实现。[属性需求](../spec/daynight-task-properties.md)拥有行为与验收；[属性行决策](../../.agents/notes/implemented/architecture/2026-10-30-task-property-rows.md)保存取舍，并链接不可变的[原属性列决策](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)。
 
 ## 职责与数据流
 

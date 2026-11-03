@@ -118,8 +118,8 @@ The [localhost guide](../../../../deployment/localhost/README.md) owns private
 `.env` preparation. The [dev-ci guide](../../../../deployment/dev-ci/README.md)
 owns toolchains, Linux fixture architecture, reconfiguration and recovery.
 An optional Vite callback proxy uses the same callback setting and existing Go
-API target, matching only the exact path while preserving query bytes; unset
-frontend-only mockups remain independent.
+API target, matching only the exact path while preserving query bytes. An unset
+callback setting adds no callback proxy.
 
 ### Browser evidence privacy
 

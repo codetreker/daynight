@@ -379,6 +379,11 @@ remain understandable in their research or decision owner with methods, source
 identity and limitations. See the
 [evidence ownership decision](.agents/notes/archived/process/2026-10-20-source-bound-validation-evidence.md).
 
+UI mockups, `mockui` pages, their resource bundles, and tests targeting them
+must not be committed, including interactive previews composed from production
+components. Keep local prototypes in the task worktree's Git-ignored `.tmp/`
+and reviewable prototypes in their owning Daynight task's attachments.
+
 Specifications and designs use Chinese headings and prose while preserving
 technical literals. Other documents, skills, code, comments and commit messages
 use English unless explicitly instructed otherwise. Discuss work in Chinese.

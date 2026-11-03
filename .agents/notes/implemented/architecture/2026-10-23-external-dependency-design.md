@@ -129,5 +129,7 @@ resource model leaves those future choices separate from prerequisite semantics.
 
 Changing all-normal multi-root projection to weak components can merge formerly
 overlapping entries even though migration changes no endpoints. The design and
-prototype expose that behavior for review. Production results remain source-bound
-acceptance artifacts, not claims established by the design or prototype.
+original prototype exposed that behavior for review. Prototype repository
+retention is superseded by the [prototype ownership decision](../process/2026-11-03-ui-mockup-ownership.md).
+Production results remain source-bound acceptance artifacts; design and prototype
+observations do not establish production behavior.

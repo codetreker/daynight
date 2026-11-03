@@ -577,12 +577,6 @@ PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的�
 [全屏阅读决策](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)
 拥有该 owner 扩展的理由，[Web 附件决策](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)保留原有同源与清理取舍。
 
-`tests/mockups/attachments.html` 仅由 Vite 开发服务提供，实际组件和 CSS 使用内存
-fixture API 与原生 fixture 文件，覆盖有文件、空态、加载、失败和忙碌状态及长内容。fixture 分配的对象
-URL 在删除后仍保持有效，到 fixture dispose 才释放，避免已加载组件使用失效地址。
-生产构建保留单一应用 index，不包含该入口或 fixture 文件。该 mockup 及本地浏览器
-探针验证前端交互；真实服务的安装 CLI/生产浏览器旅程另由组合验收覆盖。
-
 ## 独立附件阅读页
 
 独立附件入口是完整任务详情的一种初始状态。
@@ -628,8 +622,7 @@ Go UI mux 精确登记基础任务和附件页面 GET/HEAD，继续交付相同 
 保留完整附件面板复用的理由，[独立详情决策](../../.agents/notes/implemented/architecture/2026-10-24-standalone-task-detail.md)
 拥有当前完整任务详情组合。
 
-前端实际组件 mockup 与真实服务验收分别证明其被测行为；fixture 临时对象 URL
-只用于演示。源码、构建产物及浏览器环境的证据必须对应其被测对象，历史运行结果
+源码、构建产物及浏览器环境的证据必须对应其被测对象，历史运行结果
 不能替代当前扩展的验证。原有边界的选择依据记录在
 [附件组合验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)。
 

@@ -22,10 +22,7 @@ packages/daynight-web/
     LocaleProvider.tsx     展示值、偏好错误及保存操作
     LanguageSelector.tsx   共用原生选择器、错误提示与重试
   tests/helpers/renderWithLocale.tsx  显式语言渲染 helper
-  tests/mockups/locale-runtime.html
 ```
-
-隔离的[运行时预览](../../packages/daynight-web/tests/mockups/locale-runtime.html)继续演示多个选择器共享语言与 fixture 状态。实际组件的[任务浏览预览](../../packages/daynight-web/tests/mockups/browsing.html)和[附件预览](../../packages/daynight-web/tests/mockups/attachments.html)均显式挂载 Provider，复用生产组件及样式。这些 fixture 的前端交互不替代真实服务验收。
 
 生产 Application 的公开与认证分支共享常驻 LocaleProvider。messages.landing 拥有
 推广、示例文档与记录、FAQ、公开身份提示和元数据；演示的稳定身份与本地选择不依赖
@@ -35,8 +32,7 @@ packages/daynight-web/
 messages.workers 拥有 Worker 列表/详情、观测状态、资源/版本、时间、同步失败与可访问名称。
 入口在绘制前设置当前语言及与路径对应的推广页、指南或鉴权加载标题；后续页面元数据、
 路由与会话状态按当前目录更新。
-身份变化释放用户内容，但不重建语言 Provider。独立鉴权 fixture 仍显式挂载
-Provider，其内存交互验证与真实 UniAuth 生产验收分别保留证据。
+身份变化释放用户内容，但不重建语言 Provider。真实 UniAuth 生产验收保留对应源码与浏览器环境的证据。
 
 ## 初始语言与偏好
 

@@ -9,7 +9,7 @@ import { getInitialTaskViewport, TaskGraph } from '../src/features/task-graph/Ta
 import { TaskChainDialog } from '../src/features/task-graph/TaskChainDialog';
 import { buildGraphIndex, projectChain } from '../src/features/task-graph/model';
 import * as layoutModule from '../src/features/task-graph/layout';
-import { browsingProjects } from './mockups/browsing-fixture';
+import { progressiveGraph } from './helpers/graphData';
 import { compileDependencyRoute } from '../src/features/task-graph/routes';
 import { installGraphMeasurements } from './graph-measurements';
 
@@ -702,7 +702,7 @@ describe('task dependency canvas', () => {
 });
 
 describe('progressive task visibility', () => {
-  const fixture = browsingProjects.progressive;
+  const fixture = progressiveGraph;
   const progressiveIndex = buildGraphIndex(fixture);
   const rootId = fixture.tasks.find((task) => task.titlePreview === '渐进展开 · 主链交付起点')!.id;
   const joinId = fixture.tasks.find((task) => task.titlePreview === '合流任务 · 40 个外部前置')!.id;
