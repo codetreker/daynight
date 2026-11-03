@@ -51,6 +51,9 @@ take precedence.
   solution. A request to start or advance a discussion authorizes setting that
   discussion task to `in_progress`; it grants no delivery-task execution permission. Discussion completion follows the confirmed Daynight material and
   phase acceptance. Repository delivery retains its own PR and merge requirements.
+- When autopilot is activated, execute only the already confirmed task breakdown.
+  Do not derive extra tasks or prerequisite work outside that queue; newly
+  proposed work requires separate scope confirmation.
 - Complete authorized work and its verification. Before marking a task done,
   verify both its own results and the actual registration of any required
   successors within its confirmed scope and existing creation authorization.
@@ -83,6 +86,16 @@ Requirements describe required outcomes. Design documents explain mechanisms
 and the rationale needed to understand them. Notes hold detailed alternatives
 and decision history. Create documents when needed and link to their owners
 without duplicating explanations.
+
+Ship ordinary documentation with its corresponding implementation code in the
+same PR. Open a standalone documentation PR only with explicit user permission;
+permission for one document does not authorize publishing other documents.
+
+Mock UI and interactive prototype artifacts belong in the owning Daynight task
+attachments. Never commit or push them, include them in a repository PR, or place
+them in product or source directories. Local inspection copies may exist only in
+Git-ignored scratch space and must be removed after use. This rule covers their
+HTML, scripts, styles, assets, and generated previews.
 
 Rewrite edited documents as coherent wholes and synchronize related active
 documents in the same change. Preserve historical statements about a decision's
