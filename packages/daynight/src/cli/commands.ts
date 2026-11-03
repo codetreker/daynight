@@ -48,6 +48,7 @@ export const commandTree: CommandDefinition = {
   description: "A client command toolkit for development workflows",
   commands: commands.map(({ load, ...definition }) => definition),
   options: [
+    { names: ["--skill"], description: "Print the bundled CLI usage manual for coding agents", action: "skill" },
     { names: ["-h", "--help"], description: "Show this help", action: "help" },
     { names: ["-v", "--version"], description: "Show the installed version", action: "version" },
   ],

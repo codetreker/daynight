@@ -372,6 +372,7 @@ WSL Linux 仍为 Linux。普通指定任务保留人工路径，但不借此把�
 
 `daynight-review` 仍是 review runtime 的内部审查资源，其 plugin wrapper、快照、哈希
 和发现校验独立。公开 skill 由 `skill` 命令持有，只共享普通 bundle 捕获和校验。
+根 `--skill` 输出的独立 CLI 使用手册及 reader 由[客户端架构](daynight.md#源码组织)拥有，不读取或改变公开 workflow bundle；安装、自动同步和 worker prompt 继续使用既有 bundle 来源。
 
 | 机制 | 所在位置与职责 |
 |---|---|

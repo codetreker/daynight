@@ -48,6 +48,7 @@ func newSessionRoutes(s *sessionrelay.Service, auth *Authentication, logger *slo
 }
 func (h *sessionRoutes) register(mux *http.ServeMux) {
 	h.registerTestRoutes(mux)
+	h.registerArchiveRoutes(mux)
 	mux.HandleFunc("GET /api/v1/session-capabilities", h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
 		if _, err := queryValues(r); err != nil {
 			h.failure(w, r, err)

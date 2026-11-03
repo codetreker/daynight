@@ -43,7 +43,7 @@ it('admits a synchronized no-prompt Test Session once the provider is ready with
 });
 it('shares client delivery, keeps uncertain operations, and rejects owner/scope changes', async () => {
   const s = snapshot(); let receive!: (message: BrowserMessage) => void;
-  const api: sessions.SessionApi = {
+  const api: sessions.SessionApi = { archive: vi.fn(), archiveContent: vi.fn(),
     current: vi.fn(async () => ({ status: 'registered' as const, session: s })),
     timeline: vi.fn(async () => ({ sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' })),
     command: vi.fn(async () => { throw new Error('lost acknowledgement'); }), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource',
@@ -87,7 +87,7 @@ it('allows verified steering after a no-prompt session has acquired its native i
 
 it('drops prior execution state before hydrating a new Test fence on the channel', async () => {
   const s = snapshot(); let receive!: (message: BrowserMessage) => void;
-  const api: sessions.SessionApi = {
+  const api: sessions.SessionApi = { archive: vi.fn(), archiveContent: vi.fn(),
     current: async () => ({ status: 'registered', session: s }),
     timeline: vi.fn(async () => ({ sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' })),
     command: vi.fn(async () => { throw new Error('lost acknowledgement'); }), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource',
@@ -112,7 +112,7 @@ it('clears persisted Test receipts when access is revoked before a snapshot can 
   const s = snapshot();
   const key = `daynight:session-operations:${owner}:${s.sessionId}:test:${execution}:${s.executionGeneration}`;
   window.sessionStorage.setItem(key, '[]');
-  const api: sessions.SessionApi = {
+  const api: sessions.SessionApi = { archive: vi.fn(), archiveContent: vi.fn(),
     current: async () => { throw new ApiError('server', 403, 'forbidden'); }, timeline: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource', channel: vi.fn(),
   };
   const client = new TaskSessionClient({ api, userId: owner, testSessionId: s.sessionId, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage: window.sessionStorage });

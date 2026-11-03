@@ -15,6 +15,7 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Install and update](#install-and-update)
 - [Configuration root](#configuration-root)
 - [Client commands](#client-commands)
+- [CLI usage manual](#cli-usage-manual)
 - [Agent skill installation](#agent-skill-installation)
 - [Shell completion](#shell-completion)
 - [Configuration setup](#configuration-setup)
@@ -117,6 +118,7 @@ explains the mapping, platform limits, fixed build lifetime and shell verificati
 daynight                            # Show root help
 daynight --help                      # Also -h
 daynight --version                   # Also -v
+daynight --skill                    # Print the project/task usage manual
 daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
@@ -161,8 +163,8 @@ daynight task attachment remove <task-id> <relative-path> [--project <project-id
 ```
 
 Groups and operations show help when `--help` or `-h` is their sole argument.
-Help, version and completion generation do not resolve the user home, load review
-configuration, open SQLite or require review tools. `review add-repo` accepts one
+Help, version, usage-manual output and completion generation do not resolve the
+user home, load review configuration, open SQLite or require review tools. `review add-repo` accepts one
 `--path <path>` before or after its remote; `--path=value` and `--` are invalid.
 Unknown commands and invalid arguments exit with status 2; operation failures
 exit with status 1 and retain their cause. The old `--daemon-review` and root
@@ -170,6 +172,31 @@ exit with status 1 and retain their cause. The old `--daemon-review` and root
 [client design](../../docs/design/daynight.md) owns command composition and lazy loading;
 the [composition decision](../../.agents/notes/archived/architecture/2026-10-20-client-command-composition.md)
 records module ownership and the preserved data layout.
+
+## CLI usage manual
+
+```bash
+daynight --skill
+dn --skill
+```
+
+`--skill` prints one standalone English project/task usage manual from the
+current package. It covers project selection, task queries and writes,
+dependencies, properties and attachments. Other capabilities are discovered
+through `daynight --help`, with exact options in each subcommand's help. The
+output preserves the manual's original bytes, including YAML
+frontmatter and the final newline. The document has no package-relative
+references to read separately.
+
+The option must be the sole argument. Extra arguments or another option exit
+with status 2 and empty stdout before the manual is read. A missing file, read
+failure or invalid UTF-8 exits with status 1 and retains its cause. Reading and
+validation complete before output; an output failure can leave partial stdout.
+The command requires no login, Git repository, configuration, launcher or
+interactive terminal, and creates no files.
+
+The `using-daynight` skill owns task orchestration workflows and is installed
+through the separate command below. The CLI manual explains command use.
 
 ## Agent skill installation
 
@@ -419,8 +446,8 @@ messages use stderr so stdout retains its normal text or JSON format.
 Noninteractive missing review configuration fails with a `review add-repo`
 command. Shared YAML/schema errors, invalid selected values, explicit empty
 review lists and read failures retain their errors. Unrelated capability values
-remain outside the current command's validation. Help, version, completion,
-update and invalid arguments do not prompt.
+remain outside the current command's validation. Help, version, usage-manual
+output, completion, update and invalid arguments do not prompt.
 
 Test services and noninteractive automation use the existing
 `~/.daynight/config.yml` fields. For a test service, provision its origin before
@@ -1469,18 +1496,35 @@ for its supported options. These commands do not implement a native TUI or chang
 The command prints the Test Session URL and remains in the foreground. Sign in
 to Daynight as the account that started it; the URL itself grants no access.
 The service's `/test-sessions` page lists that account's online Test Sessions.
-Archived history remains available through the original URL and local resume. Use the sidebar or the Session page's back link to
-return to the list; session IDs do not need to be copied manually.
+Completed history is available through the original URL after its file archive
+is ready. Native resume creates a separate execution. Use the sidebar or the
+Session page's back link to return to the list; session IDs do not need to be
+copied manually.
 The page, history, resources, WebSocket and commands all enforce that ownership.
 An expired or revoked credential cannot continue authorizing access. Tokens stay
 in private local files and never appear in the URL.
 
 Task and Test pages share the same timeline, composer and interaction handling.
 Refreshing or closing a browser does not create or stop an Agent. Ctrl+C stops
-the owned execution; the service retains its archived history as read-only when
-shutdown registration succeeds. Service unavailability does not prevent local
-process cleanup, but leaves remote archival unconfirmed. The current directory
-and user files are never removed by the launcher.
+the owned execution. Once the service confirms shutdown, the launcher uploads
+its recorded timeline and resources to file storage for read-only access. The
+service database stores archive metadata, not conversation payloads. Service
+unavailability does not prevent local process cleanup; failed uploads retain
+their private local source. The current directory and user files are never
+removed by the launcher.
+
+Retry a failed upload without starting or resuming the Agent:
+
+```sh
+daynight controller codex archive <test-session-id>
+```
+
+The same command supports `claude` and `copilot`. It verifies the original local
+execution and stop evidence, and does not require the old working directory to
+still exist. Use `-- archive` to send the literal word as an initial prompt.
+Archives are limited to 64 MiB including resource encoding, with at most 8 MiB
+per resource; incomplete or oversized archives fail explicitly and retain their
+source. Completed pages disable all Agent controls.
 
 Resume a stopped Test Session with its native context:
 
@@ -1766,7 +1810,7 @@ verification.
 Each store's baseline and SQL conversions ship as `.sql` resources with the
 installed dist tree. Top-level SQL files in that store's directory run in lexical
 filename order: the first is its baseline, and consecutive numeric prefixes set
-later versions. Five baselines and five upgrades form the current SQL inventory.
+later versions. Five baselines and six upgrades form the current SQL inventory.
 TypeScript keeps JSON conversion, ownership checks and the atomic version-0 reset;
 ordinary non-SQL subdirectories do not enter the normal chain. Resource loading and
 sequence validation finish before user-database access; package checks compare

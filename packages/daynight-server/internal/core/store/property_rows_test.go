@@ -107,7 +107,7 @@ func TestPropertyRowsMigrationPreservesValuesAndTaskFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed := append([]migration(nil), schemaMigrations...)
-	changed[len(changed)-1].transformSource += "changed"
+	changed[25].transformSource += "changed"
 	if err := migrate(ctx, pool, changed); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("transform source is not checksummed: %v", err)
 	}

@@ -16,7 +16,7 @@ function fixture() {
   let paused = false, current = true;
   const channels: { receive: (message: BrowserMessage) => void; disconnect: (error?: unknown) => void; close: ReturnType<typeof vi.fn> }[] = [];
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: 'older', afterCursor: null, hasMoreBefore: true, hasMoreAfter: false, lastEventSeq: '0' };
-  const api: SessionApi = { current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource', channel: vi.fn((_id, _cursor, receive, disconnect) => { const channel = { receive, disconnect, close: vi.fn() }; channels.push(channel); return channel; }) };
+  const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource', channel: vi.fn((_id, _cursor, receive, disconnect) => { const channel = { receive, disconnect, close: vi.fn() }; channels.push(channel); return channel; }) };
   const mismatch = vi.fn();
   const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, isCurrent: () => current, isPaused: () => paused, onPrincipalMismatch: mismatch, storage: window.sessionStorage });
   clients.push(client);

@@ -5,6 +5,13 @@ import { renderZshCompletion } from "../../../src/commands/completion/zsh.js";
 import { taskDefinition } from "../../../src/commands/task/definition.js";
 
 describe("native zsh completion", () => {
+  it("declares the standalone root skill flag with no value or positional completion", () => {
+    const script = renderZshCompletion(commandTree);
+    expect(script).toContain("(- *)--skill[Print the bundled CLI usage manual for coding agents]");
+    expect(script).not.toContain("--skill=");
+    expect(script).not.toContain("::resource:");
+  });
+
   it("offers explicit login and logout with a boolean browser option", () => {
     const script = renderZshCompletion(commandTree);
     expect(script).toContain("'login:Sign in through a browser using a device code'");

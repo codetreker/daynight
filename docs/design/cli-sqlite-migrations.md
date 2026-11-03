@@ -13,7 +13,7 @@
 | 原实例锁和严格不接管的同步维护 permit | `platform/instance-lock.ts` |
 | 本库基线 DDL、已交付转换、业务准入和必要结构检查 | 各 store 的 format 模块 |
 
-格式定义包含基线版本及建库函数、连续的后续迁移和按版本验证函数，不包含无版本来源验证或接入 callback。SQL 主链在格式模块初始化时从所属目录加载并按文件名排序；建库和迁移 callbacks 只在传入 Database 上执行已经加载的 SQL 或本库 JSON 转换，返回类型为 `undefined`，拒绝误传 async callback。版本由执行器统一推进，迁移不自行提交或开始事务，也不操作 Git、网络、原生进程或其他文件。
+格式定义包含基线版本及建库函数、连续的后续迁移和按版本验证函数，不包含无版本来源验证或接入 callback。SQL 主链在格式模块初始化时从所属目录加载并按文件名排序；建库和迁移 callbacks 在传入 Database 上执行已经加载的 SQL 或本库 JSON 转换，返回类型为 `undefined`，拒绝误传 async callback。每步迁移同时接收本次事务初始识别的 `SqliteSource`；该来源不随中间 `user_version` 推进改变，领域转换可以据此保留旧格式的完整性限制。版本由执行器统一推进，迁移不自行提交或开始事务，也不操作 Git、网络或原生进程。Controller journal v6 的领域迁移还须先把旧正文可靠导出到本执行的待归档文件，再执行正文表删除及索引转换；SQLite 回滚不能撤销已落盘文件，重试须核对并复用它们，不能提前清除唯一正文源。该例外由 [Session 归档设计](task-session-protocol.md#完成后的文件归档)拥有，公共执行器不承担文件迁移。
 
 ## SQL 资源与参考结构
 
@@ -24,12 +24,12 @@
 | Review | `commands/review/sqlite/` | `001-baseline.sql`、`002-publications.sql` |
 | Worker 主索引 | `commands/worker/sqlite/` | `005-baseline.sql` |
 | Web 执行状态 | `commands/worker/backends/sqlite/` | `001-baseline.sql` |
-| Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql` |
+| Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql`、`006-pending-content.sql` |
 | Native resume lease | `commands/controller/sqlite/resume-lease/` | `001-baseline.sql` |
 
 文件名遵守 `NNN-description.sql`：数字前缀至少三位，同一目录使用相同宽度的补零；版本数值为 1–2147483647；后缀是以小写 ASCII 字母开头、由小写字母或数字组成且可用单个 `-` 分段的名称，扩展名必须为小写 `.sql`。首版本可以大于 1，之后必须连续。顶层 SQL 候选中的非法名称、非普通文件、重复版本、宽度不一致、空 SQL 链和中间缺号都在用户库打开前失败；例如大写 `.SQL` 和名称以 `.sql` 结尾的目录会进入候选检查并被拒绝，而 `README.txt`、`.DS_Store` 及普通非 SQL 目录不进入主链。
 
-五个基线与五个升级文件共十份 SQL 资源；Worker 历史来源参考和条件接入资源已由统一版本 0 重置取代。SQL 文件不写 BEGIN/COMMIT 或 PRAGMA，事务、user_version、JSON 和 owner 逻辑仍由 TypeScript 边界控制。
+五个基线与六个升级文件共十一份 SQL 资源；Worker 历史来源参考和条件接入资源已由统一版本 0 重置取代。SQL 文件不写 BEGIN/COMMIT 或 PRAGMA，事务、user_version、JSON 和 owner 逻辑仍由 TypeScript 边界控制。
 
 `sqliteSchemaSnapshots` 在格式模块初始化时，把同一组按文件名发现的基线和升级 SQL 依次执行到短生命周期的内存 SQLite 中，按步骤缓存 SQLite 自己生成的 sqlite_schema 元数据，然后确认关闭连接。实际用户数据库尚未打开；后续来源检查只使用已缓存的本库参考，不为每次访问重新建参考库。这个过程不复制用户记录、不读取原生历史、不生成持久标记，也不维护另一套预期 DDL 或用 SQL parser 重建结构。
 
@@ -48,7 +48,7 @@ SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](.
 | Worker | 当前七列 tasks 为基线 5；非零旧详细库 1–4 拒绝 |
 | Review | 基线 1，原 1→2 增加 publication 并保留历史发布语义；当前仍为 2 |
 | Web 执行状态 | 基线及当前版本 1 |
-| Controller journal | 基线 1，依次保留 ACK/projection、operation acknowledged、projection gap、source floor/resource 的 1→5 转换 |
+| Controller journal | 基线 1，依次保留 ACK/projection、operation acknowledged、projection gap、source floor/resource 的 1→5 转换，以及正文导出到文件和内容索引的 5→6 转换 |
 | Native resume lease | 基线及当前版本 1；任何保留 lease 阻止重置或迁移 |
 
 新库和版本 0 重置使用同一基线及后续步骤，避免另一套最新 DDL 漂移。版本 0 丢弃旧 schema 和数据；已有空版本 0 文件也通过这一路径初始化。文件创建许可 `allowCreate` 只作用于缺失文件，`inspectSqlite` 和 `upgradeSqlite` 没有空库许可参数。非零版本范围为正的 32 位有符号整数，负数、缺步、逆序、未知和较新版本均拒绝并保留原库。非零来源结构检查由本库维护，参考元数据来自上述实际 SQL 链，覆盖迁移需要的表、列、主键、必要索引、约束和 STRICT 属性，只接受有限的已交付布局。
@@ -88,7 +88,7 @@ Review runtime 继续使用普通实例锁；旧格式 listing 的维护 permit 
 
 维护 permit 只在锁原本不存在时创建自己的 owner。取得 permit 前必须提交并确认 gate 连接关闭，随后才打开业务迁移连接；Worker gate 与业务库共用文件时尤其不能持有 gate 写事务再开第二个写连接。迁移连接关闭或事务结果未知时保留维护锁。释放先经 gate 核实 exact owner 并确认 gate 关闭，再核对并删除自己的锁；该同步过程中的 live owner 阻止遵守协议的 acquisition 替换它。普通 runtime 释放语义保持。
 
-Journal 在任何 DDL 前执行 owner 准入：版本 0 没有 `execution` 表时可重置；若该表存在，必须读取 `id` 和 `owner_pid`，缺列或读取失败直接报错，活跃或不可确认 writer 阻止重置。非零版本继续按既有结构读取 owner。纯格式处理不执行 writer 认领或 generation 推进，也不产生停止证明；非零纯升级保留 owner_pid，版本 0 准入成功后的重置会丢弃旧 execution 数据。独立 stopped writer 在事务外验证进程树，最终事务断言当前格式和原 snapshot 未变后写入 stopped。Journal close 清除 owner_pid 也是写入口，失败时仍尝试关闭并保留错误链。
+Journal 在任何 DDL 前执行 owner 准入：版本 0 没有 `execution` 表时可重置；若该表存在，必须读取 `id` 和 `owner_pid`，缺列或读取失败直接报错，活跃或不可确认 writer 阻止重置。非零版本继续按既有结构读取 owner。纯格式处理不执行 writer 认领或 generation 推进，也不产生停止证明；非零纯升级保留 owner_pid，版本 0 准入成功后的重置会丢弃旧 execution 数据，但不删除独立待归档文件。缺少 execution 身份记录时，后续启动拒绝采用非空待归档源，保留文件供处理；相同 Session ID 不能代替原 execution/ticket 身份证明。独立 stopped writer 在事务外验证进程树，最终事务断言当前格式和原 snapshot 未变后写入 stopped。Journal close 清除 owner_pid 也是写入口，失败时仍尝试关闭并保留错误链。
 
 Lease 的重置或迁移准入要求已有 lease 表没有任何保留行，版本 0 没有该表时可重置；陈旧、过期或 PID 缺失都不提供回收权限。已取得租约的 release 在同一事务内断言当前格式，按 native_key+nonce 删除并验证恰好一行，不进入自动升级路径。其业务释放仍要求原有“从未启动”或完整停止证据；未返回申请的已知提交清理由下面的独立边界约束。
 

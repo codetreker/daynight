@@ -73,6 +73,27 @@ it("retains shutdown provenance across worker reopen without resetting recovery 
   expect(next.recovery).toEqual(task.recovery);
 });
 
+it("keeps completed versioned executions available for archive backfill after reopening", () => {
+  const { file, store, project, claim } = fixture();
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
+  store.register({ ...claim, project, configuration, userId: id(6) }, 1);
+  const started = store.initializeWebExecution(claim, 2);
+  store.updateWebExecution(claim, { launchSubmission: "acknowledged", sessionId: id(7) }, 3);
+  store.beginCleanup(claim, { kind: "terminal", deadline: 100 }, 4);
+  store.recordCleanupResult(claim, "completed", null, 5);
+  store.confirmAgentStopped(claim, { agentStopped: true }, 6);
+  store.confirmBackendResourcesClosed(claim, { controllerStopped: true, endpointClosed: true }, 7);
+  store.confirmWorktreeDeleted(claim, { worktreeDeleted: true }, 8);
+  const completed = store.completeTask(claim, 9);
+  const active = { ...claim, claimId: id(8), taskId: id(9), worktreeId: id(10) };
+  store.register({ ...active, project, configuration, userId: id(6) }, 10);
+  close(store);
+  const reopened = open(file);
+  expect(reopened.listCompletedTasks()).toEqual([completed]);
+  expect(reopened.listCompletedTasks()[0]?.webExecution).toMatchObject({ executionId: started.webExecution!.executionId, launchSubmission: "acknowledged", sessionId: id(7) });
+  expect(reopened.listUnfinishedTasks().map(task => task.claimId)).toEqual([active.claimId]);
+});
+
 it("rebuilds the current unversioned schema and discards its execution records", () => {
   const { file, store, project, claim } = fixture();
   store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
@@ -191,5 +212,6 @@ it("fences an open Web connection before mutating a changed format", () => {
   db.pragma("user_version=2");
   expect(() => store.initializeWebExecution(claim, 3)).toThrow("unsupported-version");
   expect(() => store.getTask(claim)).toThrow("unsupported-version");
+  expect(() => store.listCompletedTasks()).toThrow("unsupported-version");
   expect(db.prepare("SELECT data FROM executions").get()).toEqual({ data });
 });

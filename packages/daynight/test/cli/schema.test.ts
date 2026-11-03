@@ -6,6 +6,15 @@ import type { CommandDefinition } from "../../src/cli/schema.js";
 import { taskDefinition } from "../../src/commands/task/definition.js";
 
 describe("shared command syntax", () => {
+  it("selects the standalone CLI usage manual only for a sole root flag", () => {
+    expect(parseCommand(commandTree, ["--skill"])).toMatchObject({ kind: "skill" });
+    const help = renderCommandHelp(commandTree);
+    expect(help).toContain("--skill");
+    expect(help).not.toContain("<resource>");
+    expect(() => parseCommand(commandTree, ["--skill", "references/handbook.md"])).toThrow(UsageError);
+    expect(() => parseCommand(commandTree, ["skill", "--skill"])).toThrow(UsageError);
+  });
+
   it.each([
     { args: [], name: "daynight" },
     { args: ["--help"], name: "daynight" },

@@ -159,7 +159,7 @@ func TestTestSessionParentRevocationProtectsAllReads(t *testing.T) {
 	}
 }
 
-func TestDrainingOffersOnlyNewCleanupInteractions(t *testing.T) {
+func TestDrainingPreservesCleanupEventsWithoutBrowserControl(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
 	var epoch string
@@ -190,7 +190,7 @@ func TestDrainingOffersOnlyNewCleanupInteractions(t *testing.T) {
 	state.CleanupInteractionIDs = []string{newID}
 	emit("state", state)
 	snapshot, _, _, e := f.s.BrowserPoll(ctx, f.p, f.project, f.task, v.SessionID, "")
-	if e != nil || !snapshot.Operations.CanRespond || snapshot.Operations.CanSend || snapshot.Operations.CanCancel {
+	if e != nil || snapshot.Operations.CanRespond || snapshot.Operations.CanSend || snapshot.Operations.CanCancel {
 		t.Fatal("draining permissions", snapshot, e)
 	}
 	if _, e = sp.DecodeSnapshot(encode(snapshot)); e != nil {
@@ -202,16 +202,12 @@ func TestDrainingOffersOnlyNewCleanupInteractions(t *testing.T) {
 	if _, e = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, response(oldID)); e == nil {
 		t.Fatal("old pending response")
 	}
-	cmd := response(newID)
-	if _, e = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, cmd); e != nil {
-		t.Fatal("cleanup response", e)
+	if _, e = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, response(newID)); e == nil {
+		t.Fatal("draining browser cleanup response accepted")
 	}
 	offers, e := f.s.Poll(ctx, v.ControllerFence)
-	if e != nil || len(offers) != 1 {
-		t.Fatal("cleanup offer", offers, e)
-	}
-	if _, e = f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: cmd.OperationID}); e != nil {
-		t.Fatal("cleanup dispatch", e)
+	if e != nil || len(offers) != 0 {
+		t.Fatal("draining control offer", offers, e)
 	}
 	// A stale old request cannot become cleanup merely by being included in state.
 	state.CleanupInteractionIDs = []string{oldID}

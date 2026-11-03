@@ -87,6 +87,17 @@ repository; otherwise it creates a project or reports an ambiguous match. Task
 commands discover the project from the repository. Use `--project <project-id>`
 to select one explicitly. Open the Web app to browse the same tasks and progress.
 
+Read project and task usage from the installed package:
+
+```bash
+daynight --skill
+```
+
+This prints one standalone project/task reference for coding agents, including
+version-safe writes, dependencies, properties and attachments. Use
+`daynight --help` for other capabilities. Reading requires no login, configuration
+or interactive terminal.
+
 For agent integration, install a supported coding agent, then run:
 
 ```bash

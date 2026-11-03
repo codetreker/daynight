@@ -5,6 +5,13 @@ import type { CommandDefinition } from "../../../src/cli/schema.js";
 import { taskDefinition } from "../../../src/commands/task/definition.js";
 
 describe("Bash completion rendering", () => {
+  it("offers the standalone root skill flag without a value state", () => {
+    const script = renderBashCompletion(commandTree);
+    expect(script).toContain("dn_options=('--skill' '-h' '--help' '-v' '--version')");
+    expect(script).toContain("dn_option_values=('' '' '' '' '')");
+    expect(script).toContain("dn_option_actions=('skill' 'help' 'help' 'version' 'version')");
+  });
+
   it("offers explicit login and logout with a boolean browser option", () => {
     const script = renderBashCompletion(commandTree);
     expect(script).toContain("'login' 'logout'");

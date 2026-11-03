@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -23,15 +24,43 @@ type Storage struct {
 	root          *os.Root
 	exactSpelling bool
 	namespace     sync.Mutex
+	fileSync      func(*os.File) error
 }
 
 var _ filestorage.Storage = (*Storage)(nil)
 
 func New(root string) (*Storage, error) {
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	return newWithDirectorySync(root, (*os.File).Sync)
+}
+
+func newWithDirectorySync(root string, fileSync func(*os.File) error) (*Storage, error) {
+	if err := makeRoot(root, fileSync); err != nil {
 		return nil, err
 	}
-	directory, err := os.OpenRoot(root)
+	if !filepath.IsAbs(root) {
+		// Prefix the current directory without cleaning the caller's components:
+		// a symlink followed by ".." must traverse the symlink's physical parent.
+		volume := filepath.VolumeName(root)
+		relative := root[len(volume):]
+		base := volume + "."
+		if len(relative) > 0 && os.IsPathSeparator(relative[0]) {
+			base = volume + relative[:1]
+			relative = relative[1:]
+		}
+		absoluteBase, err := filepath.Abs(base)
+		if err != nil {
+			return nil, err
+		}
+		root = absoluteBase + string(os.PathSeparator) + relative
+	}
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	if err := syncRootParents(resolved, fileSync); err != nil {
+		return nil, err
+	}
+	directory, err := os.OpenRoot(resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +71,7 @@ func New(root string) (*Storage, error) {
 	if !sensitive && runtime.GOOS != "darwin" {
 		return nil, errors.Join(ErrCaseInsensitive, directory.Close())
 	}
-	return &Storage{root: directory, exactSpelling: !sensitive}, nil
+	return &Storage{root: directory, exactSpelling: !sensitive, fileSync: (*os.File).Sync}, nil
 }
 
 func (s *Storage) Close() error {
@@ -64,7 +93,11 @@ func (s *Storage) Put(ctx context.Context, bucket, name string, content io.Reade
 		}
 	}()
 	size, copyErr := io.Copy(file, contextReader{ctx: ctx, reader: content})
-	result = errors.Join(copyErr, ctx.Err(), file.Close())
+	result = errors.Join(copyErr, ctx.Err())
+	if result == nil {
+		result = s.fileSync(file)
+	}
+	result = errors.Join(result, file.Close())
 	if result != nil {
 		return info, result
 	}
@@ -170,13 +203,29 @@ func (s *Storage) publish(temporary, address string) error {
 	if err := s.fileTarget(address, true); err != nil {
 		return err
 	}
-	return s.root.Rename(temporary, address)
+	if err := s.root.Rename(temporary, address); err != nil {
+		return err
+	}
+	// The file bytes precede the rename; every new directory entry down to the
+	// configured root must also be durable before a database can acknowledge it.
+	for directory := path.Dir(address); ; directory = path.Dir(directory) {
+		file, err := s.root.Open(directory)
+		if err != nil {
+			return err
+		}
+		if err = errors.Join(s.fileSync(file), file.Close()); err != nil {
+			return err
+		}
+		if directory == "." {
+			return nil
+		}
+	}
 }
 
 func (s *Storage) discard(temporary string) error {
 	s.namespace.Lock()
 	defer s.namespace.Unlock()
-	if err := s.root.Remove(temporary); err != nil {
+	if err := s.root.Remove(temporary); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return s.pruneParents(temporary)
@@ -306,4 +355,82 @@ func createProbeFile(root *os.Root, name string) error {
 		return err
 	}
 	return file.Close()
+}
+
+// Each new directory needs a readable parent for its persistence barrier.
+// Existing roots may have searchable but unreadable pre-provisioned ancestors.
+func makeRoot(root string, fileSync func(*os.File) error) (result error) {
+	info, err := os.Stat(root)
+	if err == nil {
+		if !info.IsDir() {
+			return &os.PathError{Op: "mkdir", Path: root, Err: syscall.ENOTDIR}
+		}
+		return nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) || root == "" {
+		return err
+	}
+	// Keep symlink/.. components intact when finding the creation parent.
+	// filepath.Dir would clean them before the filesystem can resolve them.
+	end := len(root)
+	for end > 0 && os.IsPathSeparator(root[end-1]) {
+		end--
+	}
+	for end > 0 && !os.IsPathSeparator(root[end-1]) {
+		end--
+	}
+	volume := filepath.VolumeName(root)
+	parent := root[:end]
+	if end > len(volume)+1 {
+		parent = root[:end-1]
+	} else if end <= len(volume) {
+		parent = volume + "."
+	}
+	if err := makeRoot(parent, fileSync); err != nil {
+		return err
+	}
+	// New entries require a readable parent for their persistence barrier.
+	// Existing roots may still traverse unreadable pre-provisioned ancestors.
+	directory, err := os.Open(parent)
+	if err != nil {
+		return err
+	}
+	// Another instance may adopt even an empty directory as soon as mkdir
+	// succeeds. Failure cannot revoke that instance's root by removing it;
+	// every New performs its own ancestor barriers, including on retry.
+	defer func() { result = errors.Join(result, directory.Close()) }()
+	if err := os.Mkdir(root, 0o700); err != nil {
+		if info, statErr := os.Stat(root); !errors.Is(err, fs.ErrExist) || statErr != nil || !info.IsDir() {
+			return err
+		}
+	}
+	child, err := os.Open(root)
+	if err != nil {
+		return err
+	}
+	if err := errors.Join(fileSync(child), child.Close()); err != nil {
+		return err
+	}
+	return fileSync(directory)
+}
+
+// Another initializer can observe mkdir before its parent entry is durable, or
+// adopt a populated directory left by a failed initializer. Every caller must
+// finish the barriers on the resolved path before exposing a writable Storage.
+func syncRootParents(root string, fileSync func(*os.File) error) error {
+	for directory := root; ; directory = filepath.Dir(directory) {
+		file, err := os.Open(directory)
+		if err != nil {
+			// makeRoot opens parents before creating entries, so unreadable
+			// ancestors are outside the directory chain it can create.
+			if directory == root || !errors.Is(err, fs.ErrPermission) {
+				return err
+			}
+		} else if err := errors.Join(fileSync(file), file.Close()); err != nil {
+			return err
+		}
+		if filepath.Dir(directory) == directory {
+			return nil
+		}
+	}
 }

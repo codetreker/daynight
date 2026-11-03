@@ -1181,3 +1181,47 @@ it("missing Web execution evidence never permits replacing or deleting an existi
     expect(await coordinator.shutdown()).toBe(false);
   } finally { webStore.close(); }
 });
+
+it("releases a deleted Web task's last worker slot only after its archive succeeds", async () => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
+  const f = await fixture(1), webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
+  const remote = f.grant(f.candidates[0]!, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
+  const owner = { projectId: remote.projectId, taskId: remote.id, claimId: uuid(810), worktreeId: uuid(811) };
+  f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+  f.store.activateTask(owner);
+  let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+  record = webStore.bindWorktree(record, await f.git.prepareWorktree(f.project, owner, {} as Operation), 2);
+  record = webStore.initializeWebExecution(record, 3);
+  record = webStore.updateWebExecution(record, { sessionId: uuid(812), initialPrompt: "managed", launchSubmission: "acknowledged" }, 4);
+  record = webStore.beginCleanup(record, { kind: "terminal", deadline: 100 }, 5);
+  record = webStore.recordCleanupResult(record, "completed", null, 6);
+  record = webStore.confirmAgentStopped(record, { agentStopped: true }, 7);
+  webStore.confirmBackendResourcesClosed(record, { controllerStopped: true, endpointClosed: true }, 8);
+  // Deleted tasks disappear from the remote inventory, while local cleanup remains durable.
+  f.grants.clear(); f.candidates.shift();
+  let archiveAvailable = false;
+  const archive = async () => { if (!archiveAvailable) throw new Error("archive unavailable"); f.order.push("archive-ready"); };
+  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000, archive });
+  const advance = async (input: import("../../../src/commands/worker/backends/web-types.js").LocalTask) => webStore.initializeWebExecution(input, 1000);
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, webBackend: { ...backend, advance }, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
+  try {
+    await coordinator.tick();
+    await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
+    expect(f.store.getTask(owner)?.status).toBe("active");
+    expect(webStore.getTask(owner)?.cleanup?.worktreeDeleted).toBe(false);
+    expect(f.worktrees.has(owner.claimId)).toBe(true);
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    archiveAvailable = true;
+    await coordinator.tick();
+    await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
+    expect(webStore.getTask(owner)?.status).toBe("done");
+    expect(f.order.slice(-2)).toEqual(["archive-ready", "remove-worktree"]);
+    await coordinator.tick();
+    await eventually(() => expect(f.store.listUnfinishedTasks().some(task => task.taskId === f.candidates[0]!.id && task.status === "active")).toBe(true));
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+    await coordinator.shutdown();
+  } finally { webStore.close(); }
+});

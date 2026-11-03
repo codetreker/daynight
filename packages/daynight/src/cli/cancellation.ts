@@ -8,7 +8,7 @@ export class CliCancelledError extends Error {
 }
 
 export const withCliCancellation = async <Result>(
-  context: CliContext,
+  context: Pick<CliContext, "prompt">,
   action: (signal: AbortSignal) => Promise<Result>,
   supplied?: AbortSignal,
   cancellation: () => Error = () => new CliCancelledError(),

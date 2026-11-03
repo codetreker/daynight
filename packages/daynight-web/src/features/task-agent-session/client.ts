@@ -1,3 +1,4 @@
+import type { SessionArchive, SessionArchiveStatus } from '../../../../daynight/src/session/archive';
 import { ApiError, isAbortError } from '../../api/client';
 import type { SessionApi, SessionChannel } from '../../api/sessions';
 import { SESSION_PROTOCOL, assertSessionFence, sessionFence, sessionFenceKey, parseSessionOperation, type InteractionResponse, type SessionCommand, type SessionInteraction, type SessionOperation, type SessionSnapshot } from '../../../../daynight/src/session/protocol';
@@ -14,6 +15,7 @@ export function clearSessionDrafts(userId: string): void {
 export type SessionSettingIntent = { readonly operationId: string; readonly settingId: string; readonly value: string; readonly confirmedValue: string | null };
 type CommandInput = { [K in SessionCommand['kind']]: Pick<Extract<SessionCommand, { kind: K }>, 'kind' | 'payload'> }[SessionCommand['kind']];
 export type SessionViewState = {
+  readonly archiveState: SessionArchiveStatus['state'] | 'loading' | null;
   readonly settingIntents: ReadonlyMap<string, SessionSettingIntent>;
   readonly draft: SessionDraft;
   readonly state: SessionState; readonly status: 'loading' | 'ready' | 'not_registered' | 'unavailable' | 'error';
@@ -30,7 +32,8 @@ const accepted = (operation: SessionOperation) => operation.state === 'confirmed
 const uncertain = (operation: SessionOperation) => !terminalFailure(operation) && !accepted(operation);
 
 export class TaskSessionClient {
-  private view: SessionViewState = { settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set() };
+  private view: SessionViewState = { archiveState: null, settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set() };
+  private archive: SessionArchive | null = null;
   private listeners = new Set<() => void>();
   private lifetime = new AbortController();
   private connection: SessionChannel | null = null;
@@ -207,6 +210,8 @@ export class TaskSessionClient {
         else this.publish({ connected: false, state: { ...this.view.state, recoveryRequired: true } });
       }
       this.publish({ state: { ...this.view.state, snapshot: current.session }, status: 'ready' });
+      if (current.session.lifecycle !== 'active') { await this.loadArchive(current.session, generation); return; }
+      this.archive = null; this.publish({ archiveState: null });
       this.connection = this.options.api.channel(current.session.sessionId, this.hydrated ? this.cursor : null, (value) => this.receive(value, generation), (error) => {
         if (generation !== this.connectionGeneration || !this.owned()) return;
         if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(); return; }
@@ -256,6 +261,7 @@ export class TaskSessionClient {
       }
       const s = previous && this.hydrated && BigInt(previous.sessionRevision) > BigInt(value.snapshot.sessionRevision) ? previous : value.snapshot;
       this.publish({ state: { ...this.view.state, snapshot: s }, status: 'ready' });
+      if (s.lifecycle !== 'active') { this.beginArchive(s); return; }
       this.cursor = value.cursor; this.replayThrough = value.snapshot.lastEventSeq;
       if (!this.hydrated) { this.hydrating = true; this.buffer = []; void this.hydrate(value.snapshot, generation); }
       else { this.publish({ connected: BigInt(this.view.state.lastEventSeq) >= BigInt(this.replayThrough), error: null }); this.retries = 0; this.reconcile(); }
@@ -271,9 +277,47 @@ export class TaskSessionClient {
     if (!s || sessionFenceKey(value.event) !== sessionFenceKey(s)) return;
     const state = applySessionEvent(this.view.state, value.event);
     this.publish({ state });
+    if (state.snapshot && state.snapshot.lifecycle !== 'active') { this.beginArchive(state.snapshot); return; }
     if (state.recoveryRequired) { this.hydrated = false; this.cursor = null; this.publish({ connected: false }); this.schedule(0); }
     else { this.cursor = value.cursor; if (!this.hydrating && BigInt(state.lastEventSeq) >= BigInt(this.replayThrough)) this.publish({ connected: true }); }
     if (value.event.kind === 'operation') this.persist();
+  }
+  private beginArchive(snapshot: SessionSnapshot) {
+    this.disconnect(); this.availabilityRunning = true;
+    void this.loadArchive(snapshot, this.connectionGeneration);
+  }
+  private async loadArchive(snapshot: SessionSnapshot, generation: number): Promise<void> {
+    this.publish({ connected: false, hasOlder: false, loadingOlder: false, archiveState: 'loading', error: null });
+    try {
+      const status = await this.options.api.archive(snapshot.sessionId, this.lifetime.signal);
+      if (!(await this.admit()) || generation !== this.connectionGeneration) return;
+      this.publish({ archiveState: status.state });
+      if (status.state === 'pending' || status.state === 'unavailable' && snapshot.lifecycle === 'draining') { this.schedule(3000); return; }
+      if (status.state !== 'ready') return;
+      // A ready receipt is not a loaded archive: keep the placeholder until its
+      // identity and contents have been checked against the current execution.
+      this.publish({ archiveState: 'loading' });
+      // Finalization can establish an ID whose live state was never delivered.
+      // Bind the ready archive to a fresh authenticated terminal snapshot.
+      const current = await this.options.api.current(this.lifetime.signal);
+      if (!(await this.admit()) || generation !== this.connectionGeneration) return;
+      if (current.status !== 'registered' || !this.matches(current.session)) { this.invalidate(); return; }
+      if (sessionFenceKey(current.session) !== sessionFenceKey(snapshot) || current.session.lifecycle === 'active') { void this.start(); return; }
+      const finalSnapshot = current.session;
+      const archive = await this.options.api.archiveContent(snapshot.sessionId, this.lifetime.signal);
+      if (!(await this.admit()) || generation !== this.connectionGeneration) return;
+      assertSessionFence(archive, sessionFence(finalSnapshot));
+      if (archive.provider !== finalSnapshot.identity.provider || archive.controllerId !== finalSnapshot.identity.controllerId || archive.controllerInstanceId !== finalSnapshot.identity.controllerInstanceId || archive.nativeSessionId !== finalSnapshot.identity.nativeSessionId) throw new ApiError('protocol');
+      this.archive = archive;
+      const resources = archive.resources.map(({ resource, data }) => data === null && resource.status === 'available' ? { ...resource, status: 'unavailable' as const } : resource);
+      const state = hydrateSession(emptySessionState(), finalSnapshot, archive.entries, resources);
+      this.publish({ archiveState: 'ready', state, status: 'ready', connected: false, error: null });
+    } catch (error) {
+      if (!this.owned() || generation !== this.connectionGeneration || isAbortError(error)) return;
+      if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(); return; }
+      if (!(await this.admit()) || generation !== this.connectionGeneration) return;
+      this.publish({ archiveState: 'failed', error: message(error), connected: false });
+    }
   }
   private validatePage(page: TimelinePage, snapshot: SessionSnapshot) {
     if (page.sessionId !== snapshot.sessionId || page.historyEpoch !== snapshot.historyEpoch) throw new ApiError('protocol');
@@ -296,8 +340,9 @@ export class TaskSessionClient {
       }
       this.before = page.beforeCursor; this.hydrated = online; this.hydrating = false;
       this.publish({ state, status: 'ready', hasOlder: page.hasMoreBefore, connected: online, error: online ? null : this.view.error });
+      if (state.snapshot && state.snapshot.lifecycle !== 'active') { this.beginArchive(state.snapshot); return; }
       const buffered = this.buffer; this.buffer = [];
-      if (online) for (const item of buffered) this.apply(item);
+      if (online) for (const item of buffered) { this.apply(item); if (generation !== this.connectionGeneration) return; }
       this.restore(); this.restoreDraftOperation(); this.reconcile(); this.retries = 0;
     } catch (error) {
       if (!this.owned() || generation !== this.connectionGeneration) return;
@@ -420,6 +465,14 @@ export class TaskSessionClient {
     const s = this.view.state.snapshot;
     if (!this.live() || !s || this.view.state.resources.get(id)?.status !== 'available') throw new Error('Resource unavailable.');
     const combinedSignal = AbortSignal.any([signal, this.lifetime.signal]);
+    combinedSignal.throwIfAborted();
+    if (s.lifecycle !== 'active') {
+      const archived = this.archive?.resources.find(item => item.resource.resourceId === id);
+      if (this.view.archiveState !== 'ready' || !archived || archived.data === null) throw new Error('Resource unavailable.');
+      const bytes = Uint8Array.from(atob(archived.data), character => character.charCodeAt(0));
+      combinedSignal.throwIfAborted();
+      return new Blob([bytes], { type: archived.resource.mediaType ?? 'application/octet-stream' });
+    }
     const blob = await this.options.api.resource(s.sessionId, id, combinedSignal).catch((error: unknown) => {
       if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate();
       throw error;
@@ -450,5 +503,5 @@ export class TaskSessionClient {
     this.draftKey = null; this.view = { ...this.view, draft: emptyDraft() };
     this.close();
   };
-  close = (): void => { this.disconnect(); this.clearSuspensionTimer(); this.publish({ settingIntents: new Map(), state: emptySessionState(), connected: false, status: 'unavailable' }); this.lifetime.abort(); for (const timer of this.operationPolls) clearTimeout(timer); this.operationPolls.clear(); this.listeners.clear(); };
+  close = (): void => { this.archive = null; this.disconnect(); this.clearSuspensionTimer(); this.publish({ archiveState: null, settingIntents: new Map(), state: emptySessionState(), connected: false, status: 'unavailable' }); this.lifetime.abort(); for (const timer of this.operationPolls) clearTimeout(timer); this.operationPolls.clear(); this.listeners.clear(); };
 }

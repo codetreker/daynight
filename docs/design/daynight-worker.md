@@ -145,9 +145,9 @@ Agent name 为 `dn_` 加四字段 canonical JSON 的 SHA-256 前 24 位十六进
 
 配置的 `worker.agentControlMode` 省略为 herdr，只影响新 claim。同 claim 始终沿用服务端模式；普通 summary 与 properties 更新不可改写。Web 运行 Codex stdio app-server、Claude Agent SDK 或 Copilot SDK 私有 runtime；其初始输入、原生控制、停止和恢复契约由 [Task Session 设计](task-session-protocol.md)拥有。
 
-主协调器仍从完整自有 claim 清单和实际资源对账，为两种模式合并计算容量与同 task 启动屏障。Herdr 保持当前最小索引和进程内 jobs；Web 在独立版本 1 的 `worker/web-executions.sqlite` 保存自己的冻结配置、初始输入回执、恢复预算和清理期限，在 `controller/` 保存 ticket 与版本 5 的原生 journal。Web 版本 0 重置原 schema 和数据；当前版本 1 的 CRUD 保持既有 JSON parser 与缺省字段语义，不增加更严格的字段验证。Worker 持原实例锁分别打开两库，两者成功后才创建 coordinator；一库失败不回滚已提交的另一库，下次按各自版本恢复。原始 Web 执行状态缺失时保留责任并报错，不能使用 Herdr 的 NULL ID 新建语义代替连续性。
+主协调器仍从完整自有 claim 清单和实际资源对账，为两种模式合并计算容量与同 task 启动屏障。Herdr 保持当前最小索引和进程内 jobs；Web 在独立版本 1 的 `worker/web-executions.sqlite` 保存自己的冻结配置、初始输入回执、恢复预算和清理期限，在 `controller/` 保存 ticket 与版本 6 的原生 journal。Web 版本 0 重置原 schema 和数据，因此其旧 completed 行不进入补归档库存；此重置不删除独立 execution 目录中的 ticket、journal 或待归档文件。当前版本 1 的 CRUD 保持既有 JSON parser 与缺省字段语义，不增加更严格的字段验证。Worker 持原实例锁分别打开两库，两者成功后才创建 coordinator；一库失败不回滚已提交的另一库，下次按各自版本恢复。原始 Web 执行状态缺失时保留责任并报错，不能使用 Herdr 的 NULL ID 新建语义代替连续性。
 
-Web 普通终止清理使用持久化的同一 cleanup 操作与期限，确认 Controller 和原生进程停止后才删除 Git worktree。worker 退出直接停止拥有的执行并保留未完成责任。强制撤回先在服务端冻结原 Session 的普通写权限，worker 后续完整清单再收尾；没有立即停止的保证。
+Web 普通终止清理使用持久化的同一 cleanup 操作与期限，确认 Controller 和原生进程停止后封存并上传 Session 文件归档，服务端确认 ready 后才删除 Git worktree。归档失败保留源和收尾责任，只重试上传；每轮有界补传旧 completed 执行并对失败退避，已删除的 cwd 不妨碍从原 execution 目录补归档。Task 软删除后，仍具有效 PAT 和项目成员资格的原 Session owner 通过专用归档收尾接口取得 ready 回执后释放执行容量；身份失效或上传失败继续保留源和责任，不将访问拒绝当作归档成功。文件格式、完整性与只读读取由 [Task Session 设计](task-session-protocol.md#完成后的文件归档)定义。worker 退出直接停止拥有的执行并保留未完成责任。强制撤回先在服务端冻结原 Session 的普通写权限，worker 后续完整清单再收尾；没有立即停止的保证。
 
 ## Herdr 与原生会话
 
