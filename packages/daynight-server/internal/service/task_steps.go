@@ -157,6 +157,7 @@ type AddTaskStep struct {
 
 type StepsWriteResult struct {
 	StepsDocument
+	Changed            bool
 	Phase              string
 	TransactionOutcome store.TransactionOutcome
 	CleanupFailed      bool
@@ -235,12 +236,17 @@ func (s *TaskSteps) Add(ctx context.Context, principal core.Principal, projectID
 		if err != nil {
 			return taskStepsEncodingFault(err)
 		}
+		result.Changed = true
 		result.Phase = "persist"
 		if err := tx.InsertTaskStep(ctx, taskID, candidate[position]); err != nil {
 			return err
 		}
 		return tx.TouchTask(ctx, taskID, observed)
 	})
+	return finishStepsWrite(result, projectLocked, err)
+}
+
+func finishStepsWrite(result StepsWriteResult, projectLocked bool, err error) (StepsWriteResult, error) {
 	if err != nil {
 		var transaction *store.TransactionError
 		if errors.As(err, &transaction) {
@@ -253,7 +259,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal core.Principal, projectID
 			err = projectNotFound(err)
 		}
 		result.StepsDocument = StepsDocument{}
-		return result, fmt.Errorf("add task step: %w", err)
+		return result, fmt.Errorf("write task steps: %w", err)
 	}
 	result.Phase, result.TransactionOutcome = "commit", store.TransactionCommitted
 	return result, nil

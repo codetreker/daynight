@@ -102,3 +102,31 @@ func (tx *ProjectTx) TouchTask(ctx context.Context, taskID string, observed time
 	}
 	return nil
 }
+
+func (tx *ProjectTx) UpdateTaskStep(ctx context.Context, taskID string, step core.TaskStep) error {
+	result, err := tx.tx.Exec(ctx, `UPDATE task_steps SET title=$3,description=$4,status=$5,updated_at=$6 WHERE task_id=$1 AND id=$2`, taskID, step.ID, step.Title, step.Description, step.Status, step.UpdatedAt)
+	if err != nil {
+		return queryError("update task step", err)
+	}
+	if result.RowsAffected() != 1 {
+		return queryError("update task step", core.ErrNotFound)
+	}
+	return nil
+}
+
+// MoveTaskStep changes only the inclusive position interval. The deferred
+// uniqueness constraint checks its complete final order at transaction commit.
+func (tx *ProjectTx) MoveTaskStep(ctx context.Context, taskID, targetID string, from, to int64) error {
+	result, err := tx.tx.Exec(ctx, `UPDATE task_steps SET position=CASE
+ WHEN id=$2 THEN $4::bigint
+ WHEN $3::bigint < $4::bigint THEN position-1
+ ELSE position+1 END
+ WHERE task_id=$1 AND position BETWEEN LEAST($3::bigint,$4::bigint) AND GREATEST($3::bigint,$4::bigint)`, taskID, targetID, from, to)
+	if err != nil {
+		return queryError("move task step positions", err)
+	}
+	if result.RowsAffected() != max(from, to)-min(from, to)+1 {
+		return queryError("move task step positions", core.ErrNotFound)
+	}
+	return nil
+}

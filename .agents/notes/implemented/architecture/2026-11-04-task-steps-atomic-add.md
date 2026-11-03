@@ -90,8 +90,10 @@ under an opt-in stress tag separately from routine CI; failure-path tests also
 check actual rollback, ambiguous Commit and response loss. Logs do not replace
 client resource validation or prove receipt.
 
-Public writes are limited to collection additions. Unsupported methods retain
-explicit method errors. The candidate, codec and narrow store methods have only
-current consumers; no persistent operation ledger, replay queue or retry policy
-is introduced. Further operations must preserve the same shared-version,
-preflight and completion guarantees.
+The same admission, codec, narrow parent touch and completion facts also serve
+[existing-target content and status changes](2026-11-04-task-steps-target-change.md).
+Add retains its insertion-specific candidate and always changes the collection;
+the target-change path owns semantic no-op behavior. Unsupported methods retain
+explicit method errors. These primitives have actual consumers; no persistent
+operation ledger, replay queue or retry policy is introduced. Further operations
+must preserve the same shared-version, preflight and completion guarantees.

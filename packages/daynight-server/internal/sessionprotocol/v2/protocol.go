@@ -8,7 +8,7 @@ import (
 
 var envelopeSchema = fields{"protocol": literal(Protocol), "schemaVersion": literal(float64(2)), "projectionVersion": literal(float64(1)), "type": func(v any) bool { _, ok := v.(string); return ok }, "sessionId": uuid, "claimId": uuid, "executionGeneration": positive, "agentControlMode": enums("herdr", "web"), "contentKind": enums("terminal_recording", "native_timeline"), "payload": func(any) bool { return true }}
 var leaseSchema = fields{"leaseId": uuid, "holderUserId": uuid, "browserClientId": uuid, "controlEpoch": positive, "expiresAt": timestamp}
-var action = enums("acquire_control", "release_control", "resume_automation", "paste", "keys")
+var action = enums("acquire_control", "renew_control", "release_control", "resume_automation", "paste", "keys")
 var keys = enums("Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Tab", "Backspace", "Delete", "Home", "End", "PageUp", "PageDown", "Ctrl+C", "Ctrl+D", "Ctrl+U")
 
 // DecodeMessage validates the complete union, including receipt digest integrity.
@@ -85,6 +85,21 @@ func DecodeMessage(data []byte) (Message, error) {
 		out.Payload, err = decodeValue[ControlState](p)
 	case "control_request":
 		out.Payload, err = decodeValue[ControlRequest](p)
+	case "control_dispatch":
+		out.Payload, err = decodeValue[ControlDispatch](p)
+		if err == nil {
+			dispatch := out.Payload.(ControlDispatch)
+			digest, e := ControlRequestDigest(dispatch.ActorUserID, dispatch.Request)
+			if e != nil || digest != dispatch.RequestDigest {
+				return Message{}, invalid("source_corrupt")
+			}
+		}
+	case "control_ack":
+		out.Payload, err = decodeValue[ControlAck](p)
+	case "recording_responsibility":
+		out.Payload, err = decodeValue[RecordingResponsibility](p)
+	case "recording_evidence":
+		out.Payload, err = decodeValue[RecordingEvidence](p)
 	case "operation":
 		fields := mapAt(p)
 		payload := fields["payload"]
@@ -140,7 +155,7 @@ func validPayload(kind string, v any, generation string) bool {
 	case "snapshot":
 		return object(v, fields{"connectionEpoch": positive, "segmentId": uuid, "segmentOrdinal": positive, "binding": nested(bindingSchema), "frame": validFrame, "recorded": boolean})
 	case "control_state":
-		if !object(v, fields{"connectionEpoch": positive, "controlEpoch": positive, "state": enums("automation", "manual", "suspended", "closing", "closed"), "lease": nullable(nested(leaseSchema)), "initialAssignment": enums("pending", "dispatching", "transport_completed", "unknown", "unconfirmed"), "availableActions": arrayOf(action, 0, 5, "$"), "unavailableReason": nullable(errorCode)}) {
+		if !object(v, fields{"connectionEpoch": positive, "controlEpoch": positive, "state": enums("automation", "manual", "suspended", "closing", "closed"), "lease": nullable(nested(leaseSchema)), "initialAssignment": enums("pending", "dispatching", "transport_completed", "unknown", "unconfirmed"), "availableActions": arrayOf(action, 0, 6, "$"), "unavailableReason": nullable(errorCode)}) {
 			return false
 		}
 		if (m["state"] == "manual") != (m["lease"] != nil) {
@@ -163,13 +178,23 @@ func validPayload(kind string, v any, generation string) bool {
 		}
 		return true
 	case "control_request":
-		if !object(v, fields{"operationId": uuid, "connectionEpoch": positive, "controlEpoch": positive, "action": enums("acquire_control", "release_control", "resume_automation"), "browserClientId": uuid, "leaseId": nullable(uuid), "draftHandled": boolean, "initialUnknownDisposition": nullable(enums("delivered_continue"))}) {
+		if !object(v, fields{"operationId": uuid, "connectionEpoch": positive, "controlEpoch": positive, "action": enums("acquire_control", "renew_control", "release_control", "resume_automation"), "browserClientId": uuid, "leaseId": nullable(uuid), "draftHandled": boolean, "initialUnknownDisposition": nullable(enums("delivered_continue"))}) {
 			return false
 		}
 		if m["action"] == "resume_automation" {
 			return m["draftHandled"] == true
 		}
 		return m["draftHandled"] == false && m["initialUnknownDisposition"] == nil && ((m["action"] == "acquire_control") == (m["leaseId"] == nil))
+	case "control_dispatch":
+		return object(v, fields{"actorUserId": uuid, "requestDigest": hash, "request": func(value any) bool { return validPayload("control_request", value, generation) }})
+	case "control_ack":
+		return object(v, fields{"requestDigest": hash, "durable": literal(true), "controlState": func(value any) bool { return validPayload("control_state", value, generation) }, "result": func(value any) bool {
+			return validPayload("operation_result", value, generation) && enums("transport_completed", "rejected", "unknown")(mapAt(value)["state"])
+		}})
+	case "recording_responsibility":
+		return object(v, fields{"responsibilityId": uuid, "recordingEnabled": boolean})
+	case "recording_evidence":
+		return object(v, fields{"responsibilityId": uuid, "evidenceId": uuid, "revision": positive, "selectedFrameCount": decimal, "registeredFrameCount": decimal, "captureError": nullable(errorCode), "closed": boolean, "journalSha256": hash, "sourceSha256": hash}) && decimalValue(stringAt(m["registeredFrameCount"])) <= decimalValue(stringAt(m["selectedFrameCount"]))
 	case "operation":
 		if !object(v, fields{"operationId": uuid, "connectionEpoch": positive, "segmentId": uuid, "binding": nested(bindingSchema), "controlEpoch": positive, "leaseId": uuid, "leaseSeq": positive, "kind": enums("paste", "keys"), "payload": func(any) bool { return true }}) {
 			return false
