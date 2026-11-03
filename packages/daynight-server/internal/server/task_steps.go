@@ -34,6 +34,8 @@ func taskStepsRoutes(mux *http.ServeMux, steps *service.TaskSteps, auth *Authent
 	mux.HandleFunc(path+"/{stepId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH")))
 	mux.HandleFunc("PUT "+path+"/{stepId}/status", auth.Require(handler.change))
 	mux.HandleFunc(path+"/{stepId}/status", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
+	mux.HandleFunc("PUT "+path+"/{stepId}/position", auth.Require(handler.move))
+	mux.HandleFunc(path+"/{stepId}/position", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
 }
 
 func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, principal core.Principal) {

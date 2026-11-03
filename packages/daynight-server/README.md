@@ -882,8 +882,8 @@ addresses or query strings. The CLI uses this endpoint; the Web dashboard uses
 ## Task Steps API
 
 Task-owned Steps persist independently from Sessions and expose dedicated reads,
-atomic collection additions, content updates and independent status settings.
-The [resource contract](../../docs/spec/daynight-task-steps.md) owns field,
+atomic collection additions, content updates, independent status settings and
+position moves. The [resource contract](../../docs/spec/daynight-task-steps.md) owns field,
 identity, permission, version, encoding and refusal semantics. Migration 030
 stores normalized rows without changing existing Task fields or migration
 checksums. Steps remain outside ordinary Task, list, graph and synchronization
@@ -898,10 +898,11 @@ For `T = /api/v1/projects/{projectId}/tasks/{taskId}`:
 | `POST` | `T/steps` | `201`, canonical item `Location` and complete ordered collection after append or before/after insertion. |
 | `PATCH` | `T/steps/{stepId}` | `200`, complete ordered collection after an atomic title/description update or no-op. |
 | `PUT` | `T/steps/{stepId}/status` | `200`, complete ordered collection after an independent status setting or no-op. |
+| `PUT` | `T/steps/{stepId}/position` | `200`, complete ordered collection after a before/after/first/last move or no-op. |
 
 Requests accept no query, including a trailing empty `?`. Unsupported collection
 methods return an authenticated `405` with `Allow: GET, HEAD, POST`; item methods
-return `Allow: GET, HEAD, PATCH`; status methods, including HEAD, return
+return `Allow: GET, HEAD, PATCH`; status and position methods, including HEAD, return
 `Allow: PUT`. Both project roles can read and modify Steps. Normal Task
 nonmembership/missing scope is `404`, parent soft deletion is `410`, and a missing
 child or anchor is `404`. Responses retain `no-store` and principal/request
@@ -921,6 +922,17 @@ update saves both fields atomically. Status PUT accepts only `version` and a
 required four-state value; all transitions are allowed, including multiple
 in-progress Steps and updates while the parent Task is done. Both update the
 same existing record and return a full collection without a new Location.
+
+Position PUT accepts only `version` and exactly one of `before`, `after` or
+`position`. Relative anchors are another Step in the same Task; `position` is
+the string `first` or `last`, never a boolean field. Target and anchor IDs
+normalize before placement checks. After parent/version admission and target
+resolution, a self-anchor is `400 invalid_input`;
+a missing target or anchor is `404` without a fallback position or cross-Task
+lookup. The target moves within the complete collection, preserving every
+Step's ID, title, description, status and created/updated timestamps. It returns
+a full collection without a new Location.
+
 Unknown/duplicate/read-only fields, explicit null, wrong types, NUL, invalid
 UTF-8 and lone escaped UTF-16 surrogates are refused. Valid surrogate pairs,
 literal U+FFFD and escaped backslashes are preserved.
@@ -931,19 +943,24 @@ lock order: project, member admission, narrow parent lock, tombstone and exact
 version, then current rows. Add checks duplicate ID before anchor and constructs
 an immutable insertion candidate. Content/status changes share one actual
 existing-target change path, resolve that Task's target and compare merged
-semantic values before assigning time. Current same-value updates are no-ops:
-the old complete resource, version and all times are returned without a clock
-sample, target UPDATE or parent touch. This also succeeds at MaxInt64. Stale
-same-value requests still conflict; a missing target is a child 404 before
-version exhaustion.
+semantic values before assigning time. Move resolves the target and any anchor
+and copies the final order without changing content or times. Current same-value
+updates and already-occupied positions are no-ops: the old complete resource, version and all times are returned without a clock
+sample, target/position UPDATE or parent touch. Adjacent relative moves, first/last
+boundaries and valid singleton moves follow the same rule, including MaxInt64.
+Stale same-value requests still conflict; a missing target is a child 404 before
+version exhaustion; a missing anchor remains a distinct child absence.
 
 Real changes check exhaustion, sample database UTC microsecond time, encode the
 complete candidate, persist only the intended rows and touch the parent once.
 Add shifts affected positions and inserts one row. Content/status changes update
 only the target's title/description/status/updated_at; its ID, position and
-created_at remain fixed. Other Step fields and times remain unchanged. The one
-sample equals the target's new updatedAt and the parent's updated_at. No-op
-versus real-change competition can produce two successful responses when the
+created_at remain fixed. Move writes only the affected interval's final dense
+positions with one CASE UPDATE and leaves all Step timestamps unchanged; the
+deferred unique constraint checks the final order without sentinel positions.
+For content/status changes, the one clock sample equals the target's new
+updatedAt and the parent's updated_at; for Move it belongs to the parent alone.
+No-op versus real-change competition can produce two successful responses when the
 no-op finishes first, but only one actual change advances the shared version.
 Concurrent same-version actual Task and Steps writes permit at most one change.
 
@@ -969,7 +986,7 @@ and their original causes. Confirmed Commit remains `committed` after response
 loss; confirmed rollback is `not_committed`; unconfirmed Commit is `unknown`.
 The driver's closed-transaction cleanup after failed Commit cannot prove rollback.
 Cleanup failure outranks a nested business refusal. The handler logs fixed safe
-diagnostics under `component=task_step`, `operation=add|update|set_status`, business
+diagnostics under `component=task_step`, `operation=add|update|set_status|move`, business
 `changed`/`unchanged` and prepare/persist/commit/response phases. No-op skips the
 persist phase; its business `unchanged` is independent from a `committed`
 transaction. Logs omit input values and arbitrary Fault/driver messages.
@@ -982,10 +999,11 @@ original identity and do not replay writes automatically.
 
 Routine tests cover migration preservation, scoped reads, snapshot interleaving,
 raw text, exact int64, auth/Origin/HEAD/query/method refusals, malformed storage,
-append/anchors/defaults, atomic content and four-state changes, no-op/exhaustion,
-concurrency, parent and Session preservation, rollback and completion facts, and
+append/anchors/defaults, atomic content and four-state changes, dense moves,
+self/missing anchors, no-op/exhaustion, concurrency, parent and Session preservation, rollback and completion facts, and
 safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
-and `TestStepsHTTPChange*`. Actual binary read restart persistence is covered by
+and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
+`TestStepsHTTPMove*`. Actual binary read restart persistence is covered by
 `TestBuiltBinaryStepsReadPersistence`. After preparing the normal auth fixture
 and an isolated PostgreSQL database, focused tests can be run from this module:
 
@@ -1000,7 +1018,7 @@ Maximum-resource HTTP tests use the `stress` build tag and run separately from
 routine CI:
 
 ```bash
-go test -tags=stress ./internal/server -run '^TestStepsHTTP(ExactCapacity|AddCapacity|ChangeCapacity)Stress$' -count=1 -timeout=5m
+go test -tags=stress ./internal/server -run '^TestStepsHTTP(ExactCapacity|AddCapacity|ChangeCapacity|MoveCapacity)Stress$' -count=1 -timeout=5m
 ```
 
 The read case seeds legitimate bounded individual records, observes complete
@@ -1009,8 +1027,11 @@ one-digit version, and refuses an illegally seeded over-capacity collection.
 The add case checks an exact successful candidate and subsequent complete GET,
 then a one-byte over-limit candidate with no data writes. The change case checks
 an exact PATCH and GET, one-byte over-limit refusal before target UPDATE/touch,
-shrinking, status length increases and legal maximum no-op. Run-specific results
-and source identity belong to the corresponding PR evidence.
+shrinking, status length increases and legal maximum no-op. The move case checks
+an exact-capacity move and subsequent GET, preserved Step times and a maximum
+version no-op without clock, position UPDATE or parent touch. Routine PostgreSQL
+cases verify interval-write and parent-touch rollback and same-version competition.
+Run-specific results and source identity belong to the corresponding PR evidence.
 
 ## Task Thread API
 

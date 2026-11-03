@@ -90,7 +90,9 @@ concurrency, target and parent-touch rollback, and preserved ownership. Opt-in
 stress tests separately verify exact capacity, one-byte refusal, shrinking and
 status growth through actual response bytes and database time.
 
-Public writes comprise additions, content updates and independent status
-settings. The shared mechanisms serve those actual operations and retain
-explicit method refusals for unsupported requests. No new retry, operation
-ledger, lifecycle gate or replay behavior is required.
+Public writes also include [position moves](2026-11-04-task-steps-position-move.md),
+which preserve all Step content timestamps and use their own order candidate and
+interval persistence. They reuse neutral admission, completion and response
+facts without routing through content timestamp assignment. The shared
+mechanisms serve actual operations and retain explicit method refusals for
+unsupported requests. No new retry, operation ledger, lifecycle gate or replay behavior is required.
