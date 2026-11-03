@@ -118,7 +118,7 @@ explains the mapping, platform limits, fixed build lifetime and shell verificati
 daynight                            # Show root help
 daynight --help                      # Also -h
 daynight --version                   # Also -v
-daynight --skill                    # Print the standalone CLI usage manual
+daynight --skill                    # Print the project/task usage manual
 daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
@@ -180,10 +180,11 @@ daynight --skill
 dn --skill
 ```
 
-`--skill` prints one standalone English CLI usage manual from the current
-package. It covers setup, command discovery, projects, tasks, version-safe writes,
-properties, attachments and the worker, Controller, review, update and completion
-entry points. The output preserves the manual's original bytes, including YAML
+`--skill` prints one standalone English project/task usage manual from the
+current package. It covers project selection, task queries and writes,
+dependencies, properties and attachments. Other capabilities are discovered
+through `daynight --help`, with exact options in each subcommand's help. The
+output preserves the manual's original bytes, including YAML
 frontmatter and the final newline. The document has no package-relative
 references to read separately.
 

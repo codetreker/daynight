@@ -200,7 +200,7 @@ src/
 登记 `dn`，供两种补全生成器使用。`cli/context.ts` 只描述客户端上下文：版本、包目录、输入输出，以及
 用户主目录和工作目录的惰性查询函数；不放入已解析的 review 路径、配置或运行函数。
 `cli/commands.ts` 组合各命令的轻量定义并保存异步执行入口；`cli/application.ts`
-只在选中命令时调用加载函数；根 `--skill` 信息动作按需加载 `commands/skill/read.ts`。该 reader 从稳定入口传入的包目录定位 `dist/commands/skill/usage.md`，完整读取并以 fatal UTF-8 decoder 校验后，经 `stdoutBytes` 输出原始 Buffer。它不导入安装器、配置或 `using-daynight` bundle。`usage.md` 是独立英文 CLI 使用手册，其命令事实与所属轻量定义同步。
+只在选中命令时调用加载函数；根 `--skill` 信息动作按需加载 `commands/skill/read.ts`。该 reader 从稳定入口传入的包目录定位 `dist/commands/skill/usage.md`，完整读取并以 fatal UTF-8 decoder 校验后，经 `stdoutBytes` 输出原始 Buffer。它不导入安装器、配置或 `using-daynight` bundle。`usage.md` 是独立英文 project/task 使用手册，覆盖项目选择、任务查询与写入、依赖、properties 和 attachments；其他能力引导查询 `daynight --help`，命令事实与所属轻量定义同步。
 
 `cli/schema.ts` 定义命令、别名、选项和值类型、位置
 参数及固定候选；选项元数据表达 required、allowEmpty、choices 和 repeatable，

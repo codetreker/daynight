@@ -13,8 +13,10 @@ versions, dependency replacement and attachment output.
 ## Decision
 
 `daynight --skill` and `dn --skill` print one standalone English CLI usage manual
-from the current package. The manual covers practical operations and command
-help discovery. Its YAML frontmatter identifies it as `daynight`, and its content
+from the current package. It covers project and task operations, including
+version-safe writes, dependencies, properties and attachments. Other capabilities
+are discovered through `daynight --help`; subcommand help owns exact options.
+Its YAML frontmatter identifies it as `daynight`, and its content
 has no package-relative references. Task orchestration workflows remain owned by
 the separately installed `using-daynight` skill.
 
@@ -38,13 +40,19 @@ owns module responsibilities.
 
 **Print the public workflow skill.** Its entry delegates detailed instructions
 to progressive references and owns task orchestration. Printing that entry
-would not provide a complete CLI operating manual; concatenating all references
+would not provide a standalone project/task operating manual; concatenating
+all references
 would load every workflow and duplicate their authorization and lifecycle rules.
 
 **Add resource lookup to the root option.** Separate calls could navigate the
 workflow bundle, but this creates a resource-selection interface and leaves the
 manual dependent on more document reads. A single standalone manual provides the
 requested operating reference through one invocation.
+
+**Document every CLI capability.** Installation, sessions and background services
+add unrelated reading to project/task operations. Root and subcommand help
+already own their discoverability and options; those capabilities can evolve
+without expanding this manual.
 
 ## Consequences
 
@@ -55,8 +63,9 @@ newline. Extra arguments fail before the manual is read. Missing files, read
 errors and invalid UTF-8 retain their failure causes; output failure may leave
 partial stdout.
 
-The manual's operation summaries must stay synchronized with command definitions
-and behavior. Less-common flags are discovered through the relevant `--help`.
+The project/task summaries must stay synchronized with command definitions and
+behavior. Keeping other capabilities in root and subcommand help limits reading
+cost and avoids duplicating their detailed operating guidance.
 Packaging checks validate frontmatter and standalone links; installed-package
 byte comparison proves availability and output fidelity. These checks do not
 prove model understanding or task workflow compliance.
