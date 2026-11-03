@@ -77,14 +77,25 @@ func canonicalUUID(value string) bool {
 	return true
 }
 
-func ValidateText(title, description string) error {
+func ValidateTitle(title string) error {
 	if !utf8.ValidString(title) || strings.ContainsRune(title, 0) || strings.TrimFunc(title, unicode.IsSpace) == "" {
 		return errors.New("step title must contain a non-whitespace character in valid UTF-8 without NUL")
 	}
+	return nil
+}
+
+func ValidateDescription(description string) error {
 	if !utf8.ValidString(description) || strings.ContainsRune(description, 0) {
 		return errors.New("step description must be valid UTF-8 without NUL")
 	}
 	return nil
+}
+
+func ValidateText(title, description string) error {
+	if err := ValidateTitle(title); err != nil {
+		return err
+	}
+	return ValidateDescription(description)
 }
 
 func validTime(value time.Time) bool {

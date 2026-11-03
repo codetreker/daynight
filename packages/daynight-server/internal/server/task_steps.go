@@ -30,7 +30,10 @@ func taskStepsRoutes(mux *http.ServeMux, steps *service.TaskSteps, auth *Authent
 	mux.HandleFunc("GET "+path, auth.Require(handler.get))
 	mux.HandleFunc(path, auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 	mux.HandleFunc("GET "+path+"/{stepId}", auth.Require(handler.get))
-	mux.HandleFunc(path+"/{stepId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("PATCH "+path+"/{stepId}", auth.Require(handler.change))
+	mux.HandleFunc(path+"/{stepId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH")))
+	mux.HandleFunc("PUT "+path+"/{stepId}/status", auth.Require(handler.change))
+	mux.HandleFunc(path+"/{stepId}/status", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
 }
 
 func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -145,12 +148,8 @@ func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, pri
 
 func addStepInput(fields map[string]json.RawMessage) (service.AddTaskStep, error) {
 	var input service.AddTaskStep
-	// Validate original JSON strings before encoding/json can replace a lone
-	// escaped surrogate. Escaped backslashes and a literal U+FFFD remain valid.
-	for _, raw := range fields {
-		if !jsonunicode.Valid(raw) {
-			return input, invalidInput("Step fields must contain valid Unicode.")
-		}
+	if err := validateStepUnicode(fields); err != nil {
+		return input, err
 	}
 	var err error
 	input.Version, err = versionInput(fields)
@@ -186,6 +185,17 @@ func addStepInput(fields map[string]json.RawMessage) (service.AddTaskStep, error
 	}
 	input.After, err = optionalString(fields, "after")
 	return input, err
+}
+
+// Validate original JSON strings before encoding/json can replace a lone
+// escaped surrogate. Escaped backslashes and a literal U+FFFD remain valid.
+func validateStepUnicode(fields map[string]json.RawMessage) error {
+	for _, raw := range fields {
+		if !jsonunicode.Valid(raw) {
+			return invalidInput("Step fields must contain valid Unicode.")
+		}
+	}
+	return nil
 }
 
 func writeStepsJSON(w http.ResponseWriter, request *http.Request, logger *slog.Logger, status int, data []byte) {
