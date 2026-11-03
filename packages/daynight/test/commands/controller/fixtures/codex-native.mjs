@@ -1,6 +1,8 @@
 import { createInterface } from 'node:readline';
 const out = value => process.stdout.write(JSON.stringify(value) + '\n');
 let waiting = null, holdResponse = false;
+const sleep = { type: 'sleep', id: 'sleep-call', durationMs: 50000, startedAtMs: 1793708507841 };
+const completedSleep = { ...sleep, completedAtMs: 1793708557843 };
 for await (const line of createInterface({input:process.stdin})) {
  const m=JSON.parse(line);
  if(m.method==='initialize')out({id:m.id,result:{}});
@@ -14,7 +16,7 @@ for await (const line of createInterface({input:process.stdin})) {
   if (Object.entries(expected).some(([key,value])=>m.params.config?.['shell_environment_policy.set.'+key]!==value)) {out({id:m.id,error:{code:-32602,message:'Agent CLI environment did not override native shell snapshot'}});continue;}
  }
  if(m.method==='thread/start'||m.method==='thread/resume')out({id:m.id,result:{thread:{id:'native-thread',cwd:process.cwd()}}});
- if(m.method==='thread/items/list')out({id:m.id,result:{data:[{type:'userMessage',id:'history-user',clientId:'persisted-operation',content:[{type:'text',text:'previous'}]}],nextCursor:null}});
+ if(m.method==='thread/items/list')out({id:m.id,result:{data:[{type:'userMessage',id:'history-user',clientId:'persisted-operation',content:[{type:'text',text:'previous'}]},...(process.env.CODEX_TEST_SLEEP ? [completedSleep] : [])],nextCursor:null}});
  if(m.method==='thread/read')out({id:m.id,result:{thread:{id:'native-thread',turns:[]}}});
  if(m.method==='model/list')out({id:m.id,result:{data:[],nextCursor:null}});
  if(m.method==='configRequirements/read')out({id:m.id,result:{requirements:null}});
@@ -28,6 +30,12 @@ for await (const line of createInterface({input:process.stdin})) {
    out({id:42,method:'item/commandExecution/requestApproval',params:{threadId:'native-thread',turnId:turn.id,itemId:'tool',command:'echo safe',availableDecisions:['accept',text==='approval_cancel'?'cancel':'decline']}});continue;
   }
   if(text==='cancel') {out({id:m.id,result:{turn}});continue;}
+  if(text==='sleep' && process.env.CODEX_TEST_SLEEP) {
+   out({method:'item/started',params:{threadId:'native-thread',turnId:turn.id,item:sleep}});
+   out({method:'item/completed',params:{threadId:'native-thread',turnId:turn.id,item:completedSleep}});
+   out({method:'turn/completed',params:{threadId:'native-thread',turn:{...turn,status:'completed'}}});
+   out({id:m.id,result:{turn}});continue;
+  }
   out({method:'item/started',params:{threadId:'native-thread',turnId:turn.id,item:{id:'tool',type:'commandExecution',command:'echo safe',aggregatedOutput:''}}});
   out({method:'item/commandExecution/outputDelta',params:{threadId:'native-thread',itemId:'tool',delta:'safe output'}});
   out({method:'item/completed',params:{threadId:'native-thread',turnId:turn.id,item:{id:'answer',type:'agentMessage',text:'fixture answer'}}});
