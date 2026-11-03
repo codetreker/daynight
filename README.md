@@ -25,6 +25,10 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Keep the working material with the task.** Upload designs, screenshots and
   other files; read Markdown with Mermaid flowcharts, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
+- **Discuss tasks through the CLI.** Read persistent discussion history, post as
+  your account or an explicitly verified Agent claim, and reply to a message with
+  `daynight task thread`. [Thread commands](packages/daynight/README.md#task-discussion-threads)
+  preserve complete messages and explicit pagination independently of Sessions.
 - **Work with coding agents.** Install the `using-daynight` skill for Codex,
   Copilot CLI or Claude Code to register work, discuss designs, execute specified
   tasks and review handoffs. Ordinary execution handles one specified task.

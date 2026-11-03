@@ -1169,7 +1169,8 @@ receipt.
 
 The [binary scenarios](cmd/e2e_tests/acceptance_test.go) and their
 [process/evidence harness](cmd/e2e_tests/acceptance_process_test.go) map to
-the [V1–V10 requirements](../../docs/spec/daynight-server.md) as follows:
+the [V1–V10 requirements](../../docs/spec/daynight-server.md). The installed
+Thread scenario also verifies the [discussion contract](../../docs/spec/daynight-task-thread.md):
 
 | Requirement | Observable evidence |
 |---|---|
@@ -1183,6 +1184,7 @@ the [V1–V10 requirements](../../docs/spec/daynight-server.md) as follows:
 | V8: coverage and race gates | [`scripts/check.sh`](scripts/check.sh), [`.go-cov.toml`](.go-cov.toml), the raw profile and [exact-boundary/malformed-profile tests](scripts/coverage.test.mts) |
 | V9: mandatory infrastructure and complete CI | Missing/unavailable PostgreSQL fails the check; test-result expiration preserves real observations; the [final `checks` job](../../.github/workflows/checks.yml) accepts only `success` or `skipped` from every preceding job and rejects failures, cancellations and other results under the [repository CI rules](../../README.md#ci-selection); main pushes run all modules |
 | V10: correlation and privacy | Workflow/refusal/partial-failure/cancellation/startup scenarios verify HTTP request IDs, canonical resource IDs, structured categories and absence of submitted secret markers from logs |
+| Task Thread: CLI/service contract | [`installed_cli_task_thread`](cmd/e2e_tests/acceptance_thread_cli_test.go) verifies authenticated human/Agent authors, replies and nullable snapshots, millisecond message-ID pagination, complete resource/text byte bounds, controlled refusals and unknown submissions, task immutability and owned resource cleanup |
 
 HTTP error assertions preserve expected status/code, JSON response headers and
 exact error.requestId/X-Request-ID correlation. Known secret markers and database

@@ -35,7 +35,7 @@ const fixture = () => {
     runServerCommand: vi.fn<TaskCommandDependencies["runServerCommand"]>(async (current, command) => {
       const result = await command({ api: api as unknown as ApiClient, operation, serverUrl: "http://localhost:8787" });
       operation.check();
-      if (result !== undefined) current.stdout(result);
+      if (typeof result === "string") current.stdout(result); else if (result !== undefined) current.stdout(result.output);
     }),
   };
   return { api, context, dependencies, operation };
