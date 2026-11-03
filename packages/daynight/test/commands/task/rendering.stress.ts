@@ -6,7 +6,7 @@ if (process.env.CI) throw new Error("CLI stress tests run only on local machines
 
 const projectId = "abcdefab-1111-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
-const task: Task = { id: "abcdefab-2222-4222-8333-123456789abc", projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+const task: Task = { id: "abcdefab-2222-4222-8333-123456789abc", projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
 
 describe("task rendering stress", () => {
   it("renders full values in linear space despite an outlier title or description", () => {
@@ -15,7 +15,7 @@ describe("task rendering stress", () => {
     let contentLength = 0;
     for (const current of tasks) {
       expect(output).toContain(`ID: ${current.id}\nProject: ${projectId}\nTitle: ${current.title}\n`);
-      contentLength += current.id.length + current.projectId.length + current.title.length + current.description.length + current.status.length + current.version.toString().length + current.createdAt.length + current.updatedAt.length + `Automatic execution: ${current.allowAgents}\nRequired platform: ${current.requiredPlatform === null ? "any" : current.requiredPlatform}\n`.length;
+      contentLength += current.id.length + current.projectId.length + current.title.length + current.description.length + current.status.length + current.version.toString().length + current.createdAt.length + current.updatedAt.length + `Automatic execution: ${current.allowAgents}\nRequired platform: ${current.requiredPlatform === null ? "any" : current.requiredPlatform}\nAssigned to: ${current.assignedTo === null ? "unassigned" : current.assignedTo}\n`.length;
     }
     expect(output.length).toBeLessThanOrEqual(contentLength + 190 * tasks.length);
   });

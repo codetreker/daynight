@@ -1,6 +1,6 @@
 # Task 负责人服务端契约
 
-状态：服务端负责人字段、普通 HTTP 读写、负责人筛选和项目内人员资源已实现。本文拥有责任归属的数据、事务与查询行为；[设计](../design/daynight-task-assignment.md)拥有机制。
+状态：服务端负责人字段、普通 HTTP 读写、负责人筛选、项目内人员资源、CLI 负责人命令和本人自动领取规则已实现。本文拥有责任归属的数据、事务与查询行为；[设计](../design/daynight-task-assignment.md)拥有机制。
 
 ## 数据与读取
 
@@ -29,7 +29,7 @@ PATCH 仍要求精确正 int64 version 和至少一个可修改字段，单独�
 
 实际负责人变化包括 null→人、人→另一人和人→null，必须在同一次任务更新中令 `allowAgents=false`。组合 PATCH 即使同时请求 `allowAgents:true`，最终仍保存新负责人和 false。任务状态、起止时间、平台、标题/正文、完整属性及依赖保持请求所要求的合法候选，不由负责人规则隐式改写。
 
-`in_progress` 禁止实际负责人变化，整个组合写入返回 409 invalid_transition，原数据保持。精确版本下的相同负责人不重置许可、不增加版本或时间；等值不触发重新核验历史负责人的成员资格。它不豁免同一请求对其他字段的既有约束。陈旧版本即使等值仍返回 version_conflict。
+`in_progress` 禁止实际负责人变化，整个组合写入返回 409 invalid_transition，原数据保持。精确版本下的相同负责人不触发许可重置或重新核验历史负责人的成员资格；纯等值请求不增加版本或时间。同一请求中其他字段仍按其普通规则修改并决定版本变化。陈旧版本即使等值仍返回 version_conflict。
 
 负责人失去项目访问权限后，字段保留。普通元数据、状态、属性和全部 worker 生命周期写入保留负责人；同状态和相同 worker 摘要等 no-op 不构造空负责人写入。
 
@@ -37,7 +37,7 @@ PATCH 仍要求精确正 int64 version 和至少一个可修改字段，单独�
 
 负责人写入、状态、许可、worker claim 和成员修改共享项目锁及任务版本。实际竞争只有一个同版本变更提交；等值请求先完成时可与后续 claim 均成功，但只有 claim 增加版本。目标先被移除则新分配拒绝；有效分配后再移除目标则保留该 UUID。
 
-自动领取要求 assignedTo 等于当前认证账号的本地 userId。Worker 使用 assignedTo=me 发现候选，服务端 claim 在项目写事务中重新校验当前负责人；未分配和分配给他人的任务即使 allowAgents=true 也拒绝自动领取。已有 claim 的完整库存、恢复、完成、释放、撤回、显式人工 resume 和 Session/archive 权限仍按原执行身份与[认领设计](../design/daynight-worker-claims.md)处理；新规则不自动撤回既有执行。
+自动领取要求 assignedTo 等于当前认证账号的本地 userId。Worker 使用 assignedTo=me 发现候选，服务端 claim 在项目写事务中重新校验当前负责人；未分配和分配给他人的任务即使 allowAgents=true 也拒绝自动领取。已有 claim 的完整库存、恢复、完成、释放、撤回、显式人工 resume 和 Session/archive 权限仍按原执行身份与[认领设计](../design/daynight-worker-claims.md)处理；新规则不自动撤回既有执行。[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)保存资格规则与执行授权分离的原因。
 
 ## 任务筛选与游标
 
@@ -83,6 +83,6 @@ name 和 avatarUrl 保留实际 nullable 资料，不补姓名或邮箱；响应
 
 ## 当前交付边界与验证
 
-本契约的服务端字段、POST/PATCH、任务筛选及人员资源已实现。CLI 负责人选项、Web 编辑和新字段缓存消费不属于当前已实现能力，现有客户端继续使用其已实现的数据投影。
+本契约的服务端字段、POST/PATCH、任务筛选及人员资源已实现。CLI已消费必填nullable assignedTo并支持设置/清空、当前ID展示及UUID/me/unassigned筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有。Web负责人编辑及其新字段缓存消费尚未实现。
 
 验证覆盖原始 JSON 字段与白名单、三套任务投影、nullable 及规范化、实际/等值/陈旧版本、执行中拒绝、全部保留写入、真实项目锁竞态及回滚。查询验证多页过滤、完整游标 scope、版本隔离和权限；目录验证两种模式的资格、覆盖、隐私、资料缺失、快照一致性及失败优先级。完整规模的查询计划和响应样本由显式本地压力入口运行，绑定被测修订；常规 CI 保留查询正确性验证，不把样本量当作生产容量上限。适用 Go 门禁及严格大于 90% 的总语句覆盖率由仓库验证命令拥有。
