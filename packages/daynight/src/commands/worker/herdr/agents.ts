@@ -1,3 +1,5 @@
+import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
+import { readCodexConfiguration } from "./codex-config.js";
 import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
@@ -35,7 +37,7 @@ export type HerdrAgentStartInput = {
 };
 export type HerdrOwnedWorkspace = { owner: HerdrExecutionOwner; workspaceId: string; panes: { binding: HerdrTaskBinding; cwd: string | null; kind: WorkerAgent | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null }[] };
 export type HerdrAgentPreflight = { verifyStart(input: { context: HerdrExecutionContext; configuration: HerdrAgentConfiguration; resumeSessionId?: string }, operation: Operation): Promise<unknown> };
-export type HerdrWorkspaceEnvironment = Readonly<{ XDG_CONFIG_HOME: string; XDG_STATE_HOME: string }>;
+export type HerdrWorkspaceEnvironment = Readonly<{ XDG_CONFIG_HOME: string; XDG_STATE_HOME: string; PATH?: string; DN_CONFIG_DIR?: string }>;
 
 type RecordValue = Record<string, unknown>;
 const object = (value: unknown, name: string): RecordValue => {
@@ -95,12 +97,13 @@ const processExecuting = async (processId: number): Promise<boolean> => {
   catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ESRCH") return false; throw cause; }
 };
 
-export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session: string; preflight: HerdrAgentPreflight; workspaceEnvironment: HerdrWorkspaceEnvironment; processExecuting?: (pid: number) => Promise<boolean>; pollIntervalMs?: number }) => {
+export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session: string; preflight: HerdrAgentPreflight; workspaceEnvironment: HerdrWorkspaceEnvironment; readCodexConfig?: (args: readonly string[], cwd: string, operation: Operation) => Promise<unknown>; processExecuting?: (pid: number) => Promise<boolean>; pollIntervalMs?: number }) => {
   const session = text(options.session, "Herdr session");
   const suppliedEnvironment = object(options.workspaceEnvironment, "Task workspace environment");
   const xdgFields = ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const;
-  if (Object.keys(suppliedEnvironment).length !== xdgFields.length || xdgFields.some((field) => !Object.hasOwn(suppliedEnvironment, field) || typeof suppliedEnvironment[field] !== "string" || suppliedEnvironment[field].includes("\0"))) throw new TypeError("Task workspace environment must contain only XDG_CONFIG_HOME and XDG_STATE_HOME string values without NUL.");
-  const workspaceEnvironment = { XDG_CONFIG_HOME: suppliedEnvironment.XDG_CONFIG_HOME as string, XDG_STATE_HOME: suppliedEnvironment.XDG_STATE_HOME as string };
+  const allowedFields = new Set<string>([...xdgFields, "PATH", "DN_CONFIG_DIR"]);
+  if (xdgFields.some(field => !Object.hasOwn(suppliedEnvironment, field)) || Object.entries(suppliedEnvironment).some(([field, value]) => !allowedFields.has(field) || typeof value !== "string" || value.includes("\0"))) throw new TypeError("Task workspace environment requires XDG_CONFIG_HOME and XDG_STATE_HOME and permits optional PATH and DN_CONFIG_DIR string values without NUL.");
+  const workspaceEnvironment = { ...suppliedEnvironment } as HerdrWorkspaceEnvironment;
   const isExecuting = options.processExecuting === undefined ? processExecuting : options.processExecuting;
   const pollInterval = options.pollIntervalMs === undefined ? 100 : options.pollIntervalMs;
   if (!Number.isSafeInteger(pollInterval) || pollInterval <= 0 || pollInterval > 1000) throw new TypeError("The Herdr observation interval must be between 1 and 1000 milliseconds.");
@@ -354,6 +357,13 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       const before = await observation(context, binding, operation);
       if (before.kind !== null || before.launchPending || before.interactiveReady) return before;
       await options.preflight.verifyStart({ context, configuration: input.configuration, ...(input.resumeSessionId === undefined ? {} : { resumeSessionId: input.resumeSessionId }) }, operation);
+      if (context.agent === "codex" && workspaceEnvironment.PATH !== undefined) {
+        const effective = options.readCodexConfig
+          ? await options.readCodexConfig(args, cwd, operation)
+          : await readCodexConfiguration({ args, cwd, environment: { ...process.env, ...workspaceEnvironment } }, operation);
+        const overrides = codexAgentCliOverrides({ ...workspaceEnvironment, PATH: workspaceEnvironment.PATH }, effective);
+        for (const [key, value] of Object.entries(overrides)) args.push("-c", `${key}=${JSON.stringify(value)}`);
+      }
       const timeout = Math.floor(Math.min(30_000, operation.remainingMs()));
       if (timeout <= 3000) throw new HerdrAgentActionError("The remaining operation budget cannot start a native agent.", "agent.start", "not-submitted");
       const started = await mutation("agent.start", { name: herdrExecutionAgentName(context), kind: context.agent, pane_id: binding.paneId, args, timeout_ms: timeout }, "agent_started", operation);
