@@ -3,7 +3,7 @@
 状态：`packages/daynight/` 是通过 `@codetreker/daynight` 分发的 TypeScript 客户端
 命令工具包，支持 Linux、macOS 和 Windows。`review` 提供 GitHub PR 审查，`worker` 提供前台任务认领与资源对账，`update`
 管理当前 npm 全局安装，`login/logout` 管理 CLI 凭据，review 拥有仓库配置和首次引导，`completion` 生成 Bash 和 zsh
-的原生补全脚本并安装启动配置；`skill` 提供公开 `using-daynight` skill 的交互安装。project/task
+的原生补全脚本并安装启动配置；`--skill` 输出独立的 CLI 使用手册，`skill` 提供公开 `using-daynight` skill 的交互安装。project/task
 CLI 的共享配置、HTTP、仓库关联基础及 project/task 命令已完成，安装产物、真实服务
 与默认预算验收已通过托管验证；集成状态见[PR #55](https://github.com/codetreker/daynight/pull/55)。
 [专属设计](daynight-project-task.md)拥有项目任务机制，[worker 设计](daynight-worker.md)拥有持续执行机制。行为归属见[客户端需求](../spec/daynight.md)及
@@ -18,6 +18,7 @@ CLI 的共享配置、HTTP、仓库关联基础及 project/task 命令已完成�
 daynight                            # 顶层帮助
 daynight --help                      # 同 -h
 daynight --version                   # 同 -v
+daynight --skill                    # 输出独立的 CLI 使用手册
 daynight update
 daynight login [--no-browser]         # 浏览器设备授权
 daynight logout                      # 撤销并清除当前 CLI 凭据
@@ -60,7 +61,7 @@ daynight task attachment remove <task-id> <relative-path> [--project <project-id
 以上命令和后文源码树描述当前实现。project/task 的业务机制与完整联调要求由
 [专属设计](daynight-project-task.md)拥有。
 
-客户端外壳处理顶层帮助、版本、命令选择及通用退出结果。每个命令模块负责自己的
+客户端外壳处理顶层帮助、版本、使用手册输出分派、命令选择及通用退出结果。每个命令模块负责自己的
 定义、参数、帮助、依赖和执行生命周期。`review` 再按配置登记、本地列表、前台运行分派，
 避免查询或配置操作初始化审查运行时。`update` 属于包安装生命周期，不属于 review。
 `skill` 拥有已安装 Agent 检测、终端选择、scope 规划和 bundle 覆盖，独立于服务及
@@ -108,6 +109,8 @@ src/
       agents.ts
       targets.ts
       install.ts
+      read.ts
+      usage.md
       skills/using-daynight/
         SKILL.md
         references/handbook.md
@@ -197,15 +200,16 @@ src/
 登记 `dn`，供两种补全生成器使用。`cli/context.ts` 只描述客户端上下文：版本、包目录、输入输出，以及
 用户主目录和工作目录的惰性查询函数；不放入已解析的 review 路径、配置或运行函数。
 `cli/commands.ts` 组合各命令的轻量定义并保存异步执行入口；`cli/application.ts`
-只在选中命令时调用加载函数。`cli/schema.ts` 定义命令、别名、选项和值类型、位置
+只在选中命令时调用加载函数；根 `--skill` 信息动作按需加载 `commands/skill/read.ts`。该 reader 从稳定入口传入的包目录定位 `dist/commands/skill/usage.md`，完整读取并以 fatal UTF-8 decoder 校验后，经 `stdoutBytes` 输出原始 Buffer。它不导入安装器、配置或 `using-daynight` bundle。`usage.md` 是独立英文 project/task 使用手册，覆盖项目选择、任务查询与写入、依赖、properties 和 attachments；其他能力引导查询 `daynight --help`，命令事实与所属轻量定义同步。
+
+`cli/schema.ts` 定义命令、别名、选项和值类型、位置
 参数及固定候选；选项元数据表达 required、allowEmpty、choices 和 repeatable，
 并由它完成参数校验与帮助渲染。各 `definition.ts` 不导入业务实现、
 配置、文件系统探测、原生数据库或适配器；根分发可以读取这些定义而不加载业务。
 Bash 和 zsh 生成器消费同一命令树，避免解析、帮助和补全分别维护语法。增加业务
 命令需要登记入口和实现自己的模块，顶层分发不认识该命令的业务依赖。
 
-命令组先完成参数和帮助分派，再按操作加载默认实现。裸命令、帮助、版本及无效参数
-无需解析用户主目录、打开数据库或调用外部程序。补全生成同样不查询工作目录、
+命令组先完成参数和帮助分派，再按操作加载默认实现。裸命令、帮助、版本、使用手册输出及无效参数无需解析用户主目录、打开数据库或调用外部程序。根 `--skill` 仅接受唯一选项；参数错误先于文件读取拒绝，读取或 UTF-8 校验错误保留 cause，输出失败可留下部分 stdout。补全生成同样不查询工作目录、
 review 状态或网络。`review add-repo` 加载配置保存能力；服务业务读取默认或显式
 origin 并要求本地凭据，未登录时提示 `daynight login`。review 业务在缺少仓库配置时完成
 引导，随后列表加载配置与只读快照，`review run` 才加载运行时、信号处理、实例锁和适配器。
@@ -321,7 +325,7 @@ JSON 输出投影。
 
 ## 按需配置引导
 
-参数和业务值校验先于配置引导，帮助、版本、补全和自更新保持各自独立入口。
+参数和业务值校验先于配置引导，帮助、版本、使用手册输出、补全和自更新保持各自独立入口。
 review run/list 在缺少文件、`review` 或 `review.repositories` 字段时使用
 `commands/review/configuration-guide.ts` 引导，`config/errors.ts` 区分缺失与非法配置；
 `cli/prompts.ts` 拥有终端输入，`cli/cancellation.ts` 共享输入、信号和关闭生命周期。
@@ -486,9 +490,11 @@ registry，发布子进程继承其配置与 GitHub OIDC 环境。公开仓库�
 
 ## 验证与交付
 
-根入口与每个命令的参数验证需覆盖正常调用、裸组、帮助、版本和错误结果；构建后入口
+使用手册验收对实际 npm pack 与安装后的 `daynight`、`dn` 比较原始字节，覆盖仓库外、无配置、无 launcher 与非交互终端，确认额外参数先于文件读取拒绝，以及缺失、读取错误和非法 UTF-8 的原因链。手册 frontmatter、独立内容和实际命令用法需要核验；字节一致不代表模型遵循指令。[使用手册决策](../../.agents/notes/implemented/feature/2026-11-03-cli-skill-reading.md)拥有单文件输出的选择与代价。
+
+根入口与每个命令的参数验证需覆盖正常调用、裸组、帮助、版本、使用手册输出和错误结果；构建后入口
 必须保留 shebang、bin 路径和版本输出。依赖隔离验证通过不可用的 SQLite 加载、缺失的
-review 工具、无效或缺失配置，观察帮助、版本、补全生成和更新仍独立工作；配置保存不能进入
+review 工具、无效或缺失配置，观察帮助、版本、使用手册输出、补全生成和更新仍独立工作；配置保存不能进入
 运行时，完成必要引导后的列表不能创建缺失状态、执行网络访问或获得 review 实例锁。
 引导验证覆盖 TTY 与重定向 stdout、按能力提问、一次恢复、非交互诊断、取消与 EOF、
 全部收集后保存、锁内重读及失败保留，并确认输入时间不消耗业务期限。

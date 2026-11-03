@@ -6,7 +6,7 @@ export type CommandOption = {
   value?: { name: string; kind: "directory" | "text"; allowEmpty?: boolean; choices?: readonly string[] };
   required?: boolean;
   repeatable?: boolean;
-  action?: "help" | "version";
+  action?: "help" | "version" | "skill";
 };
 
 export type CommandArgument = {
@@ -41,19 +41,21 @@ type CommandLocation = { command: CommandDefinition; path: readonly string[] };
 export type CommandSelection = CommandLocation & (
   | { kind: "help" }
   | { kind: "version" }
+  | { kind: "skill" }
   | { kind: "selected"; remaining: readonly string[] }
 );
 
 export type ParsedCommand = CommandLocation & (
   | { kind: "help" }
   | { kind: "version" }
+  | { kind: "skill" }
   | { kind: "run"; values: readonly string[]; options: ReadonlyMap<string, string | readonly string[] | true> }
 );
 
 const matchesCommand = (command: CommandDefinition, name: string): boolean =>
   command.name === name || command.aliases?.includes(name) === true;
 
-const informationAction = (command: CommandDefinition, args: readonly string[]): "help" | "version" | undefined =>
+const informationAction = (command: CommandDefinition, args: readonly string[]): "help" | "version" | "skill" | undefined =>
   args.length === 1 ? command.options?.find((option) => option.names.includes(args[0]!))?.action : undefined;
 
 export const selectCommand = (

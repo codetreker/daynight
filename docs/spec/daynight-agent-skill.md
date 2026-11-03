@@ -21,6 +21,7 @@
 `references/authorization.md`、`references/setup.md`、`references/project-management.md`、
 `references/task-management.md`、`references/write-safety.md` 和 `references/final-acceptance.md`
 一起包含在 npm 安装产物中。Codex、Copilot CLI、Claude Code 使用相同内容。
+`daynight --skill` 的独立 CLI 使用手册由[客户端需求](daynight.md#c2-命令组合与退出结果)拥有；公开 `using-daynight` 继续拥有任务编排工作流，CLI 手册不替代或展开这些引用。
 安装后不依赖源码仓库、仓库内部工作流 skill、未发布文档或包外临时文件；npm 包移动、
 升级或卸载不使已安装资源失效。
 

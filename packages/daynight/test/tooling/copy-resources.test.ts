@@ -18,7 +18,9 @@ const sqlDirectories = [
   "commands/controller/sqlite/resume-lease",
 ] as const;
 const resources = [...bundles, ...sqlDirectories];
-type Resource = typeof resources[number];
+const standaloneManual = "commands/skill/usage.md" as const;
+const allResources = [...resources, standaloneManual];
+type Resource = typeof allResources[number];
 const directories: string[] = [];
 
 const files = (directory: string, prefix = ""): string[] => readdirSync(directory, { withFileTypes: true })
@@ -44,6 +46,10 @@ const fixture = (missing?: Resource) => {
     mkdirSync(path.dirname(source(bundle)), { recursive: true });
     cpSync(path.join(packageDirectory, "src", bundle), source(bundle), { recursive: true });
   }
+  if (missing !== standaloneManual) {
+    mkdirSync(path.dirname(source(standaloneManual)), { recursive: true });
+    cpSync(path.join(packageDirectory, "src", standaloneManual), source(standaloneManual));
+  }
   for (const resource of sqlDirectories) {
     if (resource === missing) continue;
     mkdirSync(source(resource), { recursive: true });
@@ -64,6 +70,31 @@ afterEach(() => {
 });
 
 describe("packaged resource copy", () => {
+  it("ships the standalone CLI usage manual with valid metadata and no local document dependencies", () => {
+    const f = fixture();
+    const copied = f.run();
+    expect(copied.status, copied.stderr).toBe(0);
+    const manual = readFileSync(f.destination(standaloneManual), "utf8");
+    const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(manual);
+    expect(frontmatter).not.toBeNull();
+    const metadata = parseYaml(frontmatter![1]!) as Record<string, unknown>;
+    expect(metadata.name).toBe("daynight");
+    expect(typeof metadata.description).toBe("string");
+    expect((metadata.description as string).trim()).not.toBe("");
+    const localLinks = [...manual.matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)].map((match) => match[1]!)
+      .filter((target) => !target.startsWith("#") && !/^[a-z][a-z0-9+.-]*:/iu.test(target));
+    expect(localLinks).toEqual([]);
+  });
+
+  it("rejects a directory at the standalone manual path before copying resources", () => {
+    const f = fixture(standaloneManual);
+    mkdirSync(f.source(standaloneManual), { recursive: true });
+    const result = f.run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Resource source is not a file: commands/skill/usage.md");
+    for (const resource of allResources) expect(existsSync(f.destination(resource))).toBe(false);
+  });
+
   it("preserves invalid SQL candidates so installed discovery rejects them before database access", () => {
     const f = fixture();
     const resource = sqlDirectories[0];
@@ -85,8 +116,10 @@ describe("packaged resource copy", () => {
         writeFileSync(file, readFileSync(file, "utf8").replaceAll("\r\n", "\n").replaceAll("\n", lineEnding));
       }
     }
+    writeFileSync(f.source(standaloneManual), readFileSync(f.source(standaloneManual), "utf8").replaceAll("\r\n", "\n").replaceAll("\n", lineEnding));
     const copied = f.run();
     expect(copied.status, copied.stderr).toBe(0);
+    expect(readFileSync(f.destination(standaloneManual))).toEqual(readFileSync(f.source(standaloneManual)));
     for (const resource of resources) {
       const sourceFiles = files(f.source(resource));
       expect(files(f.destination(resource))).toEqual(sourceFiles);
@@ -176,12 +209,12 @@ describe("packaged resource copy", () => {
     expect(readFileSync(compiled, "utf8")).toBe("installed compiled module\n");
   });
 
-  it.each(resources)("rejects a missing %s source before copying any resource", (missing) => {
+  it.each(allResources)("rejects a missing %s source before copying any resource", (missing) => {
     const f = fixture(missing);
     const result = f.run();
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("ENOENT");
-    for (const resource of resources) expect(existsSync(f.destination(resource))).toBe(false);
+    for (const resource of allResources) expect(existsSync(f.destination(resource))).toBe(false);
   });
 
   it("ships valid skill metadata and resolves every local resource link inside each copied bundle", () => {

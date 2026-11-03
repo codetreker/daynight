@@ -389,6 +389,8 @@ def scenarios():
         ("quoted nested command name", "daynight review 'add-repo' --pa\t", ["review", "add-repo", "--path"]),
         ("review alias", "daynight review ls\t", ["review", "ls"]),
         ("nested command", "daynight review ad\t", ["review", "add-repo"]),
+        ("root skill reading", "daynight --ski\t", ["--skill"]),
+        ("short root skill reading", "dn --ski\t", ["--skill"]),
         ("root help", "daynight --he\t", ["--help"]),
         ("root version", "daynight --ver\t", ["--version"]),
         ("nested help", "daynight review --he\t", ["review", "--help"]),
@@ -422,6 +424,10 @@ def scenarios():
         ("Unicode cursor before following option", "daynight review add-repo --path 中 --bad\x01" + "\x06" * len("daynight review add-repo --path 中") + "\t", ["review", "add-repo", "--path", "中文目录/", "--bad"]),
     ]
     unchanged = [
+        ("standalone skill flag stops positional completion", "daynight --skill ref"),
+        ("standalone skill flag rejects resource and subsequent options", "daynight --skill references/handbook.md --he"),
+        ("skill reading rejects a following help option", "daynight --skill --he"),
+        ("skill root option is hidden in the install group", "daynight skill --ski"),
         ("short command text has no file fallback", "dn task create --title nor"),
         ("short command invalid status stops completion", "dn task list --status=invalid --rea"),
         ("removed root setup has no candidate despite a local directory", "daynight set"),

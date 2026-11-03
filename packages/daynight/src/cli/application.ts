@@ -21,6 +21,11 @@ export const runCli = async (
       context.stdout(`${context.version}\n`);
       return 0;
     }
+    if (selection.kind === "skill") {
+      const { runSkillRead } = await import("../commands/skill/read.js");
+      await runSkillRead(context);
+      return 0;
+    }
     const registration = registry.find(({ name }) => name === selection.command.name)!;
     const command = await registration.load();
     await command.run(selection.remaining, context);
