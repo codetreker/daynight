@@ -310,13 +310,14 @@ func (h *sessionRoutes) terminalWorkerChannel(w http.ResponseWriter, r *http.Req
 		return
 	}
 	epoch := ack.Payload.(v2.RegistrationAck).ConnectionEpoch
+	channelFence := first.Envelope
 	if err = h.service.BindTerminalConnection(ctx, p, project, task, id, first.Envelope, epoch); err != nil {
 		return
 	}
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), relayWriteTimeout)
 		defer cancel()
-		_ = h.service.DisconnectTerminal(ctx, p, project, task, id, first.Envelope, epoch)
+		_ = h.service.DisconnectTerminal(ctx, p, project, task, id, channelFence, epoch)
 	}()
 	if err = relayWrite(ctx, conn, ack); err != nil {
 		return
@@ -350,18 +351,22 @@ func (h *sessionRoutes) terminalWorkerChannel(w http.ResponseWriter, r *http.Req
 		case <-ctx.Done():
 			return
 		case in := <-input:
-			if in.err != nil || in.m.SessionID != id || in.m.ClaimID != first.ClaimID || in.m.ExecutionGeneration != first.ExecutionGeneration {
+			if in.err != nil || in.m.SessionID != id || in.m.ClaimID != first.ClaimID || in.m.Type != "generation_ledger" && in.m.ExecutionGeneration != channelFence.ExecutionGeneration {
 				return
 			}
 			result, e := h.terminalWorkerMessage(ctx, p, project, task, id, epoch, in.m)
 			if e != nil {
 				return
 			}
+			if in.m.Type == "generation_ledger" {
+				// Only the transactional ledger grant can advance the channel fence.
+				channelFence = result.Envelope
+			}
 			if e = relayWrite(ctx, conn, result); e != nil {
 				return
 			}
 		case <-tick.C:
-			offers, e := h.service.PollTerminal(ctx, p, project, task, id, first.Envelope, epoch)
+			offers, e := h.service.PollTerminal(ctx, p, project, task, id, channelFence, epoch)
 			if e != nil {
 				return
 			}

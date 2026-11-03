@@ -66,7 +66,9 @@ nativeSessionId 只允许一致补齐。停止后的运行不可改写。新 gen
 
 所有相关事务保持 task-before-session 锁序。finalization 核对 claim 已不能继续、
 所有运行已停止且录制证据已闭合，在同一锁下冻结 finalizationId。新 generation
-授权与冻结互斥；固定 ID 可重试，不得替换封存。停止证明由可信 Worker 提供，
+授权与冻结互斥；固定 ID 可重试，不得替换封存。Worker WebSocket 将新运行账本交给
+同一事务校验，成功后推进该通道的轮询与断线清理 fence；其他消息仍只能使用当前代次。
+停止证明由可信 Worker 提供，
 服务端校验结构、原 owner、绑定和运行归属，不远程探测操作系统进程。
 
 ## 录制责任与终态
@@ -112,6 +114,11 @@ lease TTL 为 30 秒，客户端每 10 秒以 renew_control 请求续约。释�
 
 操作去重记录保存至执行封存后仍可查询。相同 ID 不同正文拒绝，原操作结果不会
 被新 claim 接管。原始 paste 正文只放在有界内存中；数据库保存摘要与路由元数据。
+预览按同连接心跳维护存活时间，新分配时回收已过期且无待提交写入的缓存。
+输入正文使用与持久操作相同的 deadline，到期后不能再被读取或占用新操作容量。
+这两类本地回收不依赖归档成功或旧凭据仍然有效；断线只清理原 owner、claim、
+generation 和 connection epoch 匹配的数据，不清除新连接或仍有效的待提交内容。
+
 转发前先持久写 dispatching。内存丢失且可证明未转发则 rejected；转发后断线或
 超时为 unknown，不自动重放。结果最多 transport_completed，不声称 provider
 接受、命令成功或业务完成。Worker 仍须在原生写入前持久记录同一操作责任。

@@ -522,3 +522,76 @@ func TestTerminalArchiveDownloadPreservesReceiptBytes(t *testing.T) {
 		t.Fatal(got.Header())
 	}
 }
+
+func TestTerminalWorkerChannelAdvancesStoppedGeneration(t *testing.T) {
+	f := terminalHTTPSetup(t)
+	native := "native-conversation"
+	reg := f.message.Payload.(v2.Registration)
+	reg.Binding.NativeSessionID = &native
+	f.message.Payload = reg
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	path := f.base + "/" + f.message.SessionID
+	worker, _, err := websocket.Dial(ctx, f.server.URL+path+"/worker-channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + f.h.token}}, Subprotocols: []string{v2.Protocol}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.CloseNow()
+	sessionWSWrite(t, worker, f.message)
+	sessionWSKind(t, worker, "registration_ack")
+	send := func(generation, kind string, payload v2.Payload) map[string]json.RawMessage {
+		t.Helper()
+		m := f.message
+		m.ExecutionGeneration = generation
+		m.Type = kind
+		m.Payload = payload
+		sessionWSWrite(t, worker, m)
+		return sessionWSKind(t, worker, kind)
+	}
+	first := v2.Run{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}
+	send("1", "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{first}})
+	stopped := "2026-01-01T00:00:01Z"
+	first.StoppedAt = &stopped
+	first.StopProof = &v2.StopProof{RecordID: uuid.NewString(), ExecutionGeneration: "1", Binding: first.Binding, BootID: "boot", StoppedAt: stopped, Method: "instances_exited", TerminalStopped: true, Processes: []v2.ProcessProof{{Role: "shell", PID: 1, BirthToken: "shell", BootID: "boot"}, {Role: "agent", PID: 2, BirthToken: "agent", BootID: "boot"}}}
+	send("1", "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{first}})
+	next := v2.Run{ExecutionGeneration: "2", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:02Z", SegmentIDs: []string{uuid.NewString()}}
+	next.Binding.TerminalID = "term_recovered"
+	ack := send("2", "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{first, next}})
+	if string(ack["executionGeneration"]) != `"2"` {
+		t.Fatal(ack)
+	}
+	waitConnected := func(want bool) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			w := terminalRequest(f.h, "GET", path+"/state", "", v2.Protocol)
+			var state struct {
+				Connected bool `json:"connected"`
+			}
+			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &state) != nil {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			if state.Connected == want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("connected=%t after generation transition, want %t", state.Connected, want)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	// Polling must use the newly committed generation, not the handshake fence.
+	waitConnected(true)
+	snapshot := v2.Snapshot{ConnectionEpoch: "1", SegmentID: next.SegmentIDs[0], SegmentOrdinal: "2", Binding: next.Binding, Frame: v2.Frame{FrameSeq: "1", CapturedAt: "2026-01-01T00:00:02Z", ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{}}}}
+	send("2", "snapshot", snapshot)
+	// Other message types cannot use the old generation after the ledger grant.
+	stale := f.message
+	stale.Type = "snapshot"
+	stale.Payload = snapshot
+	sessionWSWrite(t, worker, stale)
+	if _, _, err = worker.Read(ctx); err == nil {
+		t.Fatal("old-generation snapshot accepted")
+	}
+	// Cleanup must also use the current generation to revoke this connection.
+	waitConnected(false)
+}

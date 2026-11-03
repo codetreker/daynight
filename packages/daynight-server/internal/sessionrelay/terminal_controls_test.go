@@ -197,8 +197,8 @@ func TestTerminalControlEpochExhaustionClosesWithoutOverflow(t *testing.T) {
 
 func TestTerminalFinalizationClearsTransientPreviewAndCommandBodies(t *testing.T) {
 	f, m, doc := terminalArchiveFixture(t)
-	f.s.terminalFrames = map[string][]byte{m.SessionID: []byte("private screen")}
-	f.s.terminalPending = map[string]map[string][]byte{m.SessionID: {uuid.NewString(): []byte("private input")}}
+	f.s.terminalFrames = map[string]*terminalFrameWrite{m.SessionID: {raw: []byte("private screen")}}
+	f.s.terminalPending = map[string]map[string]*terminalBodyWrite{m.SessionID: {uuid.NewString(): {raw: []byte("private input")}}}
 	finalizeFixture(t, f, m, doc)
 	if len(f.s.terminalFrames) != 0 || len(f.s.terminalPending) != 0 {
 		t.Fatal("finalized terminal retained transient content")
@@ -209,7 +209,7 @@ func TestTerminalFinalizationFencesDelayedCommittedSnapshot(t *testing.T) {
 	f, m, doc := terminalArchiveFixture(t)
 	// The durable snapshot transaction has committed, but its callback has not
 	// run yet. Finalization must invalidate that callback before releasing data.
-	publish, _, err := f.s.stageTerminalSnapshot(m.SessionID, []byte("delayed private screen"))
+	publish, _, err := stageTerminalTestSnapshot(f.s, m.SessionID, []byte("delayed private screen"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,38 +237,38 @@ func TestTerminalFinalizationFencesDelayedCommittedSnapshot(t *testing.T) {
 
 func TestTerminalSnapshotReservationsAreBoundedAndLatestCommitWins(t *testing.T) {
 	s := &Service{}
-	first, cancelFirst, err := s.stageTerminalSnapshot("session", []byte("first"))
+	first, cancelFirst, err := stageTerminalTestSnapshot(s, "session", []byte("first"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	latest, _, err := s.stageTerminalSnapshot("session", []byte("latest"))
+	latest, _, err := stageTerminalTestSnapshot(s, "session", []byte("latest"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cancelFirst()
 	latest()
 	first()
-	if string(s.terminalFrames["session"]) != "latest" {
+	if string(s.terminalFrames["session"].raw) != "latest" {
 		t.Fatal("stale callback replaced latest frame")
 	}
-	_, cancel, err := s.stageTerminalSnapshot("session", []byte("rollback"))
+	_, cancel, err := stageTerminalTestSnapshot(s, "session", []byte("rollback"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cancel()
-	if string(s.terminalFrames["session"]) != "latest" {
+	if string(s.terminalFrames["session"].raw) != "latest" {
 		t.Fatal("rollback changed committed preview")
 	}
 	for i := 1; i < maxLiveSessions; i++ {
-		if _, _, err := s.stageTerminalSnapshot(decimal(int64(i)), []byte("pending")); err != nil {
+		if _, _, err := stageTerminalTestSnapshot(s, decimal(int64(i)), []byte("pending")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := s.stageTerminalSnapshot("overflow", []byte("pending")); err == nil {
+	if _, _, err := stageTerminalTestSnapshot(s, "overflow", []byte("pending")); err == nil {
 		t.Fatal("pending previews escaped capacity limit")
 	}
 	s.forgetTerminalSnapshot("session")
-	if _, _, err := s.stageTerminalSnapshot("replacement", []byte("pending")); err != nil {
+	if _, _, err := stageTerminalTestSnapshot(s, "replacement", []byte("pending")); err != nil {
 		t.Fatal("released preview retained capacity", err)
 	}
 }
@@ -281,7 +281,7 @@ func TestTerminalFrameOrderingSurvivesDelayedPublication(t *testing.T) {
 	// Reproduce the post-commit/pre-publication state: durable acceptance exists,
 	// but only its reserved callback can publish the frame.
 	f.s.forgetTerminalSnapshot(m.SessionID)
-	publish, _, err := f.s.stageTerminalSnapshot(m.SessionID, encode(m))
+	publish, _, err := stageTerminalTestSnapshot(f.s, m.SessionID, encode(m))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,6 +317,246 @@ func TestTerminalFrameOrderingSurvivesDelayedPublication(t *testing.T) {
 	older.ConnectionEpoch = "2"
 	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, m.SessionID, "2", f.msg("snapshot", older)); err == nil {
 		t.Fatal("reconnect reset the current segment's frame order")
+	}
+}
+
+func TestTerminalExpiredHTTPPreviewsReleaseCapacityWithoutArchive(t *testing.T) {
+	now := time.Now()
+	s := &Service{now: func() time.Time { return now }}
+	for i := range maxLiveSessions {
+		publish, _, err := stageTerminalTestSnapshot(s, decimal(int64(i)), []byte("expired HTTP preview"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		publish()
+	}
+	now = now.Add(HeartbeatTimeout + time.Second)
+	publish, _, err := stageTerminalTestSnapshot(s, "next", []byte("new HTTP preview"))
+	if err != nil {
+		t.Fatal("expired HTTP-only producers permanently consumed capacity", err)
+	}
+	publish()
+	if len(s.terminalFrames) != 1 {
+		t.Fatal("expired previews retained", len(s.terminalFrames))
+	}
+}
+
+func TestTerminalRevokedWorkerDisconnectStillReleasesPreview(t *testing.T) {
+	f := terminalControlSetup(t)
+	snapshot := v2.Snapshot{ConnectionEpoch: "1", SegmentID: f.segment, SegmentOrdinal: "1", Binding: f.binding, Recorded: true, Frame: v2.Frame{FrameSeq: "1", CapturedAt: terminalTime(f.now), ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{{Text: "private screen"}}}}}
+	f.worker(t, "1", f.msg("snapshot", snapshot))
+	if _, err := f.s.DB.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.DisconnectTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1"); err == nil {
+		t.Fatal("revoked principal unexpectedly retained database permission")
+	}
+	if len(f.s.terminalFrames) != 0 {
+		t.Fatal("revoked Worker disconnect retained preview")
+	}
+}
+
+func TestTerminalPreviewReclamationPreservesActiveAndReservedConnections(t *testing.T) {
+	now := time.Now()
+	s := &Service{now: func() time.Time { return now }}
+	r := &terminalRecord{Envelope: v2.Envelope{SessionID: "active", ClaimID: "claim", ExecutionGeneration: "1"}, ConnectionEpoch: "1", Owner: v2.Owner{OwnerUserID: "owner"}}
+	active, _, err := s.stageTerminalSnapshot(r, []byte("active"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	active()
+	for i := 1; i < maxLiveSessions; i++ {
+		publish, _, err := stageTerminalTestSnapshot(s, decimal(int64(i)), []byte("expired"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		publish()
+	}
+	now = now.Add(20 * time.Second)
+	s.touchTerminalSnapshot(r.Envelope, "1", now)
+	now = now.Add(11 * time.Second)
+	reserved := *r
+	reserved.Envelope.SessionID = "reserved"
+	publishReserved, _, err := s.stageTerminalSnapshot(&reserved, []byte("reserved"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.terminalFrames["active"] == nil || len(s.terminalFrames) != 1 {
+		t.Fatal("heartbeat did not preserve only the live preview")
+	}
+	// Filling capacity with reservations must not evict an in-flight write.
+	for i := 2; i < maxLiveSessions; i++ {
+		if _, _, err := stageTerminalTestSnapshot(s, decimal(int64(i)), []byte("pending")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := stageTerminalTestSnapshot(s, "overflow", []byte("pending")); err == nil {
+		t.Fatal("capacity eviction discarded active reservations")
+	}
+	publishReserved()
+	if s.terminalFrames["reserved"] == nil {
+		t.Fatal("pending write lost its reservation")
+	}
+}
+
+func TestTerminalOldDisconnectCannotClearNewPreviewOrPendingWrite(t *testing.T) {
+	s := &Service{now: time.Now}
+	r := &terminalRecord{Envelope: v2.Envelope{SessionID: "session", ClaimID: "claim", ExecutionGeneration: "1"}, ConnectionEpoch: "1", Owner: v2.Owner{OwnerUserID: "owner"}}
+	publish, _, err := s.stageTerminalSnapshot(r, []byte("original"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish()
+	r.ConnectionEpoch = "2"
+	newPublish, _, err := s.stageTerminalSnapshot(r, []byte("new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.forgetTerminalConnection("owner", r.Envelope, "1")
+	if s.terminalFrames["session"] != nil || s.terminalFrameWrites["session"] == nil {
+		t.Fatal("old cleanup affected the new reservation")
+	}
+	newPublish()
+	s.forgetTerminalConnection("owner", r.Envelope, "1")
+	s.forgetTerminalConnection("other owner", r.Envelope, "2")
+	s.touchTerminalSnapshot(r.Envelope, "1", time.Now().Add(time.Hour))
+	if got := s.terminalFrames["session"]; got == nil || string(got.raw) != "new" || time.Until(got.lastSeen) > time.Minute {
+		t.Fatal("stale disconnect/heartbeat affected new preview")
+	}
+	s.forgetTerminalConnection("owner", r.Envelope, "2")
+	if len(s.terminalFrames) != 0 {
+		t.Fatal("current connection cleanup did not release preview")
+	}
+}
+
+func TestTerminalDelayedSuspensionCleanupPreservesNewCommandBody(t *testing.T) {
+	f := terminalControlSetup(t)
+	lease := f.acquire(t)
+	f.submit(t, f.input(lease, "1", "old input"))
+	ctx := context.Background()
+	native, err := f.s.DB.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Rollback(ctx)
+	tx := &relayTx{Tx: native}
+	r, err := loadTerminal(ctx, tx, f.message.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.s.suspendTerminal(ctx, tx, r); err != nil {
+		t.Fatal(err)
+	}
+	if err = native.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// A new connection can submit after the commit releases the row lock, before
+	// the suspended connection runs its in-memory cleanup callbacks.
+	newID := uuid.NewString()
+	if err = storeTerminalTestBody(f.s, f.message.SessionID, newID, []byte("new input")); err != nil {
+		t.Fatal(err)
+	}
+	for _, cleanup := range tx.committed {
+		cleanup()
+	}
+	if string(f.s.terminalBody(f.message.SessionID, newID)) != "new input" {
+		t.Fatal("delayed suspension discarded a newer command body")
+	}
+}
+
+func TestTerminalExpiredBodySlotsPermitNewSubmission(t *testing.T) {
+	f := terminalControlSetup(t)
+	for i := range maxLiveSessions {
+		if err := storeTerminalTestBody(f.s, decimal(int64(i)), uuid.NewString(), []byte("abandoned input")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.now = f.now.Add(time.Duration(v2.InputTimeoutMillis) * time.Millisecond)
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	if got := f.submit(t, f.msg("control_request", req)).Payload.(v2.OperationResult); got.State != "queued" {
+		t.Fatal(got)
+	}
+	if len(f.s.terminalPending) != 1 {
+		t.Fatal("expired body entries retained quota", len(f.s.terminalPending))
+	}
+}
+
+func TestTerminalRevokedWorkerDisconnectReleasesQueuedBody(t *testing.T) {
+	f := terminalControlSetup(t)
+	actor := terminalOtherActor(t, f)
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.DB.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.DisconnectTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1"); err == nil {
+		t.Fatal("revoked principal retained database permission")
+	}
+	if len(f.s.terminalPending) != 0 {
+		t.Fatal("revoked original connection retained admin-submitted body")
+	}
+}
+
+func TestTerminalBodyDeadlineMatchesLedgerAndRetainsUnexpiredInput(t *testing.T) {
+	f := terminalControlSetup(t)
+	f.now = f.now.Add(123 * time.Nanosecond)
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	f.submit(t, f.msg("control_request", req))
+	var deadline time.Time
+	if err := f.s.DB.Pool.QueryRow(context.Background(), `SELECT deadline FROM session_operations WHERE session_id=$1 AND operation_id=$2`, f.message.SessionID, req.OperationID).Scan(&deadline); err != nil {
+		t.Fatal(err)
+	}
+	if !f.s.terminalPending[f.message.SessionID][req.OperationID].deadline.Equal(deadline) {
+		t.Fatal("cache deadline differs from durable deadline")
+	}
+	f.now = deadline.Add(-time.Nanosecond)
+	if len(f.s.terminalBody(f.message.SessionID, req.OperationID)) == 0 {
+		t.Fatal("unexpired queued body was discarded")
+	}
+	f.now = deadline
+	if len(f.s.terminalBody(f.message.SessionID, req.OperationID)) != 0 || len(f.s.terminalPending) != 0 {
+		t.Fatal("expired body was readable or retained its quota")
+	}
+	if offered := f.poll(t, "1"); len(offered) != 0 {
+		t.Fatal("expired body was dispatched", offered)
+	}
+	result, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, f.message.SessionID, req.OperationID)
+	if err != nil || result.Payload.(v2.OperationResult).State != "rejected" {
+		t.Fatal("expiry did not retain durable rejection", result, err)
+	}
+}
+
+func TestTerminalOldDisconnectPreservesNewConnectionBody(t *testing.T) {
+	s := &Service{now: time.Now}
+	fence := v2.Envelope{SessionID: "session", ClaimID: "claim", ExecutionGeneration: "1"}
+	r := &terminalRecord{Envelope: fence, ConnectionEpoch: "2", Owner: v2.Owner{OwnerUserID: "owner"}}
+	if err := s.storeTerminalBody(r, "operation", []byte("new input"), time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	s.forgetTerminalConnection("owner", fence, "1")
+	s.forgetTerminalConnection("another owner", fence, "2")
+	if string(s.terminalBody("session", "operation")) != "new input" {
+		t.Fatal("stale connection removed a current queued body")
+	}
+	s.forgetTerminalConnection("owner", fence, "2")
+	if len(s.terminalPending) != 0 {
+		t.Fatal("current connection retained queued body")
+	}
+}
+
+func TestTerminalDeadlineObservationReclaimsExpiredBody(t *testing.T) {
+	f := terminalControlSetup(t)
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	f.submit(t, f.msg("control_request", req))
+	f.now = f.now.Add(time.Duration(v2.InputTimeoutMillis) * time.Millisecond)
+	got, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, f.message.SessionID, req.OperationID)
+	if err != nil || got.Payload.(v2.OperationResult).State != "rejected" {
+		t.Fatal(got, err)
+	}
+	if len(f.s.terminalPending) != 0 {
+		t.Fatal("observed operation deadline retained its body")
 	}
 }
 
@@ -855,18 +1095,18 @@ func TestTerminalInvalidAndRepeatedSnapshotHandling(t *testing.T) {
 func TestTerminalTransientBodyCapacityDoesNotEvictUnresolvedInput(t *testing.T) {
 	s := &Service{}
 	for i := 0; i < maxLiveSessions; i++ {
-		if err := s.storeTerminalBody(decimal(int64(i)), "operation", []byte("input")); err != nil {
+		if err := storeTerminalTestBody(s, decimal(int64(i)), "operation", []byte("input")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.storeTerminalBody("overflow", "operation", []byte("input")); err == nil {
+	if err := storeTerminalTestBody(s, "overflow", "operation", []byte("input")); err == nil {
 		t.Fatal("unbounded pending body allocation")
 	}
 	if string(s.terminalBody("0", "operation")) != "input" {
 		t.Fatal("capacity pressure evicted unresolved input")
 	}
 	s.forgetTerminalBody("0", "operation")
-	if err := s.storeTerminalBody("overflow", "operation", []byte("input")); err != nil {
+	if err := storeTerminalTestBody(s, "overflow", "operation", []byte("input")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -937,4 +1177,18 @@ func TestTerminalIncompleteWorkerCapabilitiesCannotGrantControl(t *testing.T) {
 	if len(view["control"].(*v2.ControlState).AvailableActions) != 0 {
 		t.Fatal("incomplete Worker advertised browser control")
 	}
+}
+
+func stageTerminalTestSnapshot(s *Service, id string, raw []byte) (func(), func(), error) {
+	if s.now == nil {
+		s.now = time.Now
+	}
+	return s.stageTerminalSnapshot(&terminalRecord{Envelope: v2.Envelope{SessionID: id, ClaimID: "claim", ExecutionGeneration: "1"}, ConnectionEpoch: "1", Owner: v2.Owner{OwnerUserID: "owner"}}, raw)
+}
+
+func storeTerminalTestBody(s *Service, id, operationID string, raw []byte) error {
+	if s.now == nil {
+		s.now = time.Now
+	}
+	return s.storeTerminalBody(&terminalRecord{Envelope: v2.Envelope{SessionID: id, ClaimID: "claim", ExecutionGeneration: "1"}, ConnectionEpoch: "1", Owner: v2.Owner{OwnerUserID: "owner"}}, operationID, raw, s.now().Add(time.Duration(v2.InputTimeoutMillis)*time.Millisecond))
 }

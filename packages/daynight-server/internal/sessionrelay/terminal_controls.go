@@ -43,7 +43,54 @@ type terminalOperation struct {
 	Deadline time.Time
 }
 
-type terminalFrameWrite struct{ raw []byte }
+type terminalFrameWrite struct {
+	raw          []byte
+	fence        v2.Envelope
+	epoch, owner string
+	lastSeen     time.Time
+}
+
+type terminalBodyWrite struct {
+	raw          []byte
+	fence        v2.Envelope
+	epoch, owner string
+	deadline     time.Time
+}
+
+func (w *terminalFrameWrite) matches(f v2.Envelope, epoch string) bool {
+	return w != nil && w.fence.SessionID == f.SessionID && w.fence.ClaimID == f.ClaimID && w.fence.ExecutionGeneration == f.ExecutionGeneration && w.epoch == epoch
+}
+
+func (s *Service) touchTerminalSnapshot(f v2.Envelope, epoch string, seen time.Time) {
+	s.terminalMutex.Lock()
+	defer s.terminalMutex.Unlock()
+	for _, entry := range []*terminalFrameWrite{s.terminalFrames[f.SessionID], s.terminalFrameWrites[f.SessionID]} {
+		if entry.matches(f, epoch) && seen.After(entry.lastSeen) {
+			entry.lastSeen = seen
+		}
+	}
+}
+
+// A closed socket releases only its own preview, even if its credential expired
+// before database cleanup. A delayed old disconnect cannot clear a new epoch.
+func (s *Service) forgetTerminalConnection(owner string, f v2.Envelope, epoch string) {
+	s.terminalMutex.Lock()
+	defer s.terminalMutex.Unlock()
+	if entry := s.terminalFrames[f.SessionID]; entry.matches(f, epoch) && entry.owner == owner {
+		delete(s.terminalFrames, f.SessionID)
+	}
+	if entry := s.terminalFrameWrites[f.SessionID]; entry.matches(f, epoch) && entry.owner == owner {
+		delete(s.terminalFrameWrites, f.SessionID)
+	}
+	for operationID, entry := range s.terminalPending[f.SessionID] {
+		if entry.owner == owner && entry.fence.SessionID == f.SessionID && entry.fence.ClaimID == f.ClaimID && entry.fence.ExecutionGeneration == f.ExecutionGeneration && entry.epoch == epoch {
+			delete(s.terminalPending[f.SessionID], operationID)
+		}
+	}
+	if len(s.terminalPending[f.SessionID]) == 0 {
+		delete(s.terminalPending, f.SessionID)
+	}
+}
 
 // Ordering is durable independently of preview publication. The frame hash
 // permits exact retries without retaining terminal text in PostgreSQL.
@@ -57,14 +104,23 @@ type terminalFrameIdentity struct {
 // A reserved write is bounded and becomes visible only after its transaction
 // commits. Deleting the reservation fences delayed callbacks without retaining
 // tombstones for completed Sessions.
-func (s *Service) stageTerminalSnapshot(id string, raw []byte) (commit, cancel func(), err error) {
+func (s *Service) stageTerminalSnapshot(r *terminalRecord, raw []byte) (commit, cancel func(), err error) {
 	s.terminalMutex.Lock()
 	defer s.terminalMutex.Unlock()
+	id := r.Envelope.SessionID
+	now := s.now()
 	if s.terminalFrames == nil {
-		s.terminalFrames = map[string][]byte{}
+		s.terminalFrames = map[string]*terminalFrameWrite{}
 	}
 	if s.terminalFrameWrites == nil {
 		s.terminalFrameWrites = map[string]*terminalFrameWrite{}
+	}
+	// HTTP-only producers have no socket cleanup callback. Reclaim their expired
+	// committed previews on allocation; an in-flight reservation keeps its slot.
+	for key, entry := range s.terminalFrames {
+		if s.terminalFrameWrites[key] == nil && now.Sub(entry.lastSeen) > HeartbeatTimeout {
+			delete(s.terminalFrames, key)
+		}
 	}
 	if _, exists := s.terminalFrames[id]; !exists && s.terminalFrameWrites[id] == nil {
 		count := len(s.terminalFrames)
@@ -77,7 +133,7 @@ func (s *Service) stageTerminalSnapshot(id string, raw []byte) (commit, cancel f
 			return nil, nil, fault("rate_limited", "Terminal preview capacity is unavailable.")
 		}
 	}
-	write := &terminalFrameWrite{raw: raw}
+	write := &terminalFrameWrite{raw: raw, fence: r.Envelope, epoch: r.ConnectionEpoch, owner: r.Owner.OwnerUserID, lastSeen: now}
 	s.terminalFrameWrites[id] = write
 	finish := func(publish bool) {
 		s.terminalMutex.Lock()
@@ -86,8 +142,8 @@ func (s *Service) stageTerminalSnapshot(id string, raw []byte) (commit, cancel f
 			return
 		}
 		delete(s.terminalFrameWrites, id)
-		if publish {
-			s.terminalFrames[id] = write.raw
+		if publish && s.now().Sub(write.lastSeen) <= HeartbeatTimeout {
+			s.terminalFrames[id] = write
 		}
 	}
 	return func() { finish(true) }, func() { finish(false) }, nil
@@ -211,28 +267,56 @@ func terminalHash(m v2.Message) ([]byte, error) {
 	return hash[:], nil
 }
 
-func (s *Service) storeTerminalBody(id, operationID string, raw []byte) error {
+func (s *Service) storeTerminalBody(r *terminalRecord, operationID string, raw []byte, deadline time.Time) error {
 	s.terminalMutex.Lock()
 	defer s.terminalMutex.Unlock()
+	id := r.Envelope.SessionID
+	now := s.now()
 	if s.terminalPending == nil {
-		s.terminalPending = map[string]map[string][]byte{}
+		s.terminalPending = map[string]map[string]*terminalBodyWrite{}
 	}
+	s.expireTerminalBodiesLocked(now)
 	entries := s.terminalPending[id]
 	if entries == nil {
 		if len(s.terminalPending) >= maxLiveSessions {
 			return fault("rate_limited", "Terminal relay capacity is unavailable.")
 		}
-		entries = map[string][]byte{}
+		entries = map[string]*terminalBodyWrite{}
 		s.terminalPending[id] = entries
 	}
 	clear(entries)
-	entries[operationID] = bytes.Clone(raw)
+	entries[operationID] = &terminalBodyWrite{raw: bytes.Clone(raw), fence: r.Envelope, epoch: r.ConnectionEpoch, owner: r.Owner.OwnerUserID, deadline: deadline}
 	return nil
+}
+func (s *Service) expireTerminalBodiesLocked(now time.Time) {
+	// The durable operation deadline also bounds its transient body. Reclamation
+	// does not depend on a still-authorized Worker polling or finishing an archive.
+	for sessionID, entries := range s.terminalPending {
+		for operationID, entry := range entries {
+			if !now.Before(entry.deadline) {
+				delete(entries, operationID)
+			}
+		}
+		if len(entries) == 0 {
+			delete(s.terminalPending, sessionID)
+		}
+	}
 }
 func (s *Service) terminalBody(id, operationID string) []byte {
 	s.terminalMutex.Lock()
 	defer s.terminalMutex.Unlock()
-	return bytes.Clone(s.terminalPending[id][operationID])
+	entry := s.terminalPending[id][operationID]
+	if entry == nil {
+		return nil
+	}
+	if !s.now().Before(entry.deadline) {
+		delete(s.terminalPending[id], operationID)
+		if len(s.terminalPending[id]) == 0 {
+			delete(s.terminalPending, id)
+		}
+		return nil
+	}
+	return bytes.Clone(entry.raw)
 }
 func (s *Service) forgetTerminalBody(id, operationID string) {
 	s.terminalMutex.Lock()
@@ -247,7 +331,10 @@ func (s *Service) terminalSnapshot(r *terminalRecord) *v2.Snapshot {
 		return nil
 	}
 	s.terminalMutex.Lock()
-	raw := bytes.Clone(s.terminalFrames[r.Envelope.SessionID])
+	var raw []byte
+	if entry := s.terminalFrames[r.Envelope.SessionID]; entry != nil && s.now().Sub(entry.lastSeen) <= HeartbeatTimeout {
+		raw = bytes.Clone(entry.raw)
+	}
 	s.terminalMutex.Unlock()
 	var m v2.Message
 	var err error
@@ -291,14 +378,23 @@ func (s *Service) suspendTerminal(ctx context.Context, tx pgx.Tx, r *terminalRec
 	if err := invalidateTerminalOperations(ctx, tx, r.Envelope.SessionID); err != nil {
 		return err
 	}
+	s.terminalMutex.Lock()
+	pendingIDs := make([]string, 0, len(s.terminalPending[r.Envelope.SessionID]))
+	for id := range s.terminalPending[r.Envelope.SessionID] {
+		pendingIDs = append(pendingIDs, id)
+	}
+	s.terminalMutex.Unlock()
 	afterCommit(tx, func() {
-		s.terminalMutex.Lock()
-		delete(s.terminalPending, r.Envelope.SessionID)
-		s.terminalMutex.Unlock()
+		for _, id := range pendingIDs {
+			s.forgetTerminalBody(r.Envelope.SessionID, id)
+		}
 	})
 	return saveTerminal(ctx, tx, r)
 }
 func (s *Service) refreshTerminalControl(ctx context.Context, tx pgx.Tx, r *terminalRecord, t task) error {
+	s.terminalMutex.Lock()
+	s.expireTerminalBodiesLocked(s.now())
+	s.terminalMutex.Unlock()
 	_, err := tx.Exec(ctx, `UPDATE session_operations SET receipt=jsonb_build_object('operationId',operation_id::text,'state',CASE WHEN receipt->>'state'='queued' THEN 'rejected' ELSE 'unknown' END,'errorCode',CASE WHEN receipt->>'state'='queued' THEN 'input_busy' ELSE 'input_unknown' END) WHERE session_id=$1 AND deadline<=$2 AND receipt->>'state' IN ('queued','dispatching')`, r.Envelope.SessionID, s.now())
 	if err != nil {
 		return err
@@ -484,7 +580,8 @@ func (s *Service) SubmitTerminal(ctx context.Context, p core.Principal, project,
 		if e != nil {
 			return e
 		}
-		if e = s.storeTerminalBody(id, operationID, raw); e != nil {
+		deadline := s.now().Add(time.Duration(v2.InputTimeoutMillis) * time.Millisecond).Truncate(time.Microsecond)
+		if e = s.storeTerminalBody(r, operationID, raw, deadline); e != nil {
 			return e
 		}
 		stored = true
@@ -493,7 +590,7 @@ func (s *Service) SubmitTerminal(ctx context.Context, p core.Principal, project,
 		if c.Input != nil {
 			r.LastLeaseSeq = c.Input.LeaseSeq
 		}
-		_, e = tx.Exec(ctx, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt,deadline) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, id, operationID, r.OperationSeq, hash, encode(c), p.UserID, p.CredentialID, string(p.Kind), encode(result), s.now().Add(time.Duration(v2.InputTimeoutMillis)*time.Millisecond))
+		_, e = tx.Exec(ctx, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt,deadline) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, id, operationID, r.OperationSeq, hash, encode(c), p.UserID, p.CredentialID, string(p.Kind), encode(result), deadline)
 		if e != nil {
 			return e
 		}
@@ -537,6 +634,7 @@ func (s *Service) PollTerminal(ctx context.Context, p core.Principal, project, t
 		}
 		now := s.now()
 		r.LastSeen = &now
+		afterCommit(tx, func() { s.touchTerminalSnapshot(r.Envelope, epoch, now) })
 		rows, err := tx.Query(ctx, `SELECT operation_id::text FROM session_operations WHERE session_id=$1 AND receipt->>'state'='queued' ORDER BY operation_seq LIMIT 1`, id)
 		if err != nil {
 			return err
@@ -700,6 +798,7 @@ func (s *Service) HandleTerminalControl(ctx context.Context, p core.Principal, p
 		}
 		now := s.now()
 		r.LastSeen = &now
+		afterCommit(tx, func() { s.touchTerminalSnapshot(r.Envelope, epoch, now) })
 		switch payload := m.Payload.(type) {
 		case v2.ControlState:
 			if payload.ConnectionEpoch != epoch || number(payload.ControlEpoch) < number(r.ControlEpoch) {
@@ -774,7 +873,7 @@ func (s *Service) HandleTerminalControl(ctx context.Context, p core.Principal, p
 				return err
 			}
 			var publish func()
-			publish, cancelFrame, err = s.stageTerminalSnapshot(id, raw)
+			publish, cancelFrame, err = s.stageTerminalSnapshot(r, raw)
 			if err != nil {
 				return err
 			}
@@ -817,6 +916,9 @@ func (s *Service) acceptTerminalResult(ctx context.Context, tx pgx.Tx, r *termin
 }
 
 func (s *Service) DisconnectTerminal(ctx context.Context, p core.Principal, project, taskID, id string, f v2.Envelope, epoch string) error {
+	if p.Kind == core.PATCredential && id == f.SessionID {
+		defer s.forgetTerminalConnection(p.UserID, f, epoch)
+	}
 	return s.terminalAccess(ctx, p, project, taskID, id, true, func(tx pgx.Tx, r *terminalRecord, _ task, _ bool) error {
 		if err := terminalOwner(p, r); err != nil {
 			return err
@@ -828,7 +930,6 @@ func (s *Service) DisconnectTerminal(ctx context.Context, p core.Principal, proj
 			return err
 		}
 		r.LastSeen = nil
-		afterCommit(tx, func() { s.forgetTerminalSnapshot(id) })
 		return saveTerminal(ctx, tx, r)
 	})
 }

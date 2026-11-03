@@ -36,8 +36,8 @@ type Service struct {
 	instance            string
 	content             contentBroker
 	terminalMutex       sync.Mutex
-	terminalPending     map[string]map[string][]byte
-	terminalFrames      map[string][]byte
+	terminalPending     map[string]map[string]*terminalBodyWrite
+	terminalFrames      map[string]*terminalFrameWrite
 	terminalFrameWrites map[string]*terminalFrameWrite
 }
 

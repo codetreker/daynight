@@ -14,7 +14,9 @@ native recovery must not create another owner or revoke a replacement connection
 
 The shared registry dispatches by backend. Herdr stores its own typed state and
 continuous run ledger, with task-before-session transaction ordering. Generation
-grants and immutable finalization use the same row lock. Explicit v2 selection
+grants and immutable finalization use the same row lock. A Worker channel advances
+its polling and disconnect fence only after that transactional grant succeeds.
+Explicit v2 selection
 preserves strict v1 producers, responses and historical files.
 
 Recording responsibility belongs to the trusted Worker. The server registers its
@@ -32,6 +34,10 @@ usable. Input deduplication metadata survives restarts; raw pending input remain
 bounded process memory. Unknown delivery is never replayed. One physical Worker
 channel consumes each connection epoch; browser identity remains reserved through
 release so old disconnect callbacks cannot revoke replacement connections.
+Preview entries expire by connection liveness, and pending input expires by its
+durable operation deadline. Allocation reclaims expired entries independently of
+archive success or credential validity; connection-fenced cleanup preserves newer
+connections and valid pending writes.
 
 See the [server design](../../../../docs/design/terminal-session-server.md) for
 routes, authorization, state transitions and validation, and the
