@@ -110,12 +110,12 @@ provider contract without changing the frontend's discovery model.
 ### Validation ownership
 
 The [Web README](../../../../packages/daynight-web/README.md#authenticated-workspace)
-owns the actual-component fixture entry and validation commands. The fixture
-mounts the production shell with controlled fetch responses and final styles. The
-[static design prototype](../../../../docs/design/mockups/auth/index.html) retains
-the broader scenario reference. Browser interaction against controlled responses
-proves frontend behavior; real service composition and third-party login require
-separate evidence. The
+owns workspace behavior and validation commands. The original component preview
+mounted the production shell with controlled fetch responses and final styles;
+the standalone design prototype provided a broader scenario reference. Their
+repository retention is superseded by the [prototype ownership decision](../process/2026-11-03-ui-mockup-ownership.md).
+Browser interaction against controlled responses proved frontend behavior; real
+service composition and third-party login require separate evidence. The
 [bilingual requirements](../../../../docs/spec/daynight-web-i18n.md) apply to all
 new authentication components, including their failure and pending-operation
 states. Controlled bilingual frontend evidence does not replace the separately

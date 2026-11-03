@@ -15,8 +15,10 @@ coverage workload.
 The coverage child in `scripts/ci.mts quality` receives
 `VITEST_MAX_WORKERS=4`. The Node harness still runs first and retains its own
 180-second deadline. Coverage retains its separate 180-second deadline, `forks`
-pool, per-file isolation, complete product-source inventory, original assertions
-and strict unrounded statement-coverage gate.
+pool, per-file isolation, complete product-source inventory and strict unrounded
+statement-coverage gate. The [local stress decision](2026-11-03-local-stress-suites.md)
+subsequently separates scale workloads from ordinary discovery while retaining
+compact correctness cases and the same product coverage manifest.
 
 This budget targets the repository's public `ubuntu-latest` quality job. The
 [GitHub runner specification](https://github.com/github/docs/blob/2853a7b4a1bd4e17da2a43cf2c8d7306d7d4a431/data/reusables/actions/supported-github-runners.md#L18-L28)
@@ -61,9 +63,10 @@ fork isolation contract. Worker-count calibration leaves the pool unchanged.
 
 The quality command can use its dedicated standard runner's four CPUs while
 preserving every command, coverage, process-group cleanup and browser gate.
-The browser job still owns its complete native/container/capacity journey with
-one browser worker and zero retries. No shards, input reductions or larger
-allowances are introduced.
+The browser job owns both complete functional targets with one browser worker
+and zero retries. Complete capacity inputs and their original budgets remain in
+the explicit local browser stress path. The historical worker-count comparison
+introduced no shards, reduced inputs or larger allowances.
 
 More concurrent test processes can increase peak memory and expose shared test
 resources. The configured runner capacity and matched complete-suite comparison

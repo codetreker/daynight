@@ -68,7 +68,7 @@ export const selectCommand = (
   if (action !== undefined) return { kind: action, command: definition, path };
   if (args.length === 0) return { kind: "help", command: definition, path };
   const command = definition.commands?.find((candidate) => matchesCommand(candidate, args[0]!));
-  if (command === undefined) throw new UsageError(`Unknown command ${JSON.stringify(args[0])}.`, helpCommand);
+  if (command === undefined) throw new UsageError(`Unknown command ${JSON.stringify(args[0])}.`, helpCommand, { definition, path });
   return { kind: "selected", command, path: [...path, command.name], remaining: args.slice(1) };
 };
 
@@ -101,19 +101,19 @@ export const parseCommand = (
       const optionName = inline ? argument.slice(0, separator) : argument;
       const option = definition.options?.find((candidate) => candidate.names.includes(optionName));
       if (option === undefined || option.action !== undefined || inline && option.value?.kind !== "text") {
-        throw new UsageError(`Unknown ${path.join(" ")} option ${JSON.stringify(argument)}.`, helpCommand);
+        throw new UsageError(`Unknown ${path.join(" ")} option ${JSON.stringify(argument)}.`, helpCommand, { definition, path });
       }
       const name = option.names[0]!;
-      if (options.has(name) && option.repeatable !== true) throw new UsageError(`Specify ${name} only once.`, helpCommand);
+      if (options.has(name) && option.repeatable !== true) throw new UsageError(`Specify ${name} only once.`, helpCommand, { definition, path });
       if (option.value === undefined) {
         options.set(name, true);
       } else {
         const value = inline ? argument.slice(separator + 1) : args[++index];
         if (value === undefined || value === "" && option.value.allowEmpty !== true || !inline && value.startsWith("-")) {
-          throw new UsageError(`${name} requires a ${option.value.name} value.`, helpCommand);
+          throw new UsageError(`${name} requires a ${option.value.name} value.`, helpCommand, { definition, path });
         }
         if (option.value.choices !== undefined && !option.value.choices.includes(value)) {
-          throw new UsageError(`Unknown ${option.value.name} ${JSON.stringify(value)}. Expected ${option.value.choices.join(" or ")}.`, helpCommand);
+          throw new UsageError(`Unknown ${option.value.name} ${JSON.stringify(value)}. Expected ${option.value.choices.join(" or ")}.`, helpCommand, { definition, path });
         }
         if (option.repeatable === true) {
           const previous = options.get(name) as string[] | undefined;
@@ -124,18 +124,18 @@ export const parseCommand = (
       continue;
     }
     const positional = definition.arguments?.[values.length];
-    if (positional === undefined) throw new UsageError(`Unexpected ${path.join(" ")} argument ${JSON.stringify(argument)}.`, helpCommand);
-    if (argument === "" && positional.allowEmpty !== true) throw new UsageError(`${path.join(" ")} requires a ${positional.name} value.`, helpCommand);
+    if (positional === undefined) throw new UsageError(`Unexpected ${path.join(" ")} argument ${JSON.stringify(argument)}.`, helpCommand, { definition, path });
+    if (argument === "" && positional.allowEmpty !== true) throw new UsageError(`${path.join(" ")} requires a ${positional.name} value.`, helpCommand, { definition, path });
     if (positional.choices !== undefined && !positional.choices.includes(argument)) {
-      throw new UsageError(`Unknown ${positional.name} ${JSON.stringify(argument)}. Expected ${positional.choices.join(" or ")}.`, helpCommand);
+      throw new UsageError(`Unknown ${positional.name} ${JSON.stringify(argument)}. Expected ${positional.choices.join(" or ")}.`, helpCommand, { definition, path });
     }
     values.push(argument);
   }
   const missing = definition.arguments?.slice(values.length).find((argument) => argument.optional !== true);
-  if (missing !== undefined) throw new UsageError(`${path.join(" ")} requires a ${missing.name} value.`, helpCommand);
+  if (missing !== undefined) throw new UsageError(`${path.join(" ")} requires a ${missing.name} value.`, helpCommand, { definition, path });
   for (const option of definition.options ?? []) {
     const name = option.names[0]!;
-    if (option.required === true && !options.has(name)) throw new UsageError(`${path.join(" ")} requires ${name}.`, helpCommand);
+    if (option.required === true && !options.has(name)) throw new UsageError(`${path.join(" ")} requires ${name}.`, helpCommand, { definition, path });
   }
   return { kind: "run", command: definition, path, values, options };
 };

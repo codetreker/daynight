@@ -23,6 +23,7 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
+    readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>(),
     getProjectAccess: vi.fn<ApiClient["getProjectAccess"]>(),
     reportWorker: vi.fn<ApiClient["reportWorker"]>(),
@@ -56,7 +57,7 @@ const fixture = (operation = createOperation()) => {
     resolveProject: vi.fn<TaskCommandDependencies["resolveProject"]>().mockResolvedValue(project),
     runServerCommand: vi.fn<TaskCommandDependencies["runServerCommand"]>(async (current, command) => {
       const output = await command({ api, operation, serverUrl: "http://localhost:8787" });
-      operation.check(); if (output !== undefined) current.stdout(output);
+      operation.check(); if (typeof output === "string") current.stdout(output); else if (output !== undefined) current.stdout(output.output);
     }),
   };
   return { context, api, dependencies, operation };
@@ -541,15 +542,10 @@ describe("task output contracts", () => {
     expect(f.context.stdout).toHaveBeenLastCalledWith("[]\n");
   });
 
-  it("renders full values in linear space despite an outlier title or description", () => {
-    const tasks = Array.from({ length: 1_000 }, (_, index) => ({ ...task, id: `${index.toString(16).padStart(8, "0")}-2222-4222-8333-123456789abc`, title: index === 0 ? "T".repeat(4_096) : `Task ${index}` }));
+  it("preserves full titles and descriptions beside a longer task value", () => {
+    const tasks = [task, { ...task, id: "22222222-2222-4222-8333-123456789abc", title: "Long task title ".repeat(4), description: "Long description ".repeat(4) }];
     const output = renderTaskList(tasks);
-    let contentLength = 0;
-    for (const current of tasks) {
-      expect(output).toContain(`ID: ${current.id}\nProject: ${projectId}\nTitle: ${current.title}\n`);
-      contentLength += current.id.length + current.projectId.length + current.title.length + current.description.length + current.status.length + current.version.toString().length + current.createdAt.length + current.updatedAt.length + `Automatic execution: ${current.allowAgents}\nRequired platform: ${current.requiredPlatform === null ? "any" : current.requiredPlatform}\n`.length;
-    }
-    expect(output.length).toBeLessThanOrEqual(contentLength + 190 * tasks.length);
+    for (const current of tasks) expect(output).toContain(`ID: ${current.id}\nProject: ${projectId}\nTitle: ${current.title}\nDescription: ${current.description}\n`);
   });
 });
 

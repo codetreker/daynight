@@ -2,7 +2,7 @@
 
 状态：已实现。本文拥有任务三状态与统一设置的当前行为。
 
-[架构设计](../design/daynight-task-status.md)拥有机制、选型和执行边界；[交互原型](../design/mockups/task-status/index.html)演示最终样式及模拟交互。
+[架构设计](../design/daynight-task-status.md)拥有机制、选型和执行边界。
 
 ## TS1：三状态与统一入口
 

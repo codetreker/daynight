@@ -6,7 +6,7 @@
 [需求](../spec/daynight-auth.md)拥有行为；
 [原始鉴权决策](../../.agents/notes/implemented/architecture/2026-10-22-auth-architecture.md)
 保留架构取舍，[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
-拥有当前配置、组合与验收隐私规则，[交互原型](mockups/auth/index.html)拥有视觉。
+拥有当前配置、组合与验收隐私规则。
 
 ## 已采纳的架构边界
 
@@ -164,10 +164,6 @@ null 或 UTC 时间；服务先核对展示账号与当前 Cookie principal，�
 用户可设置未来到期或恢复永不过期；待提交与未知结果阻止新写入，
 不确定 PATCH 只通过 GET 令牌列表核对，失败时只提供读取重试；读回值供新的明确决定使用，不自动
 重放原写入。身份切换使旧账号请求和编辑状态失效，语言切换保留输入与请求。
-[令牌管理原型](../../packages/daynight-web/tests/mockups/tokens.html)复用正式 TokensPanel、
-TokenExpiryField 和 CSS。运行 `pnpm --filter @codetreker/daynight-web dev` 后访问
-`/tests/mockups/tokens.html`，可交互验证永不过期/指定到期、创建与修改、空/加载/失败、提交中、
-并发冲突、响应丢失后已改变/未改变、核对失败、不可用与长名称；支持切换账号和中英文。
 
 明确的 Authorization 优先；重复、格式错误或无效 Bearer 返回 401，不回退 Cookie。
 PublicOrigin 使用规范的小写主机、有效端口并省略 scheme 默认端口，使配置值与浏览器
@@ -307,8 +303,8 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 
 邀请入口 /invitations#<secret> 读取后立即清除 fragment，以 tab 的临时 sessionStorage
 跨登录保存，确认/取消/失效后删除；秘密不进请求路径/Referer/日志。一次性 token/
-邀请复制失败可恢复，关闭前清楚提示无法再次读取。桌面/窄屏/长内容/加载/空/错误/
-失效/禁用和键盘焦点由原型拥有。
+邀请复制失败可恢复，关闭前清楚提示无法再次读取。界面验证覆盖桌面、窄屏、长内容、加载、空、错误、
+失效、禁用和键盘焦点。
 
 附件 HEAD、GET、图片/PDF/iframe 和相对资源共用主站会话，保留既有同源文档键盘
 处理；401 显示明确错误并引导重新登录，不返回登录 HTML。HTML 继续可信执行，
@@ -389,9 +385,6 @@ session 和精确 Origin；PAT、过期会话与跨源请求不能决定授权�
 用户输入或预填短码后核对当前账号、短码、授权范围及到期；GET、自动打开或登录成功不批准。
 批准/拒绝待提交时阻止重复写；未知结果先 inspect 核对，读取失败继续阻止决定，只提供检查重试。
 同用户前台核验保留输入，换号/失效清除旧状态与迟到请求。
-[设备授权原型](../../packages/daynight-web/tests/mockups/device.html)复用正式组件和样式；运行
-`pnpm --filter @codetreker/daynight-web dev` 后访问 `/tests/mockups/device.html`，可切换
-等待、批准、拒绝、过期、未知结果与读取失败等情形。
 
 凭据保存复用现有 YAML 锁与原子替换。在锁内重查开始时观察的有效 origin/token，保留无关 review
 修改，拒绝覆盖另一登录或服务切换。origin 修改同次清除旧凭据，等价 origin 保留。
@@ -438,8 +431,8 @@ HTTPS 主站和回环 HTTP gateway 可以独立组合。普通运行不存在 au
 配套备份保持原义。受控测试 UniAuth 不是第三个 Daynight 备份卷。
 
 Vite 保留原 /api Go 代理；设置同一 DAYNIGHT_UNIAUTH_CALLBACK_URL 后，只增加该
-精确 callback 路径的代理，沿用同一 Go target 并原样保留 query。不设置时前端
-mockup 继续独立工作，不从请求猜测 callback 或代理所有页面。
+精确 callback 路径的代理，沿用同一 Go target 并原样保留 query。不设置时不增加 callback
+代理，不从请求猜测 callback 或代理所有页面。
 
 ## 真实协议 fixture 与验证隐私
 
@@ -473,7 +466,7 @@ trace 和 capacity override 均关闭；PNG 只在秘密关闭或遮蔽后捕获
 入口保留 requestId；网页登录增加非秘密 login transaction ID，设备授权关联非秘密授权记录 ID，
 身份后关联 userId/credentialId，业务关联 projectId，身份领取关联 UniAuth 返回的 requestId。SDK HTTP、
 数据库和文件准入继承 request context/deadline；重定向后的请求以事务或会话记录
-关联。没有新增 detached 执行；监听/资源归属现有运行时，原型请求与监听随组件卸载。
+关联。没有新增 detached 执行；监听与资源归属现有运行时，请求与监听随组件卸载释放。
 
 JSON slog 保留 component/phase/cause/error_code/request_id 和已知 user_id/project_id/
 login_id。网络、协议、数据库、取消、过期和权限错误分别分类；清洗错误说明，不输出

@@ -53,7 +53,14 @@ test('verifies exactly twenty-nine functional scenarios for the container target
   assert.deepEqual(scenarios.map(({ name }) => name), functionalNames);
 });
 
-test('aggregates native functional and capacity reports into exactly thirty-four scenarios', () => {
+test('normal native acceptance requires exactly the functional inventory and rejects capacity evidence', () => {
+  const functional = readReport(report([...functionalNames]), functionalNames);
+  assert.deepEqual(aggregateScenarios([functional], functionalNames), functional);
+  assert.throws(() => aggregateScenarios([functional, capacityNames.map(scenario)], functionalNames), /Unexpected acceptance scenario: capacity-chain/);
+  assert.throws(() => aggregateScenarios([functional.slice(1)], functionalNames), /Required acceptance scenario missing: project-list/);
+});
+
+test('local stress acceptance aggregates native functional and capacity reports into exactly thirty-four scenarios', () => {
   const functional = readReport(report([...functionalNames]), functionalNames);
   const capacity = readReport(report([...capacityNames]), capacityNames);
   const phases: readonly (readonly Scenario[])[] = [functional, capacity];

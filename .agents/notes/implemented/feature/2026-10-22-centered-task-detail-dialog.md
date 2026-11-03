@@ -66,11 +66,12 @@ The [inspection requirements](../../../../docs/spec/daynight-task-inspection.md)
 TI6–TI7 and [design](../../../../docs/design/daynight-task-inspection.md) own the
 visible contract. The [web acceptance map](../../../../packages/daynight-web/README.md#production-browser-acceptance)
 owns the production journeys for geometry, independent scrolling, graph and
-standalone entries, refresh removal, fullscreen and frame keys. The
-production-component mockups reuse the dialog and styles; the standalone
-inspection prototype remains a target for graph inspection and a visual input
-for Markdown reading. It does not establish the source-bound acceptance of
-either delivery.
+standalone entries, refresh removal, fullscreen and frame keys. The original
+production-component mockups reused the dialog and styles; the standalone
+inspection prototype supplied graph-inspection and Markdown-reading visuals.
+Their repository retention is superseded by the [prototype ownership
+decision](../process/2026-11-03-ui-mockup-ownership.md). Those previews did not
+establish source-bound production acceptance.
 
 ## Alternatives
 

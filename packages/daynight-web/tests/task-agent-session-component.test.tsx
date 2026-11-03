@@ -25,7 +25,7 @@ function fixture(snapshot = initial()) {
   return { scope, api, element, receive: (message: BrowserMessage) => act(() => receive(message)), snapshot };
 }
 describe('production task session panel', () => {
-  it('connects once, renders the real provider receipt, and retains drafts across permission refresh', async () => {
+  it('connects once, accepts input quietly, and retains drafts across permission refresh', async () => {
     const f = fixture(); const view = render(f.element());
     await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
     f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
@@ -33,8 +33,9 @@ describe('production task session panel', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'hello' } });
     vi.mocked(f.api.command).mockImplementation(async (_id, command) => ({ protocol: command.protocol, sessionId: command.sessionId, ...sessionBinding(command), executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'provider_accepted', providerResult: 'started', error: null }));
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    await screen.findByText('Accepted by provider');
     await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
+    expect(screen.queryByText('Accepted by provider')).toBeNull();
+    expect(screen.queryByText('Confirmed')).toBeNull();
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'unsent draft' } });
     view.rerender(f.element(false));
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
@@ -51,8 +52,9 @@ describe('production task session panel', () => {
     const command = vi.mocked(f.api.command).mock.calls[0]![1];
     vi.mocked(f.api.operation).mockResolvedValue({ protocol: command.protocol, sessionId: command.sessionId, ...sessionBinding(command), executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'confirmed', providerResult: 'started', error: null });
     fireEvent.click(screen.getByRole('button', { name: 'Check original operation' }));
-    await screen.findByText('Confirmed');
     await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
+    expect(screen.queryByText('Accepted by provider')).toBeNull();
+    expect(screen.queryByText('Confirmed')).toBeNull();
     expect(screen.queryByText('Lost acknowledgement')).toBeNull();
     expect(f.api.command).toHaveBeenCalledOnce();
     expect(f.api.operation).toHaveBeenCalledWith(f.snapshot.sessionId, command.operationId, expect.any(AbortSignal));

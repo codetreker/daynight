@@ -1,8 +1,7 @@
 # 任务外部依赖与任务链边界需求
 
 本文定义依赖边的外部标识、执行前置和任务链展示的目标行为。
-[架构](../design/daynight-external-dependencies.md)拥有存储、接口与计算机制，
-[交互原型](../design/mockups/external-dependencies/index.html)拥有目标视觉和交互。
+[架构](../design/daynight-external-dependencies.md)拥有存储、接口与计算机制。
 依赖性质持久化、完整任务与图输出以及 CLI/Web 严格读取已实现。
 Web 已按普通依赖弱连通分量归组，并按显式边性质绘制虚线和标注详情关系。
 公开 API 已支持分类创建及部分 PATCH，CLI 使用普通/外部选项声明完整替换关系。

@@ -551,44 +551,51 @@ func TestFailedPublicationKeepsConflictingDirectory(t *testing.T) {
 	assertNoTemporary(t, root)
 }
 
-func TestConcurrentOverwritesNeverExposePartialContent(t *testing.T) {
+func TestConcurrentOverwritesPublishCompleteFiles(t *testing.T) {
 	storage, root := newStorage(t)
-	contents := [][]byte{
-		bytes.Repeat([]byte("first"), 10_000),
-		bytes.Repeat([]byte("second"), 10_000),
-		bytes.Repeat([]byte("third"), 10_000),
-	}
-	put(t, storage, "bucket", "file", contents[0])
+	put(t, storage, "bucket", "file", []byte("old content"))
+	started := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	release := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	results := []chan error{make(chan error, 1), make(chan error, 1)}
+	contents := []string{"first replacement", "second replacement"}
 	var workers sync.WaitGroup
-	failures := make(chan error, len(contents))
-	for _, content := range contents {
+	var unblock [2]sync.Once
+	finish := func(index int) { unblock[index].Do(func() { close(release[index]) }) }
+	t.Cleanup(func() {
+		for index := range release {
+			finish(index)
+		}
+		workers.Wait()
+	})
+	for index, content := range contents {
 		workers.Go(func() {
-			for range 10 {
-				if _, err := storage.Put(t.Context(), "bucket", "file", bytes.NewReader(content)); err != nil {
-					failures <- err
-					return
-				}
-			}
+			source := &barrierReader{reader: strings.NewReader(content), started: started[index], release: release[index]}
+			_, err := storage.Put(t.Context(), "bucket", "file", source)
+			results[index] <- err
 		})
 	}
-	for range 30 {
-		got := read(t, storage, "bucket", "file")
-		complete := false
-		for _, content := range contents {
-			complete = complete || bytes.Equal(got, content)
+	for index, ready := range started {
+		select {
+		case <-ready:
+		case err := <-results[index]:
+			t.Fatalf("upload %d returned before reaching the publication barrier: %v", index, err)
 		}
-		if !complete {
-			t.Errorf("read incomplete content of size %d", len(got))
+	}
+	if got := string(read(t, storage, "bucket", "file")); got != "old content" {
+		t.Fatalf("unfinished concurrent uploads changed the published file: %q", got)
+	}
+	for index, content := range contents {
+		finish(index)
+		if err := <-results[index]; err != nil {
+			t.Fatal(err)
+		}
+		if got := string(read(t, storage, "bucket", "file")); got != content {
+			t.Fatalf("publication %d exposed incomplete content: %q", index, got)
 		}
 	}
 	workers.Wait()
-	close(failures)
-	for err := range failures {
-		t.Error(err)
-	}
 	assertNoTemporary(t, root)
 }
-
 func TestImplicitDirectoriesCanBecomeFiles(t *testing.T) {
 	for _, initial := range []struct {
 		name string
