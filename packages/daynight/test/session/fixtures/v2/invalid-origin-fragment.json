@@ -1,0 +1,38 @@
+{
+  "protocol": "daynight.session.v2",
+  "schemaVersion": 2,
+  "projectionVersion": 1,
+  "sessionId": "00000000-0000-4000-8000-000000000006",
+  "claimId": "00000000-0000-4000-8000-000000000007",
+  "executionGeneration": "1",
+  "agentControlMode": "herdr",
+  "contentKind": "terminal_recording",
+  "type": "registration",
+  "payload": {
+    "registrationId": "00000000-0000-4000-8000-000000000010",
+    "mode": "register",
+    "owner": {
+      "projectId": "00000000-0000-4000-8000-000000000001",
+      "taskId": "00000000-0000-4000-8000-000000000002",
+      "workerId": "00000000-0000-4000-8000-000000000003",
+      "worktreeId": "00000000-0000-4000-8000-000000000004",
+      "ownerUserId": "00000000-0000-4000-8000-000000000005",
+      "serverOrigin": "https://daynight.cc#",
+      "provider": "codex"
+    },
+    "binding": {
+      "instanceId": "private_herdr_1",
+      "sessionId": "daynight-worker",
+      "workspaceId": "workspace_1",
+      "paneId": "pane_1",
+      "terminalId": "term_641e9a1f10001",
+      "nativeSessionId": null
+    },
+    "connectionEpoch": null,
+    "capabilities": {
+      "observe": true,
+      "control": true,
+      "archive": true
+    }
+  }
+}
