@@ -132,7 +132,7 @@
   .thread-composer textarea { min-height: 69px; padding: 10px 12px; font-size: 12px; }
   .thread-composer-context { font-size: 9px; }
   .thread-composer-bottom { padding: 0 8px 8px 11px; }
-  .thread-send-button { min-width: 66px; min-height: 30px; font-size: 10px; }
+  .task-discussion .thread-send-button { min-width: 66px; min-height: 30px; font-size: 10px; }
   .thread-reply-preview { padding: 7px 8px 7px 11px; }
   .thread-reply-preview p { max-width: 230px; }
   .thread-read-error { margin: 0 17px 9px; padding: 9px 10px; font-size: 10px; }
