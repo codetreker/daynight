@@ -424,9 +424,7 @@ keep the credential name within 100 characters. The credential never expires by 
 The Web account's token manager can set a future expiration, restore “Never expires”, or
 revoke it. Changing expiration keeps the same credential, so the saved CLI login
 continues without replacing its secret. Expired or revoked credentials cannot be
-revived. The [token manager mockup](../../packages/daynight-web/tests/mockups/tokens.html)
-shares the production components and styles for creating tokens and editing
-expiration, including conflict and uncertain-result states. A credential
+revived. A credential
 represents the account's current project permissions. `daynight logout` revokes the current credential and removes
 its local value after a confirmed response; an already invalid credential is
 removed locally. Network or unconfirmed failures remain visible. Configuration

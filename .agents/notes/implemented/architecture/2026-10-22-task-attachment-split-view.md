@@ -111,11 +111,13 @@ controller or preview identity. Single-file writes, exact-path overwrite,
 relative resource resolution, raw-byte download, stale-response rejection and
 the accepted K1 filesystem/PostgreSQL boundary remain unchanged.
 
-The frontend-only production-component mockup proves its own visual and
-interaction behavior. Source-bound UI and browser checks establish the layout
-on their tested artifact. Independent real-service runtime acceptance establishes
-the integrated behavior within its recorded source and browser environment;
-fixture evidence remains distinct. The full-reader decision owns the implemented
+The original frontend-only production-component mockup proved its own visual
+and interaction behavior. Its repository retention is superseded by the
+[prototype ownership decision](../process/2026-11-03-ui-mockup-ownership.md).
+Source-bound UI and browser checks establish the layout on their tested artifact.
+Independent real-service runtime acceptance establishes the integrated behavior
+within its recorded source and browser environment; component evidence remains
+distinct. The full-reader decision owns the implemented
 standalone capability. Changes that remove explicit renderer sizing, mount a
 second attachment controller or add
 another vertical overflow ancestor require revisiting this decision.

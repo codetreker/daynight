@@ -9,12 +9,16 @@ import { attachmentDownloadUrl, attachmentPageUrl, attachmentPreviewUrl } from '
 import { createAcceptanceCli } from '../../scripts/acceptance/installed-cli.mts';
 import { createProject, createTask, expect, test, type Task } from './fixtures';
 import { expectCenteredTaskDetail } from './detail-dialog';
-import { longConfirmationPath } from '../mockups/attachment-paths';
 import { hasPaintedPdfMarker, readPdfPixels, type PdfPixels } from './pdf-pixels';
 import { attachmentFileButton as fileButton, attachmentFileActions as fileActions } from './attachment-tree';
 
 const exact = (value: string): RegExp => new RegExp(`^${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
 const asset = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
+const longConfirmationPath = Array.from({ length: 4 }, (_, index) => {
+  const prefix = `z${index}-`;
+  const suffix = index === 3 ? '-path-tail-visible.txt' : '';
+  return `${prefix}${'x'.repeat(180 - prefix.length - suffix.length)}${suffix}`;
+}).join('/');
 const selectFile = async (region: Locator, path: string): Promise<void> => {
   await (await fileButton(region, path)).click();
   await expect(region.getByRole('heading', { name: path, exact: true })).toBeVisible();
@@ -112,11 +116,15 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
       await command(args('put', [source, '--path', path]));
     };
     const binary = Buffer.from([0, 255, 1, 128, 13, 10, 200, 0, 254, 42]);
-    const pdf = await readFile(asset('../mockups/files/brief.pdf'));
+    const pdf = await readFile(asset('./attachment-files/brief.pdf'));
     const wideColumns = Array.from({ length: 16 }, (_, index) => `Column ${index + 1}`);
     const wideTable = `| ${wideColumns.join(' | ')} |\n| ${wideColumns.map(() => '---').join(' | ')} |\n| ${wideColumns.map(() => 'Long table content').join(' | ')} |`;
     const longCode = `const attachmentContent = '${'unbroken-source-'.repeat(80)}';`;
     const longPath = `long/${'long-file-name-'.repeat(12)}.txt`;
+    const readingMarkdown = `# Long attachment\n\n${Array.from({ length: 100 }, (_, index) => `## Section ${index + 1}\n\n${'Attachment reading content. '.repeat(10)}`).join('\n\n')}\n`;
+    const readingText = Array.from({ length: 300 }, (_, index) => `${String(index + 1).padStart(4, '0')}  Attachment reading content.\n`).join('');
+    const readingSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="6000" viewBox="0 0 600 6000"><path d="M300 0v6000" stroke="black"/></svg>';
+    const readingHtml = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Long attachment</title><style>body{margin:20px;overflow-wrap:anywhere}section{min-height:200px}</style></head><body><button id="counter" onclick="this.textContent=String(Number(this.textContent)+1)">0</button>${Array.from({ length: 30 }, (_, index) => `<section><h2>Reading section ${index + 1}</h2><p>Attachment reading content.</p></section>`).join('')}</body></html>`;
     const seeds = [
       { path: 'docs/design.md', bytes: Buffer.from(`# 附件设计\n\n| 文件 | 状态 |\n| --- | --- |\n| Web | 已连接 |\n\n${wideTable}\n\n\`\`\`js\n${longCode}\n\`\`\`\n\n![项目流程](../images/workflow.svg)\n\n[同名文本](../notes/one/same.txt)\n\n<script>window.attachmentLeak = true</script>\n`) },
       { path: 'notes/one/same.txt', bytes: Buffer.from('First nested text\nSecond line\n') },
@@ -124,18 +132,18 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
       { path: 'empty.txt', bytes: Buffer.alloc(0) },
       { path: encodedPath, bytes: Buffer.from('{\n  \"sameFile\": true\n}\n') },
       { path: 'binary/bytes.bin', bytes: binary },
-      { path: 'images/workflow.svg', bytes: await readFile(asset('../mockups/files/images/workflow.svg')) },
+      { path: 'images/workflow.svg', bytes: await readFile(asset('./attachment-files/images/workflow.svg')) },
       { path: 'reports/brief.pdf', bytes: pdf },
       { path: 'site/index.html', bytes: await readFile(asset('./attachment-files/site/index.html')) },
-      { path: 'site/style.css', bytes: await readFile(asset('../mockups/files/site/style.css')) },
+      { path: 'site/style.css', bytes: await readFile(asset('./attachment-files/site/style.css')) },
       { path: 'site/app.js', bytes: await readFile(asset('./attachment-files/site/app.js')) },
       { path: longPath, bytes: Buffer.from('Long path attachment content\n'.repeat(200)) },
       { path: longConfirmationPath, bytes: Buffer.from('Portable long-path confirmation fixture\n') },
-      { path: 'long/reading.md', bytes: await readFile(asset('../mockups/files/docs/tall.md')) },
-      { path: 'long/reading.txt', bytes: await readFile(asset('../mockups/files/data/tall.txt')) },
-      { path: 'long/reading.svg', bytes: await readFile(asset('../mockups/files/images/tall.svg')) },
-      { path: 'long/reading.html', bytes: await readFile(asset('../mockups/files/site/tall.html')) },
-      { path: 'long/reading.pdf', bytes: await readFile(asset('../mockups/files/tall.pdf')) },
+      { path: 'long/reading.md', bytes: Buffer.from(readingMarkdown) },
+      { path: 'long/reading.txt', bytes: Buffer.from(readingText) },
+      { path: 'long/reading.svg', bytes: Buffer.from(readingSvg) },
+      { path: 'long/reading.html', bytes: Buffer.from(readingHtml) },
+      { path: 'long/reading.pdf', bytes: await readFile(asset('./attachment-files/reading.pdf')) },
       { path: 'site/data.json', bytes: await readFile(asset('./attachment-files/site/data.json')) },
     ];
     for (const [index, seed] of seeds.entries()) await put(seed.path, seed.bytes, `seed-${index}`);
