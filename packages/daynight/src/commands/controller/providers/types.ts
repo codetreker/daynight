@@ -6,6 +6,7 @@ export type ProviderState = { nativeSessionId: string | null; activity: SessionS
 export type ProviderOptions = {
   cwd: string; model: string | null; args: readonly string[]; resumeNativeSessionId: string | null;
   unattended?: boolean;
+  agentCliEnvironment?: Readonly<{ PATH: string; DN_CONFIG_DIR: string }>;
   env?: NodeJS.ProcessEnv; executable?: string; controlsRevisionFloor?: string;
   onTimeline(entry: ProviderEntry): void;
   onState(state: ProviderState): void;

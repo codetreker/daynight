@@ -99,3 +99,20 @@ test.each([{ unattended: false, resume: false }, { unattended: true, resume: fal
     env: { ...process.env, EXPECT_WORKER_PERMISSIONS: unattended && !resume ? "yes" : "no" }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
   await provider.close();
 });
+
+
+test.each([null, "native-thread"])("keeps explicit CLI mappings after native shell snapshot restoration (resume %s)", async resumeNativeSessionId => {
+  const agentCliEnvironment = { PATH: "/private/aliases:/usr/bin", DN_CONFIG_DIR: "/private/dev" };
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId, agentCliEnvironment,
+    env: { ...process.env, EXPECT_AGENT_CLI_ENV: JSON.stringify(agentCliEnvironment) }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+  await provider.close();
+});
+
+
+test.skipIf(process.platform === "win32").each([null, "native-thread"])("preserves native configured toolchain PATH with CLI aliases (resume %s)", async resumeNativeSessionId => {
+  const agentCliEnvironment = { PATH: "/private/aliases:/worker/bin", DN_CONFIG_DIR: "/private/dev" };
+  const expected = { ...agentCliEnvironment, PATH: "/private/aliases:/native/toolchain:/usr/bin:/bin" };
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId, agentCliEnvironment,
+    env: { ...process.env, CODEX_TEST_EFFECTIVE_CONFIG: JSON.stringify({ shell_environment_policy: { inherit: "none", set: { PATH: "/native/toolchain:/usr/bin:/bin" }, include_only: ["PATH", "DN_CONFIG_DIR"] } }), EXPECT_AGENT_CLI_ENV: JSON.stringify(expected) }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+  await provider.close();
+});

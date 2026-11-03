@@ -12,6 +12,8 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 
 for (const [path, expected] of [
   ["packages/daynight/src/main.ts", { ...none, cli: true }],
+  ["scripts/dev-install.mjs", { ...none, cli: true }],
+  ["scripts/dev-install.test.mjs", { ...none, cli: true }],
   ["packages/daynight/src/.gitignore", { ...none, cli: true }],
   ["packages/daynight/src/commands/review/skills/daynight-review/SKILL.md", { ...none, cli: true }],
   ["packages/daynight/src/commands/review/skills/daynight-review/README.md", { ...none, cli: true }],

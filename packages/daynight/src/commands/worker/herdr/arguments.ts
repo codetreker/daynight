@@ -82,3 +82,19 @@ export const buildHerdrAgentArguments = (configuration: HerdrAgentConfiguration,
   if (configuration.model !== null) args.push("--model", configuration.model);
   return [...args, ...configuration.args, ...nativeAgentPermissionArguments(configuration.agent), ...(configuration.agent === "codex" ? ["-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments(cwd)] : [])];
 };
+
+export const codexConfigurationArguments = (args: readonly string[]): { arguments: string[]; profile: boolean } => {
+  const relevant = new Set(["-c", "--config", "--enable", "--disable", "-p", "--profile"]);
+  const selected: string[] = [];
+  let profile = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    const equals = argument.indexOf("=");
+    const option = equals < 0 ? argument : argument.slice(0, equals);
+    if (!relevant.has(option)) continue;
+    profile ||= option === "-p" || option === "--profile";
+    selected.push(argument);
+    if (equals < 0) selected.push(args[++index]!);
+  }
+  return { arguments: selected, profile };
+};
