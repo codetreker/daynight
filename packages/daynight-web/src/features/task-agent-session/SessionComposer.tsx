@@ -157,11 +157,10 @@ export function SessionComposer({ state, connected, authPaused = false, active =
     const reveal = () => {
       const selected = body.querySelector<HTMLElement>('[aria-selected="true"]');
       if (!selected) return;
-      const viewport = body.getBoundingClientRect(), item = selected.getBoundingClientRect();
-      const scale = body.offsetHeight ? viewport.height / body.offsetHeight : 1;
-      // Scroll only the catalog, preserving the surrounding timeline and dialog.
-      if (item.top < viewport.top || item.height > viewport.height) body.scrollTop += (item.top - viewport.top) / scale;
-      else if (item.bottom > viewport.bottom) body.scrollTop += (item.bottom - viewport.bottom) / scale;
+      const top = selected.offsetTop, bottom = top + selected.offsetHeight;
+      // The positioned catalog owns these unscaled offsets; never scroll an ancestor.
+      if (top < body.scrollTop || selected.offsetHeight > body.clientHeight) body.scrollTop = top;
+      else if (bottom > body.scrollTop + body.clientHeight) body.scrollTop = bottom - body.clientHeight;
     };
     reveal();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reveal);

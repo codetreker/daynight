@@ -52,10 +52,13 @@
 .session-command-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
 .session-command-actions button { min-height: 36px; }
 .session-command-close { min-width: 44px; }
-.session-command-body { min-height: 36px; overflow: auto; overscroll-behavior: contain; }
+.session-command-body { position: relative; min-height: 36px; overflow: auto; overscroll-behavior: contain; }
 
 @media (max-height: 500px) {
   .session-composer { padding-block: 6px; }
   .session-command-menu { padding-block: 6px; margin-bottom: 6px; }
   .session-command-heading { margin-bottom: 4px; }
+}
+@container session-composer (max-width: 360px) {
+  .session-controls-toolbar .session-control-trigger:first-child { max-width: 90px; }
 }

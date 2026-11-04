@@ -267,3 +267,21 @@ it('dismisses commands on an outside pointer without stealing focus or consuming
   outside.focus(); fireEvent.pointerDown(outside); fireEvent.click(outside);
   expect(screen.queryByRole('listbox')).toBeNull(); expect(outside).toHaveFocus(); expect(action).toHaveBeenCalledOnce(); expect(input).toHaveValue('Draft');
 });
+
+it('reveals keyboard selection at both ends of a long catalog without accumulating fractional layout error', () => {
+  render(<SessionComposer {...base()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  const body = screen.getByRole('listbox').parentElement!;
+  Object.defineProperties(body, { clientHeight: { value: 181 }, offsetHeight: { value: 181 } });
+  vi.spyOn(body, 'getBoundingClientRect').mockImplementation(() => ({ top: 100, bottom: 281.40625, height: 181.40625, width: 400, x: 0, y: 100, left: 0, right: 400, toJSON() {} }));
+  screen.getAllByRole('option').forEach((option, index) => {
+    Object.defineProperties(option, { offsetTop: { value: index * 500 }, offsetHeight: { value: 200 } });
+    vi.spyOn(option, 'getBoundingClientRect').mockImplementation(() => ({ top: 100 + index * 500 - body.scrollTop, bottom: 300 + index * 500 - body.scrollTop, height: 200, width: 400, x: 0, y: 100 + index * 500 - body.scrollTop, left: 0, right: 400, toJSON() {} }));
+  });
+  const input = screen.getByRole('textbox');
+  fireEvent.keyDown(input, { key: 'ArrowUp' });
+  expect(body.scrollTop).toBe(1500);
+  fireEvent.keyDown(input, { key: 'ArrowDown' });
+  expect(body.scrollTop).toBe(0);
+  expect(input).toHaveFocus();
+});
