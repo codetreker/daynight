@@ -38,8 +38,12 @@ changes retain the observation. Each GET captures that observation, preventing
 an older conflicting response from reinstating an expired exception. Matching
 normal cache entries still require no GET. Shared in-flight work, current
 content-version checks and identity/project publication fences reject obsolete
-results. Task epoch replacement can
-retain same-userFence content for validation by the new authorized manifest.
+results. Generation or userFence replacement immediately withdraws old people,
+qualification, access markers and catalogue readiness, including when a cross-tab
+replacement has no local online manifest yet. A requested catalogue waits in
+loading; unknown metadata cannot become a successful empty catalogue. Task epoch
+replacement retains raw same-userFence content only for validation by a new
+authorized manifest; userFence replacement clears the old content.
 Project revocation, logout, identity replacement and session loss clear the
 corresponding content and admission.
 

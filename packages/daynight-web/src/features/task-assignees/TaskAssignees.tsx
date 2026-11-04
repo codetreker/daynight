@@ -4,7 +4,7 @@ import type { ProjectPeople, ProjectPerson, ProjectPersonVersion } from "../../a
 import { ApiError, authRequestsPaused, isAbortError, requestId } from "../../api/client";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import type { CachedProfile } from "../task-cache/database";
-import type { CacheEvent, SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
+import type { CacheEvent, CachedProject, SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
 
 export type AssigneePeopleSnapshot = {
   readonly people: ReadonlyMap<string, ProjectPerson>;
@@ -97,7 +97,11 @@ export class TaskAssignees {
       this.clear(state); state.error = event.error ?? null; this.emit(state);
       return;
     }
-    if (!this.scope.isInvalidated && !authRequestsPaused()) this.schedule(event.projectId, state);
+    if (this.scope.isInvalidated || authRequestsPaused()) return;
+    const current = this.scope.getAuthorizedProject(event.projectId);
+    if (current === null) this.withdrawPresentation(state);
+    else this.adoptHistory(state, current);
+    this.schedule(event.projectId, state);
   };
   private reconcile(state: ProjectPeopleState, versions: readonly ProjectPersonVersion[]): void {
     const current = new Map(versions.map((person) => [person.userId, person]));
@@ -114,11 +118,23 @@ export class TaskAssignees {
     state.versions = current; state.people = people;
     state.unresolved = new Set([...state.demandIds.filter((id) => !current.has(id)), ...state.unresolvedVersions.keys()]);
   }
-  private adoptHistory(state: ProjectPeopleState, ticket: SyncTicket, versions: readonly ProjectPersonVersion[]): void {
+  private withdrawPresentation(state: ProjectPeopleState): void {
+    const status = state.catalogueRequested ? "loading" : "idle";
+    const changed = state.versions.size !== 0 || state.people.size !== 0 || state.unresolved.size !== 0 || state.catalogueStatus !== status || state.error !== null;
+    state.versions = new Map(); state.people = new Map(); state.unresolved = new Set();
+    state.resolvedAgainst.clear(); state.unresolvedVersions.clear();
+    state.catalogueStatus = status; state.error = null;
+    if (changed) this.emit(state);
+  }
+  private adoptHistory(state: ProjectPeopleState, current: CachedProject): SyncTicket | null {
+    const { userFence, cacheGeneration, epoch, maxUpdatedAt, projectId } = current.manifest;
+    const ticket = { userId: this.scope.userId, projectId, userFence, cacheGeneration, epoch, maxUpdatedAt };
     if (state.userFence !== ticket.userFence) this.clear(state);
     if (state.generation !== ticket.cacheGeneration) { state.resolvedAgainst.clear(); state.unresolvedVersions.clear(); }
     state.generation = ticket.cacheGeneration; state.userFence = ticket.userFence;
-    this.reconcile(state, versions);
+    if (current.assigneeVersions === null) { this.withdrawPresentation(state); return null; }
+    this.reconcile(state, current.assigneeVersions);
+    return ticket;
   }
   private async ready<T>(signal: AbortSignal, work: () => T): Promise<T | null> {
     while (!this.disposed && !this.scope.isInvalidated && !signal.aborted) {
@@ -138,11 +154,8 @@ export class TaskAssignees {
   private capture(projectId: string, state: ProjectPeopleState, signal: AbortSignal): Promise<SyncTicket | null> {
     return this.ready(signal, () => {
       const current = this.scope.getAuthorizedProject(projectId);
-      if (current === null || current.assigneeVersions === null) return null;
-      const { userFence, cacheGeneration, epoch, maxUpdatedAt } = current.manifest;
-      const ticket = { userId: this.scope.userId, projectId, userFence, cacheGeneration, epoch, maxUpdatedAt };
-      this.adoptHistory(state, ticket, current.assigneeVersions);
-      return ticket;
+      if (current === null) { this.withdrawPresentation(state); return null; }
+      return this.adoptHistory(state, current);
     });
   }
   private matches(state: ProjectPeopleState, ticket: SyncTicket): boolean {

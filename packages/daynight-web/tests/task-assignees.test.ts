@@ -3,7 +3,7 @@ import { openDB } from "idb";
 import type { ProjectPersonVersion } from "../src/api/auth-types";
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from "../src/features/task-cache/database";
 import { afterEach, expect, it, vi } from "vitest";
-import { invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
+import { getTaskSync, invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
 import { TaskAssignees } from "../src/features/task-assignees/TaskAssignees";
 import { createTaskCacheScope, type CacheEvent, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { detailFixture, graphFixture } from "./helpers/taskDetail";
@@ -317,4 +317,58 @@ it.each([false, true])("does not reinstall a conflicting lookup observed before 
   await settle(0, unresolved ? [] : [{ ...person(), version: "b".repeat(64), name: "Obsolete profile B" }], unresolved ? [personId] : []);
   await count(2); expect(owner.snapshot(projectId).people.has(personId)).toBe(false);
   await settle(1); expect(owner.snapshot(projectId).people.get(personId)).toEqual(person());
+});
+
+
+class CrossTabChannel {
+  static channels = new Set<CrossTabChannel>();
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
+  constructor(readonly name: string) { CrossTabChannel.channels.add(this); }
+  postMessage(value: unknown): void {
+    for (const channel of CrossTabChannel.channels) if (channel !== this && channel.name === this.name) {
+      queueMicrotask(() => channel.onmessage?.({ data: value } as MessageEvent<unknown>));
+    }
+  }
+  close(): void { CrossTabChannel.channels.delete(this); }
+}
+
+it("withdraws a ready catalogue after a peer replaces task history until a fresh local manifest validates its cached content", async () => {
+  vi.stubGlobal("BroadcastChannel", CrossTabChannel);
+  const { owner, cache, fetcher } = await harness(); owner.openCatalogue(projectId); await count(1); await settle(0);
+  await vi.waitFor(() => expect(owner.snapshot(projectId).status).toBe("ready"));
+  const previousGeneration = cache.getAuthorizedProject(projectId)!.manifest.cacheGeneration;
+  expect(owner.snapshot(projectId).items.map((profile) => profile.hasProjectAccess)).toEqual([true, true]);
+  const peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(peer);
+  await apply(peer); await apply(peer, "40000000-0000-4000-8000-000000000003", manifest([personId, otherId], TEST_PROFILE_VERSION, false));
+  await vi.waitFor(() => expect(cache.getAuthorizedProject(projectId)!.manifest.cacheGeneration).not.toBe(previousGeneration));
+  expect(cache.getAuthorizedProject(projectId)!.assigneeVersions).toBeNull();
+  expect(owner.snapshot(projectId).people.size).toBe(0); expect(owner.snapshot(projectId).items).toEqual([]);
+  expect(owner.snapshot(projectId).unresolvedUserIds.size).toBe(0); expect(owner.snapshot(projectId).status).toBe("loading");
+  const ticket = await cache.beginSync(projectId, signal()); fetcher.mockRejectedValueOnce(new TypeError("Local sync unavailable"));
+  await expect(getTaskSync(projectId, { epoch: ticket.epoch! }, TEST_VIEWER_ID, signal())).rejects.toMatchObject({ kind: "network" });
+  owner.openCatalogue(projectId); owner.retryCatalogue(projectId);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(owner.snapshot(projectId).people.size).toBe(0); expect(owner.snapshot(projectId).status).toBe("loading"); expect(requests).toHaveLength(1);
+  await apply(cache, undefined, manifest([personId, otherId], TEST_PROFILE_VERSION, false));
+  await vi.waitFor(() => expect(owner.snapshot(projectId).status).toBe("ready"));
+  expect(owner.snapshot(projectId).items).toEqual([person(personId, "Current person", false), person(otherId, "Current person", false)]);
+  expect(requests).toHaveLength(1);
+});
+
+it("rejects a pending old-history profile after a peer replacement and reuses matching raw content after local revalidation", async () => {
+  vi.stubGlobal("BroadcastChannel", CrossTabChannel);
+  const { owner, cache } = await harness(); owner.openCatalogue(projectId); await count(1); await settle(0);
+  await vi.waitFor(() => expect(owner.snapshot(projectId).status).toBe("ready"));
+  const newer = { ...person(), version: "b".repeat(64), name: "Retired history profile" };
+  await apply(cache, undefined, [{ userId: personId, version: newer.version, hasProjectAccess: true }, ...manifest([otherId])]); await count(2);
+  const previousGeneration = cache.getAuthorizedProject(projectId)!.manifest.cacheGeneration;
+  const peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(peer);
+  await apply(peer); await apply(peer, "40000000-0000-4000-8000-000000000004");
+  await vi.waitFor(() => expect(cache.getAuthorizedProject(projectId)!.manifest.cacheGeneration).not.toBe(previousGeneration));
+  expect(cache.getAuthorizedProject(projectId)!.assigneeVersions).toBeNull();
+  expect(owner.snapshot(projectId).people.size).toBe(0); expect(owner.snapshot(projectId).status).toBe("loading");
+  await settle(1, [newer]);
+  expect(owner.snapshot(projectId).people.size).toBe(0); expect(owner.snapshot(projectId).items).toEqual([]); expect(requests).toHaveLength(2);
+  await apply(cache); await vi.waitFor(() => expect(owner.snapshot(projectId).status).toBe("ready"));
+  expect(owner.snapshot(projectId).people.get(personId)).toEqual(person()); expect(requests).toHaveLength(2);
 });

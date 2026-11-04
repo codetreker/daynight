@@ -54,7 +54,7 @@ version 的十进制字符串。即使 delta.tasks 为空，本人角色和实�
 actorAccess 只进入内存权限所有者，不写入 Project/Task 或 IndexedDB，不改变 epoch、
 任务业务版本或同步水位；权限失败与内容缓存失败分别遵守各自错误边界。
 
-每个成功 snapshot 和 delta 同时返回必填的非 null assigneeVersions 完整清单，每项为 {userId,version,hasProjectAccess}，即使 tasks 为空也必须更新。资格、资料内容版本、Project、权限和任务来自同一数据库快照；结构、版本及覆盖规则由[负责人契约](daynight-task-assignment.md#web-人员版本持久缓存与筛选)拥有。清单不传姓名或头像，只在当前已认证、已在线准入的项目内存中发布，不作为持久授权；仅本地摘要 preview 没有这一清单。清单变化不改 Task version、同步水位或图索引，相同资料版本可从独立 profiles store 复用，只读取缺失或内容变化的人员。
+每个成功 snapshot 和 delta 同时返回必填的非 null assigneeVersions 完整清单，每项为 {userId,version,hasProjectAccess}，即使 tasks 为空也必须更新。资格、资料内容版本、Project、权限和任务来自同一数据库快照；结构、版本及覆盖规则由[负责人契约](daynight-task-assignment.md#web-人员版本持久缓存与筛选)拥有。清单不传姓名或头像，只在当前已认证、已在线准入的项目内存中发布，不作为持久授权；仅本地摘要 preview 没有这一清单。跨标签页历史更替先产生 assigneeVersions:null 的当前投影时，立即撤回旧人员显示、资格和目录 ready 状态，等待本页新的在线清单；未知清单不等于成功空清单。清单变化不改 Task version、同步水位或图索引，相同资料版本可从独立 profiles store 复用，只读取缺失或内容变化的人员。
 
 每次实际成功同步都取得新 observedAt 与当前 Project；只用于本页显示计时和设置。持久缓存不恢复 performance.now 锚点，重复响应不重建图布局。仅本地摘要的页面不显示最近成功刷新时间、运行中耗时或可能卡住提醒；已完成任务仍可使用持久起止时间显示耗时。概览与任务列表的近期分类按浏览器本地时区的自然日计算；暂时当前时刻使用本机时间，成功同步后切换为服务端样本与单调时间，分类口径由[Web 需求](daynight-web.md#项目整体进度)拥有。项目设置通过已有 settings.version 合并，迟到响应不得回退设置。
 

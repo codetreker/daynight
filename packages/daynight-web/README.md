@@ -615,9 +615,13 @@ The next new successful receipt clears them even if content tokens are unchanged
 duplicate receipts and presentation changes preserve the observation. Each GET
 captures that observation, so an older conflicting result cannot restore its
 exception later. Normally matching cached profiles still cause no extra GET.
-Ordinary task epoch replacement retains
-same-userFence content for validation by a fresh manifest; all reads, writes and
-publication still check the current project generation. Logout, account change,
+Generation or userFence replacement immediately withdraws the old people,
+qualification, access markers and ready catalogue. A cross-tab replacement with
+`assigneeVersions: null` follows the same rule: a requested catalogue waits in
+loading, an unopened one stays idle, and unknown metadata is not a successful
+empty catalogue. Ordinary task epoch replacement retains only raw same-userFence
+content until a fresh online manifest validates it; userFence replacement clears
+old content. All reads, writes and publication check the current generation. Logout, account change,
 session loss and project access withdrawal clear the corresponding profiles.
 Failures stay visible and retryable. Trusted same-user project 404 responses
 withdraw admission even after presentation changes; stale histories cannot

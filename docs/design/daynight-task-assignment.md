@@ -98,7 +98,7 @@ TaskAssigneesProvider 在认证 TaskCache 边界中提供按项目共享的人�
 
 选择器的候选集合来自在线完整清单，首次打开只填补尚未加载的候选资料；普通重开复用匹配内容和在途工作，Retry 恢复失败或缺失项，不重新传输整份头像目录。完整清单的资格和访问变化可更新显示，而相同内容版本直接复用已有姓名与头像。
 
-profiles store 按 [viewerUserId,projectId,profileUserId] 隔离内容，记录 userFence 和 profile {userId,version,name,avatarUrl}，不存 hasProjectAccess。持久读取与写入经过当前 ticket 的 userFence/cacheGeneration 校验，发布前再次检查认证 scope、项目历史及所有权。任务 epoch 替换使旧准入和在途发布失效，但不因任务历史变化删除同一 userFence 的资料内容；新在线清单匹配后才可复用。页面卸载关闭连接并保留内容，注销/换号/会话失效及项目撤权清除所属资料。GET 成功后可在当前 scope 显示资料；持久写入失败保留 dirty 内容与可恢复错误，Retry 先重试保存，不重传已有内容。损坏资料在事务内定向清除当前项目 profiles，保留 Task 记录并暴露错误，后续 Retry 按当前清单重新读取。错误和清理故障保留原状态与原因，不制造失权资料。
+profiles store 按 [viewerUserId,projectId,profileUserId] 隔离内容，记录 userFence 和 profile {userId,version,name,avatarUrl}，不存 hasProjectAccess。持久读取与写入经过当前 ticket 的 userFence/cacheGeneration 校验，发布前再次检查认证 scope、项目历史及所有权。缓存事件与读取捕获先采用当前 userFence/cacheGeneration，再判断当前在线清单是否存在；generation 更替立即使旧请求失效。当前投影为 assigneeVersions:null 或已无授权投影时，撤回 people、资格清单、unresolved、临时例外及目录 ready 状态；目录已请求则回到 loading，否则为 idle。跨标签页先安装新历史而本页同步仍在途时也遵守这一规则，不能因缺少新清单跳过撤回。相同 userFence 的原始 profiles 和待保存内容独立保留，只有新在线清单匹配后才恢复显示；userFence 改变清除旧内容。页面卸载关闭连接并保留内容，注销/换号/会话失效及项目撤权清除所属资料。GET 成功后可在当前 scope 显示资料；持久写入失败保留 dirty 内容与可恢复错误，Retry 先重试保存，不重传已有内容。损坏资料在事务内定向清除当前项目 profiles，保留 Task 记录并暴露错误，后续 Retry 按当前清单重新读取。错误和清理故障保留原状态与原因，不制造失权资料。
 
 可信同用户 404 先由 scope.canRevokeProject 核验捕获 ticket，再沿 scope.signal 撤权；菜单关闭或需求变化不丢失父项目失权，旧 E1 不能清新 E2。[请求复用决策](../../.agents/notes/implemented/bug-fix/2026-11-04-task-view-request-reuse.md)保存内容版本、持久复用和元数据扫描成本的取舍。
 
@@ -114,4 +114,4 @@ ProjectPage 从完整 index 导出匹配 ID，再在显示集合和分页前相�
 
 查询验证过滤先于分页、完整 scope、旧任务游标拒绝和其他列表版本不变、worker inventory 组合、自动候选本人筛选与 claim 事务负责人校验。目录验证两种模式的原始引用完整性、隐私、精确覆盖、100/101 边界、真实快照并发及所有失败路径。至少 10000 任务和 100 人员的生产查询 EXPLAIN ANALYZE BUFFERS 与响应样本通过显式本地 `bash scripts/stress.sh`（在服务模块内）运行，并绑定被测代码；常规 Go CI 排除该压力样本，保留真实 PostgreSQL 的过滤、游标、权限及失败路径验证和严格覆盖率门槛。数量样本不改变 Web 图规模限制，也不是生产容量上限。
 
-Web 验证覆盖 schema 5 持久资料、schema 4 无损升级及早期格式重建、mutation 同值/确认下限/材料保持、人员清单/内容版本/在途合并及负向撤权 fence、完整链筛选、菜单焦点及双语窄屏。生产功能场景task-assignment与task-assignment-layout分别拥有真实写入/未知结果核对，以及身份/布局/完整图显示的验证；完整inventory由Web验收所有者定义。
+Web 验证覆盖 schema 5 持久资料、schema 4 无损升级及早期格式重建、mutation 同值/确认下限/材料保持、人员清单/内容版本/在途合并及负向撤权 fence、跨标签页新 generation 尚无在线清单（assigneeVersions:null）时立即撤回旧人员与 ready 目录、新清单后零重复下载复用内容、完整链筛选、菜单焦点及双语窄屏。生产功能场景task-assignment与task-assignment-layout分别拥有真实写入/未知结果核对，以及身份/布局/完整图显示的验证；完整inventory由Web验收所有者定义。
