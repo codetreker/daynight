@@ -7,6 +7,8 @@ import { useBodyScrollLock } from "../src/app/useBodyScrollLock";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
 
+vi.mock("../src/features/teams/TeamSelector", () => ({ TeamSelector: () => null }));
+
 const render = createLocaleRender("en");
 type HarnessProps = {
   readonly collapsed?: boolean;
@@ -21,7 +23,7 @@ const Harness = ({ collapsed = false, routeKey = "/", identityChecking = false, 
   const workspace = useRef<HTMLDivElement>(null);
   useBodyScrollLock(anotherLock);
   return <ProjectsProvider>
-    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} activeProjectId={null} accountActive={routeKey === "/account"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={onNavigate} />
+    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId="00000000-0000-4000-8000-000000000701" workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} activeProjectId={null} accountActive={routeKey === "/account"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={onNavigate} />
     <div ref={workspace} data-testid="workspace" inert={initiallyInert}><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
   </ProjectsProvider>;
 };
