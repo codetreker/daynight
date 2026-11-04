@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
@@ -197,9 +198,16 @@ func TestIdentityHTTPMeCacheDoesNotHideUserReadFailure(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
 	request.Header.Set("X-Request-ID", "project-test")
 	request.Header.Set("If-None-Match", initial.Header().Get("ETag"))
-	if _, err := h.database.Pool.Exec(t.Context(), "DROP TABLE users"); err != nil {
+	if _, err := h.database.Pool.Exec(t.Context(), "ALTER TABLE users RENAME TO users_read_failure"); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := h.database.Pool.Exec(ctx, "ALTER TABLE users_read_failure RENAME TO users"); err != nil {
+			t.Error(err)
+		}
+	})
 	response := httptest.NewRecorder()
 	RequestLogging(h.auth.logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.auth.me(w, r, core.Principal{UserID: user.ID})
