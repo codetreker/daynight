@@ -218,3 +218,48 @@ func TestBotDeletionReceiptRejectsUnprovenOrStaleExecution(t *testing.T) {
 		t.Fatalf("valid stop retry: %+v %v", done, err)
 	}
 }
+
+func TestBotDeletionCleansResidualAssociationsBeyondCurrentSession(t *testing.T) {
+	f, out, _ := registeredBot(t)
+	ctx := context.Background()
+	files, err := local.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	f.s.files = files
+	// Fault injection models a historical leftover despite the current unique
+	// association constraint; cleanup must enumerate ownership, not the pointer.
+	if _, err = f.s.DB.Pool.Exec(ctx, `ALTER TABLE task_sessions DROP CONSTRAINT session_bot_identity`); err != nil {
+		t.Fatal(err)
+	}
+	residual := uuid.NewString()
+	if _, err = f.s.DB.Pool.Exec(ctx, `INSERT INTO task_sessions(id,scope,test_execution_id,owner_user_id,registration_id,registration,snapshot,parent_credential_id,bot_id) SELECT $2,scope,$3,owner_user_id,$4,registration,snapshot,parent_credential_id,bot_id FROM task_sessions WHERE id=$1`, out.Session.SessionID, residual, uuid.NewString(), uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{out.Session.SessionID, residual} {
+		if _, err = files.Put(ctx, archiveBucket, id+"/orphan.json", strings.NewReader("private")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+	if _, err = f.s.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {
+		t.Fatal(err)
+	}
+	done, err := f.s.CompleteBotDeletion(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, botCleanupReceipt(out, request.DeletionID))
+	if err != nil || done.Deletion.ServerCleanup.State != "completed" {
+		t.Fatalf("cleanup: %+v %v", done, err)
+	}
+	var count int
+	if err = f.s.DB.Pool.QueryRow(ctx, `SELECT count(*) FROM task_sessions WHERE bot_id=$1`, out.Bot.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("residual sessions %d: %v", count, err)
+	}
+	for _, id := range []string{out.Session.SessionID, residual} {
+		if object, err := files.Open(ctx, archiveBucket, id+"/orphan.json"); !errors.Is(err, fs.ErrNotExist) {
+			if err == nil {
+				_ = object.Body.Close()
+			}
+			t.Fatalf("residual archive %s: %v", id, err)
+		}
+	}
+}

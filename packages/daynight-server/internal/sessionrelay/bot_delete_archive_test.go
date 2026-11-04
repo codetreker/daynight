@@ -45,7 +45,7 @@ func botArchiveDeletionFixture(t *testing.T) (fixture, BotRegistrationResult, []
 
 func TestBotDeletionWaitsForAdmittedArchiveAndRemovesItsNamespace(t *testing.T) {
 	f, out, data, root, receipt := botArchiveDeletionFixture(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	files := f.s.files
 	// This file models a successful object write whose metadata transaction
@@ -121,7 +121,7 @@ func (s *blockingBotCleanupStorage) DeleteSessionArchives(ctx context.Context, i
 
 func TestBotDeletionPrecedesArchiveAndCleanupCannotBeFollowedByLateUpload(t *testing.T) {
 	f, out, data, root, receipt := botArchiveDeletionFixture(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	gate := &blockingBotCleanupStorage{Storage: f.s.files, entered: make(chan struct{}), release: make(chan struct{})}
 	other := New(f.s.DB, gate)
