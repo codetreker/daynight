@@ -188,11 +188,11 @@ canonical skill 的 task-content 区分持久 Steps 与 Session 计划、工具�
 
 `TaskDetailSessions` 的每个 Task entry 拥有独立的 Steps read state，`useTaskSteps` 只按活动页签订阅视图。共同 Task 提交生命周期仍归同一个 owner；读取接入没有另建写控制器。`api/task-steps.ts` 复用 request、principal 检查和精确 bigint JSON codec，完整校验资源身份、正 int64 父版本、唯一规范短 ID、原值文本、四状态和 UTC 微秒时间。非法响应整体失败，不补造字段或丢弃条目。
 
-首次激活才读取，完整资源只保存在 session 内存。每项独立保留真实版本，既不替旧 TaskDetail 补造 updatedAt，也不推进项目同步水位。owner 比较授权摘要、父详情、已确认父修改和已持有 Steps 的最高版本；更高下限把旧集合标为 stale。活动读取最多一个在途请求，目标推进合并到后续读取；非活动视图不读取。过期结果排队一次当前下限的重读，持续违反相同下限则暴露协议错误，避免无界请求循环。
+首次激活才读取，完整资源只保存在 session 内存。每项独立保留真实版本，既不替旧 TaskDetail 补造 updatedAt，也不推进项目同步水位。owner 比较授权摘要、父详情、同 generation 待准入的父详情、已确认父修改和已验证 Steps 的最高版本；更高下限把旧集合标为 stale。同一缓存 generation 的已知下限只增不减，父刷新、Steps 重读及最后退订只释放完整集合和请求，不遗忘该标量；身份、缓存 generation、父删除及撤权终结这一历史。合法 Steps 响应在身份与 generation 核验后即提高下限，后续缓存准入失败不能撤销已观察事实。活动读取最多一个在途请求，目标推进合并到后续读取；非活动视图不读取。过期结果排队一次当前下限的重读，持续违反相同下限则暴露协议错误，避免无界请求循环。
 
 超前资源等待摘要追上，并触发已有父 GET 和项目刷新。摘要追上才准入，摘要跳过中间版本则重新读取。等待准入与实际读取有不同状态，等待中的刷新入口仍可用；父读取失败传播为 Steps 失败，已有确认行仍可阅读。同版本但内容不同的响应报协议错误，不覆盖已确认集合。
 
-读取和准入均受身份、scope signal、缓存 generation、局部请求 generation 及版本下限约束。scope 的权限撤回事件和身份 retirement 同步取消读取并清除完整数组。集合 404 先读取父 Task，父仍可读时仅报告 Steps 错误；可信父 404 才调用既有 scope retirement。403 不推断项目撤权，410 交给既有父删除表达。
+读取和准入均受身份、scope signal、缓存 generation、局部请求 generation 及版本下限约束。scope 的权限撤回事件和身份 retirement 同步取消读取并清除完整数组。集合 404 先读取父 Task，父仍可读时仅报告 Steps 错误；可信父 404 才调用既有 scope retirement。403 不推断项目撤权，410 交给共同父删除所有者：取消父读取并推进 generation，同时在父响应异步准入前后检查删除终态。晚到的父读取、待准入响应或已递交写入回执不能恢复已删除详情；合法的新缓存 generation 仍按原恢复机制重新准入。
 
 64 MiB 集合不写入现有 TaskDetail LRU 或 IndexedDB，不改变其 schema。只读准入事务核对 ticket、generation 与当前摘要，不持久化集合。最后一个需要集合的视图退订时清空完整资源、未准入响应并取消其准入等待；隐藏面板只保留按 ID 的展开选择与页码，重新激活按需读取。
 
@@ -321,6 +321,6 @@ jq -c --arg rid "$STEP_REQUEST_ID" \
 
 ## 架构基线摘要
 
-服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；CLI list/show/Add/Move 已通过独立 typed 客户端消费该资源。Web 读取已接入现有详情会话的独立资源状态；其余 CLI 写命令、指令资源和 Web 写入、草稿及导航保护保留相同目标契约。各层保持项目流程、Worker 和 Session 边界。
+服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；CLI list/show/Add/Move 已通过独立 typed 客户端消费该资源。Web 读取已接入现有详情会话的独立资源状态；应用导航准入已按独立窗口所有者实现；其余 CLI 写命令、指令资源、Web 写入及后继草稿注册保留相同目标契约。各层保持项目流程、Worker 和 Session 边界。
 
 大集合按 100 行本地分页，只约束 DOM 挂载。集合完整性、顺序及服务端操作保持相同契约；Task 附件中的交互原型提供 Web 的具体视觉与跨页交互输入。本架构及其交付边界约束后续实现。

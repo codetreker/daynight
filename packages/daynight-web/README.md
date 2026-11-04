@@ -611,7 +611,10 @@ Markdown and timestamps through the same attachment controller as Overview.
 parent-detail and confirmed mutation versions invalidate it; identity, cache
 generation and version admission fence late responses. An ahead resource waits
 for summary admission and requests parent/project refresh, while stale responses
-are reread against the current floor. First-read errors, valid emptiness and
+are reread against the highest verified floor, including pending parent details.
+Refresh and reader release retain that scalar floor within the same cache
+generation. Confirmed parent deletion fences in-flight reads and asynchronous
+admission so late responses cannot restore a deleted detail. First-read errors, valid emptiness and
 retained-content errors remain distinct and retryable. A Steps 404 checks the
 parent before retiring access; 403 remains a refusal, and parent 410 uses the
 existing deleted-task presentation. Retirement and the last active reader's
@@ -1596,8 +1599,8 @@ and other results fail the gate. Shared workflow changes retain the existing
 all-module selection rule.
 
 `node packages/daynight-web/scripts/ci.mts quality` runs `test:harness`, complete
-Vitest/V8 collection and `scripts/coverage.mts` serially. Harness and collection
-each have a 180-second deadline; final source-inventory and strict coverage
+Vitest/V8 collection and `scripts/coverage.mts` serially. Harness has a 180-second deadline and collection has a 300-second deadline;
+final source-inventory and strict coverage
 verification has its own 60-second deadline. Completed tests cannot consume the
 final checker's budget. The [stage budget decision](../../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)
 owns that separation. Only the

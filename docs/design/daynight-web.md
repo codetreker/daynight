@@ -782,7 +782,7 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 20分钟上限，最终`checks`同时依赖二者及其他已选择模块。浏览器消费的CLI `src/api/`、`src/session/`和精确的`src/platform/text.ts`变更同时选择CLI与Web；共享workflow变更仍选择全部模块，合并结果验证及未选择job的`skipped`语义保持。
 
 质量 job 使用 `scripts/ci.mts` 的内部 `quality` 模式，串行执行 `test:harness`、完整
-Vitest/V8 采集与 `scripts/coverage.mts`。harness 与采集各限时 180 秒，最终源码清单及
+Vitest/V8 采集与 `scripts/coverage.mts`。harness 限时 180 秒，完整采集限时 300 秒，最终源码清单及
 严格覆盖率校验独立限时 60 秒，已完成的采集不能耗尽最终校验的时间；阶段归属见
 [预算决策](../../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)。
 完整产品源码清单与严格语句覆盖率检查保持；只有 Vitest/V8 子进程的复制环境设置

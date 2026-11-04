@@ -27,7 +27,7 @@ not browser scenarios or product scope.
 `scripts/ci.mts` exports `runCi(mode, cancellation, operations?)` for explicit
 internal `quality` and `browser` modes. Quality runs
 the canonical Node harness, complete Vitest/V8 collection and strict statement
-checker serially. Harness and collection each have a 180-second deadline; the
+checker serially. Harness has a 180-second deadline and collection has a 300-second deadline; the
 [stage budget decision](2026-11-04-web-coverage-finalization-budget.md) gives
 final inventory and coverage verification an independent 60-second deadline.
 Only the Vitest/V8
@@ -90,8 +90,10 @@ that ordinary acceptance does not need. Separate jobs remove that coupling;
 the selected core has no such gate or reader.
 
 **Increase the job or command allowance.** Larger budgets change the validation
-contract without separating the competing responsibilities. Both jobs retain
-20 minutes, and all existing command and functional deadlines remain in force.
+contract without separating the competing responsibilities. The isolation decision kept both jobs at
+20 minutes and preserved their command and functional deadlines. The later
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) separately
+bounds final verification and calibrates collection for the larger suite.
 
 **Shard browser scenarios across runners.** Shards duplicate target preparation
 and require new scenario, artifact and permission aggregation. At the time of this choice, the full native, container and capacity journey

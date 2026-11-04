@@ -42,6 +42,7 @@ type StepsRead = {
   state: TaskStepsState;
   generation: number;
   cacheGeneration: string | null;
+  // Verified versions remain a lower bound after their full collections are released.
   floor: bigint | null;
   retriedFloor: bigint | null;
   read: AbortController | null;
@@ -165,11 +166,12 @@ export class TaskDetailSessions {
     steps.state = state;
     for (const listener of steps.listeners) listener();
   }
-  private clearSteps(steps: StepsRead, state: TaskStepsState): void {
+  private clearSteps(steps: StepsRead, state: TaskStepsState, retire = true): void {
     steps.generation++;
     steps.read?.abort(); steps.read = null;
     steps.admission?.abort(); steps.admission = null;
-    steps.pending = null; steps.queued = false; steps.floor = null; steps.retriedFloor = null;
+    steps.pending = null; steps.queued = false; steps.retriedFloor = null;
+    if (retire) steps.floor = null;
     this.publishSteps(steps, state);
   }
   stepsSnapshot = (projectId: string, taskId: string): TaskStepsState => this.entry(projectId, taskId).steps.state;
@@ -179,12 +181,15 @@ export class TaskDetailSessions {
     return () => {
       steps.listeners.delete(listener);
       // Large collections belong only to views that currently need them.
-      if (steps.listeners.size === 0) this.clearSteps(steps, emptyTaskStepsState);
+      if (steps.listeners.size === 0) this.clearSteps(steps, emptyTaskStepsState, false);
     };
   };
   private stepsFloor(entry: Entry): bigint | null {
+    const pending = entry.pending;
+    const pendingVersion = pending !== null && pending.ticket.cacheGeneration === this.projectGeneration(entry.steps.projectId) &&
+      (pending.generation === null || pending.generation === entry.generation) ? pending.detail.version : null;
     const versions = [this.summaryVersion(entry.steps.projectId, entry.steps.taskId), entry.state.detail?.version ?? null,
-      entry.committedVersion, entry.steps.state.resource?.version ?? null, entry.steps.pending?.resource.version ?? null];
+      entry.committedVersion, pendingVersion, entry.steps.floor, entry.steps.state.resource?.version ?? null, entry.steps.pending?.resource.version ?? null];
     return versions.reduce<bigint | null>((floor, version) => version !== null && (floor === null || version > floor) ? version : floor, null);
   }
   private synchronizeSteps(entry: Entry): void {
@@ -201,7 +206,7 @@ export class TaskDetailSessions {
       return;
     }
     if (!entry.admitted || generation === null || entry.observedGeneration !== generation) {
-      if (steps.state.resource !== null || steps.pending !== null || steps.read !== null) this.clearSteps(steps, emptyTaskStepsState);
+      if (steps.state.resource !== null || steps.pending !== null || steps.read !== null) this.clearSteps(steps, emptyTaskStepsState, false);
       return;
     }
     const floor = this.stepsFloor(entry);
@@ -252,6 +257,9 @@ export class TaskDetailSessions {
       steps.listeners.size > 0 && entry.admitted && this.projectGeneration(steps.projectId) === ticket.cacheGeneration;
     await this.scope.ready(signal);
     if (!current()) return;
+    const observed = this.stepsFloor(entry);
+    const received = observed === null || resource.version > observed ? resource.version : observed;
+    if (steps.floor !== received) { steps.floor = received; steps.retriedFloor = null; }
     const summaryVersion = await this.scope.detailTransaction(ticket, signal, async (_details, _manifest, summaries) => summaries.get(steps.taskId)?.version ?? null);
     if (!current()) return;
     const floor = this.stepsFloor(entry);
@@ -346,7 +354,6 @@ export class TaskDetailSessions {
       cacheGeneration !== entry.deletedGeneration && version !== null && task !== undefined;
     const removed = admitted && cacheGeneration !== null && entry.observedVersion !== null && version === null && task === undefined;
     if (removed && entry.state.status !== "deleted") {
-      this.cancelRead(projectId, taskId);
       this.markDeleted(projectId, taskId, cacheGeneration, null, "reconciled");
     }
     if (entry.state.status === "deleted" && !restored) {
@@ -472,6 +479,7 @@ export class TaskDetailSessions {
     if (this.scope.isInvalidated) return;
     if (this.projectGeneration(projectId) !== cacheGeneration) { this.refreshProject(projectId); return; }
     const entry = this.entry(projectId, taskId);
+    this.cancelRead(projectId, taskId);
     entry.deletedGeneration = cacheGeneration;
     entry.liveVersion = null; entry.pending = null; entry.queuedRead = null; entry.mismatch = null;
     const mutation = entry.state.mutation.operation?.action === "delete"
@@ -494,7 +502,9 @@ export class TaskDetailSessions {
   }
   private async accept(projectId: string, taskId: string, detail: TaskDetail, ticket: SyncTicket, revision: number, reconciliation: boolean, signal: AbortSignal, generation: number | null = null, writeGeneration: number | null = null, readOpeningGeneration: number | null = null): Promise<void> {
     const entry = this.entry(projectId, taskId);
-    if (signal.aborted || this.disposed || this.scope.isInvalidated || generation !== null && generation !== entry.generation) return;
+    const current = (): boolean => !signal.aborted && !this.disposed && !this.scope.isInvalidated && entry.state.status !== "deleted" &&
+      (generation === null || generation === entry.generation);
+    if (!current()) return;
     if (detail.projectId !== projectId || detail.id !== taskId || entry.committedVersion !== null && detail.version < entry.committedVersion) throw new ApiError("protocol");
     let admitted: DetailAdmission;
     let storageError: unknown = null;
@@ -509,7 +519,7 @@ export class TaskDetailSessions {
       });
       storageError = error;
     }
-    if (signal.aborted || this.disposed || this.scope.isInvalidated || generation !== null && generation !== entry.generation) return;
+    if (!current()) return;
     if (admitted.kind === "older") {
       this.publish(entry, { ...entry.state, refreshing: false, requiresFreshRead: true,
         mutation: reconciliation ? { ...entry.state.mutation, reconciling: false, reconciliationError: new ApiError("protocol") } : entry.state.mutation });

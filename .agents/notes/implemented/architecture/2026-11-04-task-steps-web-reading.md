@@ -19,9 +19,17 @@ places a separate read state in the existing `TaskDetailSessions` entry.
 summary, parent, confirmed-mutation and Steps versions, coalesces invalidations,
 and admits results under the current identity and cache generation. Ahead results
 wait for summary admission; skipped intermediate versions drive another read.
+Validated pending parent versions participate in the floor. The highest verified
+version remains a scalar lower bound through refresh, failed cache admission and
+reader release; identity, cache-history replacement and retirement reset it.
 Repeated reads below the same known floor fail explicitly instead of polling
 forever. A waiting state keeps recovery available while parent synchronization
 settles. A collection 404 checks the parent before access retirement.
+
+Confirmed parent deletion cancels parent reads and fences admission before and
+after asynchronous cache work. Late parent reads and submitted mutation receipts
+cannot reopen the deleted presentation. Mutation receipts can still settle, and
+the existing new-generation recovery policy remains available.
 
 No Steps response enters the TaskDetail LRU or IndexedDB. The last active reader
 releases the complete collection, pending admission and owned read controller.

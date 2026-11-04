@@ -711,7 +711,7 @@ changes retain all-module selection.
 
 The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness,
 the ordinary Vitest/V8 suite and the strict statement checker serially. Harness
-and collection each have a 180-second deadline; final source-inventory and
+has a 180-second deadline and collection has a 300-second deadline; final source-inventory and
 coverage verification has an independent 60-second deadline. The
 [stage budget decision](../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)
 keeps a completed collection from consuming its final verification budget.
