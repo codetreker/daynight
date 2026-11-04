@@ -26,6 +26,7 @@ func validateWorkerReport(input core.WorkerReport) (core.WorkerReport, error) {
 		return core.WorkerReport{}, invalidInput("Worker platform and sample time are invalid.")
 	}
 	checks := []error{
+		validateWorkerAssistantHost(telemetry.AssistantHost, telemetry.Platform),
 		validateWorkerProbe(telemetry.OS, "", func(value core.WorkerOS) bool {
 			return workerText(value.Type) && workerText(value.Release) && workerText(value.Version) && workerText(value.Arch)
 		}),

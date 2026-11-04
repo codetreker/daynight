@@ -130,10 +130,16 @@ const projectCheck = async (name: string, root: string) => {
     const [state] = JSON.parse(await command(['volume', 'inspect', volume]));
     assert.equal(state.Labels['com.docker.compose.project'], project);
   }
-  const createdProject = await (await request('/api/v1/projects', {
+  const identityResponse = await request('/api/v1/me');
+  const identity = await identityResponse.json() as { id: string };
+  assert.match(identity.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.equal(identityResponse.headers.get('Daynight-User-ID'), identity.id);
+  const projectResponse = await request('/api/v1/projects', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: `Attachment persistence ${name}`, repoUrl: 'https://github.com/example/attachment-persistence.git' }),
-  }, 201)).json();
+    body: JSON.stringify({ name: `Attachment persistence ${name}`, repoUrl: 'https://github.com/example/attachment-persistence.git', expectedUserId: identity.id }),
+  }, 201);
+  assert.equal(projectResponse.headers.get('Daynight-User-ID'), identity.id);
+  const createdProject = await projectResponse.json();
   assert.match(createdProject.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   const createdTask = await (await request(`/api/v1/projects/${createdProject.id}/tasks`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

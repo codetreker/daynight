@@ -285,7 +285,7 @@ func TestBotsPaginationAndCompositeWorkerIdentity(t *testing.T) {
 func TestBotsVersionsBoundSessionAndIndependentTasks(t *testing.T) {
 	bots, database, principal, workerID := botService(t)
 	ctx := context.Background()
-	project, err := NewProjects(database).Create(ctx, principal, CreateProject{Name: "Independent tasks", RepoURL: "https://github.com/example/independent"})
+	project, err := NewProjects(database).Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Independent tasks", RepoURL: "https://github.com/example/independent"})
 	if err != nil {
 		t.Fatal(err)
 	}

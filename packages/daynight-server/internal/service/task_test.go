@@ -19,7 +19,7 @@ import (
 func taskService(t *testing.T) (*Tasks, *store.Store, core.Project, string, core.Principal) {
 	t.Helper()
 	projects, database, databaseURL, principal := projectService(t)
-	project, err := projects.Create(context.Background(), principal, CreateProject{Name: "Tasks", RepoURL: "git@host:repo"})
+	project, err := projects.Create(context.Background(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Tasks", RepoURL: "git@host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestTaskInputValidation(t *testing.T) {
 
 func TestTaskScopeAndDependencyReferences(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
-	otherProject, err := NewProjects(database).Create(context.Background(), principal, CreateProject{Name: "Other", RepoURL: "host:repo"})
+	otherProject, err := NewProjects(database).Create(context.Background(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestTaskSetStatusAllPairsAndVersionOrder(t *testing.T) {
 func TestTaskSetStatusValidationAndScope(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	target := createTask(t, tasks, principal, project.ID, "Target")
-	otherProject, err := NewProjects(database).Create(context.Background(), principal, CreateProject{Name: "Other", RepoURL: "host:other"})
+	otherProject, err := NewProjects(database).Create(context.Background(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:other"})
 	if err != nil {
 		t.Fatal(err)
 	}

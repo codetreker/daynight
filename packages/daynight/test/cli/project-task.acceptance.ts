@@ -111,13 +111,20 @@ const exercise = async (): Promise<void> => {
         const parts = url.pathname.split("/");
         const projectId = parts[4]!;
         if (url.pathname === "/api/v1/me") {
+          response.setHeader("Daynight-User-ID", alternateId);
           send(response, { id: alternateId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } }); return;
         }
         if (url.pathname === "/api/v1/task-properties/schema") {
           send(response, propertySchema); return;
         }
         if (url.pathname === "/api/v1/projects") {
-          if (request.method === "POST") { send(response, { ...project(), ...(body as { name: string; repoUrl: string }) }, 201); return; }
+          if (request.method === "POST") {
+            const input = body as { name: string; repoUrl: string; expectedUserId: string };
+            const created = { ...project(), name: input.name, repoUrl: input.repoUrl };
+            if (input.expectedUserId !== alternateId) { fault(response, "identity_mismatch", "native-project-identity", 409); return; }
+            response.setHeader("Daynight-User-ID", alternateId);
+            send(response, { ...created, access: { projectId: created.id, ownerTeam: { id: created.ownership.teamId, kind: "personal", name: null }, ownership: created.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: created.id, userId: alternateId, role: "admin", version: 1n, createdAt: time, updatedAt: time } } }, 201); return;
+          }
           if (broken === "page" && url.searchParams.has("cursor")) { fault(response, "internal_error", "native-later-page", 500); return; }
           const remaining = url.searchParams.has("cursor") ? projects.slice(1) : projects.slice(0, 1);
           send(response, { items: remaining, nextCursor: !url.searchParams.has("cursor") && projects.length > 1 ? "native page+/=?" : null }); return;
@@ -291,7 +298,7 @@ const exercise = async (): Promise<void> => {
     expect(existingProject.stdout).toContain("Project already exists.");
     const createdProject = await invoke(["project", "create", "Native 名称", "--repo", "https://git.example/Native/New.git"], outside, 0, true);
     expect(createdProject.stdout).toContain("Project created.");
-    expect(requests.at(-1)!.body).toEqual({ name: "Native 名称", repoUrl: "https://git.example/Native/New.git" });
+    expect(requests.at(-1)!.body).toEqual({ name: "Native 名称", repoUrl: "https://git.example/Native/New.git", expectedUserId: alternateId });
     expect(parseApiJson((await invoke(["project", "show", id, "--json"], outside, 0, true)).stdout)).toEqual(project());
     expect(parseApiJson((await invoke(["task", "show", taskId, "--json", ...explicit], outside, 0, true)).stdout)).toEqual({ ...task(), version: 9_007_199_254_740_993n });
     const createdTask = await invoke(["task", "create", "--title", "Native task", ...explicit], outside, 0, true);

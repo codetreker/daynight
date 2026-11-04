@@ -177,6 +177,21 @@ export type WorkerVersions = {
   readonly codex: WorkerExecutableProbe;
   readonly copilot: WorkerExecutableProbe;
 };
+export type WorkerAssistantHostReason = "unsupported_arguments" | "invalid_cwd" | "not_found" | "permission_denied" | "timeout" | "command_failed" | "invalid_output" | "unavailable";
+export type WorkerAssistantProvider = {
+  readonly provider: WorkerAgent;
+  readonly available: boolean;
+  readonly reason: WorkerAssistantHostReason | null;
+  readonly model: string | null;
+  readonly args: readonly string[];
+};
+export type WorkerAssistantHost = {
+  readonly protocolVersion: 1;
+  readonly observedAt: string;
+  readonly defaultCwd: string;
+  readonly defaultProvider: WorkerAgent;
+  readonly providers: readonly WorkerAssistantProvider[];
+};
 export type WorkerTelemetry = {
   readonly machine: WorkerMachine;
   readonly platform: TaskPlatform;
@@ -187,6 +202,7 @@ export type WorkerTelemetry = {
   readonly memory: WorkerProbe<WorkerMemory>;
   readonly disk: WorkerProbe<WorkerDisk>;
   readonly versions: WorkerVersions;
+  readonly assistantHost?: WorkerAssistantHost;
 };
 export type WorkerTaskReference = { readonly projectId: string; readonly taskId: string; readonly claimId: string };
 export type WorkerTaskInventory = { readonly observedAt: string; readonly claims: readonly WorkerTaskReference[] };
@@ -271,7 +287,7 @@ export type TaskGraph = {
 };
 
 export type Page<T> = { readonly items: readonly T[]; readonly nextCursor: string | null };
-export type CreateProjectInput = { readonly name: string; readonly repoUrl: string };
+export type CreateProjectInput = { readonly name: string; readonly repoUrl: string; readonly expectedUserId: string; readonly teamId?: string };
 export type CreateTaskInput = {
   readonly title: string;
   readonly requiredPlatform?: TaskPlatform | null;

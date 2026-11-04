@@ -175,16 +175,20 @@ func writeTeamError(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 }
 
 func writeTeamJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logger, status int, value any) {
-	responseLogger := logger.With("team_error_code", "write_outcome_unknown", "write_outcome", "unknown")
+	writeMutationJSON(w, r, logger, "team", status, value)
+}
+
+func writeMutationJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logger, component string, status int, value any) {
+	responseLogger := logger.With(component+"_error_code", "write_outcome_unknown", "write_outcome", "unknown")
 	data, err := json.Marshal(value)
 	if err != nil {
 		fault := &service.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err}
-		LogFailure(responseLogger, r.Context(), "team", "response", fault)
+		LogFailure(responseLogger, r.Context(), component, "response", fault)
 		writeJSON(w, r, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: fault.Code, Message: fault.Message, RequestID: RequestID(r.Context())}})
 		return
 	}
 	if r.Context().Err() != nil {
-		LogFailure(responseLogger, r.Context(), "team", "response", &service.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: r.Context().Err()})
+		LogFailure(responseLogger, r.Context(), component, "response", &service.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: r.Context().Err()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -195,8 +199,8 @@ func writeTeamJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logger, 
 		err = io.ErrShortWrite
 	}
 	if err != nil {
-		LogFailure(responseLogger, r.Context(), "team", "response", &service.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err})
+		LogFailure(responseLogger, r.Context(), component, "response", &service.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err})
 		return
 	}
-	logger.InfoContext(r.Context(), "Team write response", "type", "resource", "component", "team", "phase", "response", "status", status, "written_bytes", written, "request_id", RequestID(r.Context()))
+	logger.InfoContext(r.Context(), "write response", "type", "resource", "component", component, "phase", "response", "status", status, "written_bytes", written, "request_id", RequestID(r.Context()))
 }

@@ -41,7 +41,7 @@ func TestWorkerConfigurationBootstrapCloudAuthorityAndPersistence(t *testing.T) 
 	ctx := context.Background()
 	workers := NewWorkers(database)
 	id := uuid.NewString()
-	project, err := projects.Create(ctx, principal, CreateProject{Name: "Configuration project", RepoURL: "https://example.com/configuration.git"})
+	project, err := projects.Create(ctx, principal, CreateProject{Name: "Configuration project", RepoURL: "https://example.com/configuration.git", ExpectedUserID: principal.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}

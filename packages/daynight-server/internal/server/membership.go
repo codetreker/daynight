@@ -2,11 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -51,10 +53,15 @@ func membershipCompleted(request *http.Request, logger *slog.Logger, phase strin
 	logger.InfoContext(request.Context(), "project membership operation completed", "type", "resource", "component", "membership", "phase", phase, "request_id", RequestID(request.Context()))
 }
 
-func memberResponse(member core.ProjectMember) api.ProjectMember {
-	return api.ProjectMember{ProjectID: member.Grant.ProjectID, UserID: member.Grant.UserID, Email: member.Email,
-		Name: member.Name, AvatarURL: member.AvatarURL, Role: string(member.Grant.Role), Version: member.Grant.Version,
-		CreatedAt: member.Grant.CreatedAt.UTC(), UpdatedAt: member.Grant.UpdatedAt.UTC()}
+func invitationWriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logger, phase string, err error) {
+	var transaction *store.TransactionError
+	if errors.As(err, &transaction) && transaction.Outcome == store.TransactionUnknown {
+		const message = "Invitation write outcome is unknown. Review current state before starting another operation."
+		logger.ErrorContext(request.Context(), "operation failed", "type", "operation_error", "component", "membership", "phase", phase, "cause", ErrorKind(err), "error_code", "write_outcome_unknown", "diagnostic", message, "request_id", RequestID(request.Context()))
+		writeJSON(w, request, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "write_outcome_unknown", Message: message, RequestID: RequestID(request.Context())}})
+		return
+	}
+	writeError(w, request, logger, "membership", phase, err)
 }
 
 func participantResponse(participant core.ProjectParticipant) api.ProjectParticipant {
@@ -199,16 +206,17 @@ func (h *MembershipRoutes) listInvitations(w http.ResponseWriter, request *http.
 func (h *MembershipRoutes) createInvitation(w http.ResponseWriter, request *http.Request, principal core.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger, id, err := h.scoped(request, principal)
+	var expectedUserID string
 	if err == nil {
-		_, err = decodeObject(w, request)
+		expectedUserID, err = invitationActor(w, request)
 	}
 	if err != nil {
 		writeError(w, request, logger, "membership", "create_invitation", err)
 		return
 	}
-	result, err := h.memberships.CreateInvitation(request.Context(), principal, id)
+	result, err := h.memberships.CreateInvitation(request.Context(), principal, id, expectedUserID)
 	if err != nil {
-		writeError(w, request, logger, "membership", "create_invitation", err)
+		invitationWriteError(w, request, logger, "create_invitation", err)
 		return
 	}
 	membershipCompleted(request, logger, "create_invitation")
@@ -218,15 +226,27 @@ func (h *MembershipRoutes) createInvitation(w http.ResponseWriter, request *http
 
 func (h *MembershipRoutes) revokeInvitation(w http.ResponseWriter, request *http.Request, principal core.Principal) {
 	logger, id, err := h.scoped(request, principal)
+	var expectedUserID string
 	if err == nil {
-		err = h.memberships.RevokeInvitation(request.Context(), principal, id, request.PathValue("inviteId"))
+		expectedUserID, err = invitationActor(w, request)
+	}
+	if err == nil {
+		err = h.memberships.RevokeInvitation(request.Context(), principal, id, request.PathValue("inviteId"), expectedUserID)
 	}
 	if err != nil {
-		writeError(w, request, logger, "membership", "revoke_invitation", err)
+		invitationWriteError(w, request, logger, "revoke_invitation", err)
 		return
 	}
 	membershipCompleted(request, logger, "revoke_invitation")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func invitationActor(w http.ResponseWriter, request *http.Request) (string, error) {
+	fields, err := decodeObject(w, request, "expectedUserId")
+	if err != nil {
+		return "", err
+	}
+	return requiredString(fields, "expectedUserId")
 }
 
 func invitationToken(w http.ResponseWriter, request *http.Request) (string, error) {
@@ -251,9 +271,13 @@ func (h *MembershipRoutes) inspectInvitation(w http.ResponseWriter, request *htt
 		return
 	}
 	response := api.ProjectInvitationInspection{ProjectID: inspection.ProjectID, ProjectName: inspection.ProjectName}
-	if inspection.Member != nil {
-		member := memberResponse(*inspection.Member)
-		response.Member = &member
+	if inspection.DirectGrant != nil {
+		grant := projectGrantResponse(*inspection.DirectGrant)
+		response.DirectGrant = &grant
+	}
+	if inspection.Access != nil {
+		access := projectAccessResponse(*inspection.Access)
+		response.Access = &access
 	}
 	logger = logger.With("project_id", inspection.ProjectID)
 	membershipCompleted(request, logger, "inspect_invitation")
@@ -263,17 +287,24 @@ func (h *MembershipRoutes) inspectInvitation(w http.ResponseWriter, request *htt
 func (h *MembershipRoutes) acceptInvitation(w http.ResponseWriter, request *http.Request, principal core.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", principal.UserID)
-	token, err := invitationToken(w, request)
+	fields, err := decodeObject(w, request, "token", "expectedUserId")
+	var token, expectedUserID string
+	if err == nil {
+		token, err = requiredString(fields, "token")
+	}
+	if err == nil {
+		expectedUserID, err = requiredString(fields, "expectedUserId")
+	}
 	if err != nil {
 		writeError(w, request, logger, "membership", "accept_invitation", err)
 		return
 	}
-	member, err := h.memberships.AcceptInvitation(request.Context(), principal, token)
+	result, err := h.memberships.AcceptInvitation(request.Context(), principal, token, expectedUserID)
 	if err != nil {
-		writeError(w, request, logger, "membership", "accept_invitation", err)
+		invitationWriteError(w, request, logger, "accept_invitation", err)
 		return
 	}
-	logger = logger.With("project_id", member.Grant.ProjectID)
+	logger = logger.With("project_id", result.ProjectID)
 	membershipCompleted(request, logger, "accept_invitation")
-	writeJSON(w, request, logger, http.StatusOK, memberResponse(member))
+	writeJSON(w, request, logger, http.StatusOK, api.ProjectInvitationAcceptance{ProjectID: result.ProjectID, DirectGrant: projectGrantResponse(result.DirectGrant), Access: projectAccessResponse(result.Access), Joined: result.Joined, Consumed: result.Consumed})
 }
