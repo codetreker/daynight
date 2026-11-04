@@ -22,12 +22,16 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
   const [page, setPage] = useState<{ items: SessionHistoryItem[]; cursor: string | null }>({ items: [], cursor: null });
   const [error, setError] = useState<unknown>(null); const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0); const [cursor, setCursor] = useState<string | null>(null);
+  const loadedRequest = useRef<{ api: TerminalSessionApi; cursor: string | null; revision: number } | null>(null);
   useEffect(() => {
     if (!active || scope.isInvalidated) return;
+    // Reopening a retained tab preserves its inventory until an explicit refresh.
+    if (loadedRequest.current?.api === api && loadedRequest.current.cursor === cursor && loadedRequest.current.revision === revision) return;
     const controller = new AbortController(); const abort = () => controller.abort(); scope.signal.addEventListener('abort', abort);
     setLoading(true); setError(null);
     void api.history(cursor, controller.signal).then(result => {
       if (controller.signal.aborted) return;
+      loadedRequest.current = { api, cursor, revision };
       setPage(old => ({ items: cursor === null ? result.items : [...old.items, ...result.items.filter(item => !old.items.some(previous => previous.sessionId === item.sessionId))], cursor: result.nextCursor }));
     }).catch(cause => { if (!controller.signal.aborted) { setError(cause); if (cause instanceof ApiError && [401, 403, 404, 410].includes(cause.status ?? 0)) setPage({ items: [], cursor: null }); } })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });

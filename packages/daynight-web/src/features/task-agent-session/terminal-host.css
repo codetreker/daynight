@@ -25,8 +25,9 @@
 .terminal-session { overflow: auto; }
 .terminal-session > * { flex-shrink: 0; }
 .terminal-session > .session-timeline-shell { flex-shrink: 1; min-height: 12rem; }
-.task-detail-panel-attachments:has(> .managed-session-records) { flex-direction: column; overflow: auto; }
-.task-detail-panel-attachments:has(> .managed-session-records) > .task-attachments { flex: 1 0 24rem; min-height: 24rem; }
-.managed-session-records { flex: none; }
+.task-detail-panel-attachments:has(> .managed-session-records) { flex-direction: column; overflow: hidden; }
+.task-detail-panel-attachments:has(> .managed-session-records) > .task-attachments { flex: 1; min-height: 0; }
+.managed-session-records { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow: auto; overscroll-behavior: contain; }
+.managed-session-records:has(.terminal-session) { flex: 1; max-height: 60%; }
 .managed-session-records .terminal-session { max-height: 70vh; }
 .managed-session-records .terminal-session.session-fullscreen { max-height: none; }

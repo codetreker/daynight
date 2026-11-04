@@ -35,4 +35,14 @@ describe('unified Session and managed records', () => {
     expect(screen.queryByRole('button', { name: /delete|rename|download|take control/i })).toBeNull();
     expect(api.channel).not.toHaveBeenCalled();
   });
+  it('retains the loaded inventory across hidden tabs and refreshes only on request', async () => {
+    const api = fixture();
+    const view = render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active />);
+    await screen.findByRole('button', { name: /Herdr/ });
+    view.rerender(<ManagedSessionRecords projectId={projectId} taskId={taskId} active={false} />);
+    view.rerender(<ManagedSessionRecords projectId={projectId} taskId={taskId} active />);
+    expect(api.history).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(api.history).toHaveBeenCalledTimes(2));
+  });
 });

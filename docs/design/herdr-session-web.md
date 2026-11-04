@@ -2,7 +2,7 @@
 
 ## 页面与身份
 
-Task Session 使用共同任务入口，当前 web 执行保留 native timeline、composer 与原连接策略，herdr 执行由独立终端客户端承接。历史选择和附件中的 Session 记录读取同一任务历史 API；条目保存原 sessionId、claimId、executionGeneration、内容类型与 ready hash。历史读取不经过 current，不创建实时连接，也不持有输入接口。
+Task Session 使用共同任务入口，当前 web 执行保留 native timeline、composer 与原连接策略，herdr 执行由独立终端客户端承接。历史选择和附件中的 Session 记录读取同一任务历史 API；条目保存原 sessionId、claimId、executionGeneration、内容类型与 ready hash。历史读取不经过 current，不创建实时连接，也不持有输入接口。Session 选择保存在当前浏览器页签的用户/项目/任务范围内，刷新和重新领取任务不会把已选择记录改投新执行；每次读取仍由服务端核验权限。
 
 普通附件继续使用原文件树、上传和删除流程。受管 Session 记录独立展示，只能打开只读记录，不能借普通附件操作覆盖、删除或重命名权威归档。
 
@@ -10,13 +10,13 @@ Task Session 使用共同任务入口，当前 web 执行保留 native timeline�
 
 终端客户端的订阅由页签可见性、文档可见性、当前任务和访问权限共同决定。隐藏页签和离开页面关闭该浏览器的 channel；服务端撤销相同 browserClientId 的租约或尚未完成的取得控制请求。录制由 Worker 独立负责，不依赖浏览器是否订阅。
 
-页面默认只读。取得控制、续约、释放、处置初始提交和恢复自动执行均通过严格 v2 请求，只有 Worker 确认状态才改变可用动作。文字粘贴与有限逻辑键使用原 Session、运行代次、connection/control epoch、段与终端绑定，不发送任意终端寻址或 resize。输入结果未知时只能查询原 operationId，不重发原正文；传输完成不代表 Agent 已受理。
+页面默认只读。取得控制、续约、释放、处置初始提交和恢复自动执行均通过严格 v2 请求，只有 Worker 确认状态才改变可用动作。文字粘贴与有限逻辑键使用原 Session、运行代次、connection/control epoch、段与终端绑定，不发送任意终端寻址或 resize。输入结果未知时保留原 operationId，只查询原操作，不重发原正文。浏览器写前保存不含输入正文的操作身份，刷新后恢复未知提示；用户明确核对后才允许新的人工操作，原回执仍保持未知。这项本地确认既不修改 Worker 的原结果，也不恢复自动执行。传输完成不代表 Agent 已受理。
 
 未知初始提交使用 `resolve_initial_assignment` 记录人工处置，仍保持 suspended。`resume_automation` 是另一项显式确认，要求用户已处理终端草稿；它不能夹带未知初始提交处置。旧环境未公布相应动作时，页面不尝试替代控制。
 
 ## 归档验证与播放
 
-v2 reader 对固定归档状态、终态回执、原始文件字节的 hash/size 和严格 schema 进行验证，再核对项目、任务、原 claim、Session、最终运行代次、服务源和完整性。共享 decoder 校验每帧、索引、段、gap 和停止归属。任一不一致拒绝展示，不跳过坏帧。
+v2 reader 对固定归档状态、finalizationId、原始文件字节的 hash/size 和严格 schema 进行验证，再核对项目、任务、原 claim、Session、最终运行代次、服务源和完整性。共享 decoder 校验每帧、索引、段、gap 和停止归属。任一不一致拒绝展示，不跳过坏帧。
 
 v1 历史沿用原格式及服务端文件 hash 校验；浏览器核对固定状态的 hash/size、正文身份和内嵌资源完整性。v1 的 HTTP JSON 包装会重新编码正文，因此不将重建 JSON 的 hash 冒充上传原始字节的 hash。
 
