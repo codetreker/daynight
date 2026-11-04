@@ -1408,6 +1408,16 @@ The [assistant requirements](../../docs/spec/assistant.md) define management and
 lifecycle behavior; the [design](../../docs/design/assistant.md) explains identity,
 version and deletion ownership.
 
+The Worker provides a [versioned assistant role and CLI environment helpers](../../docs/design/bot-role-environment.md)
+for hosting consumers. Role selection preserves the server-frozen text and
+revision, retains an unconfirmed local preparation, and rejects disagreements.
+Environment preparation uses the target Worker's `DN_CONFIG_DIR` and normal CLI
+credential, checks its server and current account, and probes the effective CLI
+in the Bot's ordinary directory. It preserves native homes and existing alias
+rules; Controller relay credentials are not CLI credentials. The caller owns
+durable preparation, registration, startup and release of its prepared aliases.
+These helpers do not themselves enable Bot hosting or bypass native approvals.
+
 ## Remote Worker queries
 
 ```bash
