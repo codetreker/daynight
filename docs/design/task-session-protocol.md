@@ -221,6 +221,19 @@ composer 的表单保留提交、快捷键和设置面板的所有权；内部�
 
 阅读与草稿决策的替代方案和限制见[Session 阅读与草稿决策](../../.agents/notes/implemented/bug-fix/2026-10-28-session-reading-and-draft-ownership.md)。
 
+### Session 显示偏好模块
+
+`task-agent-session/display-preference.ts` 的 `createSessionDisplayPreferenceStore(getStorage?)` 创建页面级共享缓存，`get(binding)` 返回具有 `getSnapshot`、`subscribe`、`setMode` 和 `retrySave` 的独立偏好。`useSessionDisplayPreference(binding, preferences?)` 默认使用同一页面缓存，返回 `{ mode, issue, setMode, retrySave }`。第二个参数用于注入独立 store；调用方应保持该 store 实例稳定。生产 Session View 尚未接入此 hook，菜单和默认 Conversation 尚未对用户生效。
+
+`binding` 为 `{ userId, sessionId } | null`，必须来自已认证账号与匹配的已验证 Session 快照。hook 在 render 中按身份选择 store，再使用 `useSyncExternalStore` 订阅，因此身份变化的首帧不会使用上一身份的值。`null` 返回 Conversation 和空 issue，订阅、设置、重试均无操作，连 Storage getter 也不调用。claim、fence、historyEpoch、连接或归档状态不参与身份；同一账号和 Session 的多个消费者共享选择。
+
+存储键为 `daynight.web.session.display.v1:` 加 `JSON.stringify([userId, sessionId])`，值只能是 JSON 字符串 `"standard"` 或 `"conversation"`。JSON 数组编码避免身份分隔符歧义，浏览器 origin 提供站点隔离。首次缺省返回 Conversation，不写默认值；已有有效值立即生效。getter/getItem 抛错返回 `{ kind: 'read' }`，无效 JSON 或枚举返回 `{ kind: 'invalid' }`，均使用 Conversation。issue 只保留错误类别，不缓存异常 payload 或凭据。
+
+`setMode` 在保存前更新内存；保存失败保留新 mode，issue 为 `{ kind: 'write' }`。成功保存清除 issue。同值选择不写入、不通知、不更换 snapshot，调用方无需重置阅读位置。`retrySave` 仅在有 issue 时保存当前内存值，不回读旧值；重复失败保持稳定 snapshot，成功清除 issue，无错误时是无操作。
+
+解绑会移除订阅回调；页面缓存保留身份键、mode 和错误类别，使保存失败后的重新挂载仍能恢复当前选择。缓存生命周期是页面生命周期，刷新时重新读取持久值；不监听跨标签变更，也不提供跨设备同步。缓存不持有 Session client、原文、草稿或操作账本。存储与 React hook 使用可注入的 Storage/getStorage 验证失败路径，测试不接触真实用户偏好。取舍见[显示偏好决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-preferences.md)。
+
+
 ## 关闭与清理
 
 网页关闭或网络断线不停止 Agent loop。worker 请求 cleanup 时，Controller 禁止新的普通发送，保留 cleanup 所需审批；先取消原活动 turn，再提交唯一 cleanup prompt，并等待该 turn 的原生结束。旧 generation 的 cleanup 记录不能禁用恢复后的新 generation。claim 进入清理时 relay 有最多 60 秒的 draining 窗口，普通发送和取消被禁止，尚未投递的 accepted 操作在同一事务内拒绝。

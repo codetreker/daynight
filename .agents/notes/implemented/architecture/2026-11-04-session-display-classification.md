@@ -49,6 +49,8 @@ Ordinary views retain Standard-compatible behavior until they explicitly pass a
 mode. The timeline consumes this selector for explicit modes, including filtered
 pagination and mode-switch scroll recovery as described by the
 [display reading decision](2026-11-04-session-display-reading.md). That consumer
-retains complete source order separately from visible entries. Preferences and
-menu integration remain outside this classification module; the selector owns
-neither session state nor resource loading.
+retains complete source order separately from visible entries. The independent
+[preference module](2026-11-04-session-display-preferences.md) provides persisted
+choices without changing production views. Preference and menu integration
+remain outside this classification module; the selector owns neither session
+state nor resource loading.

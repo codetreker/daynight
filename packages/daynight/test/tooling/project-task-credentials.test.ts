@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readBudgetToken, runProjectTaskAcceptance } from "../../scripts/project-task-acceptance.js";
+import { coveragePackages, readBudgetToken, requireTestOnlyE2E, runProjectTaskAcceptance } from "../../scripts/project-task-acceptance.js";
 import { runBudgetProbes } from "../../scripts/project-task-budgets.js";
 import type { InstalledCliReceipt } from "../fixtures/installed-cli.js";
 
@@ -72,5 +72,26 @@ describe("normally issued budget credential handoff", () => {
 
   it.each([undefined, "", "invalid secret", "invalid\nsecret"])("rejects absent or unsafe credentials before starting any budget fixtures %#", async (token) => {
     await expect(runBudgetProbes("deadlines", {} as InstalledCliReceipt, ".", token as string)).rejects.toThrow("header-safe PAT");
+  });
+});
+
+
+describe("E2E coverage selection", () => {
+  const e2e = "github.com/codetreker/daynight/packages/daynight-server/cmd/e2e_tests";
+  it("retains every other package and refuses substring collisions or a missing E2E package", () => {
+    const production = e2e.replace("e2e_tests", "daynight-server");
+    expect(coveragePackages([production, e2e])).toEqual([production]);
+    expect(() => coveragePackages([production])).toThrow("exactly");
+    expect(() => coveragePackages([production, e2e, `${e2e}_extra`])).toThrow("exactly");
+    expect(() => coveragePackages([production, e2e, `${e2e}/nested`])).toThrow("exactly");
+  });
+
+  it("refuses production Go source, including nested files, before coverage can exclude it", async () => {
+    const { directory } = await fixture("{}");
+    await writeFile(path.join(directory, "acceptance_test.go"), "package e2e_tests");
+    await expect(requireTestOnlyE2E(directory)).resolves.toBeUndefined();
+    await mkdir(path.join(directory, "nested"));
+    await writeFile(path.join(directory, "nested", "production.go"), "package nested");
+    await expect(requireTestOnlyE2E(directory)).rejects.toThrow("production Go files");
   });
 });

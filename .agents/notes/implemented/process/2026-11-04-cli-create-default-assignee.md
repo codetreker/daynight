@@ -26,11 +26,12 @@ may explicitly select another qualified account. Task updates preserve omitted
 assignment. Creation still produces todo with automatic execution disabled;
 execution startup and original claim authority retain their own rules.
 
-Handoff verifies responsibility with the existing complete task list filtered by
-assigned-to me, including all statuses and no readiness, permission or platform
-filters. The selected ID, non-null assignee and exact version must match the full
-reviewed task. This reuses the list client's authenticated-principal validation
-without another identity command. Only content and responsibility checks together
+Handoff reads only the explicitly selected task and compares its non-null
+assignedTo with an independently confirmed authenticated local user UUID from
+setup or the current session. It does not enumerate other tasks to establish
+identity. A display name, email, task assignment or worker history cannot replace
+that identity; an unknown UUID leaves responsibility unconfirmed. Completed tasks
+return without an ownership check because they need no handoff. Only content and responsibility checks together
 permit enabling automatic execution. Missing, mismatched or unreadable ownership
 blocks enablement without automatic reassignment. Already-enabled tasks remain
 read-only on a failed check; existing claims retain their original authority.
@@ -48,6 +49,13 @@ A creation default establishes ordinary responsibility in the initial write.
 optional responsibility model and prevent callers from intentionally creating
 unassigned work. The CLI supplies the intended value without changing that model.
 
+**Enumerate the account's complete task collection.** The original ownership
+recipe reused the list client's authenticated-principal validation, including
+completed tasks. That verifies identity but reads unrelated work merely to check
+one selected task. Direct task reads keep the operation within its specified
+object; unknown independent identity is reported as a prerequisite rather than
+triggering collection discovery.
+
 ## Consequences
 
 Default CLI creation adds one authenticated read before its mutation and exposes
@@ -56,8 +64,9 @@ The server remains the authority for assignee eligibility, and the CLI's existin
 create response validation checks the submitted assignee. Existing tasks and
 other clients keep their current responsibility values and defaults.
 
-Handoff adds a complete account-filtered list read, so its cost follows the
-account's project task inventory. Exact-version enabling prevents a reassignment
-after review from silently authorizing another owner. Independent attachments
-and list pages still do not form an atomic snapshot; content checks and final
-readback retain their existing limits.
+Handoff task reads stay tied to the selected IDs and no longer depend on the
+account's task inventory. An independently confirmed account UUID is required
+for unfinished tasks. Exact-version enabling prevents a reassignment after review
+from silently authorizing another owner. Independent attachments still do not
+form an atomic snapshot; content checks and final readback retain their existing
+limits.
