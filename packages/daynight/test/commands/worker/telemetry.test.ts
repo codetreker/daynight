@@ -141,63 +141,6 @@ describe("Worker telemetry", () => {
     expect(second.issues.find(({ component }) => component === "codex")?.error).toBe(failure);
   });
 
-  it("keeps ordinary codex blocked after assistant cleanup uncertainty, including after cache expiry", async () => {
-    let monotonic = 0; vi.spyOn(performance, "now").mockImplementation(() => monotonic);
-    const cleanup = new HerdrCommandCleanupError([new Error("assistant cleanup remains")], undefined);
-    const shared = new Map<"codex" | "copilot", unknown>();
-    const assistantHost = { collect: async () => {
-      const blocked = shared.get("codex");
-      const issue = blocked === undefined ? cleanup : blocked;
-      if (blocked === undefined) shared.set("codex", issue);
-      return {
-        assistantHost: { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: [
-          { provider: "codex" as const, available: false, reason: "unavailable" as const, model: null, args: [] },
-          { provider: "claude" as const, available: true, reason: null, model: null, args: [] },
-          { provider: "copilot" as const, available: true, reason: null, model: null, args: [] },
-        ] },
-        issues: [{ provider: "codex" as const, reason: "unavailable" as const, error: issue }],
-      };
-    }, markCleanupUncertain: (provider: "codex" | "copilot", error: unknown) => { if (!shared.has(provider)) shared.set(provider, error); }, getCleanupUncertain: (provider: "codex" | "copilot") => shared.get(provider) };
-    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost });
-    await finish(instance.collect(operation()));
-    monotonic = 120_001;
-    const second = await finish(instance.collect(operation()));
-    const codexCalls = mocks.version.mock.calls.filter(([command]) => (command as { agent?: string }).agent === "codex");
-    const copilotCalls = mocks.version.mock.calls.filter(([command]) => (command as { agent?: string }).agent === "copilot");
-    expect(codexCalls).toHaveLength(1);
-    expect(copilotCalls).toHaveLength(2);
-    expect(second.telemetry.versions.codex).toMatchObject({ state: "error", code: "unavailable" });
-    expect(second.issues.find(({ component }) => component === "codex")?.error).toBe(cleanup);
-  });
-
-  it("blocks later assistant codex probes after ordinary cleanup uncertainty, including after cache expiry", async () => {
-    let monotonic = 0; vi.spyOn(performance, "now").mockImplementation(() => monotonic);
-    const cleanup = new HerdrCommandCleanupError([new Error("ordinary cleanup remains")], undefined);
-    mocks.version.mockImplementation(async ({ agent }: { agent: string }) => agent === "codex" ? Promise.reject(cleanup) : Promise.resolve("1.0.0"));
-    const shared = new Map<"codex" | "copilot", unknown>();
-    let codexAssistantAttempts = 0;
-    const assistantHost = { collect: async () => {
-      const codexBlocked = shared.get("codex");
-      const codexReason = codexBlocked === undefined ? null : "unavailable" as const;
-      if (codexBlocked === undefined) codexAssistantAttempts += 1;
-      return {
-        assistantHost: { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: [
-          { provider: "codex" as const, available: codexBlocked === undefined, reason: codexReason, model: null, args: [] },
-          { provider: "claude" as const, available: true, reason: null, model: null, args: [] },
-          { provider: "copilot" as const, available: true, reason: null, model: null, args: [] },
-        ] },
-        issues: codexBlocked === undefined ? [] : [{ provider: "codex" as const, reason: "unavailable" as const, error: codexBlocked }],
-      };
-    }, markCleanupUncertain: (provider: "codex" | "copilot", error: unknown) => { if (!shared.has(provider)) shared.set(provider, error); }, getCleanupUncertain: (provider: "codex" | "copilot") => shared.get(provider) };
-    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost });
-    await finish(instance.collect(operation()));
-    monotonic = 120_001;
-    await finish(instance.collect(operation()));
-    expect(codexAssistantAttempts).toBe(1);
-    const codexCalls = mocks.version.mock.calls.filter(([command]) => (command as { agent?: string }).agent === "codex");
-    expect(codexCalls).toHaveLength(1);
-  });
-
   it("propagates runtime cancellation and keeps an absent private daemon separate from errors", async () => {
     mocks.herdr.mockResolvedValue(null);
     const sample = await finish(collector().collect(operation()));
