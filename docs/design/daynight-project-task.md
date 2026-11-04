@@ -79,7 +79,8 @@ src/
   commands/
     server/                # 共享配置、操作与信号生命周期
     project/               # 参数、帮助、project 操作及渲染
-    team/                  # Team 只读命令、上下文与渲染
+    team/                  # Team 命令、上下文与渲染
+    invitation/            # 邀请接收语法、操作与渲染
     task/                  # task、Step 读取与附件的参数、帮助、操作及渲染
     review/                # review 配置投影和既有行为
     update/                # 既有 npm 安装生命周期
@@ -360,6 +361,7 @@ flowchart TD
 | `team create` | `GET /api/v1/me`，确认后 `POST /api/v1/teams`，提交原始名称与 `expectedUserId` |
 | `team rename`、`team delete` | `GET /api/v1/me` 和目标 Team，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}`，提交名称、精确 version 和 `expectedUserId` |
 | `team projects` | `GET /api/v1/me`，再读取全部 `GET /api/v1/projects?teamId=...` 页 |
+| `invitation inspect`、`invitation accept` | 读取当前主体，按同服务链接路径向 Project 或 Team invitation 的 inspect/accept 发送 POST body；accept 携带 `expectedUserId` |
 | `task create [--required-platform <platform>] [--assigned-to <user-uuid>]` | 省略负责人先 `GET /api/v1/me`，再 `POST /api/v1/projects/{projectId}/tasks`，携带 assignedTo 和可选 requiredPlatform |
 | `task list` | `GET /api/v1/projects/{projectId}/tasks`，保留相同筛选遍历 cursor |
 | `task ready [--limit <N>] [--allow-agents true\|false] [--compatible-platform <platform>]` | 单次 `GET /api/v1/projects/{projectId}/tasks?ready=true&limit=N`，可带 allowAgents、compatiblePlatform，不提交 cursor |
@@ -402,6 +404,14 @@ Team 生命周期写入复用当前用户和目标解析，确认阶段不持配
 typed mutation API 绑定 `/me` 主体并校验响应主体、资源与删除回执；已确认成功直接
 消费回执，不追加读取判断提交。拒绝、取消和未知提交保留各自结果；网络中断、取消
 等待、无效成功响应或未知提交不能证明回滚，也不能自动重发。后续读取只描述当前事实。
+
+邀请接收入口从隐藏提示或 `--stdin` 取得链接；后者读取至 EOF，最多 4096 字节，
+允许末尾一个 LF 或 CRLF。入口验证服务 origin、路径与秘密后
+选择 Project 或 Team API；秘密只进入请求 body，不进入参数、配置和诊断。解析失败在
+构造可递归输出的 cause 之前丢弃秘密原文。读取 `/me` 绑定真实用户，响应须核对主体；
+预览不消费，确认后 accept 只提交一次。非交互无确认不写；未知结果不能自动重发，也
+不能根据后续关系读取声称已找回原回执。[CLI 邀请接收决策](../../.agents/notes/implemented/architecture/2026-11-04-cli-invitation-receiver.md)
+记录输入与身份边界，服务端关系及消费规则由[鉴权架构](daynight-auth.md#数据与并发)拥有。
 
 项目转移按现有仓库解析规则只读选择 Project，不持久化绑定，也不解析默认 Team。
 目标解析器只接受规范 UUID 或当前 origin 的精确 Team 页面链接。预览绑定当前主体，
