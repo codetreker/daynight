@@ -7,6 +7,7 @@ import { readControllerOperation, readControllerSnapshot, recordStoppedControlle
 import { confirmControllerProcessesStopped, stopControllerProcesses } from "../../controller/process-proof.js";
 import { workerOperation, type WorkerGitManager } from "../execution.js";
 import { workerCleanupPrompt } from "../prompts.js";
+import { WorkerCleanupError, type WorkerCleanupStage } from "../cleanup-error.js";
 import { backendResourcesClosed, taskAgentControlMode, type CleanupState, type LocalTask } from "./web-types.js";
 import type { WebExecutionStore } from "./web-store.js";
 import type { TaskPlatform } from "../../../api/types.js";
@@ -139,84 +140,97 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       }
     },
     cleanup: async (input: LocalTask, kind: CleanupState["kind"], deadline: number, signal: AbortSignal = new AbortController().signal, immediateStop = false): Promise<LocalTask> => {
-      const startedAt = options.now();
-      let original = current(input);
-      if (kind === "shutdown" && original.cleanup === null && original.recovery.retryAuthorized && original.recovery.pauseReason === null) original = options.store.pauseRecovery(original, "The explicit recovery attempt stopped before a successful observation.", options.now());
-      if (kind === "shutdown" && original.cleanup === null && original.recovery.pauseReason === null && original.configuration !== null && original.recovery.count >= original.configuration.recoveryLimit && original.webExecution !== null && original.webExecution.launchSubmission !== "not-submitted") {
-        // Shutdown provenance must not turn an already exhausted writer into a healthy orderly restart.
-        try {
-          const saved = readControllerSnapshot(journal(original)), execution = original.webExecution;
-          if (saved === null || saved.executionId !== execution.executionId || saved.claimId !== original.claimId || saved.executionGeneration !== execution.executionGeneration || saved.controllerInstanceId !== execution.controllerInstanceId) throw new Error("The exhausted execution has no original generation evidence before shutdown.");
-          original = remember(original, saved);
-          const proof = original.webExecution!.controllerProcess;
-          if (proof === null) throw new Error("The exhausted execution has no complete original process stop evidence before shutdown.");
-          if (["failed", "paused", "stopped", "stopping"].includes(saved.lifecycle) || await confirmControllerProcessesStopped(proof, original.webExecution!.nativeProcesses)) original = options.store.pauseRecovery(original, "The execution recovery budget is exhausted.", options.now());
-        } catch (error) {
-          signal.throwIfAborted();
-          original = options.store.pauseRecovery(original, error instanceof Error ? error.message : String(error), options.now());
+      let stage: WorkerCleanupStage = "observation";
+      try {
+        const startedAt = options.now();
+        let original = current(input);
+        if (kind === "shutdown" && original.cleanup === null && original.recovery.retryAuthorized && original.recovery.pauseReason === null) original = options.store.pauseRecovery(original, "The explicit recovery attempt stopped before a successful observation.", options.now());
+        if (kind === "shutdown" && original.cleanup === null && original.recovery.pauseReason === null && original.configuration !== null && original.recovery.count >= original.configuration.recoveryLimit && original.webExecution !== null && original.webExecution.launchSubmission !== "not-submitted") {
+          // Shutdown provenance must not turn an already exhausted writer into a healthy orderly restart.
+          try {
+            const saved = readControllerSnapshot(journal(original)), execution = original.webExecution;
+            if (saved === null || saved.executionId !== execution.executionId || saved.claimId !== original.claimId || saved.executionGeneration !== execution.executionGeneration || saved.controllerInstanceId !== execution.controllerInstanceId) throw new Error("The exhausted execution has no original generation evidence before shutdown.");
+            original = remember(original, saved);
+            const proof = original.webExecution!.controllerProcess;
+            if (proof === null) throw new Error("The exhausted execution has no complete original process stop evidence before shutdown.");
+            if (["failed", "paused", "stopped", "stopping"].includes(saved.lifecycle) || await confirmControllerProcessesStopped(proof, original.webExecution!.nativeProcesses)) original = options.store.pauseRecovery(original, "The execution recovery budget is exhausted.", options.now());
+          } catch (error) {
+            signal.throwIfAborted();
+            original = options.store.pauseRecovery(original, error instanceof Error ? error.message : String(error), options.now());
+          }
         }
-      }
-      // An elapsed caller deadline has zero remaining budget, including immediate shutdown.
-      let task = options.store.beginCleanup(original, { kind, deadline: Math.max(startedAt, deadline) }, startedAt);
-      if (task.resources.worktree === null) { const found = await workerOperation(operation => options.git.findWorktree({ projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath }, task, operation), signal); if (found !== null) task = options.store.bindWorktree(task, found, options.now()); }
-      const execution = task.webExecution;
-      if (execution == null && task.configuration === null) throw new Error("The recovered Web claim has no original launch provenance; its native writer and worktree are retained.");
-      if (!task.cleanup!.agentStopped) {
-        if (execution == null || execution.launchSubmission === "not-submitted") {
-          task = options.store.recordCleanupInputOutcome(task, "unavailable", options.now());
-          task = options.store.recordCleanupResult(task, "unavailable", "No controller launch was submitted.", options.now());
-          task = options.store.confirmAgentStopped(task, { agentStopped: true }, options.now());
-          task = options.store.confirmBackendResourcesClosed(task, { controllerStopped: true, endpointClosed: true }, options.now());
-        } else {
-          if (execution.ticketPath === null) throw new Error("The original launch ticket is missing; cleanup retains its unknown native writer.");
-          const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
-          let response: Awaited<ReturnType<typeof request>> | undefined;
-          try { response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 1000 }); }
-          catch { const saved = readControllerSnapshot(journal(task)); if (saved !== null) task = remember(task, saved); }
-          const reachable = response !== undefined;
-          if (response !== undefined) task = remember(task, response.snapshot);
-          const proof = task.webExecution!.controllerProcess;
-          if (proof === null) throw new Error("The original controller process proof is missing; cleanup cannot infer stop.");
-          let stopped = await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses);
-          if (!immediateStop && !stopped && task.cleanup!.result === null && options.now() < task.cleanup!.deadline) {
-            if (!reachable) throw new Error("The original controller is unavailable; cleanup retains its fixed deadline and process proof.");
-            if (task.webExecution!.cleanupOperationId === null) task = options.store.updateWebExecution(task, { cleanupOperationId: randomUUID() }, options.now());
-            if (task.cleanup!.input === "not-submitted") {
-              task = options.store.markCleanupInputSubmitting(task, options.now());
-              await request(ticket, { kind: "cleanup", operationId: task.webExecution!.cleanupOperationId!, prompt: workerCleanupPrompt(task, task.cleanup!.deadline), deadline: task.cleanup!.deadline }, { signal, timeoutMs: 30000 });
+        // An elapsed caller deadline has zero remaining budget, including immediate shutdown.
+        let task = options.store.beginCleanup(original, { kind, deadline: Math.max(startedAt, deadline) }, startedAt);
+        stage = "agent-stop";
+        const execution = task.webExecution;
+        if (execution == null && task.configuration === null) throw new Error("The recovered Web claim has no original launch provenance; its native writer and worktree are retained.");
+        if (!task.cleanup!.agentStopped) {
+          if (execution == null || execution.launchSubmission === "not-submitted") {
+            task = options.store.recordCleanupInputOutcome(task, "unavailable", options.now());
+            task = options.store.recordCleanupResult(task, "unavailable", "No controller launch was submitted.", options.now());
+            task = options.store.confirmAgentStopped(task, { agentStopped: true }, options.now());
+            task = options.store.confirmBackendResourcesClosed(task, { controllerStopped: true, endpointClosed: true }, options.now());
+          } else {
+            if (execution.ticketPath === null) throw new Error("The original launch ticket is missing; cleanup retains its unknown native writer.");
+            const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
+            let response: Awaited<ReturnType<typeof request>> | undefined;
+            try { response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 1000 }); }
+            catch { const saved = readControllerSnapshot(journal(task)); if (saved !== null) task = remember(task, saved); }
+            const reachable = response !== undefined;
+            if (response !== undefined) task = remember(task, response.snapshot);
+            const proof = task.webExecution!.controllerProcess;
+            if (proof === null) throw new Error("The original controller process proof is missing; cleanup cannot infer stop.");
+            let stopped = await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses);
+            if (!immediateStop && !stopped && task.cleanup!.result === null && options.now() < task.cleanup!.deadline) {
+              if (!reachable) throw new Error("The original controller is unavailable; cleanup retains its fixed deadline and process proof.");
+              if (task.webExecution!.cleanupOperationId === null) task = options.store.updateWebExecution(task, { cleanupOperationId: randomUUID() }, options.now());
+              if (task.cleanup!.input === "not-submitted") {
+                task = options.store.markCleanupInputSubmitting(task, options.now());
+                await request(ticket, { kind: "cleanup", operationId: task.webExecution!.cleanupOperationId!, prompt: workerCleanupPrompt(task, task.cleanup!.deadline), deadline: task.cleanup!.deadline }, { signal, timeoutMs: 30000 });
+              }
+              const operation = readControllerOperation(journal(task), task.webExecution!.cleanupOperationId!);
+              if (operation?.state === "provider_accepted" || operation?.state === "confirmed") {
+                if (task.cleanup!.input === "unknown") task = options.store.recordCleanupInputOutcome(task, "submitted", options.now());
+                if (operation.state === "confirmed") task = options.store.recordCleanupResult(task, "completed", null, options.now());
+              } else if (operation !== null && ["failed", "rejected", "expired"].includes(operation.state)) task = options.store.recordCleanupResult(task, "failed", operation.error, options.now());
+              if (task.cleanup!.result === null) return task;
             }
-            const operation = readControllerOperation(journal(task), task.webExecution!.cleanupOperationId!);
-            if (operation?.state === "provider_accepted" || operation?.state === "confirmed") {
-              if (task.cleanup!.input === "unknown") task = options.store.recordCleanupInputOutcome(task, "submitted", options.now());
-              if (operation.state === "confirmed") task = options.store.recordCleanupResult(task, "completed", null, options.now());
-            } else if (operation !== null && ["failed", "rejected", "expired"].includes(operation.state)) task = options.store.recordCleanupResult(task, "failed", operation.error, options.now());
-            if (task.cleanup!.result === null) return task;
+            if (task.cleanup!.result === null) task = options.store.recordCleanupResult(task, stopped || immediateStop ? "unavailable" : "timed-out", stopped || immediateStop ? "Original processes stopped before cleanup completion was established." : "The original cleanup deadline elapsed.", options.now());
+            if (!stopped) {
+              if (reachable) try { await request(ticket, { kind: "stop", deadline: options.now() + 5000 }, { signal, timeoutMs: 5000 }); } catch { /* OS process proof remains authoritative after an IPC loss. */ }
+              await stopControllerProcesses(proof, task.webExecution!.nativeProcesses, Date.now() + 5000);
+              stopped = await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses);
+            }
+            if (!stopped) throw new Error("Complete original controller process stop is not proven.");
+            await recordStoppedControllerGeneration(journal(task), ticket);
+            task = options.store.confirmAgentStopped(task, { agentStopped: true }, options.now());
           }
-          if (task.cleanup!.result === null) task = options.store.recordCleanupResult(task, stopped || immediateStop ? "unavailable" : "timed-out", stopped || immediateStop ? "Original processes stopped before cleanup completion was established." : "The original cleanup deadline elapsed.", options.now());
-          if (!stopped) {
-            if (reachable) try { await request(ticket, { kind: "stop", deadline: options.now() + 5000 }, { signal, timeoutMs: 5000 }); } catch { /* OS process proof remains authoritative after an IPC loss. */ }
-            await stopControllerProcesses(proof, task.webExecution!.nativeProcesses, Date.now() + 5000);
-            stopped = await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses);
-          }
-          if (!stopped) throw new Error("Complete original controller process stop is not proven.");
-          await recordStoppedControllerGeneration(journal(task), ticket);
-          task = options.store.confirmAgentStopped(task, { agentStopped: true }, options.now());
+        }
+        stage = "backend-close";
+        if (!backendResourcesClosed(task.cleanup!)) {
+          if (!task.cleanup!.agentStopped || execution?.ticketPath == null) throw new Error("The original Web backend closure has no stopped controller and launch ticket.");
+          const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
           await removeEndpoint(ticket.ipcEndpoint);
           task = options.store.confirmBackendResourcesClosed(task, { controllerStopped: true, endpointClosed: true }, options.now());
         }
-      }
-      if (!backendResourcesClosed(task.cleanup!)) throw new Error("The original Web backend resources are not closed.");
-      // Shutdown proves stop but leaves any terminal finalization for normal reconciliation.
-      if (kind === "shutdown") return task;
-      if (task.cleanup!.kind === "terminal" && !task.cleanup!.worktreeDeleted) {
-        if (execution && execution.launchSubmission !== "not-submitted") {
-          if (!options.archive) throw new Error("Session archive uploader is unavailable; the original worktree is retained.");
-          await options.archive(task, journal(task), signal);
+        // Shutdown proves stop but leaves any terminal finalization for normal reconciliation.
+        if (kind === "shutdown") return task;
+        stage = "observation";
+        if (task.resources.worktree === null) { const found = await workerOperation(operation => options.git.findWorktree({ projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath }, task, operation), signal); if (found !== null) task = options.store.bindWorktree(task, found, options.now()); }
+        if (task.cleanup!.kind === "terminal" && !task.cleanup!.worktreeDeleted) {
+          if (execution && execution.launchSubmission !== "not-submitted") {
+            stage = "archive";
+            if (!options.archive) throw new Error("Session archive uploader is unavailable; the original worktree is retained.");
+            await options.archive(task, journal(task), signal);
+          }
+          stage = "worktree-removal";
+          await workerOperation(operation => options.git.removeWorktree({ projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath }, task, operation), signal);
+          task = options.store.confirmWorktreeDeleted(task, { worktreeDeleted: true }, options.now());
         }
-        await workerOperation(operation => options.git.removeWorktree({ projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath }, task, operation), signal);
-        task = options.store.confirmWorktreeDeleted(task, { worktreeDeleted: true }, options.now());
+        return task;
+      } catch (error) {
+        throw new WorkerCleanupError(stage, error);
       }
-      return task;
     },
   };
 };

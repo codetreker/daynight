@@ -17,6 +17,16 @@ export type ExecutionConfiguration = {
   recoveryLimit: number;
 };
 export type ResourceOwner = ClaimIdentity & { worktreeId: string };
+export type CleanupSchedule = {
+  deadline: number;
+  notified: boolean;
+  submitted: boolean;
+  failures: number;
+  nextAttemptAt: number;
+  stage: string;
+  lastError: string | null;
+};
+export type CleanupScheduleRecord = ResourceOwner & CleanupSchedule;
 export type WorktreeBinding = { repositoryPath: string; commonDirectory: string; worktreePath: string; branch: string };
 
 export type FrozenExecutionConfiguration = ExecutionConfiguration;

@@ -19,7 +19,7 @@ would make that recoverable execution permanently unavailable.
 ## Decision
 
 The [Web execution evidence decision](../architecture/2026-10-28-web-execution-evidence.md)
-keeps Web recovery separate from Herdr's process-local lifecycle. Web uses its
+keeps Web recovery separate from Herdr's process-local business recovery. Web uses its
 existing `recovery.count`, `pauseReason` and `retryAuthorized` fields to retain
 automatic recovery exhaustion and execution failure pauses across restarts.
 Saving a pause preserves identity and count, revokes consumed retry authorization,
@@ -99,7 +99,11 @@ preserve unfinished explicit retries as pauses.
 
 The local pause and remote summary are not one transaction. The remote task can
 remain stale while the service is unreachable, but subsequent successful
-inventory reads reconcile it. This decision adds no recovery scheduler, cleanup
-backoff, fairness policy or Herdr lifecycle change. Controlled store/backend
-checks establish these boundaries; real provider and combined integration
-acceptance require their own execution evidence.
+inventory reads reconcile it. Terminal cleanup retains its independent
+[persistent retry schedule](2026-11-04-worker-cleanup-retry.md), original deadline
+and notification state for both backends. Its backoff does not consume execution
+recovery budget, and a recovery pause cannot release that cleanup responsibility.
+This decision changes no cleanup scheduling, fairness policy or Herdr business
+recovery behavior. Controlled store/backend checks establish these boundaries;
+real provider and combined integration acceptance require their own execution
+evidence.

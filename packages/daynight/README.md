@@ -1321,12 +1321,18 @@ line separators and bidirectional display controls are escaped as visible text;
 Unicode titles and emoji remain readable. Full titles and owner IDs are retained,
 with Herdr responsible for fitting the label into its current terminal width.
 
-The local database has exactly these business fields:
+The local claim index has these business fields:
 
 ```text
 projects(project_id, repo_url, local_path)
 tasks(project_id, task_id, claim_id, status, agent, session_id, agent_control_mode)
 ```
+
+A separate `cleanup_schedules` table binds terminal cleanup responsibility to
+the original Project/task/claim/worktree. It retains the first deadline,
+notification submission state, failure count, next retry time, stage and error.
+These records preserve responsibility; they do not prove that resources stopped
+or disappeared.
 
 Status is pending, active or done. Pending is an actual acquired claim waiting
 for startup; active owns startup, running, recovery or cleanup responsibility;
@@ -1339,7 +1345,8 @@ The state directory belongs to the configured single service, Daynight account
 and workerId. Finish old executions before changing those identities and
 rebuilding local state. The running process pins its startup authenticated user;
 the claim-index database does not retain prior-service or prior-account recovery
-scopes. The claim index has its own `user_version=5`. All five business databases
+scopes. The claim index and cleanup schedule share `user_version=6`; upgrading
+version 5 preserves its Project and task rows. All five business databases
 reset `user_version=0` after their ownership checks: the original schema and data
 are discarded, then the baseline and numbered upgrades rebuild the current
 format. This includes existing empty files and query access. Known valid nonzero
@@ -1441,9 +1448,10 @@ agent's ID may fill a NULL record; inactive pane references remain excluded.
 
 The NULL rule also covers interruption before a newly started native ID was saved.
 It retains the task, claim and worktree and requires no history scan or approval
-gate. A failed resume of a known ID remains an error. Launch/input receipts,
-process observations, retries and cleanup progress exist only in the current
-call or process in Herdr mode. Herdr recovery counts reset on restart; reaching
+gate. A failed resume of a known ID remains an error. Business launch/input
+receipts, process observations and execution retries remain local to the current
+call or process in Herdr mode. Terminal cleanup retains its separate persistent
+schedule. Herdr execution recovery counts reset on restart; reaching
 recoveryLimit keeps the task active with a visible error until explicit retry or
 another run. Web recovery follows the persistent rules below.
 
@@ -1490,10 +1498,11 @@ lost across a process interruption.
 
 During normal reconciliation, when the original claim is absent from a
 successful complete inventory, the worker asks its agent to release attributable
-temporary files, services and processes outside the worktree. It waits at most
-ten minutes for this cleanup attempt, stops the agent, closes its workspace, removes the matching worktree
-and marks the local row done. Done, release and force withdrawal have the same terminal
-resource rule. Failed stop or deletion retains responsibility and the error.
+temporary files, services and processes outside the worktree. It waits until the
+original ten-minute cleanup deadline at most, stops the agent, closes its
+workspace, removes the matching worktree and marks the local row done. Done,
+release and force withdrawal have the same terminal resource rule. Failed stop
+or deletion retains responsibility and the error.
 
 Known-target cleanup and shutdown observe that Herdr execution directly;
 worktree deletion validates only its target Git registration and directory.
@@ -1509,20 +1518,35 @@ and the current bounded wait, without automatic replay. Reaching the deadline
 still proceeds through actual stop confirmation. Idle in this terminal cleanup
 phase does not complete the business task.
 
-Cleanup timing and progress are in memory. Polls do not extend the current
-attempt's deadline; after a crash, the next successful reconciliation observes
-remaining resources and starts a new cleanup attempt and timer. Cleanup prompts
-may repeat. Separate tasks have independent bounded jobs, so one held RPC does
-not postpone another task's cleanup. A cleanup already selected in the current
-process can continue during later service-read failures.
+Terminal cleanup is recorded before notification or resource removal. The
+original deadline and notification submission state survive failure, cancellation
+and restart; a cleanup notification with an unknown submission result is not
+replayed. Restart restores the
+same claim's responsibility and observes actual remaining resources without
+starting business execution. Previously confirmed cleanup can continue during
+later service-read failures.
+
+Failed claims retry independently after 1, 2, 4, 8, 16, 32 and then at most 60
+seconds, when normal reconciliation next observes eligibility. Backoff does not
+spend execution recovery budget or release a capacity slot. Other eligible
+cleanup and healthy execution continue under the existing capacity limit. Errors
+identify the failed stage and next retry time, distinguishing unconfirmed native
+stop from a stopped agent awaiting backend closure, archive upload or worktree
+removal. If a retry-state write fails, the current process retains bounded
+backoff and both errors without claiming that the latest decision is durable.
 
 Ctrl+C stops acquisition and scheduling, cancels all running jobs including
 terminal cleanup, and joins them before directly stopping agents and closing
-their workspaces. Process exit sends no cleanup prompt and does not wait for a
-cleanup turn. It preserves claims, worktrees, native session IDs and all
-unfinished active/pending rows, including those whose ownership has ended. The
-next run uses normal inventory reconciliation to re-enter terminal cleanup for
-ended claims. External temporary resources may remain after direct interruption.
+their workspaces. Process exit sends no cleanup prompt, does not wait for a
+cleanup turn or retry backoff, and does not repeat archive upload or worktree
+removal. It preserves claims, worktrees, native session IDs, unfinished
+active/pending rows and existing terminal cleanup schedules, including ended
+claims. The next run restores each saved responsibility, original deadline and
+notification state, then verifies remaining resources. A retained Herdr cleanup
+still requires its original backend even if current configuration uses Web;
+backend initialization and retries remain local to that cleanup job and cannot
+block unrelated Web execution. External temporary resources may remain after
+direct interruption.
 Normal completion, release, withdrawal and manual-control cleanup retain their
 notification and removal sequence. Pending stop confirmations must settle before the private
 Herdr instance stops; stop errors remain visible, and uncertain stopping retains
@@ -1612,8 +1636,9 @@ Normal Web terminal cleanup keeps its original cleanup operation and deadline,
 then proves native stop before deleting the task worktree. Worker shutdown stops
 owned processes while preserving unfinished claims, worktrees and native history.
 The [session design](../../docs/design/task-session-protocol.md) owns stopping,
-recovery and relay details; the Herdr lifecycle above retains its process-local
-recovery and cleanup semantics.
+recovery and relay details. Herdr business recovery remains process-local; both
+modes retain terminal cleanup responsibility, its original deadline and
+notification state in the independent schedule.
 
 The worker starts `daynight controller codex|claude|copilot --launch-id <uuid>`
 from a private immutable launch ticket. Its cwd, profile, claim, generation,
