@@ -2,6 +2,24 @@ import type { WorkerAgent } from "../../../api/types.js";
 
 export type NativeInputBlocker = "menu" | "disabled";
 
+// The placeholder is one clipped Line, so only a visible prefix of a known message is evidence.
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L4941-L4954
+const disabledPlaceholders = [
+  { message: "Input disabled.", identifyingPrefix: "Input disabled" },
+  { message: "Viewing sub-agent — direct input is disabled", identifyingPrefix: "Viewing sub-agent" },
+  // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/windows_sandbox_prompts.rs#L294-L301
+  { message: "Input disabled until setup completes.", identifyingPrefix: "Input disabled" },
+  // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L4286-L4291
+  { message: "Shutting down...", identifyingPrefix: "Shutting down" },
+  // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/mod.rs#L2109-L2112
+  { message: "Answer the questions to continue.", identifyingPrefix: "Answer the questions to continue." },
+  // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/mod.rs#L2193-L2213
+  { message: "Respond to the tool suggestion to continue.", identifyingPrefix: "Respond to the tool suggestion to continue." },
+  { message: "Respond to the MCP server request to continue.", identifyingPrefix: "Respond to the MCP server request to continue." },
+  // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/misalignment_policy.rs#L38-L38
+  { message: "Chat stopped as a precaution", identifyingPrefix: "Chat stopped as a precaution" },
+];
+
 const footerGap = String.raw`(?:[ \t]+|[ \t]*\n[ \t]*)`;
 const footerSeparator = String.raw`[ \t]*(?:\n[ \t]*)?·[ \t]*(?:\n[ \t]*)?`;
 // cfg(test) snapshots force backspace/del; production macOS renders delete/fwd del.
@@ -90,7 +108,10 @@ export const nativeInputBlocker = (agent: WorkerAgent, visible: string): NativeI
     const laterPrompt = (index: number) => lines.slice(index + 1).some(line => /^\s*[›»]/.test(line));
     // Disabled placeholders occupy the composer's own prompt row.
     // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L4873-L4954
-    const disabled = (line: string) => /^\s*[›»]\s+(?:Input disabled\.|Viewing sub-agent — direct input is disabled)\s*$/.test(line);
+    const disabled = (line: string) => {
+      const field = /^\s*[›»]\s+(.+)$/.exec(line)?.[1];
+      return field !== undefined && disabledPlaceholders.some(placeholder => field.length >= placeholder.identifyingPrefix.length && placeholder.message.startsWith(field));
+    };
     const disabledRow = lines.findLastIndex(disabled);
     if (disabledRow >= 0 && !laterPrompt(disabledRow)) return "disabled";
     const selectedRow = lines.findLastIndex(selected);

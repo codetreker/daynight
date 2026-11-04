@@ -413,5 +413,20 @@ export const nativeMenuScreens = [
     "name": "external_agent_config_migration_secondary_source_customize",
     "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/external_agent_config_migration/snapshots/codex_tui__external_agent_config_migration__tests__external_agent_config_migration_secondary_source_customize.snap",
     "screen": "\n  > Choose what to import\n  Choose items to import.\n  Codex may add files to your current project folder.\n  Your existing setup will not be changed.\n  Home\n  › [x] Settings\n        Import /Users/alex/.cursor/cli-config.json into /Users/alex/.codex/co…\n\n  Selected 1 of 1 item.\n    1. Review selection\n  Use ↑/↓ to move, space to toggle, b to go back\n"
+  },
+  {
+    "name": "parent_owned_field_clipped_32",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__parent_owned_thread_placeholder.snap",
+    "screen": "                                \n› Viewing sub-agent — direct inp\n                                \n                                \n                                \n                                \n                                \n                                \n  ? for shortcuts               \n"
+  },
+  {
+    "name": "parent_owned_field_clipped_100",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__parent_owned_thread_placeholder.snap",
+    "screen": "                                                                                                    \n› Viewing sub-agent — direct input is disabled                                                      \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n  ? for shortcuts                                                                100% context left  \n"
+  },
+  {
+    "name": "shutdown_field_clipped_32",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__shutdown_in_progress.snap",
+    "screen": "                                \n› Shutting down...              \n                                \n                                \n                                \n"
   }
 ];

@@ -10,6 +10,7 @@ import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
 import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
 import { nativeKeyDisplays } from "../../fixtures/native-key-displays.js";
+import { nativeDisabledClips } from "../../fixtures/native-disabled-placeholders.js";
 
 type Entry = Record<string, unknown>;
 const directories: string[] = [];
@@ -225,6 +226,17 @@ describe("native argument ownership", () => {
 });
 
 describe("direct task resource management", () => {
+  it.each(nativeDisabledClips)("retains initial/continuation input on a source-owned clipped disabled field: $visible", async ({ visible }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.screen.text = `› ${visible}\n\n ? for shortcuts`;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "disabled" });
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "disabled" });
+    expect(f.prompts).toEqual([]);
+    f.screen.text = `A historical code sample:\n› ${visible}\n\n› Continue`;
+    await f.manager.submitPrompt(f.context, binding, "continuation after dismissal", operation());
+    expect(f.prompts).toEqual(["continuation after dismissal"]);
+  });
+
   it.each(nativeKeyDisplays)("keeps input unsent for production $platform key display $spec = $display", async ({ display }) => {
     const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     const screen = nativeMenuScreens.find(menu => menu.name === "hooks_browser_handlers")!.screen;
@@ -889,6 +901,8 @@ describe("direct task resource management", () => {
 
   it.each([
     { agent: "codex" as const, screen: "Input disabled in this business example; press enter to confirm or esc to cancel." },
+    ...["Viewing", "Viewing sub", "Viewing sub-agents", "Viewing sub-agent examples", "Input", "Input disabled in this business example", "Input disabled for test.", "Answer the questions", "Respond to the tool suggestion"].map(text => ({ agent: "codex" as const, screen: `› ${text}\n\n ? for shortcuts` })),
+    { agent: "codex" as const, screen: "Viewing sub-agent — direct input is disabled" },
     { agent: "codex" as const, screen: "› Ask any custom question\nGPT-6.1 Terra medium · daynight/task" },
     { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› Completely custom current composer" },
     { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n›✨Custom current prompt marker" },
