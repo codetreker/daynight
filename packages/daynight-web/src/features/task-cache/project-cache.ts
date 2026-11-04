@@ -33,9 +33,11 @@ const edgeCount = (tasks: readonly TaskSummary[]): number => tasks.reduce((count
 
 const mergeProject = (current: Project, incoming: Project): Project => {
   if (current.settings.version === incoming.settings.version && current.settings.executionWarningMinutes !== incoming.settings.executionWarningMinutes) return protocol();
+  if (current.ownership.version === incoming.ownership.version && current.ownership.teamId !== incoming.ownership.teamId) return protocol();
   const base = compareTimestamps(current.updatedAt, incoming.updatedAt) > 0 ? current : incoming;
   const settings = current.settings.version > incoming.settings.version ? current.settings : incoming.settings;
-  const merged = { ...base, settings };
+  const ownership = current.ownership.version > incoming.ownership.version ? current.ownership : incoming.ownership;
+  const merged = { ...base, settings, ownership };
   return sameProject(current, merged) ? current : merged;
 };
 

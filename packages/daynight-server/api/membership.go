@@ -25,10 +25,12 @@ type ProjectParticipant struct {
 	Profile       ProjectParticipantProfile `json:"profile"`
 	EffectiveRole string                    `json:"effectiveRole"`
 	DirectGrant   *ProjectGrant             `json:"directGrant"`
+	InheritedFrom *ProjectInheritance       `json:"inheritedFrom"`
 }
 
 type ProjectParticipantList struct {
-	Items []ProjectParticipant `json:"items"`
+	Items       []ProjectParticipant `json:"items"`
+	ActorAccess ProjectAccess        `json:"actorAccess"`
 }
 
 type SetProjectMemberRoleRequest struct {

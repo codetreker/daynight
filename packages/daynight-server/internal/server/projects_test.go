@@ -120,10 +120,10 @@ func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
 		t.Fatalf("invalid resource location: %s", response.Header().Get("Location"))
 	}
 	var fields map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 6 {
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 7 {
 		t.Fatalf("unexpected project DTO: %s %v", response.Body, err)
 	}
-	for _, key := range []string{"id", "name", "repoUrl", "createdAt", "updatedAt", "settings"} {
+	for _, key := range []string{"id", "name", "repoUrl", "createdAt", "updatedAt", "settings", "ownership"} {
 		if _, exists := fields[key]; !exists {
 			t.Fatalf("missing DTO field %s: %s", key, response.Body)
 		}

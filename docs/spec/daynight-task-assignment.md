@@ -1,6 +1,6 @@
 # Task 负责人契约
 
-状态：服务端负责人字段、HTTP 读写与查询、CLI 负责人命令、Web 负责人交互和 schema 4 字段消费，以及本人自动领取规则已实现。本文拥有责任归属的数据、事务、查询与界面行为；[设计](../design/daynight-task-assignment.md)拥有机制。
+状态：服务端负责人字段、HTTP 读写与查询、CLI 负责人命令、Web 负责人交互和缓存字段消费，以及本人自动领取规则已实现。本文拥有责任归属的数据、事务、查询与界面行为；[设计](../design/daynight-task-assignment.md)拥有机制。
 
 ## 数据与读取
 
@@ -101,10 +101,10 @@ name 和 avatarUrl 保留实际 nullable 资料，不补姓名或邮箱；响应
 
 项目任务列表可选择全部、分配给我、未分配或具体人员。匹配在显示分页之前，与已有近期/显示所有条件相交；改变筛选回第一页。独立任务只显示匹配项；任一链成员匹配即保留真实代表头作上下文，展开显示匹配子任务及匹配数。完整链进度、ready/blocked、图与概览继续使用完整索引，不能按负责人裁剪task-sync。概览显式定位可以清除遮挡目标的负责人筛选，不改变完整项目事实。
 
-Web Task、summary和GraphTask严格要求assignedTo:null或规范UUID，所有相等/新鲜度/审阅键与材料保持检查纳入它。schema1/2/3直升4清除可再生项目/摘要/详情、轮换user fence和水位，随后完整重建；旧记录缺字段不能按null继续消费。
+Web Task、summary和GraphTask严格要求assignedTo:null或规范UUID，所有相等/新鲜度/审阅键与材料保持检查纳入它。旧格式升级清除可再生项目/摘要/详情、轮换user fence和水位，随后完整重建；当前格式与升级范围由[缓存需求](daynight-task-sync.md)拥有，旧记录缺字段不能按null继续消费。
 
 ## 当前交付边界与验证
 
-本契约的服务端字段、POST/PATCH、任务筛选、人员资源，以及 Web 负责人交互和 schema 4 消费已实现。CLI 已消费必填 nullable assignedTo，创建时省略负责人默认使用当前认证账号，显式 UUID 可指定其他人；服务端不强制这个默认值。CLI 还支持设置/清空、当前 ID 展示及 UUID/me/unassigned 的 list 筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有。本人自动领取规则已实现，其资格与既有执行授权分离由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有。
+本契约的服务端字段、POST/PATCH、任务筛选、人员资源，以及 Web 负责人交互和缓存消费已实现。CLI 已消费必填 nullable assignedTo，创建时省略负责人默认使用当前认证账号，显式 UUID 可指定其他人；服务端不强制这个默认值。CLI 还支持设置/清空、当前 ID 展示及 UUID/me/unassigned 的 list 筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有。本人自动领取规则已实现，其资格与既有执行授权分离由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有。
 
-验证覆盖原始 JSON 字段与白名单、三套任务投影、nullable 及规范化、实际/等值/陈旧版本、执行中拒绝、全部保留写入、真实项目锁竞态及回滚。查询验证多页过滤、完整游标 scope、版本隔离和权限；目录验证两种模式的资格、覆盖、隐私、资料缺失、快照一致性及失败优先级。完整规模的查询计划和响应样本由显式本地压力入口运行，绑定被测修订；常规 CI 保留查询正确性验证，不把样本量当作生产容量上限。Web还验证字段/schema4一并升级、迟到与失权fence、未知结果只读核对、完整图筛选及双语桌面/390px/320px交互。CLI 验证严格 nullable 字段、设置/清空参数、list 筛选与逐页 principal 绑定、精确版本和 JSON/可读输出。适用 Go、CLI 与 Web 门禁，以及 Go 严格大于 90% 的总语句覆盖率由仓库验证命令拥有。
+验证覆盖原始 JSON 字段与白名单、三套任务投影、nullable 及规范化、实际/等值/陈旧版本、执行中拒绝、全部保留写入、真实项目锁竞态及回滚。查询验证多页过滤、完整游标 scope、版本隔离和权限；目录验证两种模式的资格、覆盖、隐私、资料缺失、快照一致性及失败优先级。完整规模的查询计划和响应样本由显式本地压力入口运行，绑定被测修订；常规 CI 保留查询正确性验证，不把样本量当作生产容量上限。Web还验证负责人字段与当前缓存格式一并升级、迟到与失权fence、未知结果只读核对、完整图筛选及双语桌面/390px/320px交互。CLI 验证严格 nullable 字段、设置/清空参数、list 筛选与逐页 principal 绑定、精确版本和 JSON/可读输出。适用 Go、CLI 与 Web 门禁，以及 Go 严格大于 90% 的总语句覆盖率由仓库验证命令拥有。

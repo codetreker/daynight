@@ -7,7 +7,7 @@ import { parseTokenExpiryDraft, tokenExpiryDraft } from "../src/features/managem
 import { createLocaleRender } from "./helpers/renderWithLocale";
 
 const render = createLocaleRender("zh-CN");
-const user = { id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
 const token: PersonalAccessToken = { id: "00000000-0000-4000-8000-000000000002", name: "Daynight CLI", createdAt: "2026-10-25T08:00:00Z", expiresAt: null };
 const exactExpiry = "2099-10-25T12:34:56.123456789Z";
 const futureInput = "2099-11-26T10:30";

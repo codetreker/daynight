@@ -71,12 +71,14 @@ CLI 退出接口仅允许当前 PAT 撤销自身，不提供其他令牌管理�
 ### 项目准入与独立授权
 
 `ProjectGrant` 表达实际存储的 project/user ID、角色、真实版本和加入/更新时间。
-`ProjectParticipant` 是当前名册投影：`{userId,profile,effectiveRole,directGrant}`，
+`ProjectParticipant` 是当前名册投影：`{userId,profile,effectiveRole,inheritedFrom,directGrant}`，
 profile 是必填对象，name/email/avatarUrl 均必填且可为 null；不存在的 grant 明确为 null。
 当前查询将 owner Team 成员与 Project grant 的原始 user ID 合并去重，复用 canonical
 access relation 的有效角色，再 LEFT JOIN users；缺少或不匹配的规范用户行使整个读取
 成为完整性错误，不能用 INNER JOIN 隐藏来源。只有继承权限的人返回真实 participant
-与 `directGrant:null`，不构造可写 grant 或合成版本。
+与 `directGrant:null`，不构造可写 grant 或合成版本。继承来源以
+`inheritedFrom:{team:TeamRef,role}` 表达，无继承来源时明确为 null。`TeamRef` 是
+`{id,kind,name}`：kind 为 personal/ordinary，Personal name 为 null，普通 Team 保留原始名称。
 
 `ProjectMember` 仍是 grant 与 nullable 资料的内部直接关系投影，供现有授权目标检查、
 邀请及其他尚未改变的运行时调用使用；邀请 HTTP 结果保留其既有扁平 DTO。
@@ -85,7 +87,8 @@ access relation 的有效角色，再 LEFT JOIN users；缺少或不匹配的规
 [participant 决策](../../.agents/notes/implemented/architecture/2026-11-04-project-participant-projection.md)
 拥有资料、有效角色与可写记录分离的原因及范围。
 
-`ProjectAccess` 表达当前主体的 project/user ID、有效准入角色和可空 `DirectGrant`。
+`ProjectAccess` 的内部模型保存当前主体的 project/user ID、真实归属、owner Team、
+可空 Team role、有效准入角色和可空 `DirectGrant`。
 它没有独立的可写版本或存储时间；嵌入的 grant 保留自己实际的角色、版本与时间。
 `RequireProjectRead`、`RequireProjectWrite` 及 Worker 的非 claim owner 管理员检查
 消费该投影。Session relay 的共同项目准入也在原 raw transaction 中调用
@@ -104,11 +107,20 @@ Thread 写入通过同一存储所有者的 `store.LockProjectAuthorization` 取
 拥有完整锁序、存在性分类和提交前凭据重验。
 
 `GET /api/v1/projects/{projectId}/access` 返回当前主体的
-`{effectiveRole,directGrant}`，两个键必填。grant 为 null 或完整的
-`{projectId,userId,role,version,createdAt,updatedAt}`；只有继承权限时 grant 为 null，
-缺失准入按原规则拒绝。版本是正 int64 JSON number，时间为 UTC。
-API 不返回完整名册或个人资料，客户端核对响应 principal 及存在的 grant 归属。
-TaskSync 顶层 `actorAccess` 使用相同 DTO 和同一读取快照，空 delta 也包含它。
+`{projectId,ownerTeam,ownership,effectiveRole,teamRole,directGrant,canTransfer}`，全部键必填。
+`ownership:{teamId,version}` 对应真实归属，ownerTeam 是同一 Team 的 TeamRef。
+teamRole 为 null/member/admin，directGrant 为 null 或完整的
+`{projectId,userId,role,version,createdAt,updatedAt}`；effectiveRole 是两种实际来源的最大值，
+canTransfer 仅当 teamRole 为 admin 时为 true。无准入按原规则拒绝，不生成空角色。
+版本是正 int64 JSON number，时间为 UTC。此读取不返回完整名册或个人资料。
+客户端核对响应 principal、projectId、owner/ownership 一致性及存在的 grant 归属。
+
+Project 创建、详情、列表、图与 task-sync 的内在 Project 均必填 ownership，不能回退旧格式。
+GET Project 另带同一快照的新鲜 access；列表、图与持久缓存只保存内在字段。
+TaskSync 顶层 actorAccess 使用同一 DTO 和读取快照，空 delta 也包含它。
+members 返回 `{items,actorAccess}`，成员资料与本人 access 属于同一读取快照；Web 经既有
+身份、project、generation 和请求观察次序屏障发布 actorAccess，不能用独立读取的旧角色
+授权新名册。CLI 的 roster facade 校验完整 envelope 后保留其 participant 数组返回值。
 [当前准入投影决策](../../.agents/notes/implemented/architecture/2026-11-03-project-access-projection.md)
 记录内存所有权、刷新与资料读取分离的原因。
 
@@ -267,7 +279,7 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | GET /api/v1/auth/providers | 公开 App 范围 provider 发现；真实 SDK 投影当前权威交集。 |
 | GET /api/v1/auth/login?provider=... | 创建 pending 并跳转 UniAuth。 |
 | GET {配置 callback 路径} | 校验/消费 pending、领取身份、建立 session；只注册配置路径。 |
-| GET /api/v1/me | 当前用户最小资料。 |
+| GET /api/v1/me | 当前用户最小资料及必填 personalTeam:TeamRef；读取真实 Personal 关系并校验 owner admin。 |
 | GET / | 交付同一内嵌页面，显示公开推广页；可取消身份提示只改变导航，不授予私有访问。 |
 | GET /login | 交付同一内嵌页面，显示独立登录或将已有会话替换到有效目标。 |
 | GET /projects | 交付同一内嵌页面，认证后显示项目列表。 |
@@ -280,8 +292,8 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | POST /api/v1/auth/device/logout | 当前 Bearer PAT 撤销自身，浏览器会话不能调用。 |
 | 现有 project/task/graph/property/attachment API | session 或 PAT；业务 service 检查当前项目成员。 |
 | PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与三状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
-| GET .../projects/{id}/access | 当前主体的有效角色和可空独立授权；无资料，要求当前项目准入。 |
-| GET .../projects/{id}/members | 任一有效成员读取 items participant：最小 nullable 资料、有效 role 和可空真实 directGrant。 |
+| GET .../projects/{id}/access | 当前主体的真实归属、owner Team、双来源有效角色与 canTransfer；要求当前项目准入。 |
+| GET .../projects/{id}/members | 任一有效成员读取 items participant 和同快照 actorAccess；资料与继承来源不授予 Team 目录访问权。 |
 | PATCH .../projects/{id}/settings | admin，锁后复核角色与精确设置 version，返回完整 Project。 |
 | PATCH/DELETE .../members/{userId} | admin；携带真实 grant version 与必填 expectedUserId，PATCH 另含存储 role；成功分别返回 ProjectGrant / 204。 |
 | GET/POST .../projects/{id}/invitations、DELETE .../{inviteId} | admin，创建一次显示链接，删除撤销。 |
@@ -317,7 +329,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 具体数据和读取机制由[计时架构](daynight-task-timing.md)与[Web 架构](daynight-web.md#项目执行提醒设置)拥有。
 成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。
 401/换账号使共享请求 generation 失效并卸载旧项目和附件内容，
-失败不伪装成空列表。participant 的 nested directGrant.version 只在声明的资源路径无损解码，
+失败不伪装成空列表。ownership.version、settings.version 与 nested directGrant.version 只在声明的资源路径无损解码，
 角色修改/移除以 bigint 提交真实 grant 观察值。其 JSON 与 204 响应均核对当前请求绑定的 principal；
 身份错配清理旧 scope 并重验。已发送而未确认的授权写入关闭旧确认，保留 unknown 和读取当前状态入口；
 读取失败继续阻止写入，成功读取可建立新观察供重新审阅，不能据此声称找回原提交回执。
@@ -541,6 +553,6 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 ## 交付边界
 
 真实 Personal 归属、存量迁移、登录与项目 writer、双来源准入及 Thread 强 fence 共同成立。
-普通 Team 管理、邀请与转移，以及 ownership/完整来源的公开字段保持各自的协议和功能所有权；
-现有公开 access/participant 已用真实 nullable grant 表达继承访问，无占位来源或旧格式回退。
+普通 Team 管理、邀请与转移保持各自的功能所有权；当前 Project、access 与 participant
+公开真实 ownership 和完整权限来源，无占位来源或旧格式回退。
 可信同源 HTML 保持原权限模型，不引入预览安全系统。K1 和已准入传输语义保持。

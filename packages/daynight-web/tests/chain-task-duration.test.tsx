@@ -17,7 +17,7 @@ const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({ ass
 });
 const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot => {
   const graph: TaskGraph = {
-    project: { id: 'project', name: 'Project', repoUrl: 'https://example.com/repo', createdAt: start, updatedAt: start,
+    project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: 'project', name: 'Project', repoUrl: 'https://example.com/repo', createdAt: start, updatedAt: start,
       settings: { version: 1n, executionWarningMinutes: 1 } },
     observedAt: at(elapsed), tasks: [task('Goal', { dependsOn: [] }), ...tasks],
     summary: { total: tasks.length + 1, todo: tasks.filter((item) => item.status === 'todo').length,

@@ -47,11 +47,16 @@ func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string)
 	var ownershipID, teamID, ownerTeamID, accessUserID, profileID *string
 	var role *core.ProjectRole
 	var grant nullableProjectGrant
-	destinations := []any{&id, &ownershipID, &teamID, &ownerTeamID, &accessUserID, &profileID, &role}
-	err := tx.QueryRow(ctx, `SELECT p.id::text,o.project_id::text,o.team_id::text,t.id::text,a.user_id::text,u.id::text,a.role,
+	var ownerName, personalUserID *string
+	var ownershipVersion *int64
+	var ownershipUpdatedAt *time.Time
+	var teamRole *core.ProjectRole
+	destinations := []any{&id, &ownershipID, &teamID, &ownerTeamID, &accessUserID, &profileID, &role, &ownerName, &personalUserID, &ownershipVersion, &ownershipUpdatedAt, &teamRole}
+	err := tx.QueryRow(ctx, `SELECT p.id::text,o.project_id::text,o.team_id::text,t.id::text,a.user_id::text,u.id::text,a.role,t.name,t.personal_user_id::text,o.version,o.updated_at,m.role,
         g.project_id::text,g.user_id::text,g.role,g.version,g.created_at,g.updated_at
         FROM projects p LEFT JOIN project_ownership o ON o.project_id=p.id
         LEFT JOIN teams t ON t.id=o.team_id
+        LEFT JOIN team_members m ON m.team_id=o.team_id AND m.user_id=$2
         LEFT JOIN (`+projectAccessRelation+`) a ON a.project_id=p.id AND a.user_id=$2
         LEFT JOIN users u ON u.id=a.user_id
         LEFT JOIN project_grants g ON g.project_id=p.id AND g.user_id=$2
@@ -68,7 +73,14 @@ func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string)
 	if profileID == nil || *profileID != *accessUserID {
 		return core.ProjectAccess{}, queryError("read project access", fmt.Errorf("project access profile is missing or inconsistent"))
 	}
-	return core.ProjectAccess{ProjectID: id, UserID: *accessUserID, Role: *role, DirectGrant: grant.value()}, nil
+	kind := "ordinary"
+	if personalUserID != nil {
+		kind = "personal"
+	}
+	return core.ProjectAccess{ProjectID: id, UserID: *accessUserID, Role: *role, DirectGrant: grant.value(),
+		OwnerTeam: core.TeamRef{ID: *ownerTeamID, Kind: kind, Name: ownerName},
+		Ownership: core.ProjectOwnership{TeamID: *teamID, Version: *ownershipVersion, UpdatedAt: ownershipUpdatedAt.UTC()},
+		TeamRole:  teamRole, CanTransfer: teamRole != nil && *teamRole == core.ProjectAdmin}, nil
 }
 
 // LockProjectAuthorization stabilizes ownership and each real source until commit.
@@ -76,9 +88,10 @@ func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string)
 // ordinary writes acquire Project before Task. Source locks use a fixed order.
 func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID string) (core.ProjectAccess, error) {
 	var teamID string
-	var ownerTeamID *string
-	err := tx.QueryRow(ctx, `SELECT o.team_id::text,t.id::text FROM project_ownership o
-        LEFT JOIN teams t ON t.id=o.team_id WHERE o.project_id=$1 FOR SHARE OF o`, projectID).Scan(&teamID, &ownerTeamID)
+	var ownerTeamID, ownerName, personalUserID *string
+	var ownership core.ProjectOwnership
+	err := tx.QueryRow(ctx, `SELECT o.team_id::text,t.id::text,t.name,t.personal_user_id::text,o.version,o.updated_at FROM project_ownership o
+        LEFT JOIN teams t ON t.id=o.team_id WHERE o.project_id=$1 FOR SHARE OF o`, projectID).Scan(&teamID, &ownerTeamID, &ownerName, &personalUserID, &ownership.Version, &ownership.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1)`, projectID).Scan(&exists); err != nil {
@@ -119,7 +132,15 @@ func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID 
 	if teamRole != nil && *teamRole == core.ProjectAdmin || directGrant != nil && directGrant.Role == core.ProjectAdmin {
 		role = core.ProjectAdmin
 	}
-	return core.ProjectAccess{ProjectID: projectID, UserID: userID, Role: role, DirectGrant: directGrant}, nil
+	kind := "ordinary"
+	if personalUserID != nil {
+		kind = "personal"
+	}
+	ownership.TeamID = teamID
+	ownership.UpdatedAt = ownership.UpdatedAt.UTC()
+	return core.ProjectAccess{ProjectID: projectID, UserID: userID, Role: role, DirectGrant: directGrant,
+		OwnerTeam: core.TeamRef{ID: *ownerTeamID, Kind: kind, Name: ownerName}, Ownership: ownership,
+		TeamRole: teamRole, CanTransfer: teamRole != nil && *teamRole == core.ProjectAdmin}, nil
 }
 
 func (tx *ThreadTx) LockProjectAuthorization(ctx context.Context, principal core.Principal, projectID string) (core.ProjectAccess, error) {
