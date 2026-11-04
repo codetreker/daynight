@@ -448,7 +448,9 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 操作。[语言设计](daynight-web-i18n.md)拥有公共机制，鉴权组件遵守相同状态规则。
 
 邀请入口 /invitations#<secret> 和 /team-invitations#<secret> 读取后立即清除 fragment，以 tab 的临时 sessionStorage
-跨登录保存，确认/取消/失效后删除；秘密不进请求路径/Referer/日志。一次性 token/
+跨登录保存，确认/取消/失效后删除；捕获时同步清理导航快照及 history marker，
+未编号历史条目的清理 replace 开始新 segment，同标签再次打开也重新捕获。
+秘密不进请求路径/Referer/日志。一次性 token/
 邀请复制失败可恢复，关闭前清楚提示无法再次读取。界面验证覆盖桌面、窄屏、长内容、加载、空、错误、
 失效、禁用和键盘焦点。
 
