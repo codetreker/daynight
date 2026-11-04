@@ -185,7 +185,11 @@ Task 与 Test 共用 `SessionView`、Session client、timeline 和 composer。`S
 
 `SessionView` 顶部及 `SessionActivity` 底部状态、composer 的权限入口和主发送/中断按钮、timeline 内建工具类型只读取消息模块导出的英语标签子集，固定文本局部标为 `lang="en"`。同一消息键在其他位置仍可本地化，例如操作回执中的 unknown、归档正文和交互卡 pending。组件不替换整份消息目录或重建语言 Provider，状态选择及操作 gating 沿用既有逻辑。具体语言取舍见[Session 英语操作标签决策](../../.agents/notes/implemented/bug-fix/2026-11-04-english-session-operation-labels.md)。
 
-Codex 的 `subAgentActivity` 投影为 `tool_call`，以启动、交互、中断的操作名称和子代理路径呈现，保留原生 item 身份与子代理 thread ID。状态跟随父会话 item 生命周期，不表示子代理任务结果。浏览器对旧 `unsupported_native_item` 条目验证精确前缀与 JSON 中的类型、非空 item ID 后，以相同操作名称和折叠元数据显示；旧错误没有完整 item 生命周期，因此不显示推断状态。该兼容仅影响渲染，不改写日志、归档或游标，也不读取子代理会话。选择理由见[子代理活动决策](../../.agents/notes/implemented/bug-fix/2026-11-03-codex-subagent-activity.md)。
+Codex 的 `subAgentActivity` 投影为 `tool_call`，以启动、交互、中断的操作名称和子代理路径呈现，保留原生 item 身份与子代理 thread ID。状态跟随父会话 item 生命周期，不表示子代理任务结果。浏览器通过共享纯函数 `legacySubagentActivity` 对旧 `unsupported_native_item` 条目验证精确前缀与 JSON 中的类型、非空 item ID 后，以相同操作名称和折叠元数据显示；旧错误没有完整 item 生命周期，因此不显示推断状态。解析失败或缺少必要字段的条目仍作为原始错误呈现。该兼容仅影响显示分类与渲染，不改写日志、归档或游标，也不读取子代理会话。选择理由见[子代理活动决策](../../.agents/notes/implemented/bug-fix/2026-11-03-codex-subagent-activity.md)。
+
+`task-agent-session/display-mode.ts` 提供独立的 `SessionDisplayMode`（`standard | conversation`）、`DEFAULT_SESSION_DISPLAY_MODE`（`conversation`）和 `selectSessionDisplayEntries(entries, mode)`。selector 接受只读条目数组，按原顺序返回原条目引用，不修改消息 parts、修订、资源或 Session 状态，也不触发资源读取、网络及 Provider 操作。Standard 仅排除正文为空或全空白的 reasoning。Conversation 保留用户/助手消息的完整 parts、todo、所有状态的 interaction、真实 error（包括取消和中断）及计划工具；隐藏 reasoning、compaction、普通工具和被共享函数确认为合法旧格式子代理活动的 error。失败的普通工具仍按工具分类。
+
+计划工具只按名称最后一个 `.` 分段精确匹配 `update_plan`、`TodoWrite`、`todo_write`、`EnterPlanMode`、`ExitPlanMode`、`enter_plan_mode`、`exit_plan_mode`、`TaskCreate`、`TaskUpdate`、`TaskList`、`TaskGet`；不忽略大小写、不去除空白，也不从参数或输出推断类型。所有 timeline kind 均显式分类，新增 kind 必须补充分类决定。当前生产入口尚未消费 selector 或默认常量，`SessionTimeline` 仍保留原有非空 reasoning 过滤及完整时间线；模式偏好、菜单、过滤分页和切换滚动未接入。模块边界与接入限制见[显示分类决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-classification.md)。
 
 滚动状态区分跟随和阅读。触摸起点仅用于检测上读方向，轻点不改变模式；非编辑控件的上读按键、旧内容焦点和脚注跳转可暂停跟随。宽度变化后优先按可见文本位置恢复，找不到该文本时退回稳定条目锚点。分页、inactive 页面和返回最新沿用同一滚动状态，不能用布局变化推断用户恢复跟随。
 

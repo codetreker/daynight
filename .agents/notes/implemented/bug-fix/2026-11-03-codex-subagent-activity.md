@@ -24,6 +24,9 @@ no inferred lifecycle status. Invalid payloads and unrelated errors retain their
 original error presentation. Stored entries, sequence and cursor state remain
 unchanged. This follows the presentation-only history correction used for
 [empty reasoning](2026-10-28-session-empty-reasoning-and-tool-rows.md).
+The renderer and display selector share this recognition through a pure helper;
+the [display classification decision](../architecture/2026-11-04-session-display-classification.md)
+defines how valid legacy activities participate in visibility selection.
 
 ## Alternatives
 
