@@ -42,7 +42,7 @@ it("clears persisted null-ownership details before admitting the same task versi
   await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
   expect((await connection.get("details", [userId, projectId, taskId]))!.detail.properties).toHaveProperty("worker", null);
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(5);
+  expect(TASK_CACHE_SCHEMA).toBe(6);
   expect(await current.getAll("details")).toEqual([]);
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
 });
@@ -110,8 +110,40 @@ it.each([1, 2, 3, 4])("rebuilds schema %i project and task formats before admitt
   expect((await connection.get("projects", [userId, projectId]))!.project).not.toHaveProperty("ownership");
   if (oldVersion < 4) expect((await connection.get("details", [userId, projectId, taskId]))!.detail).not.toHaveProperty("assignedTo");
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(5);
+  expect(TASK_CACHE_SCHEMA).toBe(6);
   expect(failure).toHaveBeenCalledWith(expect.objectContaining({ category: "versionchange" }));
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
   for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);
+});
+
+it("adds persistent profiles to the shipped ownership-bearing schema 5 without rebuilding task data or fences", async () => {
+  const old = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 5, { upgrade(database) {
+    database.createObjectStore("userScopes", { keyPath: "userId" });
+    database.createObjectStore("projects", { keyPath: ["userId", "projectId"] }).createIndex("by-user", "userId");
+    for (const name of ["summaries", "details"] as const) {
+      const store = database.createObjectStore(name, { keyPath: ["userId", "projectId", "taskId"] });
+      store.createIndex("by-user", "userId"); store.createIndex("by-project", ["userId", "projectId"]);
+    }
+  } });
+  const userId = "10000000-0000-4000-8000-000000000001", userFence = "20000000-0000-4000-8000-000000000001";
+  const projectId = "30000000-0000-4000-8000-000000000001", taskId = "40000000-0000-4000-8000-000000000001";
+  const detail = detailFixture(projectId, taskId);
+  const project = { ownership: { teamId: "50000000-0000-4000-8000-000000000001", version: 9_007_199_254_740_993n },
+    id: projectId, name: "Project", repoUrl: "https://example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: detail.createdAt, updatedAt: detail.updatedAt };
+  const manifest: TaskCacheSchema["projects"]["value"] = { userId, projectId, userFence, cacheGeneration: userFence, state: "active", invalidatedBy: null,
+    epoch: userFence, project, maxUpdatedAt: detail.updatedAt, taskCount: 1, edgeCount: 0 };
+  const { ready: _ready, blockedBy: _blockedBy, ...intrinsicDetail } = detail;
+  const { projectId: _owner, title, description: _body, ...summaryFields } = intrinsicDetail;
+  const summary: TaskCacheSchema["summaries"]["value"] = { userId, projectId, taskId, summary: { ...summaryFields, titlePreview: title, titleTruncated: false } };
+  const detailRecord = { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail: intrinsicDetail, byteSize: 100, lastUsedAt: 1 };
+  await old.put("userScopes", { userId, userFence });
+  await old.put("projects", manifest); await old.put("summaries", summary); await old.put("details", detailRecord);
+  expect([...old.objectStoreNames]).not.toContain("profiles");
+  old.close();
+  const current = await cache().open();
+  expect([...current.objectStoreNames]).toContain("profiles");
+  expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
+  expect(await current.get("projects", [userId, projectId])).toEqual(manifest);
+  expect(await current.get("summaries", [userId, projectId, taskId])).toEqual(summary);
+  expect(await current.get("details", [userId, projectId, taskId])).toEqual(detailRecord);
 });

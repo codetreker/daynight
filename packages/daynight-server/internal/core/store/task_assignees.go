@@ -2,6 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
@@ -35,7 +38,29 @@ func taskAssigneeProfile(userID string, profileID, name, avatarURL *string, hasP
 	if profileID == nil || *profileID != userID {
 		return core.TaskAssignee{}, fmt.Errorf("task assignee profile is missing or inconsistent")
 	}
-	return core.TaskAssignee{UserID: userID, Name: name, AvatarURL: avatarURL, HasProjectAccess: hasProjectAccess}, nil
+	return core.TaskAssignee{UserID: userID, Version: taskAssigneeContentVersion(userID, name, avatarURL), Name: name, AvatarURL: avatarURL, HasProjectAccess: hasProjectAccess}, nil
+}
+
+func taskAssigneeContentVersion(userID string, name, avatarURL *string) string {
+	values := []*string{&userID, name, avatarURL}
+	size := len(values) * 9
+	for _, value := range values {
+		if value != nil {
+			size += len(*value)
+		}
+	}
+	content := make([]byte, 0, size)
+	for _, value := range values {
+		if value == nil {
+			content = append(content, 0)
+		} else {
+			content = append(content, 1)
+			content = binary.BigEndian.AppendUint64(content, uint64(len(*value)))
+			content = append(content, *value...)
+		}
+	}
+	digest := sha256.Sum256(content)
+	return hex.EncodeToString(digest[:])
 }
 
 func (s *Snapshot) TaskAssignees(ctx context.Context, projectID string) (core.TaskAssignees, error) {

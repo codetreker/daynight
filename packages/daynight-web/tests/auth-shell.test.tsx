@@ -449,7 +449,7 @@ describe("authenticated application shell", () => {
       const dialog = screen.getByRole('dialog');
       await waitForCacheUi(() => expect(within(dialog).getByText('Alice-only private detail')).toBeInTheDocument());
       serverUserId = otherId;
-      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
       await waitForCacheUi(() => expect(meCalls).toBe(2));
       expect(identityFinished).toBe(false);
       expect(recheckViews).toEqual([{ authenticatedShell: false, privateDetail: false }]);
@@ -460,7 +460,7 @@ describe("authenticated application shell", () => {
       expect(screen.queryByRole('link', { name: '账户设置：Alice' })).toBeNull();
       expect(screen.queryByRole('heading', { name: 'Bob 的项目' })).toBeNull();
       expect(screen.getByRole('heading', { name: '正在确认登录状态' })).toBeInTheDocument();
-      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
       expect(fetcher.mock.calls.filter(([url]) => isTaskSync(url))).toHaveLength(2);
       expect(meCalls).toBe(2);
       await act(async () => { identityFinished = true; finishIdentity(json(user(otherId, 'Bob'))); });
@@ -958,7 +958,7 @@ describe("authenticated application shell", () => {
       expect(screen.getByRole("heading", { name: "私有项目" })).toBeInTheDocument();
     });
     expired = true;
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await vi.waitFor(async () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       expect(screen.getByRole("heading", { name: "登录你的工作空间" })).toBeInTheDocument();

@@ -397,7 +397,7 @@ describe('project task views', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     graphRequest.mockResolvedValueOnce(snapshot([seed(canonicalTask(3))])).mockResolvedValueOnce(snapshot([seed(canonicalTask(3)), seed(canonicalTask(4), 'todo', [canonicalTask(3)])]));
     mount(); await screen.findByRole('tab', { name: '独立任务' }); const { trigger, dialog } = await openStandalone(canonicalTask(3));
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await screen.findByRole('heading', { name: '暂无独立任务' });
     expectUnfinishedCounts(2, 0);
     expect(trigger.isConnected).toBe(false); expect(dialog).toBeVisible();
@@ -416,7 +416,7 @@ describe('project task views', () => {
     await waitFor(() => expect(document.querySelector('.task-detail-dialog')).toBeVisible());
     const dialog = document.querySelector<HTMLElement>('.task-detail-dialog')!;
     await within(dialog).findByRole('heading', { name: `任务 ${canonicalTask(1)}` });
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await screen.findByRole('heading', { name: '暂无任务链' }); expect(dialog).toBeVisible();
     expectUnfinishedCounts(0, 2);
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' }); await waitFor(() => expect(tab('chains')).toHaveFocus());
@@ -1087,7 +1087,7 @@ describe('status-first project presentation', () => {
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     expect(overviewTitles()).toEqual([title(1), '独立任务', title(3), title(5)]);
     if (refresh === 'manual') fireEvent.click(screen.getByRole('button', { name: '刷新' }));
-    else await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    else await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(overviewTitles()).toEqual([title(3), '独立任务', title(5), title(1)]));
     selectTasks();
     expect(presentedIds('standalone')).toEqual([102, 103, 101].map(canonicalTask));

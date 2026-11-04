@@ -38,7 +38,7 @@ func taskAssigneesRequest(request *http.Request) (service.TaskAssigneesRequest, 
 func taskAssigneesResponse(result core.TaskAssignees) api.TaskAssignees {
 	response := api.TaskAssignees{Items: make([]api.TaskAssignee, 0, len(result.Items)), UnresolvedUserIDs: append([]string{}, result.UnresolvedUserIDs...)}
 	for _, person := range result.Items {
-		response.Items = append(response.Items, api.TaskAssignee{UserID: person.UserID, Name: person.Name, AvatarURL: person.AvatarURL, HasProjectAccess: person.HasProjectAccess})
+		response.Items = append(response.Items, api.TaskAssignee{UserID: person.UserID, Version: person.Version, Name: person.Name, AvatarURL: person.AvatarURL, HasProjectAccess: person.HasProjectAccess})
 	}
 	return response
 }

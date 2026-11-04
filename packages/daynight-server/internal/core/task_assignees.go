@@ -2,8 +2,15 @@ package core
 
 type TaskAssignee struct {
 	UserID           string
+	Version          string
 	Name             *string
 	AvatarURL        *string
+	HasProjectAccess bool
+}
+
+type TaskAssigneeVersion struct {
+	UserID           string
+	Version          string
 	HasProjectAccess bool
 }
 

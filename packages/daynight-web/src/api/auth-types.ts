@@ -46,8 +46,14 @@ export type ProjectAccess = {
   readonly directGrant: ProjectGrant | null;
 };
 
+export type ProjectPersonVersion = {
+  readonly userId: string;
+  readonly version: string;
+  readonly hasProjectAccess: boolean;
+};
 export type ProjectPerson = {
   readonly userId: string;
+  readonly version: string;
   readonly name: string | null;
   readonly avatarUrl: string | null;
   readonly hasProjectAccess: boolean;

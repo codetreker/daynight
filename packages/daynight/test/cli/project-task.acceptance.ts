@@ -1,3 +1,4 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { readWorkerClaim } from "../../src/api/task-properties.js";
 import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -13,7 +14,7 @@ import { parse } from "yaml";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 import type { Project, Task, WorkerClaim } from "../../src/api/types.js";
-import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
+import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const id = "a1b2c3d4-1111-4222-8333-123456789abc";
@@ -48,9 +49,9 @@ const scenarios: string[] = [];
 const requests: RequestRecord[] = [];
 const servers: Server[] = [];
 const children = new Map<ChildProcess, Promise<unknown>>();
-let installed: Awaited<ReturnType<typeof createInstalledCli>> | undefined;
+let installed: Awaited<ReturnType<typeof createAcceptanceCli>> | undefined;
 let preparationRoot: string | undefined;
-let preparation: Promise<Awaited<ReturnType<typeof createInstalledCli>>>;
+let preparation: Promise<Awaited<ReturnType<typeof createAcceptanceCli>>>;
 let behavior: Promise<void> | undefined;
 let completed = false;
 let failure: unknown;
@@ -62,7 +63,7 @@ beforeAll(async () => {
     preparationRoot = mkdtempSync(path.join(temporary, "Project task 中文 "));
     await rm(evidencePath, { force: true });
     cancellation.signal.throwIfAborted();
-    installed = await createInstalledCli({
+    installed = await createAcceptanceCli({
       temporaryRoot: preparationRoot, rootDirectory: path.join(preparationRoot, "installed"), signal: cancellation.signal,
       onSpawn: (child) => {
         const closed = new Promise<void>((resolve) => child.once("close", () => { children.delete(child); resolve(); }));
@@ -759,7 +760,7 @@ afterAll(async () => {
   if (servers.some((server) => server.listening)) cleanup.push(new Error("Installed project/task servers did not close."));
   const artifact = installed === undefined ? {} : { artifact: { packageVersion: installed.receipt.packageVersion, tarballSha256: installed.receipt.tarballSha256, entrySha256: installed.receipt.entrySha256, source: installed.receipt.source } };
   try {
-    await writeFile(evidencePath, `${JSON.stringify({ schemaVersion: 1, success: completed && failure === undefined && cleanup.length === 0 && removed && preparationRemoved, platform: process.platform, nodeVersion: process.version, ...artifact, scenarios, requests: requests.map(({ method, path: pathname }) => ({ method, path: pathname })), cleanup: { installationRemoved: removed, preparationRemoved, childrenExited: children.size === 0, serversClosed: servers.every((server) => !server.listening), errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(evidencePath, `${JSON.stringify({ schemaVersion: 1, success: completed && failure === undefined && cleanup.length === 0 && removed && preparationRemoved, platform: process.platform, nodeVersion: process.version, ...artifact, scenarios, requests: requests.map(({ method, path: pathname }) => ({ method, path: pathname })), cleanup: { runtimeRemoved: removed, preparationRemoved, childrenExited: children.size === 0, serversClosed: servers.every((server) => !server.listening), errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
   } catch (cause) { cleanup.push(cause); }
   if (cleanup.length !== 0) throw new AggregateError(failure === undefined ? cleanup : [failure, ...cleanup], "Installed project/task acceptance or cleanup failed.");
   if (failure !== undefined) throw failure;
