@@ -34,8 +34,10 @@ ordinary reading independently composable and gives Steps the same link,
 preview and keyboard ownership. Local pages mount at most 100 rows with global
 numbering and numeric navigation; paging does not change the service resource.
 Narrow layouts wrap the expanded tab set when height permits. At heights up to
-500px, one horizontally scrollable row preserves reading space and native focus
-reveals the keyboard target. The tab scroller does not widen the page.
+500px, one horizontally scrollable row preserves reading space. The tab owner
+reveals the target both on activation and after selection or locale layout;
+native focus alone can leave a partly visible tab clipped when selected text
+becomes wider. The tab scroller does not widen the page.
 
 ## Alternatives
 

@@ -24,6 +24,9 @@ export const TaskDetailPanels = ({ overview, steps, attachments, discussion, ses
   const id = useId();
   const tabId = (tab: TaskDetailTab) => `${id}-tab-${tab}`;
   const panelId = (tab: TaskDetailTab) => `${id}-panel-${tab}`;
+  const reveal = (tab: TaskDetailTab) => document.getElementById(tabId(tab))?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  // The selected font and translated label can widen a tab after native focus.
+  useLayoutEffect(() => { reveal(active); }, [id, active, messages]);
   const labels = { overview: messages.inspection.detail.overview, steps: messages.inspection.steps.title, attachments: messages.inspection.attachments.title, discussion: messages.inspection.discussion.title, session: 'Session' };
   const slots = { steps, attachments, discussion, session };
   const content = (tab: TaskDetailTab) => {
@@ -34,6 +37,7 @@ export const TaskDetailPanels = ({ overview, steps, attachments, discussion, ses
   const activate = (tab: TaskDetailTab) => {
     setActive(tab);
     document.getElementById(tabId(tab))!.focus();
+    reveal(tab);
   };
   const navigate = (event: KeyboardEvent<HTMLButtonElement>, tab: TaskDetailTab) => {
     let next: TaskDetailTab;
