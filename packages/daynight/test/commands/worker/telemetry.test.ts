@@ -17,7 +17,7 @@ vi.mock("../../../src/commands/worker/herdr/instance.js", async (original) => ({
 const operations: Operation[] = [];
 const operation = (): Operation => { const result = createOperation({ limits: { totalMs: 15_000 } }); operations.push(result); return result; };
 const cwd = path.resolve("startup-volume");
-const collector = () => createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux" });
+const collector = () => createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example" });
 const finish = async <T>(pending: Promise<T>, milliseconds = 210): Promise<T> => { await vi.advanceTimersByTimeAsync(milliseconds); return pending; };
 
 beforeEach(() => {
@@ -51,7 +51,7 @@ describe("Worker telemetry", () => {
   it("includes explicitly supplied assistant observations and preserves cleanup failures privately", async () => {
     const failure = new HerdrCommandCleanupError([new Error("private-token")], undefined);
     const assistantHost = { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: ["codex", "claude", "copilot"].map(provider => ({ provider: provider as "codex" | "claude" | "copilot", available: false, reason: "unavailable" as const, model: null, args: [] })) };
-    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: async () => ({ assistantHost, issues: [{ provider: "copilot" as const, reason: "unavailable" as const, error: failure }] }) } });
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: { collect: async () => ({ assistantHost, issues: [{ provider: "copilot" as const, reason: "unavailable" as const, error: failure }] }) } });
     const sample = await finish(instance.collect(operation()));
     expect(sample.telemetry.assistantHost).toEqual(assistantHost);
     expect(sample.issues).toEqual([{ component: "assistantHost_copilot", code: "unavailable", error: failure }]);
@@ -60,7 +60,7 @@ describe("Worker telemetry", () => {
 
   it("keeps a bounded assistant timeout report when the resource sampling deadline has elapsed", async () => {
     const assistantHost = { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: ["codex", "claude", "copilot"].map(provider => ({ provider: provider as "codex" | "claude" | "copilot", available: false, reason: "timeout" as const, model: null, args: [] })) };
-    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: async parent => {
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: { collect: async parent => {
       await new Promise(resolve => setTimeout(resolve, 5_001)); parent.check(); return { assistantHost, issues: [] };
     } } });
     const pending = instance.collect(operation());
@@ -169,7 +169,7 @@ describe("Worker telemetry", () => {
     mocks.version.mockImplementation(({ agent }: { agent: string }) => new Promise((resolve, reject) => {
       completions.set(agent, error => error === undefined ? resolve("1.0.0") : reject(error));
     }));
-    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: () => {
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: { collect: () => {
       if (mode === "synchronous throw") throw assistantFailure;
       return Promise.reject(assistantFailure);
     } } });
@@ -196,7 +196,7 @@ describe("Worker telemetry", () => {
     mocks.version.mockImplementation(() => new Promise((resolve, reject) => {
       completions.push(error => error === undefined ? resolve("1.0.0") : reject(error));
     }));
-    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: parent => new Promise((_, reject) => {
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: { collect: parent => new Promise((_, reject) => {
       const abort = () => reject(parent.signal.reason);
       parent.signal.addEventListener("abort", abort, { once: true });
       if (parent.signal.aborted) abort();

@@ -14,6 +14,7 @@ import { OperationError } from "../../../src/api/operation.js";
 import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
+import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
@@ -404,6 +405,46 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.events).toContainEqual(expect.objectContaining({ kind: "workspace-name-error", task: row, error: failure }));
     expect(f.events.some((event) => event.kind === "execution-error")).toBe(false);
     expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.store.getTask(row)).toEqual(row);
+  });
+
+  it("waits through native menus beyond the recovery limit and sends once when the same idle turn is released", async () => {
+    const f = await fixture(); const limited = { ...configuration, recoveryLimit: 0 };
+    const coordinator = createWorkerCoordinator({ ...f.options, globalConfiguration: limited, repositories: [{ project: f.project, configuration: limited }] });
+    await coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const pane = f.resources.get(row.claimId)!.panes[0]!; pane.status = "idle";
+    const original = f.tasks.submitPrompt.getMockImplementation()!;
+    let menuOpen = true;
+    f.tasks.submitPrompt.mockImplementation(async (...args) => { if (menuOpen) throw new HerdrInputBlockedError("menu"); return original(...args); });
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await coordinator.tick();
+      await eventually(() => expect(f.tasks.submitPrompt).toHaveBeenCalledTimes(attempt));
+    }
+    expect(f.events.filter(event => event.kind === "waiting" && event.message.includes("open menu"))).toHaveLength(1);
+    expect(f.events.filter(event => event.kind === "execution-error")).toEqual([]);
+    expect(pane).toMatchObject({ status: "idle", stateChangeSeq: 2 });
+    menuOpen = false;
+    await coordinator.tick(); await eventually(() => expect(f.tasks.submitPrompt).toHaveBeenCalledTimes(6));
+    await coordinator.tick();
+    expect(f.tasks.submitPrompt).toHaveBeenCalledTimes(6);
+    expect(pane.status).toBe("working");
+    expect(f.tasks.start).toHaveBeenCalledOnce();
+    await coordinator.shutdown();
+  });
+
+  it("keeps ordinary visible-read failures in the execution recovery budget", async () => {
+    const f = await fixture(); const limited = { ...configuration, recoveryLimit: 0 };
+    const coordinator = createWorkerCoordinator({ ...f.options, globalConfiguration: limited, repositories: [{ project: f.project, configuration: limited }] });
+    await coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    f.resources.get(row.claimId)!.panes[0]!.status = "idle";
+    const cause = new HerdrRpcError("visible read failed", { method: "agent.read", requestId: "read", submission: "unknown" });
+    const failure = new HerdrAgentActionError("The visible native input could not be read.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" });
+    f.tasks.submitPrompt.mockRejectedValue(failure);
+    await coordinator.tick(); await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error", error: failure })));
+    for (let attempt = 0; attempt < 3; attempt++) await coordinator.tick();
+    expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
+    await coordinator.shutdown();
   });
 
   it.each(["transport", "deadline"] as const)("keeps naming discovery %s failures outside a zero execution recovery budget", async (kind) => {

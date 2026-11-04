@@ -334,7 +334,7 @@ const earlyContainerCallback = async (value: Fixture, delays = { initializationM
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 3, runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha },
     ...(shard === undefined ? {} : { mode: 'functional', shard: { current: shard, total: 2 },
-      selection: (shard === 1 ? functionalScenarios.slice(0, Math.ceil(functionalScenarios.length / 2)) : functionalScenarios.slice(Math.ceil(functionalScenarios.length / 2))) }) }));
+      selection: shard === 1 ? functionalScenarios.slice(0, Math.ceil(functionalScenarios.length / 2)) : functionalScenarios.slice(Math.ceil(functionalScenarios.length / 2)) }) }));
   await writeFile(join(value.bin, 'docker'), '#!/bin/sh\nprintf \'%s\\n\' "$0 $*" >> "$DAYNIGHT_TEST_COMMAND_LOG"\nif [ "$1" != ps ]; then exit 91; fi\nprintf \'%s\\n\' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
   value.env = { ...value.env, DAYNIGHT_ACCEPTANCE_DIRECTORY: containerDirectory, DAYNIGHT_DEV_CI_RUN_ID: devCiRunId,
     DAYNIGHT_BASE_URL: 'http://127.0.0.1:12345' };

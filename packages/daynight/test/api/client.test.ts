@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { performance } from "node:perf_hooks";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, createApiClient, createOperation, DEFAULT_OPERATION_LIMITS, OperationError, parseApiJson, parseVersionArgument, stringifyApiJson } from "../../src/api/index.js";
@@ -512,13 +513,16 @@ describe("operation-scoped API access", () => {
   });
 
   it("checks the single request deadline after synchronous parsing stalls the timer", async () => {
+    const response = jsonResponse(project);
+    let elapsed = 0;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(performance, "now").mockImplementation(() => elapsed);
     const original = JSON.parse;
     const spy = vi.spyOn(JSON, "parse").mockImplementation((...args: Parameters<typeof JSON.parse>) => {
-      const until = performance.now() + 15;
-      while (performance.now() < until) { /* Keep the deadline timer from running during parsing. */ }
+      elapsed = 15;
       return original(...args);
     });
-    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(project)), operation({ limits: { requestMs: 10 } })).getProject(projectId)).rejects.toMatchObject({ cause: { kind: "request_timeout" } });
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response), operation({ limits: { requestMs: 10 } })).getProject(projectId)).rejects.toMatchObject({ phase: "protocol", cause: { kind: "request_timeout" } });
     expect(spy).toHaveBeenCalled();
   });
 

@@ -8,6 +8,7 @@ import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-st
 import type { HerdrInputBatch, HerdrInputTarget, HerdrInputWriteContext } from "../../../src/commands/worker/herdr/input-types.js";
 import { canonicalSessionJson, SessionV2Error } from "../../../src/session/v2/values.js";
 import type { SessionV2Message, SessionV2Payloads } from "../../../src/session/v2/types.js";
+import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const root = fileURLToPath(new URL("../../../../../.tmp/herdr-input/", import.meta.url));
 const cleanups: (() => void)[] = [];
@@ -35,6 +36,32 @@ const fixture = () => {
   return { store, filename, close, target, arbiter, writes, initial, control, input, advance: (ms: number) => { time += ms; wall += ms; }, execute: (fn: typeof execute) => { execute = fn; }, verify: (fn: typeof verify) => { verify = fn; } };
 };
 describe("durable Herdr input arbitration", () => {
+  it("persists known-menu no-write refusals while allowing a fresh initial attempt after dismissal", async () => {
+    const f = fixture(); const blocked = new HerdrInputBlockedError("menu");
+    f.verify(async () => { throw blocked; });
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await expect(f.initial()).rejects.toBe(blocked);
+      expect(f.arbiter.record()).toMatchObject({ state: "automation", initialOutcome: "pending", unknownInput: false });
+      expect(f.arbiter.record().operations.at(-1)?.result).toMatchObject({ state: "rejected", errorCode: "automation_suspended" });
+    }
+    expect(f.writes).toEqual([]);
+    expect(new Set(f.arbiter.record().operations.map(op => op.operationId)).size).toBe(5);
+    f.verify(async () => {});
+    expect((await f.initial()).state).toBe("transport_completed");
+    expect((await f.initial()).state).toBe("transport_completed");
+    expect(f.writes).toHaveLength(1);
+    expect(f.writes[0]?.payload).toMatchObject({ text: "original assignment" });
+  });
+
+  it("keeps a blocker discovered after native writing unknown without replay", async () => {
+    const f = fixture(); const blocked = new HerdrInputBlockedError("menu");
+    f.execute(async (batch, ctx) => { ctx.markWritten(); f.writes.push(batch); throw blocked; });
+    expect((await f.initial()).state).toBe("unknown");
+    expect(f.arbiter.record()).toMatchObject({ state: "suspended", initialOutcome: "unknown", unknownInput: true });
+    expect((await f.initial()).state).toBe("unknown");
+    expect(f.writes).toHaveLength(1);
+  });
+
   it("retains manual control across paste and Detach and suppresses automatic continuation", async () => {
     const f = fixture(); await f.initial();
     expect((await f.arbiter.control(f.control("acquire_control"))).result.state).toBe("transport_completed");

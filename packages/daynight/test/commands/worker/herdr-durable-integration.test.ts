@@ -13,6 +13,7 @@ import type { Task } from "../../../src/api/types.js";
 import { cleanupOperation } from "../../../src/commands/cleanup-operation.js";
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
+import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import type { createWorkerHerdr, HerdrAgentObservation, HerdrExecutionContext, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import { resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
 import { herdrLedgerHash, openHerdrLifecycleStore } from "../../../src/commands/worker/herdr/lifecycle-store.js";
@@ -44,7 +45,7 @@ const fixture = (realInspector = false) => {
   let task: Task = { id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: context.claimId, state: "active", userId: ownerId, workerId, machine: { id: uuid(8), name: "test-machine" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId: context.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-04T00:00:00Z" } } };
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
-  const settings = { nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
+  const settings = { nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
   let beforePromptGuard: (() => void) | undefined;
   let beforeLaunchRetry: (() => void) | undefined;
   let recoveryDelay: ((stage: "publish" | "state" | "prepare", signal: AbortSignal | undefined) => Promise<void>) | undefined;
@@ -189,7 +190,7 @@ const fixture = (realInspector = false) => {
           if (method === "ping") return { type: "pong", version: "0.9.5" };
           if (method === "session.snapshot") return { type: "session_snapshot", snapshot: { panes: [{ pane_id: binding.paneId, terminal_id: binding.terminalId, workspace_id: binding.workspaceId, tab_id: "tab" }] } };
           if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: local.shellPid, tty: "/dev/ttys001" } };
-          if (method === "pane.read") return { type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, tab_id: "tab", source: "visible", format: "text", truncated: false, text: settings.nativeDraft ? "› a pending draft" : "› Ask Codex to do anything\n gpt · /tmp/project" } };
+          if (method === "pane.read") return { type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, tab_id: "tab", source: "visible", format: request.purpose === "resume" ? "ansi" : "text", truncated: false, text: settings.nativeDraft ? "› a pending draft" : settings.nativeScreen } };
           throw new Error(`Unexpected readiness RPC: ${method}`);
         } } });
         if (request.purpose !== "manual" && settings.nativeDraft) throw new Error("The native composer now contains this batch's paste");
@@ -236,13 +237,39 @@ describe("durable Herdr facade with real SQLite", () => {
     f.settings.nativeReady = false;
     await expect(f.facade.tasks.submitPrompt(f.context, binding, "Unready completion", operation())).rejects.toThrow(/automation_suspended/);
     expect(f.settings.nativeWrites).toBe(4);
-    f.settings.nativeReady = true; f.settings.nativeDraft = true;
-    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Conflicting draft", operation())).rejects.toThrow(/automation_suspended/);
-    expect(f.settings.nativeWrites).toBe(4);
-    f.settings.nativeDraft = false;
+    f.settings.nativeReady = true;
     f.observed.set(f.read().runs[0]!.processes.find(value => value.role === "shell")!.pid, "changed");
     await expect(f.facade.tasks.submitPrompt(f.context, binding, "Replaced process", operation())).rejects.toThrow(/changed/);
     expect(f.settings.nativeWrites).toBe(4);
+  });
+  it("keeps repeated known-menu refusals pending and retries the original body after same-state dismissal", async () => {
+    const f = fixture(true); f.register(); const binding = await f.prepare();
+    const menu = "Select model\n› 1. GPT-6.1 Terra\nenter default · s session · esc back";
+    f.settings.nativeScreen = menu;
+    await expect(f.start(binding)).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    const input = openHerdrInputStore(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+    try {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await expect(f.facade.tasks.submitPrompt(f.context, binding, "Must not replace the original body", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+        expect(f.read()).toMatchObject({ initialAssignment: "pending", automationBlocked: false, initialPrompt: "Original managed assignment" });
+        expect(f.read().runs.at(-1)?.admission).toBeNull();
+        expect(input.get(f.read().sessionId)).toMatchObject({ state: "automation", initialOutcome: "pending", unknownInput: false });
+      }
+      expect(f.inputs).toEqual([]); expect(f.settings.nativeWrites).toBe(0); expect(f.launches).toHaveLength(1);
+      f.settings.nativeScreen = "Unknown normal layout without an empty-composer assertion";
+      await expect(f.facade.tasks.submitPrompt(f.context, binding, "Still not the initial body", operation())).resolves.toMatchObject({ submission: "submitted" });
+      expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+      expect(f.read()).toMatchObject({ initialAssignment: "transport_completed", automationBlocked: false });
+      f.settings.nativeScreen = menu;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await expect(f.facade.tasks.submitPrompt(f.context, binding, "Waiting continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+        expect(f.read().runs.at(-1)?.admission).toBeNull();
+      }
+      f.settings.nativeScreen = "Unknown normal layout without an empty-composer assertion";
+      await expect(f.facade.tasks.submitPrompt(f.context, binding, "Continuation after dismissal", operation())).resolves.toMatchObject({ submission: "submitted" });
+      expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }, { initial: false, body: "Continuation after dismissal" }]);
+      expect(f.settings.nativeStatus).toBe("idle"); expect(f.settings.nativeWrites).toBe(4);
+    } finally { input.close(); }
   });
   it("keeps manual control across detach and blocks continuation until explicit handback", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
@@ -265,6 +292,33 @@ describe("durable Herdr facade with real SQLite", () => {
     f.facade.input!.suspend(f.context);
     expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation())).toBe(false);
     expect(f.inputs).toHaveLength(1); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+  });
+  it("keeps manual menus usable and requires real styled empty input before explicit handback", async () => {
+    const f = fixture(true); f.register(); const binding = await f.prepare(); await f.start(binding);
+    const input = f.facade.input!, record = f.read();
+    const control = async (action: "acquire_control" | "resume_automation", id: number) => {
+      const state = input.state(f.context);
+      const request = { operationId: uuid(id), connectionEpoch: record.connectionEpoch!, controlEpoch: state.controlEpoch, action, browserClientId: uuid(101), leaseId: state.lease?.leaseId ?? null, draftHandled: action === "resume_automation", initialUnknownDisposition: null };
+      const actorUserId = uuid(5), requestDigest = createHash("sha256").update(canonicalSessionJson({ actorUserId, request })).digest("hex");
+      return input.control(f.context, { protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: record.sessionId, claimId: record.claimId, executionGeneration: "1", agentControlMode: "herdr", contentKind: "terminal_recording", type: "control_dispatch", payload: { actorUserId, requestDigest, request } }, operation());
+    };
+    f.settings.nativeScreen = "› 1. GPT-6.1 Terra\nenter default · s session · esc back";
+    expect((await control("acquire_control", 150)).controlState.state).toBe("manual");
+    input.suspend(f.context);
+    f.settings.nativeScreen = "› Ask Codex to do anything\n\n ? for shortcuts";
+    expect((await control("resume_automation", 151)).result.state).toBe("rejected");
+    expect(input.state(f.context).state).toBe("suspended");
+    f.settings.nativeScreen = "› \x1b[2mAsk Codex to do anything\x1b[0m\n\n ? for shortcuts";
+    expect((await control("resume_automation", 152)).controlState.state).toBe("automation");
+    expect(f.inputs).toHaveLength(1);
+  });
+  it("skips a known-menu cleanup notification while still stopping the original native run", async () => {
+    const f = fixture(true); f.register(); const binding = await f.prepare(); await f.start(binding);
+    f.settings.nativeScreen = "› 1. GPT-6.1 Terra\nenter default · s session · esc back";
+    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation())).toBe(false);
+    expect(f.inputs).toHaveLength(1); expect(f.settings.nativeWrites).toBe(2);
+    expect(f.read().runs.at(-1)?.admission).toBeNull();
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
   });
   it("sends eligible cleanup through the same input journal before controlled stop", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);

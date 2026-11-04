@@ -19,6 +19,7 @@ type BotDefinition struct {
 	ResolvedConfiguration BotConfiguration      `json:"resolvedConfiguration"`
 	RoleConfiguration     *BotRoleConfiguration `json:"roleConfiguration"`
 	SessionID             *string               `json:"sessionId"`
+	TestExecutionID       *string               `json:"testExecutionId"`
 	StartupResult         BotResult             `json:"startupResult"`
 	CreatedAt             time.Time             `json:"createdAt"`
 	UpdatedAt             time.Time             `json:"updatedAt"`

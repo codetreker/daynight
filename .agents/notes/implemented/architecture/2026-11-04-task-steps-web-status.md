@@ -53,4 +53,4 @@ readback preserves the uncertainty without inventing a result.
 
 Status changes require convergence of three independently returned resources,
 so synchronization or read failures remain visible and temporarily prevent
-further writes. Position writes reuse this owner as described in the [position decision](2026-11-04-task-steps-web-position.md). Content forms and deletion can reuse the same owner without introducing another submission gate.
+further writes. The [append form](2026-11-04-task-steps-web-add.md) and [position writes](2026-11-04-task-steps-web-position.md) reuse the same owner; editing and deletion can do so without another gate.
