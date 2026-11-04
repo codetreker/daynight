@@ -74,3 +74,27 @@ export const setTaskStepStatus = async (projectId: string, taskId: string, stepI
     return result;
   }, undefined, true);
 };
+
+export type AddStepInput = { readonly id: string; readonly title: string; readonly description: string; readonly status: StepStatus; readonly version: bigint };
+
+export const addTaskStep = async (projectId: string, taskId: string, input: AddStepInput, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  const target = input.id.toLowerCase();
+  if (!/^[0-9a-f]{8}$/.test(target) || !isTaskVersion(input.version) || !["todo", "in_progress", "done", "skipped"].includes(input.status) ||
+    !/[^\p{White_Space}]/u.test(input.title) || [input.title, input.description].some((value) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value))) throw new ApiError("protocol");
+  const path = `/api/v1/projects/${project}/tasks/${task}/steps`;
+  const response = await request(path, signal, {
+    method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId },
+    body: stringifyApiJson({ version: input.version, id: target, title: input.title, description: input.description, status: input.status }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 201) admission.onWriteConfirmed?.();
+  return json(response, signal, (value) => {
+    const result = parseTaskSteps(value, project, task);
+    const added = result.steps.at(-1);
+    if (response.status !== 201 || response.headers.get("Location") !== `${path}/${target}` || result.version !== input.version + 1n ||
+      added?.id !== target || added.title !== input.title || added.description !== input.description || added.status !== input.status || added.createdAt !== added.updatedAt) throw new ApiError("protocol", response.status);
+    return result;
+  }, undefined, true);
+};

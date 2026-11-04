@@ -13,6 +13,7 @@ export const useTaskSteps = (projectId: string, taskId: string, active: boolean)
   useEffect(() => { if (active) sessions.loadSteps(projectId, taskId); }, [sessions, projectId, taskId, active]);
   const retry = useCallback(() => { if (active) sessions.loadSteps(projectId, taskId, true); }, [sessions, projectId, taskId, active]);
   const setStatus = useCallback((stepId: string, status: StepStatus, version: bigint) => { sessions.setStepStatus(projectId, taskId, stepId, status, version); }, [sessions, projectId, taskId]);
+  const add = useCallback((stepId: string, title: string, description: string, status: StepStatus, version: bigint) => sessions.addStep(projectId, taskId, stepId, title, description, status, version), [sessions, projectId, taskId]);
   const reconcile = useCallback(() => { sessions.reconcile(projectId, taskId); }, [sessions, projectId, taskId]);
-  return { ...state, retry, mutation: detail.mutation, canSetStatus: active && sessions.canSetStepStatus(projectId, taskId), setStatus, reconcile };
+  return { ...state, retry, mutation: detail.mutation, canSetStatus: active && sessions.canSetStepStatus(projectId, taskId), canAdd: active && sessions.canSetStepStatus(projectId, taskId), setStatus, add, reconcile };
 };

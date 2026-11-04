@@ -4,6 +4,21 @@
 .steps-counts { color: #45516a; font-size: 11px; font-weight: 550; }
 .steps-refresh { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 6px; }
 .steps-refresh .spinner { width: 14px; height: 14px; }
+.steps-toolbar-actions { display: flex; align-items: center; gap: 8px; }
+.step-add-form { display: grid; gap: 12px; margin-top: 16px; padding: 16px; border: 1px solid #dce0e8; border-radius: 7px; background: #fcfcfe; min-width: 0; }
+.step-add-form label { display: grid; gap: 6px; color: #45516a; font-size: 11px; font-weight: 600; }
+.step-add-form input, .step-add-form select, .step-add-form textarea { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid #dce0e8; border-radius: 5px; padding: 8px; background: #fff; color: #344258; font: inherit; font-size: 12px; }
+.step-add-form textarea { min-height: 120px; resize: vertical; }
+.step-add-form input:focus-visible, .step-add-form select:focus-visible, .step-add-form textarea:focus-visible, .step-editor-heading button:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 2px; }
+.step-field-error { color: #a05252; font-size: 11px; margin: -6px 0 0; }
+.step-editor-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: #45516a; font-size: 11px; font-weight: 600; }
+.step-editor-heading div { display: flex; gap: 4px; }
+.step-editor-heading button { border: 0; border-radius: 4px; padding: 5px 8px; background: transparent; color: #737d8e; font: inherit; cursor: pointer; }
+.step-editor-heading button[aria-pressed=true] { background: #edf2ff; color: #4e74bd; }
+.step-add-preview { min-height: 120px; min-width: 0; padding: 10px; border: 1px solid #e9ecf2; border-radius: 5px; background: #fff; overflow: auto; }
+.step-add-preview > p { color: #929bac; font-size: 11px; }
+.step-add-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.step-add-actions .spinner { width: 12px; height: 12px; margin-right: 6px; }
 .steps-pagination { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; padding: 10px 0 12px; border-bottom: 1px solid #e9ecf2; background: #fff; }
 .steps-range { color: #737d8e; font-size: 11px; margin: 0; min-width: 0; }
 .steps-page-controls { display: flex; align-items: center; gap: 8px; flex: none; }

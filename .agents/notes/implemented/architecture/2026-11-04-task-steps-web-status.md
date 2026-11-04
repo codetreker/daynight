@@ -53,5 +53,5 @@ readback preserves the uncertainty without inventing a result.
 
 Status changes require convergence of three independently returned resources,
 so synchronization or read failures remain visible and temporarily prevent
-further writes. Content forms, ordering and deletion remain outside this slice;
-they can reuse the same owner without introducing another submission gate.
+further writes. The [append form](2026-11-04-task-steps-web-add.md) reuses the
+same owner; editing, ordering and deletion can do so without another gate.

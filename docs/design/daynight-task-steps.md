@@ -1,6 +1,6 @@
 # Task Steps 架构设计
 
-状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除，以及 CLI list/show、Add、Update、Set-status、Move、Delete 与 Web Steps 阅读和状态设置已实现；Agent 指令资源与其余 Web 写入交互保留已确认的目标架构。本文区分已实现机制与客户端目标。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。
+状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除，以及 CLI list/show、Add、Update、Set-status、Move、Delete 与 Web Steps 阅读、状态设置和末尾添加已实现；其余 Web 写入交互保留已确认的目标架构。本文区分已实现机制与客户端目标。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。
 
 ## 目标与边界
 
@@ -196,11 +196,13 @@ canonical skill 的 task-content 区分持久 Steps 与 Session 计划、工具�
 
 读取和准入均受身份、scope signal、缓存 generation、局部请求 generation 及版本下限约束。scope 的权限撤回事件和身份 retirement 同步取消读取并清除完整数组。集合 404 先读取父 Task，父仍可读时仅报告 Steps 错误；可信父 404 才调用既有 scope retirement。403 不推断项目撤权，410 交给共同父删除所有者：取消父读取并推进 generation，同时在父响应异步准入前后检查删除终态。晚到的父读取、待准入响应或已递交写入回执不能恢复已删除详情；同步快照替换 generation 时，以当前授权缓存索引识别已移除的 Task，并向视图发布删除终态，不能让滞后的图节点或 generation 门控掩成加载态。合法的新缓存 generation 仍按原恢复机制重新准入。
 
-64 MiB 集合不写入现有 TaskDetail LRU 或 IndexedDB，不改变其 schema。只读准入事务核对 ticket、generation 与当前摘要，不持久化集合。最后一个需要集合的视图退订且没有在途状态操作依赖时清空完整资源、未准入响应并取消其准入等待；隐藏面板只保留按 ID 的展开选择与页码，重新激活按需读取。
+64 MiB 集合不写入现有 TaskDetail LRU 或 IndexedDB，不改变其 schema。只读准入事务核对 ticket、generation 与当前摘要，不持久化集合。最后一个需要集合的视图退订且没有在途 Step 操作依赖时清空完整资源、未准入响应并取消其准入等待；隐藏面板保留展开选择、页码和草稿，重新激活按需读取。
 
-### 已实现的状态写入
+### 已实现的状态写入和末尾添加
 
 Step 状态操作接入现有提交和核对生命周期，并按 Task-result/Steps-result 分派；不复制第二个控制器。Steps 写成功保留确认集合，把父详情标为需刷新，并触发父 GET 和项目同步。只有当前父详情、授权摘要和 Steps 资源在同一身份与缓存 generation 下匹配父版本，才恢复共同可提交基线。同步直接跳过中间版本时仍按最新下限收敛，不重放修改。核对期间父读取先结束而摘要或 Steps 再推进，或详情重新打开需要新的实时读取时，owner 按版本下限与打开周期合并并调度父 GET；持续落后时有界失败并保留恢复入口。Task 与 Steps 的状态发布均检查收敛，以便摘要不匹配消失时恢复提交。
+
+末尾添加使用同一提交所有者，提交前确定短 ID 和独立请求 UUID。完整 201 响应须匹配 Location、版本、字段、末尾位置与已有行，才能确认；非法回执进入只读核对。草稿以请求 UUID 绑定回执，避免迟到结果作用于后来的表单。
 
 Web 写入 API 保留容量 details 与安全错误信息。成功 HTTP 状态但非法 body 仍需读回完整 Steps，不能展示请求目标为已确认事实。子 Step/锚点 404 保留当前可访问 Task、其他项和草稿；来源不明时按同一身份 fence 核验父 Task，只有确认父不可访问才 retirement。
 
@@ -212,19 +214,19 @@ unknown 冻结共同提交入口，保留原身份、操作和恢复所有权，
 
 `TaskDetailPanels` 固定提供概览之后的 Steps slot 和 `tab=steps`，继续使用相同弹窗与独立页、roving tab、hidden/inert、语言和焦点所有者。`TaskDetailSurface` 注入 `TaskStepsPanel`，`TaskDetailReading` 提供共享 Task-root Markdown render/navigation callback；正文与概览沿用同一个 `useAttachments` controller。文件链接从 Task 附件根解析，保留修饰键和既有 URL 策略，不新增附件清单或预览所有者。
 
-Steps 组件保留按稳定 ID 的多项展开状态及当前页码；服务顺序决定编号，跨页和刷新重排不重绑身份。四状态使用独立消息组，`skipped` 不进入 TaskStatus。状态控件使用四项单选菜单，提交确认前保留原状态；其他写入能力没有空壳入口。
+Steps 组件保留按稳定 ID 的多项展开状态及当前页码；服务顺序决定编号，跨页和刷新重排不重绑身份。四状态使用独立消息组，`skipped` 不进入 TaskStatus。状态控件使用四项单选菜单，提交确认前保留原状态。
 
 完整资源仍一次读取，主列表每页最多挂载 100 行。超过 100 项展示全局范围、前后页和数值跳转，页码不生成随集合增长的 option 列表；分页只限制 DOM，不改变完整服务顺序，也不增加服务查询。刷新缩小集合时将显示页限制在仍存在的范围。600px 以下标题与状态/ID 换行，320px 下公共外壳和阅读控件保持可达。高度不超过 600px 时，分页随列表滚动，避免窄屏双行分页条覆盖正文。窄屏页签在高度充足时换行；高度不超过 500px 时使用单行横向滚动，为正文与附件预览保留空间。页签所有者在聚焦及选中样式、语言更新后的 layout 阶段显露完整目标，避免字体变粗后右缘仍被裁掉。
 
-### 写入目标
+### 已实现的末尾添加
 
-Steps workspace 按 Task 身份保存展开 ID、一个表单、草稿、预览及确认选择。操作 token 绑定提交回执，迟到结果不能关闭后来创建的表单。own-form 在 pending/unknown 冻结字段；无关父写入只锁提交。删除正在编辑的项时，同一确认层明确告知未保存修改会丢弃。
+Steps workspace 按 Task 身份保存一个新增表单、草稿、预览及放弃选择，使用共享 Task-root Markdown renderer。自身 pending/unknown 冻结原字段；无关父写入只锁提交。明确拒绝保留输入，冲突和 unknown 由共同所有者只读核对；确认回执收敛后按实际 ID 定位所在页并恢复行焦点。
 
 ### 已实现的应用导航准入
 
 `app/navigation.ts` 的窗口级 `BrowserNavigation` 拥有已准入 location、历史条目和离开选择。`Application`、`AuthenticatedApp` 与 `App` 通过 `useBrowserLocation` 订阅该 location，不直接用原生事件卸载 Surface。`navigate`、`replaceRoute` 在写历史前准入；关系跳转与模态详情关闭通过 `requestAction` 在修改本地选择前准入。取消程序导航不写历史，确认只执行一次已选动作。
 
-`TaskDraftBoundary` 将注册绑定到当前 `TaskCacheScope` 实例、Project 和 Task。后继草稿工作空间在保持挂载的位置调用 `useDirtyTaskDraft`，提供实时 `isDirty` 与 `discard` 回调；切换隐藏页签仍保留注册。独立页的相同 Task 页签/附件导航保持 Surface，不弹放弃确认；模态详情转入独立页会卸载原 Surface，仍需准入。注销只释放注册，不推断放弃。明确放弃调用回调后保留尚未卸载的注册，因此后续新草稿仍受保护；确认动作内部的同步路由调用共享本次准入。
+`TaskDraftBoundary` 将注册绑定到当前 `TaskCacheScope` 实例、Project 和 Task。Steps 草稿工作空间在保持挂载的位置调用 `useDirtyTaskDraft`，提供实时 `isDirty` 与 `discard` 回调；切换隐藏页签仍保留注册。独立页的相同 Task 页签/附件导航保持 Surface，不弹放弃确认；模态详情转入独立页会卸载原 Surface，仍需准入。注销只释放注册，不推断放弃。明确放弃调用回调后保留尚未卸载的注册，因此后续新草稿仍受保护；确认动作内部的同步路由调用共享本次准入。
 
 应用导航在 `history.state.__daynightNavigation` 保存窗口内的 segment 标识、entry index 和完整 URL，并保留其他 state 字段。启动仅用 `replaceState` 标记当前条目，不添加初始化条目。应用 push 的 index 在同一连续 segment 中按实际步长增加，replace 保留 index；URL 必须与 marker 匹配，避免把复制了 state 的原生 fragment 误认成有效编号项。从未编号位置发起新的应用写入时，仅为实际写入条目开启新 segment，旧 segment 不再参与索引差值恢复；不补标中间的原生历史项。
 
@@ -236,9 +238,7 @@ Steps workspace 按 Task 身份保存展开 ID、一个表单、草稿、预览�
 
 ### 后续写入交互
 
-未提交 Markdown 预览沿用已实现的 Task-root renderer 和同一个附件 controller。
-
-写入沿用已实现的每页 100 行边界。跨页移动按 ID 作用于完整数组；添加、移动、删除后选择目标或相邻项所在页并恢复焦点。草稿和展开状态由 ID 保存，换页不会丢失。
+后续编辑、移动和删除沿用已实现的每页 100 行边界。跨页移动按 ID 作用于完整数组；移动、删除后选择目标或相邻项所在页并恢复焦点。删除正在编辑的项时，同一确认层明确告知未保存修改会丢弃。
 
 该方式沿用[现有 PR 区域](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/docs/design/daynight-task-properties.md)限制挂载数量的方式，避免合法大集合直接形成巨大 DOM。超过 100 项才出现分页控件，展示全局范围和总数；不足一页时保留原列表。视觉验收使用 Task 附件中的交互原型，覆盖 241 项、跨页移动与添加、删除末页及保留草稿等情境。
 
@@ -323,6 +323,6 @@ jq -c --arg rid "$STEP_REQUEST_ID" \
 
 ## 架构基线摘要
 
-服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；CLI list/show/Add/Update/Set-status/Move/Delete 已通过独立 typed 客户端消费该资源。Web 读取和状态设置已接入现有详情会话的独立资源状态与共同提交生命周期；应用导航准入已按独立窗口所有者实现；指令资源、其余 Web 写入及后继草稿注册保留相同目标契约。各层保持项目流程、Worker 和 Session 边界。
+服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；CLI list/show/Add/Update/Set-status/Move/Delete 已通过独立 typed 客户端消费该资源。Web 读取、状态设置和末尾添加接入现有详情会话的独立资源状态与共同提交生命周期，新增草稿使用窗口级导航准入；其余 Web 写入保留相同目标契约。各层保持项目流程、Worker 和 Session 边界。
 
 大集合按 100 行本地分页，只约束 DOM 挂载。集合完整性、顺序及服务端操作保持相同契约；Task 附件中的交互原型提供 Web 的具体视觉与跨页交互输入。本架构及其交付边界约束后续实现。
