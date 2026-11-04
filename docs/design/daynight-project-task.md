@@ -710,9 +710,9 @@ symlink 偏好；独立 e2e 仍验证默认 PNPM shim，生产依赖与真实 np
 拥有期限与解码字节预算场景。
 完整入口先执行覆盖率阶段，再执行 E2E 阶段，`--coverage` 与 `--e2e` 可独立选择。
 两个阶段分别构建并安装 CLI，各自拥有 PostgreSQL、UniAuth 和真实 Web 构建输入。
-E2E 将自己的安装身份传给独立 Go 测试包 `cmd/e2e_tests`，复用其 fresh race binary、
+E2E 将自己的安装身份传给独立 Go 测试包 `cmd/e2e_tests`，复用其 fresh binary、
 隔离 PostgreSQL schema、listener、重启和数据库等待屏障。该包拥有跨进程验收的
-`TestMain` 与辅助设施，以 `go test -race -count=1 -timeout=10m ./cmd/e2e_tests`
+`TestMain` 与辅助设施，以 `go test -race=<value> -count=1 -timeout=10m ./cmd/e2e_tests`
 完整执行，`go test ./...` 也能发现它；主命令包保留直接调用内部函数的测试并
 独立管理临时资源。场景
 `installed_cli_project_task_workflow` 通过要求编号 `PT.V1`、`PT.V3`、`PT.V5`、
@@ -761,8 +761,10 @@ project，各页均满足列表协议，失败 stdout 必须为空。
 字节边界场景依次执行。四个字节场景使用完整生产默认值，不加载期限 mock；两个
 期限场景仍验证实际等待、正确错误分类、持续分页、空 stdout 和清理。
 CI 将覆盖率与 E2E 放在两个并行的 20 分钟作业中，二者使用同一 server selector
-并由最终 `checks` 汇总。覆盖率作业保留 build/vet/race 与严格 coverage gate，
-E2E 作业保留真实进程、race、安装产物溯源及全部场景清理。分工见
+并由最终 `checks` 汇总。覆盖率作业保留 build/vet 与严格 coverage gate，
+E2E 作业保留真实进程、安装产物溯源及全部场景清理。race instrumentation 在 PR CI 关闭、
+main CI 和本地默认开启，两个阶段及 E2E 服务 binary 使用一致模式，具体选择与回执由
+[服务验证说明](../../packages/daynight-server/README.md#race-instrumentation)拥有。分工见
 [独立作业决策](../../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)。
 根目录 `.tmp/project-task-service-evidence.json` 拥有常规期限证据，
 `.tmp/project-task-stress-evidence.json` 拥有本地完整字节证据；schema 1 中的 `suite`

@@ -15,8 +15,9 @@ Agent decisions.
 
 The existing acceptance owners provide complementary evidence for the
 [three-state setter](../architecture/2026-10-24-task-status-assignment.md). The Go
-[E2E package](2026-11-03-server-e2e-package.md) retains its built race binary,
-isolated PostgreSQL schema, project-row barriers, structured request logs and
+[E2E package](2026-11-03-server-e2e-package.md) retains its built service binary,
+whose race instrumentation matches the test process under the
+[event-specific validation policy](2026-11-04-go-validation-timing.md), isolated PostgreSQL schema, project-row barriers, structured request logs and
 restart/cleanup ownership. The
 production Web runner reuses its existing packed CLI, native and container
 services, browser phases and request allowlists. Native CLI acceptance validates

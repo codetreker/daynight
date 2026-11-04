@@ -32,7 +32,10 @@ fixture changes only its selected polling periods, retaining real Server and
 Controller communication, response parsing, state publication, authentication,
 layout and cleanup. Cases that control browser time and capacity measurements
 retain their own schedule setup. Unit tests cover the production schedules and
-short-period behavior.
+short-period behavior. Assignment reconciliation also uses the short task-sync
+period when an API-originated permission change must reach its open detail
+control; its version-conflict, uncertain-result and exact write-count checks
+retain their original assertions.
 
 Execution elapsed time, the one-second ticker, warning thresholds, freshness and
 request deadlines do not share these overrides. The execution-time journey
