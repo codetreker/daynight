@@ -1,7 +1,8 @@
+import { TaskPauseControl, TaskPauseFeedback } from "../task-pause/TaskPauseControl";
 import { ProjectAccessBoundary, useProjectAccess } from "../projects/ProjectAccess";
 import { isThreadScopeLoss } from '../task-thread/api';
 import { TaskDiscussion } from '../task-thread/TaskDiscussion';
-import { readPullRequests, readWorkerClaim } from "../../api/task-properties";
+import { readPullRequests, readTaskPaused, readWorkerClaim } from "../../api/task-properties";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
 import { taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
@@ -287,6 +288,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
                   {task.assignmentUncertain ? <span className="task-assignment-uncertain" role="status">{messages.assignment.uncertain}</span> : <TaskAgentPermissionSwitch detail={detail} disabled={!task.canSetAgentPermission} describedBy={automationFeedbackId}
                     onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />}
                 </div>
+                <TaskPauseControl paused={readTaskPaused(detail.properties) === true} disabled={!task.canUnpause} mutation={task.mutation} onUnpause={() => task.unpause(detail.version)} fallbackFocus={titleRef} />
                 {currentClaim !== null && access.error !== null && <div role="alert"><TaskDetailError error={access.error} /><button className="button" type="button" onClick={() => { void access.session.revalidate(); }}>{messages.workspace.projects.retry}</button></div>}
                 {currentClaim !== null && <TaskClaimSummary worker={currentClaim} members={membership.members} membershipStatus={membership.status} membershipError={membership.error} onRetryMembers={membership.retry}
                   canWithdraw={task.canWithdrawClaim && mayWithdraw} {...(mayWithdraw ? { onWithdraw: () => { const review = { kind: 'withdraw' as const, detail, claimId: currentClaim.claimId }; void access.session.revalidate().then((fresh) => { if (fresh !== null && dialogRef.current?.isConnected && mayWithdrawClaim(currentClaim, viewer.userId, fresh.effectiveRole)) requestConfirmation(review); }); } } : {})} />}
@@ -328,6 +330,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
         <footer className="task-detail-footer">{m.footer}</footer>
         {status !== 'deleted' && <TaskDeletionFeedback key={`${scope}/deletion`} mutation={task.mutation} onReconcile={task.reconcile} />}
         <TaskWithdrawalFeedback key={`${scope}/withdrawal`} mutation={task.mutation} onReconcile={task.reconcile} />
+        <TaskPauseFeedback key={`${scope}/pause`} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskStatusFeedback key={`${scope}/status`} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskAgentPermissionFeedback key={`${scope}/permission`} id={automationFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskAssignmentFeedback mutation={task.mutation} uncertain={task.assignmentUncertain} onReconcile={task.reconcile} />

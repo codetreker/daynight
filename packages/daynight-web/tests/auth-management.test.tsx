@@ -33,6 +33,10 @@ const deferred = <T,>() => {
   return { promise, resolve, reject };
 };
 const click = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
+const clickWhenReady = async (name: string) => {
+  await waitFor(() => expect(screen.getByRole('button', { name })).not.toBeDisabled());
+  click(name);
+};
 const dialogClick = async (name: string) => { const button = within(screen.getByRole('dialog')).getByRole('button', { name }); await waitFor(() => expect(button).not.toBeDisabled()); fireEvent.click(button); };
 const account = () => render(<AccountPage user={user} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
 const members = (props: Partial<Parameters<typeof MembersPanel>[0]> = {}) => render(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" projectName="Very long project name" user={user} onRemoved={vi.fn()} {...props} />);
@@ -278,7 +282,8 @@ describe('authoritative project management', () => {
     click('邀请成员'); expect(screen.getByText('7 天后到期 · 单次使用 · 加入角色：成员')).toBeInTheDocument(); await dialogClick('创建邀请链接');
     await screen.findByLabelText('一次性邀请链接'); expect(auth.createInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', expect.any(AbortSignal));
     expect(screen.getByLabelText('一次性邀请链接')).toHaveValue('https://daynight.test/invitations#once-secret'); await dialogClick('我已保存，关闭');
-    expect(screen.queryByDisplayValue(/once-secret/)).toBeNull(); await screen.findByRole('button', { name: '撤销邀请 invitation-a' }); click('撤销邀请 invitation-a');
+    expect(screen.queryByDisplayValue(/once-secret/)).toBeNull();
+    await clickWhenReady('撤销邀请 invitation-a');
     expect(screen.getByText(/这个邀请链接将立即失效/)).toBeInTheDocument(); await dialogClick('撤销邀请');
     await screen.findByText(/还没有有效邀请/); expect(auth.revokeInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'invitation-a', expect.any(AbortSignal));
   });
@@ -290,7 +295,7 @@ describe('authoritative project management', () => {
     members(); await readyMembers(); click('邀请成员'); await dialogClick('创建邀请链接'); await screen.findByRole('alert');
     expect(screen.queryByText('secret-link-error')).toBeNull(); await dialogClick('创建邀请链接'); await screen.findByLabelText('一次性邀请链接');
     fireEvent.keyDown(document, { key: 'Escape' }); expect(screen.getByRole('alert')).toHaveTextContent('邀请链接'); await dialogClick('确认已保存，关闭');
-    await screen.findByRole('button', { name: '撤销邀请 invitation-a' }); click('撤销邀请 invitation-a'); await dialogClick('撤销邀请'); await screen.findByRole('alert'); await dialogClick('取消'); expect(screen.queryByRole('dialog')).toBeNull();
+    await clickWhenReady('撤销邀请 invitation-a'); await dialogClick('撤销邀请'); await screen.findByRole('alert'); await dialogClick('取消'); expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('recovers ordinary member state when invitation access races a role loss', async () => {
