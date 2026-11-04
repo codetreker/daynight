@@ -633,15 +633,15 @@ test('auth-personal-tokens', scenario('auth-personal-tokens'), async ({ page, ap
 
 test('auth-invitations', scenario('auth-invitations'), async ({ page, context, api: request, playwright, allowBrowserWrites }, info) => {
   const baseURL = origin(info);
-  await verifyScopedInvitationManagement(page, request, baseURL, allowBrowserWrites);
   const project = await createProject(request, { name: `Invitation ${randomUUID()}` });
   allowBrowserWrites([
     { method: 'POST', url: `${baseURL}/api/v1/projects/${project.id}/invitations`, count: 1 },
-    { method: 'POST', url: `${baseURL}/api/v1/invitations/inspect`, count: 2 },
-    { method: 'POST', url: `${baseURL}/api/v1/invitations/accept`, count: 1 },
+    { method: 'POST', url: `${baseURL}/api/v1/invitations/inspect`, count: 3 },
+    { method: 'POST', url: `${baseURL}/api/v1/invitations/accept`, count: 2 },
     { method: 'POST', url: `${baseURL}/api/v1/team-invitations/inspect`, count: 5 },
     { method: 'POST', url: `${baseURL}/api/v1/team-invitations/accept`, count: 3 },
   ]);
+  await verifyScopedInvitationManagement(page, context, playwright.request, request, baseURL, allowBrowserWrites);
   await page.goto(`/projects/${project.id}/members`);
   await page.getByRole('button', { name: '邀请成员', exact: true }).click();
   const created = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects/${project.id}/invitations` && response.request().method() === 'POST');

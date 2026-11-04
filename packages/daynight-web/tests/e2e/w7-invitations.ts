@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import type { Page, Route } from '@playwright/test';
+import type { APIRequest, BrowserContext, Page, Route } from '@playwright/test';
 import { expect, createProject, type BrowserWriteExpectation } from './fixtures';
-import type { AuthenticatedAPI } from './authentication';
+import { bearerContext, browserAuthentication, type AuthenticatedAPI } from './authentication';
 
 // The caller disables traces and screenshots while invitation secrets are visible.
-export const verifyScopedInvitationManagement = async (page: Page, request: AuthenticatedAPI, baseURL: string, allowWrites: (entries: readonly BrowserWriteExpectation[]) => void) => {
+export const verifyScopedInvitationManagement = async (page: Page, context: BrowserContext, apiRequest: APIRequest, request: AuthenticatedAPI, baseURL: string, allowWrites: (entries: readonly BrowserWriteExpectation[]) => void) => {
   const identityResponse = await request.get('/api/v1/me');
   expect(identityResponse.status()).toBe(200);
   const identity = await identityResponse.json() as { id: string; personalTeam: { id: string } };
@@ -198,4 +198,47 @@ export const verifyScopedInvitationManagement = async (page: Page, request: Auth
     await expect(page.getByText('Current invitations are shown; the original result is still unknown. Review before changing them.')).toBeVisible();
   } finally { unknownHeld.resolve(); await page.unroute(projectUrl, loseProject); }
   await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
+
+  // An existing direct grant is preserved and does not consume the same invitation.
+  const teamProjectResponse = await request.post('/api/v1/projects', { data: { name: `Inherited invite ${randomUUID()}`, repoUrl: `https://example.com/${randomUUID()}`, teamId: team.id, expectedUserId: identity.id } });
+  expect(teamProjectResponse.status()).toBe(201);
+  const teamProject = await teamProjectResponse.json() as { id: string; name: string };
+  const scopedInviteResponse = await request.post(`/api/v1/projects/${teamProject.id}/invitations`, { data: { expectedUserId: identity.id } });
+  expect(scopedInviteResponse.status()).toBe(201);
+  const scopedInvite = await scopedInviteResponse.json() as { id: string; link: string };
+  const token = new URL(scopedInvite.link).hash.slice(1);
+  const existing = await request.post('/api/v1/invitations/accept', { data: { token, expectedUserId: identity.id } });
+  expect(existing.status()).toBe(200);
+  expect(await existing.json()).toMatchObject({ projectId: teamProject.id, directGrant: { role: 'admin', userId: identity.id }, joined: false, consumed: false });
+  const stillAvailable = await request.get(`/api/v1/projects/${teamProject.id}/invitations`);
+  expect((await stillAvailable.json() as { items: { id: string }[] }).items.some((item) => item.id === scopedInvite.id)).toBe(true);
+
+  const bob = await bearerContext(apiRequest, baseURL, 'bob');
+  try {
+    const bobIdentity = await (await bob.get('/api/v1/me')).json() as { id: string };
+    const teamInviteResponse = await request.post(`/api/v1/teams/${team.id}/invitations`, { data: { expectedUserId: identity.id } });
+    expect(teamInviteResponse.status()).toBe(201);
+    const teamInvite = await teamInviteResponse.json() as { link: string };
+    const joined = await bob.post('/api/v1/team-invitations/accept', { data: { token: new URL(teamInvite.link).hash.slice(1), expectedUserId: bobIdentity.id } });
+    expect(joined.status()).toBe(200);
+    const joinedMember = await joined.json() as { membership: { version: number } };
+    const promote = await request.patch(`/api/v1/teams/${team.id}/members/${bobIdentity.id}`, { data: { role: 'admin', version: joinedMember.membership.version, expectedUserId: identity.id } });
+    expect(promote.status()).toBe(200);
+    const before = await bob.get(`/api/v1/projects/${teamProject.id}/access`);
+    expect(before.status()).toBe(200);
+    expect(await before.json()).toMatchObject({ effectiveRole: 'admin', teamRole: 'admin', directGrant: null });
+    await browserAuthentication(context, baseURL, 'bob');
+    try { await page.goto(scopedInvite.link); } catch { throw new Error('The project invitation document could not be opened.'); }
+    await expect(page.getByRole('heading', { name: '你受邀加入一个项目' })).toBeVisible();
+    await page.getByRole('button', { name: '接受邀请并加入', exact: true }).click();
+    await expect(page).toHaveURL(`${baseURL}/projects/${teamProject.id}`);
+    await expect(page.getByRole('heading', { name: teamProject.name, exact: true })).toBeVisible();
+    const after = await bob.get(`/api/v1/projects/${teamProject.id}/access`);
+    expect(after.status()).toBe(200);
+    expect(await after.json()).toMatchObject({ effectiveRole: 'admin', teamRole: 'admin', directGrant: { userId: bobIdentity.id, role: 'member' } });
+  } finally {
+    await bob.dispose();
+    await browserAuthentication(context, baseURL, 'alice');
+    await page.goto('/projects');
+  }
 };
