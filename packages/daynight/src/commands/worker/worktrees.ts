@@ -7,7 +7,7 @@ import { repositoryIdentity } from "../../repository/identity.js";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import { canonicalResourceOwner } from "./resource-owner.js";
-import { removeWorktreeContents } from "./remove-worktree-contents.js";
+import { removeWorktreeContents, type WorktreeEntryRemover } from "./remove-worktree-contents.js";
 
 type GitRunner = typeof runRepositoryGit;
 type Owner = ResourceOwner & { leaf: string; root: string; common: string };
@@ -61,10 +61,9 @@ const markerOwner = (marker: string): Owner => {
 };
 const sameCoordinates = (owner: Owner, identity: ResourceOwner): boolean => Object.entries(coordinates(identity)).every(([key, value]) => owner[key as keyof Owner] === value);
 
-export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; removeDirectory?: typeof rm }) => {
+export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; removeEntry?: WorktreeEntryRemover }) => {
   const temporaryDirectory = absolute(options.temporaryDirectory, "Git temporary directory");
   const runGit = options.runGit === undefined ? runRepositoryGit : options.runGit;
-  const removeDirectory: typeof rm = options.removeDirectory ?? (target => unlink(target));
   let hooks: Promise<string> | null = null;
   const hookDirectory = async (): Promise<string> => {
     if (hooks === null) hooks = (async () => {
@@ -81,7 +80,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       const key = name.toUpperCase();
       if (["GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CURL_VERBOSE"].includes(key) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(key) || key.startsWith("GIT_TRACE")) environment[name] = undefined;
     }
-    const result = await runGit(cwd, ["-c", `core.hooksPath=${await hookDirectory()}`, "-c", "submodule.recurse=false", ...args], operation, { environment, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+    const result = await runGit(cwd, ["-c", `core.hooksPath=${await hookDirectory()}`, "-c", "submodule.recurse=false", ...args], operation, { environment, timeoutMs: timeoutMs === undefined ? operation.limits.requestMs : timeoutMs });
     return line(result.stdout);
   };
   const validateOrigin = async (root: string, repoUrl: string, operation: Operation): Promise<void> => {
@@ -280,7 +279,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
           const confirmed = await inspectWorktree(project, owner, repository, operation, true);
           if (confirmed.leaf !== leaf || confirmed.registration?.directory !== registration.directory || confirmed.registration.marker !== registration.marker) throw new Error("The task worktree ownership changed before cleanup.");
           await verifyOwnership();
-          await removeWorktreeContents(binding.worktreePath, leaf, operation, verifyOwnership, removeDirectory);
+          await removeWorktreeContents(binding.worktreePath, leaf, operation, verifyOwnership, options.removeEntry);
           await inspectWorktree(project, owner, repository, operation, true);
           await verifyOwnership();
           await unlink(path.join(binding.worktreePath, ".git"));

@@ -33,9 +33,12 @@ On POSIX, the walker opens each directory without following its final symlink,
 compares the path and descriptor identities, and requires the current effective
 user, the worktree device, and existing owner read/search permissions. Only a
 missing owner write bit is added through the verified directory descriptor.
-Files and links are unlinked without an application permission fallback. Ancestor identity
-and ownership metadata are checked before mutations; observed replacements and
-I/O errors stop cleanup and retain the remaining evidence.
+Files and links are unlinked nonrecursively with explicit `force: true`. Only
+ENOENT from the final unlink is accepted as an already absent entry; permission
+and I/O errors retain their original identity. The deletion seam accepts only
+nonrecursive entry removal and does not apply an application permission fallback.
+Ancestor identity and ownership metadata are checked before mutations; observed
+replacements stop cleanup and retain the remaining evidence.
 
 Cancellation joins submitted filesystem operations and descriptor closes. An
 in-process guard rejects overlapping removals for the same physical repository
@@ -61,6 +64,13 @@ resource remains an error; the completed record is not mutated again.
 replacement symlink or change a hard-linked file outside the worktree. A separate
 permission pass also leaves recursive deletion without per-entry identity or
 cancellation checks.
+
+**Use fs.rm for forced single-entry removal.** Node
+[defines force as ignoring a missing path](https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/doc/api/fs.md#fspromisesrmpath-options),
+but its [Windows EPERM recovery](https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/lib/internal/fs/rimraf.js#L90-L104)
+uses path-based chmod even for nonrecursive removal. That can change a shared
+hard-linked inode. Unlink with narrowly scoped ENOENT handling provides the
+required force semantics without this additional permission mutation.
 
 **Retry unchanged recursive rm.** The directory permission is persistent; retries
 cannot remove its entries and would keep the slot occupied indefinitely.

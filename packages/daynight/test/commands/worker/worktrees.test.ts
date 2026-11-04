@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
+import { cleanupOperation } from "../../../src/commands/cleanup-operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { runRepositoryGit } from "../../../src/repository/git.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
@@ -226,17 +227,23 @@ describe("worker repositories and task worktrees", () => {
     await expect(adapter.prepareWorktree(f.project, f.owner, operation())).rejects.toThrow("no matching ownership registration");
   });
 
-  it("removes dirty terminal worktree while preserving branches and unrelated work", async () => {
-    const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+  it("removes dirty terminal worktree with the cleanup Git budget while preserving branches and unrelated work", async () => {
+    const f = await fixture(); const timeouts: (number | undefined)[] = [];
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => { timeouts.push(options?.timeoutMs); return runRepositoryGit(cwd, args, op, options); } });
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    expect(timeouts.length).toBeGreaterThan(0); expect(timeouts.every(timeout => timeout === 30_000)).toBe(true);
+    timeouts.length = 0;
     await writeFile(path.join(binding.worktreePath, "unpublished"), "terminal temp\n"); await writeFile(path.join(f.repository, "unrelated"), "keep\n");
-    await adapter.removeWorktree(f.project, f.owner, operation()); expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/${binding.branch}`])).toBe(`refs/heads/${binding.branch}`);
+    await cleanupOperation(op => adapter.removeWorktree(f.project, f.owner, op));
+    expect(timeouts.length).toBeGreaterThan(0); expect(timeouts.every(timeout => timeout === 300_000)).toBe(true);
+    expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/${binding.branch}`])).toBe(`refs/heads/${binding.branch}`);
     expect(await readFile(path.join(f.repository, "unrelated"), "utf8")).toBe("keep\n"); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
     await adapter.removeWorktree(f.project, f.owner, operation());
   });
 
   it("continues partial content deletion while preserving the original Git pointer", async () => {
     const f = await fixture(); const failure = new Error("controlled partial filesystem removal"); let partial = true;
-    const adapter = manager(f.root, { removeDirectory: async (target, options) => { await rm(target, options); if (partial) { partial = false; throw failure; } } });
+    const adapter = manager(f.root, { removeEntry: async (target, options) => { await rm(target, options); if (partial) { partial = false; throw failure; } } });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); const admin = administrativeDirectory(binding.worktreePath);
     const pointer = await readFile(path.join(binding.worktreePath, ".git"), "utf8");
     await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toBe(failure);
@@ -248,7 +255,7 @@ describe("worker repositories and task worktrees", () => {
 
   it("retains content and the Git pointer when the ownership marker changes during removal", async () => {
     const f = await fixture(); let marker = "";
-    const adapter = manager(f.root, { removeDirectory: async (target, options) => {
+    const adapter = manager(f.root, { removeEntry: async (target, options) => {
       await rm(target, options); await writeFile(marker, "human-owned\n");
     } });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
@@ -263,7 +270,7 @@ describe("worker repositories and task worktrees", () => {
   it("keeps cancellation joined and rejects overlapping cleanup until the original removal settles", async () => {
     const f = await fixture();
     const entered = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
-    const adapter = manager(f.root, { removeDirectory: async (target, options) => {
+    const adapter = manager(f.root, { removeEntry: async (target, options) => {
       entered.resolve(); await release.promise; await rm(target, options);
     } });
     const second = manager(f.root);

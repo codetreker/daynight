@@ -1,6 +1,6 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
@@ -8,7 +8,7 @@ import { removeWorktreeContents } from "../../../src/commands/worker/remove-work
 
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, open: vi.fn(actual.open) };
+  return { ...actual, open: vi.fn(actual.open), unlink: vi.fn(actual.unlink) };
 });
 
 const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
@@ -40,6 +40,7 @@ const deferred = () => {
 
 afterEach(async () => {
   vi.mocked(open).mockImplementation(actualFs.open);
+  vi.mocked(unlink).mockReset().mockImplementation(actualFs.unlink);
   try { operations.splice(0).forEach(entry => entry.dispose()); }
   finally { vi.useRealTimers(); vi.restoreAllMocks(); }
   for (const target of restoreModes.splice(0)) {
@@ -50,6 +51,28 @@ afterEach(async () => {
 });
 
 describe("owned worktree content removal", () => {
+  it("accepts an entry disappearing after final verification during forced deletion", async () => {
+    const f = await fixture();
+    await writeFile(path.join(f.target, "file"), "remove");
+    vi.mocked(unlink).mockImplementationOnce(async target => {
+      await actualFs.unlink(target);
+      await actualFs.unlink(target);
+    });
+    await removeWorktreeContents(f.target, f.identity, operation(), async () => {});
+    expect(await readdir(f.target)).toEqual([".git"]);
+    expect(await readFile(path.join(f.target, ".git"), "utf8")).toBe("gitdir: retained\n");
+  });
+
+  it.each(["EACCES", "EPERM", "EIO"])("retains the original %s error and ownership evidence during forced deletion", async code => {
+    const f = await fixture();
+    await writeFile(path.join(f.target, "file"), "retained");
+    const failure = Object.assign(new Error("controlled unlink failure"), { code });
+    vi.mocked(unlink).mockRejectedValueOnce(failure);
+    await expect(removeWorktreeContents(f.target, f.identity, operation(), async () => {})).rejects.toBe(failure);
+    expect(await readFile(path.join(f.target, "file"), "utf8")).toBe("retained");
+    expect(await readFile(path.join(f.target, ".git"), "utf8")).toBe("gitdir: retained\n");
+  });
+
   it("removes nested content while retaining the original root and top-level Git pointer", async () => {
     const f = await fixture();
     const nested = path.join(f.target, "nested"); await mkdir(nested);

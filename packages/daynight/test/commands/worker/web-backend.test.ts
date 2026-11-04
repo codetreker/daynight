@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -13,7 +14,7 @@ import type { ControllerSnapshot } from "../../../src/commands/controller/lifecy
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { requestController } from "../../../src/commands/controller/local-client.js";
 const roots:string[]=[];const stores:ReturnType<typeof openWebExecutionStore>[]=[];
-afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllGlobals();for(const store of stores.splice(0))store.close();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
+afterEach(async()=>{vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllGlobals();for(const store of stores.splice(0))store.close();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 const fixture=async(agent: "codex" | "claude" | "copilot" = "codex")=>{
  const base=path.resolve(import.meta.dirname,"../../../../../.tmp/web-backend-tests");await mkdir(base,{recursive:true});const home=await mkdtemp(path.join(base,"h-"));roots.push(home);
  const store=openWebExecutionStore(path.join(home,"worker.sqlite"));stores.push(store);
@@ -205,4 +206,28 @@ it("cleanup propagates a local snapshot write failure without taking the IPC fal
   await expect(backend.cleanup(task, "shutdown", 100)).rejects.toBe(failure);
   expect(request).toHaveBeenCalledOnce(); expect(fallback).not.toHaveBeenCalled(); expect(stopping).not.toHaveBeenCalled();
   expect(f.store.getTask(task)?.cleanup).toMatchObject({ input: "not-submitted", agentStopped: false, backendResourcesClosed: false });
+});
+
+
+it.each([240_000, 300_001])("bounds Web worktree removal to five minutes (duration=%s)", async duration => {
+  const f = await fixture();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 5 });
+  let now = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  vi.mocked(f.git.removeWorktree).mockImplementationOnce(async (_project, _owner, operation) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { operation.signal.removeEventListener("abort", cancel); operation.check(); resolve(); }, duration);
+    const cancel = (): void => { clearTimeout(timer); reject(operation.signal.reason); };
+    operation.signal.addEventListener("abort", cancel, { once: true });
+  }));
+  const outcome = backend.cleanup(f.store.getTask(f.identity)!, "terminal", 600_005).catch(error => error);
+  await vi.advanceTimersByTimeAsync(0);
+  now = Math.min(duration, 300_000);
+  await vi.advanceTimersByTimeAsync(now);
+  if (duration < 300_000) {
+    expect((await outcome).cleanup?.worktreeDeleted).toBe(true);
+  } else {
+    expect(await outcome).toMatchObject({ name: "OperationError", kind: "deadline" });
+    expect(f.store.getTask(f.identity)?.cleanup).toMatchObject({ agentStopped: true, backendResourcesClosed: true, worktreeDeleted: false });
+  }
 });

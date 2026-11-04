@@ -125,7 +125,7 @@ Projects 在远端认领前保存仓库映射。有未结束任务或实际受�
 
 统一的资源身份为 `projectId/taskId/claimId/worktreeId` 四项 canonical UUID。Herdr 标签后缀和 Git locked-worktree 所有权标记使用同一份身份；服务地址只供 API 请求和 managed assignment 使用。动态执行进度与 title 不进入 Git 标记。实际 pane、cwd、Git 注册和目录每次读取。Device/inode 只作辅助核对；符号链接、外来路径、缺指针或歧义注册不能授权破坏性删除。
 
-清理先确认进程停止和 workspace 关闭，再删除已核对的 worktree 内容，保留 .git 指针至内容删除完成，最后移除目录与 Git 注册。中断后只根据仍存在的实际资源继续；仍存在但缺指针的路径保留并报告。分支和提交历史保留。
+清理先确认进程停止和 workspace 关闭，再删除已核对的 worktree 内容，保留 .git 指针至内容删除完成，最后移除目录与 Git 注册。文件逐项非递归删除并显式传入 `force: true`，仅将最终 unlink 时的 ENOENT 视为已不存在；身份核验失败、权限和 I/O 错误继续返回。生产删除器使用 unlink，避免 `fs.rm` 在 Windows EPERM 恢复路径上的文件 chmod 影响外部硬链接。Git 注册删除使用 `--force --force`。中断后只根据仍存在的实际资源继续；仍存在但缺指针的路径保留并报告。分支和提交历史保留。
 
 `worktrees.ts` 在完整归属检查后，为仓库 root/common directory、受管父目录、Git 注册目录及 worktree 记录实际身份，并保留 locked marker、gitdir、commondir 和 .git 内容。内容删除前再次完成归属检查，每次修改前用这些只读快照核验资源。进程内按仓库物理身份与 task 串行化删除，同一 worktree 的另一次删除在原操作真正结束前拒绝进入。
 
@@ -223,6 +223,8 @@ Codex 保留 `--no-daemon [resume <session_id>]` 前缀，在配置参数后追�
 → 删除该 claim 的 worktree，保留分支
 → 本机 done
 ```
+
+清理资源观察、通知、停止/关闭及 worktree 核验与删除使用专属的 5 分钟 operation，totalMs 与 requestMs 同为 300000；内部 Herdr RPC 和 Git 命令继承请求预算。Web 清理 IPC、Controller 等待清理回执及最终进程停止证明使用同一 5 分钟上限，通知与 Controller 清理回执等待还受原 10 分钟期限的剩余时间限制。进程停止中的信号升级间隔保持独立。正常执行继续使用原有预算。期限选择与代价见[清理操作预算决策](../../.agents/notes/implemented/bug-fix/2026-11-04-worker-cleanup-operation-budget.md)。
 
 清理消息成功递交后，后续巡查观察到 agent 为 idle 即确认该清理轮完成，开始实际停止进程和关闭 workspace。这个判断不依赖 stateChangeSeq/completionSeq 或 interactiveReady；通知前的观察和 submitPrompt 回执本身不完成清理。通知失败或结果未知时保留错误，继续等待本次既定期限，不自动重发。期限届满仍按既有停止确认流程收尾。这个终止清理阶段的 idle 不表示业务验收完成，worker 仍不提交业务 done。
 

@@ -2,18 +2,29 @@ import path from "node:path";
 import { constants } from "node:fs";
 import type { BigIntStats } from "node:fs";
 import { lstat, open, readdir, rmdir, unlink } from "node:fs/promises";
-import type { FileHandle, rm } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import type { Operation } from "../../api/operation.js";
 
 const identity = (entry: BigIntStats): string => `${entry.dev}:${entry.ino}`;
 type OpenDirectory = { target: string; entry: BigIntStats; handle: FileHandle | null };
+export type WorktreeEntryRemover = (target: string, options: { readonly recursive: false; readonly force: boolean }) => Promise<void>;
+
+// fs.rm's Windows EPERM recovery uses path-based chmod, which can affect shared
+// file inodes. Keep forced removal limited to an already absent entry.
+// https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/lib/internal/fs/rimraf.js#L90-L104
+const removeFile: WorktreeEntryRemover = async (target, { force }) => {
+  try { await unlink(target); }
+  catch (error) {
+    if (!(force && error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+};
 
 export const removeWorktreeContents = async (
   target: string,
   expectedIdentity: string,
   operation: Operation,
   verifyOwnership: () => Promise<void>,
-  removeEntry: typeof rm = target => unlink(target),
+  removeEntry: WorktreeEntryRemover = removeFile,
 ): Promise<void> => {
   operation.check();
   await verifyOwnership();
@@ -78,7 +89,7 @@ export const removeWorktreeContents = async (
           operation.check();
           // Nonrecursive removal unlinks symlinks and hard links without
           // changing the target inode's permissions or following its contents.
-          await removeEntry(child, { recursive: false });
+          await removeEntry(child, { recursive: false, force: true });
           operation.check();
         }
       }

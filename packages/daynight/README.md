@@ -1492,7 +1492,18 @@ successful complete inventory, the worker asks its agent to release attributable
 temporary files, services and processes outside the worktree. It waits at most
 ten minutes for this cleanup attempt, stops the agent, closes its workspace, removes the matching worktree
 and marks the local row done. Done, release and force withdrawal have the same terminal
-resource rule. Failed stop or deletion retains responsibility and the error.
+resource rule. Cleanup observations, notification, stop/close, and worktree
+verification and deletion each have a five-minute operation budget, including
+their RPC, Controller cleanup requests and Git commands. Notification and
+Controller cleanup-response waits are also capped by the remaining ten-minute
+agent deadline. Ordinary execution keeps its existing operation budgets. Failed
+stop or deletion retains responsibility and the error.
+
+File removal explicitly uses `force: true` for already absent entries while
+retaining ownership checks and nonrecursive unlink. Permission and I/O failures
+remain errors; removal does not apply a file chmod fallback. Git registration
+removal uses `--force --force`. Branches, commits and external link targets remain
+protected by the existing cleanup rules.
 
 Known-target cleanup and shutdown observe that Herdr execution directly;
 worktree deletion validates only its target Git registration and directory.
