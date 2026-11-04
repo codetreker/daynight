@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crossSpawn from "cross-spawn";
+import which from "which";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createProcessSupervisor, processGroupIsExecuting } from "../../../src/commands/review/processes.js";
 import { formatError } from "../../../src/platform/diagnostics.js";
@@ -22,6 +23,35 @@ const waitForFile = async (file: string): Promise<string> => {
     await new Promise((resolve) => { setTimeout(resolve, 20); });
   }
   throw new Error(`Fixture did not create ${file}.`);
+};
+const kill = process.kill.bind(process);
+const killPosixFixture = async (pid: number, closed: Promise<unknown[]>): Promise<void> => {
+  try { kill(-pid, "SIGKILL"); }
+  catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
+  await closed;
+};
+const nativeTree = async (ignoreTerm: boolean, name: string) => {
+  const marker = path.join(directory, `${name}.txt`);
+  const termMarker = path.join(directory, `${name}.term`);
+  const fixture = path.join(directory, `${name}.cjs`);
+  await writeFile(fixture, `const {spawn}=require('node:child_process');const fs=require('node:fs');\nif(process.argv[2]==='leaf'){setInterval(()=>fs.writeFileSync(process.argv[3],String(Date.now())),15);}else{const leaf=spawn(process.execPath,[__filename,'leaf',process.argv[2]],{stdio:'ignore'});process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(termMarker)},'received');${ignoreTerm ? "" : "if(leaf.exitCode!==null||leaf.signalCode!==null)process.exit(0);else leaf.once('close',()=>process.exit(0));"}});setInterval(()=>{},1000);}`);
+  let file = process.execPath;
+  let args = [fixture, marker];
+  if (process.platform === "win32") {
+    file = path.join(directory, `${name}.cmd`);
+    await writeFile(file, `@echo off\r\n"${process.execPath}" "${fixture}" "${marker}"\r\n`);
+    args = [];
+  }
+  const child = crossSpawn(file, args, { detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const closed = once(child, "close");
+  child.stdout!.resume(); child.stderr!.resume();
+  await once(child, "spawn");
+  return { child, closed, marker, termMarker };
+};
+const expectHeartbeatStopped = async (marker: string): Promise<void> => {
+  const stoppedValue = await readFile(marker, "utf8");
+  await new Promise((resolve) => { setTimeout(resolve, 80); });
+  expect(await readFile(marker, "utf8")).toBe(stoppedValue);
 };
 let directory: string;
 beforeAll(async () => {
@@ -118,29 +148,98 @@ describe("current-run process supervision", () => {
   });
 
   it.each([false, true])("terminates a managed native wrapper tree (ignore TERM=%s)", async (ignoreTerm) => {
-    const marker = path.join(directory, `tree-${ignoreTerm}.txt`);
-    const fixture = path.join(directory, `tree-${ignoreTerm}.cjs`);
-    await writeFile(fixture, `const {spawn}=require('node:child_process');const fs=require('node:fs');\nif(process.argv[2]==='leaf'){setInterval(()=>fs.writeFileSync(process.argv[3],String(Date.now())),15);}else{const leaf=spawn(process.execPath,[__filename,'leaf',process.argv[2]],{stdio:'ignore'});process.on('SIGTERM',()=>{${ignoreTerm ? "" : "if(leaf.exitCode!==null||leaf.signalCode!==null)process.exit(0);else leaf.once('close',()=>process.exit(0));"}});setInterval(()=>{},1000);}`);
-    let file = process.execPath;
-    let args = [fixture, marker];
-    if (process.platform === "win32") {
-      file = path.join(directory, `wrapper-${ignoreTerm}.cmd`);
-      await writeFile(file, `@echo off\r\n"${process.execPath}" "${fixture}" "${marker}"\r\n`);
-      args = [];
-    }
+    const { child, closed, marker } = await nativeTree(ignoreTerm, `tree-${ignoreTerm}`);
     const supervisor = createProcessSupervisor({ graceMs: process.platform === "win32" ? 3_000 : 300 });
-    const child = crossSpawn(file, args, { detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    child.stdout!.resume(); child.stderr!.resume();
-    await once(child, "spawn"); supervisor.onProcess(child, { reviewId: "review", attempt: 1 });
+    supervisor.onProcess(child, { reviewId: "review", attempt: 1 });
+    let stopped = false;
     try {
       await waitForFile(marker);
       await supervisor.stop(child, { reviewId: "review", attempt: 1 });
-      const stoppedValue = await readFile(marker, "utf8");
-      await new Promise((resolve) => { setTimeout(resolve, 80); });
-      expect(await readFile(marker, "utf8")).toBe(stoppedValue);
+      stopped = true;
+      await closed;
+      await expectHeartbeatStopped(marker);
       await expect(supervisor.exclude(review(child.pid!))).resolves.toEqual({ processesExcluded: true });
     } finally {
-      if (child.exitCode === null && child.signalCode === null) await supervisor.stop(child, { reviewId: "review", attempt: 1 });
+      if (process.platform !== "win32" && !stopped) await killPosixFixture(child.pid!, closed);
+      else if (!stopped && child.exitCode === null && child.signalCode === null) await supervisor.stop(child, { reviewId: "review", attempt: 1 });
+      await closed;
+    }
+  }, 15_000);
+
+  it("inspects a real POSIX process group beyond its short termination grace", async () => {
+    if (process.platform === "win32") return;
+    const realPs = await which("ps");
+    const proxyDirectory = await mkdtemp(path.join(directory, "delayed-ps-"));
+    const invocation = path.join(proxyDirectory, "invocation.json");
+    const result = path.join(proxyDirectory, "result.json");
+    const { child, closed, marker, termMarker } = await nativeTree(true, "delayed-inspection");
+    const supervisor = createProcessSupervisor({ graceMs: 300 });
+    supervisor.onProcess(child, { reviewId: "review", attempt: 1 });
+    const previousPath = process.env.PATH;
+    let stopped = false;
+    try {
+      await writeFile(path.join(proxyDirectory, "ps"), `#!/usr/bin/env node
+import { execFileSync } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const first = !existsSync(${JSON.stringify(invocation)});
+if (first) writeFileSync(${JSON.stringify(invocation)}, JSON.stringify({ args, pid: process.pid }));
+setTimeout(() => {
+  const beforeTerm = !existsSync(${JSON.stringify(termMarker)});
+  const stdout = execFileSync(${JSON.stringify(realPs)}, args, { encoding: "utf8" });
+  if (first) writeFileSync(${JSON.stringify(result)}, JSON.stringify({ stdout, beforeTerm }));
+  process.stdout.write(stdout);
+}, first ? 450 : 0);
+`, { mode: 0o755 });
+      process.env.PATH = `${proxyDirectory}${path.delimiter}${previousPath}`;
+      await waitForFile(marker);
+      await supervisor.stop(child, { reviewId: "review", attempt: 1 });
+      stopped = true;
+      await closed;
+      const firstInvocation = JSON.parse(await readFile(invocation, "utf8")) as { args: string[]; pid: number };
+      expect(firstInvocation.args).toEqual(["-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="]);
+      expect(firstInvocation.pid).not.toBe(child.pid);
+      const firstResult = JSON.parse(await readFile(result, "utf8")) as { stdout: string; beforeTerm: boolean };
+      expect(firstResult.beforeTerm).toBe(true);
+      expect(firstResult.stdout.split("\n").some((line) => {
+        const members = line.trim().split(/\s+/);
+        return Number(members[1]) === child.pid && !members[2]!.startsWith("Z");
+      })).toBe(true);
+      expect(child.signalCode).toBe("SIGKILL");
+      await expectHeartbeatStopped(marker);
+      await expect(supervisor.exclude(review(child.pid!))).resolves.toEqual({ processesExcluded: true });
+      expect(supervisor.safeToReleaseLock).toBe(true);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      if (!stopped) await killPosixFixture(child.pid!, closed);
+      await closed;
+    }
+  }, 15_000);
+
+  it("retains native POSIX inspection failures and prevents exclusion", async () => {
+    if (process.platform === "win32") return;
+    const proxyDirectory = await mkdtemp(path.join(directory, "failed-ps-"));
+    const { child, closed, marker } = await nativeTree(false, "failed-inspection");
+    const supervisor = createProcessSupervisor({ graceMs: 300 });
+    const attempt = { reviewId: "review", attempt: 1 };
+    supervisor.onProcess(child, attempt);
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(path.join(proxyDirectory, "ps"), "#!/usr/bin/env node\nprocess.stderr.write('inspection fixture failed'); process.exitCode = 7;\n", { mode: 0o755 });
+      process.env.PATH = `${proxyDirectory}${path.delimiter}${previousPath}`;
+      await waitForFile(marker);
+      const failure: unknown = await supervisor.stop(child, attempt).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).toMatchObject({ cause: { code: 7, killed: false, signal: null } });
+      expect(formatError(failure)).toContain("Caused by: Command failed: ps -A -o pid= -o pgid= -o stat=");
+      expect(formatError(failure)).toContain("inspection fixture failed");
+      expect(supervisor.safeToReleaseLock).toBe(false);
+      await expect(supervisor.exclude(review(child.pid!))).rejects.toBe(failure);
+      expect(child.exitCode).toBe(null);
+      expect(child.signalCode).toBe(null);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      await killPosixFixture(child.pid!, closed);
     }
   }, 15_000);
 
