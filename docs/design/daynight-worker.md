@@ -238,6 +238,8 @@ Herdr 自动恢复计数及超限等待只在当前进程中维护，重启清�
 → 本机 done
 ```
 
+清理资源观察、通知、停止/关闭及 worktree 核验与删除使用专属的 5 分钟 operation，totalMs 与 requestMs 同为 300000；内部 Herdr RPC 和 Git 命令继承请求预算。Web 清理 IPC、缺失执行记录时的启动来源 HTTP 核验、Controller 等待清理回执及最终进程停止证明使用同一 5 分钟上限，通知与 Controller 清理回执等待还受原 10 分钟期限的剩余时间限制。进程停止中的信号升级间隔保持独立。正常执行继续使用原有预算。期限选择与代价见[清理操作预算决策](../../.agents/notes/implemented/bug-fix/2026-11-04-worker-cleanup-operation-budget.md)。
+
 清理消息成功递交后，后续巡查观察到 agent 为 idle 即确认该清理轮完成，开始实际停止进程和关闭 workspace。这个判断不依赖 stateChangeSeq/completionSeq 或 interactiveReady；通知前的观察和 submitPrompt 回执本身不完成清理。通知失败或结果未知时保留错误，继续等待本次既定期限，不自动重发。期限届满仍按既有停止确认流程收尾。这个终止清理阶段的 idle 不表示业务验收完成，worker 仍不提交业务 done。
 
 终态清理首次保存 cleanup_schedules 后才能通知或删除资源。Herdr 在递交前持久标记 notified，成功回执再标记 submitted；递交结果未知不能重新发送，后续沿用原 deadline 观察或停止。Web 首次初始化 cleanup 时使用调度表已保存的 deadline；两库提交之间中断后仍沿用该期限，已过期时只给零剩余预算。已有 Web cleanup 保留自身原 deadline。Web 的原生 cleanup 操作、result 和 error 仍由 Web 状态库保存，调度表的 lastError 不改变原生执行结果。失败、取消与重启不延长原期限；重启由持久调度恢复 ending，再核对实际资源，不能为已结束任务启动原生业务执行。Herdr 本机行已 done、调度责任尚未删除时，即使当前配置全部使用 Web，仍按原责任初始化私有 Herdr 控制后端；清理 job 查询资源前以及 shutdown 核验前均确保后端可达。普通巡查的 Herdr 依赖只来自当前配置与尚未进入 ending 的执行；仅用于清理的后端初始化和读取留在该 claim 的 job 内，遵守 nextAttemptAt，失败不能在全局巡查中再次初始化或阻塞无关 Web 执行。shutdown 则合并执行与清理责任，初始化后实际读取全部 Herdr workspace，不能将后端不可用当作空资源。该初始化不启动业务 Agent，实际观察完成前仍保留责任与容量。只有实际清理成功才清除调度责任，不能用到期或 done 行替代资源观察。调度读写异常由 job 错误边界捕获，聚合原清理错误与 SQLite 错误，并以进程内失败次数和 nextAttemptAt 保持有界退避；它不把未确认持久化当作成功，也不让 job 的未处理 rejection 阻止 shutdown 证明停止。既有持久责任保留；跨重启只能恢复最后一次已确认的持久状态。

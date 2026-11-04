@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+import { CLEANUP_OPERATION_MS } from "../../../src/commands/cleanup-operation.js";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -14,7 +16,7 @@ import type { ControllerSnapshot } from "../../../src/commands/controller/lifecy
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { requestController } from "../../../src/commands/controller/local-client.js";
 const roots:string[]=[];const stores:ReturnType<typeof openWebExecutionStore>[]=[];
-afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllGlobals();for(const store of stores.splice(0))store.close();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
+afterEach(async()=>{vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllGlobals();for(const store of stores.splice(0))store.close();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 const fixture=async(agent: "codex" | "claude" | "copilot" = "codex", recoveryLimit = 2)=>{
  const base=path.resolve(import.meta.dirname,"../../../../../.tmp/web-backend-tests");await mkdir(base,{recursive:true});const home=await mkdtemp(path.join(base,"h-"));roots.push(home);
  const store=openWebExecutionStore(path.join(home,"worker.sqlite"));stores.push(store);
@@ -580,4 +582,67 @@ it("retries endpoint closure after native stop without replaying native cleanup"
   expect(request).not.toHaveBeenCalled();
   expect(archive).toHaveBeenCalledOnce();
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+});
+
+
+it.each([240_000, 300_001])("bounds Web worktree removal to five minutes (duration=%s)", async duration => {
+  const f = await fixture();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 5 });
+  let now = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  vi.mocked(f.git.removeWorktree).mockImplementationOnce(async (_project, _owner, operation) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { operation.signal.removeEventListener("abort", cancel); operation.check(); resolve(); }, duration);
+    const cancel = (): void => { clearTimeout(timer); reject(operation.signal.reason); };
+    operation.signal.addEventListener("abort", cancel, { once: true });
+  }));
+  const outcome = backend.cleanup(f.store.getTask(f.identity)!, "terminal", 600_005).catch(error => error);
+  await vi.advanceTimersByTimeAsync(0);
+  now = Math.min(duration, 300_000);
+  await vi.advanceTimersByTimeAsync(now);
+  if (duration < 300_000) {
+    expect((await outcome).cleanup?.worktreeDeleted).toBe(true);
+  } else {
+    expect(await outcome).toMatchObject({ stage: "worktree-removal", cause: { name: "OperationError", kind: "deadline" } });
+    expect(f.store.getTask(f.identity)?.cleanup).toMatchObject({ agentStopped: true, backendResourcesClosed: true, worktreeDeleted: false });
+  }
+});
+
+
+it.each(["completed", "deadline", "cancelled", "startup-deadline"] as const)("uses the requested cleanup or startup provenance budget (%s)", async outcome => {
+  const api = createWorkerSessionApi("https://daynight.example", "test-token");
+  const identity = { projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID() };
+  const cancellation = new AbortController();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  // AbortSignal.timeout uses native timers, so route only its timer through the
+  // controlled queue while preserving the signal's deadline behavior.
+  vi.spyOn(AbortSignal, "timeout").mockImplementation(milliseconds => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), milliseconds);
+    return controller.signal;
+  });
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (_target, init) => new Promise<Response>((resolve, reject) => {
+    const signal = init!.signal!;
+    const timer = setTimeout(() => { signal.removeEventListener("abort", cancel); resolve(Response.json({ status: "not_registered", agentControlMode: "web", claimId: identity.claimId })); }, outcome === "completed" ? 60_000 : 300_001);
+    const cancel = (): void => { clearTimeout(timer); reject(signal.reason); };
+    signal.addEventListener("abort", cancel, { once: true });
+  })));
+  let settled = false;
+  const request = outcome === "startup-deadline" ? api.verifyUnregistered(identity, cancellation.signal) : api.verifyUnregistered(identity, cancellation.signal, CLEANUP_OPERATION_MS);
+  const result = request.then(() => { settled = true; return null; }, error => { settled = true; return error; });
+  await vi.advanceTimersByTimeAsync(30_001);
+  if (outcome === "startup-deadline") {
+    expect(settled).toBe(true);
+    expect(await result).toMatchObject({ name: "TimeoutError" });
+    return;
+  }
+  expect(settled).toBe(false);
+  if (outcome === "cancelled") {
+    cancellation.abort(new Error("cleanup cancelled"));
+    expect(await result).toBe(cancellation.signal.reason);
+  } else {
+    await vi.advanceTimersByTimeAsync((outcome === "completed" ? 60_000 : 300_000) - 30_001);
+    if (outcome === "completed") expect(await result).toBeNull();
+    else expect(await result).toMatchObject({ name: "TimeoutError" });
+  }
 });
