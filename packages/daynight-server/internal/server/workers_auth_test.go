@@ -40,7 +40,7 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 	if response.Header.Get("Daynight-User-ID") != aliceUser.ID {
 		t.Fatal("PAT reporter ownership was not authenticated")
 	}
-	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Private project","repoUrl":"https://example.com/snapshot"}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Private project", RepoURL: "https://example.com/snapshot", ExpectedUserID: bobUser.ID}), origin, http.StatusCreated)
 	project := identityDecode[api.Project](t, data)
 	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", `{}`, origin, http.StatusCreated)
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)

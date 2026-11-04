@@ -159,7 +159,7 @@ version 后才接受相同原文。真实改名只更新 Team 名称、元数据
 快照能看见取锁等待期间已提交的 ownership；把检查合并进最初的锁定查询会使用等待前的快照。
 检查使用既有 `project_ownership(team_id,project_id)` 索引。非空返回 team_not_empty，空集才在
 同一事务删除成员和 Team。事务不取得已有 Project、Task 或 Thread head 锁，避免把 Team-only
-操作引入那些资源的锁序。创建 Project 的既有入口先锁真实 Personal Team；任何建立目标
+操作引入那些资源的锁序。创建 Project 先锁目标 Team；任何建立目标
 ownership 的写入必须先锁定并重读该 Team，和删除共享其存在性锁，不能在 Team 删除后插入孤立归属。
 
 生命周期调用复用既有 `TransactionError` 的 callback、rollback、commit 和 completion 事实，
@@ -285,10 +285,13 @@ ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessio
 重置 sequence；已经删除的高版本仍保护删除后重加的 ABA。SQL、必要 transform 与 ledger
 在原迁移事务内提交，任一失败均回滚；历史 migration checksum 保持。
 
-当前项目创建先锁定并验证调用者真实 Personal Team，再在同一事务插入 Project、
-ownership 与 creator direct admin grant。`core.Project.Ownership` 是真实内部聚合，
+项目创建在任何领域 SQL 前核对 `expectedUserId` 与 principal。指定 Team 时锁定目标行并在
+锁后读取当前成员资格；省略时锁定并验证调用者真实 Personal Team。随后在同一事务插入
+Project、ownership 与 creator direct admin grant。创建和删除共享 Team 存在性锁，删除的
+独立 Read Committed 查询能看到锁等待前提交的 ownership。未确认 COMMIT 与清理失败沿用
+Team 事务的结果分类，不自动重放。`core.Project.Ownership` 是真实内部聚合，
 Project 点读通过 LEFT JOIN 投影并校验必需归属；缺行是完整性错误，没有运行时旧数据回退。
-当前公开 Project 与 `/me` 合同保持，归属与完整来源的公开字段由其实际协议转换拥有。
+创建在同一事务投影当前 access，提交确认后与 Project 一并返回；公开归属与权限来源使用真实记录。
 
 独立授权管理提交观察版本，锁项目后重查有效 admin 与 grant 版本。真实角色变更与新加入
 从 `project_grant_versions` sequence 取得新版本，观察值不要求连续或每次恰好加一；

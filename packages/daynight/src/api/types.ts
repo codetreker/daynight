@@ -257,7 +257,7 @@ export type TaskGraph = {
 };
 
 export type Page<T> = { readonly items: readonly T[]; readonly nextCursor: string | null };
-export type CreateProjectInput = { readonly name: string; readonly repoUrl: string };
+export type CreateProjectInput = { readonly name: string; readonly repoUrl: string; readonly expectedUserId: string; readonly teamId?: string };
 export type CreateTaskInput = {
   readonly title: string;
   readonly requiredPlatform?: TaskPlatform | null;

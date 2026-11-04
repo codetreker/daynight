@@ -50,7 +50,9 @@ export const runProjectCommand = async (
       operation.check();
       if (matches.length > 1) throw new Error(`Multiple projects match this repository (${matches.map(({ id }) => id).join(", ")}); choose an existing project by its ID.`);
       if (matches.length === 1) return `Project already exists.\n${renderProject(matches[0]!)}`;
-      const project = await api.createProject({ name: name!, repoUrl });
+      const expectedUserId = (await api.getCurrentUser(true)).id;
+      operation.check();
+      const project = await api.createProject({ name: name!, repoUrl, expectedUserId });
       operation.check();
       return `Project created.\n${renderProject(project)}`;
     }

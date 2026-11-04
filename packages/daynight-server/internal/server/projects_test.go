@@ -111,7 +111,7 @@ func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
 	if page.Items == nil || len(page.Items) != 0 || page.NextCursor != nil || !strings.Contains(empty.Body.String(), `"items":[]`) || !strings.Contains(empty.Body.String(), `"nextCursor":null`) {
 		t.Fatalf("empty list shape: %s", empty.Body)
 	}
-	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", `{"name":"API work","repoUrl":"git@github.com:example/repository.git"}`)
+	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "API work", RepoURL: "git@github.com:example/repository.git", ExpectedUserID: handler.principal.UserID}))
 	project := decodeResponse[api.Project](t, response, http.StatusCreated)
 	if project.Name != "API work" || project.RepoURL != "git@github.com:example/repository.git" || project.ID == "" || project.CreatedAt.IsZero() || project.CreatedAt.Location() != time.UTC || project.UpdatedAt != project.CreatedAt {
 		t.Fatalf("created project: %+v", project)
@@ -120,10 +120,10 @@ func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
 		t.Fatalf("invalid resource location: %s", response.Header().Get("Location"))
 	}
 	var fields map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 7 {
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 8 {
 		t.Fatalf("unexpected project DTO: %s %v", response.Body, err)
 	}
-	for _, key := range []string{"id", "name", "repoUrl", "createdAt", "updatedAt", "settings", "ownership"} {
+	for _, key := range []string{"id", "name", "repoUrl", "createdAt", "updatedAt", "settings", "ownership", "access"} {
 		if _, exists := fields[key]; !exists {
 			t.Fatalf("missing DTO field %s: %s", key, response.Body)
 		}
@@ -301,7 +301,7 @@ func TestProjectHTTPSharedPaginationRejectsOtherScopesAndPrincipals(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := service.NewProjects(h.database).Create(ctx, admin, service.CreateProject{Name: "Second shared", RepoURL: "https://example.com/second.git"})
+	second, err := service.NewProjects(h.database).Create(ctx, admin, service.CreateProject{ExpectedUserID: admin.UserID, Name: "Second shared", RepoURL: "https://example.com/second.git"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +487,7 @@ func TestHTTPErrorMappingAndWriteFailure(t *testing.T) {
 func TestPublicHealthAndReadinessUseLiveDatabase(t *testing.T) {
 	database := projectTestStore(t)
 	handler := projectTestHandler(t, database, io.Discard)
-	created := projectRequest(handler, http.MethodPost, "/api/v1/projects", `{"name":"private-health-project","repoUrl":"https://example.test/private.git"}`)
+	created := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "private-health-project", RepoURL: "https://example.test/private.git", ExpectedUserID: handler.principal.UserID}))
 	decodeResponse[api.Project](t, created, http.StatusCreated)
 	request := func(method, path string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -517,4 +517,80 @@ func TestPublicHealthAndReadinessUseLiveDatabase(t *testing.T) {
 		t.Fatalf("readiness failure exposed data or cached state: %s %+v", response.Body, response.Header())
 	}
 	decodeResponse[map[string]string](t, request(http.MethodGet, "/healthz"), http.StatusOK)
+}
+
+func TestProjectCreateIdentityTargetAndAccess(t *testing.T) {
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
+	ctx := context.Background()
+	actor := handler.principal
+	team, err := service.NewTeams(database).Create(ctx, actor, service.CreateTeam{Name: "Team", ExpectedUserID: actor.UserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := api.CreateProjectRequest{Name: " 原文 ", RepoURL: "git@example.com:Org/Repo.git", TeamID: &team.ID, ExpectedUserID: actor.UserID}
+	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input))
+	doc := decodeResponse[api.ProjectDocument](t, response, http.StatusCreated)
+	if doc.Name != input.Name || doc.RepoURL != input.RepoURL || doc.Ownership.TeamID != team.ID || doc.Access.Ownership != doc.Ownership || doc.Access.ProjectID != doc.ID || doc.Access.DirectGrant == nil || doc.Access.DirectGrant.UserID != actor.UserID || doc.Access.DirectGrant.Role != "admin" || doc.Access.EffectiveRole != "admin" {
+		t.Fatalf("created document: %+v", doc)
+	}
+	snapshot := func() string {
+		var state string
+		err := database.Pool.QueryRow(ctx, `SELECT jsonb_build_object('teams',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM teams t),'members',(SELECT jsonb_agg(to_jsonb(m) ORDER BY team_id,user_id) FROM team_members m),'projects',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM projects p),'ownership',(SELECT jsonb_agg(to_jsonb(o) ORDER BY project_id) FROM project_ownership o),'grants',(SELECT jsonb_agg(to_jsonb(g) ORDER BY project_id,user_id) FROM project_grants g))::text`).Scan(&state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	before := snapshot()
+	input.ExpectedUserID = "00000000-0000-4000-8000-000000000001"
+	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input)), http.StatusConflict, "identity_mismatch")
+	for _, body := range []string{
+		`{"name":"x","repoUrl":"host:repo"}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":null}`,
+		`{"name":"\ud800","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `"}`,
+		`{"name":"x","repoUrl":"host:\udfff","expectedUserId":"` + actor.UserID + `"}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":"bad"}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `","teamId":null}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `","teamId":"bad"}`,
+	} {
+		assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", body), http.StatusBadRequest, "invalid_input")
+	}
+	input.ExpectedUserID = actor.UserID
+	missing := "00000000-0000-4000-8000-000000000002"
+	input.TeamID = &missing
+	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input)), http.StatusNotFound, "not_found")
+	if after := snapshot(); before != after {
+		t.Fatal("rejected writes changed domain rows or versions")
+	}
+}
+
+func TestProjectCreateUnknownOutcomeClassification(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", nil)
+	request.Header.Set("X-Request-ID", "project-test")
+	for _, test := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: context.DeadlineExceeded}, 503, "write_outcome_unknown"},
+		{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: &service.Fault{Code: "forbidden", Message: "private"}}, 500, "internal_error"},
+		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionNotCommitted, Cause: errors.New("private")}, 500, "internal_error"},
+	} {
+		response := httptest.NewRecorder()
+		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeProjectCreateError(w, r, logger, test.err) })).ServeHTTP(response, request)
+		assertProjectError(t, response, test.status, test.code)
+	}
+	for _, short := range []bool{false, true} {
+		writer := &threadFailingWriter{ResponseRecorder: httptest.NewRecorder(), short: short}
+		writeMutationJSON(writer, request, logger, "project", 201, api.ProjectDocument{})
+		if writer.calls != 1 {
+			t.Fatal("response replayed")
+		}
+	}
+	if strings.Contains(logs.String(), "private") {
+		t.Fatal("private errors leaked")
+	}
 }

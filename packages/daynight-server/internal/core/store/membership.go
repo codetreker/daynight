@@ -33,20 +33,53 @@ func (tx *ProjectTx) DirectProjectMember(ctx context.Context, userID string) (co
 }
 
 func (s *Store) CreatePrivateProject(ctx context.Context, principal core.Principal, id, name, repoURL string) (core.Project, error) {
-	tx, err := s.Pool.Begin(ctx)
+	project, _, err := s.CreateProjectInTeam(ctx, principal, id, name, repoURL, nil)
+	return project, err
+}
+
+func (s *Store) CreateProjectInTeam(ctx context.Context, principal core.Principal, id, name, repoURL string, targetTeamID *string) (core.Project, core.ProjectAccess, error) {
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return core.Project{}, queryError("begin private project", err)
+		return core.Project{}, core.ProjectAccess{}, queryError("begin project creation", err)
 	}
+	project, access, err := createProjectInTeamTx(ctx, tx, principal, id, name, repoURL, targetTeamID)
+	return project, access, authQueryError("create project", err)
+}
+
+func createProjectInTeamTx(ctx context.Context, tx pgx.Tx, principal core.Principal, id, name, repoURL string, targetTeamID *string) (core.Project, core.ProjectAccess, error) {
 	var project core.Project
+	var access core.ProjectAccess
+	var err error
 	err = transact(ctx, tx, func(tx pgx.Tx) error {
 		// The user must still exist; no implicit membership is created for an external ID.
 		var userID string
 		if err := tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 FOR KEY SHARE`, principal.UserID).Scan(&userID); err != nil {
 			return err
 		}
-		teamID, err := personalTeam(ctx, tx, userID, " FOR UPDATE")
-		if err != nil {
-			return err
+		var teamID string
+		if targetTeamID == nil {
+			teamID, err = personalTeam(ctx, tx, userID, " FOR UPDATE")
+			if err != nil {
+				return err
+			}
+		} else {
+			var personalOwner *string
+			if err := tx.QueryRow(ctx, `SELECT id::text,personal_user_id::text FROM teams WHERE id=$1 FOR UPDATE`, *targetTeamID).Scan(&teamID, &personalOwner); err != nil {
+				return err
+			}
+			if personalOwner != nil {
+				if *personalOwner != userID {
+					return pgx.ErrNoRows
+				}
+				if _, err := personalTeam(ctx, tx, userID, ""); err != nil {
+					return err
+				}
+			} else {
+				var role string
+				if err := tx.QueryRow(ctx, `SELECT role FROM team_members WHERE team_id=$1 AND user_id=$2`, teamID, userID).Scan(&role); err != nil {
+					return err
+				}
+			}
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO projects (id,name,repo_url) VALUES ($1,$2,$3)`, id, name, repoURL)
 		if err != nil {
@@ -59,9 +92,13 @@ func (s *Store) CreatePrivateProject(ctx context.Context, principal core.Princip
 			return err
 		}
 		project, err = readProject(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		access, err = ReadProjectAccess(ctx, tx, userID, id)
 		return err
 	})
-	return project, authQueryError("create private project", err)
+	return project, access, err
 }
 
 func (s *Snapshot) ProjectParticipants(ctx context.Context, projectID string) ([]core.ProjectParticipant, error) {

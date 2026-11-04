@@ -23,7 +23,7 @@ import (
 
 func taskProject(t *testing.T, handler http.Handler) api.Project {
 	t.Helper()
-	return decodeResponse[api.Project](t, projectRequest(handler, http.MethodPost, "/api/v1/projects", `{"name":"Task project","repoUrl":"https://github.com/example/tasks"}`), http.StatusCreated)
+	return decodeResponse[api.Project](t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Task project", RepoURL: "https://github.com/example/tasks", ExpectedUserID: handler.(*resourceTestHandler).principal.UserID})), http.StatusCreated)
 }
 
 func taskCollection(projectID string) string { return "/api/v1/projects/" + projectID + "/tasks" }

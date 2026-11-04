@@ -75,9 +75,29 @@ export const updateTokenExpiry = (tokenId: string, input: PersonalAccessTokenExp
   });
 };
 
-export const createProject = (input: { readonly name: string; readonly repoUrl: string }, signal: AbortSignal): Promise<Project> => {
-  if (input.name.trim() === "" || input.repoUrl.trim() === "" || input.name.includes("\0") || input.repoUrl.includes("\0")) throw new ApiError("protocol");
-  return send("/api/v1/projects", "POST", 201, JSON.stringify(input), signal, project, decodeProjectJson);
+export class ProjectCreationUnknown extends Error {
+  constructor(cause: unknown) { super("The project creation outcome is unknown.", { cause }); this.name = "ProjectCreationUnknown"; }
+}
+export const createProject = (input: { readonly name: string; readonly repoUrl: string; readonly expectedUserId: string; readonly teamId?: string }, signal: AbortSignal, onIdentityMismatch: () => void): Promise<Project> => {
+  if (!input.name.isWellFormed() || !/[^\p{White_Space}]/u.test(input.name) || input.name.includes("\0") || !input.repoUrl.isWellFormed() || !/[^\p{White_Space}]/u.test(input.repoUrl) || input.repoUrl.includes("\0")) throw new ApiError("protocol");
+  const expected = requestId(input.expectedUserId);
+  const teamId = input.teamId === undefined ? undefined : requestId(input.teamId);
+  let dispatched = false;
+  return grantWrite(signal, onIdentityMismatch, async () => {
+    const response = await request("/api/v1/projects", signal, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ name: input.name, repoUrl: input.repoUrl, expectedUserId: expected, ...(teamId === undefined ? {} : { teamId }) }) }, () => { dispatched = true; });
+    assertResponsePrincipal(response, expected, onIdentityMismatch);
+    return json(response, signal, (value) => {
+      if (response.status !== 201) throw new ApiError("protocol", response.status);
+      const data = record(value);
+      if (Object.keys(data).some((key) => !["id", "name", "repoUrl", "settings", "ownership", "createdAt", "updatedAt", "access"].includes(key))) return malformed();
+      const created = project(data), access = parseProjectAccess(data.access, created.id, expected);
+      if (teamId !== undefined && teamId !== created.ownership.teamId || access.ownership.teamId !== created.ownership.teamId || access.ownership.version !== created.ownership.version || access.directGrant?.role !== "admin" || access.teamRole === null) return malformed();
+      return created;
+    }, decodeProjectJson);
+  }).catch((error: unknown) => {
+    if (dispatched && !(error instanceof ApiError && error.kind === "server" && error.status !== null && error.status >= 400 && error.status < 500)) throw new ProjectCreationUnknown(error);
+    throw error;
+  });
 };
 export const listMembers = (projectId: string, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<ProjectParticipants> => {
   const project = requestId(projectId);

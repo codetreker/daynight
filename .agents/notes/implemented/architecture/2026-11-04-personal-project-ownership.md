@@ -34,8 +34,10 @@ Canonical user UPSERT, Personal initialization and session creation share the
 login transaction. A newly inserted Team receives its owner admin there;
 repeated and concurrent logins reuse the existing Team and validate its owner
 relationship. Authentication does not repair broken Personal state. The active
-Project creator locks and validates the real Personal Team, then inserts Project,
-ownership and creator direct admin grant in one transaction.
+Project creator locks and validates the target Team, defaulting to the real
+Personal Team, then inserts Project, ownership and creator direct admin grant in
+one transaction. The [Team creation context decision](2026-11-04-team-project-creation.md)
+owns identity and concurrency details for this writer.
 
 The canonical access owner computes `max(owner Team role, direct grant role)`
 under `none < member < admin`. Actor admission, lists, participant/assignee

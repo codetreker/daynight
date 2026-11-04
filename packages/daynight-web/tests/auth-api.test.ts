@@ -17,6 +17,7 @@ const { email: memberEmail, name: memberName, avatarUrl: memberAvatar, ...grant 
 const participant = { inheritedFrom: null, userId, profile: { email: memberEmail, name: memberName, avatarUrl: memberAvatar }, effectiveRole: member.role, directGrant: grant };
 const invitation = { id: inviteId, projectId, createdBy: userId, createdAt: time, expiresAt: time, consumedBy: null, consumedAt: null, revokedAt: null };
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "New project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
+const creationReceipt = { ...project, access: { ...directAccessFixture(projectId, userId, "admin"), teamRole: "admin", canTransfer: true } };
 const signal = () => new AbortController().signal;
 const rawJson = JSON as unknown as { rawJSON: (text: string) => unknown };
 const response = (value: unknown, status = 200): Response => new Response(JSON.stringify(value, (_key, item: unknown) => typeof item === "bigint" ? rawJson.rawJSON(item.toString()) : item), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
@@ -194,17 +195,50 @@ describe("session and personal credentials API", () => {
 
 describe("private project and membership API", () => {
   it("creates a project through the existing endpoint and requires the documented creation status", async () => {
-    const fetcher = mock(response(project, 201));
-    expect(await createProject({ name: project.name, repoUrl: project.repoUrl }, signal())).toEqual(project);
-    expect(fetcher.mock.calls[0]).toEqual(["/api/v1/projects", expect.objectContaining({ method: "POST", body: JSON.stringify({ name: project.name, repoUrl: project.repoUrl }) })]);
-    fetcher.mockResolvedValue(response(project, 200));
-    await expect(createProject({ name: project.name, repoUrl: project.repoUrl }, signal())).rejects.toMatchObject({ kind: "protocol", status: 200 });
+    const fetcher = mock(response(creationReceipt, 201));
+    expect(await createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), vi.fn())).toEqual(project);
+    expect(fetcher.mock.calls[0]).toEqual(["/api/v1/projects", expect.objectContaining({ method: "POST", body: JSON.stringify({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }) })]);
+    fetcher.mockResolvedValue(response(creationReceipt, 200));
+    await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ name: "ProjectCreationUnknown", cause: { kind: "protocol", status: 200 } });
+  });
+
+  it("sends an explicit team and validates the creation ownership and grant", async () => {
+    const fetcher = mock(response(creationReceipt, 201));
+    const teamId = project.ownership.teamId;
+    const input = { name: project.name, repoUrl: project.repoUrl, expectedUserId: userId.toUpperCase(), teamId: teamId.toUpperCase() };
+    await expect(createProject(input, signal(), vi.fn())).resolves.toEqual(project);
+    expect(fetcher.mock.calls[0]?.[1].body).toBe(JSON.stringify({ ...input, expectedUserId: userId, teamId }));
+    for (const access of [
+      { ...creationReceipt.access, ownership: { ...creationReceipt.access.ownership, version: 2n } },
+      { ...creationReceipt.access, directGrant: null },
+      { ...creationReceipt.access, directGrant: { ...creationReceipt.access.directGrant!, userId: otherId } },
+    ]) {
+      fetcher.mockResolvedValueOnce(response({ ...project, access }, 201));
+      await expect(createProject(input, signal(), vi.fn())).rejects.toMatchObject({ name: "ProjectCreationUnknown" });
+    }
+  });
+
+  it("preserves original project text and rejects mismatched successful principals without replay", async () => {
+    const input = { name: "  Project 名称  ", repoUrl: "git@github.com:org/repo.git", expectedUserId: userId };
+    const mismatch = vi.fn();
+    const fetcher = mock(new Response(stringifyWireJson({ ...project, name: input.name }), { status: 201, headers: { "Content-Type": "application/json", "Daynight-User-ID": otherId } }));
+    await expect(createProject(input, signal(), mismatch)).rejects.toMatchObject({ name: "ProjectCreationUnknown", cause: { kind: "protocol", code: "principal_mismatch" } });
+    expect(mismatch).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]?.[1].body).toBe(JSON.stringify(input));
+  });
+
+  it("revalidates identity on an explicit creation refusal without replay", async () => {
+    const mismatch = vi.fn(), fetcher = mock(refusal(409, "identity_mismatch"));
+    await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), mismatch)).rejects.toMatchObject({ kind: "server", code: "identity_mismatch" });
+    expect(mismatch).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it.each([{ name: "", repoUrl: "repo" }, { name: "name", repoUrl: " " }, { name: "bad\0name", repoUrl: "repo" }, { name: "name", repoUrl: "bad\0repo" }])("rejects malformed project input before requests %#", (input) => {
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
-    expect(() => createProject(input, signal())).toThrow(ApiError);
+    expect(() => createProject({ ...input, expectedUserId: userId }, signal(), vi.fn())).toThrow(ApiError);
     expect(fetcher).not.toHaveBeenCalled();
   });
 

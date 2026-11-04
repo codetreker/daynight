@@ -541,7 +541,9 @@ option before the terminator: `daynight project create --repo <repo> -- -name`.
 The name is sent unchanged.
 
 Creation first scans every project page and compares canonical repository
-identities. With no match it registers the original name and repository address.
+identities. With no match it reads the current user, binds the request and response
+to that identity, and registers the original name and repository address in the
+Personal Team. An unknown write is not automatically replayed.
 With one match it reports `Project already exists.` and the existing project,
 leaving that project's name and address unchanged. Multiple matches fail with
 their IDs; lookup failures and exhausted command budgets stop before creation.

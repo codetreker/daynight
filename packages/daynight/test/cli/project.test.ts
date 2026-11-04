@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 
 const executable = fileURLToPath(new URL("../../dist/main.js", import.meta.url));
+const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const user = { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal", name: null } };
 const projectId = "a1b2c3d4-1111-4222-8333-123456789abc";
 const secondId = "a1b2c3d4-1111-4222-8333-123456789abd";
 const project = (id = projectId, name = "Project 中文") => ({
@@ -15,6 +17,7 @@ const project = (id = projectId, name = "Project 中文") => ({
   createdAt: "2026-10-20T00:00:00.123456789Z", updatedAt: "2026-10-20T00:00:00.123456789Z",
 });
 
+const creationReceipt = <T extends { id: string; ownership: { teamId: string; version: bigint }; createdAt: string; updatedAt: string }>(value: T, userId: string) => ({ ...value, access: { projectId: value.id, ownerTeam: { id: value.ownership.teamId, kind: "personal", name: null }, ownership: value.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: value.id, userId, role: "admin", version: 1n, createdAt: value.createdAt, updatedAt: value.updatedAt } } });
 const fixture = async () => {
   const temporary = fileURLToPath(new URL("../../../../.tmp/", import.meta.url));
   await mkdir(temporary, { recursive: true });
@@ -69,10 +72,12 @@ describe("compiled project commands", () => {
         const input = body === "" ? null : JSON.parse(body) as { name: string; repoUrl: string };
         requests.push({ method: request.method!, cursor, body: input });
         response.setHeader("Content-Type", "application/json");
+        if (request.url === "/api/v1/me") { response.setHeader("Daynight-User-ID", userId); response.end(stringifyApiJson(user)); return; }
         if (input !== null) {
-          const created = { ...project(), ...input };
+          const created = { ...project(), name: input.name, repoUrl: input.repoUrl };
+          response.setHeader("Daynight-User-ID", userId);
           projects.push(created);
-          response.writeHead(201).end(stringifyApiJson(created));
+          response.writeHead(201).end(stringifyApiJson(creationReceipt(created, userId)));
         } else response.end(stringifyApiJson({ items: cursor === null ? projects.slice(0, 1) : projects.slice(1), nextCursor: cursor === null && projects.length > 1 ? "later page" : null }));
       });
     });
@@ -98,7 +103,7 @@ describe("compiled project commands", () => {
       const created = await f.invoke(["project", "create", "Original 名称"], blocked, { cwd: nested, nativeGit: true });
       expect(created.code, created.stderr).toBe(0);
       expect(created.stdout).toContain("Project created.");
-      expect(requests).toEqual([{ method: "GET", cursor: null, body: null }, { method: "POST", cursor: null, body: { name: "Original 名称", repoUrl: remote } }]);
+      expect(requests).toEqual([{ method: "GET", cursor: null, body: null }, { method: "GET", cursor: null, body: null }, { method: "POST", cursor: null, body: { name: "Original 名称", repoUrl: remote, expectedUserId: userId } }]);
       projects[1] = { ...projects[1]!, repoUrl: "https://git.example/Org/Repo" };
       const beforeRepeat = requests.length;
       const repeated = await f.invoke(["project", "create", "Different name"], blocked, { cwd: nested, nativeGit: true });
@@ -176,7 +181,11 @@ describe("compiled project commands", () => {
         response.setHeader("Content-Type", "application/json");
         if (request.method === "POST") {
           const input = body as { name: string; repoUrl: string };
-          response.writeHead(201).end(stringifyApiJson({ ...project(), ...input }));
+          response.setHeader("Daynight-User-ID", userId);
+          response.writeHead(201).end(stringifyApiJson(creationReceipt({ ...project(), name: input.name, repoUrl: input.repoUrl }, userId)));
+        } else if (url.pathname === "/api/v1/me") {
+          response.setHeader("Daynight-User-ID", userId);
+          response.end(stringifyApiJson(user));
         } else if (url.pathname === `/api/v1/projects/${projectId}`) {
           response.end(stringifyApiJson(project()));
         } else if (url.searchParams.has("cursor")) {
@@ -222,12 +231,12 @@ describe("compiled project commands", () => {
       expect(created.code, created.stderr).toBe(0);
       expect(created.stdout).toContain("Project created.");
       expect(created.stdout).toContain("名字\\n\\u001b[31m");
-      expect(requests.filter(({ method }) => method === "POST")).toEqual([{ method: "POST", pathname: "/api/v1/projects", cursor: null, body: { name, repoUrl: remote } }]);
+      expect(requests.filter(({ method }) => method === "POST")).toEqual([{ method: "POST", pathname: "/api/v1/projects", cursor: null, body: { name, repoUrl: remote, expectedUserId: userId } }]);
 
       for (const name of [" Name 中文 ", "\ufeff", "-leading"]) {
         const created = await f.invoke(["project", "create", "--repo", remote, "--", name], createBlocked);
         expect(created.code, created.stderr).toBe(0);
-        expect(requests.at(-1)!.body).toEqual({ name, repoUrl: remote });
+        expect(requests.at(-1)!.body).toEqual({ name, repoUrl: remote, expectedUserId: userId });
       }
 
       failSecondPage = true;

@@ -350,7 +350,7 @@ flowchart TD
 
 | CLI 操作 | API |
 |---|---|
-| `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时 `POST /api/v1/projects`，提交原始 `name`、`repoUrl` |
+| `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时读取 `/me`，再提交真实 `expectedUserId` 和原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
 | `task create [--required-platform <platform>] [--assigned-to <user-uuid>]` | 省略负责人先 `GET /api/v1/me`，再 `POST /api/v1/projects/{projectId}/tasks`，携带 assignedTo 和可选 requiredPlatform |
@@ -459,7 +459,8 @@ create/update 的 --required-platform 设置枚举，update --clear-required-pla
 创建先确定 repo：显式 `--repo` 直接使用原值，并跳过工作目录查询及 Git；省略时
 直接复用 `repository/git.ts` 的 `discoverRepository`，读取当前 worktree 有效
 `origin`，包含 `insteadOf` 展开。随后将该地址及全部列表结果的 `repoUrl` 交给
-`repository/identity.ts` 的同一正规化器比较。零匹配才 POST 原始名称和原始地址；
+`repository/identity.ts` 的同一正规化器比较。零匹配时读取当前用户并绑定创建请求与响应主体，
+再 POST 原始名称和原始地址；
 唯一匹配通过既有资源渲染器输出 `Project already exists.` 及完整 project，不改名
 或更新 repo；多匹配列出 ID 并失败。此路径不调用 task 的 `resolveProject`，因此
 不读取或保存 `.daynight/project.yml`，也不写 ignore 规则。

@@ -29,7 +29,7 @@ Personal 初始化和存量归属迁移遵守下述原子性与数据完整性�
 | AU2 | 稳定外部身份对应唯一的本地用户，邮箱/姓名/头像为可空资料，不用邮箱匹配身份。 |
 | AU3 | 登录事务绑定发起浏览器，原子校验和消费后才领取一次性身份。重放、过期、错误绑定与领取失败明确拒绝。 |
 | AU4 | Web 使用可注销/到期的主站会话；CLI 通过设备授权取得关联用户的默认永不过期、可撤销凭据，网页令牌管理器可修改到期时间。普通使用无需手工 PAT，自动化保留显式 PAT 配置；凭据明文只交付一次。 |
-| AU5 | 创建项目、真实 Personal ownership 与创建者 direct admin 在同一事务提交。有效角色只有 admin/member，两者具有业务读写及任务 set-status 能力。 |
+| AU5 | 创建项目、真实 Team ownership 与创建者 direct admin 在同一事务提交；未指定 Team 时使用 Personal。有效角色只有 admin/member，两者具有业务读写及任务 set-status 能力。 |
 | AU6 | 只有有效 admin 能管理独立授权、角色和邀请；Project 可以没有 direct admin，owner Team 的继承权限仍独立生效。 |
 | AU7 | 项目列表先按成员筛选再分页；详情、任务、图、属性、附件列表、下载及预览逐请求执行项目授权。 |
 | AU8 | 邀请有有效期、可撤销、单次使用；接受者先登录再明确确认，加入角色为 member。 |
@@ -220,8 +220,12 @@ grant 版本是独立于 task.version 的不连续正 int64 JSON number；大于
 
 过期修改返回 version_conflict；移除后重新加入获得新版本，旧观察仍冲突，
 无变化角色更新保留版本。有效 admin 可以删除或降级最后一位 direct admin；Team 关系与
-Project grant 独立，撤销一种来源不能撤销另一种来源。当前项目创建原子保存调用者 Personal
-归属、ownership 与 creator direct admin。
+Project grant 独立，撤销一种来源不能撤销另一种来源。创建 Project 接受原文 `name`、`repoUrl`、
+可选 `teamId` 和必填 `expectedUserId`。目标 Team 的当前 member 或 admin 可创建；省略目标时使用
+调用者 Personal Team。Project、真实 ownership 与 creator direct admin 原子提交。身份不符在任何领域
+SQL 前返回 409 `identity_mismatch`，非成员不可创建。客户端核对响应主体，不自动重放未知写入。
+成功返回 Project、ownership 和同一事务中新鲜的 access。现有 CLI 和 Web 创建入口未指定目标，
+使用当前真实身份并保留有效名称与仓库地址原文。
 
 既有项目按最早加入的现任 admin 的 Personal Team 回填；加入时间相同按 user UUID 稳定决定。
 全部既有用户，包括仅持 PAT 的用户，预先取得 Personal。零 admin 或坏引用使迁移整体失败，
@@ -387,12 +391,12 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | 缺失、无效、撤销或到期用户凭据 | 401 unauthenticated JSON |
 | Team/项目不存在或当前主体没有对应成员资格 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
-| Team 管理或修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
+| Team 管理、创建项目或修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
 | 观察独立授权或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
 | 变更 Personal Team | 409 personal_team_immutable |
 | 删除仍有 Project ownership 引用的 Team | 409 team_not_empty |
 | Team 真实改名所需版本已达最大正 int64 | 409 version_exhausted；同值 no-op 仍有效 |
-| 无法确认 Team 管理 COMMIT 结果 | 503 write_outcome_unknown |
+| 无法确认 Team 管理或项目创建 COMMIT 结果 | 503 write_outcome_unknown |
 | 生命周期前态不符或前置未完成 | 409 invalid_transition / dependency_unsatisfied |
 | 邀请已消费、到期或撤销 | 410 invitation_unavailable |
 | provider discovery 的 App 配置/凭据错误 | 503 identity_configuration |

@@ -309,7 +309,9 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 | `GET /api/v1/projects/{projectId}/task-assignees` | 同一读取快照中的项目成员与保留负责人目录或限定ID解析 |
 | `GET /api/v1/me/workers/{workerId}` | telemetry 与按当前权限过滤的任务观测 |
 
-创建 project 的输入为 `name` 和 `repoUrl`。创建 task 的输入为 `title`、可省略的
+创建 project 的输入为 `name`、`repoUrl`、必填 `expectedUserId` 和可选 `teamId`；
+目标成员检查与事务锁由[鉴权架构](daynight-auth.md#数据与并发)拥有；成功返回 Project 与同事务 access。
+创建 task 的输入为 `title`、可省略的
 `description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo` 与 `properties`；省略描述表示空字符串，省略依赖和
 属性表示没有对应行，完整属性对象为空时返回 {}。创建成功
 返回 `201`、资源体和对应资源的 `Location`；读取、更新及全部 worker 操作成功返回 `200`。Worker DTO/授权/事务规则由[认领架构](daynight-worker-claims.md)拥有；普通 create/PATCH 不能提供 properties.worker，PR 更新保留它。

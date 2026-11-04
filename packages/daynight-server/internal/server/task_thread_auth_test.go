@@ -12,7 +12,7 @@ import (
 func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
 	integration := newIdentityIntegration(t)
 	admin, member, outsider, anonymous := identityBrowser(t), identityBrowser(t), identityBrowser(t), identityBrowser(t)
-	integration.login(t, admin, "alice")
+	adminUser := integration.login(t, admin, "alice")
 	memberUser := integration.login(t, member, "bob")
 	integration.login(t, outsider, "nullable")
 	origin := map[string]string{"Origin": integration.server.URL}
@@ -31,7 +31,7 @@ func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
 		}
 		return response, data
 	}
-	_, data := request(admin, http.MethodPost, "/api/v1/projects", map[string]any{"name": "Thread authentication", "repoUrl": "https://example.com/thread-auth"}, origin, 201, "")
+	_, data := request(admin, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Thread authentication", RepoURL: "https://example.com/thread-auth", ExpectedUserID: adminUser.ID}, origin, 201, "")
 	project := identityDecode[api.Project](t, data)
 	_, data = request(admin, http.MethodPost, "/api/v1/projects/"+project.ID+"/invitations", map[string]any{}, origin, 201, "")
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)

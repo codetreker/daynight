@@ -47,7 +47,7 @@ func (f *membershipFixture) user(t *testing.T) core.Principal {
 
 func (f *membershipFixture) project(t *testing.T, p core.Principal, name string) core.Project {
 	t.Helper()
-	project, err := f.projects.Create(context.Background(), p, CreateProject{Name: name, RepoURL: "https://example.com/team/repo.git"})
+	project, err := f.projects.Create(context.Background(), p, CreateProject{ExpectedUserID: p.UserID, Name: name, RepoURL: "https://example.com/team/repo.git"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestPrivateProjectsAtomicCreationAndMemberFilteredPagination(t *testing.T) 
 	if _, err := f.database.Pool.Exec(ctx, `CREATE FUNCTION reject_initial_admin() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected admin insertion failure'; END $$; CREATE TRIGGER reject_initial_admin BEFORE INSERT ON project_grants FOR EACH ROW EXECUTE FUNCTION reject_initial_admin()`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.projects.Create(ctx, alice, CreateProject{Name: "Must roll back", RepoURL: "host:repo"})
+	_, err = f.projects.Create(ctx, alice, CreateProject{ExpectedUserID: alice.UserID, Name: "Must roll back", RepoURL: "host:repo"})
 	requireIdentityOperationalError(t, err)
 	var residual int
 	if err := f.database.Pool.QueryRow(ctx, `SELECT count(*) FROM projects WHERE name='Must roll back'`).Scan(&residual); err != nil || residual != 0 {
@@ -393,7 +393,7 @@ func TestMembershipRejectsMissingPrincipalsAndInvalidInputs(t *testing.T) {
 		requireFault(t, err, "unauthenticated")
 		_, err = memberships.AcceptInvitation(ctx, p, "invalid")
 		requireFault(t, err, "unauthenticated")
-		_, err = projects.Create(ctx, p, CreateProject{})
+		_, err = projects.Create(ctx, p, CreateProject{ExpectedUserID: p.UserID})
 		requireFault(t, err, "unauthenticated")
 		_, err = projects.List(ctx, p, PageRequest{})
 		requireFault(t, err, "unauthenticated")
@@ -420,7 +420,7 @@ func TestMembershipRejectsMissingPrincipalsAndInvalidInputs(t *testing.T) {
 		},
 		func() error { return memberships.RevokeInvitation(ctx, p, id, "bad") },
 		func() error {
-			_, err := projects.Create(ctx, p, CreateProject{Name: "", RepoURL: "host:repo"})
+			_, err := projects.Create(ctx, p, CreateProject{ExpectedUserID: p.UserID, Name: "", RepoURL: "host:repo"})
 			return err
 		},
 		func() error { _, err := projects.List(ctx, p, PageRequest{Limit: 0}); return err },
@@ -450,7 +450,7 @@ func TestMembershipPATAndOperationalFailurePropagation(t *testing.T) {
 	if _, err := f.memberships.CreateInvitation(ctx, pat, p.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.projects.Create(ctx, pat, CreateProject{Name: "PAT project", RepoURL: "host:repo"}); err != nil {
+	if _, err := f.projects.Create(ctx, pat, CreateProject{ExpectedUserID: pat.UserID, Name: "PAT project", RepoURL: "host:repo"}); err != nil {
 		t.Fatal(err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
@@ -466,7 +466,7 @@ func TestMembershipPATAndOperationalFailurePropagation(t *testing.T) {
 		func() error { _, err := f.memberships.CreateInvitation(ctx, admin, p.ID); return err },
 		func() error { _, err := f.memberships.InspectInvitation(ctx, admin, invitation.Secret); return err },
 		func() error {
-			_, err := f.projects.Create(ctx, admin, CreateProject{Name: "Failure", RepoURL: "host:repo"})
+			_, err := f.projects.Create(ctx, admin, CreateProject{ExpectedUserID: admin.UserID, Name: "Failure", RepoURL: "host:repo"})
 			return err
 		},
 		func() error { _, err := f.projects.List(ctx, admin, PageRequest{Limit: 1}); return err },

@@ -66,7 +66,7 @@ export const auth: AuthMessages = {
     open: "＋ 创建项目", createFirst: "创建第一个项目", emptyDetail: "创建私有项目来整理工作，或使用管理员发给你的邀请链接加入团队。",
     title: "创建私有项目", close: "关闭创建项目", intro: "项目仅对你和项目成员可见。创建后，你将成为项目管理员。",
     name: "项目名称", repository: "仓库地址", repositoryHint: "支持 HTTPS、SSH URL 或 git@host:team/project.git 格式。",
-    error: "项目创建失败，请检查输入后重试。", cancel: "取消", busy: "正在创建…", submit: "创建项目",
+    error: "项目创建失败，请检查输入后重试。", unknown: "创建结果未知。发起新的创建前请先查看项目列表；列表不能确认原请求的结果。", checkProjects: "查看项目", observedProjects: "当前项目", checking: "正在加载项目…", checkFailed: "无法加载项目。", noProjects: "未找到项目。", loadMore: "加载更多项目", cancel: "取消", busy: "正在创建…", submit: "创建项目",
   },
   management: {
     common: {

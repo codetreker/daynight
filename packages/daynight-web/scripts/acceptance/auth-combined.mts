@@ -463,8 +463,8 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const bobUser = await request<User>(bob, origin, 'GET', '/api/v1/me', 200);
     check(aliceUser.id !== bobUser.id && aliceUser.email === bobUser.email, 'Normal same-email users did not remain distinct.');
     const a0 = await projectIds(alice, origin), b0 = await projectIds(bob, origin);
-    const shared = await request<Project>(alice, origin, 'POST', '/api/v1/projects', 201, { name: `Combined shared ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}` });
-    const privateProject = await request<Project>(bob, origin, 'POST', '/api/v1/projects', 201, { name: `Combined private ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}` });
+    const shared = await request<Project>(alice, origin, 'POST', '/api/v1/projects', 201, { name: `Combined shared ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}`, expectedUserId: aliceUser.id });
+    const privateProject = await request<Project>(bob, origin, 'POST', '/api/v1/projects', 201, { name: `Combined private ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}`, expectedUserId: bobUser.id });
     sameIds(await projectIds(alice, origin), [...a0, shared.id], 'Alice private-project pagination differs.');
     sameIds(await projectIds(bob, origin), [...b0, privateProject.id], 'Bob private-project pagination differs.');
     const invite = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, {});

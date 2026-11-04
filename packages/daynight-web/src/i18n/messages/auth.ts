@@ -136,6 +136,13 @@ export type AuthMessages = {
     readonly repository: string;
     readonly repositoryHint: string;
     readonly error: string;
+    readonly unknown: string;
+    readonly checkProjects: string;
+    readonly observedProjects: string;
+    readonly checking: string;
+    readonly checkFailed: string;
+    readonly noProjects: string;
+    readonly loadMore: string;
     readonly cancel: string;
     readonly busy: string;
     readonly submit: string;

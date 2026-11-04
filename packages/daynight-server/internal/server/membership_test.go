@@ -45,7 +45,7 @@ func membershipTestHarness(t *testing.T) *membershipHarness {
 		t.Fatal(err)
 	}
 	h.adminID = principal.UserID
-	h.project, err = service.NewProjects(h.database).Create(context.Background(), principal, service.CreateProject{Name: "Shared project", RepoURL: "https://example.com/shared.git"})
+	h.project, err = service.NewProjects(h.database).Create(context.Background(), principal, service.CreateProject{ExpectedUserID: principal.UserID, Name: "Shared project", RepoURL: "https://example.com/shared.git"})
 	if err != nil {
 		t.Fatal(err)
 	}

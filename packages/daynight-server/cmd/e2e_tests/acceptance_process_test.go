@@ -686,9 +686,14 @@ func acceptanceError(t *testing.T, response acceptanceResponse, status int, code
 	return value
 }
 
+func (p *acceptanceProcess) expectedUserID(t *testing.T) string {
+	t.Helper()
+	return acceptanceDecode[api.User](t, p.request(context.Background(), http.MethodGet, "/api/v1/me", nil, ""), http.StatusOK).ID
+}
+
 func (p *acceptanceProcess) project(t *testing.T, name string) api.Project {
 	t.Helper()
-	response := p.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: name, RepoURL: "https://github.com/example/acceptance-repo"}, "")
+	response := p.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{ExpectedUserID: p.expectedUserID(t), Name: name, RepoURL: "https://github.com/example/acceptance-repo"}, "")
 	project := acceptanceDecode[api.Project](t, response, http.StatusCreated)
 	if response.header.Get("Location") != "/api/v1/projects/"+project.ID || project.ID == "" || project.Settings != (api.ProjectSettings{Version: 1, ExecutionWarningMinutes: 60}) {
 		t.Fatal("project identity or Location is invalid")
