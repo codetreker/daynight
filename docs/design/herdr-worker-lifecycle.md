@@ -35,7 +35,7 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 
 首次启动先确认原 claim，再保存 preparation，记录 daemon 启动意图并捕获实际 daemon 身份。建立 workspace 后读取原 shell 的真实进程身份，将完整绑定提交为 `prepared`。Session 注册与运行 ledger 同步失败时，保留已经产生的资源和责任，不以新实例代替。
 
-`prepared` 运行可以重新接入，但在 `agent.start` 前必须核对原 daemon、shell 和端点。随后先持久化 `launch_requested`，再调用 `HerdrAgentManager.launch`；该调用只启动原生进程，不发送 assignment，也不以 `nativeSessionId` 出现作为启动成功的前提。取得原 native agent 的进程身份并保存为 `active`、建立采集段后，才进入输入阶段。启动结果尚未持久确认的崩溃恢复为 `stop_unknown`，不能再次启动。
+`prepared` 运行可以重新接入，但在 `agent.start` 前必须核对原 daemon、shell 和端点。随后先持久化 `launch_requested`，再调用 `HerdrAgentManager.launch`；该调用只启动原生进程，不发送 assignment，也不以 `nativeSessionId` 出现作为启动成功的前提。每次实际 `agent.start`（包括明确 shell busy 后的重试）之前，再核对原 claim、daemon、端点与 shell 出生身份；变化时不发出下一次启动请求。取得原 native agent 的进程身份并保存为 `active`、建立采集段后，才进入输入阶段。启动结果尚未持久确认的崩溃恢复为 `stop_unknown`，不能再次启动。
 
 首次 assignment 保存为 `pending`，递交前写 `dispatching` 和本次 admission。`submitInitialPrompt` 与后续 `submitPrompt` 在原生输入界面就绪之后、实际 mutation 之前再次核对原 claim、paused、运行身份和 admission。明确未发送可回到 pending；成功传输保存为 `transport_completed`；未知结果保存为 unknown 并阻断重放。这里的成功仅表示输入传输完成，不证明业务完成或模型已处理正文。
 

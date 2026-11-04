@@ -288,14 +288,20 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     start: (context, binding, input, operation) => serialize(context, async () => {
       let record = need(context), run = current(record);
       if (run.phase !== "prepared" || JSON.stringify(bindingFor(run)) !== JSON.stringify(binding)) throw new Error("Native launch requires the original prepared Herdr run.");
-      await verifyClaim(context, operation, false);
-      if (run.daemon === null || await native.observe(run.daemon) !== "same" || await native.observe(run.processes[0]!) !== "same") throw new Error("The original prepared runtime changed before native launch.");
-      const peer = await native.peer(adapter(record).paths.apiEndpoint);
-      if (JSON.stringify(peer.auditToken) !== JSON.stringify(run.daemon.auditToken)) throw new Error("The original daemon endpoint was replaced before native launch.");
+      const beforeStart = async (active: Operation): Promise<void> => {
+        const fresh = need(context), target = current(fresh), shell = run.processes.find(proof => proof.role === "shell");
+        if (target.run.executionGeneration !== run.run.executionGeneration || !["prepared", "launch_requested"].includes(target.phase)) throw new Error("The original native launch no longer owns its prepared run.");
+        await verifyClaim(context, active, false);
+        if (run.daemon === null || shell === undefined || await native.observe(run.daemon) !== "same" || await native.observe(shell) !== "same") throw new Error("The original prepared runtime changed before native launch.");
+        const peer = await native.peer(adapter(fresh).paths.apiEndpoint);
+        if (JSON.stringify(peer.auditToken) !== JSON.stringify(run.daemon.auditToken) || peer.bootId !== run.daemon.bootId || peer.birthToken !== run.daemon.birthToken) throw new Error("The original daemon endpoint was replaced before native launch.");
+        active.check();
+      };
+      await beforeStart(operation);
       await publish(context, operation);
       record = update(context, draft => { current(draft).phase = "launch_requested"; if (draft.initialAssignment === "pending") draft.initialPrompt = input.prompt; });
       const manager = adapter(record).tasks;
-      const observed = await manager.launch(context, binding, { configuration: input.configuration, ...(run.run.binding.nativeSessionId === null ? {} : { resumeSessionId: run.run.binding.nativeSessionId }) }, operation);
+      const observed = await manager.launch(context, binding, { configuration: input.configuration, beforeStart, ...(run.run.binding.nativeSessionId === null ? {} : { resumeSessionId: run.run.binding.nativeSessionId }) }, operation);
       const info = await manager.processInfo(context, binding, operation);
       if (info.shellPid !== run.processes.find(p => p.role === "shell")?.pid) throw new Error("The original shell changed while launching the native agent.");
       const agents = await Promise.all(info.foregroundPids.filter(pid => pid !== info.shellPid).map(pid => native.capture(pid, "agent")));

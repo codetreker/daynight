@@ -27,7 +27,7 @@ export type HerdrAgentObservation = { binding: HerdrTaskBinding; kind: string | 
 export type HerdrPromptReceipt = { submission: "submitted"; observation: HerdrAgentObservation };
 export type HerdrPromptResult = HerdrPromptReceipt | { submission: "skipped"; observation: HerdrAgentObservation };
 export type HerdrPromptGuard = (operation: Operation) => Promise<boolean>;
-export type HerdrAgentLaunchInput = { configuration: HerdrAgentConfiguration; resumeSessionId?: string };
+export type HerdrAgentLaunchInput = { configuration: HerdrAgentConfiguration; resumeSessionId?: string; beforeStart?: (operation: Operation) => Promise<void> };
 export type HerdrAgentStartInput = HerdrAgentLaunchInput & {
   prompt: string;
   // The receipt preserves the pre-input observation before session discovery
@@ -225,9 +225,13 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       return paneShellName(foreground.name) || paneShellName(argv[0]);
     });
   };
-  const startNative = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, args: string[], operation: Operation): Promise<HerdrRpcResult> => {
+  const startNative = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, args: string[], operation: Operation, beforeStart?: HerdrAgentLaunchInput["beforeStart"]): Promise<HerdrRpcResult> => {
     let readiness: { deadline: number; rejection: HerdrAgentActionError } | undefined;
     while (true) {
+      operation.check();
+      if (readiness !== undefined && performance.now() >= readiness.deadline) throw readiness.rejection;
+      // A definite rejection authorizes another attempt only after fresh caller admission.
+      if (beforeStart !== undefined) await beforeStart(operation);
       operation.check();
       if (readiness !== undefined && performance.now() >= readiness.deadline) throw readiness.rejection;
       const timeout = Math.floor(Math.min(30_000, operation.remainingMs()));
@@ -304,7 +308,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       const overrides = codexAgentCliOverrides({ ...workspaceEnvironment, PATH: workspaceEnvironment.PATH }, effective);
       for (const [key, value] of Object.entries(overrides)) args.push("-c", `${key}=${JSON.stringify(value)}`);
     }
-    const started = await startNative(context, binding, args, operation);
+    const started = await startNative(context, binding, args, operation, input.beforeStart);
     const acknowledged = object(started.agent, "Started native agent");
     const argv = array(started.argv, "Native launch arguments");
     const expectedArgv = [context.agent, ...args];

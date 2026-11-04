@@ -465,6 +465,67 @@ describe("direct task resource management", () => {
     expect(attempts).toBe(2);
   });
 
+  it("checks start admission immediately before every native launch attempt", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const order: string[] = []; const op = operation();
+    const beforeStart = vi.fn(async (active: Operation) => { expect(active).toBe(op); order.push("guard"); });
+    let attempts = 0;
+    f.hook(async method => {
+      if (method === "pane.process_info") return shellProcesses(binding);
+      if (method === "agent.start") { order.push("start"); if (++attempts < 3) throw busyShell(); }
+      return undefined;
+    });
+    await f.manager.launch(f.context, binding, { configuration, beforeStart }, op);
+    expect(order).toEqual(["guard", "start", "guard", "start", "guard", "start"]);
+    expect(beforeStart).toHaveBeenCalledTimes(3);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each([1, 2])("does not retry a rejected start guard on attempt %s", async rejectedAttempt => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const failure = new HerdrAgentActionError("Original launch target changed.", "agent.start", "rejected", { cause: busyShell() });
+    let attempts = 0; let checks = 0;
+    const beforeStart = vi.fn(async () => { if (++checks === rejectedAttempt) throw failure; });
+    f.hook(async method => {
+      if (method === "pane.process_info") return shellProcesses(binding);
+      if (method === "agent.start" && ++attempts === 1) throw busyShell();
+      return undefined;
+    });
+    await expect(f.manager.launch(f.context, binding, { configuration, beforeStart }, operation())).rejects.toBe(failure);
+    expect(beforeStart).toHaveBeenCalledTimes(rejectedAttempt);
+    expect(attempts).toBe(rejectedAttempt - 1);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each([2500, 7500])("uses the remaining launch budget after admission consumes %s ms", async elapsed => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    let now = 1000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const op = createOperation({ limits: { totalMs: 10_000 } }); operations.push(op);
+    try {
+      const launched = f.manager.launch(f.context, binding, { configuration, beforeStart: async () => { now += elapsed; } }, op);
+      if (elapsed === 2500) {
+        await launched;
+        expect(f.calls.filter(call => call.method === "agent.start")).toMatchObject([{ params: { timeout_ms: 7500 } }]);
+      } else {
+        await expect(launched).rejects.toMatchObject({ action: "agent.start", submission: "not-submitted" });
+        expect(f.calls.filter(call => call.method === "agent.start")).toEqual([]);
+      }
+      expect(f.prompts).toEqual([]);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("does not reuse start admission after an unknown launch response", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const beforeStart = vi.fn(async () => {});
+    const failure = new HerdrRpcError("launch response lost", { method: "agent.start", requestId: "unknown", submission: "unknown" });
+    f.hook(async method => { if (method === "agent.start") throw failure; return undefined; });
+    await expect(f.manager.launch(f.context, binding, { configuration, beforeStart }, operation())).rejects.toMatchObject({ submission: "unknown", cause: failure });
+    expect(beforeStart).toHaveBeenCalledOnce();
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.prompts).toEqual([]);
+  });
+
   it("bounds shell initialization retries and retains the actual rejected launch", async () => {
     const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     const failure = busyShell();

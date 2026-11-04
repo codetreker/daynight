@@ -41,6 +41,7 @@ const fixture = () => {
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
   const settings = { nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false };
   let beforePromptGuard: (() => void) | undefined;
+  let beforeLaunchRetry: (() => void) | undefined;
   const observed = new Map<number, MacProcessObservation>();
   type Local = { ordinal: number; paths: ReturnType<typeof resolveHerdrInstancePaths>; binding: HerdrTaskBinding; started: boolean; launched: boolean; nativeVisible: boolean; daemonPid: number; shellPid: number; agentPid: number };
   const instances = new Map<string, Local>(); let sequence = 0, reader: HerdrLifecycleStore | undefined, facade: WorkerHerdrAdapter;
@@ -117,7 +118,10 @@ const fixture = () => {
         prepareWorkspace: async () => { events.push("workspace"); return state.binding; },
         syncWorkspaceName: async () => {}, observe: async () => observation(),
         processInfo: async () => ({ shellPid: state.shellPid, foregroundPids: state.launched ? [state.agentPid] : [state.shellPid] }),
-        launch: async (_context, _binding, request) => { expect(read().runs.at(-1)?.phase).toBe("launch_requested"); events.push("native-launch"); launches.push(request.resumeSessionId ? { resumeSessionId: request.resumeSessionId } : {}); state.launched = true; state.nativeVisible = request.resumeSessionId !== undefined; return observation(); },
+        launch: async (_context, _binding, request, active) => {
+          await request.beforeStart?.(active);
+          if (beforeLaunchRetry) { events.push("native-busy-attempt"); beforeLaunchRetry(); await request.beforeStart?.(active); }
+          expect(read().runs.at(-1)?.phase).toBe("launch_requested"); events.push("native-launch"); launches.push(request.resumeSessionId ? { resumeSessionId: request.resumeSessionId } : {}); state.launched = true; state.nativeVisible = request.resumeSessionId !== undefined; return observation(); },
         start: async () => { throw new Error("Direct start would bypass durable admission"); },
         submitInitialPrompt: async (_context, _binding, body, _operation, beforeSubmit) => { beforePromptGuard?.(); if (beforeSubmit && !await beforeSubmit(_operation)) return { submission: "skipped", observation: observation() }; return input(true, body); },
         submitPrompt: async (_context, _binding, body, _operation, beforeSubmit) => { beforePromptGuard?.(); if (beforeSubmit && !await beforeSubmit(_operation)) return { submission: "skipped", observation: observation() }; return input(false, body); },
@@ -135,10 +139,28 @@ const fixture = () => {
   const register = () => facade.lifecycle!.registerClaim(context, ownerId);
   const prepare = () => facade.tasks.prepareWorkspace(context, task.title, operation());
   const start = (binding: HerdrTaskBinding) => facade.tasks.start(context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, operation());
-  return { context, paths, events, registrations, ledgers, inputs, launches, settings, observed, nativeId, read, register, prepare, start, reopen, get facade() { return facade; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
+  return { context, paths, events, registrations, ledgers, inputs, launches, settings, observed, nativeId, read, register, prepare, start, reopen, get facade() { return facade; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
 };
 
 describe("durable Herdr facade with real SQLite", () => {
+  it.each(["shell", "daemon", "peer", "claim"] as const)("rejects a native start retry after original %s evidence changes", async kind => {
+    const f = fixture(); f.register(); const binding = await f.prepare();
+    f.beforeLaunchRetry(() => {
+      if (kind === "peer") f.settings.peerReplaced = true;
+      else if (kind === "claim") f.changeTask({ status: "done" });
+      else {
+        const run = f.read().runs[0]!;
+        const proof = kind === "daemon" ? run.daemon! : run.processes.find(value => value.role === "shell")!;
+        f.observed.set(proof.pid, "changed");
+      }
+    });
+    await expect(f.start(binding)).rejects.toThrow(/original/i);
+    expect(f.events.filter(value => value === "native-busy-attempt")).toHaveLength(1);
+    expect(f.launches).toHaveLength(0); expect(f.inputs).toHaveLength(0);
+    expect(f.read().runs[0]!.phase).toBe("launch_requested");
+    f.reopen(); expect(f.read().runs[0]!.phase).toBe("stop_unknown");
+  });
+
   it("uses the cleanup operation's five-minute budget for the stop ledger HTTP read", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     vi.useFakeTimers(); const signals: AbortSignal[] = [];
