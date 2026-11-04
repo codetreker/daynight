@@ -33,7 +33,7 @@ const dependencies = () => ({
 });
 
 describe("worker command", () => {
-  it.each([[], ["--help"], ["-h"], ...["setup", "run", "attach", "repo", "retry", "release", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
+  it.each([[], ["--help"], ["-h"], ...["list", "show", "setup", "run", "attach", "repo", "retry", "release", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
     ...["list", "add", "remove"].flatMap((name) => [["repo", name, "--help"], ["repo", name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
     const { cli, output } = context();
     const deps = dependencies();
@@ -88,10 +88,10 @@ describe("worker command", () => {
     expect(await runCli(["--help"], cli)).toBe(0);
     expect(output.join("")).toContain("worker");
     const definition = commandTree.commands!.find(({ name }) => name === "worker")!;
-    expect(definition.commands!.map(({ name }) => name)).toEqual(["setup", "run", "attach", "repo", "retry", "release", "resume"]);
+    expect(definition.commands!.map(({ name }) => name)).toEqual(["list", "show", "setup", "run", "attach", "repo", "retry", "release", "resume"]);
     expect(renderBashCompletion(commandTree)).toContain("'worker'");
     expect(renderZshCompletion(commandTree)).toContain("worker:Run automatically claimed tasks");
-    expect(renderBashCompletion(commandTree)).toContain("dn_children=('setup' 'run' 'attach' 'repo' 'retry' 'release' 'resume')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'show' 'setup' 'run' 'attach' 'repo' 'retry' 'release' 'resume')");
     expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'add' 'remove')");
     expect(renderZshCompletion(commandTree)).toContain("repo:Manage repositories selected from existing Daynight Projects");
     expect(renderBashCompletion(commandTree)).not.toContain("--target-agent");

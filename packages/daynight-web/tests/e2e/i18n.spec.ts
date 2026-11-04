@@ -123,7 +123,6 @@ test.describe('Web language journeys', () => {
     });
     // Keep locale request-isolation assertions independent of the task polling timer.
     const clockTime = new Date('2030-01-01T00:00:00Z');
-    await page.clock.install({ time: clockTime });
     await page.clock.pauseAt(clockTime);
     await page.goto(`/projects/${project.id}`);
     await selectTaskList(page);

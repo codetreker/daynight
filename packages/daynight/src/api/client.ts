@@ -1,3 +1,7 @@
+import { parseBot, botName, botVersion } from "../commands/bot/api.js";
+import type { Bot, CreateBotInput, DeleteBotInput } from "../commands/bot/api.js";
+import { parseWorkerPage, parseWorkerDetail } from "../commands/worker/query-api.js";
+import type { WorkerList, WorkerDetailResponse, WorkerSummary } from "../commands/worker/query-api.js";
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
 import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
@@ -68,6 +72,12 @@ export class ApiError extends Error {
 }
 
 export type ApiClient = {
+  listBots(): Promise<readonly Bot[]>;
+  getBot(botId: string): Promise<Bot>;
+  createBot(input: CreateBotInput): Promise<Bot>;
+  deleteBot(botId: string, input: DeleteBotInput): Promise<Bot>;
+  listWorkers(): Promise<WorkerList>;
+  getWorker(workerId: string): Promise<WorkerDetailResponse>;
   listTaskSteps(projectId: string, taskId: string, options?: TaskStepsReadOptions): Promise<StepsResource>;
   addTaskStep(projectId: string, taskId: string, input: AddTaskStepInput, options: AddTaskStepOptions): Promise<StepsResource>;
   deleteTaskStep(projectId: string, taskId: string, stepId: string, input: DeleteTaskStepInput, options: TaskStepWriteOptions): Promise<StepsResource>;
@@ -557,7 +567,65 @@ export const createApiClient = (options: {
     }
   };
 
+  const accountPrincipal = (): ((metadata: JsonResponseMetadata) => string) => {
+    let bound: string | undefined = expectedUserId;
+    return (metadata) => {
+      const principal = metadata.principalHeader === null ? null : canonicalId(metadata.principalHeader);
+      if (principal === null || principal !== metadata.principalHeader || bound !== undefined && bound !== principal) throw new ProtocolError("The authenticated account response principal is invalid or changed.");
+      bound = principal;
+      return principal;
+    };
+  };
+
   return {
+    listBots: () => {
+      const principal = accountPrincipal();
+      return list({ operation: "bot.list" }, "/me/bots", (value, metadata) => {
+        const owner = principal(metadata);
+        return parsePage(value, (item) => { const bot = parseBot(item, undefined, owner); if (bot.deletion !== null) throw new ProtocolError("Deleted Bot appeared in the ordinary list."); return bot; }, (bot) => bot.id);
+      }, (bot) => bot.id);
+    },
+    getBot: (botId) => {
+      const target = resourceId(botId), principal = accountPrincipal();
+      return exchange({ operation: "bot.show" }, `/me/bots/${target}`, "GET", { kind: "json", requirePrincipal: true, parse: (value, metadata) => parseBot(value, target, principal(metadata)) }, [200]);
+    },
+    createBot: (input) => {
+      const target = resourceId(input.id), principal = accountPrincipal();
+      const name = botName(input.name);
+      return exchange({ operation: "bot.create" }, "/me/bots", "POST", { kind: "json", requirePrincipal: true, parse: (value, metadata) => {
+        const bot = parseBot(value, target, principal(metadata));
+        if (input.overrides?.workerId !== undefined && bot.workerId !== input.overrides.workerId) throw new ProtocolError("Bot creation response does not match the submitted Worker.");
+        if (bot.deletion === null && (bot.name !== name || ["workerId", "cwd", "provider"].some((key) => {
+          const field = key as keyof NonNullable<CreateBotInput["overrides"]>;
+          return bot.requestedOverrides[field] !== input.overrides?.[field];
+        }))) throw new ProtocolError("Bot creation response does not match the submitted request.");
+        return bot;
+      }, confirmMutation: (bot) => bot.id }, [200], { kind: "json", value: { ...input, id: target, name } });
+    },
+    deleteBot: (botId, input) => {
+      const target = resourceId(botId), principal = accountPrincipal();
+      const body = { ifVersion: botVersion(input.ifVersion), deletionId: resourceId(input.deletionId) };
+      return exchange({ operation: "bot.delete" }, `/me/bots/${target}`, "DELETE", { kind: "json", requirePrincipal: true, parse: (value, metadata) => {
+        const bot = parseBot(value, target, principal(metadata));
+        if (bot.deletion === null || bot.deletion.deletionId !== body.deletionId || bot.deletion.requestedVersion !== body.ifVersion) throw new ProtocolError("Bot deletion response does not match the submitted request.");
+        return bot;
+      }, confirmMutation: (bot) => bot.id }, [200], { kind: "json", value: body });
+    },
+    listWorkers: async () => {
+      const principal = accountPrincipal();
+      let observedAt: string | undefined;
+      const items = await list<WorkerSummary>({ operation: "worker.list" }, "/me/workers", (value, metadata) => {
+        principal(metadata);
+        const page = parseWorkerPage(value);
+        observedAt = page.observedAt;
+        return page;
+      }, (worker) => worker.workerId);
+      return { observedAt: observedAt!, items };
+    },
+    getWorker: (workerId) => {
+      const target = resourceId(workerId), principal = accountPrincipal();
+      return exchange({ operation: "worker.show" }, `/me/workers/${target}`, "GET", { kind: "json", requirePrincipal: true, parse: (value, metadata) => { principal(metadata); return parseWorkerDetail(value, target); } }, [200]);
+    },
     listTaskSteps: (projectId, taskId, options) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       return exchange({ operation: "task.step.list", projectId: project, taskId: task, ...(options === undefined ? {} : { sentRequestId: options.requestId }) }, resourcePath("projects", project, "tasks", task, "steps"), "GET", {

@@ -68,6 +68,20 @@ Bot 生命周期验证 Worker PAT；共享 Session 继续验证 owner 的当前�
 
 HTTP DTO 将版本及创建序号编码为字符串，并投影实际关联的 sessionId/testExecutionId；尚未登记时两者为 null。删除后整体省略 `BotDefinition`，仅保留最小责任，避免单独漏删某个配置或角色字段。内部数据库对象不直接序列化为管理响应。
 
+## CLI 管理与远端观测
+
+Bot 命令拥有参数、业务请求身份、资源解析和显示；共享服务命令运行时拥有配置认证、请求预算、取消与输出。CLI 使用现有 `/api/v1/me/bots` 公开管理接口，不经过项目发现，不新增助手专用业务旁路。远端 Worker list/show 在命令分派时与 run、repo 和 claim 控制操作分开，不加载本地 Worker 库存或取得运行锁。
+
+创建在请求前确定 Bot UUID，只向服务端发送名字及显式覆盖；省略字段保持省略，避免客户端默认值改变创建指纹。删除在请求前确定 deletionId，并将显式观察版本作为 ifVersion 字符串发送。Bot 的 int64 字段按十进制字符串校验、传输和输出，与普通 Task 的数字版 JSON 分开处理。成功响应必须与目标资源和请求身份匹配；响应结构不完整不能当作写入已确认。创建重放可以返回原资源的删除责任；服务端拥有原 owner 与请求指纹核对，CLI 对活跃定义比较名字及覆盖项，对最小删除责任只核验其公开身份与结构。两者都检查 principal、目标 Bot ID 和显式 Worker，删除责任不因缺少已清理的定义字段而被误报为未知结果。
+
+已派发写入的传输失败、未知服务结果或无效成功响应保留原业务 ID 和未确认结果。错误投影仅公开操作、资源和请求身份、阶段、HTTP 状态、错误码和白名单内的可操作原因；不转储传输 cause、认证配置或服务端错误正文。显式 show 读取当前资源用于核对，CLI 本身不自动重发写入、更新版本或生成替代请求。创建的业务请求 ID 是 botId，删除的是 deletionId；HTTP 关联 ID 单独保留，避免把日志关联误作幂等依据。
+
+列表按服务端不透明游标读完所有页面，检测重复游标和重复资源身份，之后才统一输出；后页失败时丢弃未完整的显示结果并保留错误。Bot 输出只包含公开 DTO，删除对象整体省略定义；删除完成取决于两个清理阶段，不能由 HTTP 200、列表隐藏或一个阶段完成推导。
+
+Worker 列表保留服务端 observedAt 与完整 items，详情保留 observedAt 与 worker。人类显示从服务端时间计算 120 秒在线阈值，库存 observed/stale/unavailable 独立显示；null 库存不转为零，资源探测错误不转为可用。assistantHost 缺失表示没有托管观测。此读取与 Worker 运行、调度及能力广告无副作用联系，普通远端查询沿用服务端 72 小时窗口。
+
+CLI 消费 [删除与清理事务](#删除与清理事务) 的真实阶段与最终 completed 结果；停证由绑定 Worker 提供，服务端拥有删除屏障与历史清理，命令自身不生成停证或清理历史。命令与错误用法见 [CLI 手册](../../packages/daynight/README.md#bot-management)，选择理由见 [CLI 观测决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-cli-observation.md)。
+
 ## 删除与清理事务
 
 公开 DELETE 由同一 `sessionrelay.Service` 处理。删除事务先锁 Bot，核对 owner、原请求身份和当前版本，再按 `bot_id` 查询并锁定所有实际关联 Session，撤销 grant/连接授权，最后存入删除责任。登记、归档上传和清理都使用 Bot → Session → archive metadata 锁序；已获准上传先完成，随后删除屏障生效。删除先提交时旧上传在文件写入前被拒绝。普通 Task 的历史归档流程不改变。
