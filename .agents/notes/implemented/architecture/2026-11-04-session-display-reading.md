@@ -20,6 +20,11 @@ without mode controls. The shared Session View now explicitly supplies its
 selected preference and defaults to Conversation. The Conversation
 empty message is localized separately from the original empty-session message.
 History loading, failure and retry remain independent of visible row count.
+The original filtering delivery retained manual pagination and prohibited
+automatic loops through hidden pages. The
+[automatic history decision](../bug-fix/2026-11-04-session-history-autoload.md)
+replaces that policy with viewport demand and verified page progress while
+preserving this decision's filtering and reading guarantees.
 
 The shared `useTimelineScroll` accepts optional original and visible key orders
 plus mode, separately from identity and content revision. A paused anchor keeps
@@ -43,14 +48,17 @@ reader's explicit pause and jumps away from the passage being read.
 
 **Reuse the ordinary empty-session message.** A filtered empty page may contain
 history and still have older pages. A distinct message explains the visible
-result while the independent manual pagination control preserves access.
+result while the independent manual pagination control preserved access in the
+original delivery. Pagination now follows the separately owned automatic
+history policy.
 
 ## Consequences
 
 Mode changes preserve retained message and interaction nodes, pending responses
 and original entries. Hidden tool resources unmount; restored tools reuse the
 existing timeline data and ordinary resource-loading rules, without dispatching
-provider operations. No preference store, client or protocol change is needed.
+provider operations. Filtering itself needs no preference store, client or
+protocol change.
 
 The hook retains one captured key order in addition to the current lists. Its
 display argument is optional so other timeline consumers preserve their API.
