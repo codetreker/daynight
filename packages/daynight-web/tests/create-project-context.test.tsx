@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CreateProjectDialog } from '../src/features/auth/CreateProjectDialog';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
-import { invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
+import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { act } from '@testing-library/react';
 import * as auth from '../src/api/auth';
 
@@ -105,6 +105,40 @@ describe('project creation context', () => {
     expect(create).not.toHaveBeenCalled();
     await act(async () => resume());
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    view.unmount(); admission.dispose();
+  });
+
+  it('cancels a queued creation before dispatch', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const create = vi.spyOn(auth, 'createProject');
+    const resume = pauseAuthRequests();
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} teamName="Alpha" teamPersonal={false} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Project' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    view.unmount();
+    await act(async () => resume());
+    expect(create).not.toHaveBeenCalled();
+    admission.dispose();
+  });
+
+  it.each([['rejected', 'same'], ['unknown', 'same'], ['rejected', 'changed'], ['unknown', 'changed']] as const)('holds a %s creation result for the %s identity', async (outcome, identity) => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();
+    const create = vi.spyOn(auth, 'createProject').mockReturnValue(pending.promise);
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} teamName="Alpha" teamPersonal={false} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Project' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const resume = pauseAuthRequests();
+    const error = outcome === 'unknown' ? new auth.ProjectCreationUnknown(new Error('lost')) : new ApiError('server', 403, 'forbidden');
+    await act(async () => pending.reject(error));
+    expect(screen.queryByRole('alert')).toBeNull();
+    await act(async () => { if (identity === 'changed') { void admission.invalidateScope(); invalidateAuthRequests(); } resume(); });
+    if (identity === 'same') expect(await screen.findByRole('alert')).toHaveTextContent(outcome === 'unknown' ? /creation result is unknown/i : /project could not be created/i);
+    else expect(screen.queryByRole('alert')).toBeNull();
+    expect(create).toHaveBeenCalledTimes(1);
     view.unmount(); admission.dispose();
   });
 });
