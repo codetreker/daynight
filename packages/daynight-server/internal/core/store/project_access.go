@@ -88,10 +88,10 @@ func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string)
 // ordinary writes acquire Project before Task. Source locks use a fixed order.
 func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID string) (core.ProjectAccess, error) {
 	var teamID string
-	var ownerTeamID, ownerName, personalUserID *string
+	var ownerName, personalUserID *string
 	var ownership core.ProjectOwnership
-	err := tx.QueryRow(ctx, `SELECT o.team_id::text,t.id::text,t.name,t.personal_user_id::text,o.version,o.updated_at FROM project_ownership o
-        LEFT JOIN teams t ON t.id=o.team_id WHERE o.project_id=$1 FOR SHARE OF o`, projectID).Scan(&teamID, &ownerTeamID, &ownerName, &personalUserID, &ownership.Version, &ownership.UpdatedAt)
+	err := tx.QueryRow(ctx, `SELECT o.team_id::text,o.version,o.updated_at FROM project_ownership o
+        WHERE o.project_id=$1 FOR SHARE OF o`, projectID).Scan(&teamID, &ownership.Version, &ownership.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1)`, projectID).Scan(&exists); err != nil {
@@ -104,8 +104,14 @@ func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID 
 	if err != nil {
 		return core.ProjectAccess{}, queryError("lock project authorization", err)
 	}
-	if ownerTeamID == nil {
+	// The ownership lock may have waited for a transfer. Read its Team in a
+	// fresh statement snapshot, rather than retaining a join from before the wait.
+	err = tx.QueryRow(ctx, `SELECT name,personal_user_id::text FROM teams WHERE id=$1`, teamID).Scan(&ownerName, &personalUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return core.ProjectAccess{}, queryError("lock project authorization", fmt.Errorf("project owner Team is missing"))
+	}
+	if err != nil {
+		return core.ProjectAccess{}, queryError("read project owner Team", err)
 	}
 	var teamRole *core.ProjectRole
 	var lockedTeamRole core.ProjectRole
@@ -139,7 +145,7 @@ func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID 
 	ownership.TeamID = teamID
 	ownership.UpdatedAt = ownership.UpdatedAt.UTC()
 	return core.ProjectAccess{ProjectID: projectID, UserID: userID, Role: role, DirectGrant: directGrant,
-		OwnerTeam: core.TeamRef{ID: *ownerTeamID, Kind: kind, Name: ownerName}, Ownership: ownership,
+		OwnerTeam: core.TeamRef{ID: teamID, Kind: kind, Name: ownerName}, Ownership: ownership,
 		TeamRole: teamRole, CanTransfer: teamRole != nil && *teamRole == core.ProjectAdmin}, nil
 }
 

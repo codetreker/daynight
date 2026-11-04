@@ -73,8 +73,9 @@ resource and observation. Existence locking preserves ownership integrity
 without changing the schema's foreign-key policy or reversing resource lock
 orders.
 
-Member management, invitations, Project transfer, Team CLI commands and Team
-pages retain their own capability boundaries. Any new ownership writer must
+Member management, invitations, Team CLI commands and Team pages retain their
+own capability boundaries. The [transfer decision](2026-11-04-project-transfer.md)
+uses the same Team existence lock for Project ownership changes. Any new ownership writer must
 participate in the Team existence lock; any new Team-owned child records must
 be included in deletion's transaction. Transaction and response loss remain
 visible to callers and require explicit fresh decisions after reconciliation.

@@ -17,7 +17,7 @@ CLI 创建私有项目，创建者自动成为管理员；Web 表单复用现有
 操作；网页元数据编辑不由登录功能增加，任务操作遵守[任务生命周期](daynight-server.md#状态与更新规则)。
 每个项目具有真实 Team 归属，现有资源入口统一计算 owner Team 与独立 Project grant 的有效权限。
 Personal 初始化和存量归属迁移遵守下述原子性与数据完整性要求。登录用户可以通过 Team API
-创建、读取、分页、改名和删除普通 Team；Team 的成员管理、邀请及项目转移保持各自的功能边界。
+创建、读取、分页、改名和删除普通 Team；当前 owner Team admin 可预览和转移项目。Team 成员管理、邀请及转移客户端保持各自的功能边界。
 
 可信 HTML 保持现有同源执行，复用主站会话、普通 iframe、相对资源和键盘交互。
 鉴权不能把独立预览域名、预览凭据或相关设施作为前提；该约束的选择依据记录在
@@ -188,6 +188,26 @@ Project ownership 引用的普通 Team 可删除，否则返回 `409 team_not_em
 提交错误保持原有优先级及原因链。无法确认 COMMIT 结果返回 `503 write_outcome_unknown`；
 清理失败返回安全的 `500 internal_error`，不把保存的领域拒绝当作最终结果。响应丢失或提交结果
 未知时只读取当前事实，不自动重放管理写入；当前值符合目标不能证明找回了原提交回执。
+
+## 项目归属转移
+
+`POST /api/v1/projects/{projectId}/transfer-preview` 接收 `{targetTeamId}`，只允许当前
+owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,name,version}`、
+`ownership:{teamId,version}` 和必填可空 `actorRole`。目标以规范小写 UUID 指定，返回的
+资料仅限名称和身份；不要求目标成员关系，也不提供目录或全局搜索。
+
+`POST /api/v1/projects/{projectId}/transfer` 接收必填
+`{ownership:{teamId,version},targetTeam:{id,version},expectedUserId}`。主体核对先于领域 SQL；
+提交前重新检查当前 owner Team admin、归属身份和版本、目标存在和元数据版本。过期观察返回
+`409 version_conflict`，不可见项目或不存在目标返回 `404 not_found`，仅有 Project admin
+而非 owner Team admin 返回 `403 forbidden`。同一 owner 仍核对权限和双方版本，返回
+`changed:false` 且不更新任何时间或版本；实际转移使 ownership version 加一，保留 Project
+身份及所有 grant 和邀请。版本耗尽时真实转移返回 `409 version_exhausted`。
+
+成功回执 `{projectId,changed,sourceTeam,ownerTeam,ownership,actorAccess}` 只在确认提交后
+返回；`actorAccess:null` 表示操作者成功转移后失权。无法确认提交返回
+`503 write_outcome_unknown`，丢失响应后即使项目读取为 404 也不能推断提交成功，不得自动重放。
+所有版本是精确正 int64，响应和方法拒绝使用 `no-store`。
 
 ## 项目、成员与邀请
 
@@ -391,12 +411,12 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | 缺失、无效、撤销或到期用户凭据 | 401 unauthenticated JSON |
 | Team/项目不存在或当前主体没有对应成员资格 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
-| Team 管理、创建项目或修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
-| 观察独立授权或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
+| Team 管理、创建或转移项目，或修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
+| 观察独立授权、ownership 或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
 | 变更 Personal Team | 409 personal_team_immutable |
 | 删除仍有 Project ownership 引用的 Team | 409 team_not_empty |
 | Team 真实改名所需版本已达最大正 int64 | 409 version_exhausted；同值 no-op 仍有效 |
-| 无法确认 Team 管理或项目创建 COMMIT 结果 | 503 write_outcome_unknown |
+| 无法确认 Team 管理、项目创建或项目转移 COMMIT 结果 | 503 write_outcome_unknown |
 | 生命周期前态不符或前置未完成 | 409 invalid_transition / dependency_unsatisfied |
 | 邀请已消费、到期或撤销 | 410 invitation_unavailable |
 | provider discovery 的 App 配置/凭据错误 | 503 identity_configuration |

@@ -812,6 +812,27 @@ own the complete public contract. The
 [Team transaction design](../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
 owns existence locking, completion classification and independent versions.
 
+## Project transfer API
+
+`POST /api/v1/projects/{projectId}/transfer-preview` accepts `targetTeamId` and
+returns source and target Team references, target metadata version, ownership
+and nullable predicted `actorRole`. `POST /api/v1/projects/{projectId}/transfer`
+accepts `ownership:{teamId,version}`, `targetTeam:{id,version}` and
+`expectedUserId`; only the current owner Team admin can use either operation.
+The target need not include the actor. A confirmed receipt contains `projectId`,
+`changed`, `sourceTeam`, `ownerTeam`, `ownership` and nullable `actorAccess`.
+Same-owner requests verify both versions and leave the Project unchanged.
+Actual transfers retain grants and invitations. Stale versions return
+`version_conflict`; an unconfirmed commit returns `write_outcome_unknown`.
+A lost receipt followed by 404 cannot establish success or authorize replay.
+
+The transaction locks Project, ownership, then source and target Teams in UUID
+order. Team deletion checks ownership in a fresh statement after its Team lock.
+Transfer logs use `component=project_transfer`, resource IDs, phase, outcome,
+error code and duration; names and credentials are excluded. The
+[requirements](../../docs/spec/daynight-auth.md#项目归属转移) and
+[design](../../docs/design/daynight-auth.md#数据与并发) own the complete contract.
+
 ## Project API
 
 | Method | Path | Result |
@@ -1250,8 +1271,9 @@ messages but refuse access through their task resource.
 Writes use canonical `store.LockProjectAuthorization` with Task share,
 credential share, real ownership share, owner-Team-member share, direct-grant
 share and head update locks in that order. Only existing source rows are locked;
-admission merges current source facts after waits and keeps ownership and sources
-stable through commit. At least one real source must still admit the writer.
+admission reads the stable owner Team in a new statement after the ownership lock,
+merges current source facts after waits and keeps ownership and sources stable
+through commit. At least one real source must still admit the writer.
 A missing ownership row is an integrity error. It acquires no Project row lock
 or profile projection. The final credential-expiry check follows all waits
 and encoding. Ordinary resource and Session admission keep their existing
