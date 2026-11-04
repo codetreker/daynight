@@ -114,7 +114,10 @@ cannot serve the new schema. A failed uncommitted migration rolls back; recovery
 after commit requires a forward repair or a paired database/file backup restored
 while writers remain stopped.
 
-Ordinary Team CRUD, Team invitations, transfer, new CLI commands and Team pages
-remain separate capabilities. Public ownership/source expansion must update its
-actual strict consumers and derived cache format together. These additions must
-retain independent grant facts and the established nonreversing lock order.
+The [Team lifecycle decision](2026-11-04-team-lifecycle.md) owns ordinary Team
+creation, member-scoped reads, versioned rename and empty deletion. Team
+invitations, new CLI commands and Team pages remain separate capabilities. The
+[transfer decision](2026-11-04-project-transfer.md) owns the ownership writer and
+its interaction with Thread admission. Public ownership/source changes must update their actual strict
+consumers and derived cache format together. These capabilities retain
+independent grant facts and the established nonreversing lock order.

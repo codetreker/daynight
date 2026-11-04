@@ -88,10 +88,10 @@ func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string)
 // ordinary writes acquire Project before Task. Source locks use a fixed order.
 func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID string) (core.ProjectAccess, error) {
 	var teamID string
-	var ownerTeamID, ownerName, personalUserID *string
+	var ownerName, personalUserID *string
 	var ownership core.ProjectOwnership
-	err := tx.QueryRow(ctx, `SELECT o.team_id::text,t.id::text,t.name,t.personal_user_id::text,o.version,o.updated_at FROM project_ownership o
-        LEFT JOIN teams t ON t.id=o.team_id WHERE o.project_id=$1 FOR SHARE OF o`, projectID).Scan(&teamID, &ownerTeamID, &ownerName, &personalUserID, &ownership.Version, &ownership.UpdatedAt)
+	err := tx.QueryRow(ctx, `SELECT o.team_id::text,o.version,o.updated_at FROM project_ownership o
+        WHERE o.project_id=$1 FOR SHARE OF o`, projectID).Scan(&teamID, &ownership.Version, &ownership.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1)`, projectID).Scan(&exists); err != nil {
@@ -104,8 +104,14 @@ func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID 
 	if err != nil {
 		return core.ProjectAccess{}, queryError("lock project authorization", err)
 	}
-	if ownerTeamID == nil {
+	// The ownership lock may have waited for a transfer. Read its Team in a
+	// fresh statement snapshot, rather than retaining a join from before the wait.
+	err = tx.QueryRow(ctx, `SELECT name,personal_user_id::text FROM teams WHERE id=$1`, teamID).Scan(&ownerName, &personalUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return core.ProjectAccess{}, queryError("lock project authorization", fmt.Errorf("project owner Team is missing"))
+	}
+	if err != nil {
+		return core.ProjectAccess{}, queryError("read project owner Team", err)
 	}
 	var teamRole *core.ProjectRole
 	var lockedTeamRole core.ProjectRole
@@ -139,7 +145,7 @@ func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID 
 	ownership.TeamID = teamID
 	ownership.UpdatedAt = ownership.UpdatedAt.UTC()
 	return core.ProjectAccess{ProjectID: projectID, UserID: userID, Role: role, DirectGrant: directGrant,
-		OwnerTeam: core.TeamRef{ID: *ownerTeamID, Kind: kind, Name: ownerName}, Ownership: ownership,
+		OwnerTeam: core.TeamRef{ID: teamID, Kind: kind, Name: ownerName}, Ownership: ownership,
 		TeamRole: teamRole, CanTransfer: teamRole != nil && *teamRole == core.ProjectAdmin}, nil
 }
 
@@ -155,12 +161,58 @@ func (tx *ProjectTx) ProjectAccess(ctx context.Context, principal core.Principal
 	return ReadProjectAccess(ctx, tx.tx, principal.UserID, tx.projectID)
 }
 
+type ProjectScopeKind string
+
+const (
+	ProjectScopeAll    ProjectScopeKind = "all"
+	ProjectScopeTeam   ProjectScopeKind = "team"
+	ProjectScopeShared ProjectScopeKind = "shared"
+)
+
+type ProjectScope struct {
+	Kind   ProjectScopeKind
+	TeamID string
+}
+
 func (s *Snapshot) AccessibleProjects(ctx context.Context, principal core.Principal, page Page) (ProjectPage, error) {
+	return s.ScopedProjects(ctx, principal, ProjectScope{Kind: ProjectScopeAll}, page)
+}
+
+func (s *Snapshot) ScopedProjects(ctx context.Context, principal core.Principal, scope ProjectScope, page Page) (ProjectPage, error) {
+	condition := ""
+	var arguments []any
+	switch scope.Kind {
+	case ProjectScopeAll:
+		if scope.TeamID != "" {
+			return ProjectPage{}, queryError("list projects", fmt.Errorf("invalid project scope"))
+		}
+	case ProjectScopeTeam:
+		if scope.TeamID == "" {
+			return ProjectPage{}, queryError("list projects", fmt.Errorf("invalid project scope"))
+		}
+		var member int
+		err := s.tx.QueryRow(ctx, `SELECT 1 FROM teams t JOIN team_members m ON m.team_id=t.id
+            WHERE t.id=$1 AND m.user_id=$2`, scope.TeamID, principal.UserID).Scan(&member)
+		if err != nil {
+			return ProjectPage{}, queryError("read team membership", err)
+		}
+		condition = ` AND o.team_id=$5::uuid`
+		arguments = append(arguments, scope.TeamID)
+	case ProjectScopeShared:
+		if scope.TeamID != "" {
+			return ProjectPage{}, queryError("list projects", fmt.Errorf("invalid project scope"))
+		}
+		condition = ` AND EXISTS (SELECT 1 FROM project_grants g WHERE g.project_id=p.id AND g.user_id=$1)
+            AND NOT EXISTS (SELECT 1 FROM team_members m WHERE m.team_id=o.team_id AND m.user_id=$1)`
+	default:
+		return ProjectPage{}, queryError("list projects", fmt.Errorf("invalid project scope"))
+	}
 	afterTime, afterID := pageValues(page)
+	arguments = append([]any{principal.UserID, afterTime, afterID, page.Limit + 1}, arguments...)
 	rows, err := s.tx.Query(ctx, `SELECT `+projectProjection+` FROM `+projectRelation+`
         WHERE EXISTS (SELECT 1 FROM (`+projectAccessRelation+`) a WHERE a.project_id=p.id AND a.user_id=$1)
-        AND ($2::timestamptz IS NULL OR (p.created_at,p.id)>($2,$3::uuid))
-        ORDER BY p.created_at,p.id LIMIT $4`, principal.UserID, afterTime, afterID, page.Limit+1)
+        AND ($2::timestamptz IS NULL OR (p.created_at,p.id)>($2,$3::uuid))`+condition+`
+		ORDER BY p.created_at,p.id LIMIT $4`, arguments...)
 	if err != nil {
 		return ProjectPage{}, queryError("list accessible projects", err)
 	}

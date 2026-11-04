@@ -84,9 +84,12 @@ and matching consumers. Upgrading a pre-ownership cache costs a complete task sn
 profile-only upgrade preserves compatible records. Actor authority stays outside
 durable records.
 
-Ordinary Team management, transfer and new Team commands/pages remain separate
-capabilities. Their later addition can reuse real ownership and independent grant
-facts without changing the cache's permission boundary. The
+The [Team lifecycle decision](2026-11-04-team-lifecycle.md) owns ordinary Team
+metadata and empty deletion separately from these public Project projections.
+Member management and new Team commands/pages remain separate capabilities.
+The [transfer decision](2026-11-04-project-transfer.md) owns the versioned
+ownership mutation and its receipt. They can reuse real ownership and independent grant facts without
+changing the cache's permission boundary. The
 [Personal ownership decision](2026-11-04-personal-project-ownership.md),
 [access projection](2026-11-03-project-access-projection.md) and
 [participant projection](2026-11-04-project-participant-projection.md) retain
