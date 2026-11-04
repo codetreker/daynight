@@ -28,7 +28,7 @@ function fixture(lifecycle: SessionSnapshot['lifecycle'] = 'archived', standalon
 }
 it.each([false, true])('renders completed history without a live controller (standalone=%s)', async standalone => {
   const f = fixture('archived', standalone); await f.client.start();
-  render(<SessionView client={f.client} active current />);
+  render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   expect(screen.getByText('The saved result.')).toBeVisible();
   expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
   expect(f.api.channel).not.toHaveBeenCalled(); expect(f.api.timeline).not.toHaveBeenCalled();
@@ -38,7 +38,7 @@ it.each([false, true])('renders completed history without a live controller (sta
 });
 it.each(['pending', 'failed', 'unavailable'] as const)('shows an honest %s state without an empty conversation or restoring message', async state => {
   const f = fixture(); vi.mocked(f.api.archive).mockResolvedValue({ state, sha256: null, byteLength: null, errorCode: state === 'failed' ? 'upload_failed' : null });
-  await f.client.start(); render(<SessionView client={f.client} active current />);
+  await f.client.start(); render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   expect(f.client.snapshot().archiveState).toBe(state);
   expect(screen.queryByText('No conversation yet.')).toBeNull();
   expect(screen.queryByText('Restoring session')).toBeNull();
@@ -95,7 +95,7 @@ it('rechecks draining sessions whose archive intent has not arrived yet', async 
   vi.useFakeTimers();
   const f = fixture('draining');
   vi.mocked(f.api.archive).mockResolvedValueOnce({ state: 'unavailable', sha256: null, byteLength: null, errorCode: null });
-  await f.client.start(); render(<SessionView client={f.client} active current />);
+  await f.client.start(); render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   expect(screen.getByText('The session is ending. Waiting for its history archive.')).toBeVisible();
   await vi.advanceTimersByTimeAsync(3000);
   expect(f.client.snapshot().archiveState).toBe('ready');

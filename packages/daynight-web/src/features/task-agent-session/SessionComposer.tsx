@@ -8,8 +8,8 @@ import type { SessionState } from './state';
 import { sessionCancelGate, sessionSendGate, hasPendingOperation, sessionControlGate, hasPendingControls } from './state';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 
-export function SessionComposer({ state, connected, authPaused = false, active = true, draft, onDraftChange, onSend, onCancel, settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls }: {
-  readonly state: SessionState; readonly connected: boolean; readonly authPaused?: boolean; readonly active?: boolean;
+export function SessionComposer({ state, connected, authPaused = false, active = true, suppressKeyboardHint = false, draft, onDraftChange, onSend, onCancel, settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls }: {
+  readonly state: SessionState; readonly connected: boolean; readonly authPaused?: boolean; readonly active?: boolean; readonly suppressKeyboardHint?: boolean;
   readonly draft?: SessionDraft; readonly onDraftChange?: (text: string) => void;
   readonly settingIntents?: ReadonlyMap<string, SessionSettingIntent>;
   readonly onUpdateSetting?: (id: string, value: string, revision: string) => Promise<void>;
@@ -20,7 +20,7 @@ export function SessionComposer({ state, connected, authPaused = false, active =
   const m = useSessionMessages(), menuId = useId();
   const [controlView, setControlView] = useState<ControlsView>(null);
   const [keyboardHint, setKeyboardHint] = useState({ hovered: false, focused: false, dismissed: false });
-  const keyboardHintVisible = active && !keyboardHint.dismissed && (keyboardHint.hovered || keyboardHint.focused);
+  const keyboardHintVisible = active && !suppressKeyboardHint && !keyboardHint.dismissed && (keyboardHint.hovered || keyboardHint.focused);
   useEffect(() => {
     if (!keyboardHintVisible) return;
     const dismiss = (event: KeyboardEvent) => {

@@ -599,6 +599,20 @@ index. Overview positioning can clear a filter that hides its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
+## Session display
+
+Task, Test and readable archived Sessions share the Display menu beside Refresh.
+Conversation is the default and keeps messages, plans, interactions and real
+errors; Standard preserves the complete activity view. The authenticated account
+and verified Session ID select a shared page preference, persisted independently
+from drafts and execution identity. Storage failures retain the current choice
+and expose retry only inside the menu. Both modes and all menu text follow the
+page language. Changing mode preserves the client, channel, Composer, retained
+entries and reading intent without replaying operations or altering pagination.
+The [requirements](../../docs/spec/task-sessions.md#session-显示模式) own the
+display rules; the [Session design](../../docs/design/task-session-protocol.md#session-显示菜单与入口绑定)
+owns identity binding, menu behavior and preference integration.
+
 ## Task discussions
 
 Task details always provide Overview, Attachments and Discussion tabs, followed
