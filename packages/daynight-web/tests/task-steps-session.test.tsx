@@ -720,3 +720,63 @@ it.each(["resume", "retire"] as const)("rechecks identity after committed Steps 
   if (outcome === "resume") await waitFor(() => expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ resource: resource(), status: "ready", stale: false }));
   else { await new Promise<void>((resolve) => setTimeout(resolve, 0)); expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull(); }
 });
+
+
+it.each([
+  [{ position: "first" } as const, ["00000002", "00000001", "00000003"], 6n],
+  [{ position: "last" } as const, ["00000001", "00000003", "00000002"], 6n],
+  [{ before: "00000003" } as const, ["00000001", "00000002", "00000003"], 5n],
+  [{ after: "00000003" } as const, ["00000001", "00000003", "00000002"], 6n],
+])("accepts exact position result and converges, including no-op %#", async (placement, order, version) => {
+  const scope = await seed(); const session = await open(scope);
+  const second = { ...item, id: "00000002", title: "Second" }; const third = { ...item, id: "00000003", title: "Third" };
+  const original = [item, second, third]; const reordered = order.map((id) => original.find((step) => step.id === id)!); let submitted = false;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PUT") { submitted = true; return Promise.resolve(resourceResponse(resource(version, reordered), TEST_VIEWER_ID)); }
+    return Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource(submitted ? version : 5n, submitted ? reordered : original) : body(submitted ? version : 5n), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.moveStep(projectId, taskId, second.id, placement, 5n);
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ operation: { action: "stepPosition" }, phase: "confirmed" }));
+  if (version !== 5n) { await apply(scope, body(version)); session.observe(projectId, taskId, node(scope)); }
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual(reordered);
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+});
+
+it("rejects a wrong order or altered step content as unknown and reconciles without replay", async () => {
+  const scope = await seed(); const session = await open(scope); const second = { ...item, id: "00000002" }; const original = [item, second]; let submitted = false;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PUT") { submitted = true; return Promise.resolve(resourceResponse(resource(6n, [{ ...second, title: "changed" }, item]), TEST_VIEWER_ID)); }
+    return Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource(5n, original) : body(), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.moveStep(projectId, taskId, second.id, { position: "first" }, 5n);
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "reconciled", reconciledFrom: "unknown" }));
+  expect(submitted).toBe(true); expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual(original);
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+});
+
+it.each([[{ before: item.id }, 400, "invalid_input"], [{ after: "ffffffff" }, 404, "not_found"]] as const)("reports invalid anchor failures without a fallback %#", async (placement, status, code) => {
+  const scope = await seed(); const session = await open(scope);
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => options.method === "PUT" ? Promise.resolve(failure(status, code)) : Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource() : body(), TEST_VIEWER_ID)));
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.moveStep(projectId, taskId, item.id, placement, 5n);
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ operation: { action: "stepPosition" }, phase: "refused", error: { status, code } }));
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+});
+
+it.each(["unknown", "conflict"] as const)("reconciles a position %s without replay and excludes other writes", async (outcome) => {
+  const scope = await seed(); const session = await open(scope); const write = deferred<Response>(); let submitted = false;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PUT") { submitted = true; return write.promise; }
+    return Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource() : body(), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.moveStep(projectId, taskId, item.id, { position: "last" }, 5n); session.setStatus(projectId, taskId, "done", 5n);
+  await waitFor(() => expect(submitted).toBe(true)); expect(session.canSetStepStatus(projectId, taskId)).toBe(false);
+  write.resolve(outcome === "unknown" ? resourceResponse({ invalid: true }, TEST_VIEWER_ID) : failure(409, "version_conflict"));
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "reconciled", reconciledFrom: outcome, reconciling: false }));
+  expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual([item]);
+  expect(session.canSetStepStatus(projectId, taskId)).toBe(true); expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+});

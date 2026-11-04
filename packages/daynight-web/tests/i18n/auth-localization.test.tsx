@@ -12,6 +12,7 @@ import { getFormats } from "../../src/i18n/formats";
 import { en } from "../../src/i18n/messages/en";
 import { zhCN } from "../../src/i18n/messages/zh-CN";
 import { renderWithLocale } from "../helpers/renderWithLocale";
+import { personalTeamPage } from "../helpers/team";
 
 const userId = "00000000-0000-4000-8000-000000000001";
 const projectId = "00000000-0000-4000-8000-000000000002";
@@ -30,6 +31,7 @@ const deferred = <T,>() => {
 };
 const defaults = (url: string): Response => {
   if (url === "/api/v1/me") return json(user);
+  if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(userId));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url === "/api/v1/projects" || url.startsWith("/api/v1/projects?")) return json({ items: [], nextCursor: null });
   if (url === "/api/v1/me/tokens") return json({ items: [] });
@@ -74,7 +76,7 @@ describe("authentication language changes", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(signal.aborted).toBe(false);
     await act(async () => pending.resolve(json(user)));
-    await screen.findByRole("heading", { name: zhCN.workspace.app.projects });
+    await screen.findByRole("heading", { name: "个人" });
     expect(document.title).toBe(zhCN.auth.shell.documentTitle.projects);
     expect(language()).toHaveValue("zh-CN");
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);

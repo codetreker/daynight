@@ -158,6 +158,9 @@ Team API 使用既有 session/PAT、Cookie 写请求 Origin 校验、`Daynight-U
 | `GET /api/v1/teams/{teamId}` | 当前 Team member/admin | `200`，Team 元数据与本人真实成员关系 |
 | `PATCH /api/v1/teams/{teamId}` | 当前 admin；`version,name,expectedUserId` | `200`，保存后的 Team 与本人真实成员关系 |
 | `DELETE /api/v1/teams/{teamId}` | 当前 admin；`version,name,expectedUserId` | `200`，有限回执 `{teamId,deleted:true}` |
+| `GET /api/v1/teams/{teamId}/members` | 当前 Team 成员 | `200`，完整目录 `{items}` |
+| `PATCH /api/v1/teams/{teamId}/members/{userId}` | 当前 admin；`version,role,expectedUserId` | `200`，`{membership,actorRole}` |
+| `DELETE /api/v1/teams/{teamId}/members/{userId}` | 当前 admin 或本人；`version,expectedUserId` | `200`，`{teamId,userId,removed:true,actorRole}` |
 
 创建、分页条目、详情和改名返回同一结构：
 `{id,kind,name,version,createdAt,updatedAt,membership:{teamId,userId,role,version,createdAt,updatedAt}}`。
@@ -183,6 +186,21 @@ Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原
 删除同时核对精确元数据版本和当前名称原文，任一不符返回 `409 version_conflict`；只有没有
 Project ownership 引用的普通 Team 可删除，否则返回 `409 team_not_empty`。删除原子移除
 现有邀请、成员和 Team，不隐式转移或删除 Project，不改写独立 Project grant。
+
+目录每项是 `membership` 的字段加 `profile:{name,email,avatarUrl}`；profile 对象必填，三个字段
+均可为 null。`role` 和 `actorRole` 为 `member` 或 `admin`；退出成功的 `actorRole` 为 null。
+
+Team 成员目录仅对本 Team 的当前成员开放，包含每位成员的可空姓名、邮箱、头像、角色、
+真实成员版本和时间；只有 Project 单独授权不能读取目录。目录读取失败或用户资料缺失时整个
+请求失败，不返回部分目录。普通 Team admin 可修改已有成员角色或移除成员；普通成员可自行
+退出，但不能管理他人。加入只能通过邀请接受，不提供按 UUID、姓名或邮箱加人。Personal Team
+成员关系固定，角色修改和退出均返回 `409 personal_team_immutable`。
+
+角色修改和移除必须提供观察到的真实成员 version 及 `expectedUserId`，主体核对先于领域 SQL。
+过期版本返回 `409 version_conflict`，即使所请求角色与当前角色相同也不例外；精确版本下的
+同角色操作不改变版本或时间。降低或移除最后一名 admin 返回 `409 last_admin`；并发操作也
+必须保留至少一名 admin。删除后重新加入获得新版本，旧操作不能命中新关系。成功回执包含
+提交后操作者的 Team role，退出后为 null；所有成员变更不改写 Project 独立 grant。
 
 仅确认事务提交后交付成功资源或删除回执。领域拒绝不产生领域写入；取消、SQL、rollback 和
 提交错误保持原有优先级及原因链。无法确认 COMMIT 结果返回 `503 write_outcome_unknown`；
@@ -258,7 +276,7 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 当前 member 或 admin 可创建；省略目标时使用调用者 Personal Team。Project、真实 ownership 与
 creator direct admin 原子提交。身份不符在任何领域 SQL 前返回 409 `identity_mismatch`，非成员
 不可创建。客户端核对响应主体，不自动重放未知写入。成功返回 Project、ownership 和同一事务中
-新鲜的 access。现有 CLI 和 Web 创建入口未指定目标，使用当前真实身份并保留有效名称与仓库地址原文。
+新鲜的 access。CLI 未指定目标时使用当前身份的 Personal Team；Web 创建入口提交打开对话框时捕获的 Team。两者使用当前真实身份并保留有效名称与仓库地址原文。
 
 既有项目按最早加入的现任 admin 的 Personal Team 回填；加入时间相同按 user UUID 稳定决定。
 全部既有用户，包括仅持 PAT 的用户，预先取得 Personal。零 admin 或坏引用使迁移整体失败，

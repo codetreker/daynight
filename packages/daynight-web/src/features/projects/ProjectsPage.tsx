@@ -37,7 +37,7 @@ const ErrorDetail = ({ error }: { error: unknown }) => {
   );
 };
 
-export const ProjectsPage = ({ onCreate }: { readonly onCreate?: () => void }) => {
+export const ProjectsPage = ({ onCreate, title, subtitle, emptyDetail }: { readonly onCreate?: () => void; readonly title?: string; readonly subtitle?: string; readonly emptyDetail?: string }) => {
   const projects = useProjectList();
   const { messages: { workspace: { projects: m, app }, auth: { createProject } }, format } = useI18n();
 
@@ -46,8 +46,8 @@ export const ProjectsPage = ({ onCreate }: { readonly onCreate?: () => void }) =
       <div className="page-heading">
         <div>
           <p className="eyebrow">{app.workspace}</p>
-          <h1 id="page-title" tabIndex={-1}>{app.projects}</h1>
-          <p className="subtitle">{m.subtitle}</p>
+          <h1 id="page-title" tabIndex={-1}>{title ?? app.projects}</h1>
+          <p className="subtitle">{subtitle ?? m.subtitle}</p>
         </div>
         <div className="heading-actions">{onCreate !== undefined && <button className="button primary" type="button" onClick={onCreate}>{createProject.open}</button>}<button className="button" type="button" onClick={projects.refresh}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
@@ -78,7 +78,7 @@ export const ProjectsPage = ({ onCreate }: { readonly onCreate?: () => void }) =
         <section className="state-box">
           <div className="state-icon"><FolderIcon /></div>
           <h2>{m.empty}</h2>
-          <p>{onCreate === undefined ? m.emptyDetail : createProject.emptyDetail}</p>{onCreate !== undefined && <button className="button primary" type="button" onClick={onCreate}>{createProject.createFirst}</button>}
+          <p>{emptyDetail ?? (onCreate === undefined ? m.emptyDetail : createProject.emptyDetail)}</p>{onCreate !== undefined && <button className="button primary" type="button" onClick={onCreate}>{createProject.createFirst}</button>}
         </section>
       )}
 

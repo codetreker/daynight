@@ -28,7 +28,7 @@ it("qualifies resource and pure software probes on the native operating system",
     await Promise.all([mkdir(startup), mkdir(home)]);
     const manifest = JSON.parse(await readFile(path.resolve(import.meta.dirname, "../../../package.json"), "utf8")) as { version: string };
     const paths = { ...resolveWorkerPaths(home), herdrDirectory: path.join(root, "h"), logsDirectory: path.join(root, "l") };
-    const collector = createWorkerTelemetryCollector({ paths, homeDirectory: home, version: manifest.version, workingDirectory: startup, machine: { id: "native-qualification", name: "Native qualification" }, platform: platform() });
+    const collector = createWorkerTelemetryCollector({ paths, homeDirectory: home, version: manifest.version, workingDirectory: startup, machine: { id: "native-qualification", name: "Native qualification" }, platform: platform(), workerId: "native-qualification", serverOrigin: "https://daynight.example" });
     const began = performance.now();
     const { telemetry } = await collector.collect(operation);
     const elapsed = performance.now() - began;

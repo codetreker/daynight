@@ -124,12 +124,38 @@ describe("Herdr Session v2 client", () => {
     raw = "x".repeat(2048); await expect(api.register(registration(origin))).rejects.toThrow(/limit|large|size/i);
   });
 
-  it("bounds unresponsive requests and rejects redirects without forwarding credentials", async () => {
-    let redirect = false, calls = 0;
-    const origin = await listen((_req, res) => { calls++; if (redirect) { res.statusCode = 307; res.setHeader("location", "/elsewhere"); res.end(); } });
-    const api = createHerdrSessionApi(origin, "token", { timeoutMs: 30 });
-    await expect(api.register(registration(origin))).rejects.toThrow(); expect(calls).toBe(1);
-    redirect = true; await expect(api.register(registration(origin))).rejects.toThrow(); expect(calls).toBe(2);
+  it("aborts an unresponsive registration at its deadline without replaying it", async () => {
+    vi.useFakeTimers();
+    const requests: RequestInit[] = [];
+    const pendingFetch: typeof fetch = async (_url, init) => new Promise((_resolve, reject) => {
+      requests.push(init!);
+      init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+    });
+    // We control the deadline after dispatch; a wall-clock deadline cannot guarantee server arrival.
+    let settled = false;
+    const origin = "https://daynight.example";
+    const result = createHerdrSessionApi(origin, "token", { fetch: pendingFetch, timeoutMs: 30 }).register(registration(origin)).then(
+      () => { settled = true; return undefined; },
+      (error: unknown) => { settled = true; return error; },
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.method).toBe("POST");
+    expect(JSON.parse(requests[0]!.body as string)).toEqual(registration(origin));
+    await vi.advanceTimersByTimeAsync(29);
+    expect(settled).toBe(false); expect(requests[0]!.signal!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toBe(requests[0]!.signal!.reason);
+    expect(requests[0]!.signal!.reason).toMatchObject({ message: "The Herdr Session request deadline elapsed; its result must be reconciled." });
+    expect(requests).toHaveLength(1); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects redirects without sending the Worker credential to the destination", async () => {
+    const destinationRequests: (string | undefined)[] = [], originRequests: (string | undefined)[] = [];
+    const destination = await listen((req, res) => { destinationRequests.push(req.headers.authorization); req.resume(); res.end(); });
+    const origin = await listen((req, res) => { originRequests.push(req.headers.authorization); req.resume(); res.statusCode = 307; res.setHeader("location", `${destination}/elsewhere`); res.end(); });
+    await expect(createHerdrSessionApi(origin, "worker-redirect-token").register(registration(origin))).rejects.toThrow();
+    expect(originRequests).toEqual(["Bearer worker-redirect-token"]);
+    expect(destinationRequests).toEqual([]);
   });
 
   it("preserves HTTP status for readback decisions without reporting response bodies", async () => {
