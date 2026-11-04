@@ -39,4 +39,4 @@ facts with effective authority and cannot represent inherited-only access.
 Existing producers and Web consumers must change together, including invitation
 creation and revocation. A lost creation response cannot recover its secret;
 reading current metadata cannot prove the original write's outcome. The result
-contains no member directory and does not introduce Team invitations.
+contains no member directory. The [Team invitation decision](2026-11-04-team-invitations.md) owns the separate Team receiver and lifecycle.

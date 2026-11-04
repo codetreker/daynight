@@ -15,9 +15,10 @@ import { ProjectSettingsPanel } from "../features/management/ProjectSettingsPane
 import { MembersPanel } from "../features/management/MembersPanel";
 import { CreateProjectDialog } from "../features/auth/CreateProjectDialog";
 import { InvitationPage } from "../features/auth/InvitationPage";
+import { TeamInvitationPage } from "../features/auth/TeamInvitationPage";
 import { LoginPage } from "../features/auth/LoginPage";
 import { DeviceAuthorizationPage } from "../features/auth/DeviceAuthorizationPage";
-import { captureInvitation, clearInvitation } from "../features/auth/invitation";
+import { captureInvitation, clearInvitation, persistInvitation } from "../features/auth/invitation";
 import { TaskDetailSessionProvider } from "../features/task-detail/TaskDetailSession";
 import { TaskAssigneesProvider } from "../features/task-assignees/TaskAssignees";
 import { ProjectPage } from "../features/projects/ProjectPage";
@@ -157,11 +158,13 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   const route = parseAuthRoute(pathname, search);
   const navigation = new URLSearchParams(search);
   navigation.delete("authError");
-  const requestedPath = route.kind === "login" ? route.returnPath : route.kind === "notFound" ? null : route.kind === "invitations" ? "/invitations" : pathname + (navigation.size === 0 ? "" : `?${navigation}`);
+  const requestedPath = route.kind === "login" ? route.returnPath : route.kind === "notFound" ? null : route.kind === "invitations" ? "/invitations" : route.kind === "teamInvitations" ? "/team-invitations" : pathname + (navigation.size === 0 ? "" : `?${navigation}`);
   const returnPath = requestedPath !== null && isLoginReturnPath(requestedPath) ? requestedPath : null;
   const target = returnPath === null ? null : new URL(returnPath, window.location.origin);
   const destination = target === null ? route : parseAuthRoute(target.pathname, target.search);
   const invitationFlow = invitationLocation(pathname, search);
+  const invitationRef = useRef(invitation); invitationRef.current = invitation;
+  const invitationFlowRef = useRef(invitationFlow); invitationFlowRef.current = invitationFlow;
   useLayoutEffect(() => {
     document.documentElement.lang = locale;
     const page = session.status === "authenticated" ? route.kind : session.status === "anonymous" ? "login" : session.status;
@@ -173,7 +176,17 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     if (parameters.has("authError")) { parameters.delete("authError"); window.history.replaceState(window.history.state, "", window.location.pathname + (parameters.size === 0 ? "" : `?${parameters}`)); }
     return failed;
   });
+  const discardInvitation = useCallback(() => {
+    invitationLifetime.current.abort(); setCleanupFailed(!clearInvitation());
+    const empty = { token: null, scope: null, storageUnavailable: false, cleanupFailed: false } as const;
+    invitationRef.current = empty; setInvitation(empty);
+  }, []);
   const clearSession = useCallback((notice?: SessionNotice) => {
+    if (invitationFlowRef.current && invitationRef.current.token !== null) {
+      const pending = persistInvitation(invitationRef.current);
+      invitationRef.current = pending;
+      setInvitation(pending);
+    }
     if (sessionRef.current.status === "authenticated") clearSessionDrafts(sessionRef.current.user.id);
     void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests(); ++generation.current; active.current?.abort(); active.current = null;
@@ -187,9 +200,11 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   useEffect(() => {
     // The initial state already consumed the first secret, even when storage is unavailable.
     if (invitationLocationSeen.current === location) return;
+    const previous = invitationLocationSeen.current;
     invitationLocationSeen.current = location;
-    if (location.pathname === "/invitations" && location.hash !== "") {
+    if ((location.pathname === "/invitations" || location.pathname === "/team-invitations") && (location.hash !== "" || previous.pathname !== location.pathname && (previous.pathname !== "/login" || new URLSearchParams(previous.search).get("returnPath") !== location.pathname))) {
       const incoming = captureInvitation();
+      if (sessionRef.current.status === "authenticated") setCleanupFailed(!clearInvitation());
       invitationLifetime.current.abort();
       invitationLifetime.current = new AbortController();
       setInvitation(incoming); setInvitationRevision((value) => value + 1);
@@ -202,7 +217,9 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     if (sessionRef.current.status !== "authenticated") setSession({ status: "loading" });
     void me(controller.signal).then((user) => {
       if (controller.signal.aborted || current !== generation.current) return;
+      if (invitationFlowRef.current) setCleanupFailed(!clearInvitation());
       const previous = sessionRef.current;
+      if (previous.status === "authenticated" && previous.user.id !== user.id && invitationFlowRef.current) discardInvitation();
       if (previous.status === "authenticated" && previous.user.id === user.id && !cacheScope.current?.isInvalidated) {
         setSession({ ...previous, user });
       } else {
@@ -221,8 +238,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
       else setSession({ status: "error" });
     });
     return () => controller.abort();
-  }, [attempt, clearSession]);
-  const discardInvitation = useCallback(() => { invitationLifetime.current.abort(); setCleanupFailed(!clearInvitation()); setInvitation({ token: null, storageUnavailable: false }); }, []);
+  }, [attempt, clearSession, discardInvitation]);
   const completeInvitation = useCallback((projectId: string) => { discardInvitation(); navigate(`/projects/${projectId}`); }, [discardInvitation]);
   const cancelInvitation = useCallback(() => { discardInvitation(); navigate("/projects"); }, [discardInvitation]);
   const unavailableInvitation = discardInvitation;
@@ -260,6 +276,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     setAttempt((value) => value + 1);
   }, [pauseIdentity]);
   const invalidateIdentity = useCallback(() => {
+    if (invitationFlowRef.current) discardInvitation();
     if (sessionRef.current.status === "authenticated") clearSessionDrafts(sessionRef.current.user.id);
     void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests();
@@ -269,7 +286,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
       setRevalidation("idle"); setSession({ status: "loading" });
     });
     setAttempt((value) => value + 1);
-  }, [pauseIdentity]);
+  }, [pauseIdentity, discardInvitation]);
   identityRecheck.current = invalidateIdentity;
   const blocked = revalidation === "error" || revalidation === "retrying";
   useLayoutEffect(() => {
@@ -312,19 +329,20 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     const parameters = new URLSearchParams({ provider, returnPath });
     navigateToLogin(`/api/v1/auth/login?${parameters}`);
   };
-  const cleanupWarning = cleanupFailed ? <div className="notice warning" role="alert">{m.invitationCleanupError}</div> : null;
+  const cleanupWarning = cleanupFailed || invitation.cleanupFailed ? <div className="notice warning" role="alert">{m.invitationCleanupError}</div> : null;
   if (returnPath === null && (route.kind === "login" || route.kind !== "notFound" && session.status === "anonymous")) return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.invalidLoginTarget}</h1><p>{m.invalidLoginTargetDetail}</p><LanguageSelector /><a className="button primary" href="/login">{m.startFreshLogin}</a></section></main></>;
   if (route.kind === "notFound") return <>{cleanupWarning}<main className="auth-main"><section className="state-box"><h1>{app.notFound}</h1><LanguageSelector /><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section></main></>;
   if (logoutPending) return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.signingOut}</h1><LanguageSelector /></section></main></>;
   if (session.status === "loading" || session.status === "authenticated" && route.kind === "login") return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.identityLoading}</h1><LanguageSelector /></section></main></>;
   if (session.status === "error") return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.identityError}</h1><p>{m.networkRetry}</p><LanguageSelector /><button className="button primary" type="button" onClick={() => setAttempt((value) => value + 1)}>{projects.retry}</button></section></main></>;
-  if (session.status === "anonymous") return <>{cleanupWarning}{invitationFlow && invitation.storageUnavailable && <div className="notice warning" role="alert">{m.invitationStorageError}</div>}<LoginPage invitation={destination.kind === "invitations"} device={destination.kind === "device"} {...(session.notice !== undefined ? { notice: m.notice[session.notice] } : loginError ? { notice: m.notice.loginFailed } : {})} onLogin={startLogin} />{logoutFailed && <button className="button" type="button" onClick={() => signOut(logoutContinuation.current)}>{m.retryLogout}</button>}</>;
+  if (session.status === "anonymous") return <>{cleanupWarning}{invitationFlow && invitation.storageUnavailable && <div className="notice warning" role="alert">{m.invitationStorageError}</div>}<LoginPage invitation={destination.kind === "invitations" || destination.kind === "teamInvitations"} device={destination.kind === "device"} {...(session.notice !== undefined ? { notice: m.notice[session.notice] } : loginError ? { notice: m.notice.loginFailed } : {})} onLogin={startLogin} />{logoutFailed && <button className="button" type="button" onClick={() => signOut(logoutContinuation.current)}>{m.retryLogout}</button>}</>;
   const identity = `${session.user.id}:${session.generation}`;
   const revalidationOverlay = blocked ? <RevalidationOverlay failed={revalidation === "error"} onRetry={recheckIdentity} /> : null;
   if (route.kind === "attachment" || route.kind === "task") return <CurrentAccountProvider user={session.user} admissionBlocked={revalidation !== "idle"}><TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskAssigneesProvider><TaskDetailSessionProvider>{revalidationOverlay}{cleanupWarning}<div className="auth-shell" key={identity} aria-hidden={blocked} inert={blocked}>
     <TaskDetailPage key={route.projectId} projectId={route.projectId} taskId={route.taskId} navigation={{ tab: route.tab, path: route.path }} />
   </div></TaskDetailSessionProvider></TaskAssigneesProvider></TaskCacheProvider></CurrentAccountProvider>;
-  if (route.kind === "invitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} onIdentityMismatch={invalidateIdentity} /></div></>;
+  if (route.kind === "teamInvitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><TeamInvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation.scope === "project" ? { token: null, scope: null, storageUnavailable: false, cleanupFailed: false } : invitation} user={session.user} onAccepted={discardInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} onIdentityMismatch={invalidateIdentity} /></div></>;
+  if (route.kind === "invitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation.scope === "team" ? { token: null, scope: null, storageUnavailable: false, cleanupFailed: false } : invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} onIdentityMismatch={invalidateIdentity} /></div></>;
   if (route.kind === "device") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><DeviceAuthorizationPage key={`${identity}:${route.userCode}`} user={session.user} initialCode={route.userCode} onSwitchAccount={() => signOut(returnPath)} onIdentityMismatch={invalidateIdentity} /></div></>;
   return <CurrentAccountProvider user={session.user} admissionBlocked={revalidation !== "idle"}><TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskAssigneesProvider><TaskDetailSessionProvider>{revalidationOverlay}<ProjectsProvider key={identity}><WorkspaceRoutes user={session.user} route={route} onSignOut={() => signOut()} onIdentityMismatch={invalidateIdentity} blocked={blocked} identityChecking={revalidation !== "idle"}>{cleanupWarning}</WorkspaceRoutes></ProjectsProvider></TaskDetailSessionProvider></TaskAssigneesProvider></TaskCacheProvider></CurrentAccountProvider>;
 };

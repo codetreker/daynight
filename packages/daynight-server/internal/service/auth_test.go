@@ -328,6 +328,7 @@ func TestIdentitySessionCreationFailureRetainsDestination(t *testing.T) {
 	for _, destination := range []string{
 		"/projects/project/tasks/task/attachments/docs/guide.md?tab=overview#details",
 		"/invitations",
+		"/team-invitations",
 		"/device?user_code=ABCD-EFGH",
 	} {
 		t.Run(destination, func(t *testing.T) {

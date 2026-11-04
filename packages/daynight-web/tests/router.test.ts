@@ -146,6 +146,10 @@ describe("explicit login destinations", () => {
 
   it("rejects duplicate destinations and retains the invitation lifetime only for its effective destination", () => {
     expect(parseLoginReturnPath("?returnPath=%2Fprojects&returnPath=%2Finvitations")).toBeNull();
+    expect(parseAuthRoute("/team-invitations")).toEqual({ kind: "teamInvitations" });
+    expect(isLoginReturnPath("/team-invitations")).toBe(true);
+    expect(invitationLocation("/team-invitations", "")).toBe(true);
+    expect(invitationLocation("/login", "?returnPath=%2Fteam-invitations")).toBe(true);
     expect(invitationLocation("/invitations", "")).toBe(true);
     expect(invitationLocation("/login", "?returnPath=%2Finvitations&authError=login_failed")).toBe(true);
     expect(invitationLocation("/login", "?returnPath=%2Fprojects")).toBe(false);
