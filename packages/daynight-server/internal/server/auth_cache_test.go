@@ -197,7 +197,7 @@ func TestIdentityHTTPMeCacheDoesNotHideUserReadFailure(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
 	request.Header.Set("X-Request-ID", "project-test")
 	request.Header.Set("If-None-Match", initial.Header().Get("ETag"))
-	if _, err := h.database.Pool.Exec(t.Context(), "DROP TABLE users"); err != nil {
+	if _, err := h.database.Pool.Exec(t.Context(), "ALTER TABLE users RENAME TO unavailable_users"); err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()

@@ -380,7 +380,7 @@ func TestProjectHTTPDatabaseFailuresAreVisibleAndSafe(t *testing.T) {
 	for _, request := range []struct{ method, path, body string }{
 		{http.MethodGet, "/api/v1/projects", ""},
 		{http.MethodGet, "/api/v1/projects/00000000-0000-4000-8000-000000000099", ""},
-		{http.MethodPost, "/api/v1/projects", `{"name":"secret-body","repoUrl":"https://github.com/example/private-secret"}`},
+		{http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "secret-body", RepoURL: "https://github.com/example/private-secret", ExpectedUserID: handler.principal.UserID})},
 	} {
 		response := projectRequest(handler, request.method, request.path, request.body)
 		assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
