@@ -54,7 +54,9 @@ function BotPane({ pane, active, current }: { readonly pane: BotSessionPane; rea
     // Only unfinished restoration may cross that boundary; the original handle
     // still distinguishes a real Latest cancellation from a fresh handle's idle.
     if (bookmark && restored.current && restored.current.getRestoreStatus() !== 'pending') { pane.retained.bookmark = null; return; }
-    if (!active || !current || !handle || !bookmark || (!view.historyReady && view.archiveState !== 'ready')) return;
+    // Every replacement handle owns the pending bookmark before it can be captured
+    // on eviction, including hidden panes and incomplete initial history.
+    if (!current || !handle || !bookmark) return;
     if (restored.current !== handle) {
       restored.current = handle; attemptedPage.current = null;
       if (handle.restoreBookmark(bookmark) === 'rejected') { pane.retained.bookmark = null; return; }
@@ -66,7 +68,7 @@ function BotPane({ pane, active, current }: { readonly pane: BotSessionPane; rea
     const snapshot = view.state.snapshot;
     // Controller replacement can cancel a page without replacing the browser channel.
     // Wait for admission before remembering an attempt that loadOlder can start.
-    if (!snapshot?.synchronized || snapshot.connectionState !== 'connected' || snapshot.lifecycle !== 'active') return;
+    if (!active || !snapshot?.synchronized || snapshot.connectionState !== 'connected' || snapshot.lifecycle !== 'active') return;
     const key = bookmark.anchor?.key;
     const page = `${view.connectionGeneration}/${snapshot.connectionEpoch}/${view.historyRevision}`;
     if (!key || view.state.entries.some(entry => entry.entryId === key) || !view.historyReady || !view.hasOlder || view.loadingOlder || view.historyError || view.authPaused || attemptedPage.current === page) return;

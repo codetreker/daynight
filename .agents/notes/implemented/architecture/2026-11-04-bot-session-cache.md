@@ -34,7 +34,10 @@ that is still synchronizing or an authentication gate that refuses the request
 must not consume its retry. A failed page retains the bookmark;
 Latest cancels it. Restoration belongs to a mounted Timeline handle, not the
 longer-lived pane: only a pending target transfers when archive loading replaces
-the Timeline. Stable handles forward to current scroll state, while complete
+the Timeline. A real handle accepts that target before visibility or tail
+hydration; those conditions govern pagination and layout, not bookmark ownership.
+Eviction can then capture the pending target instead of a fresh viewport default.
+Stable handles forward to current scroll state, while complete
 validated archives confirm the boundary without enabling live pagination.
 The [design](../../../../docs/design/bot-session-view.md)
 owns interfaces, ownership and fallback details. This consumes the existing

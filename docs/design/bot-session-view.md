@@ -24,7 +24,7 @@
 
 `SessionView` 将可选 `reading` 透传给 `SessionTimeline`；未提供时保持原调用方式。pane 的 scope 是完整 Bot 绑定，Timeline 再加实际 Session fence，并独立校验 historyEpoch。
 
-重挂时等待历史就绪，把保留书签应用到该 Timeline 挂载实例。reading handle 在一次挂载内稳定，方法代理最新滚动状态；普通渲染、显隐和布局变化不构成新实例。实时 Timeline 因归档加载卸载时，容器保留原 handle 的恢复状态，只有仍为 `pending` 的目标才交给归档的新 handle；隐藏 pane 等到重新 active 后交接，新 handle 仍验证完整 identity 和 historyEpoch。`idle`、`restored`、`rejected` 不重放，尤其不会把真实 Latest 取消当成待转交目标。`pending` 且目标尚不在原始 entries 中时，复用 `client.loadOlder()`；该客户端负责 cursor 校验、取消、去重、失败传播及实际页面进度。Host 以浏览器 `connectionGeneration`、Controller `connectionEpoch` 和 `historyRevision` 防止无进度循环，且仅在 snapshot 已同步、连接就绪、执行活跃时记录分页尝试；若认证准入在视图更新前拒绝请求，则释放本次尝试标记。浏览器重连和同一 channel 内的 Controller 连接替换取消旧请求后，都能在实际可分页时继续定位。局部重试沿用 Timeline 原有入口，失败不丢书签。`restored`、`rejected` 或用户选择 Latest 后的 `idle` 都停止恢复，不因下一次回执、模式变化或布局重放旧位置。
+重挂取得真实 reading handle 后立即接纳保留书签；handle 自行校验 identity 和 historyEpoch，不要求 pane 可见或尾页已加载。缺页、隐藏和零高度只延后定位，不能留下可被淘汰捕获覆盖的初始跟尾状态。reading handle 在一次挂载内稳定，方法代理最新滚动状态；普通渲染、显隐和布局变化不构成新实例。实时 Timeline 因归档加载卸载时，容器保留原 handle 的恢复状态，只有仍为 `pending` 的目标才交给归档的新 handle；隐藏 pane 也立即交接，新 handle 仍验证完整 identity 和 historyEpoch。`idle`、`restored`、`rejected` 不重放，尤其不会把真实 Latest 取消当成待转交目标。仅 active 且历史就绪、`pending` 目标尚不在原始 entries 中时，复用 `client.loadOlder()`；该客户端负责 cursor 校验、取消、去重、失败传播及实际页面进度。Host 以浏览器 `connectionGeneration`、Controller `connectionEpoch` 和 `historyRevision` 防止无进度循环，且仅在 snapshot 已同步、连接就绪、执行活跃时记录分页尝试；若认证准入在视图更新前拒绝请求，则释放本次尝试标记。浏览器重连和同一 channel 内的 Controller 连接替换取消旧请求后，都能在实际可分页时继续定位。局部重试沿用 Timeline 原有入口，失败不丢书签。`restored`、`rejected` 或用户选择 Latest 后的 `idle` 都停止恢复，不因下一次回执、模式变化或布局重放旧位置。
 
 锚点已加载但因显示过滤隐藏时，定位由共享 hook 决定；历史边界确认前不会把缺页当作条目已删除。已校验且完整加载的归档确认历史边界，但不开放在线分页；归档确实缺失的目标沿用前邻、后邻或第一可见行降级。没有可见行或 pane 不可见时可继续保留 pending。新 generation/historyEpoch 拒绝旧书签，正常布局变化保留文字锚点。
 

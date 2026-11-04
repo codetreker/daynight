@@ -140,7 +140,8 @@ async function coldArchiveFixture(historyFailure = false) {
     const top = this.dataset.entryKey ? (this.dataset.entryKey === 'early' ? 400 : 900) - this.closest('.session-timeline')!.scrollTop : 0;
     return { top, bottom: top + 300, left: 0, right: 400, x: 0, y: top, width: 400, height: 300, toJSON() {} };
   });
-  const bot = botFixture(), cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), createApi: () => bot.api }); caches.push(cache);
+  const bot = botFixture(), bots = [bot, ...[2, 3, 4].map(n => botFixture(botBinding(n)))];
+  const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), createApi: binding => bots.find(candidate => candidate.binding.botId === binding.botId)!.api }); caches.push(cache);
   cache.select(bot.binding); const old = cache.snapshot()[0]!;
   await waitFor(() => expect(old.client.snapshot().historyReady).toBe(true));
   const bookmark = { identity: JSON.stringify([old.key, sessionFenceKey(bot.snapshot())]), historyEpoch: bot.snapshot().historyEpoch, following: false, anchor: { key: 'early', top: 15 } };
@@ -159,18 +160,27 @@ async function coldArchiveFixture(historyFailure = false) {
   if (historyFailure) await screen.findByText('Live history unavailable');
   const liveHandle = pane.reading.current!;
   const show = (active: boolean) => view.rerender(<BotSessionHost cache={cache} binding={bot.binding} active={active} />);
+  const select = async (n: number) => {
+    view.rerender(<BotSessionHost cache={cache} binding={botBinding(n)} />);
+    await waitFor(() => {
+      const state = cache.snapshot().find(candidate => candidate.binding.botId === botBinding(n).botId)?.client.snapshot();
+      expect(state?.connected || state?.archiveState === 'ready').toBe(true);
+    });
+    return cache.snapshot().find(candidate => candidate.binding.botId === botBinding(n).botId)!;
+  };
   return {
-    pane, bookmark, liveHandle, view, show,
+    bot, cache, pane, bookmark, liveHandle, view, show, select,
     archive: async (change: { historyEpoch?: string; executionGeneration?: string } = {}, content: 'target' | 'missing' | 'empty' | 'filtered' = 'target') => {
       const final = { ...bot.snapshot(), ...change, lifecycle: 'archived' as const, synchronized: false, connectionState: 'disconnected' as const };
       bot.change(final);
       act(() => bot.receive({ protocol: final.protocol, type: 'snapshot', userId: botOwner, snapshot: { ...final, lifecycle: 'draining' }, cursor: 'draining' }));
       await waitFor(() => expect(bot.api.archiveContent).toHaveBeenCalledOnce());
       expect(pane.reading.current).toBeNull();
-      expect(view.container.querySelector('.session-timeline')).toBeNull();
+      expect(view.container.querySelector(`[data-bot-id="${bot.binding.botId}"] .session-timeline`)).toBeNull();
       const archive: SessionArchive = { schemaVersion: 1, ...sessionFence(final), controllerId: final.identity.controllerId, controllerInstanceId: final.identity.controllerInstanceId, provider: final.identity.provider, nativeSessionId: final.identity.nativeSessionId,
         entries: content === 'empty' ? [] : content === 'filtered' ? [{ kind: 'reasoning', entryId: 'reasoning', entrySeq: '1', revision: '1', text: 'Filtered reasoning' }] : content === 'target' ? [{ kind: 'assistant_message', entryId: 'early', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Archived original target' }] }, ...bot.page.items] : bot.page.items, resources: [] };
       await act(async () => finish(archive));
+      vi.mocked(bot.api.archiveContent).mockResolvedValue(archive);
       await waitFor(() => expect(pane.client.snapshot().archiveState).toBe('ready'));
       expect(pane.reading.current).not.toBe(liveHandle);
     },
@@ -222,4 +232,46 @@ it.each(['empty', 'filtered'] as const)('retains the pending bookmark when the c
   const f = await coldArchiveFixture(); await f.archive({}, content);
   expect(f.pane.reading.current?.getRestoreStatus()).toBe('pending');
   expect(f.pane.reading.current?.captureBookmark()).toEqual(f.bookmark);
+});
+
+it.each([false, true])('retains the reader intent through hidden archive replacement and A/B/C/D eviction (Latest canceled: %s)', async canceled => {
+  const f = await coldArchiveFixture();
+  if (canceled) fireEvent.click(screen.getByRole('button', { name: /latest/i }));
+  await f.select(2); await f.archive();
+  const archivedTimeline = f.view.container.querySelector(`[data-bot-id="${f.bot.binding.botId}"] .session-timeline`)!;
+  await f.select(3); await f.select(4);
+  expect(f.cache.snapshot().some(pane => pane.binding.botId === f.bot.binding.botId)).toBe(false);
+  expect(archivedTimeline.isConnected).toBe(false);
+  const restored = await f.select(1);
+  expect(restored).not.toBe(f.pane);
+  expect(restored.reading.current?.captureBookmark()).toMatchObject(canceled ? { following: true, anchor: null } : { following: false, anchor: { key: 'early', top: 15 } });
+  expect(f.view.container.querySelector(`[data-bot-id="${f.bot.binding.botId}"] .session-timeline`)!.scrollTop).toBe(canceled ? 1800 : 385);
+});
+
+it('retains a cold bookmark through closing a replacement Timeline before its tail hydration completes', async () => {
+  const f = await coldArchiveFixture();
+  act(() => f.cache.close()); f.view.unmount();
+  vi.mocked(f.bot.api.timeline).mockImplementation((_id, _direction, _cursor, signal) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('Canceled', 'AbortError')), { once: true })));
+  const loading = render(<BotSessionHost cache={f.cache} binding={f.bot.binding} />);
+  const pending = f.cache.snapshot()[0]!;
+  await waitFor(() => expect(pending.reading.current).not.toBeNull());
+  expect(pending.client.snapshot().historyReady).toBe(false);
+  act(() => f.cache.close()); loading.unmount();
+  vi.mocked(f.bot.api.timeline).mockResolvedValue({ ...f.bot.page, items: [{ kind: 'assistant_message', entryId: 'early', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Restored after pending hydration' }] }] });
+  const final = render(<BotSessionHost cache={f.cache} binding={f.bot.binding} />);
+  await screen.findByText('Restored after pending hydration');
+  expect(f.cache.snapshot()[0]!.reading.current?.captureBookmark()).toMatchObject({ following: false, anchor: { key: 'early', top: 15 } });
+  expect(final.container.querySelector('.session-timeline')!.scrollTop).toBe(385);
+});
+
+it('does not start older-page requests for a hidden pending bookmark after reconnect', async () => {
+  const f = await coldArchiveFixture();
+  const olderRequests = () => vi.mocked(f.bot.api.timeline).mock.calls.filter(([, direction]) => direction === 'before').length;
+  expect(olderRequests()).toBe(1);
+  f.show(false); act(() => f.pane.client.refresh());
+  await waitFor(() => expect(f.pane.client.snapshot().historyReady).toBe(true));
+  expect(f.pane.reading.current?.captureBookmark()).toEqual(f.bookmark);
+  expect(olderRequests()).toBe(1);
+  f.show(true);
+  await waitFor(() => expect(olderRequests()).toBe(2));
 });
