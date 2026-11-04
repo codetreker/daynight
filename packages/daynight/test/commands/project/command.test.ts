@@ -6,6 +6,8 @@ import { runProjectCommand } from "../../../src/commands/project/command.js";
 import type { ProjectCommandDependencies } from "../../../src/commands/project/command.js";
 import { renderProjectList } from "../../../src/commands/project/rendering.js";
 
+const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const user = { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } };
 const id = "abcdefab-1234-5678-90ab-abcdefabcdef";
 const project: Project = { id, name: "Project 名称", repoUrl: "git@Git.Example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-20T01:02:03.123456789Z", updatedAt: "2026-10-20T02:03:04.987654321Z" };
 const context = () => ({
@@ -29,7 +31,7 @@ const fixture = (projects: readonly Project[] = []) => {
     getTaskProperties: async () => { throw new Error("Unused property API"); },
     setTaskProperty: async () => { throw new Error("Unused property API"); },
     removeTaskProperty: async () => { throw new Error("Unused property API"); },
-    getCurrentUser: unavailable,
+    getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(user),
     getTeamCurrentUser: unavailable, listTeams: unavailable, getTeam: unavailable, createTeam: unavailable, renameTeam: unavailable, deleteTeam: unavailable, listTeamProjects: unavailable,
     reportWorker: unavailable,
     createProject: vi.fn<ApiClient["createProject"]>().mockResolvedValue(project),
@@ -91,7 +93,7 @@ describe("project command boundaries", () => {
     const { api, context, dependencies } = fixture();
     const repoUrl = "https://git.example/o/r.git";
     await runProjectCommand(["create", "\ufeff", "--repo", repoUrl], context, dependencies);
-    expect(api.createProject).toHaveBeenCalledExactlyOnceWith({ name: "\ufeff", repoUrl });
+    expect(api.createProject).toHaveBeenCalledExactlyOnceWith({ name: "\ufeff", repoUrl, expectedUserId: userId });
     expect(context.workingDirectory).not.toHaveBeenCalled();
   });
 
@@ -99,14 +101,14 @@ describe("project command boundaries", () => {
     for (const args of [["create", name, "--repo", project.repoUrl], ["create", "--repo", project.repoUrl, name]]) {
       const { api, context, dependencies } = fixture();
       await runProjectCommand(args, context, dependencies);
-      expect(api.createProject).toHaveBeenCalledExactlyOnceWith({ name, repoUrl: project.repoUrl });
+      expect(api.createProject).toHaveBeenCalledExactlyOnceWith({ name, repoUrl: project.repoUrl, expectedUserId: userId });
     }
   });
 
   it.each(["-leading", "--name", "--help", "--", "-中文"])("preserves dash-prefixed names after the options terminator: %j", async (name) => {
     const { api, context, dependencies } = fixture();
     await runProjectCommand(["create", "--repo", project.repoUrl, "--", name], context, dependencies);
-    expect(api.createProject).toHaveBeenCalledExactlyOnceWith({ name, repoUrl: project.repoUrl });
+    expect(api.createProject).toHaveBeenCalledExactlyOnceWith({ name, repoUrl: project.repoUrl, expectedUserId: userId });
   });
 
   it("describes the required positional name and dash syntax in create help", async () => {
@@ -124,8 +126,16 @@ describe("project command boundaries", () => {
     await runProjectCommand(["create", "A different name", "--repo", "https://git.example/Org/Repo"], context, dependencies);
     expect(api.listProjects).toHaveBeenCalledOnce();
     expect(api.createProject).not.toHaveBeenCalled();
+    expect(api.getCurrentUser).not.toHaveBeenCalled();
     expect(context.stdout.mock.calls[0]![0]).toContain(`Project already exists.\nID: ${id}\nName: ${project.name}\n`);
     expect(context.workingDirectory).not.toHaveBeenCalled();
+  });
+
+  it("does not create if current identity cannot be read", async () => {
+    const { api, context, dependencies } = fixture();
+    api.getCurrentUser.mockRejectedValue(new Error("Identity unavailable"));
+    await expect(runProjectCommand(["create", "Name", "--repo", project.repoUrl], context, dependencies)).rejects.toThrow("Identity unavailable");
+    expect(api.createProject).not.toHaveBeenCalled();
   });
 
   it("rejects ambiguous repository matches with their IDs before creation", async () => {
@@ -168,7 +178,7 @@ describe("project command output", () => {
     const { api, context, dependencies } = fixture();
     const name = "  Original name  ";
     await runProjectCommand(["create", name, "--repo", project.repoUrl], context, dependencies);
-    expect(api.createProject).toHaveBeenCalledExactlyOnceWith({ name, repoUrl: project.repoUrl });
+    expect(api.createProject).toHaveBeenCalledExactlyOnceWith({ name, repoUrl: project.repoUrl, expectedUserId: userId });
     expect(context.stdout).toHaveBeenCalledExactlyOnceWith(`Project created.\nID: ${id}\nName: ${project.name}\nRepository: ${project.repoUrl}\nCreated: ${project.createdAt}\nUpdated: ${project.updatedAt}\n`);
     expect(context.stderr).not.toHaveBeenCalled();
   });

@@ -26,9 +26,11 @@ const projectSettings = (value: unknown): Project["settings"] => {
 
 export const project = (value: unknown): Project => {
   const data = record(value);
+  const name = string(data.name);
+  if (!name.isWellFormed() || name.includes("\0") || !/[^\p{White_Space}]/u.test(name)) return malformed();
   return {
     id: id(data.id),
-    name: nonemptyString(data.name),
+    name,
     repoUrl: nonemptyString(data.repoUrl),
     settings: projectSettings(data.settings),
     ownership: parseProjectOwnership(data.ownership),

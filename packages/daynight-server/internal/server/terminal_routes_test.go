@@ -202,6 +202,42 @@ func (f terminalHTTPFixture) messageRequest(t *testing.T, kind string, payload v
 	f.h.ServeHTTP(w, r)
 	return terminalMessage(t, w)
 }
+
+func TestTerminalHTTPAutomationRecoveryHasAnIndependentReadbackContract(t *testing.T) {
+	f := terminalHTTPSetup(t)
+	ctx := context.Background()
+	reg := f.message.Payload.(v2.Registration)
+	native := "original-native"
+	reg.Binding.NativeSessionID = &native
+	reg.Capabilities = v2.Capabilities{}
+	f.message.Payload = reg
+	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
+	f.messageRequest(t, "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}}})
+	f.messageRequest(t, "control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}})
+	if err := f.app.relay.service.BindTerminalConnection(ctx, f.h.principal, reg.Owner.ProjectID, reg.Owner.TaskID, f.message.SessionID, f.message.Envelope, "1"); err != nil {
+		t.Fatal(err)
+	}
+	prepare := v2.AutomationRecoveryPrepare{RecoveryID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", ClosingControlEpoch: "2", StopOperationID: uuid.NewString(), Binding: reg.Binding, InitialAssignment: "transport_completed"}
+	ack := f.messageRequest(t, "automation_recovery_prepare", prepare)
+	path := f.base + "/" + f.message.SessionID + "/automation-recovery/" + prepare.RecoveryID
+	read := terminalMessage(t, terminalRequest(f.h, http.MethodGet, path, "", v2.Protocol))
+	if jsonBody(t, read) != jsonBody(t, ack) {
+		t.Fatal("readback changed original preparation")
+	}
+	for _, probe := range []struct {
+		method, path, protocol string
+		status                 int
+	}{{"GET", path + "?unexpected=1", v2.Protocol, 400}, {"HEAD", path, v2.Protocol, 405}, {"GET", f.base + "/" + f.message.SessionID + "/automation-recovery/" + uuid.NewString(), v2.Protocol, 404}} {
+		w := terminalRequest(f.h, probe.method, probe.path, "", probe.protocol)
+		if w.Code != probe.status {
+			t.Fatal(probe, w.Code, w.Body.String())
+		}
+	}
+	state := terminalRequest(f.h, "GET", f.base+"/"+f.message.SessionID+"/state", "", v2.Protocol)
+	if state.Code != 200 || strings.Contains(state.Body.String(), "prepareDigest") {
+		t.Fatal("ordinary strict state shape changed", state.Code, state.Body.String())
+	}
+}
 func TestTerminalHTTPRegistrationLedgerAndClosedUnavailable(t *testing.T) {
 	f := terminalHTTPSetup(t)
 	m := f.message
@@ -356,6 +392,86 @@ func TestTerminalWorkerAndBrowserWebSockets(t *testing.T) {
 		}
 	}
 	t.Fatal("revoked browser remained connected")
+}
+
+func terminalInitialInputChannel(t *testing.T) (terminalHTTPFixture, *websocket.Conn) {
+	t.Helper()
+	f := terminalHTTPSetup(t)
+	reg := f.message.Payload.(v2.Registration)
+	reg.Capabilities = v2.Capabilities{}
+	f.message.Payload = reg
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	worker, _, err := websocket.Dial(ctx, f.server.URL+f.base+"/"+f.message.SessionID+"/worker-channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + f.h.token}}, Subprotocols: []string{v2.Protocol}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = worker.CloseNow() })
+	sessionWSWrite(t, worker, f.message)
+	sessionWSKind(t, worker, "registration_ack")
+	ledger := f.message
+	ledger.Type = "generation_ledger"
+	ledger.Payload = v2.GenerationLedger{Runs: []v2.Run{{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}}}
+	sessionWSWrite(t, worker, ledger)
+	sessionWSKind(t, worker, "generation_ledger")
+	return f, worker
+}
+
+func TestTerminalWorkerChannelRetainsDefinitelyUnsentInitialRetry(t *testing.T) {
+	f, worker := terminalInitialInputChannel(t)
+	// These are Worker observations of one initial assignment. A rejected
+	// zero-write attempt returns to pending before a new admitted attempt starts.
+	for index, initial := range []string{"pending", "dispatching", "pending", "dispatching", "transport_completed"} {
+		message := f.message
+		message.Type = "control_state"
+		message.Payload = v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: initial, AvailableActions: []string{"acquire_control"}}
+		sessionWSWrite(t, worker, message)
+		ack := sessionWSKind(t, worker, "control_state")
+		var control v2.ControlState
+		if err := json.Unmarshal(ack["payload"], &control); err != nil {
+			t.Fatal(err)
+		}
+		if control.InitialAssignment != initial || control.State != "automation" || control.ConnectionEpoch != "1" || control.ControlEpoch != "1" {
+			t.Fatalf("initial observation %d was not acknowledged on the original channel: %+v", index, control)
+		}
+	}
+	response := terminalRequest(f.h, http.MethodGet, f.base+"/"+f.message.SessionID+"/state", "", v2.Protocol)
+	var state struct {
+		Connected bool            `json:"connected"`
+		Control   v2.ControlState `json:"control"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &state) != nil || !state.Connected || state.Control.InitialAssignment != "transport_completed" {
+		t.Fatal("initial retry closed the Worker channel or lost its durable result", response.Code, response.Body.String())
+	}
+}
+
+func TestTerminalWorkerChannelRejectsInitialReplayAfterUncertainOrFinalResult(t *testing.T) {
+	for _, initial := range []string{"unknown", "unconfirmed", "transport_completed"} {
+		t.Run(initial, func(t *testing.T) {
+			f, worker := terminalInitialInputChannel(t)
+			message := f.message
+			message.Type = "control_state"
+			state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "suspended", InitialAssignment: initial, AvailableActions: []string{}}
+			message.Payload = state
+			sessionWSWrite(t, worker, message)
+			sessionWSKind(t, worker, "control_state")
+			state.InitialAssignment = "pending"
+			message.Payload = state
+			sessionWSWrite(t, worker, message)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, _, err := worker.Read(ctx); err == nil || ctx.Err() != nil {
+				t.Fatalf("Worker channel did not reject %s to pending: %v", initial, err)
+			}
+			response := terminalRequest(f.h, http.MethodGet, f.base+"/"+f.message.SessionID+"/state", "", v2.Protocol)
+			var observed struct {
+				Control v2.ControlState `json:"control"`
+			}
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &observed) != nil || observed.Control.InitialAssignment != initial {
+				t.Fatal("rejected replay replaced the original initial result", response.Code, response.Body.String())
+			}
+		})
+	}
 }
 
 func TestTerminalDuplicateChannelsPreserveOriginalLease(t *testing.T) {

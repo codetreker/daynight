@@ -30,7 +30,7 @@ func TestTransferAuthorizationVersionsAndReceipts(t *testing.T) {
 	teams := NewTeams(db)
 	other := servicePrincipal(t, db)
 	target := newTestTeam(t, teams, other, "Target")
-	project, err := projects.Create(ctx, actor, CreateProject{Name: "Project", RepoURL: "host:repo"})
+	project, err := projects.Create(ctx, actor, CreateProject{Name: "Project", RepoURL: "host:repo", ExpectedUserID: actor.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestTransferValidationBeforeDomainSQL(t *testing.T) {
 func TestTransferInvalidInputsAndCancellation(t *testing.T) {
 	projects, db, _, actor := projectService(t)
 	ctx := context.Background()
-	project, err := projects.Create(ctx, actor, CreateProject{Name: "Validation", RepoURL: "host:repo"})
+	project, err := projects.Create(ctx, actor, CreateProject{Name: "Validation", RepoURL: "host:repo", ExpectedUserID: actor.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestTransferInvalidInputsAndCancellation(t *testing.T) {
 func TestTransferUnavailableAndVersionExhaustion(t *testing.T) {
 	projects, db, _, actor := projectService(t)
 	ctx := context.Background()
-	project, err := projects.Create(ctx, actor, CreateProject{Name: "Exhaustion", RepoURL: "host:repo"})
+	project, err := projects.Create(ctx, actor, CreateProject{Name: "Exhaustion", RepoURL: "host:repo", ExpectedUserID: actor.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestTransferUnavailableAndVersionExhaustion(t *testing.T) {
 func TestTransferDatabaseFailuresDoNotMasqueradeAsRejection(t *testing.T) {
 	projects, db, _, actor := projectService(t)
 	ctx := context.Background()
-	project, err := projects.Create(ctx, actor, CreateProject{Name: "Database failure", RepoURL: "host:repo"})
+	project, err := projects.Create(ctx, actor, CreateProject{Name: "Database failure", RepoURL: "host:repo", ExpectedUserID: actor.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}

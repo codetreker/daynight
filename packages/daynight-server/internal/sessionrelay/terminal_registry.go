@@ -19,26 +19,27 @@ type terminalRecording struct {
 	ObservedContent bool
 }
 type terminalRecord struct {
-	Envelope           v2.Envelope
-	Registration       v2.Registration
-	RegistrationDigest string
-	RegistrationEpoch  string
-	Owner              v2.Owner
-	Binding            v2.Binding
-	Runs               []v2.Run
-	FinalizationID     *string
-	ConnectionEpoch    string
-	ChannelEpoch       string
-	ControlEpoch       string
-	Control            *v2.ControlState
-	ControlActor       *core.Principal
-	LastLeaseSeq       string
-	OperationSeq       int64
-	Snapshot           *v2.Snapshot `json:"-"`
-	LastFrame          *terminalFrameIdentity
-	LastSeen           *time.Time
-	ServerInstance     string
-	Recording          map[string]terminalRecording
+	AutomationRecoveries map[string]*terminalAutomationRecovery
+	Envelope             v2.Envelope
+	Registration         v2.Registration
+	RegistrationDigest   string
+	RegistrationEpoch    string
+	Owner                v2.Owner
+	Binding              v2.Binding
+	Runs                 []v2.Run
+	FinalizationID       *string
+	ConnectionEpoch      string
+	ChannelEpoch         string
+	ControlEpoch         string
+	Control              *v2.ControlState
+	ControlActor         *core.Principal
+	LastLeaseSeq         string
+	OperationSeq         int64
+	Snapshot             *v2.Snapshot `json:"-"`
+	LastFrame            *terminalFrameIdentity
+	LastSeen             *time.Time
+	ServerInstance       string
+	Recording            map[string]terminalRecording
 }
 
 func suspendTerminalState(r *terminalRecord) {

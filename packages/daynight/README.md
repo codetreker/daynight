@@ -548,7 +548,9 @@ option before the terminator: `daynight project create --repo <repo> -- -name`.
 The name is sent unchanged.
 
 Creation first scans every project page and compares canonical repository
-identities. With no match it registers the original name and repository address.
+identities. With no match it reads the current user, binds the request and response
+to that identity, and registers the original name and repository address in the
+Personal Team. An unknown write is not automatically replayed.
 With one match it reports `Project already exists.` and the existing project,
 leaving that project's name and address unchanged. Multiple matches fail with
 their IDs; lookup failures and exhausted command budgets stop before creation.
@@ -1821,8 +1823,11 @@ pane disappearance cannot prove success after restart.
 Herdr lifecycle registration advertises `observe=false`, `control=false` and
 `archive=false`. Terminal recording, browser control and archive finalization
 are not enabled. Consequently macOS Herdr terminal cleanup retains its worktree
-and separate archive responsibility even after confirmed stopping. It does not
-send a cleanup prompt or claim a final ready archive. A terminal run can mark
+and separate archive responsibility even after confirmed stopping. A durable
+input arbiter revokes control before cleanup; it sends one bounded advisory
+prompt only from safe automation with no manual draft or unknown input. Other
+states skip the prompt and proceed with controlled stopping. No final ready
+archive is claimed. A terminal run can mark
 its local execution row done and release its slot after segment and ledger
 confirmation, while
 the retained worktree continues to block another claim for the same task.
@@ -1905,6 +1910,13 @@ then remove its retained worktree and unblock a later claim for the same task.
 An unknown original agent type retains the workspace with a visible error;
 current configuration does not establish that historical type. Unproven Git-only
 resources remain untouched.
+
+The [Herdr input design](../../docs/design/herdr-input-arbitration.md) defines
+`worker/herdr-inputs.sqlite`, strict terminal transport, retained operation IDs,
+manual leases and explicit handback. Native idle and Detach do not resume
+automation. Unknown inputs are never automatically replayed; an explicit initial
+delivery disposition remains distinct from a provider acknowledgement. Strict
+input currently requires the validated Herdr 0.9.5 protocol profile.
 
 The [Herdr lifecycle design](../../docs/design/herdr-worker-lifecycle.md) defines
 the persisted identities, crash boundaries and supported macOS process scope;

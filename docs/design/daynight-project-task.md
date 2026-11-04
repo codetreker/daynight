@@ -351,7 +351,7 @@ flowchart TD
 
 | CLI 操作 | API |
 |---|---|
-| `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时 `POST /api/v1/projects`，提交原始 `name`、`repoUrl` |
+| `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时读取 `/me`，再提交真实 `expectedUserId` 和原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
 | `team list` | `GET /api/v1/me`，再读取全部 `GET /api/v1/teams` 页 |
@@ -395,7 +395,7 @@ Team 读取先以 `/me` 确定真实用户和 Personal Team，并核对响应主
 Team 生命周期写入复用当前用户和目标解析，确认阶段不持配置锁。普通确认展示操作及
 目标；删除将名称编码为 JSON string literal，让换行、控制符、反斜线和空白可见，
 再将输入解码并精确比较原文。非 TTY 且无 `--confirm` 时不写入；显式布尔确认只
-跳过提示，仍提交真实目标名称和版本。`--if-version` 与读取版本不符时本地拒绝，
+跳过提示，删除仍提交真实目标名称和版本。`--if-version` 与读取版本不符时本地拒绝，
 不在冲突后自动刷新或重放。
 
 typed mutation API 绑定 `/me` 主体并校验响应主体、资源与删除回执；已确认成功直接
@@ -483,7 +483,8 @@ create/update 的 --required-platform 设置枚举，update --clear-required-pla
 创建先确定 repo：显式 `--repo` 直接使用原值，并跳过工作目录查询及 Git；省略时
 直接复用 `repository/git.ts` 的 `discoverRepository`，读取当前 worktree 有效
 `origin`，包含 `insteadOf` 展开。随后将该地址及全部列表结果的 `repoUrl` 交给
-`repository/identity.ts` 的同一正规化器比较。零匹配才 POST 原始名称和原始地址；
+`repository/identity.ts` 的同一正规化器比较。零匹配时读取当前用户并绑定创建请求与响应主体，
+再 POST 原始名称和原始地址；
 唯一匹配通过既有资源渲染器输出 `Project already exists.` 及完整 project，不改名
 或更新 repo；多匹配列出 ID 并失败。此路径不调用 task 的 `resolveProject`，因此
 不读取或保存 `.daynight/project.yml`，也不写 ignore 规则。

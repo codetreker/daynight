@@ -137,7 +137,7 @@ Web 与 Herdr 共用 claim 结束和工作区删除门槛。两种模式保留�
 - 每次实际失败记录原错误、清理阶段和下一次重试时间，区分停止未确认、Agent 已停但后端资源关闭未确认、Agent 已停但归档待完成、Agent 已停但 worktree 删除失败；调度错误与 Controller 拥有的原生操作结果分别报告。满槽且存在失败清理时，阻塞责任集合变化才输出容量诊断，说明保留的槽位、错误原因及解除原因后的自动重试方式。普通 tick 不重复刷屏。调度持久化失败保留原清理错误与存储错误，当前进程继续独立退避，不让未处理的 job rejection 跳过退出停止证明；持久写成功前，不把该次 retry 决策描述为已跨重启保存，已有持久清理责任保持。
 - 失败保留错误与收尾责任；每次重试从 source of truth 读取剩余资源，已不存在的资源即满足对应清理目标。删除、停止等操作的响应丢失后重新观察结果，不因缺少成功回执判定资源仍在。读取失败或无法确认停止时不能删除工作区或标 done；macOS 必须持有原实例停止证明，单纯缺席不完成。清理不影响其他任务与人工 Herdr。
 - 已知目标的清理按对应执行推进，删除仅验证该目标的 Git 工作区。退出立即取消运行中的等待，进行原执行停止证明，不等待失败退避、不归档、不删除 worktree，也不以 Git 发现成功作为停止门槛。已经停止 Agent 的结果不能被文件删除错误覆盖；停止未确认与后端关闭未确认分别诊断，任一无法确认时退出仍须失败并保留责任。Web 已写 done 而调度责任尚未删除时，退出仍从原进程实例和 endpoint 重新确认停止与关闭，不操作 Git；正常对账则重新观察并清理剩余 Git 资源后才结束责任。原有终态清理责任留待正常恢复。
-- macOS Herdr 按原出生身份与 audit token 停止独占运行，关闭前保存 stop_intent/close_requested，停止后保存证明、封段并同步 ledger；不发送 cleanup prompt，原进程替代、未知停止或未知写入保留责任，不启动替代运行。journal 写失败只允许依据已有证据尽力停止，不能在重启后补写意图来追认同一 boot 中已消失 daemon 的完整停止。停止、封段与 ledger 确认后可结束本机执行行并释放执行槽；当前 observe/control/archive 均为 false，未提供最终 archive，因此 worktree 与独立 archive 责任继续保留并阻止同 task 后继覆盖。shutdown 保留 active claim 与同一 Session，只结束原运行和段，不发布最终 ready。
+- macOS Herdr 按原出生身份与 audit token 停止独占运行，关闭前保存 stop_intent/close_requested，停止后保存证明、封段并同步 ledger；终态 cleanup 先持久撤销输入，仅原 automation、无草稿/未知输入且原生界面安全时允许一次有界 cleanup prompt，否则跳过提示并受控停止，原进程替代、未知停止或未知写入保留责任，不启动替代运行。journal 写失败只允许依据已有证据尽力停止，不能在重启后补写意图来追认同一 boot 中已消失 daemon 的完整停止。停止、封段与 ledger 确认后可结束本机执行行并释放执行槽；当前 observe/control/archive 均为 false，未提供最终 archive，因此 worktree 与独立 archive 责任继续保留并阻止同 task 后继覆盖。shutdown 保留 active claim 与同一 Session，只结束原运行和段，不发布最终 ready。
 
 ### W-11：可观察性与交付验收
 
@@ -161,6 +161,6 @@ Web 与 Herdr 共用 claim 结束和工作区删除门槛。两种模式保留�
 | W-09 | 主索引字段及冻结模式正确，三态/唯一 active；退出取消并等待所有 job 收尾，含正在等待通知、清理轮或停止确认的终止清理 job，随后直接停止并关闭 workspace，不发送清理 prompt、不等待清理轮、不删除 worktree、不把未完成行置 done；归属已结束及原本缺失本机行的任务也保留 worktree、有效 session ID 与未完成行，重启恢复原清理责任、原期限和资源身份，核对实际资源后完成清理并解除同 task 后继的启动屏障；停止错误可见，停止不确定时私有 Herdr 保留。 |
 | W-10 | 正常完整清单缺席统一清理，正常完成、release、强制撤回及人工管理均按所属 backend 的资源目标清理；legacy Herdr 通知后的新观察为 idle 时允许开始停止，缺失或不变计数不阻塞，清理完成仍要求实际资源消失；完整资源身份的首个十分钟期限和每 claim 退避跨重启保持，身份尚不完整时通过未完成索引行重新发现并重新建立进程内退避；Legacy Herdr 的建议性通知在调用中断后允许重复，Web 操作由 Controller 原生回执核对；可控时钟与故障注入覆盖持续失败、上限、串行、公平推进和解除原因后的收敛；归档失败保源、有余量健康任务推进、满槽准确诊断及旧 claim 屏障成立；持久化写失败时进程内退避保留原错误且不妨碍 shutdown；shutdown 不等待退避、不重复归档/删除，原停止证明与 backend-close 失败保持独立；Web done 与调度删除之间中断后的退出重新核验原进程和 endpoint，正常 tick 继续收敛实际 Git 资源；旧资源完成标记及丢失的操作响应不能代替当前观察。 |
 | W-11 | 独立报告覆盖空闲、满并发与长操作，清单未知/空/旧及部分字段错误保持区分；采集、单飞、期限、取消与关停满足[上报需求](daynight-worker-reporting.md#验证)。关联日志、Warning、原错误链和脱敏成立；终端上下文、消息及错误链中的完整连字符 GUID 在脱敏后显示首段 8 位，保留大小写且不改变非 GUID 文本，JSONL 各字段、消息与错误仍含完整 ID；attach 只连接并保持既有执行；macOS journal 只读、不迁移或升 epoch，替代端点与不可读证据必须拒绝；验证关联实际源码、平台和环境。 |
-| W-07、W-09、W-10（macOS Herdr） | 先持久原身份后输入；全部自动输入最终检查暂停与准入；无启动来源、原 ID 未知、launch/input/stop unknown 不新开对话；重连只改 epoch，同 Session 换代先确认原停止并标记段间断；同次 launch 内只有明确 shell busy 拒绝及初始化证据允许最多两秒重试，未知响应或崩溃不重放；停止、封段与 ledger 丢响应均可恢复，未确认发布不重放；终态确认后释放执行槽但归档前保留工作区与同 task 屏障；不发送 cleanup prompt。 |
+| W-07、W-09、W-10（macOS Herdr） | 先持久原身份后输入；全部自动输入最终检查暂停与准入；无启动来源、原 ID 未知、launch/input/stop unknown 不新开对话；重连只改 epoch，同 Session 换代先确认原停止并标记段间断；同次 launch 内只有明确 shell busy 拒绝及初始化证据允许最多两秒重试，未知响应或崩溃不重放；停止、封段与 ledger 丢响应均可恢复，未确认发布不重放；终态确认后释放执行槽但归档前保留工作区与同 task 屏障；cleanup 提示受持久仲裁约束，manual/unknown 时不发送。 |
 
 完整平台运行验收要求其实际门禁与端到端结果，组件检查和 schema 验证不能替代。

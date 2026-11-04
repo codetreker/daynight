@@ -125,6 +125,13 @@ export const parseProjectAccess = (value: unknown, projectId: string, userId?: s
   if (access.projectId !== projectId || access.ownerTeam.id !== access.ownership.teamId || access.canTransfer !== (access.teamRole === "admin") || access.effectiveRole !== effectiveRole(access.teamRole, access.directGrant)) return malformed();
   return access;
 };
+export const parseCreatedProject = (value: unknown, userId: string, teamId?: string): Project => {
+  const data = fields(value, ["id", "name", "repoUrl", "settings", "ownership", "createdAt", "updatedAt", "access"]);
+  const project = parseProject(data);
+  const access = parseProjectAccess(data.access, project.id, userId);
+  if (teamId !== undefined && teamId !== project.ownership.teamId || access.ownership.teamId !== project.ownership.teamId || access.ownership.version !== project.ownership.version || access.directGrant?.role !== "admin" || access.teamRole === null) return malformed();
+  return project;
+};
 export const parseProjectParticipants = (value: unknown, projectId: string, actorUserId?: string): readonly ProjectParticipant[] => {
   const data = fields(value, ["items", "actorAccess"]);
   const actorAccess = parseProjectAccess(data.actorAccess, projectId, actorUserId);

@@ -68,7 +68,8 @@ SSH URL 和 SCP 风格 SSH 地址，地址必须包含主机和仓库路径；�
 但不得包含密码；查询参数和 fragment
 不属于仓库地址。无效地址作为输入错误拒绝，地址中 SSH 用户名不作为业务身份。
 
-接口提供创建、列表、单项读取及专用设置修改；创建者在同一事务中成为项目管理员，
+接口提供创建、列表、单项读取及专用设置修改；创建输入的身份、目标 Team 与原子性规则由
+[鉴权需求](daynight-auth.md#项目成员与邀请)拥有。创建者在同一事务中成为项目管理员，
 列表在数据库中先按当前成员关系过滤，再进行分页。创建后 `repoUrl` 不可通过 task 或设置更新改变。
 创建、详情、列表、图内 Project 及成功设置修改均返回完整 settings。已有项目通过迁移获得 `60` 分钟、
 版本 `1`，迁移保持原 createdAt/updatedAt。
@@ -206,6 +207,8 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `POST` | `/api/v1/me/workers/{workerId}/report` | 保存账号自己的最新运行快照，返回服务端 observation 与 lastReportedAt |
 | `GET` | `/api/v1/me/workers` | 返回最近 72 小时的账号级 Worker 摘要及稳定分页 cursor |
 | `GET` | `/api/v1/me/workers/{workerId}` | 返回近期 Worker telemetry 与按当前权限过滤的任务观测 |
+| `GET, HEAD` | `/api/v1/me/workers/{workerId}/configuration` | 读取账号拥有的云端目标与逐项应用观测，不受近期窗口限制 |
+| `PUT` | `/api/v1/me/workers/{workerId}/configuration` | 精确目标版本保存完整配置，返回当前配置资源 |
 
 HTTP 创建请求使用 `Content-Type: application/json`，可附带 UTF-8 charset。请求体
 最多 1 MiB，必须是单个 JSON 对象；拒绝无效 UTF-8、重复 key、字段名大小写不符、
@@ -286,7 +289,7 @@ Task 列表 cursor 使用版本2，必需 scope 包含解析后的 all/unassigne
 
 ### 账号级 Worker 快照
 
-Worker 资源归属来自认证 principal，报告不能提供 userId 或权威任务状态。完整结构、Probe 分支、null/空/旧清单、72 小时窗口及任务计数由[快照协议](daynight-worker-snapshots.md)拥有。GET 不续活，详情超窗、未知与他人资源统一为 404。离线和移出近期列表不改变任务执行；读取时的当前项目权限同时约束历史标题、任务行和计数。
+Worker 资源归属来自认证 principal，报告不能提供 userId 或权威任务状态。完整结构、Probe 分支、null/空/旧清单、72 小时窗口及任务计数由[快照协议](daynight-worker-snapshots.md)拥有。GET 不续活，详情超窗、未知与他人资源统一为 404。离线和移出近期列表不改变任务执行；读取时的当前项目权限同时约束历史标题、任务行和计数。[云端配置接口](daynight-worker-configuration.md)独立管理目标与应用观测，通过显式报告协议交换。配置读取/保存不续活，也不以 active claim 为接入条件。
 
 ### 时间窗口任务摘要
 
@@ -359,7 +362,7 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | `404` | `not_found` | 路径资源缺失、当前用户不是对应 Team/项目成员或 task 不属于指定 project |
 | `405` | `method_not_allowed` | 已知路径使用不支持的方法，并返回 `Allow` |
 | `409` | `version_conflict` | 任务元数据、生命周期、Steps、Team 元数据或项目设置的期望版本过期；删除 Team 的名称原文不匹配 |
-| `409` | `identity_mismatch` | Team 管理输入的 expectedUserId 与实际 principal 不符，领域行和版本零变化 |
+| `409` | `identity_mismatch` | Team 管理或项目创建输入的 expectedUserId 与实际 principal 不符，领域行和版本零变化 |
 | `409` | `personal_team_immutable` | 变更 Personal Team |
 | `409` | `team_not_empty` | 删除仍有 Project ownership 引用的 Team |
 | `409` | `step_id_conflict` | 同一 Task 内添加的 Step ID 已存在；版本检查先于身份与锚点检查 |
@@ -371,7 +374,7 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | `409` | `graph_limit_exceeded` | 任务链查询的返回集合或 task-sync 的全项目集合超过节点或依赖上限，返回精确数量和支持上限 |
 | `410` | `task_deleted` | 授权成员访问已软删除任务；不表示项目访问撤回 |
 | `500` | `internal_error` | 内部、持久化或事务清理操作失败，响应不泄露数据库连接信息或 SQL |
-| `503` | `write_outcome_unknown` | 无法确认 Team 管理 COMMIT 结果，不自动重放写入 |
+| `503` | `write_outcome_unknown` | 无法确认 Team 管理或项目创建 COMMIT 结果，不自动重放写入 |
 
 ## 运行与范围
 
