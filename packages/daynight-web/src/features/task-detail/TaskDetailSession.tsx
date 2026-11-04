@@ -743,14 +743,17 @@ export class TaskDetailSessions {
     if (!this.canSetStepStatus(projectId, taskId) || !["todo", "in_progress", "done", "skipped"].includes(status) || entry.steps.state.resource?.version !== version || !entry.steps.state.resource.steps.some((step) => step.id === target) || !/^[0-9a-f]{8}$/.test(target)) return;
     this.performMutation(projectId, taskId, { action: "stepStatus", stepId: target, status, version, requestId: crypto.randomUUID() });
   }
-  addStep(projectId: string, taskId: string, stepId: string, title: string, description: string, status: StepStatus, version: bigint): string | null {
+  addStep(projectId: string, taskId: string, stepId: string, title: string, description: string, status: StepStatus, version: bigint, placement?: { readonly before: string } | { readonly after: string }): string | null {
     const entry = this.entry(projectId, taskId);
     const target = stepId.toLowerCase();
+    const normalized = placement === undefined ? undefined : "before" in placement ? { before: placement.before.toLowerCase() } : { after: placement.after.toLowerCase() };
+    const anchor = normalized === undefined ? undefined : "before" in normalized ? normalized.before : normalized.after;
     if (!this.canSetStepStatus(projectId, taskId) || entry.steps.state.resource?.version !== version || !/^[0-9a-f]{8}$/.test(target) ||
+      (anchor !== undefined && (!/^[0-9a-f]{8}$/.test(anchor) || !entry.steps.state.resource.steps.some((step) => step.id === anchor))) ||
       !["todo", "in_progress", "done", "skipped"].includes(status) || !/[^\p{White_Space}]/u.test(title) ||
       [title, description].some((value) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value))) return null;
     const requestId = crypto.randomUUID();
-    this.performMutation(projectId, taskId, { action: "stepAdd", stepId: target, version, requestId }, { id: target, title, description, status, version });
+    this.performMutation(projectId, taskId, { action: "stepAdd", stepId: target, version, requestId }, { id: target, title, description, status, version, ...(normalized === undefined ? {} : { placement: normalized }) });
     return requestId;
   }
   editStep(projectId: string, taskId: string, stepId: string, title: string, description: string, version: bigint): string | null {
@@ -954,7 +957,7 @@ export class TaskDetailSessions {
             const result = response.value;
             const expected = operation.action === "stepPosition" ? moved : operation.action === "stepDelete" ? previousSteps!.steps.filter((step) => step.id !== operation.stepId) : previousSteps!.steps;
             const valid = operation.action === "stepAdd"
-              ? result.version === committedVersion && result.steps.length === previousSteps!.steps.length + 1 && sameSteps(previousSteps!, { ...result, steps: result.steps.slice(0, -1) })
+              ? result.version === committedVersion && result.steps.length === previousSteps!.steps.length + 1 && sameSteps(previousSteps!, { ...result, steps: result.steps.filter((step) => step.id !== operation.stepId) })
               : expected !== null && result.version === committedVersion && result.steps.length === expected.length && result.steps.every((step, index) => {
                 const old = expected[index]!;
                 const edited = operation.action === "stepEdit" && step.id === operation.stepId;
