@@ -26,8 +26,11 @@ not browser scenarios or product scope.
 
 `scripts/ci.mts` exports `runCi(mode, cancellation, operations?)` for explicit
 internal `quality` and `browser` modes. Quality runs
-the canonical Node harness and complete Vitest/V8 plus strict statement checker
-serially, with a separate 180-second deadline for each command. Only the coverage
+the canonical Node harness, complete Vitest/V8 collection and strict statement
+checker serially. Harness and collection each have a 180-second deadline; the
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) gives
+final inventory and coverage verification an independent 60-second deadline.
+Only the Vitest/V8
 child receives `VITEST_MAX_WORKERS=4`, calibrated for its dedicated public
 standard Linux runner by the [worker capacity
 decision](2026-10-28-web-quality-worker-capacity.md); its `forks` pool, file

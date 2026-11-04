@@ -14,9 +14,11 @@ coverage workload.
 
 The coverage child in `scripts/ci.mts quality` receives
 `VITEST_MAX_WORKERS=4`. The Node harness still runs first and retains its own
-180-second deadline. Coverage retains its separate 180-second deadline, `forks`
+180-second deadline. Vitest/V8 collection retains a separate 180-second deadline;
+the [stage budget decision](2026-11-04-web-coverage-finalization-budget.md) gives
+the final inventory and coverage checker its own 60-second deadline. The `forks`
 pool, per-file isolation, complete product-source inventory and strict unrounded
-statement-coverage gate. The [local stress decision](2026-11-03-local-stress-suites.md)
+statement-coverage gate remain. The [local stress decision](2026-11-03-local-stress-suites.md)
 subsequently separates scale workloads from ordinary discovery while retaining
 compact correctness cases and the same product coverage manifest.
 

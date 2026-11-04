@@ -1579,9 +1579,12 @@ main pushes run the full suite. The Web result enables two parallel jobs,
 and other results fail the gate. Shared workflow changes retain the existing
 all-module selection rule.
 
-`node packages/daynight-web/scripts/ci.mts quality` runs `test:harness` and the complete
-`test:coverage` command serially. Each retains a separate 180-second deadline,
-so harness duration cannot consume the coverage command's budget. Only the
+`node packages/daynight-web/scripts/ci.mts quality` runs `test:harness`, complete
+Vitest/V8 collection and `scripts/coverage.mts` serially. Harness and collection
+each have a 180-second deadline; final source-inventory and strict coverage
+verification has its own 60-second deadline. Completed tests cannot consume the
+final checker's budget. The [stage budget decision](../../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)
+owns that separation. Only the
 Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=4`, retaining
 its `forks` pool, per-file isolation, full product manifest and strict statement
 gate. The [worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
