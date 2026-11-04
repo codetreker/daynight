@@ -20,7 +20,7 @@ Worker 资源键为认证账号与规范 workerId 的组合。workerId、machine
 
 请求为 UTF-8 `application/json`，最多 1 MiB。必须是单个对象；各层字段名区分大小写，未知字段、重复键、缺少必填字段、错误分支字段及尾随 JSON 均为 `400 invalid_input`。报告端点不接受查询参数。
 
-所有顶层字段必填：
+以下顶层字段必填；`assistantHost` 为可选扩展，旧报告省略该字段仍有效：
 
 | 字段 | 内容 |
 |---|---|
@@ -53,6 +53,31 @@ error 的 code 仅接受 `not_found`、`permission_denied`、`timeout`、`comman
 CPU model 是非空白文本，logicalProcessors 是 `1..9007199254740991` 的整数，usagePercent 是有限的 `0..100` 数值。容量字段是 `0..9007199254740991` 的整数；usedBytes、availableBytes 不超过对应 totalBytes。整数条件按 JSON 数值含义判断，不接受非整数或超出可精确表示范围的值。
 
 版本探测的成功值为非空白字符串。未安装、未运行和检测失败是独立结果，不以 null 或空字符串代替。某项探测为 error 不影响其他有效字段的保存，也不使一份格式正确的机器报告失效。
+
+### 助手托管预检
+
+可选 `assistantHost` 一旦提供就必须是完整对象，不接受 null、未知字段或重复键：
+
+| 字段 | 内容 |
+|---|---|
+| protocolVersion | 数值 `1` |
+| observedAt | 本次预检的有效 RFC3339 来源时刻 |
+| defaultCwd | Worker 启动目录，按报告 platform 验证绝对路径语法，最多 4096 UTF-8 字节 |
+| defaultProvider | `codex`、`claude` 或 `copilot`，来自 Worker 全局配置 |
+| providers | 恰好三个不重复的 Provider 条目，每项为 `{provider,available,reason,model,args}` |
+
+`available` 为布尔值，成功时 `reason=null`；失败时 reason 仅接受
+`unsupported_arguments`、`invalid_cwd`、`not_found`、`permission_denied`、
+`timeout`、`command_failed`、`invalid_output`、`unavailable`。
+model 为 null 或最多 256 UTF-8 字节的非空白文本；args 为显式数组，最多 128 项，每项为最多 4096 UTF-8 字节的非空白文本。目录、model 和 args 不接受控制字符。`unsupported_arguments` 必须同时清空 model 为 null、args 为 []，不能把不支持的原生命令或凭据作为报告内容。
+
+默认 Provider 才能继承全局 model/args；其它 Provider 使用各自原生默认，即 model=null、args=[]。所有 Provider 都按 Web 适配器参数规则预检，Worker 任务使用 Herdr 不影响该规则。Worker 本机核对真实目录与可执行文件；服务端只校验路径语法，不访问另一台机器的目录。Windows 接受完整盘符路径或 UNC 路径，不接受 drive-relative 路径。
+
+预检成功只表示在来源时刻通过有界启动条件检查，不证明认证、模型访问或原生 Session 已成功建立。消费者必须同时核对 Worker 最近报告和预检时刻：两者都不能在服务端当前时间之后，且年龄都必须小于 120 秒；达到边界即不可作为可启动依据。缺报告表示不支持助手托管；依次区分 offline、stale、全部 Provider unavailable 和至少一个 Provider available。选择具体 Provider 时还必须检查对应条目，不能用另一 Provider 的成功替代。
+
+每次有效机器报告完整替换助手预检；后来省略字段会清除之前的助手能力，不能沿用任务清单 null 的保留行为。详情保留原报告及 observedAt，不把历史 available 改写为当前启动承诺。服务层提供上述状态判断供创建默认解析使用；普通 Worker 列表和详情外层字段保持原有结构。
+
+报告协议和预检采集器不代表完整助手已可运行。默认 Worker runtime 不提交此扩展；只有完成托管链路组合后才能接入能力广告。
 
 ### 任务清单
 

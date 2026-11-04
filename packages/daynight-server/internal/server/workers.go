@@ -119,7 +119,7 @@ func workerDetailResponse(worker core.WorkerSnapshot) api.WorkerDetail {
 	telemetry := worker.Telemetry
 	response := api.WorkerDetail{WorkerSummary: workerSummaryResponse(worker), InventoryObservedAt: workerOptionalTime(worker.TaskSnapshot.InventoryObservedAt), Tasks: make([]api.WorkerTaskSnapshot, 0, len(worker.TaskSnapshot.Items)),
 		Telemetry: api.WorkerTelemetry{Machine: api.WorkerMachine{ID: telemetry.Machine.ID, Name: telemetry.Machine.Name}, Platform: string(telemetry.Platform),
-			WorkingDirectory: telemetry.WorkingDirectory, SampledAt: telemetry.SampledAt.UTC(),
+			WorkingDirectory: telemetry.WorkingDirectory, SampledAt: telemetry.SampledAt.UTC(), AssistantHost: workerAssistantHostResponse(telemetry.AssistantHost),
 			OS:     workerProbeResponse(telemetry.OS, func(value core.WorkerOS) api.WorkerOS { return api.WorkerOS(value) }),
 			CPU:    workerProbeResponse(telemetry.CPU, func(value core.WorkerCPU) api.WorkerCPU { return api.WorkerCPU(value) }),
 			Memory: workerProbeResponse(telemetry.Memory, func(value core.WorkerMemory) api.WorkerMemory { return api.WorkerMemory(value) }),
@@ -149,4 +149,15 @@ func workerOptionalTime(value *time.Time) *time.Time {
 	}
 	utc := value.UTC()
 	return &utc
+}
+
+func workerAssistantHostResponse(host *core.WorkerAssistantHost) *api.WorkerAssistantHost {
+	if host == nil {
+		return nil
+	}
+	response := &api.WorkerAssistantHost{ProtocolVersion: host.ProtocolVersion, ObservedAt: host.ObservedAt.UTC(), DefaultCwd: host.DefaultCwd, DefaultProvider: string(host.DefaultProvider), Providers: make([]api.WorkerAssistantProvider, 0, len(host.Providers))}
+	for _, provider := range host.Providers {
+		response.Providers = append(response.Providers, api.WorkerAssistantProvider{Provider: string(provider.Provider), Available: provider.Available, Reason: provider.Reason, Model: provider.Model, Args: provider.Args})
+	}
+	return response
 }

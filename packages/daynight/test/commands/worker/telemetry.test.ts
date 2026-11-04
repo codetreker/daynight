@@ -39,11 +39,33 @@ describe("Worker telemetry", () => {
     expect(mocks.cpus).toHaveBeenCalledTimes(1);
     const sample = await finish(pending, 2);
     expect(sample.issues).toEqual([]);
+    expect(sample.telemetry).not.toHaveProperty("assistantHost");
     expect(sample.telemetry.cpu).toMatchObject({ state: "ok", value: { model: "Real CPU", logicalProcessors: 2, usagePercent: 20 } });
     expect(sample.telemetry.memory).toMatchObject({ state: "ok", value: { usedBytes: 768, totalBytes: 1024 } });
     expect(sample.telemetry.disk).toMatchObject({ state: "ok", value: { availableBytes: 102400, totalBytes: 409600 } });
     expect(mocks.statfs).toHaveBeenCalledWith(cwd, { bigint: true });
     expect(sample.telemetry.versions).toMatchObject({ daynight: "1.2.3", codex: { state: "ok", value: "0.1.0" }, herdr: { state: "ok", value: "0.9.5" } });
+  });
+
+  it("includes explicitly supplied assistant observations and preserves cleanup failures privately", async () => {
+    const failure = new HerdrCommandCleanupError([new Error("private-token")], undefined);
+    const assistantHost = { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: ["codex", "claude", "copilot"].map(provider => ({ provider: provider as "codex" | "claude" | "copilot", available: false, reason: "unavailable" as const, model: null, args: [] })) };
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: async () => ({ assistantHost, issues: [{ provider: "copilot" as const, reason: "unavailable" as const, error: failure }] }) } });
+    const sample = await finish(instance.collect(operation()));
+    expect(sample.telemetry.assistantHost).toEqual(assistantHost);
+    expect(sample.issues).toEqual([{ component: "assistantHost_copilot", code: "unavailable", error: failure }]);
+    expect(JSON.stringify(sample.telemetry)).not.toContain("private-token");
+  });
+
+  it("keeps a bounded assistant timeout report when the resource sampling deadline has elapsed", async () => {
+    const assistantHost = { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: ["codex", "claude", "copilot"].map(provider => ({ provider: provider as "codex" | "claude" | "copilot", available: false, reason: "timeout" as const, model: null, args: [] })) };
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: async parent => {
+      await new Promise(resolve => setTimeout(resolve, 5_001)); parent.check(); return { assistantHost, issues: [] };
+    } } });
+    const pending = instance.collect(operation());
+    const observed = pending.then(sample => sample, error => error);
+    const sample = await finish(observed, 5_010);
+    expect(sample).toHaveProperty("telemetry.assistantHost", assistantHost);
   });
 
   it("exposes invalid and unsafe resource values independently without fabricated zero measurements", async () => {

@@ -10,9 +10,10 @@ import { hasHerdrCommandCleanupFailure, HerdrCommandDeadlineError, HerdrCommandE
 import { createHerdrNativeEnvironment, createHerdrVersionObserver } from "./herdr/instance.js";
 import { NativeVersionOutputError, probeNativeAgentVersion } from "./herdr/version-probe.js";
 import type { WorkerPaths } from "./paths.js";
+import type { AssistantHostSample } from "./bots/host-capabilities.js";
 
 export type WorkerTelemetryIssue = {
-  component: "os" | "cpu" | "memory" | "disk" | "herdr" | "codex" | "copilot";
+  component: "os" | "cpu" | "memory" | "disk" | "herdr" | "codex" | "copilot" | "assistantHost_codex" | "assistantHost_claude" | "assistantHost_copilot";
   code: WorkerProbeCode;
   error: unknown;
 };
@@ -114,6 +115,7 @@ const executableMissing = async (agent: string, environment: NodeJS.ProcessEnv, 
 
 export const createWorkerTelemetryCollector = (options: {
   paths: WorkerPaths; homeDirectory: string; version: string; workingDirectory: string; machine: WorkerMachine; platform: TaskPlatform;
+  assistantHost?: { collect: (operation: Operation) => Promise<AssistantHostSample> };
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || /[\0\r\n]/.test(options.workingDirectory)) throw new TypeError("The Worker startup directory must be absolute and contain no control separators.");
   const environment = createHerdrNativeEnvironment(options.paths, process.env);
@@ -173,13 +175,16 @@ export const createWorkerTelemetryCollector = (options: {
       };
       const sampledAt = new Date().toISOString();
       try {
-        const [system, cpu, memory, filesystem, daemon, codex, copilot] = await Promise.all([
+        const [system, cpu, memory, filesystem, daemon, codex, copilot, assistant] = await Promise.all([
           probe("os", () => ({ type: text(os.type()), release: text(os.release()), version: text(os.version()), arch: text(os.arch()) })),
           probe("cpu", () => sampleCPU(collection)),
           probe("memory", () => { const totalBytes = integer(os.totalmem()); const free = integer(os.freemem()); if (totalBytes <= 0 || free > totalBytes) throw new SampleError("invalid_sample", "Available memory must fit its positive total capacity."); return { totalBytes, usedBytes: totalBytes - free }; }),
           probe("disk", () => disk(collection)),
           probe("herdr", () => herdr.observe(collection)), version("codex"), version("copilot"),
+          // The assistant collector owns its five-second budget and must retain timeout results after resource sampling expires.
+          options.assistantHost?.collect(operation),
         ]);
+        for (const issue of assistant?.issues ?? []) issues.push({ component: `assistantHost_${issue.provider}`, code: issue.reason === "unsupported_arguments" ? "unavailable" : issue.reason === "invalid_cwd" ? "invalid_sample" : issue.reason, error: issue.error });
         try { operation.check(); }
         catch (error) {
           const cleanup = issues.filter((issue) => hasHerdrCommandCleanupFailure(issue.error)).map((issue) => issue.error);
@@ -187,6 +192,7 @@ export const createWorkerTelemetryCollector = (options: {
           throw error;
         }
         return { telemetry: { machine: { ...options.machine }, platform: options.platform, workingDirectory: options.workingDirectory, sampledAt, os: system, cpu, memory, disk: filesystem,
+          ...(assistant === undefined ? {} : { assistantHost: assistant.assistantHost }),
           versions: { daynight: options.version, codex, copilot, herdr: daemon.state === "error" ? daemon : daemon.value === null ? { state: "not_running", checkedAt: daemon.checkedAt } : { state: "ok", checkedAt: daemon.checkedAt, value: daemon.value } } }, issues };
       } finally { collection.dispose(); }
     },
