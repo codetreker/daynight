@@ -58,6 +58,13 @@ test('step status writes converge through real service resources', { annotation:
   const late = new Promise<void>(resolve => { releaseLate = resolve; });
   const lateEntered = new Promise<void>(resolve => { enteredLate = resolve; });
   let rejectReads = false;
+  const recoveryIds: string[] = [];
+  page.on('request', request => {
+    if (request.method() === 'GET' && request.url() === collectionUrl) {
+      const id = request.headers()['x-request-id'];
+      if (id !== undefined) recoveryIds.push(id);
+    }
+  });
   const receipts: { status: number; body: string; requestId: string | null }[] = [];
   await page.route(collectionUrl, async route => {
     if (rejectReads && route.request().method() === 'GET') await route.abort('connectionfailed');
@@ -115,6 +122,8 @@ test('step status writes converge through real service resources', { annotation:
     await expect(trigger(page, stepId)).toContainText(labels.in_progress);
     await expect(trigger(page, stepId)).toBeEnabled();
     expect(writes).toBe(7);
+    expect(receipts[6]?.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(recoveryIds.some(id => id.startsWith(`${receipts[6]!.requestId}.r`))).toBe(true);
     mode = 'invalid';
     await choose(page, stepId, 'skipped');
     await expect(retry).toBeEnabled();
@@ -218,7 +227,7 @@ test('step status writes converge through real service resources', { annotation:
     await choose(page, stepIdForDeleted(), 'done');
     await expect(root(page)).toContainText('任务已删除');
     await page.unroute(deletedUrl);
-    await info.attach('step-status-receipts', { contentType: 'application/json', body: Buffer.from(JSON.stringify({ receipts, writes }, null, 2)) });
+    await info.attach('step-status-receipts', { contentType: 'application/json', body: Buffer.from(JSON.stringify({ receipts, recoveryIds, writes }, null, 2)) });
   } finally {
     rejectReads = false;
     releaseLate();
