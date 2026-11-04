@@ -33,6 +33,7 @@ const fixture = (projects: readonly Project[] = []) => {
     removeTaskProperty: async () => { throw new Error("Unused property API"); },
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(user),
     getTeamCurrentUser: unavailable, inspectInvitation: unavailable, acceptInvitation: unavailable, listTeams: unavailable, getTeam: unavailable, createTeam: unavailable, renameTeam: unavailable, deleteTeam: unavailable, listTeamProjects: unavailable,
+    listTeamInvitations: unavailable, createTeamInvitation: unavailable, revokeTeamInvitation: unavailable,
     listTeamMembers: unavailable, setTeamMemberRole: unavailable, removeTeamMember: unavailable,
     listBots: unavailable, getBot: unavailable, createBot: unavailable, deleteBot: unavailable, listWorkers: unavailable, getWorker: unavailable,
     reportWorker: unavailable,
@@ -52,7 +53,7 @@ const fixture = (projects: readonly Project[] = []) => {
   const runServerCommand = vi.fn<ProjectCommandDependencies["runServerCommand"]>(async (current, command) => {
     const operation = createOperation();
     try {
-      const output = await command({ api, operation, serverUrl: "http://server.example:8787" });
+      const output = await command({ api, operation, serverUrl: "http://server.example:8787", serverConfiguration: { serverUrl: "http://server.example:8787" } });
       if (typeof output === "string") current.stdout(output);
     }
     finally { operation.dispose(); }
@@ -161,7 +162,7 @@ describe("project command boundaries", () => {
     const { api, context } = fixture();
     api.listProjects.mockImplementation(async () => { controller.abort(new Error("Cancelled after listing")); return []; });
     try {
-      const failure = await runProjectCommand(["create", "Name", "--repo", project.repoUrl], context, { runServerCommand: async (_current, command) => { await command({ api, operation, serverUrl: "http://server.example" }); } }).catch((error: unknown) => error);
+      const failure = await runProjectCommand(["create", "Name", "--repo", project.repoUrl], context, { runServerCommand: async (_current, command) => { await command({ api, operation, serverUrl: "http://server.example", serverConfiguration: { serverUrl: "http://server.example" } }); } }).catch((error: unknown) => error);
       expect(failure).toBe(operation.signal.reason);
       expect(api.createProject).not.toHaveBeenCalled();
     } finally { operation.dispose(); }

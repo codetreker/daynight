@@ -6,8 +6,9 @@ import { isNonemptyText } from "../../../platform/text.js";
 import { parseControllerGrantResponse, parseRegistrationResponse, type ControllerGrantResponse } from "../../../session/controller-protocol.js";
 import { parseSessionSnapshot, SESSION_PROTOCOL, sessionFence, type SessionSnapshot } from "../../../session/protocol.js";
 import { controllerPayloadHash } from "../../controller/launch-ticket.js";
-import { parseBot, parseBotOwner, parseBotRole, type BotDefinition, type BotOwner, type BotRecord } from "./types.js";
+import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, type BotDefinition, type BotOwner, type BotRecord } from "./types.js";
 
+export type BotRecoveryProof = { generation: string; instanceId: string; recordId: string; stoppedAt: string };
 export type BotStartupResult = { state: "ready" | "failed"; code?: string | null; nativeSessionId?: string | null };
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
 
@@ -36,13 +37,13 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
       || previous.roleConfiguration !== null && !same(bot.roleConfiguration, previous.roleConfiguration)) throw new ProtocolError("Bot lifecycle response conflicts with the original definition.");
     return bot;
   };
-  const checkedSnapshot = (value: unknown, record: BotRecord, sessionId?: string): SessionSnapshot => {
+  const checkedSnapshot = (value: unknown, record: BotRecord, sessionId?: string, previous?: Pick<BotRecoveryProof, "generation" | "instanceId">): SessionSnapshot => {
     const intent = intentOf(record), snapshot = parseSessionSnapshot(value);
     const expectedSession = sessionId ?? intent.sessionId ?? active(record).sessionId;
     if (expectedSession !== null && snapshot.sessionId !== expectedSession || snapshot.testExecutionId !== intent.executionId
-      || snapshot.executionGeneration !== intent.executionGeneration || snapshot.identity.ownerUserId !== owner.ownerUserId
+      || snapshot.executionGeneration !== (previous?.generation ?? intent.executionGeneration) || snapshot.identity.ownerUserId !== owner.ownerUserId
       || snapshot.identity.provider !== intent.registration.provider || snapshot.identity.controllerId !== intent.registration.controllerId
-      || snapshot.identity.controllerInstanceId !== intent.registration.controllerInstanceId || snapshot.initialInputState !== "not_required"
+      || snapshot.identity.controllerInstanceId !== (previous?.instanceId ?? intent.controllerInstanceId) || snapshot.initialInputState !== "not_required"
       || intent.nativeSessionId !== null && snapshot.identity.nativeSessionId !== intent.nativeSessionId) throw new ProtocolError("Bot Session snapshot conflicts with the original execution.");
     return snapshot;
   };
@@ -88,11 +89,11 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
     finally { operation.dispose(); }
   };
   const prefix = (record: BotRecord): string => { active(record); return `/api/v1/me/workers/${owner.workerId}/bots/${record.botId}`; };
-  const read = async (record: BotRecord, operation: Operation): Promise<SessionSnapshot> => {
+  const read = async (record: BotRecord, operation: Operation, previous?: BotRecoveryProof): Promise<SessionSnapshot> => {
     const bot = active(record), intent = intentOf(record), sessionId = intent.sessionId ?? bot.sessionId;
     if (sessionId === null) throw new Error("Bot Session has not been registered.");
     const response = parseRegistrationResponse(await request(`/api/v1/test-sessions/${sessionId}`, operation));
-    return checkedSnapshot(response.session, record, sessionId);
+    return checkedSnapshot(response.session, record, sessionId, response.session.executionGeneration === previous?.generation ? previous : undefined);
   };
   return {
     register: (record: BotRecord, signal: AbortSignal): Promise<{ bot: BotDefinition; snapshot: SessionSnapshot }> => run(signal, async operation => {
@@ -104,17 +105,31 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
       if (value === null || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "bot,session") throw new ProtocolError("Bot registration response is malformed.");
       const result = value as { bot: unknown; session: unknown }, registered = checkedBot(result.bot, record);
       if (registered.sessionId === null || registered.testExecutionId !== intent.executionId || !same(registered.roleConfiguration, roleConfiguration)) throw new ProtocolError("Bot registration response conflicts with the persisted role or execution.");
-      return { bot: registered, snapshot: checkedSnapshot(result.session, record, registered.sessionId) };
+      return { bot: registered, snapshot: checkedSnapshot(result.session, record, registered.sessionId, { generation: "1", instanceId: intent.registration.controllerInstanceId }) };
     }),
     readSession: (record: BotRecord, signal: AbortSignal): Promise<SessionSnapshot> => run(signal, operation => read(record, operation)),
-    grant: (record: BotRecord, signal: AbortSignal): Promise<ControllerGrantResponse> => run(signal, async operation => {
-      const bot = active(record), intent = intentOf(record), snapshot = await read(record, operation);
+    grant: (record: BotRecord, signal: AbortSignal, previous?: BotRecoveryProof): Promise<ControllerGrantResponse> => run(signal, async operation => {
+      const bot = active(record), intent = intentOf(record);
+      if (previous !== undefined) {
+        if (previous === null || typeof previous !== "object" || Object.keys(previous).sort().join() !== "generation,instanceId,recordId,stoppedAt"
+          || !isNonemptyText(intent.nativeSessionId) || intent.nativeSessionId.trim() === "") throw new Error("Bot recovery requires the original native Session and a complete process stop proof.");
+        botVersion(previous.generation); botVersion(intent.executionGeneration);
+        botUUID(previous.instanceId, "Previous Bot controller instance"); botUUID(previous.recordId, "Bot stop proof record");
+        botUUID(intent.controllerInstanceId, "Bot controller instance");
+        if (BigInt(intent.executionGeneration) !== BigInt(previous.generation) + 1n || intent.controllerInstanceId === previous.instanceId
+          || typeof previous.stoppedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(previous.stoppedAt)
+          || !Number.isFinite(Date.parse(previous.stoppedAt)) || Date.parse(previous.stoppedAt) > Date.now() + 1000) throw new Error("Bot recovery proof does not identify the exact stopped predecessor generation.");
+      }
+      const snapshot = await read(record, operation, previous);
+      // A lost response may have already advanced the service. Observe the
+      // persisted target before choosing recovery or a same-generation grant.
+      const recovering = previous !== undefined && snapshot.executionGeneration === previous.generation;
       const grant = parseControllerGrantResponse(await request(`${prefix(record)}/grant`, operation, {
         botVersion: bot.version, nativeSessionId: snapshot.identity.nativeSessionId,
-        grant: { protocol: SESSION_PROTOCOL, testExecutionId: intent.executionId, controllerId: intent.registration.controllerId, controllerInstanceId: intent.registration.controllerInstanceId, executionGeneration: intent.executionGeneration, kind: "reconnect", previousGeneration: null, stopProof: null },
+        grant: { protocol: SESSION_PROTOCOL, testExecutionId: intent.executionId, controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId, executionGeneration: intent.executionGeneration, kind: "reconnect", previousGeneration: recovering ? previous.generation : null, stopProof: recovering ? { recordId: previous.recordId, previousControllerInstanceId: previous.instanceId, stoppedAt: previous.stoppedAt } : null },
       }));
       if (grant.sessionId !== snapshot.sessionId || grant.testExecutionId !== intent.executionId || grant.executionGeneration !== intent.executionGeneration
-        || grant.controllerId !== intent.registration.controllerId || grant.controllerInstanceId !== intent.registration.controllerInstanceId || Date.parse(grant.expiresAt) <= Date.now()) throw new ProtocolError("Bot Controller grant conflicts with the original execution or is expired.");
+        || grant.controllerId !== intent.registration.controllerId || grant.controllerInstanceId !== intent.controllerInstanceId || Date.parse(grant.expiresAt) <= Date.now()) throw new ProtocolError("Bot Controller grant conflicts with the original execution or is expired.");
       return grant;
     }),
     report: (record: BotRecord, result: BotStartupResult, signal: AbortSignal): Promise<BotDefinition> => run(signal, async operation => {

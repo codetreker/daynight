@@ -15,7 +15,7 @@ const fixture=()=>{
   const owner={serverOrigin:"https://daynight.example",ownerUserId:id(1),workerId:id(2)};
   const records=[3,4].map(n=>({owner,botId:id(n),intent:null,observed:{id:id(n),version:"1",deletion:null,startupResult:{state:"pending",code:null}},definition:{},observedAt:1}) as BotRecord);
   const store={list:()=>records,get:(_owner:unknown,key:string)=>records.find(r=>r.botId===key)!,observe:(_owner:unknown,bot:any)=>{const r=records.find(r=>r.botId===bot.id)!;r.observed=bot;return r;}};
-  const process={advance:vi.fn(async(_record:BotRecord)=>({startup:{state:"ready",reasonCode:"ready"},lifecycle:"ready",initialInputState:"not_required",nativeSessionId:id(7),error:null})),refreshGrant:vi.fn(async()=>{})};
+  const process={advance:vi.fn(async(_record:BotRecord)=>({startup:{state:"ready",reasonCode:"ready"},lifecycle:"ready",initialInputState:"not_required",nativeSessionId:id(7),error:null})),refreshGrant:vi.fn(async()=>{}),shutdown:vi.fn(async()=>{})};
   const api={report:vi.fn(async(r:BotRecord,result:any)=>({...r.observed,version:"2",startupResult:{state:result.state,code:result.code??null}}))};
   const remote={owner,list:vi.fn(async()=>records.map(r=>r.observed)),read:vi.fn(async(key:string)=>records.find(r=>r.botId===key)!.observed)};
   const reconcile=vi.fn(async()=>({observed:records.map(r=>r.botId),missing:[]})); const onError=vi.fn();
@@ -64,4 +64,28 @@ test("reconciles an unknown failure report and retries from durable startup fail
 test("does not report ready from native activity before initialization is confirmed",async()=>{
   const f=fixture();f.process.advance.mockResolvedValue({startup:{state:"starting",reasonCode:"initializing"},lifecycle:"ready",initialInputState:"not_required",nativeSessionId:id(7),error:null});
   await f.runtime.tick(new AbortController().signal);expect(f.api.report).not.toHaveBeenCalled();
+});
+
+
+test("shutdown joins an in-flight Bot launch before stopping every local writer and retains failures", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  let release!: () => void;
+  f.process.advance.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({startup:{state:"ready",reasonCode:"ready"},lifecycle:"ready",initialInputState:"not_required",nativeSessionId:id(7),error:null}); }));
+  const tick = f.runtime.tick(signal);
+  await vi.waitFor(() => expect(f.process.advance).toHaveBeenCalledTimes(2));
+  f.process.shutdown.mockRejectedValueOnce(new Error("Bot original writer cannot be proved stopped"));
+  const shuttingDown = f.runtime.shutdown();
+  const rejected = expect(shuttingDown).rejects.toThrow(/Bot.*shutdown/i);
+  await Promise.resolve(); expect(f.process.shutdown).not.toHaveBeenCalled();
+  release(); await tick; await rejected;
+  expect(f.process.shutdown).toHaveBeenCalledTimes(2);
+  await expect(f.runtime.tick(signal)).rejects.toThrow(/closing|closed|shutdown/i);
+});
+
+test("cancelling the managed loop stops all Bots with a fresh cleanup signal", async () => {
+  vi.useFakeTimers(); const f = fixture(), cancellation = new AbortController();
+  const running = f.runtime.run(cancellation.signal); await vi.advanceTimersByTimeAsync(1);
+  cancellation.abort(); await running;
+  expect(f.process.shutdown).toHaveBeenCalledTimes(2);
+  for (const call of f.process.shutdown.mock.calls as unknown as [BotRecord, AbortSignal][]) expect(call[1].aborted).toBe(false);
 });

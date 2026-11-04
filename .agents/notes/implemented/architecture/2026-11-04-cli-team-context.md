@@ -1,4 +1,4 @@
-# Agent Note: CLI Team Context Reads
+# Agent Note: CLI Team Context
 
 Status: implemented
 
@@ -17,16 +17,23 @@ The CLI resolves Team reads from an explicit ID or `personal`, then from the
 falling back to the real Personal Team only when that entry is absent. It reads
 the current principal and validates subsequent response identities and resource
 scope. `default show` verifies the target; Team list and explicit targets do not
-depend on a stored default. These operations do not write configuration or remote
+depend on a stored default. These reads do not write configuration or remote
 resources. Bounded pagination validates the complete collection before output.
+
+`default set` verifies the target and membership without resolving the old
+default, then confirms and updates only the current origin/account pair. It
+stores the real Personal Team ID for `personal`. The writer compares the
+observed service, credential and old pair under the configuration lock and
+checks that YAML aliases do not change settings outside that exact path. Network
+requests and confirmation do not hold the lock.
 
 The [client requirements](../../../../docs/spec/daynight-project-task.md#team-读取与上下文)
 own the observable commands and failures. The
 [project scope pagination decision](2026-11-04-project-scope-pagination.md) owns
 server filtering and cursor scope; all-accessible Project discovery remains
 independent of Team defaults.
-The [CLI lifecycle decision](2026-11-04-cli-team-lifecycle.md) owns writes and
-their confirmation.
+The [CLI lifecycle decision](2026-11-04-cli-team-lifecycle.md) owns remote Team
+lifecycle writes and their confirmation.
 
 ## Alternatives
 
@@ -42,6 +49,6 @@ misrepresent the selected collection. The Team filter uses the server scope.
 
 Accounts and origins keep independent selections, including across token
 rotation. A stale selection is visible and explicit reads remain available to
-identify a replacement. Member management and saving defaults remain separate
-capabilities; the reader retains the established configuration shape without
-introducing writes. Pagination retains the server's separate-snapshot semantics.
+identify a replacement; setting a default can repair it without validating the
+old Team. Concurrent credential or pair changes fail rather than overwrite a
+newer choice. Pagination retains the server's separate-snapshot semantics.

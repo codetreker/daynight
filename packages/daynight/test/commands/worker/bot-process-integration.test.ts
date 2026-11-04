@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
@@ -11,7 +12,7 @@ import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
 import type { BotDefinition, BotRecord } from "../../../src/commands/worker/bots/types.js";
 import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
-import { readControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import { readControllerSnapshot, readControllerOperation } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
@@ -79,8 +80,8 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   const current = () => store.get(owner, bot.id)!;
   const snapshot = (record: BotRecord): SessionSnapshot => {
     const { claimId: _claim, identity: _identity, ...baseSnapshot } = snapshotFixture;
-    return { ...baseSnapshot, protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, testExecutionId: record.intent!.executionId, sessionId: bot.sessionId!, executionGeneration: "1", connectionEpoch: "1",
-      identity: { ownerUserId: owner.ownerUserId, controllerId: record.intent!.registration.controllerId, controllerInstanceId: record.intent!.registration.controllerInstanceId, provider: "codex", agentControlMode: "web", nativeSessionId: nativeId },
+    return { ...baseSnapshot, protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, testExecutionId: record.intent!.executionId, sessionId: bot.sessionId!, executionGeneration: record.intent!.executionGeneration, connectionEpoch: "1",
+      identity: { ownerUserId: owner.ownerUserId, controllerId: record.intent!.registration.controllerId, controllerInstanceId: record.intent!.controllerInstanceId, provider: "codex", agentControlMode: "web", nativeSessionId: nativeId },
       initialInputState: "not_required", historyEpoch: "bot-fixture-history", lastEventSeq: "0", lastTimelineSeq: "0", lifecycle: "active", connectionState: "connected", synchronized: true, activity: "idle" };
   };
   const register = vi.fn(async (record: BotRecord) => {
@@ -88,7 +89,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
     bot = { ...bot, version: "2", sessionId: randomUUID(), testExecutionId: record.intent!.executionId, roleConfiguration: record.intent!.roleConfiguration };
     return { bot, snapshot: snapshot(record) };
   });
-  const grant = vi.fn(async (record: BotRecord) => ({ token: "controlled-relay-grant", expiresAt: new Date(Date.now() + 900_000).toISOString(), sessionId: bot.sessionId!, testExecutionId: record.intent!.executionId, executionGeneration: "1", controllerId: record.intent!.registration.controllerId, controllerInstanceId: record.intent!.registration.controllerInstanceId }));
+  const grant = vi.fn(async (record: BotRecord) => ({ token: "controlled-relay-grant", expiresAt: new Date(Date.now() + 900_000).toISOString(), sessionId: bot.sessionId!, testExecutionId: record.intent!.executionId, executionGeneration: record.intent!.executionGeneration, controllerId: record.intent!.registration.controllerId, controllerInstanceId: record.intent!.controllerInstanceId }));
   const api = { register, grant, readSession: async (record: BotRecord) => snapshot(record), report: async () => bot };
   const prepareEnvironment = async () => ({ environment: { ...process.env, DN_CONFIG_DIR: state, CODEX_HOME: path.join(home, "native"), CODEX_TEST_REQUEST_LOG: requestLog, EXPECT_WORKER_PERMISSIONS: "no", ...(options.rejectRole ? { CODEX_TEST_REJECT_ROLE: "Fixture role configuration refused" } : {}) }, aliasDirectory: null, bindings: [], release: async () => {} });
   const create = () => createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, dependencies: { prepareEnvironment } });
@@ -101,7 +102,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
     socket.on("message", raw => {
       try {
         const message = parseControllerMessage(JSON.parse(raw.toString())); frames.push(message);
-        const fence = { protocol: SESSION_PROTOCOL, sessionId: bot.sessionId!, testExecutionId: current().intent!.executionId, executionGeneration: "1", connectionEpoch: "1" };
+        const fence = { protocol: SESSION_PROTOCOL, sessionId: bot.sessionId!, testExecutionId: current().intent!.executionId, executionGeneration: current().intent!.executionGeneration, connectionEpoch: "1" };
         if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: SESSION_PROTOCOL, connectionEpoch: "1", session: snapshot(current()), lastAckedSourceSeq: "0", limits: RELAY_LIMITS, requiresLiveSync: true }));
         else if (message.type === "reconcile") socket.send(JSON.stringify({ ...fence, type: "reconcile_result", operations: [] }));
         else if (message.type === "events") socket.send(JSON.stringify({ ...fence, type: "events_ack", sourceEpoch: message.sourceEpoch, batchId: message.batchId, lastAckedSourceSeq: message.events.at(-1)!.sourceSeq, lastEventSeq: message.events.at(-1)!.sourceSeq }));
@@ -224,3 +225,35 @@ test("recovers cleanup evidence from the original journal when the parent proces
   // afterEach must wait for the child's durable evidence instead of retaining
   // the empty snapshot taken before its process ownership was captured.
 }, 60_000);
+
+
+test("four orderly Worker restarts preserve the real journal, native session, role and unknown user operation without spending recovery budget", async () => {
+  const f = await fixture(), signal = AbortSignal.timeout(90_000);
+  await launchAndObserveReady(f, signal);
+  const original = f.current().intent!, operationId = randomUUID();
+  const operation = { operationId, executionGeneration: "1", kind: "send_message", payload: { text: "already submitted" }, payloadHash: "a".repeat(64), state: "unknown", result: null, error: null, createdAt: 1, updatedAt: 1 };
+  for (let generation = 1; generation <= 4; generation++) {
+    await f.create().shutdown(f.current(), signal);
+    expect(f.journal()).toMatchObject({ nativeStopped: true, lifecycle: "stopped", nativeSessionId: f.nativeId });
+    if (generation === 1) {
+      // Insert a crash-surviving unknown receipt only after OS stop proof. The
+      // production Controller must retain and reconcile it without dispatch.
+      const db = new Database(original.journalPath);
+      try { db.prepare("INSERT INTO operations(id,value,acknowledged) VALUES (?,?,0)").run(operationId, JSON.stringify(operation)); }
+      finally { db.close(); }
+    }
+    expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
+    await f.create().advance(f.current(), signal);
+    await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId }), { timeout: 20_000, interval: 100 });
+    expect(f.current().intent).toMatchObject({ executionGeneration: String(generation + 1), sessionId: original.sessionId, executionId: original.executionId, nativeSessionId: f.nativeId, roleConfiguration: original.roleConfiguration, initialOperationId: original.initialOperationId });
+    expect(readControllerOperation(original.journalPath, operationId)).toMatchObject({ operationId, state: "unknown" });
+    expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
+  }
+  expect(f.register).toHaveBeenCalledOnce(); expect(await f.launches()).toHaveLength(5);
+  const requests = await f.requests();
+  expect(requests.filter(request => request.method === "thread/start")).toHaveLength(1);
+  expect(requests.filter(request => request.method === "thread/resume")).toHaveLength(4);
+  for (const request of requests.filter(request => request.method === "thread/resume")) expect(request.params).toMatchObject({ threadId: f.nativeId, developerInstructions: original.roleConfiguration!.instructions });
+  expect(requests.some(request => request.method === "turn/start")).toBe(false);
+  expect(f.relayErrors).toEqual([]);
+}, 120_000);

@@ -29,7 +29,7 @@ export const openBotStore = (databaseFile: string, options: { busyTimeoutMs?: nu
     time(record.observedAt);
     if (record.intent !== null) {
       const intent = record.intent;
-      for (const id of [intent.launchId, intent.executionId, intent.initialOperationId, intent.registration.registrationId, intent.registration.testExecutionId, intent.registration.controllerId, intent.registration.controllerInstanceId]) botUUID(id, "Bot launch identity");
+      for (const id of [intent.launchId, intent.executionId, intent.initialOperationId, intent.controllerInstanceId, intent.registration.registrationId, intent.registration.testExecutionId, intent.registration.controllerId, intent.registration.controllerInstanceId]) botUUID(id, "Bot launch identity");
       if (intent.executionId !== intent.registration.testExecutionId || intent.registration.initialInput !== "none" || intent.registration.protocol !== "daynight.session.v1" || intent.registration.schemaVersion !== 1 || intent.registration.projectionVersion !== 1 || record.definition === null || intent.registration.provider !== record.definition.resolvedConfiguration.provider) throw new Error("Stored Bot launch binding is inconsistent.");
       botVersion(intent.botVersion); botVersion(intent.executionGeneration);
       if (intent.sessionId !== null) botUUID(intent.sessionId, "Bot session ID");
@@ -97,11 +97,11 @@ export const openBotStore = (databaseFile: string, options: { busyTimeoutMs?: nu
       if (record.definition === null || record.definition.sessionId !== null) throw new Error("An existing bound Bot session requires its original execution evidence.");
       if (!path.isAbsolute(input.homeDirectory) || /[\0\r\n]/.test(input.homeDirectory)) throw new Error("Bot home directory must be absolute.");
       if (!Number.isSafeInteger(input.recoveryLimit) || input.recoveryLimit < 0) throw new Error("Bot recovery limit must be a nonnegative safe integer.");
-      const executionId = randomUUID(), launchId = randomUUID();
+      const executionId = randomUUID(), launchId = randomUUID(), controllerInstanceId = randomUUID();
       const directory = controllerExecutionDirectory(input.homeDirectory, executionId);
       record.intent = { botVersion: record.observed.version,
-        registration: { protocol: "daynight.session.v1", schemaVersion: 1, projectionVersion: 1, registrationId: randomUUID(), testExecutionId: executionId, controllerId: randomUUID(), controllerInstanceId: randomUUID(), provider: record.definition.resolvedConfiguration.provider, initialInput: "none" },
-        launchId, executionId, initialOperationId: randomUUID(), sessionId: null, executionGeneration: "1", nativeSessionId: null,
+        registration: { protocol: "daynight.session.v1", schemaVersion: 1, projectionVersion: 1, registrationId: randomUUID(), testExecutionId: executionId, controllerId: randomUUID(), controllerInstanceId, provider: record.definition.resolvedConfiguration.provider, initialInput: "none" },
+        launchId, executionId, controllerInstanceId, initialOperationId: randomUUID(), sessionId: null, executionGeneration: "1", nativeSessionId: null,
         ticketPath: controllerTicketPath(input.homeDirectory, launchId), journalPath: path.join(directory, "journal.sqlite"), credentialFile: path.join(directory, "credential.json"), recoveryLimit: input.recoveryLimit, roleConfiguration: record.definition.roleConfiguration };
       return put(record).intent!;
     }),

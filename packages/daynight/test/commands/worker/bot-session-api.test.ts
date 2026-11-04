@@ -9,7 +9,7 @@ const id = (value: number): string => `00000000-0000-4000-8000-${String(value).p
 const role = { instructions: "Frozen role", revision: "first", digest: createHash("sha256").update("Frozen role").digest("hex") };
 const owner = { serverOrigin: "http://127.0.0.1:1", ownerUserId: id(1), workerId: id(2) };
 const definition = (): BotDefinition => ({ id: id(3), ownerUserId: id(1), workerId: id(2), version: "9007199254740993", deletion: null, name: "Assistant", creationOrder: "1", requestedOverrides: {}, resolvedConfiguration: { workerId: id(2), cwd: "/ordinary", provider: "codex", model: null, args: [] }, roleConfiguration: role, sessionId: id(4), testExecutionId: id(5), startupResult: { state: "pending", code: null }, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z" });
-const record = (): BotRecord => ({ owner, botId: id(3), observed: definition(), definition: definition(), observedAt: 1, intent: { botVersion: "1", registration: { protocol: "daynight.session.v1", schemaVersion: 1, projectionVersion: 1, registrationId: id(6), testExecutionId: id(5), controllerId: id(7), controllerInstanceId: id(8), provider: "codex", initialInput: "none" }, launchId: id(9), executionId: id(5), initialOperationId: id(10), sessionId: id(4), executionGeneration: "1", nativeSessionId: null, ticketPath: "/private/ticket.json", journalPath: "/private/journal.sqlite", credentialFile: "/private/credential.json", recoveryLimit: 3, roleConfiguration: role } });
+const record = (): BotRecord => ({ owner, botId: id(3), observed: definition(), definition: definition(), observedAt: 1, intent: { botVersion: "1", registration: { protocol: "daynight.session.v1", schemaVersion: 1, projectionVersion: 1, registrationId: id(6), testExecutionId: id(5), controllerId: id(7), controllerInstanceId: id(8), provider: "codex", initialInput: "none" }, controllerInstanceId: id(8), launchId: id(9), executionId: id(5), initialOperationId: id(10), sessionId: id(4), executionGeneration: "1", nativeSessionId: null, ticketPath: "/private/ticket.json", journalPath: "/private/journal.sqlite", credentialFile: "/private/credential.json", recoveryLimit: 3, roleConfiguration: role } });
 const snapshot = (): SessionSnapshot => ({ protocol: "daynight.session.v1", schemaVersion: 1, projectionVersion: 1, sessionId: id(4), testExecutionId: id(5), executionGeneration: "1", connectionEpoch: "2", identity: { ownerUserId: id(1), controllerId: id(7), controllerInstanceId: id(8), agentControlMode: "web", provider: "codex", nativeSessionId: id(11) }, sessionRevision: "3", historyEpoch: id(12), lastEventSeq: "1", lastTimelineSeq: "0", initialInputState: "not_required", synchronized: true, lifecycle: "active", connectionState: "connected", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: false, respond: true }, operations: { canSend: true, canCancel: false, canRespond: true } });
 const credential = () => ({ sessionId: id(4), testExecutionId: id(5), executionGeneration: "1", controllerId: id(7), controllerInstanceId: id(8), token: "relay-secret", expiresAt: "2099-01-01T00:00:00Z" });
 const cleanups: (() => Promise<void>)[] = [];
@@ -163,6 +163,75 @@ describe("Bot lifecycle HTTP client", () => {
     await expect(fixture.api.readSession(fixture.record, AbortSignal.abort())).rejects.toThrow();
     fixture.record.owner = { ...fixture.record.owner, ownerUserId: id(99) };
     await expect(fixture.api.register(fixture.record, signal())).rejects.toThrow();
+    expect(requests).toBe(0);
+  });
+});
+
+
+describe("Bot recovery grants", () => {
+  const previous = { generation: "1", instanceId: id(8), recordId: id(30), stoppedAt: "2026-01-01T00:00:00Z" };
+  const recover = (value: BotRecord): BotRecord => ({ ...value, intent: { ...value.intent!, controllerInstanceId: id(31), executionGeneration: "2", nativeSessionId: id(11) } });
+  const recoveredSnapshot = (): SessionSnapshot => ({ ...snapshot(), executionGeneration: "2", identity: { ...snapshot().identity, controllerInstanceId: id(31) } });
+  const recoveredCredential = () => ({ ...credential(), executionGeneration: "2", controllerInstanceId: id(31) });
+
+  it("requests the next generation only for the exact old native Session and durable stop proof", async () => {
+    const requests: { method: string; body: unknown }[] = [];
+    const fixture = await listen((request, response, body) => {
+      requests.push({ method: request.method!, body });
+      response.end(JSON.stringify(request.method === "GET" ? { session: snapshot() } : recoveredCredential()));
+    });
+    const value = recover(fixture.record);
+    expect(await fixture.api.grant(value, signal(), previous)).toEqual(recoveredCredential());
+    expect(requests.map(item => item.method)).toEqual(["GET", "POST"]);
+    expect(requests[1]!.body).toEqual({ botVersion: "9007199254740993", nativeSessionId: id(11), grant: {
+      protocol: "daynight.session.v1", testExecutionId: id(5), controllerId: id(7), controllerInstanceId: id(31), executionGeneration: "2", kind: "reconnect", previousGeneration: "1",
+      stopProof: { recordId: id(30), previousControllerInstanceId: id(8), stoppedAt: "2026-01-01T00:00:00Z" },
+    } });
+  });
+
+  it("observes a lost recovery response and reconnects only the already committed target generation", async () => {
+    let committed = false;
+    const requests: { method: string; body: any }[] = [];
+    const fixture = await listen((request, response, body) => {
+      requests.push({ method: request.method!, body });
+      if (request.method === "GET") response.end(JSON.stringify({ session: committed ? recoveredSnapshot() : snapshot() }));
+      else if (!committed) { committed = true; request.socket.destroy(); }
+      else response.end(JSON.stringify(recoveredCredential()));
+    });
+    const value = recover(fixture.record);
+    await expect(fixture.api.grant(value, signal(), previous)).rejects.toThrow();
+    expect(requests.map(item => item.method)).toEqual(["GET", "POST"]);
+    expect(await fixture.api.grant(value, signal(), previous)).toEqual(recoveredCredential());
+    expect(requests.map(item => item.method)).toEqual(["GET", "POST", "GET", "POST"]);
+    expect(requests[3]!.body.grant).toMatchObject({ controllerInstanceId: id(31), executionGeneration: "2", previousGeneration: null, stopProof: null });
+    expect(value.intent!.registration.controllerInstanceId).toBe(id(8));
+  });
+
+  it.each(["generation", "old instance", "target instance", "native", "session", "owner"])("does not request recovery after conflicting %s evidence", async mismatch => {
+    const base = mismatch === "target instance" ? recoveredSnapshot() : snapshot();
+    const observed = { ...base, identity: { ...base.identity } };
+    if (mismatch === "generation") observed.executionGeneration = "3";
+    if (mismatch === "old instance" || mismatch === "target instance") observed.identity.controllerInstanceId = id(90);
+    if (mismatch === "native") observed.identity.nativeSessionId = id(90);
+    if (mismatch === "session") observed.sessionId = id(90);
+    if (mismatch === "owner") observed.identity.ownerUserId = id(90);
+    let posts = 0;
+    const fixture = await listen((request, response) => { if (request.method === "POST") posts++; response.end(JSON.stringify({ session: observed })); });
+    await expect(fixture.api.grant(recover(fixture.record), signal(), previous)).rejects.toThrow();
+    expect(posts).toBe(0);
+  });
+
+  it.each(["missing native", "same instance", "skipped generation", "record", "future", "never started"])("rejects invalid %s recovery intent before HTTP", async mismatch => {
+    let requests = 0;
+    const fixture = await listen((_request, response) => { requests++; response.end(JSON.stringify({ session: snapshot() })); });
+    const value = recover(fixture.record), proof = { ...previous };
+    if (mismatch === "missing native") value.intent!.nativeSessionId = null;
+    if (mismatch === "same instance") value.intent!.controllerInstanceId = id(8);
+    if (mismatch === "skipped generation") value.intent!.executionGeneration = "3";
+    if (mismatch === "record") proof.recordId = "invalid";
+    if (mismatch === "future") proof.stoppedAt = "2099-01-01T00:00:00Z";
+    if (mismatch === "never started") Object.assign(proof, { kind: "never_started" });
+    await expect(fixture.api.grant(value, signal(), proof)).rejects.toThrow();
     expect(requests).toBe(0);
   });
 });

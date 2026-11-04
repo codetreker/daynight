@@ -21,8 +21,15 @@ target. Without it, the CLI reads the default for the current normalized service
 origin and account, or uses the account's Personal Team when no entry exists.
 `team default show` validates and displays the resolved target. Invalid or
 inaccessible defaults fail explicitly; listing Teams and using an explicit target
-do not depend on the old default. These commands only read. Team defaults do not
-change project discovery or explicit project and task identity.
+do not depend on the old default. These commands only read.
+
+With authorization, `team default set <uuid|personal>` validates the target and
+membership, then saves the default for the current service and account. It can
+replace an invalid or inaccessible old default; `personal` saves the real
+Personal Team ID. The command requires interactive confirmation or `--confirm`.
+Cancellation, an identity mismatch, or a concurrent credential or current-default
+change prevents the write. A token rotation preserves the account's default.
+Team defaults do not change project discovery or explicit project and task identity.
 
 With authorization, `team create` creates an ordinary Team, `team rename` changes
 its name, and `team delete` removes an empty ordinary Team. Rename and delete use

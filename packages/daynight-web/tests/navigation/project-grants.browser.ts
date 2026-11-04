@@ -101,3 +101,45 @@ test('narrow screen cancellation makes no write and self removal shows the null-
   expect(state.writes[0]?.body).toBe(`{"version":1,"expectedUserId":"${actorId}"}`);
   expect(state.requests.filter((request) => request.includes(`/teams/${teamId}`))).toEqual([]);
 });
+
+for (const width of [700, 768, 800, 1280]) {
+  test(`grant removal remains reachable inside the member table at ${width}px`, async ({ page }, testInfo) => {
+    const externalRequests: string[] = [];
+    await page.route('**/*', async (route) => {
+      if (new URL(route.request().url()).origin === 'http://127.0.0.1:4198') return route.continue();
+      externalRequests.push(route.request().resourceType());
+      return route.abort();
+    });
+    const state = await install(page);
+    state.targetGrant = grant(targetId, 'member', initialVersion);
+    await page.setViewportSize({ width, height: 900 });
+    await start(page);
+    const shell = page.locator('.auth-shell');
+    await expect(shell).not.toHaveClass(/sidebar-collapsed/);
+    if (width > 740) await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible();
+    const table = page.locator('.grant-table');
+    const remove = page.getByRole('button', { name: 'Remove direct grant for Bob' });
+    const before = await table.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth, scrollLeft: element.scrollLeft }));
+    await table.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+    const hit = await remove.evaluate((element) => {
+      const button = element.getBoundingClientRect();
+      const container = element.closest('.grant-table')!.getBoundingClientRect();
+      const x = button.x + button.width / 2, y = button.y + button.height / 2;
+      return { x, y, contained: button.left >= container.left && button.right <= container.right, reachable: document.elementFromPoint(x, y)?.closest('button') === element };
+    });
+    await testInfo.attach('table-reachability', { contentType: 'application/json', body: JSON.stringify({ width, before, hit }) });
+    expect(hit.contained).toBe(true);
+    expect(hit.reachable).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (width === 1280) expect(before.scrollWidth).toBe(before.clientWidth);
+    await page.screenshot({ path: testInfo.outputPath(`members-${width}.png`) });
+    await page.mouse.click(hit.x, hit.y);
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText('Member → No direct grant');
+    await dialog.getByRole('button', { name: 'Remove grant' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'Direct grant for Bob removed' })).toBeVisible();
+    await expect(page.getByLabel('Direct grant for Bob', { exact: true })).toHaveValue('');
+    expect(state.writes).toEqual([{ method: 'DELETE', path: `/api/v1/projects/${projectId}/grants/${targetId}`, body: `{"version":9007199254740993,"expectedUserId":"${actorId}"}` }]);
+    expect(externalRequests).toEqual([]);
+  });
+}

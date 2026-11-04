@@ -63,7 +63,10 @@ Grant creation and replacement can be distinguished without invented versions,
 and deleted grants cannot be targeted through an old observation. The finite
 receipt allows confirmed self-demotion or removal to succeed even if later
 project reads are forbidden. Callers must still validate response identity and
-must not automatically replay unknown writes. Web displays all three role sources and uses these routes with real versions.
+must not automatically replay unknown writes. The
+[table overflow decision](../bug-fix/2026-11-05-project-grant-table-overflow.md)
+keeps its action column reachable within the Members container. Web displays all
+three role sources and uses these routes with real versions.
 The committed receipt updates the actor access and remains visible after access
 is lost. A fresh access read after the receipt determines current cache withdrawal
 or a later restoration; cache generation alone cannot establish server authorization
