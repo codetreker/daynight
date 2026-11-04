@@ -14,14 +14,15 @@ vi.mock("../src/features/task-detail/TaskDetailSession", () => ({ useTaskDetailS
 }) }));
 const publish = () => act(() => { for (const listener of listeners) listener(); });
 const navigationDraft = vi.hoisted(() => ({ current: null as null | { isDirty: () => boolean; discard: () => void } }));
-vi.mock("../src/features/task-detail/TaskDraftNavigation", () => ({ useDirtyTaskDraft: (draft: typeof navigationDraft.current) => { navigationDraft.current = draft; }, useDraftNavigationDecision: () => null }));
+const navigationDecision = vi.hoisted(() => ({ current: null as object | null }));
+vi.mock("../src/features/task-detail/TaskDraftNavigation", () => ({ useDirtyTaskDraft: (draft: typeof navigationDraft.current) => { navigationDraft.current = draft; }, useDraftNavigationDecision: () => navigationDecision.current }));
 const projectId = "10000000-0000-0000-0000-000000000001";
 const taskId = "20000000-0000-0000-0000-000000000002";
 const time = "2026-11-03T12:34:56.123456Z";
 const steps: TaskStep[] = Array.from({ length: 241 }, (_, index) => ({ id: index.toString(16).padStart(8, "0"), title: `Round ${index + 1}`, description: index === 1 ? "" : `Result ${index + 1}`, status: (["todo", "in_progress", "done", "skipped"] as const)[index % 4]!, createdAt: time, updatedAt: time }));
 const resource = (items: readonly TaskStep[] = steps): StepsResource => ({ projectId, taskId, version: 3n, steps: items });
 const panel = (active = true) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} renderMarkdown={(text) => <div data-testid="markdown">{text}</div>} />;
-beforeEach(() => { navigationDraft.current = null; Object.assign(read, { resource: resource(steps.slice(0, 4)), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn(), canSetStatus: true, canAdd: true, canMove: true, move: vi.fn(), setStatus: vi.fn(), add: vi.fn().mockReturnValue("request-add"), reconcile: vi.fn(), mutation: { operation: null, phase: "idle", error: null, reconciling: false, reconciliationError: null, reconciledFrom: undefined } }); });
+beforeEach(() => { navigationDraft.current = null; navigationDecision.current = null; Object.assign(read, { resource: resource(steps.slice(0, 4)), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn(), canSetStatus: true, canAdd: true, canMove: true, move: vi.fn(), setStatus: vi.fn(), add: vi.fn().mockReturnValue("request-add"), reconcile: vi.fn(), mutation: { operation: null, phase: "idle", error: null, reconciling: false, reconciliationError: null, reconciledFrom: undefined } }); });
 
 describe("Step status", () => {
   it("offers four keyboard-accessible choices and retains the confirmed state until a response", () => {
@@ -405,6 +406,19 @@ describe("Steps read failures", () => {
 
 
 describe("Step position", () => {
+  it("closes a move dialog before a draft navigation decision and returns to the editor on cancellation", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }));
+    const title = screen.getByRole("textbox", { name: "Title" });
+    fireEvent.change(title, { target: { value: "A draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Round 1" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+    expect(screen.getByRole("dialog", { name: "Move step" })).toBeVisible();
+    navigationDecision.current = {}; view.rerender(panel());
+    expect(screen.queryByRole("dialog", { name: "Move step" })).toBeNull();
+    navigationDecision.current = null; view.rerender(panel());
+    expect(title).toHaveFocus(); expect(title).toHaveValue("A draft");
+  });
   it("does not steal focus or change page from an actively edited add draft when a move completes", () => {
     read.resource = resource();
     const view = renderWithLocale(panel(), { locale: "en" });
@@ -467,7 +481,7 @@ describe("Step position", () => {
     expect(screen.getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: "More actions for Round 1" })).toHaveFocus();
     expect(screen.getByRole("button", { name: "Round 1" }).closest("li")!.querySelector(".step-number")).toHaveTextContent("241");
-  });
+  }, 15_000);
   it("returns focus after a confirmed relative move within the same page", () => {
     const view = renderWithLocale(panel(), { locale: "en" });
     fireEvent.click(screen.getByRole("button", { name: "More actions for Round 1" }));

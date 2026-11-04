@@ -76,7 +76,7 @@ test('append steps with draft protection and recovery through the real service',
     await leave.getByRole('button', { name: '继续编辑' }).click();
     await expect(page).toHaveURL(new RegExp(`/tasks/${task.id}\\?tab=steps$`));
     await expect(form(page).getByRole('textbox', { name: '标题' })).toHaveValue('移动导航草稿');
-    await expect(root(page).locator('.task-detail-title')).toBeFocused();
+    await expect(form(page).getByRole('textbox', { name: '标题' })).toBeFocused();
     await openRelativeMove();
     await page.evaluate(() => history.go(-2));
     await expect(leave).toBeVisible();

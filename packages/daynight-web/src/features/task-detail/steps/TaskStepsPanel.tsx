@@ -48,7 +48,16 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
   const focusMove = useRef<string | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
   const navigationDecision = useDraftNavigationDecision();
-  useLayoutEffect(() => { if (navigationDecision !== null) setMovingId(null); }, [navigationDecision]);
+  const interruptedMove = useRef(false);
+  useLayoutEffect(() => {
+    if (navigationDecision !== null) {
+      if (movingId !== null) interruptedMove.current = true;
+      setMovingId(null);
+    } else if (interruptedMove.current) {
+      interruptedMove.current = false;
+      if (draft !== null && active) titleInput.current?.focus();
+    }
+  }, [navigationDecision, movingId, draft, active]);
   const resource = state.resource;
   const total = resource?.steps.length ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
