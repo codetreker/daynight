@@ -516,24 +516,20 @@ records the workload split and retained correctness guarantees.
 
 ## Package versions
 
-Changes to `packages/daynight/src/`, either package manifest, `pnpm-lock.yaml`,
-`pnpm-workspace.yaml`, `.npmrc`, either application TypeScript configuration, or
-the package's build-cleanup and resource-copy scripts require a strictly greater
-SemVer in `packages/daynight/package.json`. Source
-additions, deletions and moves all count. Unchanged versions, downgrades and
-build-metadata-only changes fail. Tests, fixtures, documentation, CI workflows
-and validation scripts alone do not require a version increase. CI enforces this
-policy in the PR's Linux CLI job using the event's explicit base and head commits.
+Ordinary change PRs keep `packages/daynight/package.json` version unchanged.
+Version selection and complete CLI publication belong to the repository's
+[release-daynight skill](../.agents/skills/release-daynight/SKILL.md). It analyzes
+CLI changes since the public npm `latest` source, selects patch or minor unless
+an explicit version is supplied, and retains an already prepared version when
+it meets the release requirements. The skill owns the classification rules,
+version PR delivery, release completion evidence, and interrupted-release
+reconciliation.
 
-Update the version in the same PR as the code. To check committed revisions
-locally, run `pnpm version:check pull_request <base-sha> <head-sha>` or
-`pnpm version:check push <before-sha> <after-sha>`. The command reads versions
-from those commits; uncommitted files do not affect the result. The local push
-mode compares the complete before/after range; an all-zero before SHA validates
-the starting version without a predecessor comparison. Missing history,
-unreadable manifests and invalid versions fail visibly. The
-[toolchain decision](../.agents/notes/archived/process/2026-10-16-typescript-cli-toolchain.md)
-records the original comparison and CI ownership choices.
+Publication accepts stable `x.y.z` versions. A new release must advance public
+npm `latest`; existing npm versions and release tags are immutable. The
+[publication procedure](#npm-publication) describes the workflow's admission,
+validation, and existing-version skips. A successful skip alone does not prove
+that the requested source was published.
 
 ## npm publication
 
@@ -555,7 +551,10 @@ successful publication within two days; npm requires an expired configuration
 to be recreated. These settings belong to npmjs and are not configured by the
 repository. See npm's [trusted publishing documentation](https://docs.npmjs.com/trusted-publishers).
 
-After merging a stable package version to `main`, run:
+For an authorized release, use the
+[release-daynight skill](../.agents/skills/release-daynight/SKILL.md) to select the
+version and complete any protected version PR. Its publication step dispatches
+the following workflow after the stable version is on `main`:
 
 ```bash
 gh workflow run publish.yml --ref main
