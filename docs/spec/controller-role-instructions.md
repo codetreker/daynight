@@ -18,10 +18,18 @@
 
 独立会话使用 `initialInput: "none"` 和 `initialPrompt: ""` 时，角色文本仍可存在。初始输入状态为 `not_required`，IPC `submit_initial` 必须拒绝；只有真正的用户请求才能进入发送路径。已有 Task 与无角色 Test 的输入规则保持不变。
 
+## Copilot 原生追加
+
+Copilot 新建和精确恢复均将提供的 `instructions` 原文配置为 `systemMessage: { mode: "append", content: instructions }`，保留原生基础提示。没有角色时完全省略 `systemMessage`，不构造空角色或替换提示。角色配置本身不发送用户消息，也不产生初始化 turn。
+
+新建的模型和 reasoning effort 继续按原规则选择：未提供就省略，显式配置才传递。恢复仍以原 native session ID 为准，不使用启动参数覆盖该会话的模型、effort 或审批设置。角色不启用无人值守权限；普通会话继续使用原生交互审批。原生打开或身份核验失败时向调用者传播错误，关闭自己拥有的 runtime，不发送角色作为重试输入，也不新建替代会话。
+
 ## 实现边界与验证
 
-该契约提供 ticket 校验、持久化和 Controller 到 Provider 的共享传递。各 Provider 的原生追加映射、Bot 角色模板、首次角色冻结与 Worker 托管分别由相应消费者实现；共享字段可读不表示这些入口已启用，也不证明真实原生角色已生效。独立 CLI 当前没有角色创建参数。
+该契约提供 ticket 校验、持久化和 Controller 到 Provider 的共享传递，以及上述 Copilot 追加映射。其它 Provider 的原生追加、Bot 角色模板、首次角色冻结与 Worker 托管分别由相应消费者实现；共享字段可读或单个适配器可用不表示这些入口已启用。独立 CLI 当前没有角色创建参数。
 
 验证须覆盖旧 Task/Test 字段与 hash 不变、非法输入及准确 UTF-8 边界、同 launchId 的角色改写拒绝、持久 ticket 经停止代际恢复后的原文传递、未知操作不重放，以及三个 Provider 的新建/恢复 options。适配器模拟结果仅证明共享传递，真实 Provider 行为需独立运行证据。
+
+Copilot 适配验证还须覆盖 create/resume 的原文追加、无角色字段缺失、无初始化发送、模型/effort 与审批保持、打开拒绝及身份错误后的子进程回收。真实 SDK/CLI 的新建与恢复验收使用隔离目录，分别记录原生配置接受、native ID、消息历史与停止结果；不把模拟结果或配置接受表述为完整 Bot 或模型行为验收。
 
 机制见[会话协议设计](../design/task-session-protocol.md#角色指令的共享传递)，输入和身份基础见[独立测试会话需求](controller-test-sessions.md)。
