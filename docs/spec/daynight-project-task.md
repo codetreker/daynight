@@ -229,7 +229,7 @@ daynight task graph <task-id> [--depends-only]
 `--path=value` 继续拒绝。附件上传的 `--path` 是 text 选项，接受内联赋值。
 `project create`、属性 set/remove 和附件 `put/read/remove` 接受独立 `--` 结束选项解析；该终止符用于保留前导连字符的位置参数，选项必须放在终止符之前。其他操作继续使用其声明的语法。
 
-创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--required-platform windows|linux|macos`、`--assigned-to <user-uuid>`、重复的 `--depends-on` 和 `--external-depends-on`。省略描述与依赖分别为空字符串与空集合，平台省略为 null，不限制执行平台；负责人省略为 assignedTo:null，未显式设置的属性缺失。新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可或属性专用选项。任务响应解码接受 `todo`、`in_progress`、`done`，列表默认选择
+创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--required-platform windows|linux|macos`、`--assigned-to <user-uuid>`、重复的 `--depends-on` 和 `--external-depends-on`。省略描述与依赖分别为空字符串与空集合，平台省略为 null，不限制执行平台；CLI 省略 --assigned-to 时，先通过现有 GET /me 读取当前认证账号，再将其 UUID 作为 assignedTo 提交；显式 UUID 不额外查询身份。身份查询失败或取消时不得创建任务或退回未分配。未显式设置的属性缺失。新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可或属性专用选项。任务响应解码接受 `todo`、`in_progress`、`done`，列表默认选择
 所有未完成任务；`--all` 选择所有未删除任务的业务状态，
 单个 `--status` 选择指定状态，包括 `done`。`--all` 与 `--status` 互斥，组合使用
 属于参数错误；列表状态值为 `todo`、`in_progress`、`done`，共享语法负责校验和静态候选，
@@ -262,7 +262,7 @@ limit，每项必须为 ready，且 task ID 不得重复；响应违反任一条
 元数据 update 至少提供标题、描述、普通/外部依赖、自动执行许可、平台要求或负责人中的一个字段；属性由专用通用命令维护。`update --allow-agents true|false` 显式设置许可，省略保留，false 关闭；服务在 in_progress 拒绝实际切换，同值精确版本不改版本或时间。该选项不改变 ready；明确指定执行不要求开启许可。--required-platform windows|linux|macos 设置，--clear-required-platform 发送null，二者互斥；省略均保留。
 精确版本同值不写，旧版本冲突，in_progress实际变化整体拒绝；普通人工setter不按平台筛选。
 
---assigned-to 在创建/更新中只接受用户 UUID，规范化后提交顶层 assignedTo；update 用互斥的 --clear-assigned-to 明确发送 null，省略均保留。查询专用 me/unassigned 不能作为写入值。实际负责人变化同一事务关闭 allowAgents；等值不重置，in_progress 拒绝实际变化。分配不授予项目访问权或既有执行控制权。自动领取还要求负责人等于 worker 认证账号；运行时规则由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有，许可开启本身不足以领取他人任务。设置/清空冲突、错误UUID和非法查询token在配置/Git/网络前拒绝，新参数仍允许自由UUID值而非封闭 choices。
+--assigned-to 在创建/更新中只接受用户 UUID，规范化后提交顶层 assignedTo；update 用互斥的 --clear-assigned-to 明确发送 null，更新时省略保留；创建时省略按当前认证账号赋值。服务端仍允许其他调用者省略或明确提供 null 创建未分配任务，不强制本人分配。查询专用 me/unassigned 不能作为写入值。实际负责人变化同一事务关闭 allowAgents；等值不重置，in_progress 拒绝实际变化。分配不授予项目访问权或既有执行控制权。自动领取还要求负责人等于 worker 认证账号；运行时规则由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有，许可开启本身不足以领取他人任务。设置/清空冲突、错误UUID和非法查询token在配置/Git/网络前拒绝，新参数仍允许自由UUID值而非封闭 choices。
 `task update --status`
 作为不支持的选项拒绝，帮助引导使用 set-status。省略字段表示保持，空描述表示
 清空描述。两类依赖选项分别形成普通 N 和外部 E，任一出现就提交完整 D=N∪E 及精确 E。
@@ -386,7 +386,7 @@ JSON 保留所输出 API 字段的名称、类型和原始字符串，不应用�
 | V13 | `task ready` 的默认和显式 limit、参数在 I/O 前拒绝、单次 `ready=true` 查询、合法 cursor 不续页、稳定服务顺序、完整 int64 JSON、空结果及超量/非 ready/重复 ID 响应拒绝均可观察；`task list --ready` 仍完整翻页，真实服务证明选择前 N 项及依赖完成后的 ready 变化 |
 | V14 | `--allow-agents true/false` 的 update/list/ready 路径、静态补全、非法值在 I/O 前拒绝、字段必填严格读取、分页前筛选及跨页保留、返回筛选不符拒绝、精确版本/同值/运行锁与响应丢失不重试、JSON 及可读许可输出通过适用安装入口验证 |
 | V15 | 平台 create/update 设置、update 清除与互斥、list/ready 兼容筛选、全部 shell 补全、非法值在 I/O 前拒绝、必填 null/枚举资源严格读取、兼容条件跨页保留和响应校验、精确版本/同值/运行锁/拒绝不重试及 JSON/可读平台输出通过适用安装入口和真实服务验证 |
-| V16 | 负责人 create/update 设置和update清空、省略/null与I/O前冲突拒绝，自由UUID补全语法；所有Task/graph入口严格读取nullable assignedTo；list的UUID/me/unassigned和ready交集跨页保留并拒绝不匹配项；me单页/空页/多页成功身份缺失、非法、重复或变化均失败且无额外身份请求；精确版本、未知不重放、无正常postGET及文本/JSON字段通过安装CLI和真实服务验证 |
+| V16 | CLI 创建省略负责人先查询当前身份并分配本人、身份失败或取消不创建、显式 UUID 不查身份；负责人 create/update 设置和update清空、省略/null与I/O前冲突拒绝，自由UUID补全语法；所有Task/graph入口严格读取nullable assignedTo；list的UUID/me/unassigned和ready交集跨页保留并拒绝不匹配项；me单页/空页/多页成功身份缺失、非法、重复或变化均失败且无额外身份请求；精确版本、未知不重放、无正常postGET及文本/JSON字段通过安装CLI和真实服务验证 |
 | V17 | 安装后 Step list/show 与真实持久服务完整互读；空集合、单项完整说明、保存顺序、规范短 ID/作用域、精确大版本、安全转义及 JSON 单值成立；显式 project 在 Git 外可读且无隐藏项目 GET，帮助无配置/Git/网络依赖，损坏字段/scope/重复 ID/不可用服务及未支持命令明确失败，帮助/补全/独立手册只宣告实际 list/show 能力 |
 
 配置、HTTP、仓库关联基础及 Project 命令已提供对应模块验证；Project 的实际编译

@@ -161,7 +161,9 @@ export const runTaskCommand = async (
     const { renderTask, renderTaskGraph, renderTaskGraphDependencies, renderTaskJson, renderTaskList, renderTaskListJson, renderTaskSummaryList } = await import("./rendering.js");
     operation.check();
     if (command.command.name === "create") {
-      const input: CreateTaskInput = { title: title!, ...(description === undefined ? {} : { description }), ...assignmentFields, ...platformFields, ...dependencyFields };
+      const createAssignedTo = assignedTo === undefined ? (await api.getCurrentUser()).id : assignedTo;
+      operation.check();
+      const input: CreateTaskInput = { title: title!, ...(description === undefined ? {} : { description }), assignedTo: createAssignedTo, ...platformFields, ...dependencyFields };
       const task = await api.createTask(project.id, input);
       operation.check();
       return `Task created.\n${renderTask(task)}`;

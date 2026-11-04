@@ -39,8 +39,8 @@ daynight task ready --limit 20 --json
 daynight task show <task-id> --json
 ```
 
-New tasks start in `todo`, unassigned unless explicitly selected, with automatic
-execution disabled. `task list` excludes
+New tasks start in `todo`, assigned to the signed-in account unless
+`--assigned-to <user-uuid>` selects another person, with automatic execution disabled. `task list` excludes
 `done` by default; `--all` and `--status` are mutually exclusive. List reads all
 matching pages; JSON omits descriptions, so read `show --json` for a complete
 task and its version. Creation returns text and does not accept `--json`.
@@ -124,7 +124,9 @@ omitted fields remain unchanged. Set `--required-platform windows|linux|macos`
 or use `--clear-required-platform`, never both.
 
 `assignedTo` is one optional human responsible for the task, not a property or
-worker identity. Create/update accept `--assigned-to <user-uuid>`; update also
+worker identity. CLI creation without `--assigned-to` reads the current account
+from `/me` and submits its UUID; an identity lookup failure prevents creation.
+An explicit UUID skips this lookup. Create/update accept `--assigned-to <user-uuid>`; update also
 accepts `--clear-assigned-to` to send null. Setting and clearing conflict. Writes
 accept UUIDs only; `me` and `unassigned` are list filters. A real assignee change
 also sets `allowAgents=false`; an equal value preserves it. Assignment grants no
