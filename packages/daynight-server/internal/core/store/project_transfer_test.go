@@ -61,3 +61,58 @@ func TestTransferCommitResponseLossRemainsUnknown(t *testing.T) {
 		t.Fatalf("actor retained access: %v", err)
 	}
 }
+
+func TestTransferPreviewRoleCombinesDestinationAndDirectGrant(t *testing.T) {
+	s := isolatedStore(t)
+	ctx := context.Background()
+	_, actor, _ := testAuthRecords(t, s)
+	_, other, _ := testAuthRecords(t, s)
+	project, err := s.CreatePrivateProject(ctx, actor, uuid.NewString(), "Project", "host:repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := s.CreateTeam(ctx, other.UserID, uuid.NewString(), "Destination")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func() *core.ProjectRole {
+		t.Helper()
+		var role *core.ProjectRole
+		err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+			var err error
+			role, err = snapshot.TransferRole(ctx, actor.UserID, project.ID, team.ID)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return role
+	}
+	if got := read(); got == nil || *got != core.ProjectAdmin {
+		t.Fatalf("direct admin: %v", got)
+	}
+	if _, err = s.Pool.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, project.ID, actor.UserID); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got == nil || *got != core.ProjectMemberRole {
+		t.Fatalf("direct member: %v", got)
+	}
+	if _, err = s.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, team.ID, actor.UserID); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got == nil || *got != core.ProjectAdmin {
+		t.Fatalf("inherited admin: %v", got)
+	}
+	if _, err = s.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, actor.UserID); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got == nil || *got != core.ProjectAdmin {
+		t.Fatalf("inherited only: %v", got)
+	}
+	if _, err = s.Pool.Exec(ctx, `DELETE FROM team_members WHERE team_id=$1 AND user_id=$2`, team.ID, actor.UserID); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got != nil {
+		t.Fatalf("no access: %v", got)
+	}
+}
