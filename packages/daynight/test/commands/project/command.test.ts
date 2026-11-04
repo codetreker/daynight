@@ -20,6 +20,7 @@ const fixture = (projects: readonly Project[] = []) => {
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
     moveTaskStep: unavailable,
     addTaskStep: unavailable,
+    deleteTaskStep: unavailable,
     listTaskSteps: unavailable, getTaskStep: unavailable,
     getProjectAccess: unavailable,
     readTaskThread: unavailable, postTaskThreadMessage: unavailable,

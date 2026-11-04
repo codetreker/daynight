@@ -745,9 +745,16 @@ records the isolation and scheduling constraints.
 The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
 records the responsibility and budget boundaries without claiming a measured
 CPU/I/O cause or guaranteed hosted speedup. The existing functional Playwright
-JSON reports also expose named phases for the largest journeys; the
+JSON reports also expose named phases for the largest journeys. Selected status
+journeys share worker-owned API/CLI credentials and a project while retaining
+fresh per-case API contexts, browser login and artifact validation. Permission,
+platform and assignment share only a project. Worker restart or a different
+service origin cannot reuse another worker's prepared resources. The
+[shared preparation decision](../.agents/notes/implemented/testing/2026-11-04-web-scenario-preparation.md)
+records the extra ownership obligations and the absence of a demonstrated causal
+hosted speedup. The
 [Web validation guide](../packages/daynight-web/README.md#production-browser-acceptance)
-explains their wall-time and residual interpretation limits.
+owns the setup receipt, case isolation and wall-time interpretation details.
 The Go coverage, Go E2E and Web browser jobs restore module and compiler caches
 keyed by the server `go.sum`. Coverage validation expires Go test results before
 database/race/coverage checks; E2E uses `-count=1` to require fresh observations.
