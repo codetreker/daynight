@@ -1,5 +1,5 @@
 import { createTaskSessionWorld } from "./helpers/taskSessions";
-import { waitFor } from '@testing-library/react';
+import { waitForState as waitFor } from './helpers/waitForState';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, getTask, setTaskStatus, setTaskAgentPermission, setTaskRequiredPlatform } from '../src/api/client';
 import type { TaskDetail, TaskStatus } from '../src/api/types';

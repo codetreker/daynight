@@ -1540,6 +1540,13 @@ The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
 were never imported by a test. Empty, malformed and incomplete reports fail.
 
+The platform, pause, status and assignment controller session tests use
+`tests/helpers/waitForState.ts` for non-DOM state changes. It delegates to
+Testing Library with a 5ms default polling interval, preserving immediate
+checks, timeouts, errors and explicit options. DOM tests keep their existing
+waits. The [state polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-controller-state-polling.md)
+records the cadence and its limits.
+
 The focused navigation browser suite builds a minimal editor host from the
 production router, admitted-location owner and task confirmation. It checks draft
 admission independently of Steps forms and HTTP writes, including indexed
