@@ -163,7 +163,7 @@ func TestProjectSettingsCancellationAndDatabaseFailuresPreserveTheSavedProject(t
 		cancelAfter bool
 		minutes     int32
 	}{
-		{"member refusal completion", "FROM project_members", true, 90},
+		{"member refusal completion", "FROM project_grants", true, 90},
 		{"project query", "SELECT id::text, name, repo_url", false, 90},
 		{"noop completion", "SELECT id::text, name, repo_url", true, 60},
 		{"update query", "UPDATE projects SET execution_warning_minutes", false, 90},

@@ -132,7 +132,7 @@ func TestTaskHTTPAssignedToStrictFiltersAndFormerTarget(t *testing.T) {
 	project := taskProject(t, handler)
 	former := assignmentHTTPMember(t, database, project.ID)
 	task := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Former assignment query", "assignedTo": former})), http.StatusCreated)
-	if _, err := database.Pool.Exec(t.Context(), `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, former); err != nil {
+	if _, err := database.Pool.Exec(t.Context(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, former); err != nil {
 		t.Fatal(err)
 	}
 	collection := taskCollection(project.ID)

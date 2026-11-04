@@ -375,6 +375,9 @@ func TestInstalledCLIStatusMigrationAcceptance(t *testing.T) {
 		ids := []string{"00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000012", "00000000-0000-4000-8000-000000000013", "00000000-0000-4000-8000-000000000014", "00000000-0000-4000-8000-000000000015"}
 		stamp := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
 		fixture.exec(t, "INSERT INTO projects (id, name, repo_url) VALUES ($1, 'Preserved v12 project', 'git@git.example:Org/Repo.git')", projectID)
+		historicalAdmin := "00000000-0000-4000-8000-000000000020"
+		fixture.exec(t, "INSERT INTO users (id,uniauth_id,created_at,updated_at) VALUES ($1,'historical-admin',$2,$2)", historicalAdmin, stamp)
+		fixture.exec(t, "INSERT INTO project_members (project_id,user_id,role,created_at,updated_at) VALUES ($1,$2,'admin',$3,$3)", projectID, historicalAdmin, stamp)
 		properties := acceptanceProperties(t, []api.PullRequestProperty{{URL: "https://github.com/example/migration/pull/1", Title: "Historical reference"}})
 		encoded, err := json.Marshal(acceptanceProperties(t, acceptancePullRequests(t, properties)))
 		if err != nil {
@@ -481,12 +484,12 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 		for index, entry := range migration.AfterLedger {
 			versions[index] = entry.Version
 		}
-		if !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}) || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
-			t.Fatal("startup did not append the property-row, session archive, assignment, Thread, Steps and terminal Session schemas while preserving prior ledger, dependencies and attachments")
+		if !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}) || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
+			t.Fatal("startup did not append the property-row, session archive, assignment, Thread, Steps, terminal Session and Personal ownership schemas while preserving prior ledger, dependencies and attachments")
 		}
 		acceptanceStatusMigrationRows(t, migration.StatusBeforeRows, migration.AfterRows)
 		user := acceptanceDecode[api.User](t, process.request(context.Background(), http.MethodGet, "/api/v1/me", nil, ""), http.StatusOK)
-		fixture.exec(t, "INSERT INTO project_members (project_id,user_id,role) VALUES ($1,$2,'admin')", projectID, user.ID)
+		fixture.exec(t, "INSERT INTO project_grants (project_id,user_id,role) VALUES ($1,$2,'admin')", projectID, user.ID)
 		old := make([]api.Task, len(ids))
 		for index, id := range ids {
 			old[index] = acceptanceCLITaskResource(t, cli.run(t, cli.caller, "task", "show", id, "--project", projectID, "--json"))

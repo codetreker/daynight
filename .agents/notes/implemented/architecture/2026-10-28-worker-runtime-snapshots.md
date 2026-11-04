@@ -36,8 +36,9 @@ concurrently committed conflict row; a same-statement CTE does not provide that
 visibility guarantee.
 
 Reports and read-only snapshots share the store's canonical project access
-relation, currently backed by real direct grants. Both batch queries constrain
-access by the authenticated user without giving Worker code ownership of the
+relation, merging real owner Team and direct-grant roles under the
+[Personal ownership decision](2026-11-04-personal-project-ownership.md). Both batch
+queries constrain access by the authenticated user without giving Worker code ownership of the
 authorization sources. Report normalization still checks the current account,
 Worker, claim and task state; read-only snapshots reapply current project access
 and undeleted-task visibility to saved task arrays and counts. They retain the recorded status and

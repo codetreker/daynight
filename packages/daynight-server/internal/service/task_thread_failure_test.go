@@ -202,7 +202,7 @@ func TestThreadReadCancellationAndServiceDeadlineAreBounded(t *testing.T) {
 	task := createTask(t, tasks, principal, project.ID, "Read cancellation")
 	threads := NewTaskThreads(database)
 	first := postThread(t, threads, principal, task, CreateThreadMessage{Body: "first"})
-	for _, fragment := range []string{"SELECT expires_at FROM sessions", "FROM project_members", "SELECT deleted_at FROM tasks", "FROM task_thread_messages WHERE task_id=$1 AND message_id=$2", "ORDER BY created_at", "EXISTS(SELECT 1 FROM task_thread_messages"} {
+	for _, fragment := range []string{"SELECT expires_at FROM sessions", "FROM project_grants", "SELECT deleted_at FROM tasks", "FROM task_thread_messages WHERE task_id=$1 AND message_id=$2", "ORDER BY created_at", "EXISTS(SELECT 1 FROM task_thread_messages"} {
 		t.Run(fragment, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -324,10 +324,11 @@ func TestThreadPreCommitFailureExposesOnlyAvailableCandidateAttribution(t *testi
 }
 
 func TestThreadReadSnapshotKeepsAuthorizationMessagesAndSidesConsistent(t *testing.T) {
-	tasks, database, project, databaseURL, principal := taskService(t)
+	tasks, database, project, databaseURL, owner := taskService(t)
+	principal := workerMember(t, database, project.ID)
 	other := workerMember(t, database, project.ID)
 	threads := NewTaskThreads(database)
-	task := createTask(t, tasks, principal, project.ID, "Snapshot consistency")
+	task := createTask(t, tasks, owner, project.ID, "Snapshot consistency")
 	first := postThread(t, threads, principal, task, CreateThreadMessage{Body: "in the authorized snapshot"})
 	interleaved := false
 	traced := tracedThreads(t, databaseURL, taskQueryAction{
@@ -341,7 +342,7 @@ func TestThreadReadSnapshotKeepsAuthorizationMessagesAndSidesConsistent(t *testi
 			if err := tasks.Delete(context.Background(), principal, project.ID, task.ID, DeleteTask{Version: task.Version}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID); err != nil {
+			if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID); err != nil {
 				t.Fatal(err)
 			}
 		},

@@ -24,7 +24,11 @@ bound pending login is atomically validated and consumed in PostgreSQL before
 one SDK identity retrieval. Provider errors terminate a valid pending operation;
 retrieval cancellation, response loss and protocol failure require a new login.
 The full external identity ID uniquely maps to a local user UUID; nullable profile
-fields retain their meaning and email does not merge identities.
+fields retain their meaning and email does not merge identities. Canonical
+user UPSERT, Personal Team initialization and session insertion now share one
+transaction under the [Personal ownership decision](2026-11-04-personal-project-ownership.md).
+Repeated and concurrent login reuse the unique Team and validate its real owner
+admin; authentication does not repair broken ownership data.
 
 Sessions and personal access tokens are opaque high-entropy secrets represented
 by hashes in PostgreSQL. Separate Session and PersonalAccessToken records express

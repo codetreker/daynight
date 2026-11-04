@@ -120,7 +120,7 @@ func acceptanceAssignmentMember(t *testing.T, fixture *acceptanceFixture, projec
 	t.Helper()
 	id := uuid.NewString()
 	fixture.exec(t, "INSERT INTO users (id,uniauth_id,name,created_at,updated_at) VALUES ($1,$2,'Assignment colleague',statement_timestamp(),statement_timestamp())", id, "assignment-colleague-"+id)
-	fixture.exec(t, "INSERT INTO project_members (project_id,user_id,role) VALUES ($1,$2,'member')", project.ID, id)
+	fixture.exec(t, "INSERT INTO project_grants (project_id,user_id,role) VALUES ($1,$2,'member')", project.ID, id)
 	return id
 }
 

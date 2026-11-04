@@ -55,6 +55,9 @@ func (s *Store) CreateIdentitySession(ctx context.Context, user core.User, sessi
 		if err != nil {
 			return err
 		}
+		if err := initializePersonalTeam(ctx, tx, result.ID, session.CreatedAt); err != nil {
+			return err
+		}
 		_, err = tx.Exec(ctx, `INSERT INTO sessions (id,user_id,token_hash,created_at,expires_at) VALUES ($1,$2,$3,$4,$5)`, session.ID, result.ID, session.TokenHash, session.CreatedAt, session.ExpiresAt)
 		return err
 	})

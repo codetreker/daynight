@@ -322,8 +322,8 @@ func TestTaskAssignmentFailuresPreserveAtomicityAndCause(t *testing.T) {
 		target := workerMember(t, database, project.ID)
 		before := createAssignedTask(t, tasks, admin, project.ID, nil)
 		statement := fmt.Sprintf(`CREATE FUNCTION refuse_assignment_target() RETURNS text LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1030',MESSAGE='private assignment target'; END $$;
-			ALTER TABLE project_members RENAME TO assignment_member_source;
-			CREATE VIEW project_members AS SELECT project_id,user_id,CASE WHEN user_id='%s'::uuid THEN refuse_assignment_target() ELSE role END AS role,version,created_at,updated_at FROM assignment_member_source`, target.UserID)
+			ALTER TABLE project_grants RENAME TO assignment_member_source;
+			CREATE VIEW project_grants AS SELECT project_id,user_id,CASE WHEN user_id='%s'::uuid THEN refuse_assignment_target() ELSE role END AS role,version,created_at,updated_at FROM assignment_member_source`, target.UserID)
 		if _, err := database.Pool.Exec(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
@@ -333,7 +333,7 @@ func TestTaskAssignmentFailuresPreserveAtomicityAndCause(t *testing.T) {
 		if !errors.As(err, &pg) || pg.Code != "P1030" || strings.Contains(err.Error(), "private assignment") {
 			t.Fatalf("target lookup failure was masked or leaked: %v", err)
 		}
-		if _, err := database.Pool.Exec(ctx, `DROP VIEW project_members; ALTER TABLE assignment_member_source RENAME TO project_members`); err != nil {
+		if _, err := database.Pool.Exec(ctx, `DROP VIEW project_grants; ALTER TABLE assignment_member_source RENAME TO project_grants`); err != nil {
 			t.Fatal(err)
 		}
 		assertTaskUnchanged(t, tasks, admin, before)
@@ -362,7 +362,7 @@ func TestTaskAssignmentFailuresPreserveAtomicityAndCause(t *testing.T) {
 		var memberships atomic.Int32
 		traced := tracedTasks(t, databaseURL, taskQueryAction{
 			match: func(sql string) bool {
-				return strings.Contains(sql, "FROM project_members") && memberships.Add(1) == 2
+				return strings.Contains(sql, "FROM project_grants") && memberships.Add(1) == 2
 			}, end: cancel,
 		})
 		_, err := traced.Update(ctx, admin, project.ID, before.ID, UpdateTask{Version: before.Version, AssignedTo: assignmentChange(&outsider.UserID)})

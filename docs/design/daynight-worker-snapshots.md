@@ -25,7 +25,7 @@ flowchart LR
 
 ## 报告事务
 
-`Store.WriteWorker` 使用独立 READ COMMITTED 事务，不进入会锁 project 的 WriteProject。service 先取得数据库 statement_timestamp，按输入 task ID 的主键集合批量读取任务，JOIN store 的 canonical `projectAccessRelation` 及项目名，排除软删除记录。准入关系在同一语句内按认证 userId 筛选，当前仅计算真实 direct 授权；Worker 不另行解释授权来源。
+`Store.WriteWorker` 使用独立 READ COMMITTED 事务，不进入会锁 project 的 WriteProject。service 先取得数据库 statement_timestamp，按输入 task ID 的主键集合批量读取任务，JOIN store 的 canonical `projectAccessRelation` 及项目名，排除软删除记录。准入关系在同一语句内按认证 userId 筛选，计算当前 owner Team role 与 direct grant role 的最大值；只有继承访问也具有相同可见资格。Worker 不另行解释授权来源，不改写任何 grant。
 
 按已准入的 task IDs 批量读取唯一 worker 属性，在 Go 中校验并解码。只有 project、task、claim、当前认证账号与 workerId 相符，claim active 且 task in_progress 才产生规范化任务项。属性 codec 负责完整 claim 格式及 Agent/控制模式，快照只提取需要的字段。缺失归属、普通完成、撤回或失权竞态省略引用；非法持久化属性使整个请求返回 400 invalid_input，数据库故障仍返回 500。
 

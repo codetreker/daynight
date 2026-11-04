@@ -108,7 +108,6 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
     void load(controller.current.signal);
   }, [access.ready, access.access?.effectiveRole, unavailable, members, invitations, loading, error, access.session]);
   const admin = !access.session.scope.isInvalidated && access.access?.effectiveRole === 'admin';
-  const adminCount = members?.filter((member) => member.directGrant?.role === 'admin').length;
   const grantBlocked = grantIssue !== null && !grantIssue.observed;
   const participantIdentity = (member: ProjectParticipant) => ({ ...member.profile, userId: member.userId });
   const open = (next: MemberDialog) => { if ((next.kind === 'role' || next.kind === 'remove') && grantIssueRef.current !== null && !grantIssueRef.current.observed) return; setDialogError(null); setDialog(next); void access.session.revalidate(); };
@@ -131,7 +130,13 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
         await removeMember(projectId, action.member.userId, { version: action.member.directGrant!.version, expectedUserId: user.id }, signal, access.session.scope.principalMismatch);
         if (signal.aborted) return;
         callbacks.current.onMembershipChange?.();
-        if (action.member.userId === user.id) { setDialog(null); onRemoved(); return; }
+        if (action.member.userId === user.id) {
+          setDialog(null);
+          await access.session.revalidate();
+          if (signal.aborted || access.session.scope.isInvalidated) return;
+          if (access.session.snapshot().status === 'unavailable') { onRemoved(); return; }
+          if (access.session.snapshot().status !== 'ready') return;
+        }
       } else if (action.kind === 'invite') {
         const result = await createInvitation(projectId, signal);
         if (signal.aborted) return;
@@ -180,11 +185,10 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
         <div className="row head" aria-hidden="true"><span>{m.memberColumn}</span><span>{m.roleColumn}</span><span>{m.actionColumn}</span></div>
         {members.map((member) => {
           const grant = member.directGrant;
-          const lastAdmin = grant?.role === 'admin' && adminCount === 1;
           const identity = participantIdentity(member);
-          return <div className="row" key={member.userId}><Identity user={identity} self={member.userId === user.id} /><div>{admin && grant !== null ? <select className="role-select" aria-label={m.roleLabel({ name: identityName(identity) })} aria-describedby={lastAdmin ? 'last-admin-note' : undefined} disabled={lastAdmin || pending || !access.ready || grantBlocked} value={grant.role} onChange={(event) => open({ kind: 'role', member, role: event.target.value as 'admin' | 'member' })}><option value="member">{common.roleMember}</option><option value="admin">{common.roleAdmin}</option></select> : <span className={`badge${member.effectiveRole === 'admin' ? ' admin' : ''}`}>{member.effectiveRole === 'admin' ? common.roleAdmin : common.roleMember}</span>}</div><div className="actions">{admin && grant !== null ? <button className="button quiet" type="button" aria-label={m.removeLabel({ name: identityName(identity) })} disabled={lastAdmin || pending || !access.ready || grantBlocked} title={lastAdmin ? m.lastAdminTitle : undefined} onClick={() => open({ kind: 'remove', member })}>{m.remove}</button> : <span className="muted small">—</span>}</div></div>;
+          return <div className="row" key={member.userId}><Identity user={identity} self={member.userId === user.id} /><div>{admin && grant !== null ? <select className="role-select" aria-label={m.roleLabel({ name: identityName(identity) })} disabled={pending || !access.ready || grantBlocked} value={grant.role} onChange={(event) => open({ kind: 'role', member, role: event.target.value as 'admin' | 'member' })}><option value="member">{common.roleMember}</option><option value="admin">{common.roleAdmin}</option></select> : <span className={`badge${member.effectiveRole === 'admin' ? ' admin' : ''}`}>{member.effectiveRole === 'admin' ? common.roleAdmin : common.roleMember}</span>}</div><div className="actions">{admin && grant !== null ? <button className="button quiet" type="button" aria-label={m.removeLabel({ name: identityName(identity) })} disabled={pending || !access.ready || grantBlocked} onClick={() => open({ kind: 'remove', member })}>{m.remove}</button> : <span className="muted small">—</span>}</div></div>;
         })}
-      </section><p className="muted small" id="last-admin-note">{m.lastAdminNote}</p>
+      </section>
       {admin && <section className="panel" aria-labelledby="invites-title"><div className="panel-heading"><div><h2 id="invites-title">{m.invitesTitle}</h2><p>{m.invitesDescription}</p></div></div>
         {invitations !== null && (invitations.length === 0 ? <div className="empty-inline">{m.invitesEmpty}</div> : invitations.map((invitation) => <div className="row" key={invitation.id}><div><div className="person-name">{m.newInvitation}</div><div className="person-meta">{common.createdAt} <DateLabel value={invitation.createdAt} /></div></div><div className="row-detail">{common.expiresAt} <DateLabel value={invitation.expiresAt} /></div><div className="actions"><button className="button quiet" type="button" aria-label={m.revokeLabel({ id: invitation.id })} disabled={pending || !access.ready} onClick={() => open({ kind: 'revoke', invitation })}>{common.revoke}</button></div></div>))}
       </section>}
