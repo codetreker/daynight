@@ -11,7 +11,7 @@ const row = (page: Page, id: string): Locator => root(page).locator(`.step-row[d
 type Write = { id: string; requestId: string; status: number };
 
 // Runs as part of the add scenario against the same production service and collection.
-export const exerciseRelativeInsert = async (page: Page, api: AuthenticatedAPI, projectId: string, taskId: string, path: string, writes: Write[], info: TestInfo): Promise<void> => {
+export const exerciseRelativeInsert = async (page: Page, api: AuthenticatedAPI, projectId: string, taskId: string, path: string, writes: Write[], info: TestInfo, pauseReads: () => () => void): Promise<void> => {
   const read = async () => {
     const response = await api.get(path); expect(response.status()).toBe(200);
     return parseTaskSteps(parseApiJson(await response.text()), projectId, taskId);
@@ -105,6 +105,39 @@ export const exerciseRelativeInsert = async (page: Page, api: AuthenticatedAPI, 
   current = await read();
   expect(current.steps.findIndex(step => step.id === recovered.id) + 1).toBe(current.steps.findIndex(step => step.id === '00000063'));
   await expect(row(page, recovered.id).locator('.step-disclosure')).toBeFocused();
+
+  // Both service writes complete before refresh, so the browser never sees the ID absent.
+  await chooseMenu('00000063', 'Add after');
+  await form(page).getByRole('textbox', { name: 'Title', exact: true }).fill('Replacement draft');
+  current = await read();
+  const releaseReads = pauseReads();
+  try {
+    const removedAgain = await api.delete(`${path}/00000063`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.version }) });
+    expect(removedAgain.status()).toBe(200);
+    const deletedState = parseTaskSteps(parseApiJson(await removedAgain.text()), projectId, taskId);
+    const replaced = await api.post(path, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: deletedState.version, id: '00000063', title: 'Replaced without an empty read' }) });
+    expect(replaced.status()).toBe(201);
+    const replacementState = parseTaskSteps(parseApiJson(await replaced.text()), projectId, taskId);
+    expect(replacementState.steps.find(step => step.id === '00000063')?.createdAt).not.toBe(current.steps.find(step => step.id === '00000063')?.createdAt);
+  } finally { releaseReads(); }
+  await expect(root(page).getByRole('button', { name: 'Refresh steps', exact: true })).toBeEnabled();
+  await root(page).getByRole('button', { name: 'Refresh steps', exact: true }).click();
+  await expect(row(page, '00000063')).toContainText('Replaced without an empty read');
+  await expect(form(page).getByRole('alert')).toContainText(/target step.*no longer available/i);
+  await expect(form(page).getByRole('textbox', { name: 'Title', exact: true })).toHaveValue('Replacement draft');
+  await expect(form(page).getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  await form(page).getByRole('button', { name: 'Choose target', exact: true }).click();
+  const replacementPicker = page.getByRole('dialog', { name: 'Select target', exact: true });
+  await replacementPicker.getByRole('searchbox', { name: 'Search name or ID' }).fill('00000063');
+  await replacementPicker.getByRole('radio', { name: /00000063/ }).click();
+  await replacementPicker.getByRole('button', { name: 'Select', exact: true }).click();
+  await expect(form(page).getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  await form(page).getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(form(page)).toHaveCount(0);
+  const finalInsertion = writes[8]!; expect(finalInsertion.status).toBe(201);
+  current = await read();
+  expect(current.steps.findIndex(step => step.id === finalInsertion.id)).toBe(current.steps.findIndex(step => step.id === '00000063') + 1);
+  await expect(row(page, finalInsertion.id).locator('.step-disclosure')).toBeFocused();
   await root(page).getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
   await page.setViewportSize({ width: 1440, height: 800 });
 };

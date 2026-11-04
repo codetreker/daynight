@@ -1,7 +1,7 @@
 import { readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, unpauseTask, withdrawWorkerClaim } from "../../api/client";
-import { addTaskStep, getTaskSteps, moveTaskStep, setTaskStepStatus, type AddStepInput, type StepPlacement, type StepStatus, type StepsResource } from "../../api/task-steps";
+import { addTaskStep, editTaskStep, getTaskSteps, moveTaskStep, setTaskStepStatus, type AddStepInput, type StepPlacement, type StepStatus, type StepsResource } from "../../api/task-steps";
 import { isTaskStale } from "./freshness";
 import type { ExecutionPlatform, GraphTask, TaskDetail, TaskStatus } from "../../api/types";
 import { TaskCacheError } from "../task-cache/database";
@@ -9,9 +9,9 @@ import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import type { SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
 import { materializeDetail, readCachedDetail, saveDetail, validateDetailSummary, type DetailAdmission } from "./detail-cache";
 
-export type TaskMutationOperation = { readonly action: "unpause"; readonly version: bigint } | { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "stepAdd"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepPosition"; readonly stepId: string; readonly placement: StepPlacement; readonly version: bigint; readonly requestId: string } | { readonly action: "stepStatus"; readonly stepId: string; readonly status: StepStatus; readonly version: bigint; readonly requestId: string } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
-const isStepOperation = (operation: TaskMutationOperation | null): operation is Extract<TaskMutationOperation, { action: "stepStatus" | "stepAdd" | "stepPosition" }> =>
-  operation?.action === "stepStatus" || operation?.action === "stepAdd" || operation?.action === "stepPosition";
+export type TaskMutationOperation = { readonly action: "unpause"; readonly version: bigint } | { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "stepAdd"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepEdit"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepPosition"; readonly stepId: string; readonly placement: StepPlacement; readonly version: bigint; readonly requestId: string } | { readonly action: "stepStatus"; readonly stepId: string; readonly status: StepStatus; readonly version: bigint; readonly requestId: string } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
+const isStepOperation = (operation: TaskMutationOperation | null): operation is Extract<TaskMutationOperation, { action: "stepStatus" | "stepAdd" | "stepEdit" | "stepPosition" }> =>
+  operation?.action === "stepStatus" || operation?.action === "stepAdd" || operation?.action === "stepEdit" || operation?.action === "stepPosition";
 const movedSteps = (resource: StepsResource, stepId: string, placement: StepPlacement): StepsResource["steps"] | null => {
   const from = resource.steps.findIndex((step) => step.id === stepId);
   if (from < 0) return null;
@@ -756,6 +756,16 @@ export class TaskDetailSessions {
     this.performMutation(projectId, taskId, { action: "stepAdd", stepId: target, version, requestId }, { id: target, title, description, status, version, ...(normalized === undefined ? {} : { placement: normalized }) });
     return requestId;
   }
+  editStep(projectId: string, taskId: string, stepId: string, title: string, description: string, version: bigint): string | null {
+    const entry = this.entry(projectId, taskId);
+    const target = stepId.toLowerCase();
+    if (!this.canSetStepStatus(projectId, taskId) || entry.steps.state.resource?.version !== version || !/^[0-9a-f]{8}$/.test(target) ||
+      !entry.steps.state.resource.steps.some((step) => step.id === target) || !/[^\p{White_Space}]/u.test(title) ||
+      [title, description].some((value) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value))) return null;
+    const requestId = crypto.randomUUID();
+    this.performMutation(projectId, taskId, { action: "stepEdit", stepId: target, version, requestId }, undefined, { title, description });
+    return requestId;
+  }
   moveStep(projectId: string, taskId: string, stepId: string, placement: StepPlacement, version: bigint): void {
     const entry = this.entry(projectId, taskId);
     const target = stepId.toLowerCase();
@@ -872,7 +882,7 @@ export class TaskDetailSessions {
       }
     }
   }
-  private performMutation(projectId: string, taskId: string, operation: TaskMutationOperation, addInput?: AddStepInput): void {
+  private performMutation(projectId: string, taskId: string, operation: TaskMutationOperation, addInput?: AddStepInput, editInput?: { readonly title: string; readonly description: string }): void {
     const entry = this.entry(projectId, taskId);
     const previous = entry.state.detail!;
     const previousSteps = isStepOperation(operation) ? entry.steps.state.resource : null;
@@ -899,6 +909,7 @@ export class TaskDetailSessions {
       const moved = operation.action === "stepPosition" && previousSteps !== null ? movedSteps(previousSteps, operation.stepId, operation.placement) : null;
       const changed = operation.action === "stepPosition" ? moved === null || moved.some((step, index) => step.id !== previousSteps!.steps[index]?.id)
         : operation.action === "stepStatus" ? previousSteps?.steps.find((step) => step.id === operation.stepId)?.status !== operation.status
+        : operation.action === "stepEdit" ? previousSteps?.steps.find((step) => step.id === operation.stepId)?.title !== editInput!.title || previousSteps?.steps.find((step) => step.id === operation.stepId)?.description !== editInput!.description
         : operation.action === "status" ? previous.status !== operation.status
         : operation.action === "assignedTo" ? previous.assignedTo !== operation.assignedTo : true;
       const committedVersion = operation.version + (changed ? 1n : 0n);
@@ -925,6 +936,8 @@ export class TaskDetailSessions {
               ? setTaskStepStatus(projectId, taskId, operation.stepId, operation.status, operation.version, signal, admission, operation.requestId)
               : operation.action === "stepAdd"
                 ? addTaskStep(projectId, taskId, addInput!, signal, admission, operation.requestId)
+                : operation.action === "stepEdit"
+                  ? editTaskStep(projectId, taskId, operation.stepId, editInput!.title, editInput!.description, operation.version, signal, admission, operation.requestId)
                 : moveTaskStep(projectId, taskId, operation.stepId, operation.placement, operation.version, signal, admission, operation.requestId);
           });
           if (response === null) return;
@@ -936,8 +949,9 @@ export class TaskDetailSessions {
               ? result.version === committedVersion && result.steps.length === previousSteps!.steps.length + 1 && sameSteps(previousSteps!, { ...result, steps: result.steps.filter((step) => step.id !== operation.stepId) })
               : expected !== null && result.version === committedVersion && result.steps.length === expected.length && result.steps.every((step, index) => {
                 const old = expected[index]!;
-                return step.id === old.id && step.title === old.title && step.description === old.description && step.createdAt === old.createdAt &&
-                  (operation.action === "stepStatus" && step.id === operation.stepId ? step.status === operation.status && (changed || step.updatedAt === old.updatedAt) : step.status === old.status && step.updatedAt === old.updatedAt);
+                const edited = operation.action === "stepEdit" && step.id === operation.stepId;
+                return step.id === old.id && step.title === (edited ? editInput!.title : old.title) && step.description === (edited ? editInput!.description : old.description) && step.createdAt === old.createdAt &&
+                  (operation.action === "stepStatus" && step.id === operation.stepId ? step.status === operation.status && (changed || step.updatedAt === old.updatedAt) : step.status === old.status && (edited && changed || step.updatedAt === old.updatedAt));
               });
             if (!valid) throw new ApiError("protocol");
             validated = true;

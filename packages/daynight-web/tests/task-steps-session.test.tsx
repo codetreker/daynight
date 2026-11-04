@@ -760,6 +760,52 @@ it.each(["before", "after"] as const)("admits an exact %s insertion through the 
   expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual(ordered);
 });
 
+it.each([true, false])("validates atomic content edits and preserves other rows, including no-op %#", async (changed) => {
+  const scope = await seed(); const session = await open(scope); const write = deferred<Response>(); let submitted = false;
+  const other = { ...item, id: "00000002" };
+  const updated = changed ? { ...item, title: "Changed", description: "" } : item;
+  const version = changed ? 6n : 5n;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PATCH") { submitted = true; return write.promise; }
+    return Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource(submitted ? version : 5n, submitted ? [updated, other] : [item, other]) : body(submitted ? version : 5n), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session);
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  const token = session.editStep(projectId, taskId, item.id, updated.title, updated.description, 5n);
+  expect(token).toMatch(/^[0-9a-f-]{36}$/); session.setStatus(projectId, taskId, "done", 5n);
+  expect(session.editStep(projectId, taskId, other.id, "Other", "", 5n)).toBeNull();
+  await waitFor(() => expect(submitted).toBe(true));
+  expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual([item, other]);
+  write.resolve(resourceResponse(resource(version, [updated, other]), TEST_VIEWER_ID));
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ operation: { action: "stepEdit", stepId: item.id, requestId: token }, phase: "confirmed" }));
+  if (changed) { await apply(scope, body(version)); session.observe(projectId, taskId, node(scope)); }
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual([updated, other]);
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PATCH")).toHaveLength(1);
+});
+
+it.each(["conflict", "unknown", "altered-neighbor", "no-op-timestamp"] as const)("reconciles content edit %s without replay or changing the baseline", async (outcome) => {
+  const scope = await seed(); const session = await open(scope); let submitted = false;
+  const other = { ...item, id: "00000002" };
+  const title = outcome === "no-op-timestamp" ? item.title : "Changed";
+  const description = outcome === "no-op-timestamp" ? item.description : "";
+  const bad = outcome === "no-op-timestamp" ? [{ ...item, updatedAt: "2026-10-22T10:01:00Z" }, other] : [{ ...item, title, description }, { ...other, status: "done" as const }];
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PATCH") {
+      submitted = true;
+      if (outcome === "conflict") return Promise.resolve(failure(409, "version_conflict"));
+      if (outcome === "unknown") return Promise.reject(new Error("Offline"));
+      return Promise.resolve(resourceResponse(resource(outcome === "no-op-timestamp" ? 5n : 6n, bad), TEST_VIEWER_ID));
+    }
+    return Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource(5n, [item, other]) : body(), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  const token = session.editStep(projectId, taskId, item.id, title, description, 5n);
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ operation: { action: "stepEdit", requestId: token }, phase: "reconciled", reconciledFrom: outcome === "conflict" ? "conflict" : "unknown" }));
+  expect(submitted).toBe(true); expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual([item, other]);
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PATCH")).toHaveLength(1);
+});
+
 it("reconciles an unknown append against its original identity without replay or attributing existence", async () => {
   const scope = await seed(); const session = await open(scope); let submitted = false; let failed = false;
   const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {

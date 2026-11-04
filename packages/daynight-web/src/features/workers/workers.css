@@ -11,7 +11,8 @@
 .worker-platform { font-size: 11px; color: var(--muted); margin: 7px 0 17px; }
 .worker-workload { font-size: 12px; color: #4f5c73; margin-bottom: 20px; overflow-wrap: anywhere; }
 .worker-card-footer { border-top: 1px solid #eef0f4; margin-top: auto; padding-top: 16px; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: flex-end; font-size: 11px; color: var(--muted); }
-.worker-last-time { display: block; color: #546177; margin-top: 3px; }
+.worker-last-report { white-space: nowrap; }
+.worker-last-time { color: #546177; }
 .worker-open { color: var(--indigo); display: inline-flex; gap: 4px; align-items: center; }
 .worker-status-badge { display: inline-flex; align-items: center; gap: 6px; white-space: normal; font-size: 11px; padding: 4px 9px; border-radius: 20px; font-weight: 500; line-height: 1.45; }
 .worker-status-badge::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }

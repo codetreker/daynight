@@ -12,9 +12,59 @@ import { StepStatusMenu } from "./StepStatusMenu";
 import "../../../styles/task-steps.css";
 
 const PAGE_SIZE = 100;
-type AddDraft = { id: string; title: string; description: string; status: StepStatus; placement: "last" | "before" | "after"; anchorId: string | null; initialPlacement: "last" | "before" | "after"; initialAnchorId: string | null; requestId: string | null; confirmed: boolean; uncertain: boolean };
+type StepDraft = { kind: "add" | "edit"; id: string; title: string; description: string; status: StepStatus; originalTitle: string; originalDescription: string; originalCreatedAt: string | null; retired: boolean; placement: "last" | "before" | "after"; anchorId: string | null; anchorCreatedAt: string | null; initialPlacement: "last" | "before" | "after"; initialAnchorId: string | null; initialAnchorCreatedAt: string | null; requestId: string | null; confirmed: boolean; uncertain: boolean };
+const isDirty = (draft: StepDraft | null) => draft !== null && (draft.title !== draft.originalTitle || draft.description !== draft.originalDescription || draft.kind === "add" && (draft.status !== "todo" || draft.placement !== draft.initialPlacement || draft.anchorId !== draft.initialAnchorId || draft.anchorCreatedAt !== draft.initialAnchorCreatedAt) || draft.requestId !== null);
 const invalidText = (value: string) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
-const isDirty = (draft: AddDraft | null) => draft !== null && (draft.title !== "" || draft.description !== "" || draft.status !== "todo" || draft.requestId !== null || draft.placement !== draft.initialPlacement || draft.anchorId !== draft.initialAnchorId);
+// Textareas normalize CR and CRLF for display. Preserve untouched source spans when editing.
+type EditSelection = { start: number; end: number; inputType: string };
+type TextEdit = { start: number; removed: string; inserted: string };
+type TextHistory = { current: string; edits: TextEdit[]; index: number; size: number };
+const newHistory = (current: string): TextHistory => ({ current, edits: [], index: 0, size: 0 });
+const displayText = (value: string) => value.replace(/\r\n|\r/g, "\n");
+const preserveLineEndings = (source: string, value: string, selection: EditSelection | null): string => {
+  const display = displayText(source);
+  let prefix = 0;
+  const backward = selection?.start === selection?.end && selection?.inputType.startsWith("delete") && selection.inputType.endsWith("Backward");
+  const forward = selection?.start === selection?.end && selection?.inputType.startsWith("delete") && selection.inputType.endsWith("Forward");
+  const prefixLimit = selection ? Math.max(0, selection.start - (backward ? 1 : 0)) : display.length;
+  const suffixLimit = selection ? Math.max(0, display.length - selection.end - (forward ? 1 : 0)) : display.length;
+  while (prefix < prefixLimit && prefix < display.length && prefix < value.length && display[prefix] === value[prefix]) prefix++;
+  let suffix = 0;
+  while (suffix < suffixLimit && suffix < display.length - prefix && suffix < value.length - prefix && display[display.length - 1 - suffix] === value[value.length - 1 - suffix]) suffix++;
+  const offset = (end: number) => {
+    let raw = 0; let shown = 0;
+    while (shown < end) { if (source[raw] === "\r" && source[raw + 1] === "\n") raw++; raw++; shown++; }
+    return raw;
+  };
+  return source.slice(0, offset(prefix)) + value.slice(prefix, value.length - suffix) + source.slice(offset(display.length - suffix));
+};
+
+// Keep bounded edit deltas, so undo restores raw line endings without retaining a full document per keystroke.
+const editText = (history: TextHistory, source: string, value: string, selection: EditSelection | null): { value: string; blocked: boolean } => {
+  if (history.current !== source) Object.assign(history, newHistory(source));
+  if (selection?.inputType === "historyUndo" || selection?.inputType === "historyRedo") {
+    const undo = selection.inputType === "historyUndo";
+    let candidate = source; let index = history.index;
+    while (undo ? index > 0 : index < history.edits.length) {
+      const edit = history.edits[undo ? --index : index++]!;
+      const from = undo ? edit.inserted : edit.removed; const to = undo ? edit.removed : edit.inserted;
+      candidate = candidate.slice(0, edit.start) + to + candidate.slice(edit.start + from.length);
+      if (displayText(candidate) === value) { history.current = candidate; history.index = index; return { value: candidate, blocked: false }; }
+    }
+    return { value: source, blocked: true };
+  }
+  const result = preserveLineEndings(source, value, selection);
+  let start = 0; while (start < source.length && start < result.length && source[start] === result[start]) start++;
+  let suffix = 0; while (suffix < source.length - start && suffix < result.length - start && source[source.length - 1 - suffix] === result[result.length - 1 - suffix]) suffix++;
+  history.edits.splice(history.index);
+  // Copy deltas so a small slice does not retain a large source string in memory.
+  const copy = (text: string): string => JSON.parse(JSON.stringify(text)) as string;
+  history.edits.push({ start, removed: copy(source.slice(start, source.length - suffix)), inserted: copy(result.slice(start, result.length - suffix)) });
+  history.index = history.edits.length; history.current = result;
+  history.size = history.edits.reduce((total, edit) => total + edit.removed.length + edit.inserted.length, 0);
+  if (history.edits.length > 1000 || history.size > 4 * 1024 * 1024) Object.assign(history, newHistory(result));
+  return { value: result, blocked: false };
+};
 
 export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, confirmationOwner, confirmationFallback, onConfirmationChange, available = true }: {
   readonly projectId: string; readonly taskId: string; readonly active: boolean;
@@ -29,26 +79,43 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   const sessions = useTaskDetailSessions();
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
-  const [draft, setDraft] = useState<AddDraft | null>(null);
+  const [draft, setDraft] = useState<StepDraft | null>(null);
   const [preview, setPreview] = useState(false);
   const [discard, setDiscard] = useState(false);
+  const [switchTarget, setSwitchTarget] = useState<string | null>(null);
   const [invalidTitle, setInvalidTitle] = useState(false);
   const [invalidDescription, setInvalidDescription] = useState(false);
+  const [undoUnavailable, setUndoUnavailable] = useState(false);
   const [addedMissing, setAddedMissing] = useState(false);
   const [focusStep, setFocusStep] = useState<string | null>(null);
   const workspace = useRef<HTMLElement>(null);
   const addButton = useRef<HTMLButtonElement>(null);
-  const titleInput = useRef<HTMLInputElement>(null);
+  const titleInput = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
   const chooseTarget = useRef<HTMLButtonElement>(null);
   const [choosingTarget, setChoosingTarget] = useState(false);
   const [anchorNeedsDecision, setAnchorNeedsDecision] = useState(false);
   const rejectedAnchorRequest = useRef<string | null>(null);
-  useDirtyTaskDraft({ isDirty: () => isDirty(draft), discard: () => { setDraft(null); setDiscard(false); onConfirmationChange?.(false); } });
+  const descriptionInput = useRef<HTMLTextAreaElement>(null);
+  const titleHistory = useRef<TextHistory>(newHistory(""));
+  const descriptionHistory = useRef<TextHistory>(newHistory(""));
+  const titleSelection = useRef<EditSelection | null>(null);
+  const descriptionSelection = useRef<EditSelection | null>(null);
+  useLayoutEffect(() => {
+    const title = titleInput.current; const description = descriptionInput.current;
+    const capture = (element: HTMLInputElement | HTMLTextAreaElement, target: { current: EditSelection | null }) => (event: Event) => {
+      target.current = { start: element.selectionStart ?? 0, end: element.selectionEnd ?? 0, inputType: (event as InputEvent).inputType ?? "" };
+    };
+    const titleBefore = title && capture(title, titleSelection); const descriptionBefore = description && capture(description, descriptionSelection);
+    if (title && titleBefore) title.addEventListener("beforeinput", titleBefore);
+    if (description && descriptionBefore) description.addEventListener("beforeinput", descriptionBefore);
+    return () => { if (title && titleBefore) title.removeEventListener("beforeinput", titleBefore); if (description && descriptionBefore) description.removeEventListener("beforeinput", descriptionBefore); };
+  });
+  useDirtyTaskDraft({ isDirty: () => isDirty(draft), discard: () => { titleHistory.current = newHistory(""); descriptionHistory.current = newHistory(""); setDraft(null); setDiscard(false); onConfirmationChange?.(false); } });
   useEffect(() => () => { onConfirmationChange?.(false); }, [onConfirmationChange]);
   useLayoutEffect(() => { if (!available) { setDiscard(false); onConfirmationChange?.(false); } }, [available, onConfirmationChange]);
   useLayoutEffect(() => sessions.subscribe(projectId, taskId, () => {
     const mutation = sessions.snapshot(projectId, taskId).mutation;
-    if ((mutation.phase === "confirmed" && !mutation.reconciling && mutation.reconciliationError === null || mutation.phase === "unknown") && mutation.operation?.action === "stepAdd") {
+    if ((mutation.phase === "confirmed" && !mutation.reconciling && mutation.reconciliationError === null || mutation.phase === "unknown") && (mutation.operation?.action === "stepAdd" || mutation.operation?.action === "stepEdit")) {
       const requestId = mutation.operation.requestId;
       setDraft((current) => current !== null && current.requestId === requestId ? { ...current, confirmed: current.confirmed || mutation.phase === "confirmed", uncertain: current.uncertain || mutation.phase === "unknown" } : current);
     }
@@ -95,20 +162,20 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     : error.kind === "protocol" ? m.protocolError : error.status === 404 ? m.unavailable
       : error.status === 403 ? m.denied : m.requestFailed : m.requestFailed;
   const mutation = state.mutation;
-  const ownAdd = draft !== null && draft.requestId !== null && mutation.operation?.action === "stepAdd" && mutation.operation.requestId === draft.requestId ? mutation : null;
+  const ownAdd = draft !== null && draft.requestId !== null && (mutation.operation?.action === "stepAdd" || mutation.operation?.action === "stepEdit") && mutation.operation.requestId === draft.requestId ? mutation : null;
   const frozen = draft?.confirmed === true || ownAdd !== null && (ownAdd.phase === "pending" || ownAdd.phase === "unknown" || ownAdd.phase === "confirmed");
   const duplicateId = ownAdd?.phase === "refused" && ownAdd.error instanceof ApiError && ownAdd.error.code === "step_id_conflict";
   useEffect(() => {
-    if (ownAdd?.phase === "refused" && ownAdd.error instanceof ApiError && ownAdd.error.status === 404 && draft?.requestId && rejectedAnchorRequest.current !== draft.requestId) {
+    if (draft?.kind === "add" && ownAdd?.phase === "refused" && ownAdd.error instanceof ApiError && ownAdd.error.status === 404 && draft.requestId && rejectedAnchorRequest.current !== draft.requestId) {
       rejectedAnchorRequest.current = draft.requestId;
       setAnchorNeedsDecision(true);
     }
-  }, [ownAdd, draft?.requestId]);
+  }, [ownAdd, draft?.kind, draft?.requestId]);
   const dirty = isDirty(draft);
-  const closeDraft = () => { setDraft(null); setChoosingTarget(false); setDiscard(false); onConfirmationChange?.(false); setInvalidTitle(false); setInvalidDescription(false); setPreview(false); };
-  const cancelDraft = () => { if (dirty) { setDiscard(true); onConfirmationChange?.(true); } else { closeDraft(); addButton.current?.focus(); } };
+  const closeDraft = () => { titleHistory.current = newHistory(""); descriptionHistory.current = newHistory(""); setDraft(null); setChoosingTarget(false); setDiscard(false); setSwitchTarget(null); onConfirmationChange?.(false); setInvalidTitle(false); setInvalidDescription(false); setPreview(false); };
+  const cancelDraft = () => { if (dirty) { setDiscard(true); onConfirmationChange?.(true); } else { const target = draft?.kind === "edit" ? draft.id : ""; closeDraft(); setFocusStep(target); } };
   useEffect(() => {
-    if (draft === null || !draft.confirmed || resource === null || state.stale || state.error !== null) return;
+    if (draft === null || !draft.confirmed || resource === null || state.stale || state.error !== null || draft.kind === "edit" && (draft.retired || !resource.steps.some((step) => step.id === draft.id && step.createdAt === draft.originalCreatedAt))) return;
     const index = resource.steps.findIndex((step) => step.id === draft.id);
     if (index < 0) { setAddedMissing(true); setFocusStep(""); }
     else { setPage(Math.floor(index / PAGE_SIZE) + 1); setFocusStep(draft.id); }
@@ -119,7 +186,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     const target = focusStep === "" ? addButton.current : workspace.current?.querySelector<HTMLButtonElement>(`[data-step-id="${focusStep}"] .step-disclosure`);
     if (target) { target.focus(); setFocusStep(null); }
   }, [focusStep, currentPage, active, resource]);
-  const otherAdd = mutation.operation?.action === "stepAdd" && ownAdd === null ? mutation : null;
+  const otherAdd = (mutation.operation?.action === "stepAdd" || mutation.operation?.action === "stepEdit") && ownAdd === null ? mutation : null;
   const isPosition = mutation.operation?.action === "stepPosition";
   const stepMutation = mutation.operation?.action === "stepStatus" || isPosition ? mutation : null;
   const moving = resource?.steps.find((step) => step.id === movingId) ?? null;
@@ -152,16 +219,19 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     submittedMove.current = stepId;
     state.move(stepId, placement, resource.version);
   };
-  const startAdd = (placement: AddDraft["placement"], anchorId: string | null) => {
+  const startAdd = (placement: StepDraft["placement"], anchorId: string | null) => {
     if (draft !== null) return;
     if (placement === "last") setPage(pages);
     setPreview(false); setInvalidTitle(false); setInvalidDescription(false); setAddedMissing(false);
     setAnchorNeedsDecision(false);
-    setDraft({ id: crypto.randomUUID().slice(0, 8), title: "", description: "", status: "todo", placement, anchorId, initialPlacement: placement, initialAnchorId: anchorId, requestId: null, confirmed: false, uncertain: false });
+    titleHistory.current = newHistory(""); descriptionHistory.current = newHistory(""); setUndoUnavailable(false);
+    const anchorCreatedAt = resource?.steps.find((step) => step.id === anchorId)?.createdAt ?? null;
+    setDraft({ kind: "add", id: crypto.randomUUID().slice(0, 8), title: "", description: "", status: "todo", originalTitle: "", originalDescription: "", originalCreatedAt: null, retired: false, placement, anchorId, anchorCreatedAt, initialPlacement: placement, initialAnchorId: anchorId, initialAnchorCreatedAt: anchorCreatedAt, requestId: null, confirmed: false, uncertain: false });
   };
   const move = (stepId: string, index: number, action: MoveAction) => {
     if (resource === null) return;
     if (action === "addBefore" || action === "addAfter") { startAdd(action === "addBefore" ? "before" : "after", stepId); return; }
+    if (action === "edit") { selectEdit(stepId); return; }
     if (action === "relative") { setMovingId(stepId); return; }
     if (action === "first" || action === "last") submitMove(stepId, { position: action });
     else if (action === "up" && index > 0) submitMove(stepId, { before: resource.steps[index - 1]!.id });
@@ -169,7 +239,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   };
   const pendingStepId = mutation.operation?.action === "stepStatus" && mutation.phase === "pending" ? mutation.operation.stepId : null;
   const pendingMoveId = isPosition && mutation.phase === "pending" ? mutation.operation.stepId : null;
-  const unresolved = stepMutation?.phase === "unknown" || stepMutation?.phase === "conflict" || stepMutation?.reconciliationError != null || mutation.operation?.action === "stepAdd" && (mutation.phase === "unknown" || mutation.phase === "conflict" || mutation.reconciliationError !== null);
+  const unresolved = stepMutation?.phase === "unknown" || stepMutation?.phase === "conflict" || stepMutation?.reconciliationError != null || (mutation.operation?.action === "stepAdd" || mutation.operation?.action === "stepEdit") && (mutation.phase === "unknown" || mutation.phase === "conflict" || mutation.reconciliationError !== null);
   const mutationError = stepMutation?.error;
   const resolvedConflict = stepMutation?.phase === "reconciled" && stepMutation.reconciledFrom === "conflict";
   const resolvedUnknown = stepMutation?.phase === "reconciled" && stepMutation.reconciledFrom === "unknown";
@@ -177,8 +247,65 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
     : mutationError.code === "version_exhausted" ? m.statusExhausted : mutationError.code === "steps_limit_exceeded" ? m.statusCapacity
       : mutationError.code === "invalid_input" ? isPosition ? m.moveInvalid : m.statusInvalid : isPosition ? m.moveRefused : m.statusRefused : isPosition ? m.moveRefused : m.statusRefused;
   const anchor = draft?.anchorId === null || draft?.anchorId === undefined ? null : resource?.steps.find((step) => step.id === draft.anchorId) ?? null;
-  const missingAnchor = draft !== null && draft.placement !== "last" && draft.anchorId !== null && anchor === null && resource !== null;
+  const missingAnchor = draft?.kind === "add" && draft.placement !== "last" && draft.anchorId !== null && resource !== null && (anchor === null || anchor.createdAt !== draft.anchorCreatedAt);
   useEffect(() => { if (missingAnchor) setAnchorNeedsDecision(true); }, [missingAnchor]);
+
+  useLayoutEffect(() => { if (draft?.kind === "edit" && active) titleInput.current?.focus(); }, [draft?.kind, draft?.id, active]);
+  const currentDraftStep = draft?.kind === "edit" ? resource?.steps.find((step) => step.id === draft.id) : undefined;
+  const editTargetAvailable = draft?.kind === "edit" && !draft.retired && currentDraftStep?.createdAt === draft.originalCreatedAt;
+  useEffect(() => {
+    if (draft?.kind === "edit" && !draft.retired && resource !== null && !state.stale && state.error === null && !editTargetAvailable) {
+      setDraft((current) => current === draft ? { ...current, retired: true, confirmed: false } : current);
+    }
+  }, [draft, resource, state.stale, state.error, editTargetAvailable]);
+  const beginEdit = (stepId: string) => {
+    const step = resource?.steps.find((item) => item.id === stepId);
+    if (!step) return;
+    titleHistory.current = newHistory(step.title); descriptionHistory.current = newHistory(step.description); setUndoUnavailable(false);
+    setDraft({ kind: "edit", id: step.id, title: step.title, description: step.description, status: step.status, originalTitle: step.title, originalDescription: step.description, originalCreatedAt: step.createdAt, retired: false, placement: "last", anchorId: null, anchorCreatedAt: null, initialPlacement: "last", initialAnchorId: null, initialAnchorCreatedAt: null, requestId: null, confirmed: false, uncertain: false });
+    setExpanded((previous) => new Set(previous).add(step.id));
+    setPreview(false); setInvalidTitle(false); setInvalidDescription(false); setAddedMissing(false);
+  };
+  const selectEdit = (stepId: string) => {
+    if (draft?.id === stepId && draft.kind === "edit" && !draft.retired && currentDraftStep?.createdAt === draft.originalCreatedAt) { titleInput.current?.focus(); return; }
+    if (dirty) { setSwitchTarget(stepId); setDiscard(true); onConfirmationChange?.(true); }
+    else beginEdit(stepId);
+  };
+  const editor = draft !== null && <form className={draft.kind === "edit" ? "step-add-form step-edit-form" : "step-add-form"} onSubmit={(event) => {
+      event.preventDefault();
+      if (!/[^\p{White_Space}]/u.test(draft.title) || invalidText(draft.title)) { setInvalidTitle(true); titleInput.current?.focus(); return; }
+      if (invalidText(draft.description)) { setInvalidDescription(true); setPreview(false); return; }
+      if (resource === null || !state.canAdd || frozen || draft.kind === "edit" && !editTargetAvailable || draft.kind === "add" && (anchorNeedsDecision || draft.placement !== "last" && (draft.anchorId === null || missingAnchor))) return;
+      const placement = draft.placement === "last" ? undefined : draft.placement === "before" ? { before: draft.anchorId! } : { after: draft.anchorId! };
+      const requestId = draft.kind === "edit" ? state.edit(draft.id, draft.title, draft.description, resource.version) : placement === undefined ? state.add(draft.id, draft.title, draft.description, draft.status, resource.version) : state.add(draft.id, draft.title, draft.description, draft.status, resource.version, placement);
+      if (requestId !== null) setDraft({ ...draft, requestId });
+    }} onKeyDown={(event) => { if (event.key === "Escape" && !discard) { event.preventDefault(); event.stopPropagation(); cancelDraft(); } }}>
+      <label>{m.addTitle}{draft.kind === "edit" ? <textarea className="step-title-editor" ref={titleInput as RefObject<HTMLTextAreaElement | null>} autoFocus value={draft.title} disabled={frozen} aria-invalid={invalidTitle} aria-describedby={invalidTitle ? `${id}-title-error` : undefined} onChange={(event) => { const result = editText(titleHistory.current, draft.title, event.currentTarget.value, titleSelection.current); setDraft({ ...draft, title: result.value }); setUndoUnavailable(result.blocked); titleSelection.current = null; setInvalidTitle(false); }} /> : <input ref={titleInput as RefObject<HTMLInputElement | null>} autoFocus value={draft.title} disabled={frozen} aria-invalid={invalidTitle} aria-describedby={invalidTitle ? `${id}-title-error` : undefined} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }); setInvalidTitle(false); }} />}</label>
+      {undoUnavailable && <p className="step-field-error" role="alert">{m.undoUnavailable}</p>}
+      {invalidTitle && <p className="step-field-error" id={`${id}-title-error`} role="alert">{invalidText(draft.title) ? m.invalidText : m.titleRequired}</p>}
+      {draft.kind === "add" && <label>{m.initialStatus}<select value={draft.status} disabled={frozen} onChange={(event) => setDraft({ ...draft, status: event.currentTarget.value as StepStatus })}>{(["todo", "in_progress", "done", "skipped"] as const).map((value) => <option key={value} value={value}>{m.status[value]}</option>)}</select></label>}
+      {draft.kind === "add" && <label>{m.placement}<select value={draft.placement} disabled={frozen} onChange={(event) => { const placement = event.currentTarget.value as StepDraft["placement"]; setDraft({ ...draft, placement, anchorId: placement === "last" ? null : draft.anchorId, anchorCreatedAt: placement === "last" ? null : draft.anchorCreatedAt }); if (placement === "last") setAnchorNeedsDecision(false); }}><option value="last">{m.addEnd}</option><option value="before">{m.before}</option><option value="after">{m.after}</option></select></label>}
+      {draft.kind === "add" && draft.placement !== "last" && <div className="step-add-target">{anchor !== null && <div className="step-target-selected"><span>{m.target}</span><strong>{anchor.title}</strong><code className="step-id">{anchor.id}</code></div>}{(missingAnchor || anchorNeedsDecision && ownAdd?.phase !== "refused") && <p role="alert">{m.targetMissing} <code>{draft.anchorId}</code></p>}<button ref={chooseTarget} className="button" type="button" disabled={frozen || resource === null} onClick={() => setChoosingTarget(true)}>{m.chooseTarget}</button></div>}
+      <div className="step-editor-heading"><span>{m.description}</span><div><button type="button" aria-pressed={!preview} onClick={() => setPreview(false)}>{m.edit}</button><button type="button" aria-pressed={preview} onClick={() => setPreview(true)}>{m.preview}</button></div></div>
+      <textarea ref={descriptionInput} aria-label={m.description} aria-invalid={invalidDescription} aria-describedby={invalidDescription ? `${id}-description-error` : undefined} hidden={preview} value={draft.description} disabled={frozen} onChange={(event) => { const result = editText(descriptionHistory.current, draft.description, event.currentTarget.value, descriptionSelection.current); setDraft({ ...draft, description: result.value }); setUndoUnavailable(result.blocked); descriptionSelection.current = null; setInvalidDescription(false); }} />
+      {invalidDescription && <p className="step-field-error" id={`${id}-description-error`} role="alert">{m.invalidText}</p>}
+      {preview && <div className="step-add-preview">{draft.description === "" ? <p>{m.noDescription}</p> : renderMarkdown(draft.description)}</div>}
+      {draft.kind === "edit" && currentDraftStep && (ownAdd?.phase === "reconciled" || currentDraftStep.title !== draft.originalTitle || currentDraftStep.description !== draft.originalDescription) && <div className="step-current-content"><strong>{m.currentContent}</strong><p>{currentDraftStep.title}</p>{currentDraftStep.description === "" ? <p>{m.noDescription}</p> : renderMarkdown(currentDraftStep.description)}</div>}
+      {draft.kind === "edit" && resource !== null && !editTargetAvailable && <div className="steps-error" role="alert">{m.editMissing}</div>}
+      {draft.uncertain && ownAdd === null && <div className="steps-error" role="alert"><p>{m.addUnknownReconciled} <code>{draft.id}</code></p></div>}
+      {ownAdd !== null && (ownAdd.phase === "unknown" || ownAdd.phase === "conflict" || ownAdd.phase === "reconciled" || ownAdd.phase === "refused" || ownAdd.reconciliationError !== null) && <div className="steps-error" role="alert">
+        {ownAdd.phase === "unknown" && <p>{draft.kind === "edit" ? m.editUnknown : m.addUnknown} <code>{draft.id}</code></p>}{ownAdd.phase === "conflict" && <p>{m.addConflict}</p>}
+        {ownAdd.phase === "reconciled" && <p>{ownAdd.reconciledFrom === "unknown" ? m.addUnknownReconciled : m.addConflictReconciled} {ownAdd.reconciledFrom === "unknown" && <code>{draft.id}</code>}</p>}
+        {ownAdd.phase === "refused" && <p>{draft.kind === "edit" && ownAdd.error instanceof ApiError && ownAdd.error.status === 404 ? m.editMissing : draft.kind === "edit" ? ownAdd.error instanceof ApiError && ownAdd.error.code === "steps_limit_exceeded" ? m.statusCapacity : ownAdd.error instanceof ApiError && ownAdd.error.code === "version_exhausted" ? m.statusExhausted : ownAdd.error instanceof ApiError && ownAdd.error.status === 403 ? m.statusDenied : ownAdd.error instanceof ApiError && ownAdd.error.code === "invalid_input" ? m.addInvalid : m.editRefused : duplicateId ? m.duplicateId : ownAdd.error instanceof ApiError && ownAdd.error.status === 404 ? m.addMissing : ownAdd.error instanceof ApiError && ownAdd.error.code === "steps_limit_exceeded" ? m.statusCapacity : ownAdd.error instanceof ApiError && ownAdd.error.code === "version_exhausted" ? m.statusExhausted : ownAdd.error instanceof ApiError && ownAdd.error.code === "invalid_input" ? m.addInvalid : ownAdd.error instanceof ApiError && ownAdd.error.status === 403 ? m.addDenied : m.addRefused}</p>}
+        {ownAdd.phase === "refused" && ownAdd.error instanceof ApiError && ownAdd.error.status === 404 && <button className="button" type="button" disabled={busy || !active} onClick={state.retry}>{m.checkState}</button>}
+        {duplicateId && !draft.uncertain && <button className="button" type="button" onClick={() => setDraft({ ...draft, id: crypto.randomUUID().slice(0, 8), requestId: null })}>{m.chooseId}</button>}
+        {ownAdd.error instanceof ApiError && ownAdd.error.stepsLimit !== undefined && <p>{m.capacityDetails(format.number(ownAdd.error.stepsLimit.encodedBytes), format.number(ownAdd.error.stepsLimit.maxEncodedBytes))}</p>}
+        {ownAdd.error instanceof ApiError && ownAdd.error.requestId !== null && <p className="request-id">{messages.common.requestId} <code>{ownAdd.error.requestId}</code></p>}
+        {ownAdd.reconciliationError !== null && <p>{m.checkFailed}</p>}
+        {(ownAdd.phase === "unknown" || ownAdd.phase === "conflict" || ownAdd.reconciliationError !== null) && <button className="button" type="button" disabled={ownAdd.reconciling} onClick={state.reconcile}>{ownAdd.reconciling ? m.checking : m.checkState}</button>}
+      </div>}
+      <div className="step-add-actions"><button className="button" type="button" onClick={cancelDraft}>{m.cancel}</button><button className="button primary" type="submit" disabled={!state.canAdd || frozen || duplicateId || draft.kind === "edit" && !editTargetAvailable || draft.kind === "add" && (anchorNeedsDecision || draft.placement !== "last" && (draft.anchorId === null || missingAnchor))} aria-busy={ownAdd?.phase === "pending" || ownAdd?.reconciling}>{ownAdd?.phase === "pending" && <span className="spinner" aria-hidden="true" />}{m.save}</button></div>
+    </form>;
 
   return <section className="steps-workspace" aria-label={m.title} ref={workspace}>
     <div className="steps-toolbar">
@@ -195,6 +322,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
       {error instanceof ApiError && error.requestId !== null && <p className="request-id">{messages.common.requestId} <code>{error.requestId}</code></p>}
       <button className="button" type="button" disabled={busy || !active || unresolved} onClick={state.retry}>{m.retry}</button>
     </div>}
+    {draft?.kind === "edit" && resource !== null && editTargetAvailable && (!resource.steps.slice(start, start + PAGE_SIZE).some((step) => step.id === draft.id) || !expanded.has(draft.id)) && <button className="button" type="button" onClick={() => { const index = resource.steps.findIndex((step) => step.id === draft.id); setPage(Math.floor(index / PAGE_SIZE) + 1); setExpanded((previous) => new Set(previous).add(draft.id)); }}>{m.returnEditing}</button>}
     {addedMissing && <div className="steps-error" role="status">{m.addedMissing}</div>}
     {stepMutation !== null && (unresolved || resolvedConflict || resolvedUnknown || stepMutation.phase === "refused") && <div className="steps-error" role="alert">
       {stepMutation.phase === "unknown" && <p>{isPosition ? m.moveUnknown : m.unknown}</p>}
@@ -209,7 +337,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
       {stepMutation.phase === "refused" && mutationError instanceof ApiError && mutationError.status === 404 && <button className="button" type="button" disabled={busy || !active} onClick={state.retry}>{m.checkState}</button>}
     </div>}
     {otherAdd !== null && (otherAdd.phase === "unknown" || otherAdd.phase === "conflict" || otherAdd.phase === "reconciled" || otherAdd.reconciliationError !== null) && <div className="steps-error" role="alert">
-      <p>{otherAdd.phase === "unknown" ? m.addUnknown : otherAdd.phase === "conflict" ? m.addConflict : otherAdd.reconciledFrom === "unknown" ? m.addUnknownReconciled : m.addConflictReconciled} <code>{otherAdd.operation?.action === "stepAdd" && otherAdd.operation.stepId}</code></p>
+      <p>{otherAdd.phase === "unknown" ? (otherAdd.operation?.action === "stepEdit" ? m.editUnknown : m.addUnknown) : otherAdd.phase === "conflict" ? m.addConflict : otherAdd.reconciledFrom === "unknown" ? m.addUnknownReconciled : m.addConflictReconciled} <code>{(otherAdd.operation?.action === "stepAdd" || otherAdd.operation?.action === "stepEdit") && otherAdd.operation.stepId}</code></p>
       {otherAdd.reconciliationError !== null && <p>{m.checkFailed}</p>}
       {(otherAdd.phase === "unknown" || otherAdd.phase === "conflict" || otherAdd.reconciliationError !== null) && <button className="button" type="button" disabled={otherAdd.reconciling} onClick={state.reconcile}>{otherAdd.reconciling ? m.checking : m.checkState}</button>}
     </div>}
@@ -233,50 +361,19 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
               <span className="step-chevron" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m6 3 5 5-5 5" /></svg></span>
               <span className="step-number" aria-hidden="true">{format.number(start + index + 1)}</span><span className="step-title">{step.title}</span>
             </button>
-            <div className="step-controls"><StepStatusMenu step={step} available={state.canSetStatus} busy={pendingStepId === step.id} onSelect={(status) => state.setStatus(step.id, status, resource.version)} /><code className="step-id">{step.id}</code><StepMoveMenu step={step} index={start + index} total={total} available={state.canMove} canAdd={active && draft === null} busy={pendingMoveId === step.id} onSelect={(action) => move(step.id, start + index, action)} /></div>
+            <div className="step-controls"><StepStatusMenu step={step} available={state.canSetStatus} busy={pendingStepId === step.id} onSelect={(status) => state.setStatus(step.id, status, resource.version)} /><code className="step-id">{step.id}</code><StepMoveMenu step={step} index={start + index} total={total} available={state.canMove} canAdd={active && draft === null} canEdit={active} busy={pendingMoveId === step.id} onSelect={(action) => move(step.id, start + index, action)} /></div>
           </div>
           <div id={bodyId} className="step-detail" hidden={!open}>
-            {open && <>{step.description === "" ? <p className="step-detail-empty">{m.noDescription}</p> : renderMarkdown(step.description)}
-              <dl className="step-metadata"><div><dt>{m.created}</dt><dd><time dateTime={step.createdAt}>{format.dateTime(step.createdAt)}</time></dd></div><div><dt>{m.updated}</dt><dd><time dateTime={step.updatedAt}>{format.dateTime(step.updatedAt)}</time></dd></div></dl>
+            {open && <>{draft?.kind === "edit" && draft.id === step.id && editTargetAvailable ? editor : <><button className="button" type="button" onClick={() => selectEdit(step.id)}>{m.editStep}</button>{step.description === "" ? <p className="step-detail-empty">{m.noDescription}</p> : renderMarkdown(step.description)}
+              <dl className="step-metadata"><div><dt>{m.created}</dt><dd><time dateTime={step.createdAt}>{format.dateTime(step.createdAt)}</time></dd></div><div><dt>{m.updated}</dt><dd><time dateTime={step.updatedAt}>{format.dateTime(step.updatedAt)}</time></dd></div></dl></>}
             </>}
           </div>
         </li>;
       })}
     </ol>}
-    {draft !== null && <form className="step-add-form" onSubmit={(event) => {
-      event.preventDefault();
-      if (!/[^\p{White_Space}]/u.test(draft.title) || invalidText(draft.title)) { setInvalidTitle(true); titleInput.current?.focus(); return; }
-      if (invalidText(draft.description)) { setInvalidDescription(true); setPreview(false); return; }
-      if (resource === null || !state.canAdd || frozen || anchorNeedsDecision || draft.placement !== "last" && (draft.anchorId === null || missingAnchor)) return;
-      const placement = draft.placement === "last" ? undefined : draft.placement === "before" ? { before: draft.anchorId! } : { after: draft.anchorId! };
-      const requestId = placement === undefined ? state.add(draft.id, draft.title, draft.description, draft.status, resource.version) : state.add(draft.id, draft.title, draft.description, draft.status, resource.version, placement);
-      if (requestId !== null) setDraft({ ...draft, requestId });
-    }} onKeyDown={(event) => { if (event.key === "Escape" && !discard) { event.preventDefault(); event.stopPropagation(); cancelDraft(); } }}>
-      <label>{m.addTitle}<input ref={titleInput} autoFocus value={draft.title} disabled={frozen} aria-invalid={invalidTitle} aria-describedby={invalidTitle ? `${id}-title-error` : undefined} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }); setInvalidTitle(false); }} /></label>
-      {invalidTitle && <p className="step-field-error" id={`${id}-title-error`} role="alert">{invalidText(draft.title) ? m.invalidText : m.titleRequired}</p>}
-      <label>{m.initialStatus}<select value={draft.status} disabled={frozen} onChange={(event) => setDraft({ ...draft, status: event.currentTarget.value as StepStatus })}>{(["todo", "in_progress", "done", "skipped"] as const).map((value) => <option key={value} value={value}>{m.status[value]}</option>)}</select></label>
-      <label>{m.placement}<select value={draft.placement} disabled={frozen} onChange={(event) => { const placement = event.currentTarget.value as AddDraft["placement"]; setDraft({ ...draft, placement, anchorId: placement === "last" ? null : draft.anchorId }); if (placement === "last") setAnchorNeedsDecision(false); }}><option value="last">{m.addEnd}</option><option value="before">{m.before}</option><option value="after">{m.after}</option></select></label>
-      {draft.placement !== "last" && <div className="step-add-target">{anchor !== null && <div className="step-target-selected"><span>{m.target}</span><strong>{anchor.title}</strong><code className="step-id">{anchor.id}</code></div>}{(missingAnchor || anchorNeedsDecision && ownAdd?.phase !== "refused") && <p role="alert">{m.targetMissing} <code>{draft.anchorId}</code></p>}<button ref={chooseTarget} className="button" type="button" disabled={frozen || resource === null} onClick={() => setChoosingTarget(true)}>{m.chooseTarget}</button></div>}
-      <div className="step-editor-heading"><span>{m.description}</span><div><button type="button" aria-pressed={!preview} onClick={() => setPreview(false)}>{m.edit}</button><button type="button" aria-pressed={preview} onClick={() => setPreview(true)}>{m.preview}</button></div></div>
-      <textarea aria-label={m.description} aria-invalid={invalidDescription} aria-describedby={invalidDescription ? `${id}-description-error` : undefined} hidden={preview} value={draft.description} disabled={frozen} onChange={(event) => { setDraft({ ...draft, description: event.currentTarget.value }); setInvalidDescription(false); }} />
-      {invalidDescription && <p className="step-field-error" id={`${id}-description-error`} role="alert">{m.invalidText}</p>}
-      {preview && <div className="step-add-preview">{draft.description === "" ? <p>{m.noDescription}</p> : renderMarkdown(draft.description)}</div>}
-      {draft.uncertain && ownAdd === null && <div className="steps-error" role="alert"><p>{m.addUnknownReconciled} <code>{draft.id}</code></p></div>}
-      {ownAdd !== null && (ownAdd.phase === "unknown" || ownAdd.phase === "conflict" || ownAdd.phase === "reconciled" || ownAdd.phase === "refused" || ownAdd.reconciliationError !== null) && <div className="steps-error" role="alert">
-        {ownAdd.phase === "unknown" && <p>{m.addUnknown} <code>{draft.id}</code></p>}{ownAdd.phase === "conflict" && <p>{m.addConflict}</p>}
-        {ownAdd.phase === "reconciled" && <p>{ownAdd.reconciledFrom === "unknown" ? m.addUnknownReconciled : m.addConflictReconciled} {ownAdd.reconciledFrom === "unknown" && <code>{draft.id}</code>}</p>}
-        {ownAdd.phase === "refused" && <p>{duplicateId ? m.duplicateId : ownAdd.error instanceof ApiError && ownAdd.error.status === 404 ? m.addMissing : ownAdd.error instanceof ApiError && ownAdd.error.code === "steps_limit_exceeded" ? m.statusCapacity : ownAdd.error instanceof ApiError && ownAdd.error.code === "version_exhausted" ? m.statusExhausted : ownAdd.error instanceof ApiError && ownAdd.error.code === "invalid_input" ? m.addInvalid : ownAdd.error instanceof ApiError && ownAdd.error.status === 403 ? m.addDenied : m.addRefused}</p>}
-        {ownAdd.phase === "refused" && ownAdd.error instanceof ApiError && ownAdd.error.status === 404 && <button className="button" type="button" disabled={busy || !active} onClick={state.retry}>{m.checkState}</button>}
-        {duplicateId && !draft.uncertain && <button className="button" type="button" onClick={() => setDraft({ ...draft, id: crypto.randomUUID().slice(0, 8), requestId: null })}>{m.chooseId}</button>}
-        {ownAdd.error instanceof ApiError && ownAdd.error.stepsLimit !== undefined && <p>{m.capacityDetails(format.number(ownAdd.error.stepsLimit.encodedBytes), format.number(ownAdd.error.stepsLimit.maxEncodedBytes))}</p>}
-        {ownAdd.error instanceof ApiError && ownAdd.error.requestId !== null && <p className="request-id">{messages.common.requestId} <code>{ownAdd.error.requestId}</code></p>}
-        {ownAdd.reconciliationError !== null && <p>{m.checkFailed}</p>}
-        {(ownAdd.phase === "unknown" || ownAdd.phase === "conflict" || ownAdd.reconciliationError !== null) && <button className="button" type="button" disabled={ownAdd.reconciling} onClick={state.reconcile}>{ownAdd.reconciling ? m.checking : m.checkState}</button>}
-      </div>}
-      <div className="step-add-actions"><button className="button" type="button" onClick={cancelDraft}>{m.cancel}</button><button className="button primary" type="submit" disabled={!state.canAdd || frozen || duplicateId || anchorNeedsDecision || draft.placement !== "last" && (draft.anchorId === null || missingAnchor)} aria-busy={ownAdd?.phase === "pending" || ownAdd?.reconciling}>{ownAdd?.phase === "pending" && <span className="spinner" aria-hidden="true" />}{m.save}</button></div>
-    </form>}
-    {discard && available && navigationDecision === null && <TaskConfirmation title={m.discardTitle} question={m.discardQuestion} explanation={m.discardExplanation} taskTitle={draft?.title ?? ""} confirmLabel={m.discard} cancelLabel={m.keep} closeLabel={m.cancel} destructive owner={confirmationOwner ?? workspace} fallbackFocus={confirmationFallback ?? addButton} onCancel={() => { setDiscard(false); onConfirmationChange?.(false); }} onConfirm={closeDraft} />}
+    {draft !== null && (draft.kind === "add" || resource !== null && !editTargetAvailable) && editor}
+    {discard && available && navigationDecision === null && <TaskConfirmation title={m.discardTitle} question={draft?.kind === "edit" ? m.discardEditQuestion : m.discardQuestion} explanation={m.discardExplanation} taskTitle={draft?.title ?? ""} confirmLabel={m.discard} cancelLabel={m.keep} closeLabel={m.cancel} destructive owner={confirmationOwner ?? workspace} fallbackFocus={confirmationFallback ?? addButton} onCancel={() => { setDiscard(false); setSwitchTarget(null); onConfirmationChange?.(false); }} onConfirm={() => { const target = switchTarget; const previous = draft?.kind === "edit" ? draft.id : ""; closeDraft(); if (target !== null) beginEdit(target); else setFocusStep(previous); }} />}
     {navigationDecision === null && moving !== null && resource !== null && <StepMoveDialog step={moving} steps={resource.steps} available={state.canMove} onCancel={() => { setMovingId(null); requestAnimationFrame(() => workspace.current?.querySelector<HTMLButtonElement>(`[data-step-id="${moving.id}"] .step-more`)?.focus()); }} onConfirm={(target, placement) => { setMovingId(null); submitMove(moving.id, placement === "before" ? { before: target } : { after: target }); }} />}
-    {navigationDecision === null && choosingTarget && draft !== null && resource !== null && <StepAddTargetDialog steps={resource.steps} selectedId={draft.anchorId} onCancel={() => { setChoosingTarget(false); requestAnimationFrame(() => chooseTarget.current?.focus()); }} onConfirm={(target) => { setDraft({ ...draft, anchorId: target }); setAnchorNeedsDecision(false); setChoosingTarget(false); requestAnimationFrame(() => chooseTarget.current?.focus()); }} />}
+    {navigationDecision === null && choosingTarget && draft !== null && resource !== null && <StepAddTargetDialog steps={resource.steps} selectedId={draft.anchorId} onCancel={() => { setChoosingTarget(false); requestAnimationFrame(() => chooseTarget.current?.focus()); }} onConfirm={(target) => { const selected = resource.steps.find((step) => step.id === target); if (!selected) return; setDraft({ ...draft, anchorId: target, anchorCreatedAt: selected.createdAt }); setAnchorNeedsDecision(false); setChoosingTarget(false); requestAnimationFrame(() => chooseTarget.current?.focus()); }} />}
   </section>;
 };

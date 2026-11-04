@@ -2,11 +2,11 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { TaskStep } from "../../../api/task-steps";
 import { useI18n } from "../../../i18n/LocaleProvider";
 
-export type MoveAction = "up" | "down" | "first" | "last" | "relative" | "addBefore" | "addAfter";
+export type MoveAction = "edit" | "up" | "down" | "first" | "last" | "relative" | "addBefore" | "addAfter";
 
-export const StepMoveMenu = ({ step, index, total, available, canAdd, busy, onSelect }: {
+export const StepMoveMenu = ({ step, index, total, available, canAdd, canEdit, busy, onSelect }: {
   readonly step: TaskStep; readonly index: number; readonly total: number;
-  readonly available: boolean; readonly canAdd: boolean; readonly busy: boolean; readonly onSelect: (action: MoveAction) => void;
+  readonly available: boolean; readonly canAdd: boolean; readonly canEdit: boolean; readonly busy: boolean; readonly onSelect: (action: MoveAction) => void;
 }) => {
   const { messages: { inspection: { steps: m } } } = useI18n();
   const [open, setOpen] = useState(false);
@@ -25,10 +25,11 @@ export const StepMoveMenu = ({ step, index, total, available, canAdd, busy, onSe
     { action: "relative", label: m.moveRelative, disabled: !available || total < 2 },
     { action: "addBefore", label: m.addBefore, disabled: !canAdd },
     { action: "addAfter", label: m.addAfter, disabled: !canAdd },
+    { action: "edit", label: m.editStep, disabled: !canEdit },
   ];
   const enabled = actions.map((item, i) => item.disabled ? -1 : i).filter((i) => i >= 0);
   const close = (restore: boolean) => { setOpen(false); if (restore) trigger.current?.focus(); };
-  const menuAvailable = available || canAdd;
+  const menuAvailable = available || canAdd || canEdit;
   const show = (last = false) => { if (menuAvailable && enabled.length) { setActive(last ? enabled[enabled.length - 1]! : enabled[0]!); setOpen(true); } };
   useLayoutEffect(() => {
     if (!open || !trigger.current || !menu.current) return;

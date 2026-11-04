@@ -23,15 +23,22 @@ test('append steps with draft protection and recovery through the real service',
     version = Number(parseTaskSteps(parseApiJson(await response.text()), projectId, task.id).version);
   }
   const url = new URL(path, baseURL).href;
-  allowBrowserWrites([{ method: 'POST', url, count: 8 }]);
+  allowBrowserWrites([{ method: 'POST', url, count: 9 }]);
   let mode: 'normal' | 'conflict' | 'lost' | 'late' = 'normal';
   let readsBlocked = false;
+  let readsGate: Promise<void> | null = null;
+  const pauseReads = () => {
+    let release!: () => void;
+    readsGate = new Promise<void>(resolve => { release = resolve; });
+    return () => { readsGate = null; release(); };
+  };
   let releaseLate!: () => void; let enterLate!: () => void; let releaseMove = () => {};
   const lateGate = new Promise<void>(resolve => { releaseLate = resolve; });
   const lateEntered = new Promise<void>(resolve => { enterLate = resolve; });
   const writes: { id: string; requestId: string; status: number }[] = [];
   await page.route(url, async route => {
     if (route.request().method() === 'GET') {
+      if (readsGate !== null) await readsGate;
       if (readsBlocked) await route.abort('connectionfailed'); else await route.continue();
       return;
     }
@@ -181,7 +188,7 @@ test('append steps with draft protection and recovery through the real service',
     expect(parseTaskSteps(parseApiJson(await afterMove.text()), projectId, task.id).steps[0]?.id).toBe(first.id);
     await form(page).getByRole('button', { name: '取消', exact: true }).click();
     await page.getByRole('alertdialog').getByRole('button', { name: '放弃', exact: true }).click();
-    await exerciseRelativeInsert(page, api, projectId, task.id, path, writes, info);
+    await exerciseRelativeInsert(page, api, projectId, task.id, path, writes, info, pauseReads);
     const modalTask = await createTask(api, projectId, { title: 'Modal draft keyboard' });
     await page.locator('.task-detail-page-back').click();
     await selectTaskList(page);
