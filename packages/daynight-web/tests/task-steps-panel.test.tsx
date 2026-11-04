@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/client";
 import type { StepsResource, TaskStep } from "../src/api/task-steps";
@@ -222,7 +222,7 @@ describe("Step position", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Move" }));
     expect(read.move).toHaveBeenCalledWith("00000000", { after: "00000065" }, 3n);
   });
-  it("restores expansion and focus at the actual confirmed page", () => {
+  it("restores expansion and focus at the actual confirmed page", async () => {
     read.resource = resource();
     const view = renderWithLocale(panel(), { locale: "en" });
     fireEvent.click(screen.getByRole("button", { name: "Round 1" }));
@@ -232,10 +232,12 @@ describe("Step position", () => {
     expect(screen.getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
     read.resource = resource([...steps.slice(1), steps[0]!]);
     read.mutation = { ...read.mutation, phase: "confirmed" }; view.rerender(panel());
-    expect(screen.getByText("201–241 of 241 steps")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "More actions for Round 1" })).toHaveFocus();
-    expect(screen.getByRole("button", { name: "Round 1" }).closest("li")!.querySelector(".step-number")).toHaveTextContent("241");
+    await waitFor(() => {
+      expect(screen.getByText("201–241 of 241 steps")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByRole("button", { name: "More actions for Round 1" })).toHaveFocus();
+      expect(screen.getByRole("button", { name: "Round 1" }).closest("li")!.querySelector(".step-number")).toHaveTextContent("241");
+    });
   });
   it("returns focus after a confirmed relative move within the same page", () => {
     const view = renderWithLocale(panel(), { locale: "en" });
