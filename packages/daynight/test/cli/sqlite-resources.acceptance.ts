@@ -39,7 +39,7 @@ it("ships exact SQL resources and initializes and resets every installed store f
     count += Object.keys(source).length;
     expect(files(path.join(installed, "dist", directory))).toEqual(source);
   }
-  expect(count).toBe(16);
+  expect(count).toBe(17);
   const cwd = path.join(fixture.receipt.root, "different caller 中文");
   const databases = path.join(fixture.receipt.root, "databases");
   mkdirSync(cwd); mkdirSync(databases);
@@ -124,8 +124,8 @@ db.close();
 });
 it("discovers newly added installed migrations and executes them only in filename order", () => {
   const directory = path.join(installed, "dist/commands/worker/sqlite");
-  const first = path.join(directory, "010-create-order-probe.sql");
-  const second = path.join(directory, "011-record-order-probe.sql");
+  const first = path.join(directory, "011-create-order-probe.sql");
+  const second = path.join(directory, "012-record-order-probe.sql");
   expect(existsSync(first)).toBe(false); expect(existsSync(second)).toBe(false);
   const databaseFile = path.join(fixture.receipt.root, "filename-ordered-worker.sqlite");
   const original = new Database(databaseFile);
@@ -147,7 +147,7 @@ store.close();
     expect(result.status, result.stderr).toBe(0);
     const upgraded = new Database(databaseFile, { readonly: true });
     try {
-      expect(upgraded.pragma("user_version", { simple: true })).toBe(11);
+      expect(upgraded.pragma("user_version", { simple: true })).toBe(12);
       expect(upgraded.prepare("SELECT value FROM filename_order_probe").all()).toEqual([{ value: "sorted" }]);
     } finally { upgraded.close(); }
   } finally { rmSync(first, { force: true }); rmSync(second, { force: true }); }
