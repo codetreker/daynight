@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-store.js";
+import { inspectHerdrInput } from "../../../src/commands/worker/herdr/input-readiness.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +15,7 @@ import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/dur
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import type { createWorkerHerdr, HerdrAgentObservation, HerdrExecutionContext, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import { resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
-import { openHerdrLifecycleStore } from "../../../src/commands/worker/herdr/lifecycle-store.js";
+import { herdrLedgerHash, openHerdrLifecycleStore } from "../../../src/commands/worker/herdr/lifecycle-store.js";
 import type { HerdrLifecycleStore } from "../../../src/commands/worker/herdr/lifecycle-store.js";
 import type { MacProcessIdentity } from "../../../src/commands/worker/herdr/lifecycle-types.js";
 import type { MacProcessControl, MacProcessObservation } from "../../../src/commands/worker/herdr/native-macos.js";
@@ -35,7 +36,7 @@ afterEach(() => {
 });
 type Registration = Extract<SessionV2Message, { type: "registration" }>;
 type Ledger = Extract<SessionV2Message, { type: "generation_ledger" }>;
-const fixture = () => {
+const fixture = (realInspector = false) => {
   mkdirSync(root, { recursive: true }); const directory = mkdtempSync(path.join(root, "run-")); directories.push(directory);
   const context: HerdrExecutionContext = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), cwd: directory, agent: "codex" };
   const ownerId = uuid(5), workerId = uuid(6), nativeId = uuid(7), serverOrigin = "https://daynight.example";
@@ -43,7 +44,7 @@ const fixture = () => {
   let task: Task = { id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: context.claimId, state: "active", userId: ownerId, workerId, machine: { id: uuid(8), name: "test-machine" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId: context.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-04T00:00:00Z" } } };
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
-  const settings = { nativeDraft: false, nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
+  const settings = { nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
   let beforePromptGuard: (() => void) | undefined;
   let beforeLaunchRetry: (() => void) | undefined;
   let recoveryDelay: ((stage: "publish" | "state" | "prepare", signal: AbortSignal | undefined) => Promise<void>) | undefined;
@@ -81,11 +82,20 @@ const fixture = () => {
     },
   };
   let remote: HerdrSessionState | undefined;
+  let adjustControlRead: ((control: NonNullable<HerdrSessionState["control"]>) => void) | undefined;
+  const stateView = () => {
+    if (!remote) throw new Error("No remote state");
+    const view = structuredClone(remote);
+    // terminalState hides presentation actions while combined capabilities are gated.
+    if (view.control && !Object.values(view.capabilities).every(Boolean)) view.control.availableActions = [];
+    if (view.control) adjustControlRead?.(view.control);
+    return view;
+  };
   const recoveryReceipts = new Map<string, Extract<SessionV2Message, { type: "automation_recovery_state" }>>();
   const digestMessage = (value: unknown) => createHash("sha256").update(canonicalSessionJson(value)).digest("hex");
   const api: HerdrSessionApi = {
     verifySupport: async () => { events.push("support"); },
-    current: async expected => remote ? structuredClone(remote) : { status: "not_registered", protocol: "daynight.session.v2", claimId: expected.claimId, agentControlMode: "herdr" },
+    current: async expected => remote ? stateView() : { status: "not_registered", protocol: "daynight.session.v2", claimId: expected.claimId, agentControlMode: "herdr" },
     register: async request => {
       registrations.push(structuredClone(request)); events.push(`register:${request.payload.mode}`);
       const connectionEpoch = request.payload.connectionEpoch === null ? "1" : String(BigInt(request.payload.connectionEpoch) + 1n);
@@ -95,8 +105,10 @@ const fixture = () => {
     ledger: async (request, epoch) => {
       if (!remote || remote.connectionEpoch !== epoch) throw new Error("Unregistered or stale connection");
       ledgers.push(structuredClone(request)); events.push(`ledger:${request.executionGeneration}`);
+      if (settings.ledgerFailure === "before") throw new Error("Lost ledger before commit");
       if (remote.control && remote.executionGeneration !== request.executionGeneration) remote.control = { ...remote.control, state: "suspended", lease: null, availableActions: [] };
       remote = { ...remote, executionGeneration: request.executionGeneration, binding: structuredClone(request.payload.runs.at(-1)!.binding), ledger: structuredClone(request.payload) };
+      if (settings.ledgerFailure === "after") throw new Error("Lost ledger response");
       return request;
     },
     publishControl: async (_expected, request, signal) => {
@@ -108,6 +120,7 @@ const fixture = () => {
       await recoveryDelay?.("prepare", signal);
       events.push("prepare-post"); if (settings.prepareFailure === "before") throw new Error("Lost prepare before commit");
       if (!remote || remote.control?.state !== "automation" || remote.control.initialAssignment !== "transport_completed" || remote.control.controlEpoch !== request.payload.controlEpoch || remote.control.lease !== null) throw new Error("No clean service control");
+      if (remote.executionGeneration !== request.executionGeneration || remote.connectionEpoch !== request.payload.connectionEpoch || canonicalSessionJson(remote.binding) !== canonicalSessionJson(request.payload.binding)) throw new Error("Recovery requires the exact published binding");
       const state: Extract<SessionV2Message, { type: "automation_recovery_state" }> = { ...request, type: "automation_recovery_state", payload: { recoveryId: request.payload.recoveryId, prepareDigest: digestMessage(request), sourceGeneration: request.executionGeneration, sourceConnectionEpoch: request.payload.connectionEpoch, sourceControlEpoch: request.payload.controlEpoch, closingControlEpoch: request.payload.closingControlEpoch, stopOperationId: request.payload.stopOperationId, nativeSessionId: request.payload.binding.nativeSessionId!, consumed: null } };
       recoveryReceipts.set(request.payload.recoveryId, structuredClone(state));
       remote.control = { ...remote.control, state: "closing", controlEpoch: request.payload.closingControlEpoch, availableActions: [] };
@@ -127,15 +140,14 @@ const fixture = () => {
     },
     state: async (_expected, signal) => {
       await recoveryDelay?.("state", signal);
-      if (!remote) throw new Error("No remote state");
-      return structuredClone(remote);
+      return stateView();
     },
   };
   const createAdapter: typeof createWorkerHerdr = options => {
     let local = instances.get(options.paths.herdrDirectory);
     if (!local) { const ordinal = ++sequence; local = { ordinal, paths: resolveHerdrInstancePaths(options.paths), binding: { session: "w", workspaceId: `workspace-${ordinal}`, paneId: `pane-${ordinal}`, terminalId: `terminal-${ordinal}` }, started: false, launched: false, nativeVisible: false, daemonPid: ordinal * 100, shellPid: ordinal * 100 + 1, agentPid: ordinal * 100 + 2 }; instances.set(options.paths.herdrDirectory, local); }
     const state = local;
-    const observation = (): HerdrAgentObservation => ({ binding: state.binding, kind: state.launched ? "codex" : null, name: null, status: "idle", launchPending: false, interactiveReady: state.launched, nativeSession: state.nativeVisible ? { source: "herdr:codex", agent: "codex", sessionId: nativeId } : null, stateChangeSeq: 1, completionSeq: 0 });
+    const observation = (): HerdrAgentObservation => ({ binding: state.binding, kind: state.launched ? "codex" : null, name: null, status: settings.nativeStatus, launchPending: false, interactiveReady: state.launched && settings.nativeReady, nativeSession: state.nativeVisible ? { source: "herdr:codex", agent: "codex", sessionId: nativeId } : null, stateChangeSeq: 1, completionSeq: 0 });
     const input = async (initial: boolean, body: string) => {
       const record = read(), run = record.runs.at(-1)!;
       expect(run.phase).toBe("active"); expect(run.daemon).toEqual(proof(state.daemonPid, "daemon"));
@@ -171,6 +183,15 @@ const fixture = () => {
     if (facade) { facade.lifecycle!.close(); facades.delete(facade); }
     facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => task, processControl: native,
       inspectInput: async request => {
+        if (realInspector) return inspectHerdrInput({ ...request, readSize: async () => ({ width: 100, height: 24 }), rpc: { request: async method => {
+          const local = [...instances.values()].find(value => value.binding.terminalId === request.binding.terminalId)!;
+          const binding = local.binding;
+          if (method === "ping") return { type: "pong", version: "0.9.5" };
+          if (method === "session.snapshot") return { type: "session_snapshot", snapshot: { panes: [{ pane_id: binding.paneId, terminal_id: binding.terminalId, workspace_id: binding.workspaceId, tab_id: "tab" }] } };
+          if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: local.shellPid, tty: "/dev/ttys001" } };
+          if (method === "pane.read") return { type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, tab_id: "tab", source: "visible", format: "text", truncated: false, text: settings.nativeDraft ? "› a pending draft" : "› Ask Codex to do anything\n gpt · /tmp/project" } };
+          throw new Error(`Unexpected readiness RPC: ${method}`);
+        } } });
         if (request.purpose !== "manual" && settings.nativeDraft) throw new Error("The native composer now contains this batch's paste");
         return { width: 100, height: 24, herdrVersion: "0.9.5", composer: "empty" };
       },
@@ -180,6 +201,7 @@ const fixture = () => {
         try {
           for (const part of request.inputs) {
             await request.beforeWrite(); request.onWrite?.(); written = true;
+            settings.nativeWrites += 1;
             settings.nativeDraft = part.kind === "paste";
           }
         } catch (error) { return { status: written ? "unknown" : "rejected", reason: String(error) }; }
@@ -197,10 +219,31 @@ const fixture = () => {
   const register = () => facade.lifecycle!.registerClaim(context, ownerId);
   const prepare = () => facade.tasks.prepareWorkspace(context, task.title, operation());
   const start = (binding: HerdrTaskBinding) => facade.tasks.start(context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, operation());
-  return { context, paths, events, registrations, ledgers, inputs, launches, settings, observed, nativeId, read, register, prepare, start, reopen, get facade() { return facade; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
+  return { context, paths, events, registrations, ledgers, inputs, launches, settings, observed, nativeId, read, stateView, register, prepare, start, reopen, get facade() { return facade; }, adjustControlRead: (hook: NonNullable<typeof adjustControlRead>) => { adjustControlRead = hook; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
 };
 
 describe("durable Herdr facade with real SQLite", () => {
+  it("continues a completed interactive turn through the real inspector while retaining input and process guards", async () => {
+    const f = fixture(true); f.register(); const binding = await f.prepare(); await f.start(binding);
+    expect(f.settings.nativeWrites).toBe(2);
+    f.settings.nativeStatus = "working";
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Premature continuation", operation())).rejects.toThrow(/automation_suspended/);
+    expect(f.settings.nativeWrites).toBe(2);
+    f.settings.nativeStatus = "done";
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Completed-turn continuation", operation())).resolves.toMatchObject({ submission: "submitted" });
+    expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }, { initial: false, body: "Completed-turn continuation" }]);
+    expect(f.settings.nativeWrites).toBe(4);
+    f.settings.nativeReady = false;
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Unready completion", operation())).rejects.toThrow(/automation_suspended/);
+    expect(f.settings.nativeWrites).toBe(4);
+    f.settings.nativeReady = true; f.settings.nativeDraft = true;
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Conflicting draft", operation())).rejects.toThrow(/automation_suspended/);
+    expect(f.settings.nativeWrites).toBe(4);
+    f.settings.nativeDraft = false;
+    f.observed.set(f.read().runs[0]!.processes.find(value => value.role === "shell")!.pid, "changed");
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Replaced process", operation())).rejects.toThrow(/changed/);
+    expect(f.settings.nativeWrites).toBe(4);
+  });
   it("keeps manual control across detach and blocks continuation until explicit handback", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     const input = f.facade.input!;
@@ -288,6 +331,50 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(recovered.segments[1]!.gap).toMatchObject({ kind: "boundary", reason: "restart", from: { executionGeneration: "1" }, to: { executionGeneration: "2" } });
     expect(f.inputs.filter(input => input.initial)).toHaveLength(1); expect(f.inputs.filter(input => !input.initial)).toHaveLength(1);
   });
+  it.each([true, false])("prepares recovery with gated presentation and native identity known at launch %s", async nativeAtLaunch => {
+    const f = fixture(); f.settings.nativeAtLaunch = nativeAtLaunch; f.register(); const binding = await f.prepare(); await f.start(binding);
+    expect(f.stateView().binding.nativeSessionId).toBe(nativeAtLaunch ? f.nativeId : null);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    expect(f.stateView().control?.availableActions).toEqual([]);
+    expect(f.events).toContain("recovery-prepared");
+    const publication = f.ledgers.findIndex(message => message.payload.runs.at(-1)?.binding.nativeSessionId === f.nativeId && message.payload.runs.at(-1)?.stoppedAt === null);
+    expect(publication).toBeGreaterThanOrEqual(0);
+    f.reopen(); const next = await f.prepare(); await f.start(next);
+    expect(f.inputs.filter(value => value.initial)).toHaveLength(1);
+    expect(f.inputs.filter(value => !value.initial)).toHaveLength(1);
+  });
+  it.each(["before", "after"] as const)("observes an enriched ledger lost %s commit without replaying it", async boundary => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    expect(f.stateView().binding.nativeSessionId).toBeNull();
+    f.settings.ledgerFailure = boundary;
+    const stopped = f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    if (boundary === "before") await expect(stopped).rejects.toThrow(/unconfirmed|conflicts/);
+    else await stopped;
+    expect(f.events).toContain("stop"); expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
+    const enrichmentPosts = () => f.ledgers.filter(message => message.payload.runs.at(-1)?.binding.nativeSessionId === f.nativeId && message.payload.runs.at(-1)?.stoppedAt === null);
+    expect(enrichmentPosts()).toHaveLength(1);
+    expect(f.events.filter(value => value === "prepare-post")).toHaveLength(boundary === "after" ? 1 : 0);
+    f.settings.ledgerFailure = "none"; f.reopen();
+    if (boundary === "before") {
+      await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow(/unconfirmed|conflicts/);
+      expect(enrichmentPosts()).toHaveLength(1);
+    } else {
+      const next = await f.prepare(); await f.start(next);
+      expect(f.inputs.filter(value => !value.initial)).toHaveLength(1);
+    }
+  });
+  it.each(["connectionEpoch", "controlEpoch", "state", "lease", "initialAssignment", "unavailableReason"] as const)("does not ignore differing recovery authority field %s", async field => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    f.adjustControlRead(control => {
+      if (field === "connectionEpoch" || field === "controlEpoch") control[field] = "99";
+      else if (field === "state") control.state = "suspended";
+      else if (field === "initialAssignment") control.initialAssignment = "pending";
+      else if (field === "unavailableReason") control.unavailableReason = "input_unknown";
+      else control.lease = { leaseId: uuid(80), holderUserId: uuid(81), browserClientId: uuid(82), controlEpoch: control.controlEpoch, expiresAt: "2026-11-04T00:00:30.000Z" };
+    });
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    expect(f.events).toContain("stop"); expect(f.events).not.toContain("prepare-post");
+  });
   it.each(["prepare", "consume"] as const)("reconciles a lost %s response without replay against retained service control", async boundary => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     if (boundary === "prepare") f.settings.prepareFailure = "after";
@@ -301,11 +388,11 @@ describe("durable Herdr facade with real SQLite", () => {
   it.each(["publish", "state"] as const)("reserves native stop time when recovery %s consumes the shared ten-second budget", async stalled => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     vi.useFakeTimers();
-    let blocked = false;
+    let blocked = false, published = false;
     f.recoveryDelay(async (stage, signal) => {
       signal!.throwIfAborted();
-      if (stalled === "state" && stage === "publish") await new Promise<void>(resolve => setTimeout(resolve, 6000));
-      else if (stage === stalled && !blocked) { blocked = true; await new Promise<void>((_resolve, reject) => signal!.addEventListener("abort", () => reject(signal!.reason), { once: true })); }
+      if (stalled === "state" && stage === "publish") { await new Promise<void>(resolve => setTimeout(resolve, 6000)); published = true; }
+      else if (stage === stalled && !blocked && (stalled !== "state" || published)) { blocked = true; await new Promise<void>((_resolve, reject) => signal!.addEventListener("abort", () => reject(signal!.reason), { once: true })); }
     });
     let completed = false, failure: unknown;
     const pending = cleanupOperation(active => f.facade.lifecycle!.stop(f.context, "shutdown", active)).then(() => { completed = true; }, error => { failure = error; });
@@ -469,9 +556,10 @@ describe("durable Herdr facade with real SQLite", () => {
   });
   it("attempts emergency stopping if the close-request journal cannot commit", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
-    const exec = Database.prototype.exec; let transactions = 0;
+    const exec = Database.prototype.exec;
     const failure = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-      if (this.name.endsWith("herdr-executions.sqlite") && sql === "BEGIN IMMEDIATE" && ++transactions === 2) throw new Error("close journal unavailable");
+      const record = f.read();
+      if (this.name.endsWith("herdr-executions.sqlite") && sql === "BEGIN IMMEDIATE" && record.runs[0]!.phase === "stop_intent" && record.ledgerRequest === null && record.publishedLedgerHash === herdrLedgerHash(record)) throw new Error("close journal unavailable");
       return exec.call(this, sql);
     });
     await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow(/close journal.*commit/i); failure.mockRestore();
@@ -483,9 +571,9 @@ describe("durable Herdr facade with real SQLite", () => {
   });
   it("recovers segment closure and ledger publication before preparing a successor", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
-    const exec = Database.prototype.exec; let transactions = 0;
+    const exec = Database.prototype.exec;
     const failure = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-      if (this.name.endsWith("herdr-executions.sqlite") && sql === "BEGIN IMMEDIATE" && ++transactions === 4) throw new Error("segment journal unavailable");
+      if (this.name.endsWith("herdr-executions.sqlite") && sql === "BEGIN IMMEDIATE" && f.read().runs[0]!.phase === "stopped_confirmed" && f.read().segments[0]!.endedAt === null) throw new Error("segment journal unavailable");
       return exec.call(this, sql);
     });
     await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow("segment journal unavailable"); failure.mockRestore();

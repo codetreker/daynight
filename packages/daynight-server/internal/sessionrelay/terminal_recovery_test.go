@@ -2,12 +2,95 @@ package sessionrelay
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+func TestTerminalRecoveryReadbackFiltersActionsWithoutChangingAdmissionEvidence(t *testing.T) {
+	f, _ := recoveryFixture(t)
+	ctx := context.Background()
+	publication := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
+	ack := f.worker(t, "1", f.msg("control_state", publication))
+	if !reflect.DeepEqual(ack.Payload, publication) {
+		t.Fatal("publication acknowledgement changed the original control state", ack)
+	}
+	state, err := f.s.TerminalState(ctx, f.p, f.project, f.task, f.message.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := state["control"].(*v2.ControlState)
+	expected := publication
+	expected.AvailableActions = []string{}
+	if !reflect.DeepEqual(*projected, expected) || state["capabilities"].(v2.Capabilities) != (v2.Capabilities{}) {
+		t.Fatal("capability projection altered admission evidence", state)
+	}
+	if err := f.s.terminalAccess(ctx, f.p, f.project, f.task, f.message.SessionID, true, func(_ pgx.Tx, r *terminalRecord, _ task, _ bool) error {
+		if !reflect.DeepEqual(*r.Control, publication) {
+			t.Fatal("state read rewrote durable control", r.Control)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTerminalRecoveryRequiresAcknowledgedLateNativeIdentityEnrichment(t *testing.T) {
+	f := terminalControlSetup(t)
+	ctx := context.Background()
+	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE tasks SET allow_agents=true WHERE id=$1`, f.task); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.BindTerminalConnection(ctx, f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1"); err != nil {
+		t.Fatal(err)
+	}
+	native := "late-original-conversation"
+	binding := f.binding
+	binding.NativeSessionID = &native
+	prepare := f.msg("automation_recovery_prepare", v2.AutomationRecoveryPrepare{RecoveryID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", ClosingControlEpoch: "2", StopOperationID: uuid.NewString(), Binding: binding, InitialAssignment: "transport_completed"})
+	if _, err := f.s.UpdateTerminalRecovery(ctx, f.p, f.project, f.task, prepare.SessionID, "1", prepare); err == nil {
+		t.Fatal("unpublished native identity was accepted for shutdown recovery")
+	}
+	state, err := f.s.TerminalState(ctx, f.p, f.project, f.task, prepare.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := state["ledger"].(v2.GenerationLedger)
+	ledger.Runs[0].Binding = binding
+	message := f.msg("generation_ledger", ledger)
+	ack, err := f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, prepare.SessionID, "1", message)
+	if err != nil || !reflect.DeepEqual(ack, message) {
+		t.Fatal("enrichment did not acknowledge the exact original ledger", ack, err)
+	}
+	state, err = f.s.TerminalState(ctx, f.p, f.project, f.task, prepare.SessionID)
+	if err != nil || !reflect.DeepEqual(state["binding"], binding) || !reflect.DeepEqual(state["ledger"], ledger) || state["connectionEpoch"] != "1" || state["executionGeneration"] != "1" {
+		t.Fatal("same-generation enrichment changed the execution fence", state, err)
+	}
+	for _, kind := range []string{"different-native", "unknown-native", "different-terminal"} {
+		t.Run(kind, func(t *testing.T) {
+			changed := ledger
+			changed.Runs = append([]v2.Run(nil), ledger.Runs...)
+			switch kind {
+			case "different-native":
+				different := "replacement-conversation"
+				changed.Runs[0].Binding.NativeSessionID = &different
+			case "unknown-native":
+				changed.Runs[0].Binding.NativeSessionID = nil
+			case "different-terminal":
+				changed.Runs[0].Binding.TerminalID = "replacement-terminal"
+			}
+			if _, err := f.s.UpdateTerminalLedger(ctx, f.p, f.project, f.task, prepare.SessionID, "1", f.msg("generation_ledger", changed)); err == nil {
+				t.Fatal("identity replacement was treated as enrichment")
+			}
+		})
+	}
+	if _, err := f.s.UpdateTerminalRecovery(ctx, f.p, f.project, f.task, prepare.SessionID, "1", prepare); err != nil {
+		t.Fatal("acknowledged original enrichment did not enable clean shutdown preparation", err)
+	}
+}
 
 func recoveryFixture(t *testing.T) (*terminalControlFixture, v2.Message) {
 	t.Helper()

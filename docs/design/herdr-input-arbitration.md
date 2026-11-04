@@ -34,7 +34,9 @@ Session 注册继续声明 `observe=false`、`control=false`、`archive=false`�
 
 交还要求当前 fence/controlEpoch、无在途批次、明确 `draftHandled`、原生 readiness 和可用 composer 检查。Codex/Claude 使用当前支持界面的占位符与菜单检查；这是受限屏幕检查，不是跨 provider 的形式证明。Copilot 没有可用的通用空 composer 证明，记录为 unavailable；其人工草稿责任必须由显式交还承担，native idle 不会自动解除 manual/suspended。系统不擅自发送清空草稿快捷键。
 
-服务端控制请求包含原 actor 与请求摘要，Worker 持久提交状态和关联 ACK 后才回传。每次实际写入前再读取服务端 Session 状态、任务权限和原进程证明；已撤 lease、旧连接或控制代次不能借轮询间隔迟到写入。本地 Herdr TUI/API 仍可能并发输入，这不是全局键盘互斥。
+服务端控制请求包含原 actor 与请求摘要，Worker 持久提交状态和关联 ACK 后才回传。每次实际写入前再读取服务端 Session 状态、任务权限和原进程证明，已撤 lease、旧连接或控制代次不能借轮询间隔迟到写入。
+
+交互仍就绪且无 pending launch 的 `done` 可以表示已完成 turn，允许 continuation；非交互就绪的 `done` 禁止输入。自动输入仍检查空 composer、原目标和进程身份，不能把 turn 完成当成进程退出或跳过准入。本地 Herdr TUI/API 仍可能并发输入，这不是全局键盘互斥。
 
 ## 严格原生传输与几何
 
@@ -50,7 +52,7 @@ API layout 或观察帧不能证明实际 PTY 尺寸。Worker 从原 pane 的 `p
 
 cleanup 首先同步提交 closing、提升控制代次并撤销 lease，再中止旧批次。尚未写出的输入取消；已经写出的只能保留原结果或 unknown。只有此前处于 automation、无人工草稿风险/未知输入、没有在途批次且原生界面可用时，才通过同一仲裁器发送一次 cleanup prompt。其他情况跳过提示并继续原实例受控停止；外部临时资源可能因此无法由 agent 及时收尾。
 
-正常 shutdown 的干净自动状态与人工 suspended 状态分别持久保留。输入 journal 保存每次原始 prepare 和消费请求，不覆盖旧请求。Worker 先同步持久 closing 并中止输入，在旧通道关闭前发布最后已确认的干净 automation 状态、读取服务端确认，再以原 control/connection epoch 和 stopOperationId 请求 `automation_recovery_prepare`。服务端同事务冻结旧控制为 closing 并保存单次许可；没有原在线控制、初始完成结果、无 lease/未决操作和当前授权就拒绝。
+正常 shutdown 的干净自动状态与人工 suspended 状态分别持久保留。输入 journal 保存每次原始 prepare 和消费请求，不覆盖旧请求。Worker 先同步持久 closing 并中止输入，在旧通道关闭前先确认已补齐 nativeSessionId 的原运行账本，再发布最后已确认的干净 automation 状态、读取服务端确认，再以原 control/connection epoch 和 stopOperationId 请求 `automation_recovery_prepare`。状态读回比较 connection/control epoch、state、lease、initialAssignment 和安全原因；availableActions 是能力过滤后的展示结果，不参与恢复授权比较。服务端同事务冻结旧控制为 closing 并保存单次许可；没有原在线控制、初始完成结果、无 lease/未决操作和当前授权就拒绝。
 
 停止证明登记后，下一代必须仍为相邻代次和同一已知 native conversation。Worker 重新核对原进程、readiness 与 claim，持久保存 `automation_recovery` 请求；服务端核验旧许可、对应 stopProof 和当前连接后一次性恢复 automation。Worker 读取匹配回执与当前服务状态，持久同步 controlEpoch，才允许 continuation。shutdown 准备和恢复期间的通道 hold 只暂停状态轮询；断线、过期、新派发和身份变化仍禁入。许可准备使用独立、最多 10 秒的总预算，保留原停止操作的剩余时间；许可服务不可用不消耗全部原生停止时限。
 

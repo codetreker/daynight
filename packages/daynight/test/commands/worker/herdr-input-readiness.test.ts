@@ -28,3 +28,40 @@ describe("Herdr original input readiness", () => {
     const f = fixture(); f.observation.kind = "codex"; try { f.text("› a pending draft"); await expect(f.inspect("resume")).rejects.toThrow(); f.text("› Ask Codex to do anything\n gpt · /tmp/project"); expect((await f.inspect("resume")).composer).toBe("empty"); } finally { f.operation.dispose(); }
   });
 });
+
+const readyComposer = {
+  codex: "› Ask Codex to do anything\n gpt · /tmp/project",
+  claude: "────────\n❯\n────────\n ? for shortcuts",
+  copilot: "",
+} as const;
+
+it.each(["codex", "claude", "copilot"] as const)("accepts an interactive %s completion while preserving automatic composer checks", async provider => {
+  const f = fixture(); f.observation.kind = provider; f.text(readyComposer[provider]);
+  try {
+    f.observation.status = "working"; await expect(f.inspect()).rejects.toMatchObject({ code: "automation_suspended" });
+    f.observation.status = "done";
+    await expect(f.inspect()).resolves.toMatchObject({ width: 97, height: 23, composer: provider === "copilot" ? "unavailable" : "empty" });
+    if (provider !== "copilot") {
+      f.text(provider === "codex" ? "› a pending draft" : "────────\n❯ a pending draft\n────────\n ? for shortcuts");
+      await expect(f.inspect()).rejects.toMatchObject({ code: "automation_suspended" });
+    }
+  } finally { f.operation.dispose(); }
+});
+
+it.each(["automatic", "manual", "resume", "cleanup"] as const)("requires readiness for done input in %s mode", async purpose => {
+  const f = fixture(); f.observation.status = "done";
+  try {
+    await expect(f.inspect(purpose)).resolves.toBeDefined();
+    f.observation.interactiveReady = false;
+    await expect(f.inspect(purpose)).rejects.toMatchObject({ code: "automation_suspended" });
+  } finally { f.operation.dispose(); }
+});
+
+it("does not grant manual input to unknown or pending completed observations", async () => {
+  const f = fixture();
+  try {
+    f.observation.status = "unknown"; await expect(f.inspect("manual")).rejects.toMatchObject({ code: "automation_suspended" });
+    f.observation.status = "done"; f.observation.launchPending = true;
+    await expect(f.inspect("manual")).rejects.toMatchObject({ code: "automation_suspended" });
+  } finally { f.operation.dispose(); }
+});

@@ -29,7 +29,11 @@ Clean shutdown requires a service-acknowledged, single-use automation recovery
 permission before the old channel closes. The service freezes old control and
 binds permission to its stop operation and native conversation. Only the exact
 next generation with that stop proof and current authorization may consume it.
-Persisted preparation and consumption requests are observed after uncertain
+A newly observed native identity must reach the original run ledger before
+preparation. Recovery compares authoritative control fields; capability-filtered
+available actions remain a presentation projection. A completed interactive turn
+is still an input-capable native process, subject to the same identity and composer
+checks. Persisted preparation and consumption requests are observed after uncertain
 responses, never replayed. The original consumed receipt grants no rights on a
 later connection. This is distinct from human handback and the UI capability gate.
 

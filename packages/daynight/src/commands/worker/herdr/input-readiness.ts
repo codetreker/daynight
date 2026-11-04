@@ -50,8 +50,9 @@ export const inspectHerdrInput = async (options: {
   const verify = async (): Promise<void> => {
     const observed = await options.observe();
     if (JSON.stringify(observed.binding) !== JSON.stringify(binding)) throw new SessionV2Error("target_changed");
-    if (observed.kind !== options.provider || observed.launchPending || observed.status === "unknown" || observed.status === "done") throw new SessionV2Error("automation_suspended");
-    if (options.purpose !== "manual" && (observed.status !== "idle" || !observed.interactiveReady)) throw new SessionV2Error("automation_suspended");
+    // A completed turn may retain its interactive process and accept continuation.
+    if (observed.kind !== options.provider || observed.launchPending || observed.status === "unknown" || (observed.status === "done" && !observed.interactiveReady)) throw new SessionV2Error("automation_suspended");
+    if (options.purpose !== "manual" && ((observed.status !== "idle" && observed.status !== "done") || !observed.interactiveReady)) throw new SessionV2Error("automation_suspended");
   };
   const topology = async () => {
     const result = await rpc.request("session.snapshot", {}, operation);

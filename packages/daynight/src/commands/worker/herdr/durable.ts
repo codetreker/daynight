@@ -318,11 +318,16 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       await api.readRecovery(expected, existing.prepare.payload.recoveryId, operation.signal); return;
     }
     if (!prior || prior.state !== "automation" || prior.initialAssignment !== "transport_completed" || prior.lease !== null || prior.connectionEpoch !== record.connectionEpoch || !options.sessionApi && !inputSession.connected(record.sessionId)) return;
+    // Native identity can first appear after the initial input. Confirm that
+    // enrichment on the original connection before requesting its exact binding.
+    await publishHerdrLedger(store, owner, api, operation.signal);
     const publication = { ...herdrInputEnvelope(input.target), type: "control_state" as const, payload: prior };
     try { await api.publishControl(expected, publication, operation.signal); }
     catch { /* Read back the original publication before any further decision. */ }
     const remote = await api.state(expected, operation.signal);
-    if (!remote.connected || remote.executionGeneration !== run.run.executionGeneration || remote.connectionEpoch !== record.connectionEpoch || canonicalSessionJson(remote.control) !== canonicalSessionJson(prior)) return;
+    const control = remote.control;
+    // Available actions are a capability-filtered presentation, not input authority.
+    if (!remote.connected || remote.executionGeneration !== run.run.executionGeneration || remote.connectionEpoch !== record.connectionEpoch || canonicalSessionJson(remote.binding) !== canonicalSessionJson(run.run.binding) || !control || control.connectionEpoch !== prior.connectionEpoch || control.controlEpoch !== prior.controlEpoch || control.state !== prior.state || control.lease !== null || control.initialAssignment !== prior.initialAssignment || control.unavailableReason !== null) return;
     const prepare: Extract<SessionV2Message, { type: "automation_recovery_prepare" }> = { ...herdrInputEnvelope(input.target), type: "automation_recovery_prepare", payload: {
       recoveryId: randomUUID(), connectionEpoch: input.target.connectionEpoch, controlEpoch: prior.controlEpoch, closingControlEpoch: input.controlEpoch,
       stopOperationId: run.stopOperationId, binding: { ...run.run.binding }, initialAssignment: "transport_completed",
