@@ -200,7 +200,7 @@ canonical skill 的 task-content 区分持久 Steps 与 Session 计划、工具�
 
 ### 已实现的状态写入
 
-Step 状态操作接入现有提交和核对生命周期，并按 Task-result/Steps-result 分派；不复制第二个控制器。Steps 写成功保留确认集合，把父详情标为需刷新，并触发父 GET 和项目同步。只有当前父详情、授权摘要和 Steps 资源在同一身份与缓存 generation 下匹配父版本，才恢复共同可提交基线。同步直接跳过中间版本时仍按最新下限收敛，不重放修改。
+Step 状态操作接入现有提交和核对生命周期，并按 Task-result/Steps-result 分派；不复制第二个控制器。Steps 写成功保留确认集合，把父详情标为需刷新，并触发父 GET 和项目同步。只有当前父详情、授权摘要和 Steps 资源在同一身份与缓存 generation 下匹配父版本，才恢复共同可提交基线。同步直接跳过中间版本时仍按最新下限收敛，不重放修改。核对期间父读取先结束而摘要或 Steps 再推进时，owner 合并并调度新下限的父 GET；持续落后时有界失败并保留恢复入口。
 
 Web 写入 API 保留容量 details 与安全错误信息。成功 HTTP 状态但非法 body 仍需读回完整 Steps，不能展示请求目标为已确认事实。子 Step/锚点 404 保留当前可访问 Task、其他项和草稿；来源不明时按同一身份 fence 核验父 Task，只有确认父不可访问才 retirement。
 

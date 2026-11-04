@@ -44,6 +44,7 @@ type StepsRead = {
   generation: number;
   recoveryReads: number;
   parentRetryFloor: bigint | null;
+  parentRequestedFloor: bigint | null;
   cacheGeneration: string | null;
   // Verified versions remain a lower bound after their full collections are released.
   floor: bigint | null;
@@ -155,7 +156,7 @@ export class TaskDetailSessions {
     const key = `${projectId}/${taskId}`;
     let entry = this.entries.get(key);
     if (entry === undefined) {
-      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetryFloor: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
+      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetryFloor: null, parentRequestedFloor: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
       this.entries.set(key, entry);
     }
     return entry;
@@ -240,6 +241,7 @@ export class TaskDetailSessions {
     const floor = this.stepsFloor(entry);
     const advanced = steps.floor !== floor;
     if (advanced) { steps.floor = floor; steps.retriedFloor = null; }
+    this.scheduleStepParent(entry, floor);
     if (steps.state.resource !== null && floor !== null && steps.state.resource.version < floor && !steps.state.stale) {
       this.publishSteps(steps, { ...steps.state, stale: true });
     }
@@ -264,6 +266,15 @@ export class TaskDetailSessions {
       }
     }
     if ((steps.listeners.size > 0 || this.stepOperationNeedsResource(entry)) && steps.pending === null && (advanced || steps.state.stale && steps.state.error === null)) this.loadSteps(steps.projectId, steps.taskId);
+  }
+  private scheduleStepParent(entry: Entry, floor: bigint | null): void {
+    const steps = entry.steps;
+    if (entry.state.mutation.operation?.action !== "stepStatus" || !entry.state.mutation.reconciling || floor === null ||
+      entry.state.detail === null || entry.state.detail.version >= floor || entry.pending !== null && entry.pending.detail.version >= floor || steps.parentRequestedFloor === floor) return;
+    // Schedule once per observed floor; an obsolete response gets one bounded retry.
+    steps.parentRequestedFloor = floor;
+    entry.queuedRead = { revision: entry.state.revision, reconciliation: false };
+    this.drainReads(steps.projectId, steps.taskId);
   }
   loadSteps(projectId: string, taskId: string, force = false): void {
     const entry = this.entry(projectId, taskId);
@@ -293,6 +304,7 @@ export class TaskDetailSessions {
     const observed = this.stepsFloor(entry);
     const received = observed === null || resource.version > observed ? resource.version : observed;
     if (steps.floor !== received) { steps.floor = received; steps.retriedFloor = null; }
+    this.scheduleStepParent(entry, received);
     const summaryVersion = await this.scope.detailTransaction(ticket, signal, async (_details, _manifest, summaries) => summaries.get(steps.taskId)?.version ?? null);
     while (authRequestsPaused()) {
       try { await this.scope.ready(signal); }
@@ -507,6 +519,8 @@ export class TaskDetailSessions {
     void this.read(projectId, taskId, entry.state.revision, entry.state.mutation.operation !== null, true);
   }
   private reconcileSteps(entry: Entry): void {
+    entry.steps.parentRequestedFloor = this.stepsFloor(entry);
+    entry.steps.parentRetryFloor = null;
     this.publish(entry, { ...entry.state, requiresFreshRead: true, mutation: { ...entry.state.mutation, reconciling: true, reconciliationError: null } });
     this.refreshProject(entry.steps.projectId);
     void this.read(entry.steps.projectId, entry.steps.taskId, entry.state.revision, false, true);
@@ -543,6 +557,7 @@ export class TaskDetailSessions {
   private failRead(entry: Entry, error: unknown, reconciliation: boolean): void {
     if (entry.steps.pending !== null) this.failSteps(entry.steps, error);
     const stepReconciliation = entry.state.mutation.operation?.action === "stepStatus" && entry.state.mutation.reconciling;
+    if (stepReconciliation) entry.queuedRead = null;
     const missing = error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
     const detail = missing ? null : entry.state.detail;
     this.publish(entry, { ...entry.state, detail, loadedRevision: missing ? null : entry.state.loadedRevision, status: detail !== null ? "ready" : "error", refreshing: false,
@@ -557,6 +572,7 @@ export class TaskDetailSessions {
       entry.admitted && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
       (generation === null || generation === entry.generation);
     if (!current()) return;
+    if (entry.steps.parentRequestedFloor !== null && detail.version >= entry.steps.parentRequestedFloor && readOpeningGeneration === entry.openingGeneration && entry.queuedRead?.reconciliation === false && entry.state.mutation.operation?.action === "stepStatus") entry.queuedRead = null;
     if (detail.projectId !== projectId || detail.id !== taskId) throw new ApiError("protocol");
     if (entry.committedVersion !== null && detail.version < entry.committedVersion) {
       if (this.retryStepParent(entry, revision)) return;
@@ -622,6 +638,7 @@ export class TaskDetailSessions {
     if (floor === null || entry.steps.parentRetryFloor === floor) throw new ApiError("protocol");
     entry.steps.parentRetryFloor = floor;
     entry.queuedRead = { revision, reconciliation: false };
+    this.drainReads(entry.steps.projectId, entry.steps.taskId);
     return true;
   }
   private async read(projectId: string, taskId: string, revision: number, reconciliation: boolean, retainLoaded: boolean, automatic = false): Promise<void> {
@@ -813,6 +830,7 @@ export class TaskDetailSessions {
     if (operation.action === "stepStatus") {
       entry.steps.recoveryReads = 0;
       entry.steps.parentRetryFloor = null;
+      entry.steps.parentRequestedFloor = null;
       entry.steps.generation++;
       entry.steps.read?.abort(); entry.steps.read = null;
       entry.steps.admission?.abort(); entry.steps.admission = null;
@@ -864,6 +882,7 @@ export class TaskDetailSessions {
             validated = true;
             entry.committedVersion = result.version;
             if (this.disposed) return;
+            entry.steps.parentRequestedFloor = this.stepsFloor(entry);
             this.publish(entry, { ...entry.state, requiresFreshRead: true, mutation: { operation, phase: "confirmed", error: null, reconciling: true, reconciliationError: null } });
             await this.acceptSteps(entry, result, requestTicket, entry.steps.generation, signal);
             this.refreshProject(projectId);

@@ -17,6 +17,9 @@ its actual version distinct from parent detail and summary versions. A status
 write triggers parent and project reads; the common submission gate opens when
 all three resources converge under the same identity and cache generation.
 A newer observed version invalidates the older collection and schedules a read.
+If the parent GET finishes before the other resources advance, the owner
+coalesces a new parent read at that floor; repeated stale responses fail visibly
+instead of leaving an unbounded retry or a permanently busy gate.
 
 A conflict, malformed success or uncertain transport result is reconciled by
 reading current resources under the original identity, without replay. A failed
