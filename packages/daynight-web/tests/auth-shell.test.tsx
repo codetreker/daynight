@@ -117,7 +117,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     window.history.replaceState(null, "", `/projects/${projectId}/members`);
     let removed = false;
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
-      if (url === `/api/v1/projects/${projectId}/members/${userId}` && options?.method === "DELETE") { removed = true; return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(serverUserId) })); }
+      if (url === `/api/v1/projects/${projectId}/grants/${userId}` && options?.method === "DELETE") { removed = true; return Promise.resolve(json({ projectId, userId, deleted: true, actorAccess: null })); }
       if (url.endsWith("/access")) return !removed && serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
       if (url.endsWith("/members")) return Promise.resolve(json({ actorAccess: directAccessFixture(projectId, serverUserId, "admin"), items: [participant(), participant(otherId, "admin", "Bob")] }));
       if (url.endsWith("/invitations")) return Promise.resolve(json({ items: [] }));
@@ -126,10 +126,11 @@ describe("sidebar integration with the authenticated workspace", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "移除 Alice" }));
-    const dialog = screen.getByRole("dialog", { name: "移除 Alice？" });
-    await waitFor(() => expect(within(dialog).getByRole("button", { name: "移除成员" })).not.toBeDisabled());
-    fireEvent.click(within(dialog).getByRole("button", { name: "移除成员" }));
+    fireEvent.click(await screen.findByRole("button", { name: "移除 Alice 的单独授权" }));
+    const dialog = screen.getByRole("dialog", { name: "移除 Alice 的单独授权？" });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "移除授权" })).not.toBeDisabled());
+    fireEvent.click(within(dialog).getByRole("button", { name: "移除授权" }));
+    fireEvent.click(await screen.findByRole("button", { name: "返回项目" }));
     await screen.findByRole("heading", { name: "还没有项目" });
     expect(window.location.pathname).toBe("/projects");
     expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).queryByRole("link", { name: "私有项目" })).toBeNull();
