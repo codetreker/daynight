@@ -1,4 +1,4 @@
-import { useRef, useState, useLayoutEffect, useEffect, useId } from 'react';
+import { useRef, useState, useLayoutEffect, useEffect, useId, useCallback } from 'react';
 import type { SessionDraft, SessionSettingIntent } from './client';
 import type { SessionNativeCommand } from '../../../../daynight/src/session/controls';
 import { SessionControlsPanel, type ControlsView } from './SessionControlsPanel';
@@ -41,6 +41,7 @@ export function SessionComposer({ state, connected, authPaused = false, active =
   const text = draft?.text ?? localText;
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const commandBodyRef = useRef<HTMLDivElement>(null);
   const focusCleanups = useRef(new Set<() => void>());
   useEffect(() => () => { for (const cleanup of focusCleanups.current) cleanup(); focusCleanups.current.clear(); }, []);
   const activeRef = useRef(active); activeRef.current = active;
@@ -83,6 +84,23 @@ export function SessionComposer({ state, connected, authPaused = false, active =
     observer?.observe(input);
     return () => { observer?.disconnect(); if (frame !== null) cancelAnimationFrame(frame); };
   }, [text, active]);
+  useLayoutEffect(() => {
+    if (!active) return;
+    const form = formRef.current!, surface = form.querySelector<HTMLElement>('.session-composer-surface')!, input = inputRef.current!;
+    const footer = form.querySelector<HTMLElement>('.session-composer-footer')!;
+    const reserveInput = () => {
+      const style = getComputedStyle(surface), field = getComputedStyle(input), actions = getComputedStyle(footer);
+      const pixels = (value: string) => Number.parseFloat(value) || 0;
+      const error = surface.querySelector<HTMLElement>('.session-error');
+      const errorStyle = error ? getComputedStyle(error) : null;
+      const minimum = pixels(field.minHeight) + footer.offsetHeight + pixels(actions.marginTop) + pixels(style.paddingTop) + pixels(style.paddingBottom) + pixels(style.borderTopWidth) + pixels(style.borderBottomWidth) + (error ? error.offsetHeight + pixels(errorStyle!.marginTop) : 0);
+      surface.style.minHeight = `${minimum}px`;
+    };
+    reserveInput();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reserveInput);
+    observer?.observe(surface); observer?.observe(footer);
+    return () => observer?.disconnect();
+  }, [active, error]);
   const snapshot = state.snapshot;
   const controls = snapshot?.controls;
   const localCommands: SessionNativeCommand[] = [
@@ -100,7 +118,58 @@ export function SessionComposer({ state, connected, authPaused = false, active =
   const showCommands = controlView === 'commands' || isCommand && !commandsDismissed && !/\s/u.test(commandQuery) && controlView === null;
   const selectedIndex = Math.min(commandIndex, Math.max(0, matchingCommands.length - 1));
   const controlsAllowed = !authPaused && !pending && !commandPending && sessionControlGate(state, connected);
-  const closeControls = () => { setControlView(null); dismissCommands(true); inputRef.current?.focus({ preventScroll: true }); };
+  const closeControls = useCallback(() => { setControlView(null); dismissCommands(true); inputRef.current?.focus({ preventScroll: true }); }, []);
+  useEffect(() => {
+    if (!active || !showCommands) return;
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !formRef.current?.contains(event.target)) {
+        setControlView(null); dismissCommands(true);
+      }
+    };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [active, showCommands]);
+  useEffect(() => {
+    if (!active || !showCommands || suppressKeyboardHint) return;
+    const owner = formRef.current?.closest('.task-agent-session') ?? formRef.current;
+    const dismiss = (event: Event) => {
+      const key = event as KeyboardEvent;
+      if (key.key !== 'Escape' || key.defaultPrevented) return;
+      // IME owns the key's default action; outer Session layers must not close.
+      key.stopPropagation();
+      if (key.isComposing || key.keyCode === 229 || composing.current) return;
+      key.preventDefault(); closeControls();
+    };
+    owner?.addEventListener('keydown', dismiss);
+    return () => owner?.removeEventListener('keydown', dismiss);
+  }, [active, showCommands, suppressKeyboardHint, closeControls]);
+  useLayoutEffect(() => {
+    if (!active || !showCommands) return;
+    const body = commandBodyRef.current;
+    if (!body) return;
+    const menu = body.parentElement!, heading = menu.querySelector<HTMLElement>('.session-command-heading')!;
+    const reserveHeading = () => {
+      const frame = getComputedStyle(menu), title = getComputedStyle(heading);
+      const pixels = (value: string) => Number.parseFloat(value) || 0;
+      menu.style.setProperty('--session-command-min-height', `${heading.offsetHeight + pixels(getComputedStyle(body).minHeight) + pixels(title.marginTop) + pixels(title.marginBottom) + pixels(frame.paddingTop) + pixels(frame.paddingBottom) + pixels(frame.borderTopWidth) + pixels(frame.borderBottomWidth)}px`);
+    };
+    reserveHeading();
+    const reveal = () => {
+      const selected = body.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (!selected) return;
+      const viewport = body.getBoundingClientRect(), item = selected.getBoundingClientRect();
+      const scale = body.offsetHeight ? viewport.height / body.offsetHeight : 1;
+      // Scroll only the catalog, preserving the surrounding timeline and dialog.
+      if (item.top < viewport.top || item.height > viewport.height) body.scrollTop += (item.top - viewport.top) / scale;
+      else if (item.bottom > viewport.bottom) body.scrollTop += (item.bottom - viewport.bottom) / scale;
+    };
+    reveal();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reveal);
+    observer?.observe(body);
+    const headingObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reserveHeading);
+    headingObserver?.observe(heading);
+    return () => { observer?.disconnect(); headingObserver?.disconnect(); };
+  }, [active, showCommands, selectedIndex, text, controls]);
   async function refreshCommands() {
     if (!controlsAllowed || refreshing || !onRefreshControls) return;
     setRefreshing(true); setError(null);
@@ -144,6 +213,49 @@ export function SessionComposer({ state, connected, authPaused = false, active =
   else if (!['not_required', 'provider_accepted', 'confirmed'].includes(snapshot.initialInputState)) notice = m.initialPending;
   else if (snapshot.activity === 'working' && !snapshot.capabilities.steer) notice = m.noSteer;
   else if (!sendReady) notice = m.readOnly;
+  useLayoutEffect(() => {
+    if (!active) return;
+    const form = formRef.current!, section = form.closest('.task-agent-session');
+    const taskBody = form.closest<HTMLElement>('.task-detail-body');
+    const standalone = form.closest<HTMLElement>('.test-session-shell .content');
+    const owner = taskBody ?? standalone;
+    if (!section || !owner) return;
+    const tabs = taskBody?.querySelector<HTMLElement>('.task-detail-tabs');
+    const reserve = () => {
+      const pixels = (value: string) => Number.parseFloat(value) || 0;
+      const outerHeight = (element: HTMLElement) => {
+        const style = getComputedStyle(element);
+        return element.offsetHeight + pixels(style.marginTop) + pixels(style.marginBottom);
+      };
+      const style = getComputedStyle(form);
+      let required = pixels(style.paddingTop) + pixels(style.paddingBottom);
+      for (const child of form.children) {
+        if (!(child instanceof HTMLElement)) continue;
+        const childStyle = getComputedStyle(child);
+        required += (child.matches('.session-composer-surface, .session-command-menu') ? pixels(childStyle.minHeight) : child.offsetHeight) + pixels(childStyle.marginTop) + pixels(childStyle.marginBottom);
+      }
+      for (const child of section.children) {
+        if (child instanceof HTMLElement && child !== form && !child.classList.contains('session-timeline-shell')) required += outerHeight(child);
+      }
+      if (tabs) required += outerHeight(tabs);
+      if (standalone) {
+        const page = section.parentElement!;
+        for (const child of page.children) if (child instanceof HTMLElement && child !== section) required += outerHeight(child);
+        const frame = getComputedStyle(standalone), session = getComputedStyle(section);
+        required += pixels(frame.paddingTop) + pixels(frame.paddingBottom) + pixels(session.borderTopWidth) + pixels(session.borderBottomWidth);
+      }
+      owner.style.setProperty('--session-composer-space', `${Math.ceil(required)}px`);
+    };
+    reserve();
+    // Surrounding metadata yields space to measured controls and remains scrollable.
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reserve);
+    observer?.observe(form);
+    for (const child of section.children) observer?.observe(child);
+    if (tabs) observer?.observe(tabs);
+    for (const child of form.querySelectorAll('.session-composer-surface, .session-composer-footer, .session-command-heading')) observer?.observe(child);
+    if (standalone) for (const child of section.parentElement!.children) if (child !== section) observer?.observe(child);
+    return () => { observer?.disconnect(); owner.style.removeProperty('--session-composer-space'); };
+  }, [active, showCommands, controlView, text, error, notice]);
   async function send() {
     if (currentText.current.trimStart().startsWith('/')) {
       const match = /^\/([^\s]+)(?:\s([\s\S]*))?$/u.exec(currentText.current.trimStart());
@@ -181,15 +293,17 @@ export function SessionComposer({ state, connected, authPaused = false, active =
   }
   const commandSendAllowed = !authPaused && connected && !pending && !commandPending && (commands.some(command => command.id.startsWith('$') && `/${command.name}` === text.trim()) || controlsAllowed);
   return <form ref={formRef} className="session-composer session-composer-adaptive" onSubmit={(event) => { event.preventDefault(); void send(); }} onKeyDown={event => {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
     if (controlView || showCommands) { event.preventDefault(); event.stopPropagation(); closeControls(); }
   }}>
     <SessionControlsPanel controls={controls} state={state} intents={settingIntents} view={controlView} disabled={!controlsAllowed} onClose={closeControls} onSelect={onUpdateSetting} onRefresh={onRefreshControls} />
     {showCommands ? <div className="session-command-menu">
+      <div className="session-command-heading"><strong>{m.nativeCommands}</strong><div className="session-command-actions"><button type="button" className="inline-link" disabled={!controlsAllowed || refreshing || !onRefreshControls} onClick={() => void refreshCommands()}>{refreshing ? m.checking : m.retryCommands}</button><button type="button" className="inline-link session-command-close" onClick={closeControls}>{m.close}</button></div></div>
+      <div className="session-command-body" ref={commandBodyRef}>
       {controls?.commandsError ? <p className="session-error" role="alert">{controls.commandsError}</p> : null}
-      <div className="session-command-heading"><strong>{m.nativeCommands}</strong><button type="button" className="inline-link" disabled={!controlsAllowed || refreshing || !onRefreshControls} onClick={() => void refreshCommands()}>{refreshing ? m.checking : m.retryCommands}</button></div>
       {!controls ? <p className="session-control-note">{m.controlsUnavailable}</p> : null}
       {matchingCommands.length ? <div role="listbox" id={`${menuId}-commands`} aria-label={m.nativeCommands}>{matchingCommands.map((command, index) => <button key={command.id} id={`${menuId}-command-${index}`} type="button" role="option" aria-selected={index === selectedIndex} disabled={!command.available || authPaused || !connected || pending || commandPending} onMouseDown={event => event.preventDefault()} onClick={() => chooseCommand(command)}><strong>/{command.name}</strong><span>{command.description}</span>{command.argumentHint ? <small>{command.argumentHint}</small> : null}</button>)}</div> : <p className="session-control-note">{m.noCommands}</p>}
+      </div>
     </div> : null}
     {notice ? <p className="session-notice" role="status">{notice}</p> : null}
     <div className="session-composer-surface">

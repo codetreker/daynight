@@ -318,3 +318,5 @@
 
 /* Replaying the entrance transform changes text-anchor measurements on exit. */
 .task-detail-session-layout { animation: none; }
+
+.task-detail-body:has(.task-detail-panel-session:not([hidden])) > .task-detail-heading { max-height: min(50%, max(0px, calc(100% - var(--session-composer-space, 120px)))); }
