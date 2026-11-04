@@ -882,9 +882,14 @@ error code and duration; names and credentials are excluded. The
 | `GET` | `/api/v1/projects/{projectId}` | `200`, project |
 | `PATCH` | `/api/v1/projects/{projectId}/settings` | `200`, full project with saved settings |
 
-Creation accepts `name` and `repoUrl`, locks and validates the caller's real
-Personal Team, then atomically writes Project, ownership and creator direct admin
-grant. Canonical login UPSERT, Personal initialization and session creation share
+Creation accepts `name`, `repoUrl`, required `expectedUserId` and optional
+`teamId`. The expected user must match the principal before domain SQL. The
+caller must be a current member of the target Team; omitting it selects the
+caller's Personal Team. Creation locks the Team and atomically writes Project,
+ownership and creator direct admin grant; the response includes access projected
+in that transaction. An unconfirmed commit returns
+`write_outcome_unknown` and must not be replayed automatically. Canonical login
+UPSERT, Personal initialization and session creation share
 one transaction; repeat and concurrent login reuse the unique Team and validate
 its owner admin. Authentication does not repair broken Personal state. Internal
 Project reads require real ownership and report integrity errors for a missing

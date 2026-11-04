@@ -34,6 +34,7 @@ const projectId = "00000000-0000-4000-8000-000000000003";
 const now = "2026-10-22T10:00:00Z";
 const user = (id = userId, name = "Alice") => ({ personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id, name, email: `${name}@example.com`, emailVerified: true, avatarUrl: null });
 const project = (name = "私有项目") => ({ ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name, repoUrl: "https://github.com/example/repo", createdAt: now, updatedAt: now });
+const createdProject = (name = "私有项目", repoUrl = "https://github.com/example/repo") => ({ ...project(name), repoUrl, access: { ...directAccessFixture(projectId, userId, "admin"), teamRole: "admin", canTransfer: true } });
 const member = (id = userId, role = "admin") => ({ projectId, userId: id, name: "Alice", email: "alice@example.com", avatarUrl: null, role, version: 12, createdAt: now, updatedAt: now });
 const participant = (id = userId, role = "admin", name = "Alice") => ({ inheritedFrom: null, userId: id, profile: { name, email: "alice@example.com", avatarUrl: null }, effectiveRole: role, directGrant: { projectId, userId: id, role, version: 12, createdAt: now, updatedAt: now } });
 let serverUserId = userId;
@@ -93,7 +94,7 @@ describe("sidebar integration with the authenticated workspace", () => {
   it("refreshes the shared navigation after creating a project", async () => {
     let created = false;
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
-      if (url === "/api/v1/projects" && options?.method === "POST") { created = true; return Promise.resolve(json(project("New project"), 201)); }
+      if (url === "/api/v1/projects" && options?.method === "POST") { created = true; return Promise.resolve(json(createdProject("New project", "https://github.com/example/new-project"), 201)); }
       if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: created ? [project("New project")] : [], nextCursor: null }));
       return Promise.resolve(defaults(url));
     });
@@ -891,7 +892,7 @@ describe("authenticated application shell", () => {
     await waitFor(() => expect(meCalls).toBe(3));
     await waitFor(() => expect(document.body).not.toHaveClass("auth-session-checking"));
     expect(screen.getByRole("dialog", { name: "创建私有项目" })).toBe(dialog);
-    await act(async () => complete(json(project(), 201)));
+    await act(async () => complete(json(createdProject("Pending", "git@github.com:example/repo.git"), 201)));
     await screen.findByRole("heading", { name: "私有项目" });
   });
 
@@ -1354,7 +1355,7 @@ describe("invitation handoff", () => {
 
 describe("private project creation", () => {
   it("submits required fields, navigates to the created project, and restores native dialog cancellation", async () => {
-    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v1/projects" && options?.method === "POST" ? json(project("新项目"), 201) : defaults(url)));
+    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v1/projects" && options?.method === "POST" ? json(createdProject("  新项目  ", "git@github.com:example/repo.git"), 201) : defaults(url)));
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("button", { name: "＋ 创建项目" }));
@@ -1370,7 +1371,7 @@ describe("private project creation", () => {
     expect(repository.checkValidity()).toBe(true);
     fireEvent.submit(screen.getByRole("button", { name: "创建项目" }).closest("form")!);
     await waitFor(() => expect(window.location.pathname).toBe(`/projects/${projectId}`));
-    expect(fetcher.mock.calls.find(([, options]) => options?.method === "POST")?.[1]?.body).toBe('{"name":"新项目","repoUrl":"git@github.com:example/repo.git"}');
+    expect(fetcher.mock.calls.find(([, options]) => options?.method === "POST")?.[1]?.body).toBe(JSON.stringify({ name: "  新项目  ", repoUrl: "git@github.com:example/repo.git", expectedUserId: userId }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 

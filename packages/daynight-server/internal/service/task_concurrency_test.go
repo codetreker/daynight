@@ -232,7 +232,7 @@ func TestConcurrentReopenAndSuccessorStartPreserveStateInvariant(t *testing.T) {
 func TestTaskLockWaitCancellationAndIndependentProjectProgress(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	target := createTask(t, tasks, principal, project.ID, "Target")
-	otherProject, err := NewProjects(database).Create(context.Background(), principal, CreateProject{Name: "Other", RepoURL: "host:repo"})
+	otherProject, err := NewProjects(database).Create(context.Background(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}

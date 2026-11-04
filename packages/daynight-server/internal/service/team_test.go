@@ -113,7 +113,7 @@ func TestTeamPermissionsPersonalAndNonemptyDeletion(t *testing.T) {
 	_, err = teams.Rename(ctx, actor, personal.ID, ChangeTeam{Name: "Personal", Version: 1, ExpectedUserID: actor.UserID})
 	teamFault(t, err, "personal_team_immutable")
 	teamFault(t, teams.Delete(ctx, actor, personal.ID, ChangeTeam{Name: "Personal", Version: 1, ExpectedUserID: actor.UserID}), "personal_team_immutable")
-	project, err := NewProjects(db).Create(ctx, actor, CreateProject{Name: "Owned", RepoURL: "host:repo"})
+	project, err := NewProjects(db).Create(ctx, actor, CreateProject{ExpectedUserID: actor.UserID, Name: "Owned", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}

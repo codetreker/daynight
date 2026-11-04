@@ -169,7 +169,7 @@ export const requestId = (value: string): string => {
   return id;
 };
 
-export const listProjects = (query: { readonly limit?: number; readonly cursor?: string }, signal: AbortSignal): Promise<ProjectPage> => {
+export const listProjects = (query: { readonly limit?: number; readonly cursor?: string }, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<ProjectPage> => {
   const parameters = new URLSearchParams();
   if (query.limit !== undefined) {
     if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 100) throw new ApiError("protocol");
@@ -180,7 +180,11 @@ export const listProjects = (query: { readonly limit?: number; readonly cursor?:
     parameters.set("cursor", query.cursor);
   }
   const suffix = parameters.size === 0 ? "" : `?${parameters.toString()}`;
-  return read(`/api/v1/projects${suffix}`, signal, parseProjectPage, decodeProjectPageJson);
+  if (admission === undefined) return read(`/api/v1/projects${suffix}`, signal, parseProjectPage, decodeProjectPageJson);
+  return request(`/api/v1/projects${suffix}`, signal, { headers: { Accept: "application/json" } }).then((response) => {
+    assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+    return json(response, signal, parseProjectPage, decodeProjectPageJson);
+  });
 };
 
 export const getTaskSync = async (

@@ -183,7 +183,7 @@ test.describe('visible authentication protocol', () => {
   });
 });
 
-test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page, context, api: request, playwright }, info) => {
+test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page, context, api: request, playwright, allowBrowserWrites }, info) => {
   const baseURL = origin(info);
   const bob = await bearerContext(playwright.request, baseURL, 'bob');
   const anonymous = await playwright.request.newContext({ baseURL });
@@ -196,6 +196,27 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     const bobUser = await user(bob);
     expect(aliceUser.email).toBe(bobUser.email);
     expect(aliceUser.id).not.toBe(bobUser.id);
+    const rawName = `  Browser project ${randomUUID()}  `;
+    const rawRepo = `git@example.org:group/${randomUUID()}.git`;
+    allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 1 }]);
+    await page.goto('/projects');
+    await page.getByRole('button', { name: '＋ 创建项目' }).click();
+    const creation = page.getByRole('dialog', { name: '创建私有项目' });
+    await creation.getByLabel('项目名称').fill(rawName);
+    await creation.getByLabel('仓库地址').fill(rawRepo);
+    const responsePromise = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects` && response.request().method() === 'POST');
+    await creation.getByRole('button', { name: '创建项目', exact: true }).click();
+    const createdResponse = await responsePromise;
+    expect(createdResponse.status()).toBe(201);
+    expect(createdResponse.headers()['daynight-user-id']).toBe(aliceUser.id);
+    expect(createdResponse.request().postDataJSON()).toEqual({ name: rawName, repoUrl: rawRepo, expectedUserId: aliceUser.id });
+    const created = await createdResponse.json() as { id: string; name: string; repoUrl: string; ownership: { teamId: string }; access: { directGrant: { role: string } } };
+    expect(created.name).toBe(rawName);
+    expect(created.repoUrl).toBe(rawRepo);
+    expect(created.access.directGrant.role).toBe('admin');
+    const profile = await (await request.get('/api/v1/me')).json() as { personalTeam: { id: string } };
+    expect(created.ownership.teamId).toBe(profile.personalTeam.id);
+    await expect(page).toHaveURL(`${baseURL}/projects/${created.id}`);
     const task = await createTask(request, own.id, { title: 'Private resource boundary', description: 'Visible only to project members.', assignedTo: aliceUser.id });
     const file = attachmentDownloadUrl(own.id, task.id, 'site/index.html');
     const preview = attachmentPreviewUrl(own.id, task.id, 'site/index.html');

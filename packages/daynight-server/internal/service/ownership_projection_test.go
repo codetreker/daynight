@@ -49,7 +49,7 @@ func TestMembersAndActorAccessShareSnapshotAcrossSourceChange(t *testing.T) {
 func TestProjectAndAccessShareSnapshotAcrossOwnershipChange(t *testing.T) {
 	projects, database, databaseURL, actor := projectService(t)
 	ctx := context.Background()
-	project, err := projects.Create(ctx, actor, CreateProject{Name: "Ownership snapshot", RepoURL: "host:repo"})
+	project, err := projects.Create(ctx, actor, CreateProject{ExpectedUserID: actor.UserID, Name: "Ownership snapshot", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
