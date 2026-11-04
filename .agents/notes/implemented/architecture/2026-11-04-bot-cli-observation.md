@@ -20,6 +20,13 @@ resolves omitted settings. Deletion requires the caller's observed version.
 Bot int64 values retain their decimal-string representation through parsing,
 request construction and JSON output.
 
+Creation replay returns the persisted resource, which may already be a deletion
+tombstone. The service validates the original owner and creation fingerprint;
+the CLI checks the response principal, Bot identity and any explicit Worker.
+Only active definitions expose a name and overrides to compare. Requiring those
+fields on a tombstone would turn a confirmed replay into an unknown outcome and
+pressure callers to repeat a completed operation.
+
 Unknown writes retain the original business identity and an explicit show
 command. No automatic POST/DELETE retry or replacement identity is introduced.
 HTTP correlation IDs remain separate from business IDs. Public diagnostics

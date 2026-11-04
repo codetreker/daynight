@@ -82,6 +82,11 @@ it("exercises installed Bot and remote Worker commands outside Git against contr
         catch { failure(400, "invalid_input"); return; }
         if (request.method === "POST" && url.pathname === "/api/v1/me/bots") {
           if (typeof call.body.id !== "string" || typeof call.body.name !== "string") { failure(400, "invalid_input"); return; }
+          if (call.body.id === knownBotId) {
+            if (call.body.name !== "Existing assistant" || call.body.overrides !== undefined) { failure(409, "resource_conflict"); return; }
+            send(bots.get(knownBotId));
+            return;
+          }
           const created = bot(call.body.id, call.body.name);
           bots.set(created.id, created);
           if (loseCreateResponse) response.destroy();
@@ -185,10 +190,20 @@ it("exercises installed Bot and remote Worker commands outside Git against contr
     expect(JSON.parse(pending.stdout)).toEqual({ id: knownBotId, workerId, version: "9007199254740994", deletion: {
       deletionId, requestedVersion: largeVersion, workerCleanup: { state: "pending", code: null }, serverCleanup: { state: "pending", code: null },
     } });
+    const replayArgs = ["bot", "create", "--name", "Existing assistant", "--request-id", knownBotId, "--json"];
+    const replayPending = await run(replayArgs);
+    expect(replayPending.code, replayPending.stderr).toBe(0);
+    expect(replayPending.stderr).toBe("");
+    expect(JSON.parse(replayPending.stdout)).toEqual(JSON.parse(pending.stdout));
     cleanupCompleted = true;
     const completed = await run(deleteArgs);
     expect(completed.code, completed.stderr).toBe(0);
     expect(JSON.parse(completed.stdout).deletion).toEqual({ deletionId, requestedVersion: largeVersion, workerCleanup: { state: "completed", code: null }, serverCleanup: { state: "completed", code: null } });
+    const replayCompleted = await run(replayArgs);
+    expect(replayCompleted.code, replayCompleted.stderr).toBe(0);
+    expect(replayCompleted.stderr).toBe("");
+    expect(JSON.parse(replayCompleted.stdout)).toEqual(JSON.parse(completed.stdout));
+    expect(calls.filter((call) => call.method === "POST" && call.body?.id === knownBotId)).toHaveLength(2);
     expect(calls.filter((call) => call.method === "DELETE").map((call) => call.body)).toEqual([
       { ifVersion: largeVersion, deletionId }, { ifVersion: largeVersion, deletionId },
     ]);

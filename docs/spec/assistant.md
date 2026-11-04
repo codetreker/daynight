@@ -2,7 +2,7 @@
 
 ## 当前范围
 
-Bot 是当前用户拥有、绑定已有 Worker 的独立定义，不属于项目，也不生成 Task、claim 或 worktree。当前实现提供公开 Bot CLI、远端 Worker 查询、名字创建的默认解析、幂等定义存储、查询、删除屏障与服务端历史清理，以及绑定 Worker 使用的独立 Session 登记、grant 和启动结果报告。服务端按实际 Session 同步事实提交成功偏好；Worker 原生执行托管、Worker 私有资料清理和助手页面入口由各自组件提供。首次创建成功只表示定义已持久化，启动状态为 `pending`，不表示完整助手已可用；同请求重放保留原定义的当前启动结果。
+Bot 是当前用户拥有、绑定已有 Worker 的独立定义，不属于项目，也不生成 Task、claim 或 worktree。当前实现提供公开 Bot CLI、远端 Worker 查询、名字创建的默认解析、幂等定义存储、查询、删除屏障与服务端历史清理，以及绑定 Worker 使用的独立 Session 登记、grant 和启动结果报告。服务端按实际 Session 同步事实提交成功偏好；Worker 原生执行托管、Worker 私有资料清理和助手页面入口由各自组件提供。首次创建成功只表示定义已持久化，启动状态为 `pending`，不表示完整助手已可用；同请求重放保留原资源的当前状态，包括删除责任，不复活定义。
 
 公开 `POST /api/v1/me/bots` 接受调用方先生成的 ID 和名字，可选显式 Worker、目录和 Provider；服务端解析并冻结配置。不能通过管理接口传入 model、args 或 resolvedConfiguration。Worker 的实际目录访问与 CLI/Provider 启动仍需执行前预检，服务端接受普通绝对目录不证明其存在。
 
@@ -62,7 +62,7 @@ defaults 响应为 `{observedAt,workerId,configuration,reason,workers}`。未找
 |---|---|
 | `bot list` | 读取所有分页；JSON 为 Bot 数组，普通列表不含删除意图 |
 | `bot show <bot-id>` | 返回当前定义或最小删除责任；JSON 为 Bot 对象 |
-| `bot create --name <name>` | 可选 `--worker <uuid>`、`--cwd <path>`、`--agent <codex\|claude\|copilot>`、`--request-id <uuid>`；JSON 为实际创建或同请求重放所得 Bot |
+| `bot create --name <name>` | 可选 `--worker <uuid>`、`--cwd <path>`、`--agent <codex\|claude\|copilot>`、`--request-id <uuid>`；JSON 为实际创建或同请求重放所得 Bot（包括删除责任） |
 | `bot delete <bot-id> --if-version <version>` | 可选 `--request-id <uuid>`；只使用显式观察版本，JSON 为删除后的 Bot 责任对象 |
 | `worker list` | 读取所有分页；JSON 为 `{observedAt,items}` |
 | `worker show <worker-id>` | JSON 为 `{observedAt,worker}`，包括详细资源、任务库存及可选助手托管观测 |
@@ -70,6 +70,8 @@ defaults 响应为 `{observedAt,workerId,configuration,reason,workers}`。未找
 创建只需名字，CLI 不自行选择 Worker 或向服务端填入本地目录；服务端拥有默认解析和冻结配置。cwd 是目标 Worker 的绝对路径，不要求仓库，CLI 不创建或证明该目录存在。返回 pending 只证明定义已接受，不能报为 ready；持久 ready 也不能推导当前 Worker 在线。
 
 请求 ID 在写入前生成或使用显式值。创建请求 ID 就是 Bot ID；删除请求 ID 对应 `deletionId`，与目标 Bot ID 分开保留。提交后响应丢失、格式不合法或远端结果未知时，CLI 保留原业务 ID，提供 `daynight bot show <bot-id> --json` 核对指令，并以失败退出；不得自动重发 POST/DELETE 或生成新 ID。HTTP 响应关联 ID 不替代业务请求身份。版本冲突保留失败，不自动读取更新版本后再写入。
+
+同一创建请求在删除后重放时，服务端验证原 owner 与请求指纹，CLI 接受身份匹配的最小删除责任并显示真实清理阶段，不伪造定义或启动状态。活跃定义须匹配提交的名字和显式覆盖；删除责任不含这些字段，仍须通过 principal、Bot ID、显式 Worker、版本及清理结构校验。
 
 Bot JSON 的 version、creationOrder 和 requestedVersion 始终为十进制字符串，不经浮点数转换。删除分别显示 Worker 和服务端清理状态；任一 pending 不构成完成，只有两方均 completed 才表示完成，failed 保留错误码。CLI 遵守服务端的删除准入及真实清理阶段，不将列表隐藏解释为历史或原生进程已清理。
 

@@ -1346,10 +1346,12 @@ Creation needs only `--name`. Optional `--worker`, `--cwd` and `--agent` preserv
 explicit choices; the service resolves and freezes omitted settings. The
 specified directory belongs to the target Worker, may be outside a repository,
 and must be an absolute path for that machine. The CLI does not create it or
-substitute the local working directory. A successful response reports the actual
+substitute the local working directory. An active response reports the actual
 `startupResult`: accepting a `pending` definition does not establish a running
 or ready assistant. An existing `ready` result is a startup observation, not a
-promise that its Worker is currently online.
+promise that its Worker is currently online. Replaying the original creation
+request after deletion returns the minimal deletion responsibility and its actual
+cleanup stages, without recreating the definition or claiming startup.
 
 Creation and deletion accept `--request-id <uuid>`. When omitted, the CLI generates
 the UUID before sending the write. For creation it is the Bot ID; for deletion

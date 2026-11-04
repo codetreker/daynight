@@ -547,10 +547,11 @@ export const createApiClient = (options: {
       const name = botName(input.name);
       return exchange({ operation: "bot.create" }, "/me/bots", "POST", { kind: "json", requirePrincipal: true, parse: (value, metadata) => {
         const bot = parseBot(value, target, principal(metadata));
-        if (bot.deletion !== null || bot.name !== name || ["workerId", "cwd", "provider"].some((key) => {
+        if (input.overrides?.workerId !== undefined && bot.workerId !== input.overrides.workerId) throw new ProtocolError("Bot creation response does not match the submitted Worker.");
+        if (bot.deletion === null && (bot.name !== name || ["workerId", "cwd", "provider"].some((key) => {
           const field = key as keyof NonNullable<CreateBotInput["overrides"]>;
           return bot.requestedOverrides[field] !== input.overrides?.[field];
-        })) throw new ProtocolError("Bot creation response does not match the submitted request.");
+        }))) throw new ProtocolError("Bot creation response does not match the submitted request.");
         return bot;
       }, confirmMutation: (bot) => bot.id }, [200], { kind: "json", value: { ...input, id: target, name } });
     },

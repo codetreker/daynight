@@ -60,6 +60,43 @@ describe("public Bot commands", () => {
     expect((await run(["create", "--name", "助手", "--worker", workerId, "--cwd", overrides.cwd, "--agent", "claude", "--request-id", id])).exit).toBe(0);
     expect(JSON.parse(requests[0]!.init.body as string)).toEqual({ id, name: "助手", overrides });
   });
+  it.each(["pending", "completed"])("accepts a creation replay with a %s deletion tombstone", async (state) => {
+    const tombstone = deleted(state, state);
+    const { run, requests } = await fixture(() => json(tombstone));
+    const result = await run(["create", "--name", "助手", "--worker", workerId, "--cwd", "/ordinary", "--agent", "codex", "--request-id", id, "--json"]);
+    expect(result.exit).toBe(0);
+    expect(result.err).toBe("");
+    expect(JSON.parse(result.out)).toEqual(tombstone);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.init.method).toBe("POST");
+    expect(JSON.parse(requests[0]!.init.body as string)).toEqual({ id, name: "助手", overrides: { workerId, cwd: "/ordinary", provider: "codex" } });
+  });
+  it("renders a deleted creation replay without claiming a new definition or startup", async () => {
+    const { run } = await fixture(() => json(deleted("completed", "completed")));
+    const result = await run(["create", "--name", "助手", "--request-id", id]);
+    expect(result.exit).toBe(0);
+    expect(result.out).toContain("Deletion: completed");
+    expect(result.out).not.toContain("Startup:");
+    expect(result.out).not.toContain("Name:");
+    expect(result.err).toBe("");
+  });
+  it.each(["wrong-id", "wrong-worker", "invalid-version", "missing-principal"])("rejects a creation tombstone with %s", async (failure) => {
+    const tombstone = { ...deleted(), ...(failure === "wrong-id" ? { id: requestId } : {}), ...(failure === "wrong-worker" ? { workerId: requestId } : {}), ...(failure === "invalid-version" ? { version: bot.version } : {}) };
+    const { run, requests } = await fixture(() => failure === "missing-principal" ? new Response(JSON.stringify(tombstone), { status: 200, headers: { "content-type": "application/json" } }) : json(tombstone));
+    const result = await run(["create", "--name", "助手", "--worker", workerId, "--request-id", id, "--json"]);
+    expect(result.exit).toBe(1);
+    expect(result.out).toBe("");
+    expect(JSON.parse(result.err).error.outcomeUnconfirmed).toBe(true);
+    expect(requests).toHaveLength(1);
+  });
+  it.each(["name", "overrides"])("still rejects an active creation response with different %s", async (field) => {
+    const response = field === "name" ? { ...bot, name: "Another assistant" } : { ...bot, requestedOverrides: { provider: "codex" } };
+    const { run } = await fixture(() => json(response));
+    const result = await run(["create", "--name", "助手", "--request-id", id, "--json"]);
+    expect(result.exit).toBe(1);
+    expect(result.out).toBe("");
+    expect(JSON.parse(result.err).error.outcomeUnconfirmed).toBe(true);
+  });
   it("prints no partial list on a later-page failure", async () => {
     const { run } = await fixture((url) => url.searchParams.has("cursor") ? json({ error: { code: "internal", message: "unavailable", requestId: "page-2" } }, 500) : json({ items: [bot], nextCursor: "opaque next" }));
     const result = await run(["list", "--json"]);
