@@ -4,8 +4,8 @@ Status: implemented
 
 ## Problem
 
-A command that creates or deletes a Task-owned record must preserve the identity chosen
-before submission and distinguish a trusted receipt from a lost or malformed
+A command that creates, deletes or moves a Task-owned record must preserve the
+identity chosen before submission and distinguish a trusted receipt from a lost or malformed
 response. An unconfirmed write can already be committed, while a later local
 output failure can follow a fully confirmed write. Conflating those states can
 cause duplicate records, false rollback claims or retries after cancellation.
@@ -20,10 +20,12 @@ arguments and selects an explicit canonical eight-hex ID or one UUIDv4 first
 segment. `step-write.ts` creates a separate request UUID and freezes the actual
 project/task/Step identity, payload and version. Explicit versions send one POST;
 default versions read complete Steps once before that POST. A failed pre-read
-prevents submission. Delete uses the same version preparation and result-handling helper with a
-separate operation discriminator, original target ID and version-only payload.
-Explicit versions send one JSON DELETE; default versions read Steps first. The
-helper serves these actual operations without a registry of future mutations.
+prevents submission. Delete uses the same version preparation and result-handling
+helper with a separate operation discriminator, original target ID and
+version-only payload. Explicit versions send one JSON DELETE; default versions
+read Steps first. The shared result handler serves Add, Delete and
+[Move](2026-11-04-task-steps-cli-move.md) through operation-tagged attempts without
+a registry of future mutations.
 
 `addTaskStep` uses the existing transport, principal, JSON decoder and resource
 parser. It confirms only a 201 with canonical Location, correct scope, exact
@@ -38,11 +40,11 @@ records retain their fields, timestamps and relative order. Explicit Delete
 versions likewise do not manufacture a baseline.
 
 The existing transport confirmation marker is `confirmedMutationId`, consumed
-by Thread, Add and Delete. It is set immediately after strict receipt checks and survives
-catch/finally cleanup along with decoded refusal metadata and original causes.
+by Thread, Add, Delete and Move. It is set immediately after strict receipt checks
+and survives catch/finally cleanup along with decoded refusal metadata and original causes.
 The shared runtime accepts caller-provided safe failureText for output/cleanup;
-Thread retains its existing wording. A confirmed Add or Delete remains confirmed after
-local rendering, output or cleanup failure and exits nonzero without becoming
+Thread retains its existing wording. A confirmed Add, Delete or Move remains
+confirmed after local rendering, output or cleanup failure and exits nonzero without becoming
 unknown or requesting another business observation. Output failure may leave
 partial stdout.
 
@@ -76,8 +78,8 @@ budget and cancellation boundaries; no observation is an explicit result.
 **Confirm from a matching request-ID echo or a plausible target alone.** IDs
 are diagnostic correlation, and current presence does not establish historical
 attribution. Complete receipts check version and the operation result: new fields/times and
-placement for Add, target absence for Delete, and surviving rows when a real
-baseline exists.
+placement for Add, target absence for Delete, position for Move, and surviving
+rows when a real baseline exists.
 
 **Reuse only a generic failure message after confirmation.** This would erase a
 known committed result when local output or cleanup fails. Reusing the existing
@@ -96,10 +98,12 @@ cannot establish that the original record survived.
 
 Pure/client/command cases cover strict receipts, request counts, safe discovery,
 capacity details and lifetime failures. Installed real-server cases cover normal
-Add/Delete and lost responses after real commits. Opt-in capacity stress uses the actual
-clock and producer bytes, separate from CLI JSON bytes and routine CI. Fixture
+Add/Delete and the Move cases owned by its movement decision, including lost
+responses after real commits. Opt-in capacity stress uses the actual clock and
+producer bytes, separate from CLI JSON bytes and routine CI. Fixture
 calibration continues only after known complete results and fails on unknown
 receipts. Literal launchers, real Go/PostgreSQL interoperability and copied
-manual bytes keep their existing separate evidence owners. Update, status and
-move remain separate CLI capabilities. No Agent workflow mode, history store or
+manual bytes keep their existing separate evidence owners. Move reuses this
+result handler and adds its own position/version confirmation. Update and status
+remain separate CLI capabilities. No Agent workflow mode, history store or
 recovery queue is introduced.

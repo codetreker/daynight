@@ -67,10 +67,10 @@ describe("Bash completion rendering", () => {
     expect(update).toContain("'--external-depends-on'");
   });
 
-  it("discovers delivered Step reads, Add and Delete with separate operation options", () => {
+  it("discovers delivered Step reads, Add, Delete and Move with separate operation options", () => {
     const step = taskDefinition.commands!.find(({ name }) => name === "step")!;
     const script = renderBashCompletion(step);
-    expect(script).toContain("dn_children=('list' 'show' 'add' 'delete')");
+    expect(script).toContain("dn_children=('list' 'show' 'add' 'delete' 'move')");
     const list = renderBashCompletion(step.commands!.find(({ name }) => name === "list")!);
     expect(list).toContain("dn_options=('--project' '--json' '-h' '--help')");
     expect(list).not.toContain("'--if-version'");
@@ -83,7 +83,8 @@ describe("Bash completion rendering", () => {
     expect(remove).toContain("'--json'");
     expect(remove).not.toContain("'--title'");
     expect(script).not.toContain("'set-status'");
-    expect(script).not.toContain("'move'");
+    const move = renderBashCompletion(step.commands!.find(({ name }) => name === "move")!);
+    expect(move).toContain("'--before' '--after' '--first' '--last' '--if-version'");
   });
 
   it("discovers Thread read/post options through the registered command tree", () => {

@@ -25,6 +25,11 @@ export const runTaskStepCommand = async (command: Command, context: CliContext, 
     await runTaskStepDeleteCommand(command, context, dependencies);
     return;
   }
+  if (command.command.name === "move") {
+    const { runTaskStepMoveCommand } = await import("./step-move.js");
+    await runTaskStepMoveCommand(command, context, dependencies);
+    return;
+  }
   const name = command.command.name as "list" | "show";
   let projectId: string | undefined, taskId: string | undefined, stepId: string | undefined;
   let phase: "prepare" | "request" | "render" | "output" = "prepare";

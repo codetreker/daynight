@@ -25,6 +25,7 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
+    moveTaskStep: vi.fn<ApiClient["moveTaskStep"]>(),
     addTaskStep: vi.fn<ApiClient["addTaskStep"]>(),
     deleteTaskStep: vi.fn<ApiClient["deleteTaskStep"]>(),
     listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),

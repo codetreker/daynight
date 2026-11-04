@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { AddTaskStepInput, StepsResource } from "../../api/types.js";
+import type { AddTaskStepInput, MoveTaskStepInput, StepsResource } from "../../api/types.js";
 import { OperationError } from "../../api/operation.js";
 import type { ServerSession } from "../server/runtime.js";
 import { StepWriteFailure, stepApiFailures } from "./step-write-errors.js";
-import type { StepAddAttempt, StepDeleteAttempt, StepWriteAttempt, StepCurrentObservation } from "./step-write-errors.js";
+import type { StepAddAttempt, StepDeleteAttempt, StepMoveAttempt, StepWriteAttempt, StepCurrentObservation } from "./step-write-errors.js";
 
 export type StepAddDraft = Omit<AddTaskStepInput, "version"> & { readonly version?: bigint };
 export type StepAddResult = { readonly attempt: StepAddAttempt; readonly resource: StepsResource };
@@ -32,6 +32,14 @@ export const deleteStep = async (session: ServerSession, projectId: string, task
   const payload = Object.freeze({ version });
   const attempt = Object.freeze({ operation: "delete" as const, projectId, taskId, stepId, requestId, payload });
   return performStepWrite(session, attempt, () => session.api.deleteTaskStep(projectId, taskId, stepId, payload, { requestId, ...(previous === undefined ? {} : { previous }) }));
+};
+
+export type StepMoveDraft = Omit<MoveTaskStepInput, "version"> & { readonly version?: bigint };
+export const moveStep = async (session: ServerSession, projectId: string, taskId: string, stepId: string, draft: StepMoveDraft): Promise<{ readonly attempt: StepMoveAttempt; readonly resource: StepsResource }> => {
+  const { previous, version, requestId } = await prepareStepWrite(session, projectId, taskId, draft.version);
+  const payload: MoveTaskStepInput = Object.freeze({ ...draft, version });
+  const attempt = Object.freeze({ operation: "move" as const, projectId, taskId, stepId, requestId, payload });
+  return performStepWrite(session, attempt, () => session.api.moveTaskStep(projectId, taskId, stepId, payload, { requestId, ...(previous === undefined ? {} : { previous }) }));
 };
 
 const performStepWrite = async <Attempt extends StepWriteAttempt>(session: ServerSession, attempt: Attempt, submit: () => Promise<StepsResource>): Promise<{ readonly attempt: Attempt; readonly resource: StepsResource }> => {

@@ -53,7 +53,7 @@ describe("native zsh completion", () => {
     expect(script).toContain("(--path)--path=[Attachment relative path (default\\: source basename)]:relative-path:->text_value");
   });
 
-  it("discovers delivered Step reads, Add and Delete without future write verbs", () => {
+  it("discovers delivered Step reads, Add, Delete and Move without future write verbs", () => {
     const step = taskDefinition.commands!.find(({ name }) => name === "step")!;
     const script = renderZshCompletion(step);
     expect(script).toContain("'list:Read every Step in its saved order'");
@@ -69,6 +69,9 @@ describe("native zsh completion", () => {
     expect(remove).not.toContain("--title");
     expect(script).not.toContain("'set-status:");
     expect(script).toContain("'delete:");
+    const move = renderZshCompletion(step.commands!.find(({ name }) => name === "move")!);
+    for (const option of ["--before=", "--after=", "--first", "--last", "--if-version=", "--project=", "--json"]) expect(move).toContain(option);
+    expect(script).toContain("'move:");
   });
 
   it("offers unified status command and three-state filtering without metadata status updates", () => {

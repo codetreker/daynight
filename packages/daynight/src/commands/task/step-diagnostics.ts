@@ -37,14 +37,14 @@ const projectDiscoveryFailure = (cause: unknown, seen = new Set<unknown>()): Pro
 const discoveryMessage = (failure: ProjectDiscoveryError): string => failure.kind === "missing" ? "Project does not exist."
   : `Multiple projects match this repository (${failure.projectIds.map(stepText).join(", ")}); specify --project <id>.`;
 
-const ordinaryStepMessage = (cause: unknown, operation: "list" | "show" | "add" | "delete", phase: ReadPhase, api: ApiError | undefined): string => {
+const ordinaryStepMessage = (cause: unknown, operation: "list" | "show" | "add" | "delete" | "move", phase: ReadPhase, api: ApiError | undefined): string => {
   const discovery = projectDiscoveryFailure(cause);
   const operationFailure = api?.cause instanceof OperationError ? api.cause : cause instanceof OperationError ? cause : undefined;
   return cause instanceof UsageError ? `${cause.message} Run ${cause.helpCommand} for usage.`
     : discovery !== undefined ? discoveryMessage(discovery)
     : api?.serverMessage !== undefined ? `${api.code}: ${stepText(api.serverMessage)}`
     : operationFailure !== undefined ? operationFailure.message
-    : phase === "prepare" ? (operation === "add" || operation === "delete") ? `Could not prepare the Step ${operation === "add" ? "Add" : "Delete"}. Check configuration and authentication; run daynight login if needed.` : "Could not prepare the Steps read. Check configuration and authentication; run daynight login if needed."
+    : phase === "prepare" ? (operation === "add" || operation === "delete" || operation === "move") ? `Could not prepare the Step ${operation === "add" ? "Add" : operation === "delete" ? "Delete" : "Move"}. Check configuration and authentication; run daynight login if needed.` : "Could not prepare the Steps read. Check configuration and authentication; run daynight login if needed."
     : `Steps ${operation} failed.`;
 };
 
@@ -69,17 +69,17 @@ export class StepReadCommandError extends PublicDiagnosticError {
 }
 
 export class StepWriteCommandError extends PublicDiagnosticError {
-  constructor(cause: unknown, phase: ReadPhase, projectId?: string, taskId?: string, stepId?: string, confirmed?: StepWriteAttempt, operation: "add" | "delete" = "add") {
+  constructor(cause: unknown, phase: ReadPhase, projectId?: string, taskId?: string, stepId?: string, confirmed?: StepWriteAttempt, operation: "add" | "delete" | "move" = "add") {
     const failure = findStepWriteFailure(cause);
     const attempt = confirmed === undefined ? failure?.attempt : confirmed;
-    const verb = (attempt?.operation ?? operation) === "add" ? "Add" : "Delete";
+    const verb = (attempt?.operation ?? operation) === "add" ? "Add" : (attempt?.operation ?? operation) === "delete" ? "Delete" : "Move";
     const writeOperation = attempt?.operation ?? operation;
     const outcome = confirmed !== undefined ? "confirmed" : failure === undefined ? "failed" : failure.outcome;
     const discovery = projectDiscoveryFailure(cause);
     const api = attempt === undefined ? discovery === undefined ? apiFailure(cause) : undefined
       : stepApiFailures(cause).find((error) => error.operation === `task.step.${writeOperation}` && error.sentRequestId === attempt.requestId);
     const message = outcome === "unknown" ? `The Step ${verb} outcome is unknown.`
-      : outcome === "confirmed" ? `Step ${writeOperation === "add" ? "added" : "deleted"}. ID: ${attempt!.stepId}\nThe Step is confirmed, but local result handling failed.`
+      : outcome === "confirmed" ? `Step ${writeOperation === "add" ? "added" : writeOperation === "delete" ? "deleted" : "moved"}. ID: ${attempt!.stepId}\nThe Step is confirmed, but local result handling failed.`
       : ordinaryStepMessage(cause, writeOperation, phase, api);
     const context = ["source=cli", `operation=task.step.${writeOperation}`, `phase=${api?.phase ?? phase}`, `outcome=${outcome}`,
       ...(projectId === undefined && attempt === undefined ? [] : [`projectId=${attempt === undefined ? projectId : attempt.projectId}`]),

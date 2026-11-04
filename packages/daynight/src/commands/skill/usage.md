@@ -1,6 +1,6 @@
 ---
 name: daynight
-description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads, attachments and ordered Step reads, additions and deletions with version-safe writes and explicit write outcomes.
+description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads, attachments and ordered Step reads, additions, deletions and moves with version-safe writes and explicit write outcomes.
 ---
 
 # Daynight Project and Task Usage
@@ -69,7 +69,7 @@ daynight task step show <task-id> <step-id> --json --project <project-id>
 Steps are Task-owned ordered records with a title, Markdown description,
 `todo`/`in_progress`/`done`/`skipped` status and creation/update times. Their parent
 Task version is the collection version. Ordinary task show/list/graph output does
-not include the full collection. This CLI provides Step list/show reads and Add.
+not include the full collection. This CLI provides Step list/show reads, Add, Delete and Move.
 
 List preserves saved order and prints the parent Task version, total count and
 one-based display number, full short ID, status and complete title for each
@@ -155,6 +155,37 @@ that request; a current same-ID record need not be the original record. A
 confirmed deletion stays confirmed across local render/output/cleanup failure,
 which still exits nonzero. Cancellation and exhausted budgets create no detached
 recovery read.
+
+### Move a Step
+
+```bash
+daynight task step move <task-id> <step-id> --first --project <project-id>
+daynight task step move <task-id> <step-id> --after <anchor-id> --if-version <observed-version> --json --project <project-id>
+```
+
+Exactly one of `--before`, `--after`, `--first` or `--last` is required. Target
+and anchor IDs are complete Task-local eight-hex values, normalized to lowercase
+with leading zeros preserved. A relative anchor must be another Step in the same
+Task. Invalid combinations and self-reference fail before configuration or network
+access. Movement preserves every Step's identity, content, status and timestamps.
+Moving to the current position is a no-op; it still checks the submitted version.
+
+Explicit project/version sends one PUT to the target's position resource. Without
+`--if-version`, one complete Steps GET supplies the version before one PUT; failed
+pre-read prevents submission. Confirmation requires a complete valid resource,
+matching requested position and either the submitted version or version +1.
+With an actual pre-read, confirmation also checks every record and its times,
+all surviving relative order, and exactly no-op versus +1. Explicit versions
+retain the one-write budget and cannot compare an unobserved earlier collection.
+
+Readable success prints `Step moved. ID: <id>` and the service-confirmed order;
+`--json` emits only the complete resource and LF. Known refusals preserve service
+codes, request IDs and capacity details. Unknown Move results retain the original
+Project/Task/Step identity and request UUID, use at most one same-live-operation
+`.r1` GET to report current facts, and remain unknown with exit 1 and empty
+success stdout. No PUT is replayed. Cancellation or exhausted operation budgets
+prevent detached recovery; confirmed local output/cleanup failures retain the
+confirmed result and nonzero exit, as with Add.
 
 ## Version-Safe Writes
 

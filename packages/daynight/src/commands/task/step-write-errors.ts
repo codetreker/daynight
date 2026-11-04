@@ -1,5 +1,5 @@
 import { ApiError } from "../../api/client.js";
-import type { AddTaskStepInput, DeleteTaskStepInput } from "../../api/types.js";
+import type { AddTaskStepInput, DeleteTaskStepInput, MoveTaskStepInput } from "../../api/types.js";
 
 type StepAttemptIdentity = {
   readonly projectId: string;
@@ -9,7 +9,8 @@ type StepAttemptIdentity = {
 };
 export type StepAddAttempt = StepAttemptIdentity & { readonly operation: "add"; readonly payload: AddTaskStepInput };
 export type StepDeleteAttempt = StepAttemptIdentity & { readonly operation: "delete"; readonly payload: DeleteTaskStepInput };
-export type StepWriteAttempt = StepAddAttempt | StepDeleteAttempt;
+export type StepMoveAttempt = StepAttemptIdentity & { readonly operation: "move"; readonly payload: MoveTaskStepInput };
+export type StepWriteAttempt = StepAddAttempt | StepDeleteAttempt | StepMoveAttempt;
 export type StepCurrentObservation = { readonly version: bigint; readonly found: boolean };
 export type StepWriteOutcome = "failed" | "refused" | "unknown" | "confirmed";
 

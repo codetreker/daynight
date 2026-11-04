@@ -1468,6 +1468,7 @@ Thread scenario also verifies the [discussion contract](../../docs/spec/daynight
 | V9: mandatory infrastructure and complete CI | Missing/unavailable PostgreSQL fails the check; test-result expiration preserves real observations; the [final `checks` job](../../.github/workflows/checks.yml) accepts only `success` or `skipped` from every preceding job and rejects failures, cancellations and other results under the [repository CI rules](../../README.md#ci-selection); main pushes run all modules |
 | V10: correlation and privacy | Workflow/refusal/partial-failure/cancellation/startup scenarios verify HTTP request IDs, canonical resource IDs, structured categories and absence of submitted secret markers from logs |
 | Task Steps: installed CLI Add | [`installed_cli_task_steps_add` and `installed_cli_task_steps_add_unknown`](cmd/e2e_tests/task_steps_cli_add_acceptance_test.go) cover options, saved placement, explicit one-POST/default GET+POST budgets, exact identities/versions, known refusals and current-fact-only observation after a real committed Add loses its response |
+| Task Steps: installed CLI Move | [`installed_cli_task_steps_move` and `installed_cli_task_steps_move_unknown`](cmd/e2e_tests/task_steps_cli_move_acceptance_test.go) cover all four positions, exact explicit/default request budgets, complete saved order and unchanged Step fields/times, no-op/+1 and maximum version, refusals and factual observation after a real committed Move loses its response |
 | Task Steps: installed CLI reads | [`installed_cli_task_steps_read`](cmd/e2e_tests/task_steps_cli_acceptance_test.go) checks installed list/show against persistent production resources, empty and full item output, exact versions, saved order, short IDs, explicit-project reads, help isolation, usage/refusal failures and Task preservation; the existing fixture owns receipt/source identity and cleanup |
 | Task Thread: CLI/service contract | [`installed_cli_task_thread`](cmd/e2e_tests/acceptance_thread_cli_test.go) verifies authenticated human/Agent authors, replies and nullable snapshots, millisecond message-ID pagination, complete resource/text byte bounds, controlled refusals and unknown submissions, task immutability and owned resource cleanup |
 
@@ -1528,6 +1529,17 @@ POST, at most one same-operation UUID.r1 full GET, unknown/nonzero outcome and
 empty success stdout even when the target is currently found. Normal output and
 time bounds remain unchanged. Literal launcher behavior has its separate packed
 CLI acceptance owner.
+
+Installed Move is owned by
+[`task_steps_cli_move_acceptance_test.go`](cmd/e2e_tests/task_steps_cli_move_acceptance_test.go).
+`TestInstalledCLITaskStepsMoveAcceptance` checks the four placement modes and
+no-ops against complete persisted order, every Step field/time and unrelated
+parent metadata. It observes one explicit PUT or default GET+PUT, exact large
+versions, stale same-position and missing-anchor refusals, failed pre-read and
+maximum-version no-op. `TestInstalledCLITaskStepsMoveUnknownAfterRealCommit`
+drops the committed response and requires one PUT plus one correlated `.r1`
+GET, unknown/nonzero outcome and empty success stdout. Literal `daynight`/`dn`
+launcher, help, completion and manual checks remain in the packed CLI suite.
 
 The opt-in
 [`task_steps_cli_add_stress_test.go`](cmd/e2e_tests/task_steps_cli_add_stress_test.go)

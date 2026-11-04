@@ -29,10 +29,17 @@ export type AddTaskStepInput = {
   readonly before?: string;
   readonly after?: string;
 };
+export type MoveTaskStepInput = {
+  readonly version: bigint;
+  readonly before?: string;
+  readonly after?: string;
+  readonly position?: "first" | "last";
+};
 export type DeleteTaskStepInput = { readonly version: bigint };
 export type TaskStepsReadOptions = { readonly requestId: string };
 export type TaskStepWriteOptions = TaskStepsReadOptions & { readonly previous?: StepsResource };
 export type AddTaskStepOptions = TaskStepWriteOptions;
+export type MoveTaskStepOptions = TaskStepWriteOptions;
 
 export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskPlatform = "windows" | "linux" | "macos";
