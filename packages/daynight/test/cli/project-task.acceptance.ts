@@ -109,6 +109,9 @@ const exercise = async (): Promise<void> => {
         requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, body });
         const parts = url.pathname.split("/");
         const projectId = parts[4]!;
+        if (url.pathname === "/api/v1/me") {
+          send(response, { id: alternateId, email: null, emailVerified: null, name: null, avatarUrl: null }); return;
+        }
         if (url.pathname === "/api/v1/task-properties/schema") {
           send(response, propertySchema); return;
         }
@@ -361,7 +364,7 @@ const exercise = async (): Promise<void> => {
     for (const platform of ["windows", "linux", "macos"] as const) {
       const created = await invoke(["task", "create", "--title", "Native platform", "--required-platform", platform, ...explicit], outside, 0, true);
       expect(created.stdout).toContain(`Required platform: ${platform}`);
-      expect(requests.at(-1)!.body).toEqual({ title: "Native platform", requiredPlatform: platform });
+      expect(requests.at(-1)!.body).toEqual({ title: "Native platform", assignedTo: alternateId, requiredPlatform: platform });
       const statusAt = requests.length;
       expect((await invoke(["task", "set-status", taskId, "todo", "--if-version", "9007199254740993", ...explicit], outside, 0, true)).stdout).toContain(`Required platform: ${platform}`);
       expect(requests.slice(statusAt).map(({ method }) => method)).toEqual(["GET", "PUT"]);
@@ -393,8 +396,8 @@ const exercise = async (): Promise<void> => {
 
     const dependencyCreateAt = requests.length;
     await invoke(["task", "create", "--title", "Mixed prerequisites", "--depends-on", ordinaryId.toUpperCase(), "--external-depends-on", externalId, ...explicit], outside, 0, true);
-    expect(requests.slice(dependencyCreateAt).map(({ method }) => method)).toEqual(["GET", "POST"]);
-    expect(requests.at(-1)!.body).toEqual({ title: "Mixed prerequisites", dependsOn: [ordinaryId, externalId], externalDependsOn: [externalId] });
+    expect(requests.slice(dependencyCreateAt).map(({ method }) => method)).toEqual(["GET", "GET", "POST"]);
+    expect(requests.at(-1)!.body).toEqual({ title: "Mixed prerequisites", assignedTo: alternateId, dependsOn: [ordinaryId, externalId], externalDependsOn: [externalId] });
     expect(parseApiJson((await invoke(["task", "show", taskId, "--json", ...explicit], outside, 0, true)).stdout)).toMatchObject({ dependsOn: [ordinaryId, externalId], externalDependsOn: [externalId] });
     const dependencyCases = [
       { fields: ["--title", "Preserve prerequisites"], body: { title: "Preserve prerequisites" }, dependsOn: [ordinaryId, externalId], externalDependsOn: [externalId] },
@@ -423,7 +426,7 @@ const exercise = async (): Promise<void> => {
 
     const pullRequests = [{ url: "", title: "" }, { url: "-arbitrary=a,b", title: " 标题 ,=() " }, { url: "-arbitrary=a,b", title: " 标题 ,=() " }];
     await invoke(["task", "create", "--title", "PR task", ...explicit], outside, 0, true);
-    expect(requests.at(-1)!.body).toEqual({ title: "PR task" });
+    expect(requests.at(-1)!.body).toEqual({ title: "PR task", assignedTo: alternateId });
     expect(properties).toEqual({});
     const valueText = JSON.stringify(pullRequests);
     const setAt = requests.length;
@@ -515,7 +518,7 @@ const exercise = async (): Promise<void> => {
     // https://github.com/moxystudio/node-cross-spawn/blob/77cd97f3ca7b62c904a63a698fc4a79bf41977d0/lib/parse.js#L38-L62
     const multiline = [{ url: " arbitrary\r\nURL ", title: " 标题\n\r\u001b[2J " }, { url: "", title: "" }, { url: " arbitrary\r\nURL ", title: " 标题\n\r\u001b[2J " }];
     await invoke(["task", "create", "--title", "Multiline PR task", ...explicit], outside, 0, true, "node-entry");
-    expect(requests.at(-1)!.body).toEqual({ title: "Multiline PR task" });
+    expect(requests.at(-1)!.body).toEqual({ title: "Multiline PR task", assignedTo: alternateId });
     const multilineValue = JSON.stringify(multiline, null, 2) + "\r\n";
     const multilineVersion = propertyVersion;
     const createdMultiline = await invoke(["task", "set-property", taskId, "pullRequests", multilineValue, ...explicit], outside, 0, true, "node-entry");
@@ -544,8 +547,8 @@ const exercise = async (): Promise<void> => {
     ].join("\r\n");
     const markdownCreateAt = requests.length;
     await invoke(["task", "create", "--title", "Markdown task", "--description", markdown, ...explicit], outside, 0, true, "node-entry");
-    expect(requests.slice(markdownCreateAt).map(({ method }) => method)).toEqual(["GET", "POST"]);
-    expect(requests.at(-1)!.body).toEqual({ title: "Markdown task", description: markdown });
+    expect(requests.slice(markdownCreateAt).map(({ method }) => method)).toEqual(["GET", "GET", "POST"]);
+    expect(requests.at(-1)!.body).toEqual({ title: "Markdown task", description: markdown, assignedTo: alternateId });
     const readMarkdown = parseApiJson((await invoke(["task", "show", taskId, "--json", ...explicit], outside, 0, true)).stdout) as Task;
     expect(Buffer.from(readMarkdown.description)).toEqual(Buffer.from(markdown));
     const replacement = "## Replacement 替换\r\n\r\n- Complete field replacement\r\n\r\n[方案与验收](plan.md)\r\n";
@@ -561,8 +564,8 @@ const exercise = async (): Promise<void> => {
     const brief = markdown;
     const briefCreateAt = requests.length;
     expect((await invoke(["task", "create", "--title", "Packaged Markdown brief", "--description", brief, ...explicit], outside, 0, true, "node-entry")).stdout).toContain("Status: todo");
-    expect(requests.slice(briefCreateAt).map(({ method }) => method)).toEqual(["GET", "POST"]);
-    expect(requests.at(-1)!.body).toEqual({ title: "Packaged Markdown brief", description: brief });
+    expect(requests.slice(briefCreateAt).map(({ method }) => method)).toEqual(["GET", "GET", "POST"]);
+    expect(requests.at(-1)!.body).toEqual({ title: "Packaged Markdown brief", description: brief, assignedTo: alternateId });
     for (const status of ["todo", "in_progress", "done"] as const) {
       const actionAt = requests.length;
       await invoke(["task", "set-status", taskId, status, "--if-version", "9007199254740993", ...explicit], outside, 0, true, "node-entry");

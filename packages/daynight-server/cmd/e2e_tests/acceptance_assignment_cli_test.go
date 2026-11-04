@@ -150,11 +150,11 @@ func TestInstalledCLIAssignmentAcceptance(t *testing.T) {
 			acceptanceAssignmentSave(t, evidence, "create "+assignment, api.Task{}, task, output, nil)
 			return task
 		}
-		unassigned := create("Default unassigned")
-		if unassigned.AssignedTo != nil || unassigned.AllowAgents {
-			t.Fatal("installed default creation assigned a user or enabled automation")
+		defaultAssigned := create("Default assigned to current account")
+		if defaultAssigned.AssignedTo == nil || *defaultAssigned.AssignedTo != self.ID || defaultAssigned.AllowAgents {
+			t.Fatal("installed default creation did not assign the current account or enabled automation")
 		}
-		target := create("Explicit colleague", "--assigned-to", strings.ToUpper(other), "--depends-on", unassigned.ID)
+		target := create("Explicit colleague", "--assigned-to", strings.ToUpper(other), "--depends-on", defaultAssigned.ID)
 		if target.AssignedTo == nil || *target.AssignedTo != other || target.AllowAgents {
 			t.Fatal("installed explicit creation did not save its canonical assignee")
 		}
@@ -218,8 +218,8 @@ func TestInstalledCLIAssignmentAcceptance(t *testing.T) {
 		if string(fields["assignedTo"]) != strconv.Quote(self.ID) || string(fields["version"]) != "9007199254740994" || !reflect.DeepEqual(acceptanceCLITaskResource(t, shown), target) {
 			t.Fatal("installed JSON task output lost native assignment or its exact bigint version")
 		}
-		unassigned = acceptanceCLISetStatus(t, cli, process, evidence, unassigned, "in_progress")
-		acceptanceCLIRefusal(t, cli, process, evidence, unassigned, "invalid_transition", "task", "update", unassigned.ID, "--project", project.ID, "--if-version", strconv.FormatInt(unassigned.Version, 10), "--assigned-to", other, "--title", "Must not persist")
+		defaultAssigned = acceptanceCLISetStatus(t, cli, process, evidence, defaultAssigned, "in_progress")
+		acceptanceCLIRefusal(t, cli, process, evidence, defaultAssigned, "invalid_transition", "task", "update", defaultAssigned.ID, "--project", project.ID, "--if-version", strconv.FormatInt(defaultAssigned.Version, 10), "--assigned-to", other, "--title", "Must not persist")
 		claimed := create("Assigned automatic execution", "--assigned-to", self.ID)
 		claimed = update(claimed, &self.ID, true, true, true, "--allow-agents", "true")
 		beforeClaim := claimed
