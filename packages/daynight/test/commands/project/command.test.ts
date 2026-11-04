@@ -34,6 +34,7 @@ const fixture = (projects: readonly Project[] = []) => {
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(user),
     getTeamCurrentUser: unavailable, listTeams: unavailable, getTeam: unavailable, createTeam: unavailable, renameTeam: unavailable, deleteTeam: unavailable, listTeamProjects: unavailable,
     listTeamMembers: unavailable, setTeamMemberRole: unavailable, removeTeamMember: unavailable,
+    listBots: unavailable, getBot: unavailable, createBot: unavailable, deleteBot: unavailable, listWorkers: unavailable, getWorker: unavailable,
     reportWorker: unavailable,
     createProject: vi.fn<ApiClient["createProject"]>().mockResolvedValue(project),
     listProjects: vi.fn<ApiClient["listProjects"]>().mockResolvedValue(projects),
