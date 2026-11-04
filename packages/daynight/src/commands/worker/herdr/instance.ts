@@ -306,6 +306,8 @@ export const createHerdrInstance = (options: {
           await pause(scope);
         }
       } catch (error) {
+        // Retained resources remain journal-owned without keeping the failed Worker alive.
+        if (options.retainOnStartupFailure) startedHere?.child.unref();
         if (startedHere !== null && !startedHere.closed && !options.retainOnStartupFailure) {
           try { killOwnedChild(startedHere); }
           catch (cause) { throw new AggregateError([error, cause], "Private Herdr startup failed and its owned process could not be terminated."); }

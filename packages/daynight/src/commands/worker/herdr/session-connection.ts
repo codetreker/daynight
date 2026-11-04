@@ -35,8 +35,7 @@ const assertHistory = (record: HerdrLifecycleRecord, observed: HerdrSessionState
 const reconcileRegistration = async (store: HerdrLifecycleStore, record: HerdrLifecycleRecord, api: HerdrSessionApi, signal?: AbortSignal): Promise<HerdrLifecycleRecord> => {
   const request = record.registrationRequest;
   if (request === null) return reject();
-  const observed = await api.current({ owner: record.owner, claimId: record.claimId }, signal);
-  if (observed.status !== "registered") return reject();
+  const observed = await api.state(stateIdentity(record), signal);
   assertHistory(record, observed);
   const expectedEpoch = String(BigInt(request.payload.connectionEpoch ?? "0") + 1n);
   if (observed.executionGeneration !== request.executionGeneration || observed.connectionEpoch !== expectedEpoch || !same(observed.binding, request.payload.binding)) return reject();

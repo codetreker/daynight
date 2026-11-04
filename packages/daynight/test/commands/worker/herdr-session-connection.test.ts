@@ -23,12 +23,15 @@ const stateFor = (record: HerdrLifecycleRecord, epoch = "1"): HerdrSessionState 
 const fixture = async () => {
   let observed: HerdrSessionState | null = null, loseRegistration = false, loseLedger = false, commitRegistration = true, commitLedger = true;
   let beforeRegistration: (() => void) | undefined, beforeLedger: (() => void) | undefined, stateStatus = 0;
-  const registrations: Registration[] = [], ledgers: Ledger[] = [], epochs: string[] = [];
+  let currentResponse: unknown;
+  const registrations: Registration[] = [], ledgers: Ledger[] = [], epochs: string[] = [], reads: string[] = [];
   const server = createServer((req, res) => {
     const reply = (value: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(value)); };
     if (req.method === "GET") {
+      reads.push(req.url!);
       if (req.url?.endsWith("session-capabilities")) return reply({ protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, providers: ["codex", "claude", "copilot"], backends: ["herdr"], recordingResponsibilityVersion: 1, controlDispatchVersion: 1, workerCapabilitiesRequired: true });
       if (stateStatus !== 0) { res.statusCode = stateStatus; return reply({ error: "state unavailable" }); }
+      if (req.url?.endsWith("/current") && currentResponse !== undefined) return reply(currentResponse);
       if (observed !== null) return reply(observed);
       if (req.url?.endsWith("/current")) return reply({ status: "not_registered", protocol: "daynight.session.v2", claimId: uuid(6), agentControlMode: "herdr" });
       res.statusCode = 404; return reply({ error: "missing" });
@@ -58,9 +61,9 @@ const fixture = async () => {
   let record = store.create({ owner, claimId: identity.claimId, cwd: directory });
   const run: HerdrLocalRun = { run: { executionGeneration: "1", owner, binding: { instanceId: "daemon-one", sessionId: "w", workspaceId: "workspace-one", paneId: "pane-one", terminalId: "terminal-one", nativeSessionId: uuid(10) }, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", instanceDirectory: directory, daemon: null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null };
   record = store.update(record, draft => { draft.runs.push(run); });
-  return { store, identity, record, api: createHerdrSessionApi(origin, "test-worker"), registrations, ledgers, epochs,
+  return { store, identity, record, api: createHerdrSessionApi(origin, "test-worker"), registrations, ledgers, epochs, reads,
     get state() { return observed; }, set state(value: HerdrSessionState | null) { observed = structuredClone(value); },
-    configure(value: { loseRegistration?: boolean; loseLedger?: boolean; commitRegistration?: boolean; commitLedger?: boolean; beforeRegistration?: () => void; beforeLedger?: () => void; stateStatus?: number }) { loseRegistration = value.loseRegistration ?? loseRegistration; loseLedger = value.loseLedger ?? loseLedger; commitRegistration = value.commitRegistration ?? commitRegistration; commitLedger = value.commitLedger ?? commitLedger; beforeRegistration = value.beforeRegistration ?? beforeRegistration; beforeLedger = value.beforeLedger ?? beforeLedger; stateStatus = value.stateStatus ?? stateStatus; },
+    configure(value: { loseRegistration?: boolean; loseLedger?: boolean; commitRegistration?: boolean; commitLedger?: boolean; beforeRegistration?: () => void; beforeLedger?: () => void; stateStatus?: number; currentResponse?: unknown }) { loseRegistration = value.loseRegistration ?? loseRegistration; loseLedger = value.loseLedger ?? loseLedger; commitRegistration = value.commitRegistration ?? commitRegistration; commitLedger = value.commitLedger ?? commitLedger; beforeRegistration = value.beforeRegistration ?? beforeRegistration; beforeLedger = value.beforeLedger ?? beforeLedger; stateStatus = value.stateStatus ?? stateStatus; currentResponse = value.currentResponse ?? currentResponse; },
   };
 };
 const stop = (f: Awaited<ReturnType<typeof fixture>>) => {
@@ -87,6 +90,28 @@ describe("persistent Herdr Session connection", () => {
     const f = await fixture(); f.store.update(f.record, draft => { draft.registrationRequest = requestFor(draft); }); f.state = stateFor(f.record);
     await connectHerdrSession(f.store, f.identity, f.api);
     expect(f.registrations).toHaveLength(0); expect(f.store.get(f.identity)!.connectionEpoch).toBe("1");
+  });
+  it.each(["withdrawn", "replaced"])("recovers the original reconnect after its claim is %s before publishing the stop", async claimState => {
+    const f = await fixture(); f.store.update(f.record, draft => { draft.connectionEpoch = "1"; }); f.state = stateFor(f.record);
+    f.configure({ loseRegistration: true, beforeRegistration: () => { f.configure({ stateStatus: 503 }); } });
+    await expect(connectHerdrSession(f.store, f.identity, f.api)).rejects.toThrow();
+    const pending = f.store.get(f.identity)!.registrationRequest;
+    expect(pending).toMatchObject({ sessionId: f.record.sessionId, claimId: f.identity.claimId, payload: { mode: "reconnect", connectionEpoch: "1" } });
+    expect(f.state!.connectionEpoch).toBe("2");
+    f.configure({ stateStatus: 0, currentResponse: claimState === "withdrawn"
+      ? { status: "not_applicable", protocol: "daynight.session.v2" }
+      : { ...stateFor(f.record), sessionId: uuid(99), claimId: uuid(98) } });
+    const stopped = stop(f);
+    const reopened = openHerdrLifecycleStore(path.join(f.record.cwd, "journal.sqlite")); stores.push(reopened);
+    expect(reopened.get(f.identity)!.registrationRequest).toEqual(pending);
+    f.reads.length = 0;
+    await publishHerdrLedger(reopened, f.identity, f.api);
+    expect(f.registrations).toHaveLength(1); expect(f.epochs).toEqual(["2"]);
+    expect(f.ledgers).toEqual([{ ...base(stopped), type: "generation_ledger", payload: { runs: stopped.runs.map(run => run.run), finalizationId: null } }]);
+    expect(reopened.get(f.identity)).toMatchObject({ connectionEpoch: "2", registrationRequest: null, ledgerRequest: null });
+    expect(reopened.get(f.identity)!.publishedLedgerHash).not.toBeNull();
+    expect(f.reads.length).toBeGreaterThan(0);
+    expect(f.reads.every(url => url.endsWith(`/${f.record.sessionId}/state`))).toBe(true);
   });
   it("retains unknown registration when no matching result is observable", async () => {
     const f = await fixture(); f.configure({ loseRegistration: true, commitRegistration: false });
