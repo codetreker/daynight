@@ -3,12 +3,122 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func TestTransferTeamReadsMinimalMetadataAndPreservesFailures(t *testing.T) {
+	s, actor, _, project := membershipFixture(t)
+	ctx := context.Background()
+	ordinary, err := s.CreateTeam(ctx, actor.UserID, uuid.NewString(), "Target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		personal, err := snapshot.TransferTeam(ctx, project.Ownership.TeamID)
+		if err != nil || personal.Ref.ID != project.Ownership.TeamID || personal.Ref.Kind != "personal" || personal.Ref.Name != nil || personal.Version != 1 {
+			t.Fatalf("personal Team: %#v %v", personal, err)
+		}
+		target, err := snapshot.TransferTeam(ctx, ordinary.ID)
+		if err != nil || target.Ref.ID != ordinary.ID || target.Ref.Kind != "ordinary" || target.Ref.Name == nil || *target.Ref.Name != "Target" || target.Version != ordinary.Version {
+			t.Fatalf("ordinary Team: %#v %v", target, err)
+		}
+		_, err = snapshot.TransferTeam(ctx, uuid.NewString())
+		if !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("missing Team: %v", err)
+		}
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err = snapshot.TransferTeam(cancelled, ordinary.ID)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled Team lookup: %v", err)
+		}
+		return nil
+	})
+	// A canceled query can close the transaction's connection; the lookup's
+	// error above is the observable result and the snapshot cleanup may fail.
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatal(err)
+	}
+}
+
+func TestTransferOwnershipMissingAndCanceledLock(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cancelled", true: "missing"}[missing], func(t *testing.T) {
+			s, _, _, project := membershipFixture(t)
+			ctx := context.Background()
+			if missing {
+				mustQueryExec(t, s, `DELETE FROM project_ownership WHERE project_id=$1`, project.ID)
+			}
+			raw, err := s.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer raw.Rollback(ctx)
+			tx := &ProjectTx{tx: raw, projectID: project.ID}
+			queryCtx := ctx
+			if !missing {
+				var cancel context.CancelFunc
+				queryCtx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			_, err = tx.LockTransferOwnership(queryCtx)
+			if missing && (err == nil || errors.Is(err, core.ErrNotFound) || !strings.Contains(err.Error(), "ownership is missing")) {
+				t.Fatalf("missing ownership must be an integrity failure: %v", err)
+			}
+			if !missing && !errors.Is(err, context.Canceled) {
+				t.Fatalf("lock cancellation lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestTransferUpdateFailureRollsBackOwnershipAndProject(t *testing.T) {
+	for _, table := range []string{"project_ownership", "projects"} {
+		t.Run(table, func(t *testing.T) {
+			s, actor, _, project := membershipFixture(t)
+			ctx := context.Background()
+			target, err := s.CreateTeam(ctx, actor.UserID, uuid.NewString(), "Target")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var beforeUpdated time.Time
+			if err := s.Pool.QueryRow(ctx, `SELECT updated_at FROM projects WHERE id=$1`, project.ID).Scan(&beforeUpdated); err != nil {
+				t.Fatal(err)
+			}
+			mustQueryExec(t, s, `CREATE FUNCTION refuse_transfer_update() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN RAISE EXCEPTION USING ERRCODE='P0001', MESSAGE='transfer update rejected'; END $$;
+ CREATE TRIGGER refuse_transfer_update BEFORE UPDATE ON `+table+` FOR EACH ROW EXECUTE FUNCTION refuse_transfer_update()`)
+			err = s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+				if _, err := tx.LockTransferOwnership(ctx); err != nil {
+					return err
+				}
+				_, err := tx.MoveOwnership(ctx, target.ID)
+				return err
+			})
+			var postgres *pgconn.PgError
+			if !errors.As(err, &postgres) || postgres.Code != "P0001" {
+				t.Fatalf("database rejection was lost: %v", err)
+			}
+			var owner string
+			var version int64
+			var updated time.Time
+			if err := s.Pool.QueryRow(ctx, `SELECT o.team_id::text,o.version,p.updated_at FROM project_ownership o
+ JOIN projects p ON p.id=o.project_id WHERE p.id=$1`, project.ID).Scan(&owner, &version, &updated); err != nil {
+				t.Fatal(err)
+			}
+			if owner != project.Ownership.TeamID || version != project.Ownership.Version || !updated.Equal(beforeUpdated) {
+				t.Fatalf("failed transfer committed partial state: owner=%s version=%d updated=%s", owner, version, updated)
+			}
+		})
+	}
+}
 
 func TestTransferCommitResponseLossRemainsUnknown(t *testing.T) {
 	s := isolatedStore(t)

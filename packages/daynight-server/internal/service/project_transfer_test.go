@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -140,5 +142,118 @@ func TestTransferValidationBeforeDomainSQL(t *testing.T) {
 	transferFault(t, err, "identity_mismatch")
 	if count.Load() != 0 {
 		t.Fatalf("identity mismatch executed %d queries", count.Load())
+	}
+}
+
+func TestTransferInvalidInputsAndCancellation(t *testing.T) {
+	projects, db, _, actor := projectService(t)
+	ctx := context.Background()
+	project, err := projects.Create(ctx, actor, CreateProject{Name: "Validation", RepoURL: "host:repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := TransferInput{Ownership: project.Ownership, TargetTeam: TeamVersion{ID: project.Ownership.TeamID, Version: 1}, ExpectedUserID: actor.UserID}
+	_, err = projects.TransferPreview(ctx, core.Principal{}, project.ID, valid.TargetTeam.ID)
+	transferFault(t, err, "unauthenticated")
+	_, err = projects.TransferPreview(ctx, actor, "bad", valid.TargetTeam.ID)
+	transferFault(t, err, "invalid_input")
+	_, err = projects.TransferPreview(ctx, actor, project.ID, strings.ToUpper(valid.TargetTeam.ID))
+	transferFault(t, err, "invalid_input")
+	_, err = projects.Transfer(ctx, core.Principal{}, project.ID, valid)
+	transferFault(t, err, "unauthenticated")
+	_, err = projects.Transfer(ctx, actor, "bad", valid)
+	transferFault(t, err, "invalid_input")
+	for _, mutate := range []func(*TransferInput){
+		func(input *TransferInput) { input.Ownership.TeamID = "bad" },
+		func(input *TransferInput) { input.TargetTeam.ID = "bad" },
+		func(input *TransferInput) { input.Ownership.Version = 0 },
+		func(input *TransferInput) { input.TargetTeam.Version = 0 },
+		func(input *TransferInput) { input.ExpectedUserID = "bad" },
+	} {
+		input := valid
+		mutate(&input)
+		_, err := projects.Transfer(ctx, actor, project.ID, input)
+		transferFault(t, err, "invalid_input")
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = projects.TransferPreview(canceled, actor, project.ID, valid.TargetTeam.ID)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled preview: %v", err)
+	}
+	_, err = projects.Transfer(canceled, actor, project.ID, valid)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled transfer: %v", err)
+	}
+	var owner string
+	var version int64
+	if err := db.Pool.QueryRow(ctx, `SELECT team_id::text,version FROM project_ownership WHERE project_id=$1`, project.ID).Scan(&owner, &version); err != nil || owner != project.Ownership.TeamID || version != project.Ownership.Version {
+		t.Fatalf("failed input or cancellation changed ownership: %s %d %v", owner, version, err)
+	}
+}
+
+func TestTransferUnavailableAndVersionExhaustion(t *testing.T) {
+	projects, db, _, actor := projectService(t)
+	ctx := context.Background()
+	project, err := projects.Create(ctx, actor, CreateProject{Name: "Exhaustion", RepoURL: "host:repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := uuid.NewString()
+	_, err = projects.TransferPreview(ctx, actor, project.ID, missing)
+	transferFault(t, err, "not_found")
+	input := TransferInput{Ownership: project.Ownership, TargetTeam: TeamVersion{ID: missing, Version: 1}, ExpectedUserID: actor.UserID}
+	_, err = projects.Transfer(ctx, actor, project.ID, input)
+	transferFault(t, err, "not_found")
+	_, err = projects.TransferPreview(ctx, actor, uuid.NewString(), missing)
+	transferFault(t, err, "not_found")
+	_, err = projects.Transfer(ctx, actor, uuid.NewString(), input)
+	if !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("missing project error: %v", err)
+	}
+	other := servicePrincipal(t, db)
+	target := newTestTeam(t, NewTeams(db), other, "Destination")
+	if _, err := db.Pool.Exec(ctx, `UPDATE project_ownership SET version=$2 WHERE project_id=$1`, project.ID, int64(math.MaxInt64)); err != nil {
+		t.Fatal(err)
+	}
+	input.Ownership.Version = math.MaxInt64
+	input.TargetTeam = TeamVersion{ID: target.ID, Version: target.Version}
+	_, err = projects.Transfer(ctx, actor, project.ID, input)
+	transferFault(t, err, "version_exhausted")
+	input.TargetTeam = TeamVersion{ID: project.Ownership.TeamID, Version: 1}
+	result, err := projects.Transfer(ctx, actor, project.ID, input)
+	if err != nil || result.Changed || result.Ownership.Version != math.MaxInt64 {
+		t.Fatalf("verified no-op with exhausted version: %#v %v", result, err)
+	}
+}
+
+func TestTransferDatabaseFailuresDoNotMasqueradeAsRejection(t *testing.T) {
+	projects, db, _, actor := projectService(t)
+	ctx := context.Background()
+	project, err := projects.Create(ctx, actor, CreateProject{Name: "Database failure", RepoURL: "host:repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := TransferInput{Ownership: project.Ownership, TargetTeam: TeamVersion{ID: project.Ownership.TeamID, Version: 1}, ExpectedUserID: actor.UserID}
+	if _, err := db.Pool.Exec(ctx, `DROP TABLE project_grants`); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []func() error{
+		func() error {
+			_, err := projects.TransferPreview(ctx, actor, project.ID, input.TargetTeam.ID)
+			return err
+		},
+		func() error { _, err := projects.Transfer(ctx, actor, project.ID, input); return err },
+	} {
+		err := operation()
+		var refusal *Fault
+		if err == nil || errors.As(err, &refusal) {
+			t.Fatalf("database failure became success or refusal: %v", err)
+		}
+	}
+	var owner string
+	var version int64
+	if err := db.Pool.QueryRow(ctx, `SELECT team_id::text,version FROM project_ownership WHERE project_id=$1`, project.ID).Scan(&owner, &version); err != nil || owner != project.Ownership.TeamID || version != project.Ownership.Version {
+		t.Fatalf("database failure changed ownership: %s %d %v", owner, version, err)
 	}
 }
