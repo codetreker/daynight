@@ -17,7 +17,7 @@ const timestamp = "2026-10-27T00:00:00Z";
 const projects = [
   { id: firstId, name: "First project 中文", repoUrl: "https://github.com/WorkerAcceptance/First.git" },
   { id: secondId, name: "Second project", repoUrl: "https://github.com/WorkerAcceptance/Second.git" },
-].map((project) => ({ ...project, settings: { version: 1, executionWarningMinutes: 60 }, createdAt: timestamp, updatedAt: timestamp }));
+].map((project) => ({ ...project, settings: { version: 1, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1 }, createdAt: timestamp, updatedAt: timestamp }));
 const addPrompt = "Run tasks from which existing Daynight Projects?";
 const removePrompt = "Remove which existing Daynight Projects from worker configuration?";
 const token = "worker-repository-fixture-credential";
