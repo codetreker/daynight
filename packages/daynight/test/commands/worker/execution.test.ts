@@ -401,6 +401,7 @@ describe("execution from current Herdr resources", () => {
     "Effects\nConfigure visual effects\n› 1. [ ] Animations                 Animate the welcome screen, working\n                                    indicator, and transitions\n     [-] Composer stars (disabled)  Turn on Animations to show Astra task stars\nenter toggle · esc back",
     "Keymap\nAll configurable shortcuts.\n› Action 08  Ctrl+8\nleft/right group · enter edit · esc close",
     ...nativeMenuScreens.map(menu => menu.screen),
+    ...["fwd del", "delete", "⌃x fwd del"].map(key => nativeMenuScreens.find(menu => menu.name === "hooks_browser_handlers")!.screen.replace("esc back", `${key} back`)),
   ])("keeps a continuation decision available while a Codex picker reports unchanged idle readiness: %s", async menu => {
     const f = await fixture("codex", staleId);
     f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });

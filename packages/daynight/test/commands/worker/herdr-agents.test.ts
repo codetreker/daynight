@@ -9,6 +9,7 @@ import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/a
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
 import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
+import { nativeKeyDisplays } from "../../fixtures/native-key-displays.js";
 
 type Entry = Record<string, unknown>;
 const directories: string[] = [];
@@ -224,6 +225,15 @@ describe("native argument ownership", () => {
 });
 
 describe("direct task resource management", () => {
+  it.each(nativeKeyDisplays)("keeps input unsent for production $platform key display $spec = $display", async ({ display }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const screen = nativeMenuScreens.find(menu => menu.name === "hooks_browser_handlers")!.screen;
+    f.screen.text = screen.replace("esc back", `${display} back`);
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
   it.each(nativeMenuScreens)("keeps initial and continuation input unsent in the native $name menu", async ({ screen }) => {
     const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation()); f.screen.text = screen;
     await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
@@ -835,7 +845,7 @@ describe("direct task resource management", () => {
   it.each([
     "space toggle · ←/→ reorder · enter save · esc cancel",
     "space toggle · h/l reorder · f3 save · f2 cancel",
-    "space toggle · ctrl+x left/ctrl+x right reorder · f3 save · f2 cancel",
+    "space toggle · ctrl+x ←/ctrl+x → reorder · f3 save · f2 cancel",
     "space toggle · ←/→ reorder ·\nenter save · esc cancel",
     "space toggle · enter save · esc cancel",
     "space toggle · esc cancel",
@@ -898,6 +908,8 @@ describe("direct task resource management", () => {
     { agent: "codex" as const, screen: "A discussion of checkbox controls\nspace/enter toggle · esc back" },
     { agent: "codex" as const, screen: "A discussion of saving settings\nspace toggle · enter save/select · esc cancel" },
     { agent: "codex" as const, screen: "› [x] A literal draft\nenter send · esc cancel" },
+    ...["insert", "return", "page up", "page down", "back tab", "caps lock", "media play", "f25", "λ", "🚀"].map(key => ({ agent: "codex" as const, screen: `A checkbox discussion\n› [x] Existing option\nspace/enter toggle · ${key} back` })),
+    ...["delete", "fwd del", "⌃fwd del"].map(key => ({ agent: "codex" as const, screen: `› 1. Historical model\nenter select · esc back\n› ${key} back` })),
     { agent: "codex" as const, screen: `${configurationMenu}\n\n› A custom current composer` },
     { agent: "codex" as const, screen: `${keymapMenu}\n\n› Continue` },
     { agent: "codex" as const, screen: "› Arbitrary business row\nleft/right group · enter edit · esc close" },

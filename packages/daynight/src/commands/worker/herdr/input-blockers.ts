@@ -4,9 +4,14 @@ export type NativeInputBlocker = "menu" | "disabled";
 
 const footerGap = String.raw`(?:[ \t]+|[ \t]*\n[ \t]*)`;
 const footerSeparator = String.raw`[ \t]*(?:\n[ \t]*)?·[ \t]*(?:\n[ \t]*)?`;
-// ShortcutHint renders one key or a two-key chord; runtime bindings also replace Enter/Esc.
+// cfg(test) snapshots force backspace/del; production macOS renders delete/fwd del.
+// Only names admitted by the Codex keymap parser are relevant, not every Crossterm enum.
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/key_hint.rs#L68-L122
-const footerKey = String.raw`(?:(?:ctrl|shift|alt|super)\+|[⌃⇧⌥⌘^])*(?:enter|esc|tab|home|end|pgup|pgdn|space|backspace|del|insert|left|right|up|down|f\d{1,2}|[^\s·›»❯])`;
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/keymap.rs#L2709-L2760
+// https://github.com/openai-oss-forks/crossterm/blob/ed1cdab335221515706178d68495bba2aed1924f/src/event.rs#L1453-L1515
+const footerModifiers = String.raw`(?:⌃?⇧?⌥?⌘?|(?:\^|ctrl\+)?(?:shift\+)?(?:alt\+)?(?:super\+)?)`;
+const footerKeyName = `(?:fwd${footerGap}del|enter|esc|tab|home|end|pgup|pgdn|space|backspace|delete|del|f(?:[1-9]|1\\d|2[0-4])|[↑↓←→]|[!-~])`;
+const footerKey = `${footerModifiers}${footerKeyName}`;
 const footerShortcut = `${footerKey}(?:${footerGap}${footerKey})?`;
 const pickerAccept = `${footerShortcut}${footerGap}(?:select|default|apply|toggle|open|choose|confirm|continue(?:${footerGap}and${footerGap}create${footerGap}sandbox)?)`;
 const pickerCancel = `${footerShortcut}${footerGap}(?:back|close|quit|cancel|skip)`;
@@ -19,7 +24,9 @@ const pickerFooter = `${pickerAccept}(?:${footerSeparator}${pickerExtra})*(?:${f
 const textualFooter = `Press${footerGap}${footerShortcut}${footerGap}to${footerGap}confirm${footerGap}or${footerGap}${footerShortcut}${footerGap}to${footerGap}(?:go${footerGap}back|cancel|continue${footerGap}working)(?:${footerGap}or${footerGap}${footerShortcut}${footerGap}to${footerGap}open${footerGap}thread)?`;
 // Configuration menus have group/search hints and distinct search cancellation labels.
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/config_panel/render.rs#L349-L430
-const configurationGroup = `${footerShortcut}(?:/${footerShortcut})?${footerGap}group`;
+const configurationGroupKey = `${footerModifiers}(?:${footerKeyName}|left|right)`;
+const configurationGroupShortcut = `${configurationGroupKey}(?:${footerGap}${configurationGroupKey})?`;
+const configurationGroup = `${configurationGroupShortcut}(?:/${configurationGroupShortcut})?${footerGap}group`;
 const configurationSearch = `${footerShortcut}${footerGap}search`;
 const configurationAccept = `${footerShortcut}${footerGap}(?:toggle|open|test)`;
 const configurationCancel = `${footerShortcut}${footerGap}clear${footerGap}search(?:/close)?`;
