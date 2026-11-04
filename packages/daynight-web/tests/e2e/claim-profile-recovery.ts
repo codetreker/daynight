@@ -30,7 +30,7 @@ export const verifyClaimProfileRecovery = async (page: Page, api: AuthenticatedA
   const ownerLabel = owner.profile.name ?? owner.profile.email ?? owner.userId;
   const membersURL = `**/api/v1/projects/${project.id}/members`;
   const accessURL = `**/api/v1/projects/${project.id}/access`;
-  let responseKind: 'network' | 'legacy' | 'ready' | 'missing' = 'network';
+  let responseKind: 'network' | 'legacy' | 'ready' = 'network';
   let membersReads = 0;
   let releaseAccess: (() => void) | undefined;
   let holdAccess = false;
@@ -49,10 +49,6 @@ export const verifyClaimProfileRecovery = async (page: Page, api: AuthenticatedA
         projectId: project.id, userId: caller.id, ...owner.profile, role: 'admin', version: 1,
         createdAt: project.createdAt, updatedAt: project.updatedAt,
       }] }) });
-      return;
-    }
-    if (responseKind === 'missing') {
-      await route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Daynight-User-ID': caller.id }, body: '{"items":[]}' });
       return;
     }
     await fulfillAuthenticatedResponse(route, await api.get(`/api/v1/projects/${project.id}/members`));
@@ -123,7 +119,7 @@ export const verifyClaimProfileRecovery = async (page: Page, api: AuthenticatedA
     const readyScreenshot = info.outputPath('claim-profile-recovered.png');
     await page.screenshot({ path: readyScreenshot });
     await info.attach('claim-profile-recovered', { path: readyScreenshot, contentType: 'image/png' });
-    const finalResponse = await api.get(endpoint);
+    const finalResponse = await api.get(endpoint, { headers: { 'Daynight-Worker-Protocol': '2' } });
     expect(finalResponse.status()).toBe(200);
     const final = await finalResponse.json() as Task;
     expect(final.version).toBe(claimed.version);
