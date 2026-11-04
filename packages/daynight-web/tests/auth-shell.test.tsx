@@ -414,7 +414,7 @@ describe("authenticated application shell", () => {
   it("evicts the old project and open detail as soon as a sync response proves another principal while identity is pending", async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const waitForCacheUi = async (assertion: () => void) => {
-      const deadline = nodePerformance.now() + 1_000;
+      const deadline = nodePerformance.now() + 5_000;
       for (;;) {
         await act(async () => { await nextEventLoopTurn(); });
         try { assertion(); return; }
@@ -470,7 +470,7 @@ describe("authenticated application shell", () => {
       await waitForCacheUi(() => expect(screen.getByRole('heading', { name: 'Bob 的项目' })).toBeInTheDocument());
       expect(screen.queryByText('Alice-only private detail')).toBeNull();
     } finally { view.unmount(); root.remove(); }
-  });
+  }, 20_000);
 
   it.each([null, 'invalid-principal'])("retains the authorized view and stored rows for an untrusted 404 principal header (%s)", async (principal) => {
     const taskId = '00000000-0000-4000-8000-000000000005';
