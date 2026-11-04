@@ -26,6 +26,11 @@ describe("route parsing", () => {
     expect(parseRoute(task, "?tab=session")).toEqual({ kind: "task", projectId, taskId, tab: "session", path: null });
     expect(taskDetailUrl(projectId, taskId, { tab: "session", path: null })).toBe(`${task}?tab=session`);
     expect(parseRoute(task, "?tab=attachments")).toEqual({ kind: "task", projectId, taskId, tab: "attachments", path: null });
+    expect(parseRoute(task, "?tab=steps")).toEqual({ kind: "task", projectId, taskId, tab: "steps", path: null });
+    expect(taskDetailUrl(projectId, taskId, { tab: "steps", path: null })).toBe(`${task}?tab=steps`);
+    expect(parseRoute(`${task}/attachments/result.md`, "?tab=steps")).toEqual({ kind: "attachment", projectId, taskId, tab: "steps", path: "result.md" });
+    expect(taskDetailUrl(projectId, taskId, { tab: "steps", path: "result.md" })).toBe(`${task}/attachments/result.md?tab=steps`);
+    expect(isLoginReturnPath(`${task}?tab=steps`)).toBe(true);
     expect(parseRoute(`${task}/attachments/docs/a.md`, "?tab=overview")).toEqual({ kind: "attachment", projectId, taskId, tab: "overview", path: "docs/a.md" });
     for (const search of ["?tab=", "?tab=invalid", "?tab=overview&tab=attachments", "?tab=%ZZ"]) expect(parseRoute(task, search)).toEqual({ kind: "notFound" });
     expect(taskDetailUrl(projectId, taskId, { tab: "overview", path: null })).toBe(task);
@@ -141,6 +146,10 @@ describe("explicit login destinations", () => {
 
   it("rejects duplicate destinations and retains the invitation lifetime only for its effective destination", () => {
     expect(parseLoginReturnPath("?returnPath=%2Fprojects&returnPath=%2Finvitations")).toBeNull();
+    expect(parseAuthRoute("/team-invitations")).toEqual({ kind: "teamInvitations" });
+    expect(isLoginReturnPath("/team-invitations")).toBe(true);
+    expect(invitationLocation("/team-invitations", "")).toBe(true);
+    expect(invitationLocation("/login", "?returnPath=%2Fteam-invitations")).toBe(true);
     expect(invitationLocation("/invitations", "")).toBe(true);
     expect(invitationLocation("/login", "?returnPath=%2Finvitations&authError=login_failed")).toBe(true);
     expect(invitationLocation("/login", "?returnPath=%2Fprojects")).toBe(false);

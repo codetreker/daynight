@@ -29,15 +29,23 @@ export type AddTaskStepInput = {
   readonly before?: string;
   readonly after?: string;
 };
+export type DeleteTaskStepInput = { readonly version: bigint };
 export type TaskStepsReadOptions = { readonly requestId: string };
-export type AddTaskStepOptions = TaskStepsReadOptions & { readonly previous?: StepsResource };
+export type TaskStepWriteOptions = TaskStepsReadOptions & { readonly previous?: StepsResource };
+export type AddTaskStepOptions = TaskStepWriteOptions;
+export type UpdateTaskStepInput = {
+  readonly version: bigint;
+  readonly title?: string;
+  readonly description?: string;
+};
+export type SetTaskStepStatusInput = { readonly version: bigint; readonly status: TaskStepStatus };
 export type MoveTaskStepInput = {
   readonly version: bigint;
   readonly before?: string;
   readonly after?: string;
   readonly position?: "first" | "last";
 };
-export type MoveTaskStepOptions = TaskStepsReadOptions & { readonly previous?: StepsResource };
+export type MoveTaskStepOptions = TaskStepWriteOptions;
 
 export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskPlatform = "windows" | "linux" | "macos";
@@ -48,6 +56,7 @@ export type User = {
   readonly emailVerified: boolean | null;
   readonly name: string | null;
   readonly avatarUrl: string | null;
+  readonly personalTeam: TeamRef;
 };
 
 export type TaskAttachment = {
@@ -70,11 +79,37 @@ export type ProjectSettings = {
   readonly executionWarningMinutes: number;
 };
 
+export type TeamRef = {
+  readonly id: string;
+  readonly kind: "personal" | "ordinary";
+  readonly name: string | null;
+};
+
+export type Team = TeamRef & {
+  readonly version: bigint;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly membership: {
+    readonly teamId: string;
+    readonly userId: string;
+    readonly role: "member" | "admin";
+    readonly version: bigint;
+    readonly createdAt: string;
+    readonly updatedAt: string;
+  };
+};
+
+export type ProjectOwnership = {
+  readonly teamId: string;
+  readonly version: bigint;
+};
+
 export type Project = {
   readonly id: string;
   readonly name: string;
   readonly repoUrl: string;
   readonly settings: ProjectSettings;
+  readonly ownership: ProjectOwnership;
   readonly createdAt: string;
   readonly updatedAt: string;
 };
@@ -89,11 +124,17 @@ export type ProjectGrant = {
 };
 
 export type ProjectAccess = {
+  readonly projectId: string;
+  readonly ownerTeam: TeamRef;
+  readonly ownership: ProjectOwnership;
+  readonly teamRole: "admin" | "member" | null;
+  readonly canTransfer: boolean;
   readonly effectiveRole: "admin" | "member";
   readonly directGrant: ProjectGrant | null;
 };
 
 export type ProjectParticipant = {
+  readonly inheritedFrom: { readonly team: TeamRef; readonly role: "admin" | "member" } | null;
   readonly userId: string;
   readonly profile: {
     readonly name: string | null;
@@ -136,6 +177,21 @@ export type WorkerVersions = {
   readonly codex: WorkerExecutableProbe;
   readonly copilot: WorkerExecutableProbe;
 };
+export type WorkerAssistantHostReason = "unsupported_arguments" | "invalid_cwd" | "not_found" | "permission_denied" | "timeout" | "command_failed" | "invalid_output" | "unavailable";
+export type WorkerAssistantProvider = {
+  readonly provider: WorkerAgent;
+  readonly available: boolean;
+  readonly reason: WorkerAssistantHostReason | null;
+  readonly model: string | null;
+  readonly args: readonly string[];
+};
+export type WorkerAssistantHost = {
+  readonly protocolVersion: 1;
+  readonly observedAt: string;
+  readonly defaultCwd: string;
+  readonly defaultProvider: WorkerAgent;
+  readonly providers: readonly WorkerAssistantProvider[];
+};
 export type WorkerTelemetry = {
   readonly machine: WorkerMachine;
   readonly platform: TaskPlatform;
@@ -146,6 +202,7 @@ export type WorkerTelemetry = {
   readonly memory: WorkerProbe<WorkerMemory>;
   readonly disk: WorkerProbe<WorkerDisk>;
   readonly versions: WorkerVersions;
+  readonly assistantHost?: WorkerAssistantHost;
 };
 export type WorkerTaskReference = { readonly projectId: string; readonly taskId: string; readonly claimId: string };
 export type WorkerTaskInventory = { readonly observedAt: string; readonly claims: readonly WorkerTaskReference[] };
@@ -230,7 +287,7 @@ export type TaskGraph = {
 };
 
 export type Page<T> = { readonly items: readonly T[]; readonly nextCursor: string | null };
-export type CreateProjectInput = { readonly name: string; readonly repoUrl: string };
+export type CreateProjectInput = { readonly name: string; readonly repoUrl: string; readonly expectedUserId: string; readonly teamId?: string };
 export type CreateTaskInput = {
   readonly title: string;
   readonly requiredPlatform?: TaskPlatform | null;

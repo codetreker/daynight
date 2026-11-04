@@ -166,7 +166,8 @@ daynight project show <project-id> --json
 作为名称无效。名称和详情 UUID 的参数错误必须在配置读取及网络访问之前拒绝。
 
 创建在写入前必须读取配置 server 的全部 project 分页，将选定 repo 地址与每个
-`repoUrl` 按 PT3 的同一规则比较。零匹配时提交原始名称与所选原始地址；唯一匹配
+`repoUrl` 按 PT3 的同一规则比较。零匹配时读取当前用户并提交其真实 `expectedUserId`、
+原始名称与所选原始地址，未指定 Team 时在 Personal 创建；核对响应主体且不自动重放未知写入。唯一匹配
 时成功输出 `Project already exists.` 和既有 project，不发送创建或修改请求，保留
 其名称与地址。多个匹配时报告歧义及全部匹配 ID，不创建。任一分页、响应验证、
 Git、取消或期限错误均按实际原因失败，不得把查询失败视为零匹配；完整预检成功
@@ -174,14 +175,39 @@ Git、取消或期限错误均按实际原因失败，不得把查询失败视�
 服务继续允许同一仓库有多个 project。
 
 所有 project 操作均不读取或改写当前仓库关联、不写 ignore 规则、不 clone 仓库、
-不启动 review。列表查询配置 server 中的全部 project，不按当前仓库筛选。详情使用
+不启动 review。列表查询配置 server 中主体可访问的全部 project，不按当前仓库或 Team 筛选。详情使用
 显式的连字符 UUID，接受大小写输入并使用规范 ID 查询。列表及详情可在 Git 仓库之外
 执行，不查询当前工作目录；命令组及操作帮助遵守 PT1 的依赖隔离。
 
-Project 创建、详情、分页条目及图中的 Project 必须包含 `settings.version` 与 `settings.executionWarningMinutes`。
+Project 创建、详情、分页条目及图中的 Project 必须包含 `ownership:{teamId,version}`、
+`settings.version` 与 `settings.executionWarningMinutes`。ownership 引用真实 Team，归属版本是
+完整正 int64，CLI JSON 保留它；缺失归属不能用 null、version 0 或旧形状补齐。
 前者为完整正 int64，后者为 `1..2147483647` 的整数分钟，初始分别为 `1` 和 `60`。
 缺失或不合法字段是协议错误，不能由 CLI 补默认值；JSON 必须无损保留超过 `2^53` 的嵌套版本。
 可读 Project 输出保留既有字段，当前没有新增设置修改命令，设置通过 Web 或既有服务 API 修改。
+
+## Team 读取与上下文
+
+```bash
+daynight team list [--json]
+daynight team show [--team <uuid|personal>] [--json]
+daynight team projects [--team <uuid|personal>] [--json]
+daynight team default show [--json]
+```
+
+`team list` 读取当前用户加入的全部 Team；`show` 读取目标 Team 与本人角色，
+`projects` 读取目标 Team 的全部项目。显式 `--team` 优先；否则按规范服务 origin
+和当前 `/me` 用户 ID 读取配置 `teamDefaults`，当前 pair 缺失时使用 `/me` 的真实
+Personal Team ID。配置值无效、目标不存在或无权时明确失败，不静默切换 Personal。
+`default show` 验证配置目标，失效时失败；`team list` 和显式目标不依赖旧默认，
+因此仍可用于检查和修复失效配置。读取不写配置或远程资源。默认只影响 Team 上下文，
+不改变显式 Project、Task 或现有仓库发现，`project list` 仍读取全部可访问项目。
+
+Team 与项目列表完整读取并验证全部页面后才输出；重复 ID、游标循环、预算或任何一页
+失败都不能输出部分成功结果。Team 资源及响应主体必须与当前用户和目标一致，项目列表
+必须属于所选 Team。`--json` 保留完整资源与精确版本；`default show` 返回 `configured`
+（配置 ID 或 `null`）和已验证的 `team`。可读文本遵守终端转义规则。
+帮助及参数校验先于配置与网络读取。
 
 ## PT7. Task 命令与更新语义
 

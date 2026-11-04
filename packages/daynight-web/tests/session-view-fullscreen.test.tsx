@@ -12,7 +12,7 @@ let sequence = 0;
 function fixture() {
   const snapshot: SessionSnapshot = JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8'));
   const userId = `display-user-${++sequence}`;
-  let view: SessionViewState = { state: { ...emptySessionState(), snapshot, entries: [
+  let view: SessionViewState = { historyReady: true, historyRevision: 1, connectionGeneration: 1, state: { ...emptySessionState(), snapshot, entries: [
     { entryId: 'message', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: 'Keep this message' }] },
     { entryId: 'thought', entrySeq: '2', revision: '1', kind: 'reasoning', text: 'Private reasoning' },
   ] }, archiveState: null, settingIntents: new Map(), draft: { text: 'Keep this draft', revision: '1', submission: null }, status: 'ready', connected: true, authPaused: false, error: 'Connection diagnostic', hasOlder: false, loadingOlder: false, historyError: null, checking: new Set() };
@@ -104,4 +104,32 @@ it('restores a safe Session focus when archive preparation removes the focused c
   expect(screen.getByRole('region', { name: 'Session' })).toContainElement(document.activeElement as HTMLElement);
   fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
   expect(screen.getByRole('button', { name: 'Enter Session fullscreen' })).toBeVisible();
+});
+
+it('closes commands before Session fullscreen even when focus has moved to its header', () => {
+  const f = fixture(), outer = vi.fn();
+  render(<div onKeyDown={outer}><SessionView client={f.client} userId={f.userId} active current /></div>);
+  fireEvent.click(screen.getByRole('button', { name: 'Enter Session fullscreen' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  const refresh = screen.getByRole('button', { name: 'Refresh' }); refresh.focus();
+  fireEvent.keyDown(refresh, { key: 'Escape' });
+  expect(screen.queryByRole('listbox')).toBeNull();
+  expect(screen.getByRole('region', { name: 'Session' })).toHaveClass('session-fullscreen');
+  expect(screen.getByRole('textbox')).toHaveFocus(); expect(outer).not.toHaveBeenCalled();
+  fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' });
+  expect(screen.getByRole('region', { name: 'Session' })).not.toHaveClass('session-fullscreen');
+});
+
+it('keeps composition Escape inside the command layer without cancelling fullscreen', () => {
+  const f = fixture(), outer = vi.fn();
+  render(<div onKeyDown={outer}><SessionView client={f.client} userId={f.userId} active current /></div>);
+  fireEvent.click(screen.getByRole('button', { name: 'Enter Session fullscreen' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  const input = screen.getByRole('textbox');
+  for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+    expect(fireEvent.keyDown(input, { key: 'Escape', ...composition, cancelable: true })).toBe(true);
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Session' })).toHaveClass('session-fullscreen');
+  }
+  expect(outer).not.toHaveBeenCalled();
 });

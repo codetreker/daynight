@@ -2,6 +2,21 @@ import { pause } from "./pause";
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  steps: {
+    title: "Steps", empty: "No steps yet", noDescription: "No description",
+    loading: "Loading steps", refresh: "Refresh steps", retry: "Retry",
+    loadFailed: "Steps could not be loaded.", refreshFailed: "Steps could not be updated.", retained: "Showing previously loaded steps.",
+    networkError: "Unable to connect to the server.", protocolError: "The server returned invalid steps.", unavailable: "Steps are unavailable for this task.", denied: "You do not have permission to read these steps.", requestFailed: "The server could not load steps.",
+    count: (count) => `${count} steps`, status: { todo: "To do", in_progress: "In progress", done: "Done", skipped: "Skipped" },
+    created: "Created", updated: "Updated", pagination: "Steps pages", previous: "Previous", next: "Next", page: "Page",
+    range: (start, end, total) => `${start}–${end} of ${total} steps`,
+    statusMenu: (title) => `Status for ${title}`, statusUnavailable: "Wait for the current task and steps to be checked before changing status.",
+    conflict: "The task changed. Read the current steps before choosing a status again.", conflictReconciled: "The task changed. Steps were read; choose a status again.", unknown: "The status change outcome is unknown. Read the current steps before another change.", unknownReconciled: "Steps were read. The earlier request's outcome remains unknown.",
+    checkState: "Read current steps", checking: "Reading current steps", checkFailed: "Current steps could not be checked. Changes remain unavailable.",
+    statusRefused: "The server refused the status change.", statusMissing: "This step was not found. Read the current steps before choosing again.", statusDenied: "You do not have permission to change this step.",
+    statusExhausted: "The task version is exhausted; this change cannot be saved.", statusCapacity: "This change would exceed the steps resource size limit.", statusInvalid: "The server rejected the status request as invalid.",
+    capacityDetails: (encoded, maximum) => `Encoded size: ${encoded} bytes; limit: ${maximum} bytes.`,
+  },
   draftNavigation: {
     title: 'Discard unsaved changes?', question: 'Leave this task and discard your unsaved changes?',
     explanation: 'Your unsaved draft will be lost.', discard: 'Discard and leave', keep: 'Keep editing', close: 'Cancel leaving',

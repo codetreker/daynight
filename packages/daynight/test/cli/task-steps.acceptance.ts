@@ -1,3 +1,4 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -8,7 +9,7 @@ import crossSpawn from "cross-spawn";
 import { expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 import type { Project, StepsResource, TaskStep } from "../../src/api/types.js";
-import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
+import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const projectId = "aaaaaaaa-1111-4111-8111-111111111111";
@@ -19,8 +20,8 @@ const step: TaskStep = { id: "00abcdef", title: "  <完整&> 中文😀\u001b[31
 const resource: StepsResource = { projectId, taskId, version: 9_007_199_254_740_993n, steps: [step, { ...step, id: "00000000", status: "in_progress", description: "Another complete description." }] };
 type Result = { readonly code: number | null; readonly stdout: string; readonly stderr: string };
 
-it("runs both packed launchers through Steps reads, help and safe read failures", async () => {
-  const installed = await createInstalledCli();
+it("runs both packed launchers through Steps reads, delivered help and safe read failures", async () => {
+  const installed = await createAcceptanceCli();
   const { receipt } = installed;
   const fixture = path.join(receipt.root, ".tmp", "Steps launcher fixture 中文");
   const home = path.join(fixture, "home");
@@ -44,7 +45,7 @@ it("runs both packed launchers through Steps reads, help and safe read failures"
   const discoveryRepoUrl = "https://git.example/private-project-URL/Steps.git";
   const lastMatchingId = "ffffffff-6666-4666-8666-666666666666";
   const project = (id: string, name: string, repoUrl = discoveryRepoUrl): Project => ({
-    id, name, repoUrl, settings: { version: 1n, executionWarningMinutes: 60 },
+    id, name, repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n },
     createdAt: "2026-11-03T10:11:12.123456Z", updatedAt: "2026-11-03T10:11:12.123456Z",
   });
   const matchingProjects = [project(projectId, "private-name-one\u001b[31m\u202e"), project(otherId, "private-name-two"), project(lastMatchingId, "private-name-three")];
@@ -109,14 +110,18 @@ it("runs both packed launchers through Steps reads, help and safe read failures"
         const result = await invoke(launcher, args);
         expect(result.stdout).toContain("Usage: daynight task step");
         expect(result.stdout).not.toContain("--if-version");
-        expect(result.stdout).not.toMatch(/\n\s+(?:update|set-status|delete)\s/);
+        if (args.length <= 3) {
+          for (const command of ["list", "show", "add", "update", "set-status", "move", "delete"]) {
+            expect(result.stdout).toMatch(new RegExp(`\\n\\s+${command}\\s`));
+          }
+        }
       }
       await invoke(launcher, ["task", "step", "add", taskId], 2);
       await invoke(launcher, ["task", "step", "show", taskId, "prefix"], 2);
     }
     expect(await readFile(config, "utf8")).toBe("serverUrl: [\n");
     expect(requests).toEqual([]);
-    scenarios.push("daynight-and-dn-help-before-config-and-unsupported-write-usage");
+    scenarios.push("daynight-and-dn-help-before-config-and-missing-write-arguments");
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
     const address = server.address(); if (address === null || typeof address === "string") throw new Error("Missing packed Steps test listener.");
     await writeFile(config, `serverUrl: http://127.0.0.1:${address.port}\nserverToken: fixture-token\n`);
@@ -211,7 +216,7 @@ it("runs both packed launchers through Steps reads, help and safe read failures"
   try { await installed.cleanup(); } catch (cause) { cleanup.push(cause); }
   let removed = false;
   try { await lstat(receipt.root); } catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") removed = true; else cleanup.push(cause); }
-  await writeFile(path.join(workspace, ".tmp/t06-packed-launchers-evidence.json"), `${JSON.stringify({ schemaVersion: 1, success: failure === undefined && cleanup.length === 0 && removed, artifact: { packageVersion: receipt.packageVersion, tarballSha256: receipt.tarballSha256, entrySha256: receipt.entrySha256, source: receipt.source }, transport: "literal daynight and sibling dn launchers via crossSpawn", fixture: "small Node HTTP package-consumer fixture; real server interoperability is verified by Go acceptance", scenarios, requests, cleanup: { installationRemoved: removed, childrenExited: children.size === 0, serverClosed: !server.listening, errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(path.join(workspace, ".tmp/t06-packed-launchers-evidence.json"), `${JSON.stringify({ schemaVersion: 1, success: failure === undefined && cleanup.length === 0 && removed, artifact: { packageVersion: receipt.packageVersion, tarballSha256: receipt.tarballSha256, entrySha256: receipt.entrySha256, source: receipt.source }, transport: "literal daynight and sibling dn launchers via crossSpawn", fixture: "small Node HTTP package-consumer fixture; real server interoperability is verified by Go acceptance", scenarios, requests, cleanup: { runtimeRemoved: removed, childrenExited: children.size === 0, serverClosed: !server.listening, errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
   if (cleanup.length !== 0) throw new AggregateError(failure === undefined ? cleanup : [failure, ...cleanup], "Packed Steps launcher acceptance or cleanup failed.");
   if (failure !== undefined) throw failure;
   expect(removed).toBe(true);

@@ -3,12 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Application } from "../src/app/Application";
 import { navigate } from "../src/app/router";
 import { browserNavigation } from "../src/app/navigation";
-import { invitationStorageKey } from "../src/features/auth/invitation";
+import { invitationStorageKey, teamInvitationStorageKey } from "../src/features/auth/invitation";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 
 vi.mock("../src/features/landing/LandingPage", () => ({ LandingPage: () => <main><h1>Public product introduction</h1></main> }));
 
-const user = { id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...(status === 401 ? {} : { "Daynight-User-ID": user.id }) } });
 const anonymous = () => json({ error: { code: "unauthenticated", message: "Sign in", requestId: "entry-login" } }, 401);
 const mount = (navigateToLogin = vi.fn()) => renderWithLocale(<Application navigateToLogin={navigateToLogin} />, { locale: "en" });
@@ -84,7 +84,7 @@ describe("public and authenticated entry ownership", () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
     const fetcher = vi.fn((url: string) => Promise.resolve(url === '/api/v1/invitations/inspect'
-      ? json({ projectId: '00000000-0000-4000-8000-000000000010', projectName: 'Invited project' }) : defaultResponse(url)));
+      ? json({ projectId: '00000000-0000-4000-8000-000000000010', projectName: 'Invited project', directGrant: null, access: null }) : defaultResponse(url)));
     vi.stubGlobal('fetch', fetcher);
     mount();
     await screen.findByRole('button', { name: 'Accept invitation and join' });
@@ -103,7 +103,7 @@ describe("public and authenticated entry ownership", () => {
   it("does not recover a cancelled invitation from history", async () => {
     history.replaceState(null, "", "/invitations#cancelled-invitation");
     const fetcher = vi.fn((url: string) => Promise.resolve(url.endsWith("/inspect")
-      ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project" }) : defaultResponse(url)));
+      ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project", directGrant: null, access: null }) : defaultResponse(url)));
     vi.stubGlobal("fetch", fetcher);
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
@@ -142,7 +142,7 @@ describe("public and authenticated entry ownership", () => {
     const fetcher = vi.fn((url: string, _options?: RequestInit) => {
       expect(location.hash).toBe("");
       return Promise.resolve(url.endsWith("/inspect")
-        ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project" }) : defaultResponse(url));
+        ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project", directGrant: null, access: null }) : defaultResponse(url));
     });
     vi.stubGlobal("fetch", fetcher);
     mount();
@@ -153,7 +153,106 @@ describe("public and authenticated entry ownership", () => {
     expect(location.hash).toBe("");
     expect(browserNavigation().snapshot().hash).toBe("");
     expect(history.state).toEqual({ reader: { offset: 7 } });
-    expect(sessionStorage.getItem(invitationStorageKey)).toBe("native-invitation");
+    expect(sessionStorage.getItem(invitationStorageKey)).toBeNull();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/inspect"))).toHaveLength(2);
+  });
+
+  it("removes a Team secret from navigation state and captures the same link reopened in this tab", async () => {
+    const secret = "dnteam_reopened";
+    const teamId = "00000000-0000-4000-8000-000000000010";
+    const team = { id: teamId, kind: "ordinary", name: "Example Team" };
+    const membership = { teamId, userId: user.id, role: "member", version: 1, createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+    window.history.replaceState(null, "", `/team-invitations#${secret}`);
+    let inspections = 0;
+    const fetcher = vi.fn((url: string) => {
+      if (url === "/api/v1/team-invitations/inspect") return Promise.resolve(++inspections === 1 ? json({ team, membership: null }) : json({ error: { code: "invitation_unavailable", message: "unavailable", requestId: "entry" } }, 404));
+      if (url === "/api/v1/team-invitations/accept") return Promise.resolve(json({ team, membership, joined: true, consumed: true }));
+      return Promise.resolve(defaultResponse(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    mount();
+    expect(window.location.hash).toBe("");
+    expect(JSON.stringify(window.history.state ?? null)).not.toContain(secret);
+    fireEvent.click(await screen.findByRole("button", { name: "Accept invitation and join" }));
+    await screen.findByRole("heading", { name: "You joined this Team" });
+    window.location.hash = secret;
+    await screen.findByRole("heading", { name: "Invitation unavailable" });
+    expect(inspections).toBe(2);
+    expect(window.location.hash).toBe("");
+    expect(JSON.stringify(window.history.state ?? null)).not.toContain(secret);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(1);
+  });
+
+  it("keeps a Team invitation in memory with blocked storage and retires it before Back", async () => {
+    history.replaceState(null, "", "/team-invitations#memory-only-team");
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
+    const team = { id: "00000000-0000-4000-8000-000000000010", kind: "ordinary", name: "Invited Team" };
+    const fetcher = vi.fn((url: string) => {
+      expect(location.hash).toBe("");
+      expect(browserNavigation().snapshot().hash).toBe("");
+      expect(JSON.stringify(history.state ?? null)).not.toContain("memory-only-team");
+      return Promise.resolve(url === "/api/v1/team-invitations/inspect" ? json({ team, membership: null }) : defaultResponse(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    mount();
+    await screen.findByRole("button", { name: "Accept invitation and join" });
+    expect(fetcher).toHaveBeenCalledWith("/api/v1/team-invitations/inspect", expect.objectContaining({ body: JSON.stringify({ token: "memory-only-team" }) }));
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    await screen.findByRole("heading", { name: "Projects" });
+    await historyMove("back");
+    await screen.findByRole("heading", { name: "Invitation unavailable" });
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/inspect"))).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
+  });
+
+  it("captures a native Team entry without numbering copied state or retaining a temporary copy", async () => {
+    history.replaceState({ reader: { offset: 7 } }, "", "/team-invitations#initial-team");
+    const team = { id: "00000000-0000-4000-8000-000000000010", kind: "ordinary", name: "Invited Team" };
+    const fetcher = vi.fn((url: string) => {
+      expect(location.hash).toBe("");
+      expect(browserNavigation().snapshot().hash).toBe("");
+      return Promise.resolve(url === "/api/v1/team-invitations/inspect" ? json({ team, membership: null }) : defaultResponse(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    mount();
+    await screen.findByRole("button", { name: "Accept invitation and join" });
+    history.pushState(history.state, "", "/team-invitations#native-team");
+    fireEvent(window, new Event("popstate"));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/api/v1/team-invitations/inspect", expect.objectContaining({ body: JSON.stringify({ token: "native-team" }) })));
+    expect(history.state).toEqual({ reader: { offset: 7 } });
+    expect(sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
+    expect(sessionStorage.getItem(invitationStorageKey)).toBeNull();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/inspect"))).toHaveLength(2);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
+  });
+
+  it("replaces the pending invitation when entering another scope and never mixes request secrets", async () => {
+    history.replaceState(null, "", "/invitations#first-project");
+    const team = { id: "00000000-0000-4000-8000-000000000010", kind: "ordinary", name: "Invited Team" };
+    const fetcher = vi.fn((url: string, _init?: RequestInit) => {
+      expect(location.hash).toBe("");
+      expect(browserNavigation().snapshot().hash).toBe("");
+      if (url === "/api/v1/invitations/inspect") return Promise.resolve(json({ projectId: team.id, projectName: "Invited project", directGrant: null, access: null }));
+      if (url === "/api/v1/team-invitations/inspect") return Promise.resolve(json({ team, membership: null }));
+      return Promise.resolve(defaultResponse(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    mount();
+    await screen.findByRole("heading", { name: "Invited project" });
+    await act(async () => navigate("/team-invitations#next-team"));
+    await screen.findByRole("heading", { name: "Invited Team" });
+    await act(async () => navigate("/invitations#next-project"));
+    await screen.findByRole("heading", { name: "Invited project" });
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/inspect")).map(([url, init]) => [url, JSON.parse(String(init!.body)).token])).toEqual([
+      ["/api/v1/invitations/inspect", "first-project"],
+      ["/api/v1/team-invitations/inspect", "next-team"],
+      ["/api/v1/invitations/inspect", "next-project"],
+    ]);
+    expect(sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
+    expect(sessionStorage.getItem(invitationStorageKey)).toBeNull();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
+    expect(Object.keys(history.state.__daynightNavigation).sort()).toEqual(["index", "session"]);
   });
 
   it("preserves a direct attachment and selected tab through the independent login entry", async () => {
@@ -203,7 +302,7 @@ describe("public and authenticated entry ownership", () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url === "/api/v1/me" ? anonymous() : defaultResponse(url))));
     const login = vi.fn(); mount(login);
     fireEvent.click(await screen.findByRole("button", { name: "Sign in with GitHub" }));
-    expect(screen.getByText("Sign in through UniAuth to review your project invitation.")).toBeVisible();
+    expect(screen.getByText("Sign in through UniAuth to review your invitation.")).toBeVisible();
     expect(screen.getByText(/Sign-in was not completed/)).toBeVisible();
     expect(window.sessionStorage.getItem(invitationStorageKey)).not.toBeNull();
     expect(window.location.search).not.toContain("authError");
@@ -225,7 +324,7 @@ describe("public and authenticated entry ownership", () => {
     window.history.replaceState(null, "", destination + (flow === "invitation" ? "#pending-invitation" : ""));
     const fetcher = vi.fn((url: string) => Promise.resolve(
       url === "/api/v1/auth/logout" ? new Response(null, { status: 204 })
-        : url === "/api/v1/invitations/inspect" ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project" })
+        : url === "/api/v1/invitations/inspect" ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project", directGrant: null, access: null })
           : url === "/api/v1/auth/device/inspect" ? json({ userCode: "BCDFG-HJKLM", expiresAt: new Date(Date.now() + 600_000).toISOString(), status: "pending" })
             : defaultResponse(url)
     ));

@@ -15,7 +15,7 @@ import { installGraphMeasurements } from '../graph-measurements';
 
 const time = '2026-10-20T00:00:00Z';
 const graph: GraphData = { observedAt: "2026-10-20T12:00:00Z",
-  project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },
+  project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },
   summary: { total: 5, todo: 2, inProgress: 1, done: 2, ready: 1, blocked: 1 },
   tasks: [
     { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
@@ -53,11 +53,11 @@ describe('localized task graph presentation', () => {
     const view = renderWithLocale(<ChainList projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
       openChainId="A" onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} showAll={false} onShowAllChange={noop} />, { locale: 'en', taskCache: true });
     const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked' });
-    expect(view.container.querySelector('#task-root-A .root-status')).toHaveTextContent('To do');
+    expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('To do');
     expect(view.container.querySelector('#task-root-A .root-progress-label')).toHaveTextContent('0/2 completed');
     expect(screen.getByRole('button', { name: '发布检查, To do, external prerequisite' })).toBeVisible();
     await user.selectOptions(screen.getByRole('combobox'), 'zh-CN');
-    expect(view.container.querySelector('#task-root-A .root-status')).toHaveTextContent('待处理');
+    expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('待处理');
     expect(screen.getByRole('button', { name: '最终验收，待处理，被阻塞' })).toBe(selected);
     expect(screen.getByRole('button', { name: '发布检查，待处理，外部前置' })).toBeVisible();
     expect(layout).toHaveBeenCalledTimes(1);

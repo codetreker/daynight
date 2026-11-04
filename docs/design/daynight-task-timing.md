@@ -14,7 +14,7 @@
 读取所选链及一层外部前置并折叠统计；[摘要同步服务](../../packages/daynight-server/internal/service/task_sync.go)
 读取项目摘要。两者都在数据读取后采样数据库 `observedAt`。
 
-Web 的 [useTaskGraph](../../packages/daynight-web/src/features/projects/useTaskGraph.ts) 每五秒读取 task-sync，由完整本地摘要物化图；内容比较排除 `observedAt`；
+Web 的 [useTaskGraph](../../packages/daynight-web/src/features/projects/useTaskGraph.ts) 每 15 秒读取 task-sync，由完整本地摘要物化图；内容比较排除 `observedAt`；
 最新服务端样本由独立 `GraphSnapshot.observedAt` 保存，因此仅时钟变化时复用图与索引仍能取得新样本。
 [TaskNode](../../packages/daynight-web/src/features/task-graph/TaskNode.tsx) 已将检查任务的主体按钮和打开详情的 Details 按钮分开。
 `GraphIndex` 拥有任务与统计，布局来自投影和展开状态；项目设置与每秒计时不应成为这些计算的输入。
@@ -182,5 +182,5 @@ Goal 子任务行另覆盖两种许可下的分钟推进、45 分钟完成冻结
 
 服务端不增加后台作业或告警扫描器。网页时钟仅属于当前项目页面，错误与取消归现有页面请求所有者；
 浏览器定时器只推进本地显示，不产生逐卡网络请求或遥测。每个任务增加两个可空时间字段，
-每个图增加一个时钟字段，每个项目增加固定大小 settings。图原有节点/边上限、五秒轮询及列表分页保持不变；
+每个图增加一个时钟字段，每个项目增加固定大小 settings。图节点/边上限与列表分页沿用既有约束；计时复用每 15 秒的可见页面 task-sync，不另建轮询；
 设置读取复用 Project，修改仅增加一次显式 PATCH，不新增模型工具或无界历史输出。

@@ -4,7 +4,7 @@ import type { Operation, User } from "../../src/api/index.js";
 
 const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const otherId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const user: User = { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null };
+const user: User = { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } };
 const operations: Operation[] = [];
 const response = (value: unknown, principal?: string): Response => new Response(stringifyApiJson(value), {
   headers: { "Content-Type": "application/json", ...(principal === undefined ? {} : { "Daynight-User-ID": principal }) },
@@ -31,10 +31,17 @@ describe("authenticated API identity", () => {
     await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(user))).getCurrentUser()).resolves.toEqual(user);
   });
 
+  it.each([undefined, otherId, "invalid"])("requires the current-user principal to match the body when creating with principal %s", async (principal) => {
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(user, principal))).getCurrentUser(true)).rejects.toMatchObject({ operation: "auth.me", phase: "protocol", outcomeUnconfirmed: false });
+  });
+
   it.each([
     null, [], { id: userId }, { ...user, id: "invalid" }, { ...user, id: userId.toUpperCase() },
     { ...user, email: 42 }, { ...user, emailVerified: "true" }, { ...user, name: false },
-    { ...user, avatarUrl: {} }, { ...user, extra: "unexpected" },
+    { ...user, avatarUrl: {} }, { ...user, personalTeam: undefined }, { ...user, personalTeam: null },
+    { ...user, personalTeam: { ...user.personalTeam, id: "invalid" } },
+    { ...user, personalTeam: { ...user.personalTeam, kind: "ordinary", name: "Ordinary" } },
+    { ...user, personalTeam: { ...user.personalTeam, name: "Personal" } }, { ...user, extra: "unexpected" },
   ])("refuses a malformed or incomplete current-user DTO %j", async (value) => {
     await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(value))).getCurrentUser()).rejects.toMatchObject({ operation: "auth.me", phase: "protocol", outcomeUnconfirmed: false });
   });
@@ -51,6 +58,31 @@ describe("authenticated API identity", () => {
   it("rejects an empty mutation success with unconfirmed identity", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null, { status: 204, headers: { "Daynight-User-ID": otherId } }));
     await expect(client(fetch, userId).removeTaskAttachment(userId, otherId, "evidence.txt")).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, otherId, "invalid"])("does not accept a project creation response for principal %s", async (principal) => {
+    const project = { id: otherId, name: "Project", repoUrl: "https://example.test/a/b", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: user.personalTeam.id, version: 1n }, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z" };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(stringifyApiJson(project), { status: 201, headers: { "Content-Type": "application/json", ...(principal === undefined ? {} : { "Daynight-User-ID": principal }) } }));
+    await expect(client(fetch).createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not treat a wrong-principal refusal as a confirmed project creation refusal", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(stringifyApiJson({ error: { code: "identity_mismatch", message: "Identity changed", requestId: "test" } }), { status: 409, headers: { "Content-Type": "application/json", "Daynight-User-ID": otherId } }));
+    await expect(client(fetch).createProject({ name: "Project", repoUrl: "https://example.test/a/b", expectedUserId: userId })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true, confirmedRefusal: false });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([400, 409, 503])("treats a project creation response without a principal at status %i as unknown", async (status) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(stringifyApiJson({ error: { code: "invalid_input", message: "Refused", requestId: "test" } }), { status, headers: { "Content-Type": "application/json" } }));
+    await expect(client(fetch).createProject({ name: "Project", repoUrl: "https://example.test/a/b", expectedUserId: userId })).rejects.toMatchObject({ phase: "protocol", status, outcomeUnconfirmed: true, confirmedRefusal: false });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a headerless 401 for project creation as a confirmed refusal", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(stringifyApiJson({ error: { code: "unauthenticated", message: "Login", requestId: "test" } }), { status: 401, headers: { "Content-Type": "application/json" } }));
+    await expect(client(fetch).createProject({ name: "Project", repoUrl: "https://example.test/a/b", expectedUserId: userId })).rejects.toMatchObject({ phase: "response", status: 401, code: "unauthenticated", outcomeUnconfirmed: false, confirmedRefusal: true });
     expect(fetch).toHaveBeenCalledOnce();
   });
 

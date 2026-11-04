@@ -15,6 +15,37 @@ const changed = (path: readonly string[], value: unknown): unknown => {
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
 describe('Worker response contracts', () => {
+  const assistantHost = () => ({ protocolVersion: 1, observedAt: WORKER_TIME, defaultCwd: '/srv/workspaces', defaultProvider: 'copilot', providers: [
+    { provider: 'codex', available: false, reason: 'not_found', model: null, args: [] },
+    { provider: 'claude', available: true, reason: null, model: null, args: [] },
+    { provider: 'copilot', available: true, reason: null, model: 'configured-model', args: ['--effort', 'high'] },
+  ] });
+  it('accepts optional assistant host observations without breaking legacy Worker details', () => {
+    const value = changed(['worker', 'telemetry', 'assistantHost'], assistantHost());
+    expect(parse(value)).toEqual(value);
+    expect(parse(workerDetail())).toEqual(workerDetail());
+  });
+  it('accepts remote Windows absolute paths independently of the browser platform', () => {
+    for (const defaultCwd of ['C:\\Users\\person', '\\\\host\\share', '//host/share']) {
+      const value = workerDetail();
+      value.worker.platform = 'windows'; value.worker.telemetry.platform = 'windows';
+      const response = { ...value, worker: { ...value.worker, telemetry: { ...value.worker.telemetry, assistantHost: { ...assistantHost(), defaultCwd } } } };
+      expect(parse(response)).toEqual(response);
+    }
+  });
+  it('rejects malformed assistant host reports rather than treating them as launchable', () => {
+    for (const host of [null, {}, { ...assistantHost(), protocolVersion: 2 }, { ...assistantHost(), observedAt: 'yesterday' },
+      { ...assistantHost(), providers: [] }, { ...assistantHost(), providers: Array(3).fill(assistantHost().providers[0]) },
+      { ...assistantHost(), providers: assistantHost().providers.map(p => ({ ...p, available: true, reason: 'not_found' })) },
+      { ...assistantHost(), providers: assistantHost().providers.map(p => ({ ...p, args: null })) },
+      { ...assistantHost(), defaultCwd: 'relative' }, { ...assistantHost(), defaultCwd: '/bad\npath' },
+      { ...assistantHost(), providers: assistantHost().providers.map(p => ({ ...p, model: 'x'.repeat(257) })) },
+      { ...assistantHost(), providers: assistantHost().providers.map(p => ({ ...p, args: Array(129).fill('arg') })) },
+      { ...assistantHost(), providers: assistantHost().providers.map(p => ({ ...p, available: false, reason: 'unsupported_arguments', args: ['secret'] })) },
+      { ...assistantHost(), defaultProvider: 'unknown' }, { ...assistantHost(), extra: true }]) {
+      expect(() => parse(changed(['worker', 'telemetry', 'assistantHost'], host))).toThrow('invalid response');
+    }
+  });
   it('retains actual telemetry and complete snapshot fields without interpreting client clocks', () => {
     const value = workerDetail();
     expect(parse(value)).toEqual(value);

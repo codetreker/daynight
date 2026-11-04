@@ -111,7 +111,7 @@ func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
 	if page.Items == nil || len(page.Items) != 0 || page.NextCursor != nil || !strings.Contains(empty.Body.String(), `"items":[]`) || !strings.Contains(empty.Body.String(), `"nextCursor":null`) {
 		t.Fatalf("empty list shape: %s", empty.Body)
 	}
-	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", `{"name":"API work","repoUrl":"git@github.com:example/repository.git"}`)
+	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "API work", RepoURL: "git@github.com:example/repository.git", ExpectedUserID: handler.principal.UserID}))
 	project := decodeResponse[api.Project](t, response, http.StatusCreated)
 	if project.Name != "API work" || project.RepoURL != "git@github.com:example/repository.git" || project.ID == "" || project.CreatedAt.IsZero() || project.CreatedAt.Location() != time.UTC || project.UpdatedAt != project.CreatedAt {
 		t.Fatalf("created project: %+v", project)
@@ -120,10 +120,10 @@ func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
 		t.Fatalf("invalid resource location: %s", response.Header().Get("Location"))
 	}
 	var fields map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 6 {
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 8 {
 		t.Fatalf("unexpected project DTO: %s %v", response.Body, err)
 	}
-	for _, key := range []string{"id", "name", "repoUrl", "createdAt", "updatedAt", "settings"} {
+	for _, key := range []string{"id", "name", "repoUrl", "createdAt", "updatedAt", "settings", "ownership", "access"} {
 		if _, exists := fields[key]; !exists {
 			t.Fatalf("missing DTO field %s: %s", key, response.Body)
 		}
@@ -160,19 +160,19 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 		`{"name":{},"repoUrl":"https://github.com/example/repo"}`,
 		`{"repoUrl":"https://github.com/example/repo"}`,
 		`{"name":"ok"}`, `{"name":"ok","repoUrl":null}`, `{"name":"ok","repoUrl":1}`,
-		`{"name":" ","repoUrl":"https://github.com/example/repo"}`,
-		`{"name":"\u0000","repoUrl":"https://github.com/example/repo"}`,
-		`{"name":"ok","repoUrl":"https://user:password-secret@github.com/example/repo"}`,
-		`{"name":"ok","repoUrl":"not-a-repository"}`,
-		"{\"name\":\"" + string([]byte{0xff}) + "\",\"repoUrl\":\"https://github.com/example/repo\"}",
-		`{"name":"` + strings.Repeat("x", maxJSONBody) + `","repoUrl":"https://github.com/example/repo"}`,
+		`{"name":" ","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
+		`{"name":"\u0000","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
+		`{"name":"ok","repoUrl":"https://user:password-secret@github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
+		`{"name":"ok","repoUrl":"not-a-repository","expectedUserId":"` + handler.principal.UserID + `"}`,
+		"{\"name\":\"" + string([]byte{0xff}) + "\",\"repoUrl\":\"https://github.com/example/repo\",\"expectedUserId\":\"" + handler.principal.UserID + "\"}",
+		`{"name":"` + strings.Repeat("x", maxJSONBody) + `","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
 	} {
 		t.Run(string(body[:min(len(body), 80)]), func(t *testing.T) {
 			assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", body), http.StatusBadRequest, "invalid_input")
 		})
 	}
 	for _, contentType := range []string{"", "text/plain", "application/json; charset=iso-8859-1", "application/json; charset=", "application/json; charset=utf-8; charset=us-ascii"} {
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(`{"name":"ok","repoUrl":"https://github.com/example/repo"}`))
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(jsonBody(t, api.CreateProjectRequest{Name: "ok", RepoURL: "https://github.com/example/repo", ExpectedUserID: handler.principal.UserID})))
 		authorizeResourceRequest(handler, request)
 		request.Header.Set("Content-Type", contentType)
 		request.Header.Set("X-Request-ID", "project-test")
@@ -213,8 +213,17 @@ func TestProjectHTTPPaginationWithTiedTimestamps(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wrongScope := strings.Replace(string(data), `"kind":"projects"`, `"kind":"tasks"`, 1)
-			assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?cursor="+base64.RawURLEncoding.EncodeToString([]byte(wrongScope)), ""), http.StatusBadRequest, "invalid_input")
+			var cursor map[string]any
+			if err := json.Unmarshal(data, &cursor); err != nil {
+				t.Fatal(err)
+			}
+			cursor["kind"] = "tasks"
+			wrongScope, err := json.Marshal(cursor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tampered := base64.RawURLEncoding.EncodeToString(wrongScope)
+			assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?cursor="+url.QueryEscape(tampered), ""), http.StatusBadRequest, "invalid_input")
 		}
 	}
 }
@@ -224,6 +233,8 @@ func TestProjectHTTPInvalidQueriesAndMissingResources(t *testing.T) {
 	for _, query := range []string{
 		"limit=", "limit=0", "limit=101", "limit=-1", "limit=1.5", "limit=invalid", "limit=1&limit=2",
 		"cursor=", "cursor=bad", "cursor=one&cursor=two", "status=todo", "limit=%xx", "limit=1;cursor=x",
+		"teamId=", "teamId=invalid", "teamId=one&teamId=two", "shared=", "shared=false", "shared=TRUE", "shared=1", "shared=true&shared=true",
+		"teamId=00000000-0000-4000-8000-000000000001&shared=true",
 	} {
 		assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?"+query, ""), http.StatusBadRequest, "invalid_input")
 	}
@@ -241,6 +252,124 @@ func TestProjectHTTPInvalidQueriesAndMissingResources(t *testing.T) {
 	}
 }
 
+func TestProjectHTTPScopedPagination(t *testing.T) {
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
+	ctx := context.Background()
+	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"}
+	var teamID string
+	for _, id := range ids {
+		project, err := database.CreatePrivateProject(ctx, handler.principal, id, "project", "https://github.com/example/repo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		teamID = project.Ownership.TeamID
+	}
+	query := "teamId=" + strings.ToUpper(teamID)
+	first := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1&"+query, ""), http.StatusOK)
+	if len(first.Items) != 1 || first.NextCursor == nil {
+		t.Fatalf("first team page: %+v", first)
+	}
+	cursor := url.QueryEscape(*first.NextCursor)
+	second := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1&teamId="+teamID+"&cursor="+cursor, ""), http.StatusOK)
+	if len(second.Items) != 1 || second.Items[0].ID == first.Items[0].ID || second.NextCursor != nil {
+		t.Fatalf("second team page: %+v", second)
+	}
+	shared := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?shared=true", ""), http.StatusOK)
+	if len(shared.Items) != 0 || shared.Items == nil || shared.NextCursor != nil {
+		t.Fatalf("shared scope included team projects: %+v", shared)
+	}
+	for _, scope := range []string{"", "&shared=true", "&teamId=00000000-0000-4000-8000-000000000099"} {
+		assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?cursor="+cursor+scope, ""), http.StatusBadRequest, "invalid_input")
+	}
+	all := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1", ""), http.StatusOK)
+	if all.NextCursor == nil {
+		t.Fatal("all-accessible cursor missing")
+	}
+	assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?"+query+"&cursor="+url.QueryEscape(*all.NextCursor), ""), http.StatusBadRequest, "invalid_input")
+}
+
+func TestProjectHTTPSharedPaginationRejectsOtherScopesAndPrincipals(t *testing.T) {
+	h := membershipTestHarness(t)
+	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
+	mux := http.NewServeMux()
+	h.auth.RegisterRoutes(mux)
+	projectRoutes(mux, service.NewProjects(h.database), h.auth, logger)
+	h.handler = RequestLogging(logger, mux)
+	ctx := context.Background()
+	admin, err := h.auth.identity.Authenticate(ctx, core.SessionCredential, h.admin.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.NewProjects(h.database).Create(ctx, admin, service.CreateProject{ExpectedUserID: admin.UserID, Name: "Second shared", RepoURL: "https://example.com/second.git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.outsider), http.StatusOK)
+	member := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.member), http.StatusOK)
+	for index, project := range []core.Project{h.project, second} {
+		if _, err := h.database.Pool.Exec(ctx, `UPDATE projects SET created_at='2024-01-01 00:00:00+00'::timestamptz + $2::int * interval '1 second' WHERE id=$1`, project.ID, index); err != nil {
+			t.Fatal(err)
+		}
+		for _, userID := range []string{h.memberID, other.ID} {
+			if _, err := h.database.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, userID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	first := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=1&shared=true", "", h.member), http.StatusOK)
+	if len(first.Items) != 1 || first.Items[0].ID != h.project.ID || first.NextCursor == nil {
+		t.Fatalf("first shared page: %+v", first)
+	}
+	cursor := url.QueryEscape(*first.NextCursor)
+	next := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=1&shared=true&cursor="+cursor, "", h.member), http.StatusOK)
+	if len(next.Items) != 1 || next.Items[0].ID != second.ID || next.NextCursor != nil {
+		t.Fatalf("second shared page: %+v", next)
+	}
+	for _, query := range []string{"cursor=" + cursor, "teamId=" + member.PersonalTeam.ID + "&cursor=" + cursor} {
+		assertProjectError(t, h.call(http.MethodGet, "/api/v1/projects?"+query, "", h.member), http.StatusBadRequest, "invalid_input")
+	}
+	assertProjectError(t, h.call(http.MethodGet, "/api/v1/projects?shared=true&cursor="+cursor, "", h.outsider), http.StatusBadRequest, "invalid_input")
+}
+
+func TestProjectHTTPTeamScopeRefusesNonmembersAndExposesDatabaseFailure(t *testing.T) {
+	database := projectTestStore(t)
+	var logs bytes.Buffer
+	handler := projectTestHandler(t, database, &logs)
+	ctx := context.Background()
+	project, err := database.CreatePrivateProject(ctx, handler.principal, "00000000-0000-4000-8000-000000000189", "Externally shared", "https://example.com/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const externalTeam = "00000000-0000-4000-8000-000000000190"
+	const missingTeam = "00000000-0000-4000-8000-000000000191"
+	if _, err := database.Pool.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'External team')`, externalTeam); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE project_ownership SET team_id=$2 WHERE project_id=$1`, project.ID, externalTeam); err != nil {
+		t.Fatal(err)
+	}
+	shared := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?shared=true", ""), http.StatusOK)
+	if len(shared.Items) != 1 || shared.Items[0].ID != project.ID {
+		t.Fatalf("direct grant should permit the shared project: %+v", shared)
+	}
+	nonmember := projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+externalTeam, "")
+	missing := projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+missingTeam, "")
+	assertProjectError(t, nonmember, http.StatusNotFound, "not_found")
+	assertProjectError(t, missing, http.StatusNotFound, "not_found")
+	if nonmember.Body.String() != missing.Body.String() {
+		t.Fatalf("nonmember and missing Team refusals differ: %s vs %s", nonmember.Body, missing.Body)
+	}
+	if _, err := database.Pool.Exec(ctx, `ALTER TABLE team_members RENAME TO private_membership_secret`); err != nil {
+		t.Fatal(err)
+	}
+	failed := projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+externalTeam, "")
+	assertProjectError(t, failed, http.StatusInternalServerError, "internal_error")
+	if strings.Contains(failed.Body.String(), "secret") || strings.Contains(logs.String(), "private_membership_secret") || !strings.Contains(logs.String(), `"cause":"database"`) {
+		t.Fatalf("database failure was hidden or disclosed: response %s, logs %s", failed.Body, &logs)
+	}
+}
+
 func TestProjectHTTPDatabaseFailuresAreVisibleAndSafe(t *testing.T) {
 	database := projectTestStore(t)
 	var logs bytes.Buffer
@@ -251,7 +380,7 @@ func TestProjectHTTPDatabaseFailuresAreVisibleAndSafe(t *testing.T) {
 	for _, request := range []struct{ method, path, body string }{
 		{http.MethodGet, "/api/v1/projects", ""},
 		{http.MethodGet, "/api/v1/projects/00000000-0000-4000-8000-000000000099", ""},
-		{http.MethodPost, "/api/v1/projects", `{"name":"secret-body","repoUrl":"https://github.com/example/private-secret"}`},
+		{http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "secret-body", RepoURL: "https://github.com/example/private-secret", ExpectedUserID: handler.principal.UserID})},
 	} {
 		response := projectRequest(handler, request.method, request.path, request.body)
 		assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
@@ -358,7 +487,7 @@ func TestHTTPErrorMappingAndWriteFailure(t *testing.T) {
 func TestPublicHealthAndReadinessUseLiveDatabase(t *testing.T) {
 	database := projectTestStore(t)
 	handler := projectTestHandler(t, database, io.Discard)
-	created := projectRequest(handler, http.MethodPost, "/api/v1/projects", `{"name":"private-health-project","repoUrl":"https://example.test/private.git"}`)
+	created := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "private-health-project", RepoURL: "https://example.test/private.git", ExpectedUserID: handler.principal.UserID}))
 	decodeResponse[api.Project](t, created, http.StatusCreated)
 	request := func(method, path string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -388,4 +517,80 @@ func TestPublicHealthAndReadinessUseLiveDatabase(t *testing.T) {
 		t.Fatalf("readiness failure exposed data or cached state: %s %+v", response.Body, response.Header())
 	}
 	decodeResponse[map[string]string](t, request(http.MethodGet, "/healthz"), http.StatusOK)
+}
+
+func TestProjectCreateIdentityTargetAndAccess(t *testing.T) {
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
+	ctx := context.Background()
+	actor := handler.principal
+	team, err := service.NewTeams(database).Create(ctx, actor, service.CreateTeam{Name: "Team", ExpectedUserID: actor.UserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := api.CreateProjectRequest{Name: " 原文 ", RepoURL: "git@example.com:Org/Repo.git", TeamID: &team.ID, ExpectedUserID: actor.UserID}
+	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input))
+	doc := decodeResponse[api.ProjectDocument](t, response, http.StatusCreated)
+	if doc.Name != input.Name || doc.RepoURL != input.RepoURL || doc.Ownership.TeamID != team.ID || doc.Access.Ownership != doc.Ownership || doc.Access.ProjectID != doc.ID || doc.Access.DirectGrant == nil || doc.Access.DirectGrant.UserID != actor.UserID || doc.Access.DirectGrant.Role != "admin" || doc.Access.EffectiveRole != "admin" {
+		t.Fatalf("created document: %+v", doc)
+	}
+	snapshot := func() string {
+		var state string
+		err := database.Pool.QueryRow(ctx, `SELECT jsonb_build_object('teams',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM teams t),'members',(SELECT jsonb_agg(to_jsonb(m) ORDER BY team_id,user_id) FROM team_members m),'projects',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM projects p),'ownership',(SELECT jsonb_agg(to_jsonb(o) ORDER BY project_id) FROM project_ownership o),'grants',(SELECT jsonb_agg(to_jsonb(g) ORDER BY project_id,user_id) FROM project_grants g))::text`).Scan(&state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	before := snapshot()
+	input.ExpectedUserID = "00000000-0000-4000-8000-000000000001"
+	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input)), http.StatusConflict, "identity_mismatch")
+	for _, body := range []string{
+		`{"name":"x","repoUrl":"host:repo"}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":null}`,
+		`{"name":"\ud800","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `"}`,
+		`{"name":"x","repoUrl":"host:\udfff","expectedUserId":"` + actor.UserID + `"}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":"bad"}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `","teamId":null}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `","teamId":"bad"}`,
+	} {
+		assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", body), http.StatusBadRequest, "invalid_input")
+	}
+	input.ExpectedUserID = actor.UserID
+	missing := "00000000-0000-4000-8000-000000000002"
+	input.TeamID = &missing
+	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input)), http.StatusNotFound, "not_found")
+	if after := snapshot(); before != after {
+		t.Fatal("rejected writes changed domain rows or versions")
+	}
+}
+
+func TestProjectCreateUnknownOutcomeClassification(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", nil)
+	request.Header.Set("X-Request-ID", "project-test")
+	for _, test := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: context.DeadlineExceeded}, 503, "write_outcome_unknown"},
+		{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: &service.Fault{Code: "forbidden", Message: "private"}}, 500, "internal_error"},
+		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionNotCommitted, Cause: errors.New("private")}, 500, "internal_error"},
+	} {
+		response := httptest.NewRecorder()
+		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeProjectCreateError(w, r, logger, test.err) })).ServeHTTP(response, request)
+		assertProjectError(t, response, test.status, test.code)
+	}
+	for _, short := range []bool{false, true} {
+		writer := &threadFailingWriter{ResponseRecorder: httptest.NewRecorder(), short: short}
+		writeMutationJSON(writer, request, logger, "project", 201, api.ProjectDocument{})
+		if writer.calls != 1 {
+			t.Fatal("response replayed")
+		}
+	}
+	if strings.Contains(logs.String(), "private") {
+		t.Fatal("private errors leaked")
+	}
 }

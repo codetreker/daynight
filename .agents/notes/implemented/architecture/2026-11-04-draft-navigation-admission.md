@@ -34,7 +34,11 @@ records why URLs are excluded from serialized markers and how fragment cleanup
 keeps indexed and native entries coherent.
 An application write from an unindexed position starts a new segment on the
 written entry. Older segments cannot supply a valid distance across unnumbered
-entries. No native entry is repaired or assigned an invented index.
+entries. Native traversal alone never repairs an entry or assigns an invented
+index. Capturing a project or Team invitation scrubs its fragment through the
+same owner and publishes the clean admitted location. Cleanup preserves an
+indexed entry; an unindexed native entry loses any copied marker and remains
+unindexed. Only a later application navigation write starts a new segment.
 
 ## Alternatives
 

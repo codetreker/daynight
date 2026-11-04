@@ -131,7 +131,7 @@ func TestInstalledCLIAttachmentAcceptance(t *testing.T) {
 		cli := newAcceptanceCLI(t, receipt, scenario)
 		process := fixture.launch(t, nil).started(t)
 		cli.configure(t, process)
-		project := acceptanceDecode[api.Project](t, process.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Attachment CLI", RepoURL: "git@git.example:Org/Repo.git"}, ""), http.StatusCreated)
+		project := acceptanceDecode[api.Project](t, process.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{ExpectedUserID: process.expectedUserID(t), Name: "Attachment CLI", RepoURL: "git@git.example:Org/Repo.git"}, ""), http.StatusCreated)
 		task := process.task(t, project, "Attachment target")
 		other := process.project(t, "Other attachment project")
 		foreignTask := process.task(t, other, "Foreign attachment task")

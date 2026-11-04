@@ -9,8 +9,11 @@ import type { Project } from "../../../src/api/index.js";
 import { runProjectCommand } from "../../../src/commands/project/command.js";
 import { runServerCommand } from "../../../src/commands/server/runtime.js";
 
+const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const user = { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal", name: null } };
 const id = "abcdefab-1234-5678-90ab-abcdefabcdef";
-const project: Project = { id, name: "Project 名称", repoUrl: "git@Git.Example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: "2026-10-20T01:02:03.123456789Z", updatedAt: "2026-10-20T02:03:04.987654321Z" };
+const project: Project = { id, name: "Project 名称", repoUrl: "git@Git.Example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-20T01:02:03.123456789Z", updatedAt: "2026-10-20T02:03:04.987654321Z" };
+const creationReceipt = <T extends { id: string; ownership: { teamId: string; version: bigint }; createdAt: string; updatedAt: string }>(value: T, userId: string) => ({ ...value, access: { projectId: value.id, ownerTeam: { id: value.ownership.teamId, kind: "personal", name: null }, ownership: value.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: value.id, userId, role: "admin", version: 1n, createdAt: value.createdAt, updatedAt: value.updatedAt } } });
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -88,17 +91,18 @@ describe("project command over HTTP", () => {
     const bodies: unknown[] = [];
     const url = await server((request, response) => {
       requests++;
+      if (request.url === "/api/v1/me") { response.setHeader("Daynight-User-ID", userId); respond(response, user); return; }
       if (request.method === "GET") { respond(response, { items: [], nextCursor: null }); return; }
       expect(request.method).toBe("POST"); expect(request.url).toBe("/api/v1/projects");
       let body = "";
       request.setEncoding("utf8");
       request.on("data", (chunk: string) => { body += chunk; });
-      request.on("end", () => { bodies.push(JSON.parse(body)); respond(response, { ...project, name, repoUrl }, 201); });
+      request.on("end", () => { bodies.push(JSON.parse(body)); response.setHeader("Daynight-User-ID", userId); respond(response, creationReceipt({ ...project, name, repoUrl }, userId), 201); });
     });
     const { context, dependencies } = await fixture(url);
     await runProjectCommand(["create", name, "--repo", repoUrl], context, dependencies);
-    expect(bodies).toEqual([{ name, repoUrl }]);
-    expect(requests).toBe(2);
+    expect(bodies).toEqual([{ name, repoUrl, expectedUserId: userId }]);
+    expect(requests).toBe(3);
     expect(context.stdout).toHaveBeenCalledOnce();
     expect(context.stdout.mock.calls[0]![0]).toContain(`ID: ${project.id}\nName: ${name}\nRepository: ${repoUrl}\n`);
     expect(context.workingDirectory).not.toHaveBeenCalled();

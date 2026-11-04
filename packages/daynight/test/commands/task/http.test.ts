@@ -15,7 +15,7 @@ const otherId = "abcdefab-3333-4222-8333-123456789abc";
 const claimId = "abcdefab-4444-4222-8333-123456789abc";
 const accountId = "abcdefab-5555-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
-const project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
 const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
 const worker: WorkerClaim = { claimId, state: "active", userId: projectId, workerId: otherId, machine: { id: otherId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: otherId, phase: "executing", herdr: { session: "w", workspaceId: "task-workspace", paneId: "task-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
 type Request = { readonly method: string; readonly path: string; readonly query: URLSearchParams; readonly body: string };
@@ -32,7 +32,7 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
       const current = { method: request.method!, path: url.pathname, query: url.searchParams, body };
       requests.push(current);
       if (current.path === `/api/v1/projects/${projectId}`) respond(response, project);
-      else if (current.path === "/api/v1/me") respond(response, { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null });
+      else if (current.path === "/api/v1/me") respond(response, { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } });
       else handler(current, response, request);
     });
   });

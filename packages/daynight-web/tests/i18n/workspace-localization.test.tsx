@@ -22,7 +22,7 @@ vi.mock("../../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDi
 const projectId = "10000000-0000-4000-8000-000000000001";
 const taskId = "20000000-0000-4000-8000-000000000001";
 const date = "2026-10-20T12:34:56Z";
-const project = { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Project 用户数据", repoUrl: "https://example.com/repo", createdAt: date, updatedAt: date };
+const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Project 用户数据", repoUrl: "https://example.com/repo", createdAt: date, updatedAt: date };
 const tasks: readonly GraphTask[] = [{ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: taskId, titlePreview: "Task 用户数据", titleTruncated: false, status: "todo", dependsOn: [], blockedBy: [], ready: true, createdAt: date, updatedAt: date }];
 const graph = (items = tasks): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
   project, tasks: items,

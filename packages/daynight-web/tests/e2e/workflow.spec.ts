@@ -14,6 +14,7 @@ import { expectCenteredTaskDetail, expectTaskDetailScroll } from './detail-dialo
 import { expectStableAutomaticDetailRefresh } from './detail-refresh';
 import { panPoint } from './graph-pan';
 import { verifyPublicExternalDependencyWrites } from './external-dependency-writes';
+import { verifySessionStatus } from './session-status';
 
 const scenario = (description: string) => ({ annotation: { type: 'scenario', description } });
 const card = (page: Page, id: string): Locator => page.locator(`.react-flow__node[data-id="${id}"] .task-node`);
@@ -126,7 +127,7 @@ const pauseRefreshClock = async (page: Page): Promise<void> => {
 };
 const nextAutomaticRefresh = async (page: Page, projectId: string): Promise<number> => {
   const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
-  await page.clock.fastForward(5_000);
+  await page.clock.fastForward(15_000);
   return (await response).status();
 };
 
@@ -234,7 +235,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     );
     await expect(members.locator('.goal-task-row')).toHaveCount(6);
     const taskRow = page.locator(`#chain-task-${a.id}-${b.id}`);
-    await expect(taskRow.locator('.root-status')).toHaveText('进行中');
+    await expect(taskRow.locator('..').locator('.root-status')).toHaveText('进行中');
     await taskRow.click();
     const detail = page.locator('.task-detail-dialog');
     await expect(detail.locator('.task-detail-title')).toHaveText(b.title);
@@ -273,7 +274,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await openChain(page, a.id);
   await expect(root(page, b.id)).toHaveCount(0);
   await expect(root(page, c.id)).toHaveCount(0);
-  await expect(root(page, a.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, a.id).locator('..').locator('.root-status')).toHaveText('进行中');
   await expect(root(page, a.id).locator('.root-progress-label')).toHaveText('4/7 已完成');
   await expect(page.locator('.react-flow__node')).toHaveCount(7);
   const completedVisibility = page.getByRole('checkbox', { name: '显示所有', includeHidden: true });
@@ -308,7 +309,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await expectClosedChain(page, a.id);
   await expect(root(page, a.id)).toHaveAttribute('aria-expanded', 'false');
   await openChain(page, a.id);
-  await expect(root(page, a.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, a.id).locator('..').locator('.root-status')).toHaveText('进行中');
   await expect(root(page, a.id).locator('.root-progress-label')).toHaveText('4/7 已完成');
   await expect(inspectTask(page, a.id).locator('.graph-status')).toHaveText('已完成');
   await expect(page.locator('.task-graph-canvas')).toHaveCount(1);
@@ -638,7 +639,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     const before = await appearance();
     last = await seedExternalDependencies(request, shortcut.id, last, [first.id]);
     const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${shortcut.id}/task-sync`);
-    await page.clock.fastForward(5_000); expect((await response).status()).toBe(200);
+    await page.clock.fastForward(15_000); expect((await response).status()).toBe(200);
     await expect(page.locator(`.task-dependency-edge[data-id="${first.id}->${last.id}"]`)).toHaveAttribute('data-external', 'true');
     await expect(page.locator(`.task-dependency-edge[data-id="${middle.id}->${last.id}"]`)).toHaveAttribute('data-external', 'false');
     await expect(page.locator('.task-node-external')).toHaveCount(0);
@@ -693,6 +694,10 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await test.step('writes external classifications through the installed CLI and public API into the same production Web', async () => {
     if (baseURL === undefined) throw new Error('Public dependency acceptance requires the actual service origin.');
     await verifyPublicExternalDependencyWrites(page, request, baseURL, info);
+  });
+  await test.step('reads live Session status annotations and navigates to the matching Session', async () => {
+    if (baseURL === undefined) throw new Error('Session status acceptance requires its service origin.');
+    await verifySessionStatus(page, request, baseURL, info);
   });
 
 });
@@ -1221,7 +1226,7 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   await openChain(page, predecessor.id);
   await expect(stat(page, '已完成')).toHaveText('0');
   await expect(stat(page, '被阻塞')).toHaveText('1');
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('待处理');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('待处理');
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('0/2 已完成');
   await expect(inspectTask(page, dependent.id).locator('.graph-blocked-badge')).toBeVisible();
   await pauseRefreshClock(page);
@@ -1247,13 +1252,13 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
     await expect(dialog.locator('.task-detail-status-row .task-status-trigger')).toBeDisabled();
     await expect(stat(page, '已完成')).toHaveText('0');
     await expect(stat(page, '被阻塞')).toHaveText('1');
-    await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('待处理');
+    await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('待处理');
     derivedSync.release();
     expect((await derivedResponse).status()).toBe(200);
   } finally { await derivedSync.close(); }
   await expect(stat(page, '已完成')).toHaveText('1');
   await expect(stat(page, '被阻塞')).toHaveText('0');
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('进行中');
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('1/2 已完成');
   await expect(inspectTask(page, predecessor.id).locator('.graph-status')).toHaveText('已完成');
   await expect(dialog.locator('.task-detail-title')).toHaveText(dependent.title);
@@ -1447,12 +1452,12 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   await screenshot(page, info, 'refresh-staleness');
   await page.keyboard.press('Escape');
   await finishTask(request, project.id, replaced);
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('进行中');
   expect(await nextAutomaticRefresh(page, project.id)).toBe(200);
   await expect(root(page, predecessor.id)).toBeVisible();
   await expect(page.getByRole('heading', { name: '暂无近期任务链' })).toHaveCount(0);
   await expect(page.getByRole('checkbox', { name: '显示所有' })).not.toBeChecked();
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('已完成');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('已完成');
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('2/2 已完成');
   await openChain(page, predecessor.id);
   await expect(inspectTask(page, predecessor.id).locator('.graph-status')).toHaveText('已完成');
@@ -1493,7 +1498,7 @@ test('failure-recovery', scenario('failure-recovery'), async ({ page, api: reque
   // so its graph must stay visible independently of the recent-completion window.
   await page.getByRole('checkbox', { name: '显示所有' }).check();
   await openChain(page, task.id);
-  await expect(root(page, task.id).locator('.root-status')).toHaveText('已完成');
+  await expect(root(page, task.id).locator('..').locator('.root-status')).toHaveText('已完成');
   await expect(inspectTask(page, task.id)).toBeVisible();
   await pauseRefreshClock(page);
   const receipt = await page.locator('.snapshot-time time').getAttribute('datetime');
@@ -1525,7 +1530,7 @@ test('failure-recovery', scenario('failure-recovery'), async ({ page, api: reque
   await page.getByRole('button', { name: '放大', exact: true }).click();
   await withDependencyFailure(async () => {
     const failed = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
-    await page.clock.fastForward(5_000);
+    await page.clock.fastForward(15_000);
     const response = await failed;
     expect(response.status()).toBe(500);
     const body = await response.json() as { error: { requestId: string; code: string } };

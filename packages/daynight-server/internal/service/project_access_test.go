@@ -29,7 +29,7 @@ func TestProjectAccessProjectionAndAuthorization(t *testing.T) {
 		{member, joined.Grant},
 	} {
 		access, err := f.projects.Access(ctx, test.principal, strings.ToUpper(project.ID))
-		if err != nil || !reflect.DeepEqual(access, core.ProjectAccess{ProjectID: project.ID, UserID: test.principal.UserID, Role: test.grant.Role, DirectGrant: &test.grant}) {
+		if err != nil || (access.ProjectID != project.ID || access.UserID != test.principal.UserID || access.Role != test.grant.Role || !reflect.DeepEqual(access.DirectGrant, &test.grant)) {
 			t.Fatalf("current actor access: %#v %v", access, err)
 		}
 	}
@@ -56,7 +56,7 @@ func TestProjectAccessValidationAndCompletionFailures(t *testing.T) {
 	_, err = NewProjects(nil).Access(ctx, principal, "invalid")
 	requireFault(t, err, "invalid_input")
 	projects, database, databaseURL, admin := projectService(t)
-	project, err := projects.Create(ctx, admin, CreateProject{Name: "Completion precedence", RepoURL: "host:repo"})
+	project, err := projects.Create(ctx, admin, CreateProject{ExpectedUserID: admin.UserID, Name: "Completion precedence", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}

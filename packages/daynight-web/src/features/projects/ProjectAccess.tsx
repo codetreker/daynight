@@ -32,12 +32,13 @@ export class ProjectAccessSession {
     for (const listener of this.listeners) listener();
   }
   beginObservation = (): number => ++this.sequence;
-  publishSync = (ticket: number, access: ProjectAccess): void => {
-    if (!this.live() || ticket < this.barrier || ticket < this.accepted) return;
+  publishSync = (ticket: number, access: ProjectAccess): boolean => {
+    if (!this.live() || ticket < this.barrier || ticket < this.accepted) return false;
     this.accepted = ticket;
     this.lastObservation = performance.now();
     this.update({ access, status: 'ready', refreshing: this.read !== null, error: null });
     this.schedule();
+    return true;
   };
   private schedule = (): void => {
     if (this.timer !== null) clearTimeout(this.timer);

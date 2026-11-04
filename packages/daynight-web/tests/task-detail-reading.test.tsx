@@ -32,6 +32,24 @@ const showOverview = () => fireEvent.click(screen.getByRole('tab', { name: '概�
 const pane = () => screen.getByRole('group', { name: '附件预览' });
 
 describe('task description reading', () => {
+  it('shares Task-root Markdown and the existing attachment controller with Steps', async () => {
+    const api = fixture([file('docs/result.md')]);
+    render(<TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="[Overview result](docs/result.md)"
+      overview={(content) => content} steps={(_active, markdown) => markdown('[Step result](docs/result.md) ![Step image](images/chart.png)')} />);
+    fireEvent.click(screen.getByRole('tab', { name: '步骤' }));
+    expect(screen.getByRole('img', { name: 'Step image' })).toHaveAttribute('src', `${root}images/chart.png`);
+    const link = screen.getByRole('link', { name: 'Step result' });
+    expect(link).toHaveAttribute('href', `${root}docs/result.md`);
+    fireEvent.click(link);
+    await screen.findByRole('heading', { name: 'Preview docs/result.md' });
+    expect(screen.getByRole('tab', { name: '附件' })).toHaveAttribute('aria-selected', 'true');
+    expect(api.list).toHaveBeenCalledTimes(1);
+    expect(api.readText).toHaveBeenCalledTimes(1);
+    showOverview();
+    fireEvent.click(screen.getByRole('link', { name: 'Overview result' }));
+    expect(api.list).toHaveBeenCalledTimes(1);
+    expect(api.readText).toHaveBeenCalledTimes(1);
+  });
   it('reveals only linked ancestors and reapplies the same link after manual collapse', async () => {
     const path = 'docs/design/方案 %?#.md';
     const api = fixture([file(path), file('docs2/other.md'), file('images/icon.svg'), file('root.md')]);

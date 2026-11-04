@@ -31,6 +31,7 @@ export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
 
 export const sameProject = (left: Project, right: Project): boolean =>
   left.id === right.id && left.name === right.name && left.repoUrl === right.repoUrl &&
+  left.ownership.teamId === right.ownership.teamId && left.ownership.version === right.ownership.version &&
   left.settings.version === right.settings.version && left.settings.executionWarningMinutes === right.settings.executionWarningMinutes &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 

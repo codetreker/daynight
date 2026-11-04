@@ -7,10 +7,11 @@ const projectId = "11111111-1111-1111-1111-111111111111";
 const otherProjectId = "33333333-3333-3333-3333-333333333333";
 const taskId = "22222222-2222-2222-2222-222222222222";
 const time = "2026-10-20T01:02:03.123456789Z";
-const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
 const task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, assignedTo: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
 const attachment = { path: "reports/result.bin", contentType: "application/octet-stream", sizeBytes: 5, createdAt: time, updatedAt: time };
 const token = "opaque.+/_~=-token";
+const creationReceipt = <T extends { id: string; ownership: { teamId: string; version: bigint }; createdAt: string; updatedAt: string }>(value: T, userId: string) => ({ ...value, access: { projectId: value.id, ownerTeam: { id: value.ownership.teamId, kind: "personal", name: null }, ownership: value.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: value.id, userId, role: "admin", version: 1n, createdAt: value.createdAt, updatedAt: value.updatedAt } } });
 const cleanups: (() => void | Promise<void>)[] = [];
 const operation = () => {
   const created = createOperation();
@@ -55,7 +56,7 @@ describe("API bearer authentication", () => {
     const url = await server((request, response) => {
       received.push({ method: request.method, url: request.url, authorization: request.headers.authorization, contentType: request.headers["content-type"] });
       const path = new URL(request.url!, "http://127.0.0.1");
-      if (request.method === "POST" && path.pathname === "/api/v1/projects") json(response, project, 201);
+      if (request.method === "POST" && path.pathname === "/api/v1/projects") { response.setHeader("Daynight-User-ID", projectId); json(response, creationReceipt(project, projectId), 201); }
       else if (request.method === "POST") json(response, task, 201);
       else if (request.method === "PATCH") json(response, task);
       else if (path.searchParams.has("cursor")) json(response, { items: [{ ...project, id: otherProjectId }], nextCursor: null });
@@ -63,7 +64,7 @@ describe("API bearer authentication", () => {
     });
     const api = createApiClient({ serverUrl: url, serverToken: token, operation: operation() });
 
-    await api.createProject({ name: project.name, repoUrl: project.repoUrl });
+    await api.createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId });
     await api.createTask(projectId, { title: task.title });
     await api.updateTask(projectId, taskId, { version: 1n, title: "Updated" });
     await expect(api.listProjects()).resolves.toEqual([project, { ...project, id: otherProjectId }]);
@@ -168,7 +169,7 @@ describe("API bearer authentication", () => {
         response.end(body === "malformed JSON" ? "{" : "Authentication required.");
       }
     });
-    const error: unknown = await createApiClient({ serverUrl: url, serverToken: token, operation: operation() }).createProject({ name: project.name, repoUrl: project.repoUrl }).catch((failure: unknown) => failure);
+    const error: unknown = await createApiClient({ serverUrl: url, serverToken: token, operation: operation() }).createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId }).catch((failure: unknown) => failure);
 
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 401, message: expect.stringContaining("daynight login") });
@@ -204,7 +205,7 @@ describe("API bearer authentication", () => {
       response.end("{}");
     });
 
-    await expect(createApiClient({ serverUrl: origin, serverToken: token, operation: operation() }).createProject({ name: project.name, repoUrl: project.repoUrl })).rejects.toMatchObject({ status: 307, outcomeUnconfirmed: true });
+    await expect(createApiClient({ serverUrl: origin, serverToken: token, operation: operation() }).createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId })).rejects.toMatchObject({ status: 307, outcomeUnconfirmed: true });
     expect(received).toEqual([{ method: "POST", authorization: `Bearer ${token}` }]);
     expect(redirectedRequests).toBe(0);
   });

@@ -16,7 +16,7 @@ import { TaskDetailSessionBoundary } from '../src/features/task-detail/TaskDetai
 import { createTaskSessionWorld } from './helpers/taskSessions';
 import { detailFixture, resourceResponse, snapshotFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { TEST_VIEWER_ID } from './helpers/taskSync';
+import { directAccessFixture, TEST_VIEWER_ID } from './helpers/taskSync';
 
 const initial = (): TaskSessionSnapshot => ({ ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), executionGeneration: '1', connectionEpoch: '1', lastEventSeq: '0' });
 let world: ReturnType<typeof createTaskSessionWorld>;
@@ -24,8 +24,8 @@ let root: HTMLElement;
 beforeEach(() => {
   world = createTaskSessionWorld();
   root = document.createElement('div'); root.id = 'root'; document.body.append(root);
-  vi.spyOn(auth, 'listMembers').mockResolvedValue([]);
-  vi.spyOn(auth, 'getProjectAccess').mockResolvedValue({ effectiveRole: 'admin', directGrant: null });
+  vi.spyOn(auth, 'listMembers').mockImplementation(async (projectId) => ({ items: [], actorAccess: directAccessFixture(projectId, TEST_VIEWER_ID, 'admin') }));
+  vi.spyOn(auth, 'getProjectAccess').mockImplementation(async (projectId) => directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
   vi.stubGlobal('fetch', vi.fn(async () => resourceResponse({ items: [], nextCursor: null }, TEST_VIEWER_ID)));
 });
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
@@ -125,4 +125,32 @@ describe('Session fullscreen inside task details', () => {
     expect(f.counts()).toEqual({ connections: 2, closed: 1 });
     expect(document.body.style.overflow).toBe('');
   });
+});
+
+it.each([
+  { setting: 'Model', label: 'Model settings', fullscreen: false },
+  { setting: 'Permissions', label: 'Permission settings', fullscreen: false },
+  { setting: 'Model', label: 'Model settings', fullscreen: true },
+  { setting: 'Permissions', label: 'Permission settings', fullscreen: true },
+])('retains $setting and its task dialog during composition Escape (fullscreen=$fullscreen)', async ({ setting, label, fullscreen }) => {
+  const f = await fixture(true);
+  if (fullscreen) fireEvent.click(screen.getByRole('button', { name: 'Enter Session fullscreen' }));
+  fireEvent.click(screen.getByRole('button', { name: setting }));
+  const input = screen.getByRole('textbox', { name: 'Message' }); input.focus();
+  const verify = () => {
+    expect(screen.getByLabelText(label)).toBeInTheDocument();
+    expect(f.surface.classList.contains('task-detail-session-fullscreen')).toBe(fullscreen);
+    expect(f.onClose).not.toHaveBeenCalled(); expect(input).toHaveFocus();
+  };
+  for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+    expect(fireEvent.keyDown(input, { key: 'Escape', cancelable: true, ...composition })).toBe(true);
+    verify();
+  }
+  fireEvent.compositionStart(input);
+  expect(fireEvent.keyDown(input, { key: 'Escape', cancelable: true })).toBe(true); verify();
+  fireEvent.compositionEnd(input);
+  expect(fireEvent.keyDown(input, { key: 'Escape', cancelable: true })).toBe(false);
+  expect(screen.queryByLabelText(label)).toBeNull();
+  expect(f.surface.classList.contains('task-detail-session-fullscreen')).toBe(fullscreen);
+  expect(f.onClose).not.toHaveBeenCalled();
 });

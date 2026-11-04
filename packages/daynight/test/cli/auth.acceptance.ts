@@ -1,3 +1,4 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { hostname } from "node:os";
@@ -5,10 +6,10 @@ import path from "node:path";
 import crossSpawn from "cross-spawn";
 import { parse } from "yaml";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
+import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
-let installed: Awaited<ReturnType<typeof createInstalledCli>>;
-beforeAll(async () => { installed = await createInstalledCli(); });
+let installed: Awaited<ReturnType<typeof createAcceptanceCli>>;
+beforeAll(async () => { installed = await createAcceptanceCli(); });
 afterAll(async () => { await installed?.cleanup(); });
 
 it("logs in with a device code, uses its credential for service access, then revokes it through the installed launcher", async () => {

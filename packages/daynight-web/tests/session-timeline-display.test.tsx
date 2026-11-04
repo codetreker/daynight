@@ -83,35 +83,24 @@ it('retains verified mixed message resources without loading hidden tool resourc
   expect(load).toHaveBeenCalledTimes(2);
 });
 
-it('keeps consecutive hidden history pages, loading and retry independent of visible entries', async () => {
-  let state: SessionState = { ...emptySessionState(), entries: [tool('30')] };
+it('keeps loading and errors visible when Conversation filters every entry', async () => {
+  const state: SessionState = { ...emptySessionState(), entries: [tool('30'), tool('20')] };
   const load = vi.fn(async () => {});
-  const view = render(<SessionTimeline state={state} {...props} displayMode="conversation" hasOlder onLoadOlder={load} />);
+  const view = render(<SessionTimeline state={state} {...props} displayMode="conversation" hasOlder historyReady loadingOlder onLoadOlder={load} />);
   expect(screen.getByText('No content in conversation mode.')).toBeVisible();
-  expect(load).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: 'Load earlier activity' }));
-  expect(load).toHaveBeenCalledTimes(1);
-  state = { ...state, entries: mergeTimeline(state.entries, [tool('20')]) };
-  view.rerender(<SessionTimeline state={state} {...props} displayMode="conversation" hasOlder loadingOlder onLoadOlder={load} />);
-  expect(screen.getByRole('button', { name: 'Loading session…' })).toBeDisabled();
-  view.rerender(<SessionTimeline state={state} {...props} displayMode="conversation" hasOlder onLoadOlder={load} />);
-  expect(load).toHaveBeenCalledTimes(1);
-  fireEvent.click(screen.getByRole('button', { name: 'Load earlier activity' }));
-  expect(load).toHaveBeenCalledTimes(2);
-  state = { ...state, entries: mergeTimeline(state.entries, [tool('10')]) };
-  view.rerender(<SessionTimeline state={state} {...props} displayMode="conversation" hasOlder historyError="Earlier activity failed" onLoadOlder={load} />);
+  expect(screen.getByRole('status')).toHaveTextContent('Loading earlier activity');
+  expect(screen.queryByRole('button', { name: 'Load earlier activity' })).toBeNull();
+  view.rerender(<SessionTimeline state={state} {...props} displayMode="conversation" hasOlder historyReady historyError="Earlier activity failed" onLoadOlder={load} />);
   expect(screen.getByRole('alert')).toHaveTextContent('Earlier activity failed');
-  expect(screen.getByText('No content in conversation mode.')).toBeVisible();
-  fireEvent.click(screen.getByRole('button', { name: 'Load earlier activity' }));
-  expect(load).toHaveBeenCalledTimes(3);
-  state = { ...state, entries: mergeTimeline(state.entries, [message('1')]) };
-  view.rerender(<SessionTimeline state={state} {...props} displayMode="conversation" onLoadOlder={load} />);
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled();
+  const visible = { ...state, entries: mergeTimeline(state.entries, [message('1')]) };
+  view.rerender(<SessionTimeline state={visible} {...props} displayMode="conversation" onLoadOlder={load} />);
   expect(keys(view.container)).toEqual(['1']);
   expect(screen.queryByText('No content in conversation mode.')).toBeNull();
   expect(screen.queryByRole('alert')).toBeNull();
-  view.rerender(<SessionTimeline state={state} {...props} displayMode="standard" onLoadOlder={load} />);
-  expect(keys(view.container)).toEqual(['1', '10', '20', '30']);
-  expect(load).toHaveBeenCalledTimes(3);
+  view.rerender(<SessionTimeline state={visible} {...props} displayMode="standard" onLoadOlder={load} />);
+  expect(keys(view.container)).toEqual(['1', '20', '30']);
+  expect(load).not.toHaveBeenCalled();
 });
 
 it('localizes the Conversation empty state independently of the Standard empty state', () => {

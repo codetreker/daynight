@@ -22,12 +22,16 @@ when starting a new segment or disposing. URLs and invitation credentials never
 become marker fields. The [navigation design](../../../../docs/design/daynight-task-steps.md#web-呈现导航与大集合)
 owns the history algorithm and accepted unindexed-history limits.
 
-Authentication captures an admitted invitation in a layout effect before API
-effects, using the existing invitation state and temporary-storage policy. It
+Authentication captures an admitted project or Team invitation in a layout
+effect before API effects, using the scope-specific invitation state and
+temporary-storage policy. It
 asks the navigation owner to clear the current fragment, updating the address,
 in-memory URL and admitted location together. Indexed cleanup retains the index;
 native cleanup removes a copied marker without numbering the entry or changing
-foreign state. The clean snapshot does not recapture a memory-only invitation.
+foreign state. The clean snapshot and same-flow login return do not recapture a memory-only
+invitation. Reopened links and scope changes replace the pending invitation;
+authenticated views clear the temporary copy, login continuation restores the
+matching scope, and a proven principal change retires the pending invitation.
 The [authentication design](../../../../docs/design/daynight-auth.md) owns the
 capture and terminal cleanup lifecycle.
 

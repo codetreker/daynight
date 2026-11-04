@@ -4,6 +4,7 @@ import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { hasHerdrCommandCleanupFailure, HerdrCommandCleanupError, HerdrCommandError } from "../../../src/commands/worker/herdr/command.js";
 import { createWorkerTelemetryCollector } from "../../../src/commands/worker/telemetry.js";
+import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import path from "node:path";
 
@@ -39,11 +40,33 @@ describe("Worker telemetry", () => {
     expect(mocks.cpus).toHaveBeenCalledTimes(1);
     const sample = await finish(pending, 2);
     expect(sample.issues).toEqual([]);
+    expect(sample.telemetry).not.toHaveProperty("assistantHost");
     expect(sample.telemetry.cpu).toMatchObject({ state: "ok", value: { model: "Real CPU", logicalProcessors: 2, usagePercent: 20 } });
     expect(sample.telemetry.memory).toMatchObject({ state: "ok", value: { usedBytes: 768, totalBytes: 1024 } });
     expect(sample.telemetry.disk).toMatchObject({ state: "ok", value: { availableBytes: 102400, totalBytes: 409600 } });
     expect(mocks.statfs).toHaveBeenCalledWith(cwd, { bigint: true });
     expect(sample.telemetry.versions).toMatchObject({ daynight: "1.2.3", codex: { state: "ok", value: "0.1.0" }, herdr: { state: "ok", value: "0.9.5" } });
+  });
+
+  it("includes explicitly supplied assistant observations and preserves cleanup failures privately", async () => {
+    const failure = new HerdrCommandCleanupError([new Error("private-token")], undefined);
+    const assistantHost = { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: ["codex", "claude", "copilot"].map(provider => ({ provider: provider as "codex" | "claude" | "copilot", available: false, reason: "unavailable" as const, model: null, args: [] })) };
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: async () => ({ assistantHost, issues: [{ provider: "copilot" as const, reason: "unavailable" as const, error: failure }] }) } });
+    const sample = await finish(instance.collect(operation()));
+    expect(sample.telemetry.assistantHost).toEqual(assistantHost);
+    expect(sample.issues).toEqual([{ component: "assistantHost_copilot", code: "unavailable", error: failure }]);
+    expect(JSON.stringify(sample.telemetry)).not.toContain("private-token");
+  });
+
+  it("keeps a bounded assistant timeout report when the resource sampling deadline has elapsed", async () => {
+    const assistantHost = { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: ["codex", "claude", "copilot"].map(provider => ({ provider: provider as "codex" | "claude" | "copilot", available: false, reason: "timeout" as const, model: null, args: [] })) };
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: async parent => {
+      await new Promise(resolve => setTimeout(resolve, 5_001)); parent.check(); return { assistantHost, issues: [] };
+    } } });
+    const pending = instance.collect(operation());
+    const observed = pending.then(sample => sample, error => error);
+    const sample = await finish(observed, 5_010);
+    expect(sample).toHaveProperty("telemetry.assistantHost", assistantHost);
   });
 
   it("exposes invalid and unsafe resource values independently without fabricated zero measurements", async () => {
@@ -136,5 +159,63 @@ describe("Worker telemetry", () => {
     const failure: unknown = await pending.catch((error: unknown) => error);
     expect(hasHerdrCommandCleanupFailure(failure)).toBe(true);
     expect(failure).toMatchObject({ cause: op.signal.reason });
+  });
+
+  it.each(["rejection", "synchronous throw"])("joins ordinary probes and preserves cleanup after assistant %s", async mode => {
+    const cleanup = new HerdrCommandCleanupError([new Error("owned process remains")], undefined);
+    const laterCleanup = new HerdrCommandCleanupError([new Error("another owned process remains")], undefined);
+    const assistantFailure = new Error("assistant failed");
+    const completions = new Map<string, (error?: unknown) => void>();
+    mocks.version.mockImplementation(({ agent }: { agent: string }) => new Promise((resolve, reject) => {
+      completions.set(agent, error => error === undefined ? resolve("1.0.0") : reject(error));
+    }));
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: () => {
+      if (mode === "synchronous throw") throw assistantFailure;
+      return Promise.reject(assistantFailure);
+    } } });
+    let finished = false;
+    const observed = instance.collect(operation()).then(value => { finished = true; return value; }, error => { finished = true; return error; });
+    await vi.advanceTimersByTimeAsync(210);
+    const finishedBeforeCleanup = finished;
+    completions.get("codex")!(cleanup);
+    await vi.advanceTimersByTimeAsync(0);
+    const finishedBeforeLastProbe = finished;
+    completions.get("copilot")!(laterCleanup);
+    const failure: unknown = await observed;
+    expect(finishedBeforeCleanup).toBe(false);
+    expect(finishedBeforeLastProbe).toBe(false);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toContain(assistantFailure);
+    expect((failure as AggregateError).errors).toContain(cleanup);
+    expect((failure as AggregateError).errors).toContain(laterCleanup);
+  });
+
+  it("keeps reporter stop pending until ordinary cleanup finishes after assistant cancellation", async () => {
+    const cleanup = new HerdrCommandCleanupError([new Error("owned process remains")], undefined);
+    const completions: ((error?: unknown) => void)[] = [];
+    mocks.version.mockImplementation(() => new Promise((resolve, reject) => {
+      completions.push(error => error === undefined ? resolve("1.0.0") : reject(error));
+    }));
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", assistantHost: { collect: parent => new Promise((_, reject) => {
+      const abort = () => reject(parent.signal.reason);
+      parent.signal.addEventListener("abort", abort, { once: true });
+      if (parent.signal.aborted) abort();
+    }) } });
+    let sent = 0;
+    const reporter = createWorkerReporter({ signal: new AbortController().signal, collect: parent => instance.collect(parent), emit: () => {}, send: async () => { sent++; return { observedAt: "2026-11-04T00:00:00Z", lastReportedAt: "2026-11-04T00:00:00Z" }; } });
+    await vi.advanceTimersByTimeAsync(0);
+    let stopped = false;
+    const observed = reporter.stop().then(() => { stopped = true; return undefined; }, error => { stopped = true; return error; });
+    await vi.advanceTimersByTimeAsync(0);
+    const stoppedBeforeCleanup = stopped;
+    completions[0]!(cleanup);
+    await vi.advanceTimersByTimeAsync(0);
+    const stoppedBeforeLastProbe = stopped;
+    completions[1]!();
+    const failure: unknown = await observed;
+    expect(stoppedBeforeCleanup).toBe(false);
+    expect(stoppedBeforeLastProbe).toBe(false);
+    expect(hasHerdrCommandCleanupFailure(failure)).toBe(true);
+    expect(sent).toBe(0);
   });
 });

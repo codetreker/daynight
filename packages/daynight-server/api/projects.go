@@ -3,8 +3,10 @@ package api
 import "time"
 
 type CreateProjectRequest struct {
-	Name    string `json:"name"`
-	RepoURL string `json:"repoUrl"`
+	Name           string  `json:"name"`
+	RepoURL        string  `json:"repoUrl"`
+	TeamID         *string `json:"teamId,omitempty"`
+	ExpectedUserID string  `json:"expectedUserId"`
 }
 
 type ProjectSettings struct {
@@ -17,13 +19,24 @@ type UpdateProjectSettingsRequest struct {
 	ExecutionWarningMinutes int32 `json:"executionWarningMinutes"`
 }
 
+type ProjectOwnership struct {
+	TeamID  string `json:"teamId"`
+	Version int64  `json:"version"`
+}
+
+type ProjectDocument struct {
+	Project
+	Access ProjectAccess `json:"access"`
+}
+
 type Project struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	RepoURL   string          `json:"repoUrl"`
-	CreatedAt time.Time       `json:"createdAt"`
-	UpdatedAt time.Time       `json:"updatedAt"`
-	Settings  ProjectSettings `json:"settings"`
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
+	RepoURL   string           `json:"repoUrl"`
+	CreatedAt time.Time        `json:"createdAt"`
+	UpdatedAt time.Time        `json:"updatedAt"`
+	Settings  ProjectSettings  `json:"settings"`
+	Ownership ProjectOwnership `json:"ownership"`
 }
 
 type ProjectPage struct {

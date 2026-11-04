@@ -48,7 +48,7 @@ process proofs are checked against the OS on every cleanup, then endpoint absenc
 is reconciled. Terminal cleanup verifies archive readiness before Git removal;
 shutdown still stops and closes only, preserving worktrees and archive sources.
 
-Herdr has a PTY submission acknowledgement but no queryable per-input operation
+Legacy Herdr on platforms other than macOS has a PTY submission acknowledgement but no queryable per-input operation
 identity. Each bounded cleanup call sends one advisory notification and reads
 fresh snapshots until idle permits stopping, resources disappear, or the first
 deadline expires. A failed or uncertain send is not replayed within that call.
@@ -60,6 +60,14 @@ establish resource absence after stopAndClose. The separate
 limits each cleanup observation or mutation to five minutes, including nested
 requests. That per-operation budget does not replace the ten-minute advisory
 deadline or establish cleanup completion.
+
+The [macOS Herdr lifecycle decision](2026-11-04-herdr-worker-lifecycle.md)
+uses a durable original-process stop operation and exclusive daemon per run.
+It sends no advisory cleanup prompt and retains worktrees until archive
+acceptance is available. Confirmed original stopping and ledger publication
+release the execution slot; retained worktrees still prevent another claim from
+replacing the task directory. The lifecycle journal records original instances,
+not the liveness of a subsequently created replacement resource.
 
 Git cleanup observes the worktree directory and its owned administrative
 registration separately. A missing directory already meets its target; a remaining
@@ -112,10 +120,12 @@ Repeated cleanup and restart converge from actual remaining resources. Completed
 records and lost acknowledgements cannot by themselves keep absent resources
 alive or hide present ones. Static identities, permission failures and incomplete
 observations remain visible; the Worker does not turn an unreadable source into
-an empty resource set. Real remaining resources and archive duties retain capacity
-and the same-task barrier until their targets are observed.
+an empty resource set. Real remaining execution resources retain capacity. Web archive duties retain
+capacity under their cleanup contract; macOS Herdr releases stopped execution
+capacity while preserving its worktree and same-task barrier pending archive
+acceptance.
 
-Herdr advisory notification is not exactly once across interruption. This is the
+Legacy Herdr advisory notification is not exactly once across interruption. This is the
 cost of avoiding a Worker-owned operation history without a native queryable
 receipt. Stronger notification reconciliation would require a Herdr protocol
 capability, not another Worker completion flag. The existing per-task serialization,

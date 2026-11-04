@@ -224,10 +224,10 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     expect(Date.parse(graph.observedAt)).toBeLessThan(new Date('2055-01-01T00:00:00Z').getTime());
 
     await test.step('Observe saved warning settings through task sync', async () => {
-      await settings(90); await expect(ticking.locator('.task-stuck-label')).toHaveCount(0, { timeout: 10_000 });
+      await settings(90); await expect(ticking.locator('.task-stuck-label')).toHaveCount(0, { timeout: 20_000 });
       expect(await graphGeometry(page)).toEqual(beforeGeometry); await expect(details).toBeFocused();
       expect((await record(project.id, crossing.id, 'higher-threshold-preserves-start')).startedAt).toBe(running.startedAt);
-      await settings(60); await expect(ticking.locator('.task-stuck-label')).toHaveText('可能卡住了', { timeout: 10_000 });
+      await settings(60); await expect(ticking.locator('.task-stuck-label')).toHaveText('可能卡住了', { timeout: 20_000 });
       expect((await record(project.id, crossing.id, 'lower-threshold-preserves-start')).startedAt).toBe(running.startedAt);
     });
     await closeChain(page);
@@ -240,7 +240,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     await success(['task', 'set-status', crossing.id, 'done', '--project', project.id, '--if-version', String(running.version)]);
     const completed = await record(project.id, crossing.id, 'completed-freeze');
     expect(completed.startedAt).toBe(running.startedAt); expect(completed.completedAt).not.toBeNull();
-    await expect(ticking.locator('.graph-status')).toHaveText('已完成', { timeout: 10_000 });
+    await expect(ticking.locator('.graph-status')).toHaveText('已完成', { timeout: 20_000 });
     await expect(ticking.locator('.task-stuck-label')).toHaveCount(0);
     const frozen = await duration(ticking).getAttribute('datetime');
     expect(await elapsed(ticking)).toBe(Date.parse(completed.completedAt!) - Date.parse(completed.startedAt!));
@@ -254,6 +254,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     await success(['task', 'set-status', legacy.id, 'done', '--project', project.id, '--if-version', String(unknownBeforeCompletion.version)]);
     const completedLegacy = await record(project.id, legacy.id, 'completed-legacy-remains-unknown');
     expect(completedLegacy.version).toBe(unknownBeforeCompletion.version + 1n);
+    expect(completedLegacy.updatedAt).not.toBe(unknownBeforeCompletion.updatedAt);
     expect(completedLegacy.startedAt).toBeNull(); expect(completedLegacy.completedAt).not.toBeNull();
     await retained.dispose();
     await openTimingChain();
@@ -296,7 +297,10 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
         await expect(manualRow).not.toHaveClass(/standalone-row-stuck/);
         await expect(manualRow.locator('.task-stuck-label')).toHaveCount(0);
         await expect(manualRow).not.toHaveAccessibleDescription(/Possibly stuck|可能卡住了/);
-        const unknown = page.locator(`#standalone-task-${legacy.id}`); await expect(unknown).toBeVisible(); await expect(unknown.locator('.root-status')).toHaveText(locale === 'en' ? 'Done' : '已完成'); await expect(duration(unknown)).toHaveCount(0); await expect(unknown.locator('.task-stuck-label')).toHaveCount(0);
+        const unknown = page.locator(`#standalone-task-${legacy.id}`);
+        await expect(unknown).toBeVisible();
+        await expect(unknown.locator('.root-status')).toHaveText(locale === 'en' ? 'Done' : '已完成', { timeout: 20_000 });
+        await expect(duration(unknown)).toHaveCount(0); await expect(unknown.locator('.task-stuck-label')).toHaveCount(0);
         await expect(duration(page.locator(`#standalone-task-${briefRow.id}`))).toContainText(locale === 'en' ? '< 1 min' : '不足 1 分钟');
         for (const width of [390, 320]) {
           await page.setViewportSize({ width, height: 1000 }); await rowLayout(row); await rowLayout(unknown);

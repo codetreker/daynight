@@ -40,8 +40,13 @@ Delta validation covers its selected task set, not unreturned historical rows.
 
 The property-sync delivery used IndexedDB schema 3 to rebuild projects, summaries
 and details and rotate user fences for 2-to-3 and direct 1-to-3 upgrades. The
-[assignment decision](2026-11-03-task-assignment-foundation.md) now owns schema 4
-and direct rebuilds from 1, 2 or 3. Clearing old epochs and watermarks forces a
+[assignment decision](2026-11-03-task-assignment-foundation.md) introduced schema 4
+and direct rebuilds from 1, 2 or 3. The
+[public ownership decision](2026-11-04-public-project-ownership.md) introduced
+schema 5 and rebuilds from 1 through 4. The
+[profile-reuse decision](../bug-fix/2026-11-04-task-view-request-reuse.md) adds
+schema 6 profile content, preserving schema-5 task records and retaining those
+older-format rebuilds. Clearing old epochs and watermarks forces a
 complete snapshot, including tasks unchanged since the old format. Missing
 properties cannot be repaired with an inferred empty object. Upgrade failures
 roll back. Old connections close on versionchange, and stale fences cannot

@@ -48,11 +48,32 @@ const fixture = () => {
   const deps: Parameters<typeof createCleanupDriver>[0] = { store, git, herdr, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(6), buildPrompt: () => "managed", emit: (event) => events.push(event), now: () => time };
   const driver = () => createCleanupDriver(deps);
   const advance = (deleteWorktree = true, signal?: AbortSignal) => driver().advance({ owner, project, task }, deleteWorktree, signal);
-  return { store, task, owner, driver, advance, observation, resources, listResources, submitPrompt, stopAndClose, removeWorktree, findWorktree, order, events, clock: (value: number) => { time = value; }, state: (pane: HerdrAgentObservation | null) => { current = pane === null ? [] : resources(pane); } };
+  return { store, task, owner, herdr, driver, advance, observation, resources, listResources, submitPrompt, stopAndClose, removeWorktree, findWorktree, order, events, clock: (value: number) => { time = value; }, state: (pane: HerdrAgentObservation | null) => { current = pane === null ? [] : resources(pane); } };
 };
 
 describe("cleanup from resource observations", () => {
+  it.each([true, false])("requires durable stop proof without a pane and retains the worktree (terminal %s)", async terminal => {
+    const f = fixture(); const reasons: string[] = []; let stopped = false;
+    Object.assign(f.herdr, { lifecycle: { stop: async (_owner: ResourceOwner, reason: string, operation: Operation) => { expect(operation.limits).toMatchObject({ totalMs: 300_000, requestMs: 300_000 }); reasons.push(reason); stopped = true; }, isStopped: () => stopped } });
+    f.state(null);
+    await f.advance(terminal);
+    expect(reasons).toEqual([terminal ? "terminal" : "shutdown"]);
+    expect(f.removeWorktree).not.toHaveBeenCalled();
+    expect(f.stopAndClose).not.toHaveBeenCalled();
+    expect(f.submitPrompt).not.toHaveBeenCalled();
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "agent-stopped" }));
+  });
+
+  it("does not treat an unconfirmed durable stop as permission to delete or finish", async () => {
+    const f = fixture();
+    Object.assign(f.herdr, { lifecycle: { stop: async () => {}, isStopped: () => false } });
+    await expect(f.advance()).rejects.toThrow("not confirmed");
+    expect(f.removeWorktree).not.toHaveBeenCalled();
+    expect(f.events.some(event => event.kind === "agent-stopped" || event.kind === "cleaned")).toBe(false);
+  });
+
   it("reobserves after advisory input and confirms resources absent before worktree removal", async () => {
+
     const f = fixture();
     await f.advance();
     expect(f.submitPrompt).toHaveBeenCalledOnce();

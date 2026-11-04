@@ -1,4 +1,7 @@
+import type { WorkerConfigurationMessages } from './worker-configuration';
+
 export type WorkersMessages = {
+  readonly configuration: WorkerConfigurationMessages;
   readonly title: string;
   readonly subtitle: string;
   readonly list: string;

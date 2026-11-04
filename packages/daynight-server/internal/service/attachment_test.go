@@ -106,7 +106,7 @@ func TestAttachmentLifecycleAndTaskIndependence(t *testing.T) {
 func TestAttachmentScopeAndPathConflicts(t *testing.T) {
 	attachments, tasks, database, _, task, principal := attachmentService(t)
 	ctx := context.Background()
-	otherProject, err := NewProjects(database).Create(ctx, principal, CreateProject{Name: "Other", RepoURL: "host:other"})
+	otherProject, err := NewProjects(database).Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:other"})
 	if err != nil {
 		t.Fatal(err)
 	}

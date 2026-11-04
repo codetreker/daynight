@@ -18,16 +18,20 @@ does not identify a particular CPU or I/O cause or prove transient infrastructur
 
 ## Decision
 
-The existing Web module selector enables two parallel jobs: `verify-web-quality`
-and `verify-web`. Each keeps a 20-minute job bound, and the final `checks` job
-requires both alongside all other selected modules. Shared workflow changes
-retain the existing all-module selection rule. This separates responsibilities,
-not browser scenarios or product scope.
+The isolation decision introduced separate `verify-web-quality` and `verify-web`
+responsibilities. The [case-shard decision](2026-11-04-web-ci-case-shards.md)
+subsequently partitions the browser responsibility into two matrix entries;
+quality remains a separate job. Each entry keeps a 20-minute bound, and the
+existing final `checks` job requires selected Web jobs to succeed and validates
+the complete shard union. Shared workflow changes retain all-module selection.
 
-`scripts/ci.mts` exports `runCi(mode, cancellation, operations?)` for explicit
+`scripts/ci.mts` exports `runCi(mode, cancellation, operations?, shard?)` for explicit
 internal `quality` and `browser` modes. Quality runs
-the canonical Node harness and complete Vitest/V8 plus strict statement checker
-serially, with a separate 180-second deadline for each command. Only the coverage
+the canonical Node harness, complete Vitest/V8 collection and strict statement
+checker serially. Harness has a 180-second deadline and collection has a 300-second deadline; the
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) gives
+final inventory and coverage verification an independent 60-second deadline.
+Only the Vitest/V8
 child receives `VITEST_MAX_WORKERS=4`, calibrated for its dedicated public
 standard Linux runner by the [worker capacity
 decision](2026-10-28-web-quality-worker-capacity.md); its `forks` pool, file
@@ -87,13 +91,18 @@ that ordinary acceptance does not need. Separate jobs remove that coupling;
 the selected core has no such gate or reader.
 
 **Increase the job or command allowance.** Larger budgets change the validation
-contract without separating the competing responsibilities. Both jobs retain
-20 minutes, and all existing command and functional deadlines remain in force.
+contract without separating the competing responsibilities. The isolation decision kept both jobs at
+20 minutes and preserved their command and functional deadlines. The later
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) separately
+bounds final verification and calibrates collection for the larger suite.
 
-**Shard browser scenarios across runners.** Shards duplicate target preparation
-and require new scenario, artifact and permission aggregation. At the time of this choice, the full native, container and capacity journey
-remained together; only independent quality work received a separate job.
-Capacity now belongs to the explicit local stress path.
+**Shard browser scenarios across runners.** At the time of this choice, shards
+would duplicate target preparation and require scenario/artifact aggregation,
+so the full browser journey remained together and only independent quality work
+received a separate job. Capacity later moved to the explicit local stress path.
+The [case-shard decision](2026-11-04-web-ci-case-shards.md) accepts two independent
+browser runners with validation in the existing final gate; quality isolation
+and its command budgets remain in force.
 
 ## Consequences
 

@@ -100,7 +100,7 @@ const observeSyncFetches = async (page: Page, projectId: string): Promise<void> 
     // Cache reads can cross IndexedDB tasks before fetch; retain the real polling
     // callback's provenance until its network read consumes it.
     window.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
-      if (typeof handler !== 'function' || timeout !== 5_000) return nativeInterval(handler, timeout, ...args);
+      if (typeof handler !== 'function' || timeout !== 15_000) return nativeInterval(handler, timeout, ...args);
       return nativeInterval(function (this: Window, ...parameters: unknown[]) {
         pollingCallback += 1;
         return Reflect.apply(handler, this, parameters);

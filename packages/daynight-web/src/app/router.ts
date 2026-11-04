@@ -2,7 +2,7 @@ import { ApiError, attachmentPageUrl } from "../api/client";
 import { canonicalId, isAttachmentPath } from "../api/parse";
 import { browserNavigation } from './navigation';
 
-export type TaskDetailTab = "overview" | "attachments" | "discussion" | "session";
+export type TaskDetailTab = "overview" | "steps" | "attachments" | "discussion" | "session";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
 
 export type Route =
@@ -17,7 +17,7 @@ export type ProtectedRoute = Route
   | { readonly kind: "worker"; readonly workerId: string }
   | { readonly kind: "testSessions" }
   | { readonly kind: "testSession"; readonly sessionId: string }
-  | { readonly kind: "account" | "invitations" }
+  | { readonly kind: "account" | "invitations" | "teamInvitations" }
   | { readonly kind: "device"; readonly userCode: string | null }
   | { readonly kind: "members" | "settings"; readonly projectId: string };
 export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly returnPath: string | null };
@@ -25,7 +25,7 @@ export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly retu
 const detailTab = (search: string, defaultTab: TaskDetailTab): TaskDetailTab | null => {
   const values = new URLSearchParams(search).getAll("tab");
   if (values.length === 0) return defaultTab;
-  return values.length === 1 && (values[0] === "overview" || values[0] === "attachments" || values[0] === "discussion" || values[0] === "session") ? values[0] : null;
+  return values.length === 1 && (values[0] === "overview" || values[0] === "steps" || values[0] === "attachments" || values[0] === "discussion" || values[0] === "session") ? values[0] : null;
 };
 
 export const parseRoute = (pathname: string, search = ""): Route => {
@@ -74,6 +74,7 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   }
   if (pathname === "/account") return { kind: "account" };
   if (pathname === "/invitations") return { kind: "invitations" };
+  if (pathname === "/team-invitations") return { kind: "teamInvitations" };
   if (pathname === "/device") {
     const codes = new URLSearchParams(search).getAll("user_code");
     return { kind: "device", userCode: codes.length === 0 ? null : codes.length === 1 ? codes[0]! : "" };
@@ -109,10 +110,10 @@ export const parseAuthRoute = (pathname: string, search = ""): AuthRoute => path
   : parseProtectedRoute(pathname, search);
 
 export const invitationLocation = (pathname: string, search: string): boolean => {
-  if (pathname === "/invitations") return true;
+  if (pathname === "/invitations" || pathname === "/team-invitations") return true;
   if (pathname !== "/login") return false;
   const target = parseLoginReturnPath(search);
-  return target !== null && new URL(target, "https://daynight.invalid").pathname === "/invitations";
+  return target !== null && ["/invitations", "/team-invitations"].includes(new URL(target, "https://daynight.invalid").pathname);
 };
 
 export const loginUrl = (returnPath: string): string => {
