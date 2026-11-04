@@ -14,6 +14,7 @@ import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worke
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
+import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
 
 const uuid = (value: number): string => `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
 const staleId = uuid(8);
@@ -391,10 +392,19 @@ describe("execution from current Herdr resources", () => {
     expect(prompt).toHaveBeenCalledTimes(4);
   });
 
-  it("keeps a continuation decision available while a Codex model menu reports unchanged idle readiness", async () => {
+  it.each([
+    "Select model\n› 1. GPT-6.1 Terra\n  2. GPT-6.1 Sol\nenter select · esc back",
+    "Select Reasoning Level for GPT-5.5\n› 3. High (current)    Greater reasoning depth for complex problems\nenter default · s session · esc back",
+    "Advanced Reasoning\n› 1. Ultra\nenter apply · s session · esc back",
+    "Configuration\nChanges save automatically\n› Automatic recaps       [ ] Off              Prepare recaps while the terminal is unfocused\nleft/right group · / search · enter toggle · esc clear search/close",
+    "Configuration\nChanges save automatically\n› Automatic recaps       [ ] Off              Prepare recaps while the terminal is unfocused\nleft/right group · / search · enter toggle",
+    "Effects\nConfigure visual effects\n› 1. [ ] Animations                 Animate the welcome screen, working\n                                    indicator, and transitions\n     [-] Composer stars (disabled)  Turn on Animations to show Astra task stars\nenter toggle · esc back",
+    "Keymap\nAll configurable shortcuts.\n› Action 08  Ctrl+8\nleft/right group · enter edit · esc close",
+    ...nativeMenuScreens.map(menu => menu.screen),
+  ])("keeps a continuation decision available while a Codex picker reports unchanged idle readiness: %s", async menu => {
     const f = await fixture("codex", staleId);
     f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
-    f.screen.text = "Select model\n› 1. GPT-6.1 Terra\n  2. GPT-6.1 Sol\nenter select · esc back";
+    f.screen.text = menu;
     for (let attempt = 0; attempt < 4; attempt++) await expect(f.driver.advance(f.input)).rejects.toBeInstanceOf(HerdrInputBlockedError);
     expect(f.calls.filter(call => call.method === "agent.prompt")).toEqual([]);
     expect(f.readTask).not.toHaveBeenCalled();

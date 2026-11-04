@@ -23,8 +23,10 @@ The Herdr adapter checks the original workspace/pane/terminal and native agent
 identity, launch state, required interactive readiness and blocked state. For
 Codex and Claude, it then reads the bound pane's complete visible text only to
 reject explicit known menu or disabled-input patterns. A selected picker row
-with its matching Enter/Esc footer, or a recognized disabled input row, returns
-a definitely not-submitted result. Codex's [picker footer](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/popup_consts.rs#L16-L39)
+with its source-defined accept/cancel controls, or a recognized disabled input
+row, returns a definitely not-submitted result. Picker controls include selected
+item actions, secondary shortcuts, runtime key bindings and wrapped hints.
+Codex's [picker footer](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/popup_consts.rs#L16-L63)
 and [disabled input rendering](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L4873-L4954)
 identify the concrete patterns. Ordinary prose mentioning cancellation is not a
 menu, and a later normal prompt excludes stale menu text above it.

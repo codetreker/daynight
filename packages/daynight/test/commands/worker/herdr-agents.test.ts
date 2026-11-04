@@ -8,6 +8,7 @@ import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrPromptReceipt
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
+import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
 
 type Entry = Record<string, unknown>;
 const directories: string[] = [];
@@ -22,6 +23,72 @@ const claimId = "33333333-3333-4333-8333-333333333333";
 const worktreeId = "44444444-4444-4444-8444-444444444444";
 const nativeId = "55555555-5555-4555-8555-555555555555";
 const configuration: HerdrAgentConfiguration = { agent: "codex", model: "model-a", args: ["--config", "model_reasoning_effort=low", "--no-alt-screen"] };
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_reasoning_selection_popup.snap
+const reasoningMenu = `  Select Reasoning Level for GPT-5.5
+
+
+  1. Low               Fast responses with lighter reasoning
+  2. Medium (default)  Balances speed and reasoning depth for everyday tasks
+› 3. High (current)    Greater reasoning depth for complex problems
+  4. Extra high        Extra high reasoning depth for complex problems
+  5. Persistent        Continue working until put to sleep
+  6. More reasoning…   Max and Ultra consume usage limits faster
+
+  enter default · s session · esc back`;
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/config_panel/snapshots/codex_tui__config_panel__tests__config_Sessions.snap
+const configurationMenu = `
+  Configuration
+  Changes save automatically
+
+   Appearance   Notifications   Input   Sessions   Text selection
+
+› Automatic recaps       [ ] Off              Prepare recaps while the terminal is unfocused
+  Session picker layout  Dense ›              Choose tighter rows or a roomier list when resuming and forking conversations
+  Resume directory       Ask ›                Choose which working directory to use when the current directory and saved session differ
+
+
+
+
+  left/right group · / search · enter toggle · esc clear search/close`;
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/config_panel/snapshots/codex_tui__config_panel__tests__effects_picker.snap
+const effectsMenu = `
+  Effects
+  Configure visual effects
+
+
+› 1. [ ] Animations                 Animate the welcome screen, working
+                                    indicator, and transitions
+     [-] Composer stars (disabled)  Turn on Animations to show Astra task stars
+
+  enter toggle · esc back`;
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__list_selection_view__picker_tests__browser_page_navigation_uses_rows_that_fit.snap
+const keymapMenu = `
+  Keymap
+  All configurable shortcuts.
+
+   All   Common   Customized (3)   Unbound (4)   App
+
+  Type to search shortcuts
+↑
+  Action 01  Ctrl+1
+  Action 02  Ctrl+2
+  Action 03  Ctrl+3
+  Action 04  Ctrl+4
+  Action 05  Ctrl+5
+  Action 06  Ctrl+6
+  Action 07  Ctrl+7
+› Action 08  Ctrl+8
+↓
+  left/right group · enter edit · esc close`;
+// The complete 24×7 frame has wrapped controls and retains its selected action.
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__list_selection_view__picker_tests__short_browser_keeps_header_tabs_search_and_footer.snap
+const keymapNarrowMenu = `
+  Keymap
+   All   Common      ›
+  Type to search short
+› Action 00  Ctrl+0
+  left/right group ·
+  enter edit · esc close`;
 
 const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspaceEnvironment: HerdrWorkspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, readCodexConfig = async (_args: readonly string[], _cwd: string, _operation: Operation): Promise<unknown> => ({ config: {} })) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-agent-tests"); await mkdir(scratch, { recursive: true });
@@ -157,6 +224,25 @@ describe("native argument ownership", () => {
 });
 
 describe("direct task resource management", () => {
+  it.each(nativeMenuScreens)("keeps initial and continuation input unsent in the native $name menu", async ({ screen }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation()); f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+    f.screen.text = `${screen}\n› Any custom current composer`;
+    await f.manager.submitPrompt(f.context, binding, "continuation after dismissal", operation());
+    expect(f.prompts).toEqual(["continuation after dismissal"]);
+  });
+
+  it.each(["fork", "restore"])("keeps input unsent for the source-owned session-picker %s action", async action => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.screen.text = nativeMenuScreens.find(menu => menu.name === "resume_picker_118x30")!.screen
+      .replace("Resume a previous session", action === "fork" ? "Fork a previous session" : "Resume a previous session")
+      .replace("enter resume", `enter ${action}`).replace("esc new", "esc clear search").replace("⌃c quit", "⌃c exit");
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
   it("returns a launched process before its first input or native SessionStart", async () => {
     const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     f.hook(async (method, params) => {
@@ -702,6 +788,11 @@ describe("direct task resource management", () => {
 
   it.each([
     { agent: "codex" as const, screen: "Select model\n› 1. GPT-6.1 Terra\n  2. GPT-6.1 Sol\n\nenter select · esc back", blocker: "menu" },
+    { agent: "codex" as const, screen: reasoningMenu, blocker: "menu" },
+    { agent: "codex" as const, screen: effectsMenu, blocker: "menu" },
+    { agent: "codex" as const, screen: keymapMenu, blocker: "menu" },
+    { agent: "codex" as const, screen: keymapNarrowMenu, blocker: "menu" },
+    { agent: "codex" as const, screen: keymapMenu.replace("enter edit · esc close", "enter edit shortcut · * custom · - unbound · esc close"), blocker: "menu" },
     { agent: "codex" as const, screen: "Select model\n› 1. GPT-6.1 Terra\n› Search models\nenter select · esc back", blocker: "menu" },
     { agent: "codex" as const, screen: "Folder access\nTrust this folder?\n› 1. Trust and continue\n  2. Quit\nenter continue · esc quit", blocker: "menu" },
     { agent: "codex" as const, screen: "› Input disabled.", blocker: "disabled" },
@@ -716,10 +807,64 @@ describe("direct task resource management", () => {
   });
 
   it.each([
+    "enter select · esc back",
+    "enter default · s session · esc back",
+    "enter apply · s session · esc back",
+    "f3 default · s session · f2 back",
+    "^j select · ^k back",
+    "ctrl+x enter select · alt+esc back",
+    "enter default ·\ns session · esc back",
+    "enter default · s\nsession · esc back",
+    "Press enter to confirm or esc to go back",
+    "Press f3 to confirm or f2 to cancel",
+    "Press enter to confirm or esc to cancel or ^o to open thread",
+    "enter select · / search · esc back",
+    "s session · esc back",
+    "enter select",
+    "enter toggle · esc back",
+    "f3 toggle · f2 back",
+    "enter toggle",
+    "enter toggle ·\nesc back",
+  ])("recognizes source-owned Codex picker controls: %s", async footer => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.screen.text = `Select an option\n› 1. Current selection\n  2. Another selection\n\n${footer}`;
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each([
+    configurationMenu,
+    configurationMenu.replace(" · esc clear search/close", ""),
+    configurationMenu.replace("/ search · enter toggle", "/ search ·\n  enter toggle"),
+    configurationMenu.replace("left/right group · / search · enter toggle · esc clear search/close", "enter test · esc clear search"),
+  ])("blocks initial and continuation input on the actual unnumbered Configuration menu: %s", async screen => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation()); f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each([
     { agent: "codex" as const, screen: "Input disabled in this business example; press enter to confirm or esc to cancel." },
     { agent: "codex" as const, screen: "› Ask any custom question\nGPT-6.1 Terra medium · daynight/task" },
     { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› Completely custom current composer" },
     { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n›✨Custom current prompt marker" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› Continue" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› select" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› apply" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› f3 select" },
+    ...["open", "choose", "close"].map(label => ({ agent: "codex" as const, screen: `› 1. Historical model\nenter select · esc back\n\n› ${label}` })),
+    { agent: "codex" as const, screen: "› 1. Historical reasoning\nenter default ·\ns session · esc back\n› Completely custom current composer" },
+    { agent: "codex" as const, screen: "› 1. Business example\nenter invent · esc back" },
+    { agent: "codex" as const, screen: "› 1. Historical choice\n› Current composer\nenter send ·\nesc cancel" },
+    { agent: "codex" as const, screen: "› 1. Historical choice\n› Current composer\nenter send · esc cancel" },
+    { agent: "codex" as const, screen: "Business prose: enter default · s session · esc back" },
+    { agent: "codex" as const, screen: `${configurationMenu}\n\n› A custom current composer` },
+    { agent: "codex" as const, screen: `${keymapMenu}\n\n› Continue` },
+    { agent: "codex" as const, screen: "› Arbitrary business row\nleft/right group · enter edit · esc close" },
+    { agent: "codex" as const, screen: "› Arbitrary business question\nleft/right group · / search · enter toggle" },
+    { agent: "codex" as const, screen: "Configuration\n› Current composer\nenter send · esc cancel" },
+    { agent: "codex" as const, screen: "Select model\n› Unnumbered business row\nenter select · esc back" },
     { agent: "claude" as const, screen: "Business prose says esc to cancel, then enter to confirm the example." },
     { agent: "claude" as const, screen: "❯ 1. Historical choice\nEnter to confirm · Esc to cancel\n\n❯ Completely custom current composer" },
     { agent: "claude" as const, screen: "Select model\n❯ Default\nEnter to set as default · Esc to cancel\n\n❯ New placeholder without borders" },
