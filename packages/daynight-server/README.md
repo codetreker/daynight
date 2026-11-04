@@ -385,7 +385,7 @@ return `Daynight-User-ID` from the admitted principal, including empty mutations
 and later resource errors. Failed authentication does not emit that header;
 caller-supplied values are not echoed. An unmatched route has an empty route template.
 UI and API requests use the same logging wrapper. Exact `/device`, `/account`,
-`/invitations`, `/`, `/login`, `/projects`, `/workers`, `/workers/{workerId}`, `/setup`,
+`/invitations`, `/team-invitations`, `/`, `/login`, `/projects`, `/workers`, `/workers/{workerId}`, `/setup`,
 `/projects/{projectId}`, `/projects/{projectId}/members`,
 `/projects/{projectId}/settings`, `/projects/{projectId}/tasks/{taskId}` and
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` page shapes return
@@ -851,6 +851,44 @@ The [authentication requirements](../../docs/spec/daynight-auth.md#team-生命�
 own the complete public contract. The
 [Team transaction design](../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
 owns existence locking, completion classification and independent versions.
+
+## Team membership API
+
+`GET /api/v1/teams/{teamId}/members` returns `{items}` only to current Team
+members. Each item contains the real membership fields and
+`profile:{name,email,avatarUrl}` with nullable fields. A missing canonical user
+fails the entire read. Project grants do not grant directory access.
+
+An admin changes an existing role with `PATCH /api/v1/teams/{teamId}/members/{userId}`
+and `{version,role,expectedUserId}`; the response is `{membership,actorRole}`.
+An admin or the member removes the relationship with DELETE at the same path
+and `{version,expectedUserId}`; the response is
+`{teamId,userId,removed:true,actorRole}`. The actor role is null after self-exit.
+Personal membership is immutable. A stale membership version fails even for a
+same-role request, and the final admin cannot be demoted or removed. Membership
+changes do not alter Project grants. The actor check precedes domain SQL, and
+unknown commit results must be reconciled without automatic replay.
+
+The [authentication requirements](../../docs/spec/daynight-auth.md#team-生命周期)
+own the full behavior and refusals.
+
+## Team invitation API
+
+Current Team admins create, list and revoke invitations at
+`/api/v1/teams/{teamId}/invitations`. Create and revoke bind `expectedUserId`
+before domain SQL; Personal Teams reject creation. Creation returns a one-time
+`/team-invitations#<secret>` link. Metadata lists never contain the secret.
+Invitations expire after seven days and grant member once.
+
+Authenticated recipients inspect and accept through POST bodies at
+`/api/v1/team-invitations/inspect` and `/api/v1/team-invitations/accept`.
+Acceptance also binds `expectedUserId` and returns the actual membership and
+joined/consumed flags. Existing members retain their role without consuming the
+invitation. New membership and consumption commit together; revocation shares
+the Team and invitation locks. Deletion removes invitations in the same
+transaction. Invalid, expired, consumed, revoked or deleted targets all return
+`invitation_unavailable`. The [authentication requirements](../../docs/spec/daynight-auth.md#team-邀请)
+and [design](../../docs/design/daynight-auth.md#数据与并发) own the contract.
 
 ## Project transfer API
 

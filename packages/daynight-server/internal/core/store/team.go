@@ -152,6 +152,9 @@ func (tx *TeamTx) HasProjects(ctx context.Context) (bool, error) {
 }
 
 func (tx *TeamTx) Delete(ctx context.Context) error {
+	if _, err := tx.tx.Exec(ctx, `DELETE FROM team_invitations WHERE team_id=$1`, tx.teamID); err != nil {
+		return queryError("delete Team invitations", err)
+	}
 	if _, err := tx.tx.Exec(ctx, `DELETE FROM team_members WHERE team_id=$1`, tx.teamID); err != nil {
 		return queryError("delete Team members", err)
 	}

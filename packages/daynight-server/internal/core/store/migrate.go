@@ -110,6 +110,12 @@ var botsSQL string
 //go:embed migrations/034_worker_configuration.sql
 var workerConfigurationSQL string
 
+//go:embed migrations/035_team_invitations.sql
+var teamInvitationsSQL string
+
+//go:embed migrations/036_bot_defaults.sql
+var botDefaultsSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -152,6 +158,8 @@ var schemaMigrations = []migration{
 	{version: 32, sql: personalProjectOwnershipSQL},
 	{version: 33, sql: botsSQL},
 	{version: 34, sql: workerConfigurationSQL},
+	{version: 35, sql: teamInvitationsSQL},
+	{version: 36, sql: botDefaultsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

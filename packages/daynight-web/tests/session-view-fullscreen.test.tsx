@@ -105,3 +105,31 @@ it('restores a safe Session focus when archive preparation removes the focused c
   fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
   expect(screen.getByRole('button', { name: 'Enter Session fullscreen' })).toBeVisible();
 });
+
+it('closes commands before Session fullscreen even when focus has moved to its header', () => {
+  const f = fixture(), outer = vi.fn();
+  render(<div onKeyDown={outer}><SessionView client={f.client} userId={f.userId} active current /></div>);
+  fireEvent.click(screen.getByRole('button', { name: 'Enter Session fullscreen' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  const refresh = screen.getByRole('button', { name: 'Refresh' }); refresh.focus();
+  fireEvent.keyDown(refresh, { key: 'Escape' });
+  expect(screen.queryByRole('listbox')).toBeNull();
+  expect(screen.getByRole('region', { name: 'Session' })).toHaveClass('session-fullscreen');
+  expect(screen.getByRole('textbox')).toHaveFocus(); expect(outer).not.toHaveBeenCalled();
+  fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' });
+  expect(screen.getByRole('region', { name: 'Session' })).not.toHaveClass('session-fullscreen');
+});
+
+it('keeps composition Escape inside the command layer without cancelling fullscreen', () => {
+  const f = fixture(), outer = vi.fn();
+  render(<div onKeyDown={outer}><SessionView client={f.client} userId={f.userId} active current /></div>);
+  fireEvent.click(screen.getByRole('button', { name: 'Enter Session fullscreen' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  const input = screen.getByRole('textbox');
+  for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+    expect(fireEvent.keyDown(input, { key: 'Escape', ...composition, cancelable: true })).toBe(true);
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Session' })).toHaveClass('session-fullscreen');
+  }
+  expect(outer).not.toHaveBeenCalled();
+});

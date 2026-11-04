@@ -42,10 +42,14 @@ or run your own service. The interface supports English and Simplified Chinese.
   tasks across selected, prepared Projects, preserve ongoing work through restarts
   and stop ended executions while retaining resources until their cleanup
   and archive requirements are satisfied.
-- **Observe your Workers.** Open My Workers alongside My projects to see the
-  current account's recent Workers, online/offline state, resource and software
-  observations, and authorized task snapshots. Detail keeps the last report time
-  and distinguishes an unknown inventory from idle work.
+- **Observe and configure your Workers.** Open My Workers alongside My projects
+  to see the current account's recent Workers, online/offline state, resource and
+  software observations, and authorized task snapshots. Detail keeps the last
+  report time and distinguishes an unknown inventory from idle work. Its
+  configuration section edits cloud runtime targets and displays reported actual
+  values, partial failures and Project preparation or removal outcomes. Saved
+  targets remain distinct from applied results, and configuration is independent
+  of the recent-report window.
 - **Control a task session in the browser.** With `worker.agentControlMode: web`,
   view native messages, reasoning and tool results, send text, stop a turn, and
   answer supported approvals, questions and forms in the task’s Session tab.
@@ -54,9 +58,9 @@ or run your own service. The interface supports English and Simplified Chinese.
 
 Task Steps have [CLI list/show reads, atomic CLI Add and independent persisted HTTP reads and writes](docs/spec/daynight-task-steps.md), with complete ordered content, task-local identities and the shared parent Task version.
 
-Task creation and general editing use the CLI. The Web app provides project and Worker browsing,
-status and execution-setting controls, task deletion, attachment management and
-persistent task discussions.
+Task creation and general editing use the CLI. The Web app provides project and
+Worker browsing, Worker configuration editing, status and execution-setting
+controls, task deletion, attachment management and persistent task discussions.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 explains configuration, native prerequisites and explicit
 retry/release/resume controls. Complete platform acceptance remains
@@ -349,7 +353,7 @@ from all changed paths, including deletions and both sides of renames:
 | A PR changing only the CLI `package.json` top-level `version`, with unchanged regular-file mode and other parsed fields | No application jobs |
 | Other CLI `package.json` changes limited to top-level `version`, JSON formatting or object key order | CLI |
 | Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
-| Other `packages/daynight/` paths | Linux, macOS ARM64 and Windows CLI, runtime compatibility, plus shell completion |
+| Other `packages/daynight/` paths | Independent ordinary and installed CLI jobs on Linux, macOS ARM64 and Windows; runtime compatibility and shell completion |
 | `packages/daynight-server/` | Go server coverage and E2E |
 | `packages/daynight-web/` and current Dagre and XYFlow patches | Go server coverage/E2E, Web quality and Web browser acceptance |
 | Runtime files under `deployment/` | Web quality and Web browser acceptance |
@@ -374,7 +378,11 @@ workflow. Exact preparation inputs are listed in
 [the selector](.github/scripts/ci-modules.mts).
 
 Documentation exclusions apply after CLI source ownership; changes selecting
-several modules run their union. The Web selector enables a quality job and two
+several modules run their union. CLI selection enables independent ordinary-test
+and installed-acceptance native matrices, each with a 10-minute bound per job.
+Both prepare their own environment and compiled output; the ordinary Ubuntu
+entry supplies the runtime matrix's package. Environment, acceptance and probe
+artifacts identify their native phase. The Web selector enables a quality job and two
 browser matrix entries, each with a 20-minute bound. The two browser shards
 jointly cover the complete native/container inventory; shard 2 owns the shared
 navigation, deployment, combined-authentication and persistence checks. The

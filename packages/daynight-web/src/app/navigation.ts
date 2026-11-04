@@ -61,6 +61,18 @@ export class BrowserNavigation {
   private blockers(destination?: URL): DirtyDraft[] {
     return [...this.drafts].filter((draft) => !this.admitting.has(draft) && draft.isDirty() && (destination === undefined || !draft.survives(destination)));
   }
+  /** Remove a captured fragment from both history and the admitted navigation snapshot. */
+  clearCapturedFragment(): void {
+    const current = this.readEntry();
+    const url = new URL(current.url);
+    url.hash = '';
+    if (current.index === null) this.session = crypto.randomUUID();
+    this.writeState('replaceState', url, current.index ?? 0);
+    const clean = this.readEntry();
+    this.accepted = this.observed = clean;
+    // Capture can run while React initializes a child; do not notify subscribers during render.
+    this.location = this.toLocation(clean.url);
+  }
   /** Register live readers; unregistering releases ownership and never decides to discard. */
   register(draft: DirtyDraft): () => void {
     if (draft.signal?.aborted) { draft.discard(); return () => {}; }
