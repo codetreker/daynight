@@ -85,6 +85,20 @@ export type TeamRef = {
   readonly name: string | null;
 };
 
+export type Team = TeamRef & {
+  readonly version: bigint;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly membership: {
+    readonly teamId: string;
+    readonly userId: string;
+    readonly role: "member" | "admin";
+    readonly version: bigint;
+    readonly createdAt: string;
+    readonly updatedAt: string;
+  };
+};
+
 export type ProjectOwnership = {
   readonly teamId: string;
   readonly version: bigint;

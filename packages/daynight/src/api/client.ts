@@ -9,7 +9,8 @@ import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
+import { canonicalId, parsePage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
+import type { Team } from "./types.js";
 import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string };
@@ -77,6 +78,10 @@ export type ApiClient = {
   readTaskThread(projectId: string, taskId: string, query: ThreadReadQuery): Promise<ThreadPage>;
   postTaskThreadMessage(projectId: string, taskId: string, input: PostThreadMessageInput): Promise<ThreadMessage>;
   getCurrentUser(requirePrincipal?: boolean): Promise<User>;
+  getTeamCurrentUser(): Promise<User>;
+  listTeams(userId: string): Promise<readonly Team[]>;
+  getTeam(userId: string, teamId: string): Promise<Team>;
+  listTeamProjects(userId: string, teamId: string): Promise<readonly Project[]>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(projectId: string): Promise<Project>;
@@ -142,7 +147,7 @@ export const createApiClient = (options: {
   type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
-    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly onPrincipal?: (principal: string) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string }
+    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown; readonly maxBytes?: number } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
@@ -255,7 +260,7 @@ export const createApiClient = (options: {
         // Cancelling an already errored stream repeats its existing failure, rather than introducing a cleanup failure.
         void reader.closed.catch((error: unknown) => { bodyFailure = error; });
       }
-      if (success && (expectedUserId !== undefined || mode.kind === "json" && mode.requirePrincipal === true) || !success && status !== 401 && mode.kind === "json" && mode.checkFailurePrincipal === true) {
+      if (success && (expectedUserId !== undefined || mode.kind === "json" && mode.requirePrincipal === true) || !success && mode.kind === "json" && (status !== 401 && mode.checkFailurePrincipal === true || response.headers.has("Daynight-User-ID") && mode.checkPrincipalOnError === true && (expectedUserId !== undefined || mode.requirePrincipal === true))) {
         phase = "protocol";
         const principal = response.headers.get("Daynight-User-ID");
         if (principal === null || canonicalId(principal) === null || mode.kind === "json" && mode.requirePrincipal === true && canonicalId(principal) !== principal || expectedUserId !== undefined && canonicalId(principal) !== expectedUserId) throw new ProtocolError("The authenticated response principal does not match the expected user.");
@@ -367,7 +372,7 @@ export const createApiClient = (options: {
 
   const request = <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH", parse: JsonParser<T>, body?: unknown): Promise<T> => exchange(context, path, method, { kind: "json", parse }, [method === "POST" ? 201 : 200], body === undefined ? undefined : { kind: "json", value: body });
 
-  const list = async <T>(context: Context, path: string, parse: JsonParser<Page<T>>, identity: (item: T) => string, filters: Record<string, string> = {}, mutable = false): Promise<readonly T[]> => {
+  const list = async <T>(context: Context, path: string, parse: JsonParser<Page<T>>, identity: (item: T) => string, filters: Record<string, string> = {}, mutable = false, principal?: string): Promise<readonly T[]> => {
     const result: T[] = [];
     const seenIdentities = new Set<string>();
     const seenCursors = new Set<string>();
@@ -376,7 +381,7 @@ export const createApiClient = (options: {
       do {
         operation.check();
         const query = new URLSearchParams({ ...filters, limit: "100", ...(cursor === null ? {} : { cursor }) });
-        const page = await exchange(context, `${path}?${query}`, "GET", { kind: "json", parse }, [200], undefined, mutable);
+        const page = await exchange(context, `${path}?${query}`, "GET", { kind: "json", parse, ...(principal === undefined ? {} : { requirePrincipal: true, checkPrincipalOnError: true, onPrincipal: (actual: string) => { if (actual !== principal) throw new ProtocolError("The authenticated response principal changed during the operation."); } }) }, [200], undefined, mutable);
         for (const item of page.items) {
           const key = identity(item);
           if (seenIdentities.has(key)) throw new ProtocolError("Duplicate resource identity across list pages.");
@@ -648,6 +653,27 @@ export const createApiClient = (options: {
       if (requirePrincipal && user.id !== metadata.principalId) throw new ProtocolError("The authenticated response principal does not match the current user.");
       return user;
     } }, [200], undefined, true),
+    getTeamCurrentUser: () => exchange({ operation: "auth.me" }, "/me", "GET", { kind: "json", requirePrincipal: true, parse: (value, response) => {
+      const user = parseUser(value);
+      if (user.id !== response.principalId) throw new ProtocolError("The authenticated response principal does not match the user.");
+      return user;
+    } }, [200], undefined, true),
+    listTeams: (userId) => {
+      const user = resourceId(userId);
+      return list({ operation: "team.list" }, "/teams", (value) => parsePage(value, (item) => parseTeam(item, user), (team) => team.id), (team) => team.id, {}, true, user);
+    },
+    getTeam: (userId, teamId) => {
+      const user = resourceId(userId), team = resourceId(teamId);
+      return exchange({ operation: "team.show" }, `/teams/${encodeURIComponent(team)}`, "GET", { kind: "json", requirePrincipal: true, checkPrincipalOnError: true, onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); }, parse: (value) => parseTeam(value, user, team) }, [200], undefined, true);
+    },
+    listTeamProjects: (userId, teamId) => {
+      const user = resourceId(userId), team = resourceId(teamId);
+      return list({ operation: "team.projects" }, "/projects", (value) => parsePage(value, (item) => {
+        const project = parseProject(item);
+        if (project.ownership.teamId !== team) throw new ProtocolError("Project does not belong to the requested Team.");
+        return project;
+      }, (project) => project.id), (project) => project.id, { teamId: team }, true, user);
+    },
     reportWorker: (workerId, input) => {
       const worker = resourceId(workerId);
       return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], { kind: "json", value: input }, true);

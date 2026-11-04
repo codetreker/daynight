@@ -156,6 +156,10 @@ daynight project
 daynight project create <name> [--repo <repo>]
 daynight project list [--json]
 daynight project show <project-id> [--json]
+daynight team list [--json]
+daynight team show [--team <uuid|personal>] [--json]
+daynight team projects [--team <uuid|personal>] [--json]
+daynight team default show [--json]
 daynight task
 daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
@@ -555,6 +559,31 @@ terminal-control escapes. JSON preserves resource fields and nanosecond timestam
 strings; a later-page failure produces an error with empty stdout. The
 [project/task requirements](../../docs/spec/daynight-project-task.md) own the complete
 behavior and remaining task-command scope.
+
+## Team context
+
+`team list` reads all Teams joined by the current account. `team show` and
+`team projects` use `--team <uuid|personal>` when supplied; otherwise they use
+the configured `teamDefaults` entry for the normalized service origin and current
+account, or the account's Personal Team when that entry is absent. `team default
+show` verifies and displays the resolved target. An invalid or inaccessible
+configured target fails explicitly; `team list` and an explicit `--team` remain
+available. These commands do not change configuration or remote resources.
+Lists finish and validate every page before producing output. Use `--json` for
+complete resources. Project discovery and `project list` still use all accessible
+projects, independently of this default.
+
+An externally provisioned default uses canonical UUIDs and the normalized
+service origin as keys:
+
+```yaml
+teamDefaults:
+  https://daynight.cc:
+    80be22c3-96d8-4ed1-bcd3-b820f2508c62: b95baeff-1522-4d99-a9b4-dfcb58392eca
+```
+
+`team default show --json` returns `configured` (the saved ID or `null`) and
+the verified `team` resource.
 
 ## Task management
 

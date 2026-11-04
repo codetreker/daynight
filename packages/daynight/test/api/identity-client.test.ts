@@ -74,6 +74,18 @@ describe("authenticated API identity", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
+  it.each([400, 409, 503])("treats a project creation response without a principal at status %i as unknown", async (status) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(stringifyApiJson({ error: { code: "invalid_input", message: "Refused", requestId: "test" } }), { status, headers: { "Content-Type": "application/json" } }));
+    await expect(client(fetch).createProject({ name: "Project", repoUrl: "https://example.test/a/b", expectedUserId: userId })).rejects.toMatchObject({ phase: "protocol", status, outcomeUnconfirmed: true, confirmedRefusal: false });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a headerless 401 for project creation as a confirmed refusal", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(stringifyApiJson({ error: { code: "unauthenticated", message: "Login", requestId: "test" } }), { status: 401, headers: { "Content-Type": "application/json" } }));
+    await expect(client(fetch).createProject({ name: "Project", repoUrl: "https://example.test/a/b", expectedUserId: userId })).rejects.toMatchObject({ phase: "response", status: 401, code: "unauthenticated", outcomeUnconfirmed: false, confirmedRefusal: true });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("checks identity before exposing binary response bytes to a consumer", async () => {
     const consume = vi.fn(async () => {});
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": "application/octet-stream", "Daynight-User-ID": otherId } }));
