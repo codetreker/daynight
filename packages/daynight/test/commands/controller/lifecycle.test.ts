@@ -2,7 +2,8 @@ import { mkdtemp, mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
-import { readLaunchTicket, writeLaunchTicket, controllerExecutionDirectory, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { readLaunchTicket, writeLaunchTicket, parseLaunchTicket, controllerPayloadHash, controllerExecutionDirectory, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { validateControllerLocalRequest } from "../../../src/commands/controller/local-client.js";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -218,4 +219,78 @@ it.each(["<", "\u2028", "x"])("keeps %s tool content local and uses identical bo
     }
     finally { disk.close(); }
   } finally { store.close(); }
+});
+
+
+it.each(["task", "test"])("preserves the original %s ticket bytes and journal hash when instructions are absent", async scope => {
+  const { home, ticket: task } = await fixture();
+  const { claimId, projectId, taskId, workerId, worktreeId, userId, ...common } = task;
+  const ticket: ControllerLaunchTicket = scope === "task" ? task : { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "" };
+  const original = JSON.stringify(ticket), hash = controllerPayloadHash(ticket);
+  expect(parseLaunchTicket(ticket)).toBe(ticket);
+  const file = await writeLaunchTicket(home, ticket);
+  const read = await readLaunchTicket(home, ticket.launchId);
+  expect(read).not.toHaveProperty("instructions");
+  expect(await readFile(file, "utf8")).toBe(`${original}\n`);
+  expect(controllerPayloadHash(read)).toBe(hash);
+  const journal = path.join(home, "legacy.sqlite");
+  openControllerLifecycleStore(journal, ticket).close();
+  const reopened = openControllerLifecycleStore(journal, read);
+  try { expect(reopened.getSnapshot().initialInputState).toBe(scope === "task" ? "not_submitted" : "not_required"); }
+  finally { reopened.close(); }
+});
+
+it.each([
+  ["null", null], ["undefined", undefined], ["number", 7], ["object", {}], ["array", []],
+  ["empty", ""], ["blank", " \n\t"], ["unpaired high surrogate", "\ud800"], ["unpaired low surrogate", "\udc00"],
+  ["ASCII overflow", "a".repeat(65_537)], ["UTF-8 overflow", "😀".repeat(16_384) + "a"],
+])("rejects %s role instructions", async (_label, instructions) => {
+  const { home, ticket } = await fixture();
+  const invalid = { ...ticket, instructions };
+  expect(() => parseLaunchTicket(invalid)).toThrow(/instructions/i);
+  await expect(writeLaunchTicket(home, invalid as ControllerLaunchTicket)).rejects.toThrow(/instructions/i);
+});
+
+it("persists exact role bytes at the UTF-8 limit and binds them to the immutable launch", async () => {
+  const { home, ticket: original } = await fixture();
+  const instructions = " \n角色 e\u0301 😀\n" + "a".repeat(65_536 - Buffer.byteLength(" \n角色 e\u0301 😀\n"));
+  const ticket = { ...original, instructions };
+  expect(Buffer.byteLength(instructions)).toBe(65_536);
+  await writeLaunchTicket(home, ticket);
+  expect((await readLaunchTicket(home, ticket.launchId)).instructions).toBe(instructions);
+  expect(controllerPayloadHash(ticket)).not.toBe(controllerPayloadHash(original));
+  expect(controllerPayloadHash({ ...ticket, instructions: "another role" })).not.toBe(controllerPayloadHash(ticket));
+  await expect(writeLaunchTicket(home, { ...ticket, instructions: "another role" })).rejects.toThrow(/different ticket/);
+  await expect(writeLaunchTicket(home, original)).rejects.toThrow(/different ticket/);
+  expect(() => parseLaunchTicket({ ...ticket, unexpected: true })).toThrow(/invalid fields/);
+  const { cwd: _cwd, ...missingRequired } = ticket;
+  expect(() => parseLaunchTicket({ ...missingRequired, unexpected: home })).toThrow(/invalid fields/);
+});
+
+it("carries persisted role instructions through stopped generations without replaying unknown user input", async () => {
+  const { home, ticket: task } = await fixture();
+  const { claimId, projectId, taskId, workerId, worktreeId, userId, ...common } = task;
+  let ticket: ControllerLaunchTicket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "", instructions: "固定角色\nUse the CLI. 😀" };
+  const nativeSessionId = randomUUID(), journal = path.join(home, "role.sqlite"), operationId = randomUUID();
+  for (const generation of ["1", "2", "3"]) {
+    await writeLaunchTicket(home, ticket);
+    const persisted = await readLaunchTicket(home, ticket.launchId);
+    expect(() => validateControllerLocalRequest({ requestId: randomUUID(), executionId: persisted.executionId, testExecutionId: persisted.testExecutionId, executionGeneration: persisted.executionGeneration, controllerInstanceId: persisted.controllerInstanceId, secret: persisted.ipcSecret, action: { kind: "submit_initial", operationId: persisted.initialOperationId } }, persisted)).toThrow(/initial operation/);
+    expect(persisted.instructions).toBe("固定角色\nUse the CLI. 😀");
+    const store = openControllerLifecycleStore(journal, persisted);
+    try {
+      expect(store.getSnapshot()).toMatchObject({ executionGeneration: generation, initialInputState: "not_required" });
+      if (generation === "1") {
+        expect(store.listOperations()).toEqual([]);
+        store.prepareOperation({ operationId, kind: "send_message", payload: { text: "actual user request" } });
+        store.markDispatching(operationId); store.recordOperation(operationId, "unknown");
+      } else {
+        expect(store.getSnapshot().nativeSessionId).toBe(nativeSessionId);
+        expect(store.listOperations()).toMatchObject([{ operationId, state: "unknown" }]);
+        expect(() => store.markDispatching(operationId)).toThrow(/replay/);
+      }
+      store.patchSnapshot({ nativeSessionId, lifecycle: "stopped", nativeStopped: true });
+    } finally { store.close(); }
+    ticket = { ...persisted, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: String(Number(generation) + 1), resumeNativeSessionId: nativeSessionId };
+  }
 });

@@ -91,6 +91,14 @@ Codex 原生进程意外退出、Claude SDK 意外 EOF 和 Copilot runtime 失�
 
 Codex 和 Copilot 仅在活动 turn 匹配且原生能力允许时执行 steer；Copilot 使用 SDK `send({mode: "immediate"})`，不能改用 queue 冒充当前 turn 追加。Claude 仅在原生协商支持 msg_lifecycle_v1 与 interrupt_cancel_queued_v1 时提供 steer，以输入 UUID 跟踪 queued、started、completed、cancelled；中断请求包含 cancelQueued 并核验被取消输入。缺少协商能力时运行中普通发送保持禁用。审批、问题和 form 的响应携带 interactionId、revision 和原生请求身份。Codex 等待原生请求 resolved 通知；Claude 等待 matching tool result，elicitation 等待相应 turn 成功结束。SDK callback 返回仅表示响应已交给 SDK，不能立即标记原生 confirmed。超过等待期限的响应保持 unknown；随后原生 resolved 证据仍可按原交互身份将对应 journal 操作补记 confirmed 并发送迟到回执，不再次响应原生请求。
 
+### 角色指令的共享传递
+
+launch ticket 与 `ProviderOptions` 使用同名可选 `instructions`，共享要求见[角色指令契约](../spec/controller-role-instructions.md)。严格解析器只在字段实际存在时允许该键，并检查非空白、良构 Unicode 与 64 KiB UTF-8 上限；返回原对象，不为旧 ticket 注入默认值。既有 canonical payload hash 自然包含提供的角色文本，省略字段的旧 hash 不变；私有 ticket 的不可覆盖写入继续绑定整份启动内容。
+
+runtime 从已读回 ticket 条件构造 `ProviderOptions.instructions`，新建和恢复共用此路径。无角色时完全省略该 options 键，model、args、native home、CLI 环境与 unattended 选择沿用原规则。`initialPrompt` 仍是唯一初始化发送来源；独立 `initialInput='none'` 使用空 prompt 和 `not_required`，IPC 拒绝提交初始化操作。
+
+生成新 generation 的生产者负责携带已冻结的原文。journal 保存整份 ticket hash 和原执行/停止/native 身份，不增加角色副本或角色变更机制；它不能独立判断生产者是否在两代间换了模板。Bot 的版本化模板、首次准备与服务端冻结不由这个共享层承担。三种 Provider 的原生追加映射也有各自实现与运行验收；共享透传不宣称原生追加或完整 Bot 托管已经可用。取舍见[角色传递决策](../../.agents/notes/implemented/architecture/2026-11-04-controller-role-instructions.md)。
+
 ### Copilot SDK 与私有 runtime
 
 Copilot adapter 固定使用 `@github/copilot-sdk` 1.0.11 与随包安装的 `@github/copilot` 1.0.83。Controller 直接 spawn CLI 对应平台 binary 的 `--headless --no-auto-update`，避免 npm launcher 的同步包装进程遮蔽真实 PID。随机连接 token 通过私有子进程环境传入，SDK 以 `RuntimeConnection.forUri` 连接该进程的 loopback TCP endpoint；这条连接既不共享其他 runtime，也不承载 TUI。真实 child 经 `onSpawn` 登记进程身份，继承 Controller 的 POSIX 进程组或 Windows Job 约束，沿用统一停止证明。

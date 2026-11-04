@@ -14,6 +14,7 @@ type LaunchCommon = {
   readonly provider: "codex" | "claude" | "copilot"; readonly cwd: string; readonly nativeHome: string;
   readonly configuration: FrozenExecutionConfiguration;
   readonly initialOperationId: string; readonly initialPrompt: string;
+  readonly instructions?: string;
   readonly resumeNativeSessionId: string | null;
   readonly credentialFile: string; readonly ipcEndpoint: string; readonly ipcSecret: string;
   readonly createdAt: string;
@@ -37,7 +38,7 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   const binding = sessionBinding(data);
   const test = binding.testExecutionId !== undefined;
   const ids = ["launchId", "executionId", "controllerId", "controllerInstanceId", "sessionId", ...(test ? ["testExecutionId", "ownerUserId"] : ["projectId", "taskId", "claimId", "workerId", "worktreeId", "userId"]), "initialOperationId"];
-  const keys = ["schemaVersion", ...ids, ...(test ? ["initialInput"] : []), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
+  const keys = ["schemaVersion", ...ids, ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
   if (Object.keys(data).length !== keys.length || keys.some((key) => !Object.hasOwn(data, key))) throw new Error("Controller ticket has invalid fields.");
   for (const key of ids) uuid(data[key]);
   if (data.schemaVersion !== 1 || typeof data.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(data.executionGeneration) || BigInt(data.executionGeneration) > 9_223_372_036_854_775_807n) throw new Error("Controller ticket version or execution generation is invalid.");
@@ -47,6 +48,7 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   if (typeof data.ipcEndpoint !== "string" || /[\0\r\n]/.test(data.ipcEndpoint) || !(path.isAbsolute(data.ipcEndpoint) || data.ipcEndpoint.startsWith("\\\\.\\pipe\\"))) throw new Error("Controller IPC endpoint is invalid.");
   if (typeof data.ipcSecret !== "string" || !/^[a-f0-9]{64}$/.test(data.ipcSecret)) throw new Error("Controller IPC authentication is invalid.");
   if (typeof data.initialPrompt !== "string" || (!(test && data.initialInput === "none") && data.initialPrompt.trim() === "") || !data.initialPrompt.isWellFormed() || Buffer.byteLength(data.initialPrompt) > 4 * 1024 * 1024) throw new Error("Controller initial prompt is invalid or too large.");
+  if (Object.hasOwn(data, "instructions") && (typeof data.instructions !== "string" || data.instructions.trim() === "" || !data.instructions.isWellFormed() || Buffer.byteLength(data.instructions, "utf8") > 64 * 1024)) throw new Error("Controller instructions must be nonempty well-formed Unicode text of at most 64 KiB UTF-8.");
   if (test && (data.initialInput !== "none" && data.initialInput !== "prompt" || data.initialInput === "none" && data.initialPrompt !== "" || data.resumeNativeSessionId !== null && data.initialInput !== "none")) throw new Error("Test controller initial input or resume binding is invalid.");
   if (data.resumeNativeSessionId !== null) uuid(data.resumeNativeSessionId);
   if (typeof data.createdAt !== "string" || !Number.isFinite(Date.parse(data.createdAt))) throw new Error("Controller creation time is invalid.");
