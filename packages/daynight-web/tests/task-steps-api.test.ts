@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/client";
 import { parseApiJson, stringifyApiJson } from "../src/api/json";
-import { getTaskSteps, parseTaskSteps } from "../src/api/task-steps";
+import { addTaskStep, getTaskSteps, moveTaskStep, parseTaskSteps, setTaskStepStatus } from "../src/api/task-steps";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
 const taskId = "20000000-0000-0000-0000-00000000000b";
@@ -29,6 +29,17 @@ describe("complete Steps resources", () => {
 });
 
 describe("Steps transport", () => {
+  it("sends one scoped status write with the exact version and request identity", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response(resource)); vi.stubGlobal("fetch", fetcher);
+    const owner = { ...admission(), onWriteConfirmed: vi.fn() }; const signal = new AbortController().signal;
+    await expect(setTaskStepStatus(projectId, taskId, "0000000A", "skipped", resource.version, signal, owner, "request-id")).resolves.toEqual(resource);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a/status`, expect.objectContaining({ method: "PUT", body: '{"version":9223372036854775807,"status":"skipped"}', headers: expect.objectContaining({ "X-Request-ID": "request-id" }) }));
+    expect(owner.onWriteConfirmed).toHaveBeenCalledOnce();
+  });
+  it("preserves Steps capacity details and the service message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ error: { code: "steps_limit_exceeded", message: "Resource too large.", requestId: "r1", details: { encodedBytes: 67108865, maxEncodedBytes: 67108864 } } }, 409)));
+    await expect(setTaskStepStatus(projectId, taskId, "0000000a", "todo", 1n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ kind: "server", code: "steps_limit_exceeded", serverMessage: "Resource too large.", stepsLimit: { encodedBytes: 67108865, maxEncodedBytes: 67108864 } });
+  });
   it("uses canonical scope, credentials, no-store, exact version and one GET", async () => {
     const fetcher = vi.fn().mockResolvedValue(response(resource));
     vi.stubGlobal("fetch", fetcher);
@@ -58,5 +69,52 @@ describe("Steps transport", () => {
     const controller = new AbortController(); controller.abort();
     await expect(getTaskSteps(projectId, taskId, controller.signal, admission())).rejects.toMatchObject({ name: "AbortError" });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe("append Steps transport", () => {
+  const input = { id: "0000000A", title: " New 😀 ", description: "[draft](file.md)", status: "in_progress" as const, version: 5n };
+  const added = { ...step, id: "0000000a", title: input.title, description: input.description, status: input.status };
+  const result = { ...resource, version: 6n, steps: [added] };
+  const created = (body: unknown, location = `/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a`) => new Response(stringifyApiJson(body), { status: 201, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, Location: location } });
+  it("sends an exact scoped append with preselected identity and validates the receipt", async () => {
+    const fetcher = vi.fn().mockResolvedValue(created(result)); vi.stubGlobal("fetch", fetcher);
+    const owner = { ...admission(), onWriteConfirmed: vi.fn() };
+    await expect(addTaskStep(projectId, taskId, input, new AbortController().signal, owner, "request-id")).resolves.toEqual(result);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/steps`, expect.objectContaining({ method: "POST", body: '{"version":5,"id":"0000000a","title":" New 😀 ","description":"[draft](file.md)","status":"in_progress"}', headers: expect.objectContaining({ "X-Request-ID": "request-id" }) }));
+    expect(owner.onWriteConfirmed).toHaveBeenCalledOnce();
+  });
+  it.each([
+    [result, "/wrong"], [{ ...result, version: 5n }, `/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a`],
+    [{ ...result, steps: [{ ...added, title: "wrong" }] }, `/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a`],
+    [{ ...result, steps: [{ ...added, updatedAt: "2026-11-03T12:34:57Z" }] }, `/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a`],
+  ])("rejects malformed or mismatched 201 evidence %#", async (body, location) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(created(body, location as string)));
+    const owner = { ...admission(), onWriteConfirmed: vi.fn() };
+    await expect(addTaskStep(projectId, taskId, input, new AbortController().signal, owner, "r")).rejects.toMatchObject({ kind: "protocol" });
+    expect(owner.onWriteConfirmed).toHaveBeenCalledOnce();
+  });
+  it.each([{ ...input, title: "  " }, { ...input, description: "\0" }, { ...input, title: "\ud800" }, { ...input, id: "bad" }])("rejects invalid input without dispatch %#", async (bad) => {
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    await expect(addTaskStep(projectId, taskId, bad, new AbortController().signal, admission(), "r")).rejects.toMatchObject({ kind: "protocol" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("Step position transport", () => {
+  it.each([{ position: "first" } as const, { position: "last" } as const, { before: "0000000B" } as const, { after: "0000000B" } as const])("sends the scoped placement with exact version %#", async (placement) => {
+    const fetcher = vi.fn().mockResolvedValue(response(resource)); vi.stubGlobal("fetch", fetcher);
+    const owner = { ...admission(), onWriteConfirmed: vi.fn() };
+    await expect(moveTaskStep(projectId, taskId, "0000000A", placement, resource.version, new AbortController().signal, owner, "request-id")).resolves.toEqual(resource);
+    const normalized = "before" in placement ? { before: "0000000b" } : "after" in placement ? { after: "0000000b" } : placement;
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a/position`, expect.objectContaining({ method: "PUT", body: stringifyApiJson({ version: resource.version, ...normalized }), headers: expect.objectContaining({ "X-Request-ID": "request-id" }) }));
+    expect(owner.onWriteConfirmed).toHaveBeenCalledOnce();
+  });
+  it("preserves self-reference and missing-anchor refusals from the service", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(response({ error: { code: "invalid_input", message: "self", requestId: "r1" } }, 400)).mockResolvedValueOnce(response({ error: { code: "not_found", message: "missing", requestId: "r2" } }, 404)); vi.stubGlobal("fetch", fetcher);
+    await expect(moveTaskStep(projectId, taskId, step.id, { before: step.id }, 1n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ status: 400, code: "invalid_input" });
+    await expect(moveTaskStep(projectId, taskId, step.id, { after: "ffffffff" }, 1n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ status: 404, code: "not_found" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });

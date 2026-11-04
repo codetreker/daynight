@@ -41,7 +41,7 @@ jobs:
         run: node .github/scripts/ci-modules.mts
 
   verify:
-    name: verify (${{ matrix.os }})
+    name: verify (CLI tests, ${{ matrix.os }})
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.cli == 'true' }}
     strategy:
@@ -81,8 +81,6 @@ jobs:
         run: pnpm dev:test
       - name: Test the compiled CLI
         run: pnpm --filter @codetreker/daynight exec vitest run
-      - name: Verify the compiled CLI installation
-        run: pnpm --filter @codetreker/daynight exec vitest run --config vitest.acceptance.config.ts
       - name: Pack the CLI for runtime compatibility checks
         if: matrix.os == 'ubuntu-latest'
         run: pnpm --filter @codetreker/daynight pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"
@@ -95,11 +93,68 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
+      - name: Upload ordinary CLI environment
+        if: ${{ always() && steps.environment.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-${{ matrix.os }}
+          path: .tmp/validation-environment.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload native validation probe diagnostics
+        if: ${{ always() && steps.environment.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-probes-${{ matrix.os }}
+          path: .tmp/validation-probes.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  verify-installed:
+    name: verify (installed CLI, ${{ matrix.os }})
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - name: Record native validation environment
+        id: environment
+        run: node packages/daynight/scripts/validation-environment.ts
+      - name: Require macOS ARM64
+        if: ${{ runner.os == 'macOS' }}
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
+      - run: pnpm build
+      - name: Verify the compiled CLI installation
+        run: pnpm --filter @codetreker/daynight exec vitest run --config vitest.acceptance.config.ts
       - name: Upload acceptance evidence
         if: ${{ always() && steps.environment.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: daynight-acceptance-${{ matrix.os }}
+          name: daynight-cli-installed-${{ matrix.os }}
           path: |
             .tmp/validation-environment.json
             .tmp/e2e-evidence.json
@@ -114,7 +169,7 @@ jobs:
         if: ${{ always() && steps.environment.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: daynight-validation-probes-${{ matrix.os }}
+          name: daynight-cli-installed-probes-${{ matrix.os }}
           path: .tmp/validation-probes.json
           include-hidden-files: true
           if-no-files-found: error
@@ -452,7 +507,7 @@ jobs:
           retention-days: 30
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-runtime, verify-completion, verify-server, verify-server-e2e, verify-web-quality, verify-web]
+    needs: [detect-changes, verify, verify-installed, verify-runtime, verify-completion, verify-server, verify-server-e2e, verify-web-quality, verify-web]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:

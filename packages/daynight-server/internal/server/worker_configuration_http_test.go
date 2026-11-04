@@ -303,7 +303,7 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 		identityRequest(t, anonymous, method, integration.server.URL+path+"/configuration", put("1"), nil, http.StatusUnauthorized)
 	}
 	identityRequest(t, alice, http.MethodPost, integration.server.URL+path+"/report", jsonBody(t, workerSnapshotReportBody()), origin, http.StatusOK)
-	_, data := identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Private configuration project","repoUrl":"https://example.com/private-configuration-repository"}`, origin, http.StatusCreated)
+	_, data := identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Private configuration project", RepoURL: "https://example.com/private-configuration-repository", ExpectedUserID: bobUser.ID}), origin, http.StatusCreated)
 	project := identityDecode[api.Project](t, data)
 	value["projects"] = []any{map[string]any{"projectId": project.ID, "nativeOverrides": map[string]any{}}}
 	aware := map[string]string{"Origin": integration.server.URL, workerConfigurationHeader: "1"}
@@ -312,13 +312,13 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	if identityDecode[core.WorkerConfigurationResource](t, data).Desired != nil {
 		t.Fatal("inaccessible project bootstrap persisted a target")
 	}
-	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", `{}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", invitationActorBody(bobUser.ID), origin, http.StatusCreated)
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
 	link, err := url.Parse(invitation.Link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	identityRequest(t, alice, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, http.StatusOK)
+	identityRequest(t, alice, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, aliceUser.ID), origin, http.StatusOK)
 	identityRequest(t, alice, http.MethodPost, integration.server.URL+path+"/report", jsonBody(t, configurationHTTPReportBody(value, nil)), aware, http.StatusOK)
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
 		response, _ := identityRequest(t, bob, method, integration.server.URL+path+"/configuration", put("1"), origin, http.StatusNotFound)

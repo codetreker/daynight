@@ -117,13 +117,17 @@ read -r -s -p 'Daynight personal access token: ' DAYNIGHT_TOKEN
 printf '\n'
 ```
 
-Set `DAYNIGHT_BASE_URL` to the configured public origin, then create a project:
+Set `DAYNIGHT_BASE_URL` to the configured public origin and read the current
+user. Copy its `id` into `DAYNIGHT_USER_ID`, then create a project in Personal:
 
 ```bash
 DAYNIGHT_BASE_URL=http://127.0.0.1:8787
 curl --fail-with-body --header "Authorization: Bearer $DAYNIGHT_TOKEN" \
+  "$DAYNIGHT_BASE_URL/api/v1/me"
+DAYNIGHT_USER_ID=YOUR_USER_ID
+curl --fail-with-body --header "Authorization: Bearer $DAYNIGHT_TOKEN" \
   --header 'Content-Type: application/json' \
-  --data '{"name":"Local project","repoUrl":"https://github.com/example/project.git"}' \
+  --data "{\"name\":\"Local project\",\"repoUrl\":\"https://github.com/example/project.git\",\"expectedUserId\":\"$DAYNIGHT_USER_ID\"}" \
   "$DAYNIGHT_BASE_URL/api/v1/projects"
 ```
 

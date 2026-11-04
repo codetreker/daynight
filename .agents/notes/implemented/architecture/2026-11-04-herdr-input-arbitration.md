@@ -23,6 +23,28 @@ write outcomes. Unknown, unconfirmed and completed progress cannot become pendin
 and the projection cannot restore suspended automation. Unknown initial delivery can only be resolved through a separately
 recorded human decision, never by rewriting the original transport outcome.
 
+Input inspection distinguishes purpose. Automatic and cleanup use the shared
+known-menu/disabled-input exclusions and report composer evidence as unavailable;
+custom or unknown normal layouts need no positive whitelist. Manual inspection
+allows a lease holder to operate menus. Explicit handback and clean orderly
+recovery use a separate resume-only empty-field predicate with ANSI attributes
+preserved. Codex requires the renderer-DIM placeholder and current field
+geometry, not just its words; literal or multiline drafts and ambiguous styles
+do not become empty. RGB/indexed color arguments are not DIM evidence. Claude
+requires a genuinely blank bordered field and rejects ambiguous Try text.
+Optional model, cwd and status-bar content are not requirements. Unknown fields
+and drafts cannot become empty. Copilot retains unavailable evidence and its
+explicit handback responsibility. The
+[structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
+owns this distinction and the native launch-directory precondition.
+
+Known automatic blockers before any native write retain their typed waiting
+result after the arbiter persists a rejected receipt and, for initial input,
+pending state.
+The lifecycle projection clears admission and preserves that pending input;
+serialization must not convert it into an execution failure. After a possible
+native write, the same error remains unknown and cannot authorize replay.
+
 The input journal's identity-checked final receipt owns transport completion even
 if the lifecycle projection missed its later commit. Recovery validates the
 original Session, claim, run, segment, binding, epoch order and assignment digest;
@@ -35,8 +57,8 @@ next generation with that stop proof and current authorization may consume it.
 A newly observed native identity must reach the original run ledger before
 preparation. Recovery compares authoritative control fields; capability-filtered
 available actions remain a presentation projection. A completed interactive turn
-is still an input-capable native process, subject to the same identity and composer
-checks. Persisted preparation and consumption requests are observed after uncertain
+is still an input-capable native process, subject to the same identity and
+purpose-specific input checks. Persisted preparation and consumption requests are observed after uncertain
 responses, never replayed. The original consumed receipt grants no rights on a
 later connection. This is distinct from human handback and the UI capability gate.
 
@@ -65,9 +87,12 @@ calls. It also leaves multiple automatic entry points outside human ownership.
 an absent terminal ID to another named target. Strict terminal identity is
 required, so native AttachTerminal has a small, explicitly validated adapter.
 
-**Treat native idle or a screen as proof of an empty composer.** Copilot has no
-cross-version empty-composer contract. Durable manual ownership and explicit
-handback carry the responsibility that idle cannot establish.
+**Use the automatic blocker check as empty-composer proof.** A custom or unknown
+normal layout may accept automatic input without identifying an empty field.
+That unavailable evidence cannot release a manual draft. Codex and Claude need
+a positive resume-only empty-field predicate; Copilot has no cross-version
+empty-composer contract, so its durable manual ownership and explicit handback
+retain that responsibility.
 
 **Infer PTY dimensions from a pane rectangle.** Borders, headers and scrollbar
 gutters alter actual dimensions. Native read-only TTY queries preserve the

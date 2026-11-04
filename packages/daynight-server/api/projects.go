@@ -3,8 +3,10 @@ package api
 import "time"
 
 type CreateProjectRequest struct {
-	Name    string `json:"name"`
-	RepoURL string `json:"repoUrl"`
+	Name           string  `json:"name"`
+	RepoURL        string  `json:"repoUrl"`
+	TeamID         *string `json:"teamId,omitempty"`
+	ExpectedUserID string  `json:"expectedUserId"`
 }
 
 type ProjectSettings struct {

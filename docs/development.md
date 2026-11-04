@@ -45,8 +45,10 @@ pnpm daynight --version
 
 `pnpm check` runs type checking and tests. Standalone `pnpm test` and
 `pnpm acceptance` build the package before exercising the compiled CLI. Native CI
-typechecks and builds once, then invokes both Vitest configurations against that
-same compiled output. Ordinary suites exclude `.stress.ts` files; explicit
+runs ordinary tests and installed acceptance in independent native jobs. Each
+job installs dependencies and builds its own current-source output; the ordinary
+job also typechecks and tests the local development installer. Both phases keep
+all three platforms and a 10-minute job limit. Ordinary suites exclude `.stress.ts` files; explicit
 local stress commands select those workloads separately, as described in
 [local stress validation](#local-stress-validation). `pnpm build` clears the
 package's `dist/`, compiles
@@ -104,15 +106,16 @@ registry access. The review lifecycle suite uses controlled GitHub/Copilot
 executables with real Git and SQLite. The self-update suite uses real npm and an
 isolated, task-local global prefix with a controlled HTTP registry. Neither suite
 changes the operator's installed CLI or requires live review credentials.
-Project/task acceptance is a third native installed suite using a reusable
-pack/install fixture, real Git and controlled HTTP. Repeated private consumers
-use PNPM's supported POSIX executable-link preference; the independent e2e
-consumer still exercises default PNPM shims, and npm global updates remain real.
+Project/task acceptance is a third native installed suite using the shared
+packed production installation, real Git and controlled HTTP. Vitest prepares
+default PNPM shims once and gives consumers private runtime state or writable
+package views. Non-Vitest standalone consumers retain owned preparation with
+PNPM's supported POSIX executable-link preference; npm global updates remain real.
 
-Project/task installation preparation and self-update's initial package/global
+Project/task runtime/view preparation and self-update's initial package/global
 installation belong to case-owned setup hooks. The complete ordered business
 scenarios remain in their callbacks. Both use the existing 180-second hook and
-180-second callback limits, while the native job keeps its 10-minute limit.
+180-second callback limits. The independent installed job keeps a 10-minute limit.
 Separating these allowances changes budget ownership; it does not mean the old
 scenario-total allowance or total runtime is unchanged. Teardown aborts and
 awaits pending preparation/behavior, reaps owned processes, closes registries
@@ -154,22 +157,27 @@ loading guarantees.
 
 Native development and validation support Linux, Windows and Apple Silicon
 (ARM64) macOS. Intel macOS is unsupported. GitHub Actions runs type checking,
-build and tests on native Linux, macOS 26 ARM64 and Windows runners. The macOS
-job uses the standard `macos-26` label and verifies Darwin ARM64 before validation;
+build and tests on native Linux, macOS 26 ARM64 and Windows runners. Both native
+phases use the standard `macos-26` label for macOS and verify Darwin ARM64 before validation;
 the [platform decision](../.agents/notes/implemented/testing/2026-11-04-macos-arm64-support.md)
 records the support boundary and runner selection. Hosted capacity failures
 require diagnosis within this ARM64 runner policy.
 Each native job resolves the latest available Node.js 24 patch.
-A separate runtime matrix builds the package with Node.js 24 and checks the packed
-artifact with Node.js `22.14.0`, the latest `22` and `24` releases, and current
+The ordinary Ubuntu job builds and packs the Node.js 24 artifact consumed by the
+separate runtime matrix. Runtime jobs wait for the ordinary matrix, without an
+installed-acceptance dependency, and check that packed artifact with Node.js
+`22.14.0`, the latest `22` and `24` releases, and current
 `node`. Each runtime installs it in a fresh npm consumer with `--engine-strict`
 and exercises CLI commands, interactive prompt dependencies and SQLite. These
 checks cover the published package and its production dependency graph without
 requiring the source-development toolchain on each supported runtime.
 PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
-documentation and repository metadata. A selected CLI runs every native platform,
-the runtime compatibility matrix and the dedicated Linux shell completion job.
+documentation and repository metadata. A selected CLI runs both phases on every
+native platform, the runtime compatibility matrix and the dedicated Linux shell
+completion job. Each native phase needs only module detection; neither waits for
+the other. The [phase ownership decision](../.agents/notes/implemented/testing/2026-11-04-parallel-native-cli-validation.md)
+records the independent failure gates, artifact owners and duplicated bootstrap cost.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
@@ -178,9 +186,14 @@ preparation duration. Resolution, preparation and native execution share one
 10-second gh budget; expired preparation or an over-budget native result fails
 the probe. The version child uses isolated project-local configuration/state and
 disabled telemetry. A separate diagnostic artifact uploads after validation even
-when environment discovery fails. Every native version, the complete validation
-workload and the 600-second platform gate remain required whenever CLI validation
-is selected. The
+when environment discovery fails. Ordinary environment and diagnostic artifacts
+use `daynight-cli-tests-*` and `daynight-cli-tests-probes-*` names; installed
+receipts and diagnostics use `daynight-cli-installed-*` and
+`daynight-cli-installed-probes-*`. The installed receipts include the environment,
+curated acceptance outputs and canonical preparation/cleanup result. Every
+native version and both complete phase workloads remain required whenever CLI
+validation is selected. Each phase has its own 600-second job gate, so the former
+combined platform ceiling and aggregate runner cost are not preserved. The
 [cold-start decision](../.agents/notes/archived/bug-fix/2026-10-20-gh-cold-start-preparation.md)
 records the measurements, deadline semantics and remaining limits.
 
@@ -487,7 +500,7 @@ and records cleanup failures.
 
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. After shared CLI preparation, it overlaps thirty-two native functional
+parallel. After shared CLI preparation, it overlaps thirty-six native functional
 workflows with the same container workflows, then requires complete target and
 shared CLI cleanup. The explicit local
 `pnpm web:acceptance:stress` command adds the fixed native capacity cases after
@@ -523,12 +536,12 @@ Default CLI service acceptance retains two bounded deadline probes and
 `.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
 the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
 claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
-local functional mode requires thirty-two scenarios per target (64 total);
-CI partitions that inventory into two disjoint sixteen-case selections per
+local functional mode requires thirty-six scenarios per target (72 total);
+CI partitions that inventory into disjoint eighteen-case selections per
 target. Shard receipts additionally identify `shard` and `selection`, and the
 final gate requires their complete canonical union. Stress mode remains local
-and unsharded, adds five native capacity scenarios (37 native / 32 container,
-69 total) and `native/capacity/performance.json`. Both local modes retain strict
+and unsharded, adds five native capacity scenarios (41 native / 36 container,
+77 total) and `native/capacity/performance.json`. Both local modes retain strict
 source/browser identity, combined authentication and owned-resource cleanup;
 CI shard 2 owns both combined journeys while each shard owns its full cleanup. Local measurements prove only their recorded source and host;
 they do not establish hosted PR latency.
@@ -746,8 +759,7 @@ builds its own real native and container deployments. Case selection uses
 `--fully-parallel --workers=1 --retries=0 --shard=i/2`; every database still runs
 one worker serially. Complete and selected discovery use the same functional
 arguments as execution and the canonical scenario inventory. Current selections
-contain sixteen cases each and jointly cover all thirty-two scenarios per
-target. The selected IDs and shard identity remain in the existing run evidence.
+contain eighteen cases each and jointly cover all thirty-six scenarios per target. The selected IDs and shard identity remain in the existing run evidence.
 The container callback reads its validated source/run-bound parent selection.
 
 Within each entry, native and container preparation overlap. Once native

@@ -127,7 +127,7 @@ func TestBotsHTTPStrictInputAndAuthentication(t *testing.T) {
 	assertProjectError(t, projectRequest(handler, "DELETE", path+"?x=1", `{}`), 400, "invalid_input")
 	assertProjectError(t, projectRequest(handler, "GET", "/api/v1/me/bots/"+uuid.NewString(), ""), 404, "not_found")
 	for _, p := range []string{"/api/v1/me/bots", path, "/api/v1/me/workers/" + workerID + "/bots"} {
-		assertProjectError(t, projectRequest(handler, "POST", p, `{}`), 405, "method_not_allowed")
+		assertProjectError(t, projectRequest(handler, "PUT", p, `{}`), 405, "method_not_allowed")
 		assertProjectError(t, projectRequest(handler.Handler, "GET", p, ""), 401, "unauthenticated")
 	}
 	assertProjectError(t, projectRequest(handler, "DELETE", path, `{"ifVersion":"2","deletionId":"`+uuid.NewString()+`"}`), 409, "version_conflict")

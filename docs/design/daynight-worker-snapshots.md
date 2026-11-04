@@ -23,6 +23,8 @@ flowchart LR
 
 [配置迁移](daynight-worker-configuration.md#持久化与表示)在同一 Worker 行增加独立目标及应用观测；不改变本节迁移的原始快照含义。此表没有 FK、历史报告或持久化 online 布尔值。旧 claim 和 task 时间不能证明机器仍在运行，因此迁移不回填快照。任务属性使用独立 task_properties 行，完整 JSON 文本由 Go codec 处理，不经过 PostgreSQL JSON cast。
 
+`telemetry.assistantHost` 使用可选指针存入同一 JSONB，不需要额外表或迁移。HTTP 将允许字段与必填字段分开，保留旧客户端缺字段的准入；提供对象时执行完整的严格解析和服务层校验。整个 telemetry 替换意味着省略扩展会撤销旧能力，不保留过期成功。详情 DTO 显式映射该对象，Web Worker 解析器接受此可选扩展并继续拒绝未知字段；不增加助手入口或修改普通 Worker 展示。
+
 ## 报告事务
 
 `Store.WriteWorker` 使用独立 READ COMMITTED 事务，不进入会锁 project 的 WriteProject。service 先取得数据库 statement_timestamp，按输入 task ID 的主键集合批量读取任务，JOIN store 的 canonical `projectAccessRelation` 及项目名，排除软删除记录。准入关系在同一语句内按认证 userId 筛选，计算当前 owner Team role 与 direct grant role 的最大值；只有继承访问也具有相同可见资格。Worker 不另行解释授权来源，不改写任何 grant。
@@ -50,6 +52,8 @@ UPSERT 同时写 last_seen_at、telemetry、task_snapshot，只竞争该 Worker 
 在线规则由返回的 observedAt 和 lastReportedAt 派生：差值不足 120 秒为 online；达到 120 秒为 offline。72 小时只控制近期资源可见性。客户端 sampledAt、各 Probe.checkedAt 及 inventory observedAt 是来源时间，不能替代数据库 liveness 时钟。
 
 服务端保存客户端实际提交的工作目录和资源测量，不推断设备名、物理核心或安装情况。字段格式和数值有效不证明采集工具真实运行；消费者应保留采样时间与明确 Probe 状态。taskObservedAt 表示服务端规范化任务快照的时刻，inventoryObservedAt 保留清单原始时刻，stale 状态不将旧任务伪装成刚同步的清单。
+
+`WorkerAssistantHostState` 独立判断助手候选状态：无扩展为 unsupported；机器报告不新鲜为 offline；预检不新鲜为 stale；全部 Provider 失败为 unavailable；至少一个成功为 available。机器和预检使用同一 120 秒上限，拒绝未来时刻，且不互相刷新。函数不修改原 telemetry，创建解析仍需核对具体 Provider 和执行时环境。此判断不授予 Bot 启动权限，也不替代后续真实 Session 同步确认。
 
 ## 验证边界
 

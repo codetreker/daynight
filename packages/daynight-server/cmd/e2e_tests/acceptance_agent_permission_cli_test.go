@@ -12,7 +12,7 @@ import (
 
 func acceptanceCLIAllowAgents(t *testing.T, cli *acceptanceCLI, process *acceptanceProcess) {
 	t.Helper()
-	project := acceptanceDecode[api.Project](t, process.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Installed automatic permission", RepoURL: "https://github.com/example/allow-agents"}, "permission-installed-project"), http.StatusCreated)
+	project := acceptanceDecode[api.Project](t, process.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{ExpectedUserID: process.expectedUserID(t), Name: "Installed automatic permission", RepoURL: "https://github.com/example/allow-agents"}, "permission-installed-project"), http.StatusCreated)
 	create := func(title string) api.Task {
 		id := acceptanceCLIResourceID(t, cli.run(t, cli.caller, "task", "create", "--project", project.ID, "--title", title))
 		task := acceptanceCLITaskResource(t, cli.run(t, cli.caller, "task", "show", id, "--project", project.ID, "--json"))

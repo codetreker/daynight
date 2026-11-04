@@ -154,6 +154,10 @@ func normalizeBotConfiguration(input CreateBot) (core.BotConfiguration, error) {
 // Create returns the original frozen definition for an identical normalized
 // request. Retries never replace its settings with newly resolved defaults.
 func (s *Bots) Create(ctx context.Context, principal core.Principal, input CreateBot) (core.Bot, error) {
+	return s.create(ctx, principal, input, false)
+}
+
+func (s *Bots) create(ctx context.Context, principal core.Principal, input CreateBot, resolve bool) (core.Bot, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return core.Bot{}, err
 	}
@@ -166,8 +170,17 @@ func (s *Bots) Create(ctx context.Context, principal core.Principal, input Creat
 		if err := botCredentialError(tx.Credential(ctx, principal)); err != nil {
 			return err
 		}
+		if err := tx.LockCreation(ctx, input.ID); err != nil {
+			return err
+		}
 		current, err := tx.Bot(ctx, input.ID)
 		if errors.Is(err, core.ErrNotFound) {
+			if resolve {
+				input.ResolvedConfiguration, err = resolveBotCreation(ctx, tx, principal, input)
+				if err != nil {
+					return err
+				}
+			}
 			configuration, err := normalizeBotConfiguration(input)
 			if err != nil {
 				return err

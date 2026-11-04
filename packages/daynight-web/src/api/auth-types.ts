@@ -98,9 +98,23 @@ export type CreatedProjectInvitation = ProjectInvitation & { readonly link: stri
 export type ProjectInvitationInspection = {
   readonly projectId: string;
   readonly projectName: string;
-  readonly member?: ProjectMember;
+  readonly directGrant: ProjectGrant | null;
+  readonly access: ProjectAccess | null;
+};
+export type ProjectInvitationAcceptance = {
+  readonly projectId: string;
+  readonly directGrant: ProjectGrant;
+  readonly access: ProjectAccess;
+  readonly joined: boolean;
+  readonly consumed: boolean;
 };
 export type InvitationInspection = ProjectInvitationInspection;
+export type TeamInvitationMember = {
+  readonly teamId: string; readonly userId: string; readonly role: ProjectRole; readonly version: bigint;
+  readonly createdAt: string; readonly updatedAt: string;
+};
+export type TeamInvitationInspection = { readonly team: TeamRef; readonly membership: TeamInvitationMember | null };
+export type TeamInvitationAcceptance = { readonly team: TeamRef; readonly membership: TeamInvitationMember; readonly joined: boolean; readonly consumed: boolean };
 
 export type DeviceAuthorizationStatus = "pending" | "approved" | "denied" | "expired" | "consumed";
 export type DeviceAuthorizationInspection = {

@@ -16,6 +16,7 @@ import { assertHerdrResourceBudget, reconcileDeletedHerdrResource } from "./reso
 import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "./execution.js";
 import { HerdrAgentActionError, HerdrRpcError } from "./herdr.js";
+import { HerdrInputBlockedError } from "./herdr/agents.js";
 import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } from "./herdr.js";
 import type { ManagedAssignment } from "./prompts.js";
 import type { WorkerRemote } from "./remote.js";
@@ -58,6 +59,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   let capacityWarning = "";
   const cleanupRetries = new Map<string, { failures: number; nextAttemptAt: number; stage: string; lastError: string }>();
   const failures = new Map<string, number>();
+  const inputWaiting = new Map<string, string>();
   const snapshotWarnings = new Map<string, Set<string>>();
   let nextRepository = 0;
   let nextPendingProject = 0;
@@ -169,8 +171,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const controller = new AbortController();
     controllers.set(identityKey, { controller, terminal });
     const signal = AbortSignal.any([normalSignal, controller.signal]);
-    const job = serialize(identity, () => action(signal)).catch((error: unknown) => {
+    const job = serialize(identity, () => action(signal)).then(() => { inputWaiting.delete(identityKey); }).catch((error: unknown) => {
       if (isWorkerCancellation(error, signal)) return;
+      if (!terminal && error instanceof HerdrInputBlockedError) {
+        if (inputWaiting.get(identityKey) !== error.message) {
+          inputWaiting.set(identityKey, error.message);
+          const task = options.store.getTask(identity);
+          options.emit({ kind: "waiting", ...(task === null ? {} : { task }), message: error.message });
+        }
+        return;
+      }
+      inputWaiting.delete(identityKey);
       let cleanupMessage: string | undefined;
       let reportedError = error;
       let task: LocalTask | null = null;

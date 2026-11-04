@@ -24,8 +24,12 @@ phases distinguish discussion, bilingual task/attachment and worker-claim
 layouts. Execution phases distinguish real warning crossing, saved-setting sync,
 completed-duration polling and bilingual layouts.
 
-The steps preserve the existing operations, assertions, order, timeouts and
-error handling. They remain part of the same scenarios and the existing raw
+The timing instrumentation preserves the operations, assertions, order,
+timeouts and error handling. The
+[functional polling decision](2026-11-04-web-functional-polling.md) owns shorter
+polling periods in selected browser journeys; real threshold crossing and
+monotonic business clocks keep their own semantics. The steps remain part of
+the same scenarios and the existing raw
 `playwright.json`; there is no additional report format, performance threshold
 or selected-suite entry point. The
 [functional target decision](2026-11-04-web-functional-target-overlap.md)

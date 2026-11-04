@@ -5,6 +5,8 @@ import { useProjectList } from "../features/projects/ProjectsProvider";
 import { navigate } from "./router";
 import { useBodyScrollLock } from "./useBodyScrollLock";
 import "../styles/sidebar.css";
+import { TeamSelector } from "../features/teams/TeamSelector";
+import { useTeamMessages } from "../features/teams/messages";
 import { useTestSessionListMessages } from "../features/task-agent-session/test-session-list-messages";
 
 // Keep the media query identical to sidebar.css so layout and modal ownership change together.
@@ -15,6 +17,9 @@ type WorkspaceSidebarProps = {
   readonly onToggle: () => void;
   readonly routeKey: string;
   readonly projectsActive: boolean;
+  readonly sharedActive: boolean;
+  readonly personalId: string;
+  readonly selectedTeamId: string;
   readonly workersActive?: boolean;
   readonly accountActive: boolean;
   readonly activeProjectId: string | null;
@@ -24,9 +29,10 @@ type WorkspaceSidebarProps = {
   readonly onNavigate: () => void;
 };
 
-export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, workersActive = false, accountActive, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate }: WorkspaceSidebarProps) => {
+export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, sharedActive, personalId, selectedTeamId, workersActive = false, accountActive, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate }: WorkspaceSidebarProps) => {
   const { messages: { auth: { shell: m }, workspace: { app, projects: p } } } = useI18n();
   const projects = useProjectList();
+  const teamMessages = useTeamMessages();
   const testMessages = useTestSessionListMessages();
   const [media] = useState(() => window.matchMedia(SIDEBAR_NARROW_QUERY));
   const [narrow, setNarrow] = useState(media.matches);
@@ -112,10 +118,11 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
     <aside ref={sidebar} id="workspace-sidebar" className={`sidebar${active ? " sidebar-drawer-open" : ""}`} aria-label={app.workspaceNavigation} role={active ? "dialog" : undefined} aria-modal={active ? true : undefined} tabIndex={-1}>
       <div className="sidebar-main">
         <a className="brand" href="/projects" onClick={follow} aria-label={app.projectHome} title={app.projectHome}><span className="brand-mark" aria-hidden="true" /><span className="brand-name">daynight</span></a>
+        <TeamSelector personalId={personalId} selectedId={selectedTeamId} expanded={expanded} onExpand={() => { if (narrow) setDrawer({ route: routeKey }); else onToggle(); }} onNavigate={onNavigate} />
         <nav aria-label={app.mainNavigation}>
           <p className="nav-label">{app.workspace}</p>
-          <a className="nav-button" href="/projects" onClick={follow} aria-label={m.myProjects} title={m.myProjects} aria-current={projectsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▦</span><span className="nav-text">{m.myProjects}</span></a>
-          <div className="sidebar-projects" hidden={!expanded}>
+          <a className="nav-button" href={selectedTeamId === personalId ? "/projects" : `/teams/${selectedTeamId}`} onClick={follow} aria-label={m.myProjects} title={m.myProjects} aria-current={projectsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▦</span><span className="nav-text">{m.myProjects}</span></a>
+          <div className="sidebar-projects" hidden={!expanded || sharedActive}>
             {projects.status === "loading" && <p className="sidebar-project-state" role="status">{p.loading}</p>}
             {projects.status === "error" && <div className="sidebar-project-state" role="alert"><p>{p.loadingFailed}</p><button className="sidebar-project-action" type="button" onClick={projects.refresh}>{p.retry}</button></div>}
             {projects.status === "ready" && projects.items.length === 0 && <p className="sidebar-project-state">{p.empty}</p>}
@@ -127,6 +134,7 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
               <button className="sidebar-project-action" type="button" onClick={projects.loadMore} disabled={projects.loadingMore}>{projects.loadingMore ? p.loadingMore : projects.moreError !== null ? p.retryMore : p.loadMore}</button>
             </div>}
           </div>
+          <a className="nav-button" href="/shared-projects" onClick={follow} aria-label={teamMessages.shared} title={teamMessages.shared} aria-current={sharedActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">◇</span><span className="nav-text">{teamMessages.shared}</span></a>
           <a className="nav-button" href="/workers" onClick={follow} aria-label={m.workers} title={m.workers} aria-current={workersActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4M7 8h10M7 12h6" /></svg></span><span className="nav-text">{m.workers}</span></a>
           <a className="nav-button" href="/test-sessions" onClick={follow} aria-label={testMessages.title} title={testMessages.title} aria-current={testSessionsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▷</span><span className="nav-text">{testMessages.title}</span></a>
         </nav>

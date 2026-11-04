@@ -47,7 +47,7 @@ func (f *membershipFixture) user(t *testing.T) core.Principal {
 
 func (f *membershipFixture) project(t *testing.T, p core.Principal, name string) core.Project {
 	t.Helper()
-	project, err := f.projects.Create(context.Background(), p, CreateProject{Name: name, RepoURL: "https://example.com/team/repo.git"})
+	project, err := f.projects.Create(context.Background(), p, CreateProject{ExpectedUserID: p.UserID, Name: name, RepoURL: "https://example.com/team/repo.git"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func (f *membershipFixture) project(t *testing.T, p core.Principal, name string)
 
 func (f *membershipFixture) invite(t *testing.T, p core.Principal, projectID string) MintedInvitation {
 	t.Helper()
-	invitation, err := f.memberships.CreateInvitation(context.Background(), p, projectID)
+	invitation, err := f.memberships.CreateInvitation(context.Background(), p, projectID, p.UserID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,11 +66,11 @@ func (f *membershipFixture) invite(t *testing.T, p core.Principal, projectID str
 func (f *membershipFixture) join(t *testing.T, admin, p core.Principal, projectID string) core.ProjectMember {
 	t.Helper()
 	invite := f.invite(t, admin, projectID)
-	member, err := f.memberships.AcceptInvitation(context.Background(), p, invite.Secret)
+	_, err := f.memberships.AcceptInvitation(context.Background(), p, invite.Secret, p.UserID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return member
+	return f.member(t, p, projectID)
 }
 
 func (f *membershipFixture) member(t *testing.T, p core.Principal, projectID string) core.ProjectMember {
@@ -125,7 +125,7 @@ func TestPrivateProjectsAtomicCreationAndMemberFilteredPagination(t *testing.T) 
 	if _, err := f.database.Pool.Exec(ctx, `CREATE FUNCTION reject_initial_admin() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected admin insertion failure'; END $$; CREATE TRIGGER reject_initial_admin BEFORE INSERT ON project_grants FOR EACH ROW EXECUTE FUNCTION reject_initial_admin()`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.projects.Create(ctx, alice, CreateProject{Name: "Must roll back", RepoURL: "host:repo"})
+	_, err = f.projects.Create(ctx, alice, CreateProject{ExpectedUserID: alice.UserID, Name: "Must roll back", RepoURL: "host:repo"})
 	requireIdentityOperationalError(t, err)
 	var residual int
 	if err := f.database.Pool.QueryRow(ctx, `SELECT count(*) FROM projects WHERE name='Must roll back'`).Scan(&residual); err != nil || residual != 0 {
@@ -180,7 +180,7 @@ func TestMembershipRoleAuthorizationAndObservedVersions(t *testing.T) {
 	}
 	_, err = f.memberships.List(ctx, member, p.ID)
 	requireFault(t, err, "not_found")
-	_, err = f.memberships.CreateInvitation(ctx, member, p.ID)
+	_, err = f.memberships.CreateInvitation(ctx, member, p.ID, member.UserID)
 	requireFault(t, err, "not_found")
 	ownerMember := f.member(t, owner, p.ID)
 	demoted, err := f.memberships.SetRole(ctx, owner, p.ID, owner.UserID, SetProjectMemberRole{Version: ownerMember.Grant.Version, Role: core.ProjectMemberRole, ExpectedUserID: owner.UserID})
@@ -257,40 +257,40 @@ func TestInvitationsLifecycleAndProjectOwnership(t *testing.T) {
 	}
 	for i := 0; i < 2; i++ {
 		inspection, err := f.memberships.InspectInvitation(ctx, member, invitation.Secret)
-		if err != nil || inspection.ProjectID != p.ID || inspection.ProjectName != p.Name || inspection.Member != nil {
+		if err != nil || inspection.ProjectID != p.ID || inspection.ProjectName != p.Name || inspection.DirectGrant != nil || inspection.Access != nil {
 			t.Fatalf("inspect: %#v %v", inspection, err)
 		}
 	}
 	_, err := f.memberships.List(ctx, member, p.ID)
 	requireFault(t, err, "not_found")
 	original := f.member(t, owner, p.ID)
-	existing, err := f.memberships.AcceptInvitation(ctx, owner, invitation.Secret)
-	if err != nil || !reflect.DeepEqual(existing, original) {
+	existing, err := f.memberships.AcceptInvitation(ctx, owner, invitation.Secret, owner.UserID)
+	if err != nil || !reflect.DeepEqual(existing.DirectGrant, original.Grant) || !reflect.DeepEqual(existing.Access.DirectGrant, &original.Grant) || existing.Joined || existing.Consumed {
 		t.Fatalf("existing admin: %#v %v", existing, err)
 	}
 	active, err := f.memberships.ListInvitations(ctx, owner, p.ID)
 	if err != nil || len(active) != 1 || active[0].TokenHash != nil {
 		t.Fatalf("existing member consumed: %#v %v", active, err)
 	}
-	joined, err := f.memberships.AcceptInvitation(ctx, member, invitation.Secret)
-	if err != nil || joined.Grant.Role != core.ProjectMemberRole {
+	joined, err := f.memberships.AcceptInvitation(ctx, member, invitation.Secret, member.UserID)
+	if err != nil || joined.DirectGrant.Role != core.ProjectMemberRole || !joined.Joined || !joined.Consumed || !reflect.DeepEqual(joined.Access.DirectGrant, &joined.DirectGrant) {
 		t.Fatalf("accept: %#v %v", joined, err)
 	}
-	_, err = f.memberships.AcceptInvitation(ctx, other, invitation.Secret)
+	_, err = f.memberships.AcceptInvitation(ctx, other, invitation.Secret, other.UserID)
 	requireFault(t, err, "invitation_unavailable")
 	_, err = f.memberships.InspectInvitation(ctx, member, invitation.Secret)
 	requireFault(t, err, "invitation_unavailable")
-	_, err = f.memberships.CreateInvitation(ctx, member, p.ID)
+	_, err = f.memberships.CreateInvitation(ctx, member, p.ID, member.UserID)
 	requireFault(t, err, "forbidden")
 	_, err = f.memberships.ListInvitations(ctx, member, p.ID)
 	requireFault(t, err, "forbidden")
-	requireFault(t, f.memberships.RevokeInvitation(ctx, member, p.ID, invitation.Invitation.ID), "forbidden")
+	requireFault(t, f.memberships.RevokeInvitation(ctx, member, p.ID, invitation.Invitation.ID, member.UserID), "forbidden")
 	active, err = f.memberships.ListInvitations(ctx, owner, p.ID)
 	if err != nil || len(active) != 0 {
 		t.Fatalf("consumed list: %#v %v", active, err)
 	}
 	replacement := f.invite(t, owner, p.ID)
-	promoted, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, SetProjectMemberRole{Version: joined.Grant.Version, Role: core.ProjectAdmin, ExpectedUserID: owner.UserID})
+	promoted, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, SetProjectMemberRole{Version: joined.DirectGrant.Version, Role: core.ProjectAdmin, ExpectedUserID: owner.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,28 +298,28 @@ func TestInvitationsLifecycleAndProjectOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	inspection, err := f.memberships.InspectInvitation(ctx, member, replacement.Secret)
-	if err != nil || inspection.Member == nil || inspection.Member.Grant.Version != promoted.Version {
+	if err != nil || inspection.DirectGrant == nil || inspection.DirectGrant.Version != promoted.Version {
 		t.Fatalf("member inspection: %#v %v", inspection, err)
 	}
-	if _, err := f.memberships.AcceptInvitation(ctx, other, replacement.Secret); err != nil {
+	if _, err := f.memberships.AcceptInvitation(ctx, other, replacement.Secret, other.UserID); err != nil {
 		t.Fatalf("creator departure revoked project invitation: %v", err)
 	}
 	revoked := f.invite(t, member, p.ID)
 	for i := 0; i < 2; i++ {
-		if err := f.memberships.RevokeInvitation(ctx, member, p.ID, revoked.Invitation.ID); err != nil {
+		if err := f.memberships.RevokeInvitation(ctx, member, p.ID, revoked.Invitation.ID, member.UserID); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := f.memberships.RevokeInvitation(ctx, member, p.ID, uuid.NewString()); err != nil {
+	if err := f.memberships.RevokeInvitation(ctx, member, p.ID, uuid.NewString(), member.UserID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.memberships.AcceptInvitation(ctx, owner, revoked.Secret)
+	_, err = f.memberships.AcceptInvitation(ctx, owner, revoked.Secret, owner.UserID)
 	requireFault(t, err, "invitation_unavailable")
 	expiring := f.invite(t, member, p.ID)
 	f.now = expiring.Invitation.ExpiresAt
 	_, err = f.memberships.InspectInvitation(ctx, owner, expiring.Secret)
 	requireFault(t, err, "invitation_unavailable")
-	_, err = f.memberships.AcceptInvitation(ctx, owner, expiring.Secret)
+	_, err = f.memberships.AcceptInvitation(ctx, owner, expiring.Secret, owner.UserID)
 	requireFault(t, err, "invitation_unavailable")
 	for _, secret := range []string{"bad", randomSecret(invitationPrefix)} {
 		_, err = f.memberships.InspectInvitation(ctx, owner, secret)
@@ -334,11 +334,11 @@ func TestInvitationConcurrentAcceptanceAndAtomicRollback(t *testing.T) {
 	invitation := f.invite(t, admin, p.ID)
 	results := competeTaskWrites(t, f.database, p.ID,
 		func(ctx context.Context) (core.Task, error) {
-			_, err := f.memberships.AcceptInvitation(ctx, a, invitation.Secret)
+			_, err := f.memberships.AcceptInvitation(ctx, a, invitation.Secret, a.UserID)
 			return core.Task{}, err
 		},
 		func(ctx context.Context) (core.Task, error) {
-			_, err := f.memberships.AcceptInvitation(ctx, b, invitation.Secret)
+			_, err := f.memberships.AcceptInvitation(ctx, b, invitation.Secret, b.UserID)
 			return core.Task{}, err
 		})
 	assertOneTaskWinner(t, results, "invitation_unavailable")
@@ -352,19 +352,57 @@ func TestInvitationConcurrentAcceptanceAndAtomicRollback(t *testing.T) {
 	if _, err := f.database.Pool.Exec(ctx, `CREATE FUNCTION reject_invitation_consumption() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected invitation consumption failure'; END $$; CREATE TRIGGER reject_invitation_consumption BEFORE UPDATE ON project_invitations FOR EACH ROW EXECUTE FUNCTION reject_invitation_consumption()`); err != nil {
 		t.Fatal(err)
 	}
-	_, err := f.memberships.AcceptInvitation(ctx, newcomer, retry.Secret)
+	_, err := f.memberships.AcceptInvitation(ctx, newcomer, retry.Secret, newcomer.UserID)
 	requireIdentityOperationalError(t, err)
 	_, err = f.memberships.List(ctx, newcomer, p.ID)
 	requireFault(t, err, "not_found")
 	inspection, err := f.memberships.InspectInvitation(ctx, newcomer, retry.Secret)
-	if err != nil || inspection.Member != nil {
+	if err != nil || inspection.DirectGrant != nil {
 		t.Fatalf("failed consume retained membership: %#v %v", inspection, err)
 	}
 	if _, err := f.database.Pool.Exec(ctx, `DROP TRIGGER reject_invitation_consumption ON project_invitations`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.memberships.AcceptInvitation(ctx, newcomer, retry.Secret); err != nil {
+	if _, err := f.memberships.AcceptInvitation(ctx, newcomer, retry.Secret, newcomer.UserID); err != nil {
 		t.Fatalf("rollback consumed invitation: %v", err)
+	}
+}
+
+func TestInvitationRevokeCompetesWithAcceptance(t *testing.T) {
+	f := newMembershipFixture(t)
+	admin, recipient := f.user(t), f.user(t)
+	p := f.project(t, admin, "Revoke race")
+	invite := f.invite(t, admin, p.ID)
+	results := competeTaskWrites(t, f.database, p.ID,
+		func(ctx context.Context) (core.Task, error) {
+			_, err := f.memberships.AcceptInvitation(ctx, recipient, invite.Secret, recipient.UserID)
+			return core.Task{}, err
+		},
+		func(ctx context.Context) (core.Task, error) {
+			return core.Task{}, f.memberships.RevokeInvitation(ctx, admin, p.ID, invite.Invitation.ID, admin.UserID)
+		})
+	successes := 0
+	for _, result := range results {
+		if result.err == nil {
+			successes++
+		} else {
+			requireFault(t, result.err, "invitation_unavailable")
+		}
+	}
+	var consumed, revoked *time.Time
+	var count int
+	err := f.database.Pool.QueryRow(context.Background(), `SELECT consumed_at,revoked_at,(SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2) FROM project_invitations WHERE id=$3`, p.ID, recipient.UserID, invite.Invitation.ID).Scan(&consumed, &revoked, &count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if successes == 2 {
+		if consumed == nil || count != 1 {
+			t.Fatalf("accept winner: %v %v %d", consumed, revoked, count)
+		}
+	} else {
+		if successes != 1 || revoked == nil || consumed != nil || count != 0 {
+			t.Fatalf("revoke winner: %v %v %d", consumed, revoked, count)
+		}
 	}
 }
 
@@ -384,16 +422,16 @@ func TestMembershipRejectsMissingPrincipalsAndInvalidInputs(t *testing.T) {
 		_, err = memberships.SetRole(ctx, p, id, id, SetProjectMemberRole{Version: 1, Role: core.ProjectAdmin, ExpectedUserID: p.UserID})
 		requireFault(t, err, "unauthenticated")
 		requireFault(t, memberships.Remove(ctx, p, id, id, RemoveProjectMember{Version: 1, ExpectedUserID: p.UserID}), "unauthenticated")
-		_, err = memberships.CreateInvitation(ctx, p, id)
+		_, err = memberships.CreateInvitation(ctx, p, id, p.UserID)
 		requireFault(t, err, "unauthenticated")
 		_, err = memberships.ListInvitations(ctx, p, id)
 		requireFault(t, err, "unauthenticated")
-		requireFault(t, memberships.RevokeInvitation(ctx, p, id, id), "unauthenticated")
+		requireFault(t, memberships.RevokeInvitation(ctx, p, id, id, p.UserID), "unauthenticated")
 		_, err = memberships.InspectInvitation(ctx, p, "invalid")
 		requireFault(t, err, "unauthenticated")
-		_, err = memberships.AcceptInvitation(ctx, p, "invalid")
+		_, err = memberships.AcceptInvitation(ctx, p, "invalid", p.UserID)
 		requireFault(t, err, "unauthenticated")
-		_, err = projects.Create(ctx, p, CreateProject{})
+		_, err = projects.Create(ctx, p, CreateProject{ExpectedUserID: p.UserID})
 		requireFault(t, err, "unauthenticated")
 		_, err = projects.List(ctx, p, PageRequest{})
 		requireFault(t, err, "unauthenticated")
@@ -402,7 +440,7 @@ func TestMembershipRejectsMissingPrincipalsAndInvalidInputs(t *testing.T) {
 	for _, call := range []func() error{
 		func() error { _, err := memberships.List(ctx, p, "bad"); return err },
 		func() error { _, err := RequireProjectRead(ctx, nil, p, "bad"); return err },
-		func() error { _, err := memberships.CreateInvitation(ctx, p, "bad"); return err },
+		func() error { _, err := memberships.CreateInvitation(ctx, p, "bad", p.UserID); return err },
 		func() error {
 			_, err := memberships.SetRole(ctx, p, id, "bad", SetProjectMemberRole{Version: 1, Role: core.ProjectAdmin, ExpectedUserID: p.UserID})
 			return err
@@ -418,9 +456,9 @@ func TestMembershipRejectsMissingPrincipalsAndInvalidInputs(t *testing.T) {
 		func() error {
 			return memberships.Remove(ctx, p, id, id, RemoveProjectMember{Version: 0, ExpectedUserID: p.UserID})
 		},
-		func() error { return memberships.RevokeInvitation(ctx, p, id, "bad") },
+		func() error { return memberships.RevokeInvitation(ctx, p, id, "bad", p.UserID) },
 		func() error {
-			_, err := projects.Create(ctx, p, CreateProject{Name: "", RepoURL: "host:repo"})
+			_, err := projects.Create(ctx, p, CreateProject{ExpectedUserID: p.UserID, Name: "", RepoURL: "host:repo"})
 			return err
 		},
 		func() error { _, err := projects.List(ctx, p, PageRequest{Limit: 0}); return err },
@@ -447,10 +485,10 @@ func TestMembershipPATAndOperationalFailurePropagation(t *testing.T) {
 	if _, err := f.memberships.List(ctx, pat, p.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.memberships.CreateInvitation(ctx, pat, p.ID); err != nil {
+	if _, err := f.memberships.CreateInvitation(ctx, pat, p.ID, pat.UserID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.projects.Create(ctx, pat, CreateProject{Name: "PAT project", RepoURL: "host:repo"}); err != nil {
+	if _, err := f.projects.Create(ctx, pat, CreateProject{ExpectedUserID: pat.UserID, Name: "PAT project", RepoURL: "host:repo"}); err != nil {
 		t.Fatal(err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
@@ -463,10 +501,10 @@ func TestMembershipPATAndOperationalFailurePropagation(t *testing.T) {
 	f.database.Close()
 	calls := []func() error{
 		func() error { _, err := f.memberships.List(ctx, admin, p.ID); return err },
-		func() error { _, err := f.memberships.CreateInvitation(ctx, admin, p.ID); return err },
+		func() error { _, err := f.memberships.CreateInvitation(ctx, admin, p.ID, admin.UserID); return err },
 		func() error { _, err := f.memberships.InspectInvitation(ctx, admin, invitation.Secret); return err },
 		func() error {
-			_, err := f.projects.Create(ctx, admin, CreateProject{Name: "Failure", RepoURL: "host:repo"})
+			_, err := f.projects.Create(ctx, admin, CreateProject{ExpectedUserID: admin.UserID, Name: "Failure", RepoURL: "host:repo"})
 			return err
 		},
 		func() error { _, err := f.projects.List(ctx, admin, PageRequest{Limit: 1}); return err },
@@ -497,20 +535,20 @@ func TestMembershipInheritedOwnerAcceptsIndependentGrantAndRejectsLargeStaleVers
 	}
 	invitation := f.invite(t, admin, project.ID)
 	inspection, err := f.memberships.InspectInvitation(ctx, owner, invitation.Secret)
-	if err != nil || inspection.Member != nil {
+	if err != nil || inspection.DirectGrant != nil || inspection.Access == nil || inspection.Access.Role != core.ProjectAdmin {
 		t.Fatalf("inherited access treated as direct grant: %#v %v", inspection, err)
 	}
-	replacement, err := f.memberships.AcceptInvitation(ctx, owner, invitation.Secret)
-	if err != nil || replacement.Grant.Version <= high || replacement.Grant.Role != core.ProjectMemberRole {
+	replacement, err := f.memberships.AcceptInvitation(ctx, owner, invitation.Secret, owner.UserID)
+	if err != nil || replacement.DirectGrant.Version <= high || replacement.DirectGrant.Role != core.ProjectMemberRole || !replacement.Joined || !replacement.Consumed || replacement.Access.Role != core.ProjectAdmin || !reflect.DeepEqual(replacement.Access.DirectGrant, &replacement.DirectGrant) {
 		t.Fatalf("independent replacement grant: %#v %v", replacement, err)
 	}
 	_, err = f.memberships.SetRole(ctx, admin, project.ID, owner.UserID, SetProjectMemberRole{Version: high, Role: core.ProjectAdmin, ExpectedUserID: admin.UserID})
 	requireFault(t, err, "version_conflict")
 	requireFault(t, f.memberships.Remove(ctx, admin, project.ID, owner.UserID, RemoveProjectMember{Version: high, ExpectedUserID: admin.UserID}), "version_conflict")
-	if got := f.member(t, owner, project.ID); !reflect.DeepEqual(got, replacement) {
+	if got := f.member(t, owner, project.ID); !reflect.DeepEqual(got.Grant, replacement.DirectGrant) {
 		t.Fatalf("stale large version changed new grant: %#v", got)
 	}
-	_, err = f.memberships.AcceptInvitation(ctx, admin, invitation.Secret)
+	_, err = f.memberships.AcceptInvitation(ctx, admin, invitation.Secret, admin.UserID)
 	requireFault(t, err, "invitation_unavailable")
 	people, err := f.memberships.List(ctx, owner, project.ID)
 	if err != nil {

@@ -25,7 +25,7 @@ test("Claude approval stays pending after SDK callback resolution until the matc
     };
   });
   const entries: ProviderEntry[] = [];
-  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: e => entries.push(e), onState: () => {}, onSpawn: () => {} });
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], instructions: "Keep the native approval policy.", resumeNativeSessionId: null, onTimeline: e => entries.push(e), onState: () => {}, onSpawn: () => {} });
   try {
     await provider.send("run a tool", randomUUID(), null);
     const permission = captured.canUseTool!("Bash", { command: "echo safe" }, { signal: new AbortController().signal, toolUseID: "native-tool", decisionReason: "test" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
@@ -46,11 +46,11 @@ test("Claude approval stays pending after SDK callback resolution until the matc
 const nativeFixture = (echo = true) => {
   const interrupt = vi.fn(async (): Promise<unknown> => ({}));
   let captured!: Options, wake: (() => void) | undefined, ended = false, failure: Error | undefined;
-  const messages: unknown[] = [];
+  const messages: unknown[] = [], inputs: SDKUserMessage[] = [];
   const emit = (message: unknown) => { messages.push(message); wake?.(); };
   sdk.query.mockImplementation(({ options, prompt }: { options: Options; prompt: AsyncIterable<SDKUserMessage> }) => {
     captured = options;
-    void (async () => { for await (const user of prompt) if (echo) emit(user); })();
+    void (async () => { for await (const user of prompt) { inputs.push(user); if (echo) emit(user); } })();
     return {
       async initializationResult() {
         await options.hooks!.SessionStart![0]!.hooks[0]!({ hook_event_name: "SessionStart", session_id: options.sessionId ?? options.resume!, transcript_path: "", cwd: process.cwd(), source: "startup" }, undefined, { signal: new AbortController().signal });
@@ -60,13 +60,13 @@ const nativeFixture = (echo = true) => {
       close() { ended = true; wake?.(); }, interrupt,
     };
   });
-  return { emit, interrupt, options: () => captured, end(error?: Error) { failure = error; ended = true; wake?.(); } };
+  return { emit, interrupt, inputs, options: () => captured, end(error?: Error) { failure = error; ended = true; wake?.(); } };
 };
 
 test.each([false, true])("Claude disables control and rejects unconfirmed input when the native iterator ends (error=%s)", async error => {
   const fatal: Error[] = [];
   const fixture = nativeFixture(false), states: import("../../../src/commands/controller/providers/types.js").ProviderState[] = [];
-  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: () => {}, onState: state => states.push(structuredClone(state)), onSpawn: () => {}, onFatalError: error => fatal.push(error) });
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], instructions: "Keep uncertain input unknown.", resumeNativeSessionId: null, onTimeline: () => {}, onState: state => states.push(structuredClone(state)), onSpawn: () => {}, onFatalError: error => fatal.push(error) });
   const send = provider.send("uncertain input", randomUUID(), null);
   const rejection = expect(send).rejects.toThrow(/unknown|ended|connection/i);
   fixture.end(error ? new Error("lost native pipe") : undefined);
@@ -291,4 +291,56 @@ test("Claude Worker resume preserves native permission and sandbox settings", as
   const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: nativeId, unattended: true, onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
   try { expect(fixture.options().permissionMode).toBeUndefined(); expect(fixture.options().sandbox).toBeUndefined(); }
   finally { await provider.close(); }
+});
+
+
+test.each([false, true])("Claude appends the role without creating user input or replacing native settings (resume=%s)", async resume => {
+  const fixture = nativeFixture(), nativeId = randomUUID(), entries: ProviderEntry[] = [];
+  const instructions = "  Daynight 助手\nPreserve e\u0301 and native permissions.  ";
+  sdk.getSessionInfo.mockResolvedValue({ sessionId: nativeId, cwd: process.cwd() });
+  sdk.getSessionMessages.mockResolvedValue([]);
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: "selected-model", args: ["--effort", "high"], instructions, resumeNativeSessionId: resume ? nativeId : null, onTimeline: e => entries.push(e), onState: () => {}, onSpawn: () => {} });
+  try {
+    expect(fixture.options().systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: instructions });
+    expect(fixture.options().model).toBe(resume ? undefined : "selected-model");
+    expect(fixture.options().effort).toBe(resume ? undefined : "high");
+    expect(fixture.options().permissionMode).toBe(resume ? undefined : "default");
+    expect(fixture.options().sandbox).toBeUndefined();
+    expect(fixture.options().settingSources).toEqual(["user", "project", "local"]);
+    expect(fixture.options().resume).toBe(resume ? nativeId : undefined);
+    expect(fixture.options().sessionId).toBe(resume ? undefined : provider.nativeSessionId);
+    if (resume) expect(provider.nativeSessionId).toBe(nativeId);
+    expect(fixture.inputs).toEqual([]);
+    expect(entries).toEqual([]);
+    const operationId = randomUUID();
+    await provider.send("The first actual request", operationId, null);
+    expect(fixture.inputs).toHaveLength(1);
+    expect(fixture.inputs[0]).toMatchObject({ uuid: operationId, session_id: provider.nativeSessionId, message: { role: "user", content: "The first actual request" } });
+  } finally { await provider.close(); }
+  await expect(provider.send("after close", randomUUID(), null)).rejects.toThrow(/cannot accept/);
+});
+
+test.each([false, true])("Claude omits role configuration when absent (resume=%s)", async resume => {
+  const fixture = nativeFixture(), nativeId = randomUUID();
+  sdk.getSessionInfo.mockResolvedValue({ sessionId: nativeId, cwd: process.cwd() });
+  sdk.getSessionMessages.mockResolvedValue([]);
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: resume ? nativeId : null, onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+  try { expect(fixture.options()).not.toHaveProperty("systemPrompt"); expect(fixture.options()).not.toHaveProperty("model"); }
+  finally { await provider.close(); }
+});
+
+test.each([false, true])("Claude propagates role startup failure and closes initialized SDK resources (query throws=%s)", async queryThrows => {
+  const fixture = nativeFixture(), original = sdk.query.getMockImplementation()!;
+  const failure = new Error("Native role initialization rejected"), close = vi.fn();
+  sdk.query.mockImplementation((args: unknown) => {
+    if (queryThrows) throw failure;
+    const native = original(args);
+    close.mockImplementation(() => native.close());
+    return { ...native, close, initializationResult: async () => { throw failure; } };
+  });
+  const entries: ProviderEntry[] = [];
+  await expect(openClaudeProvider({ cwd: process.cwd(), model: null, args: [], instructions: "Daynight role", resumeNativeSessionId: null, onTimeline: e => entries.push(e), onState: () => {}, onSpawn: () => {} })).rejects.toBe(failure);
+  expect(close).toHaveBeenCalledTimes(queryThrows ? 0 : 1);
+  expect(fixture.inputs).toEqual([]);
+  expect(entries).toEqual([]);
 });

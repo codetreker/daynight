@@ -59,6 +59,7 @@ func next(s string) string   { return decimal(number(s) + 1) }
 func encode(v any) []byte    { b, _ := json.Marshal(v); return b }
 
 type record struct {
+	BotID                                               *string
 	Live                                                *liveSession
 	ServerInstance                                      *string
 	FirstInputBlocked                                   bool
@@ -78,10 +79,14 @@ type record struct {
 }
 
 func load(ctx context.Context, tx pgx.Tx, id string) (*record, error) {
+	bot, err := lockSessionBot(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
 	r := &record{}
 	var raw []byte
 	var parent, kind, connectionParent *string
-	err := tx.QueryRow(ctx, `SELECT server_instance::text,snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 AND backend='web' FOR UPDATE`, id).Scan(&r.ServerInstance, &raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.FirstInputBlocked)
+	err = tx.QueryRow(ctx, `SELECT bot_id::text,server_instance::text,snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 AND backend='web' FOR UPDATE`, id).Scan(&r.BotID, &r.ServerInstance, &raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.FirstInputBlocked)
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +100,9 @@ func load(ctx context.Context, tx pgx.Tx, id string) (*record, error) {
 		r.GrantKind = *kind
 	}
 	err = json.Unmarshal(raw, &r.Snapshot)
+	if err == nil && !validSessionBot(bot, r) {
+		return nil, conflict()
+	}
 	if err == nil {
 		r.Snapshot = durableSnapshot(r.Snapshot)
 		err = attachLive(tx, r)
@@ -344,53 +352,67 @@ func (s *Service) Grant(ctx context.Context, p core.Principal, project, taskID, 
 		return out, denied()
 	}
 	err := s.browser(ctx, p, project, taskID, id, func(tx pgx.Tx, r *record, t task, _ bool) error {
-		v := &r.Snapshot
-		if !active(t, r) || r.Owner != p.UserID || g.ClaimID != v.ClaimID || g.TestExecutionID != v.TestExecutionID || g.ControllerID != v.Identity.ControllerID {
+		if r.BotID != nil {
+			return denied()
+		}
+		if r.Snapshot.TestExecutionID != "" && (g.PreviousGeneration != nil || g.StopProof != nil) {
 			return conflict()
 		}
-		if g.PreviousGeneration != nil && g.ExecutionGeneration == v.ExecutionGeneration {
-			if g.StopProof == nil || number(*g.PreviousGeneration)+1 != number(v.ExecutionGeneration) || g.ControllerInstanceID != v.Identity.ControllerInstanceID || !jsonEqual(r.StopProof, encode(g.StopProof)) {
-				return conflict()
-			}
-		} else if g.PreviousGeneration != nil {
-			if g.StopProof == nil || *g.PreviousGeneration != v.ExecutionGeneration || number(g.ExecutionGeneration) != number(v.ExecutionGeneration)+1 || g.StopProof.PreviousControllerInstanceID != v.Identity.ControllerInstanceID || g.ControllerInstanceID == v.Identity.ControllerInstanceID {
-				return conflict()
-			}
-			stopped, err := time.Parse(time.RFC3339Nano, g.StopProof.StoppedAt)
-			if err != nil || stopped.After(s.now().Add(time.Second)) {
-				return conflict()
-			}
-			v.Controls = nil
-			v.TurnStartedAt = nil
-			v.ExecutionGeneration = g.ExecutionGeneration
-			v.Identity.ControllerInstanceID = g.ControllerInstanceID
-			v.ConnectionState = "disconnected"
-			v.Synchronized = false
-			if _, err = tx.Exec(ctx, `UPDATE task_sessions SET stop_proof=$2,connection_expires_at=NULL WHERE id=$1`, id, encode(g.StopProof)); err != nil {
-				return err
-			}
-			if err = s.emit(ctx, tx, r, "snapshot", *v, nil); err != nil {
-				return err
-			}
-		} else if g.ExecutionGeneration != v.ExecutionGeneration || g.ControllerInstanceID != v.Identity.ControllerInstanceID || g.StopProof != nil {
-			return conflict()
-		}
-		if g.Kind == "bootstrap" && v.ConnectionEpoch != "0" && g.PreviousGeneration == nil {
-			return conflict()
-		}
-		ttl := 15 * time.Minute
-		if g.Kind == "bootstrap" {
-			ttl = 120 * time.Second
-		}
-		out = GrantResult{TestExecutionID: v.TestExecutionID, Token: "dncontroller_" + rand.Text(), ExpiresAt: s.now().Add(ttl).UTC(), SessionID: id, ClaimID: v.ClaimID, ExecutionGeneration: v.ExecutionGeneration, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID}
-		h := sha256.Sum256([]byte(out.Token))
-		_, err := tx.Exec(ctx, `UPDATE task_sessions SET grant_hash=$2,grant_expires_at=$3,grant_kind=$4,grant_consumed=false,parent_credential_id=$5 WHERE id=$1`, id, h[:], out.ExpiresAt, g.Kind, p.CredentialID)
-		if err != nil {
-			return err
-		}
-		return save(ctx, tx, r)
+		var err error
+		out, err = s.grantRecord(ctx, tx, p, r, t, g)
+		return err
 	})
 	return out, err
+}
+
+func (s *Service) grantRecord(ctx context.Context, tx pgx.Tx, p core.Principal, r *record, t task, g sp.Grant) (GrantResult, error) {
+	var out GrantResult
+	id := r.Snapshot.SessionID
+	v := &r.Snapshot
+	if !active(t, r) || r.Owner != p.UserID || g.ClaimID != v.ClaimID || g.TestExecutionID != v.TestExecutionID || g.ControllerID != v.Identity.ControllerID {
+		return out, conflict()
+	}
+	if g.PreviousGeneration != nil && g.ExecutionGeneration == v.ExecutionGeneration {
+		if g.StopProof == nil || number(*g.PreviousGeneration)+1 != number(v.ExecutionGeneration) || g.ControllerInstanceID != v.Identity.ControllerInstanceID || !jsonEqual(r.StopProof, encode(g.StopProof)) {
+			return out, conflict()
+		}
+	} else if g.PreviousGeneration != nil {
+		if g.StopProof == nil || *g.PreviousGeneration != v.ExecutionGeneration || number(g.ExecutionGeneration) != number(v.ExecutionGeneration)+1 || g.StopProof.PreviousControllerInstanceID != v.Identity.ControllerInstanceID || g.ControllerInstanceID == v.Identity.ControllerInstanceID {
+			return out, conflict()
+		}
+		stopped, err := time.Parse(time.RFC3339Nano, g.StopProof.StoppedAt)
+		if err != nil || stopped.After(s.now().Add(time.Second)) {
+			return out, conflict()
+		}
+		v.Controls = nil
+		v.TurnStartedAt = nil
+		v.ExecutionGeneration = g.ExecutionGeneration
+		v.Identity.ControllerInstanceID = g.ControllerInstanceID
+		v.ConnectionState = "disconnected"
+		v.Synchronized = false
+		if _, err = tx.Exec(ctx, `UPDATE task_sessions SET stop_proof=$2,connection_expires_at=NULL WHERE id=$1`, id, encode(g.StopProof)); err != nil {
+			return out, err
+		}
+		if err = s.emit(ctx, tx, r, "snapshot", *v, nil); err != nil {
+			return out, err
+		}
+	} else if g.ExecutionGeneration != v.ExecutionGeneration || g.ControllerInstanceID != v.Identity.ControllerInstanceID || g.StopProof != nil {
+		return out, conflict()
+	}
+	if g.Kind == "bootstrap" && v.ConnectionEpoch != "0" && g.PreviousGeneration == nil {
+		return out, conflict()
+	}
+	ttl := 15 * time.Minute
+	if g.Kind == "bootstrap" {
+		ttl = 120 * time.Second
+	}
+	out = GrantResult{TestExecutionID: v.TestExecutionID, Token: "dncontroller_" + rand.Text(), ExpiresAt: s.now().Add(ttl).UTC(), SessionID: id, ClaimID: v.ClaimID, ExecutionGeneration: v.ExecutionGeneration, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID}
+	h := sha256.Sum256([]byte(out.Token))
+	_, err := tx.Exec(ctx, `UPDATE task_sessions SET grant_hash=$2,grant_expires_at=$3,grant_kind=$4,grant_consumed=false,parent_credential_id=$5 WHERE id=$1`, id, h[:], out.ExpiresAt, g.Kind, p.CredentialID)
+	if err != nil {
+		return out, err
+	}
+	return out, save(ctx, tx, r)
 }
 
 // AuthenticateController checks grant and parent authority before allocating a channel.

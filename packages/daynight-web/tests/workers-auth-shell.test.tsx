@@ -5,6 +5,7 @@ import { navigate } from '../src/app/router';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { mockSidebarMediaQuery } from './helpers/mediaQuery';
 import { viewerHeaders } from './helpers/taskSync';
+import { personalTeamPage } from './helpers/team';
 
 const render = createLocaleRender('en');
 const owner = '00000000-0000-4000-8000-000000000001';
@@ -33,6 +34,7 @@ const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principa
 const failure = (status: number, code: string, viewer = principal) => json({ error: { code, message: 'Hidden server details', requestId: 'rq-worker-safe' } }, status, viewer);
 const defaults = (url: string): Response => {
   if (url === '/api/v1/me') return json(user(principal));
+  if (url.startsWith('/api/v1/teams?')) return json(personalTeamPage(principal));
   if (url.startsWith('/api/v1/projects?')) return json({ items: [], nextCursor: null });
   throw new Error(`Unexpected request ${url}`);
 };

@@ -264,7 +264,7 @@ func TestRunServesProjectAndTaskAPI(t *testing.T) {
 	if err != nil || response.StatusCode != http.StatusBadRequest || !bytes.Contains(body, []byte(`"code":"invalid_input"`)) {
 		t.Fatalf("project create route was not wired: %d %s %v", response.StatusCode, body, err)
 	}
-	response, err = client.Post("http://"+address+"/api/v1/projects", "application/json", strings.NewReader(`{"name":"Process tasks","repoUrl":"https://github.com/example/process"}`))
+	response, err = client.Post("http://"+address+"/api/v1/projects", "application/json", strings.NewReader(`{"name":"Process tasks","repoUrl":"https://github.com/example/process","expectedUserId":"`+response.Header.Get("Daynight-User-ID")+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

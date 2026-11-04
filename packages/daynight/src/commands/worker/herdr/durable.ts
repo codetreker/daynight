@@ -22,6 +22,7 @@ import { herdrInputEnvelope, openHerdrInputStore } from "./input-store.js";
 import { createHerdrInputArbiter, type HerdrInputArbiter } from "./input-arbiter.js";
 import type { HerdrInputTarget } from "./input-types.js";
 import { inspectHerdrInput } from "./input-readiness.js";
+import { HerdrInputBlockedError } from "./agents.js";
 import { submitTerminalInput, type TerminalInput } from "./terminal-input.js";
 import { createHerdrRpcClient } from "./rpc.js";
 import { createHerdrInputSession } from "./input-session.js";
@@ -361,7 +362,10 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     const operationId = initial ? arbiter.record().initialOperationId : randomUUID();
     update(context, draft => { current(draft).admission = operationId; if (initial) draft.initialAssignment = "dispatching"; });
     if (guard) promptGuards.set(record.sessionId, guard);
-    const result = await arbiter.submit({ operationId, source: initial ? "initial" : "continuation", text: body }, operation.signal).finally(() => { promptGuards.delete(record.sessionId); });
+    const result = await arbiter.submit({ operationId, source: initial ? "initial" : "continuation", text: body }, operation.signal).catch(error => {
+      if (error instanceof HerdrInputBlockedError) update(context, draft => { current(draft).admission = null; if (initial) draft.initialAssignment = "pending"; });
+      throw error;
+    }).finally(() => { promptGuards.delete(record.sessionId); });
     update(context, draft => {
       current(draft).admission = null;
       if (initial) draft.initialAssignment = result.state === "transport_completed" ? "transport_completed" : result.state === "rejected" ? "pending" : "unknown";

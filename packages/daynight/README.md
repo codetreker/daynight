@@ -546,7 +546,9 @@ option before the terminator: `daynight project create --repo <repo> -- -name`.
 The name is sent unchanged.
 
 Creation first scans every project page and compares canonical repository
-identities. With no match it registers the original name and repository address.
+identities. With no match it reads the current user, binds the request and response
+to that identity, and registers the original name and repository address in the
+Personal Team. An unknown write is not automatically replayed.
 With one match it reports `Project already exists.` and the existing project,
 leaving that project's name and address unchanged. Multiple matches fail with
 their IDs; lookup failures and exhausted command budgets stop before creation.
@@ -1668,9 +1670,17 @@ shell without its extra launch environment. The saved SQLite session_id selects
 resume or fresh startup; an inactive pane's retained reference is not saved as a
 newly observed session ID. A live agent keeps its current connection.
 
+Workspace creation supplies the shell's initial cwd. Before every fresh
+`agent.start` attempt, after caller admission, the original pane's current cwd
+must canonical-match the task worktree. Herdr writes argv into the existing
+shell, whose startup scripts may have changed directories; native trust
+arguments do not set cwd. A mismatch fails as definitely not-submitted without
+starting the native agent. Reconnecting to an existing live agent returns
+before this launch-only check.
+
 A replacement shell can still be initializing when Herdr rejects `agent.start`
 with `agent_pane_busy`. The adapter retries this explicit rejection for at most
-two seconds while the original workspace, pane, terminal and cwd remain owned,
+two seconds while the original workspace, pane and terminal remain owned,
 no Agent has appeared, and foreground process evidence confirms shell
 initialization. Cancellation and the original operation deadline still apply.
 Recovery within that call does not consume an execution failure attempt. Busy
@@ -1715,7 +1725,8 @@ observation before another decision, without blind replay. Terminal cleanup
 suppresses business pings.
 
 Before a periodic ping reaches the native agent, the worker rereads the task
-from the service after workspace serialization and native readiness checks,
+from the service after workspace serialization, native readiness and known
+input-blocker checks,
 verifies the original active claim, worker and worktree, and checks
 `properties.paused`. A true value skips that input without advancing its
 submission baseline. Setting false or removing the property therefore permits
@@ -1782,11 +1793,40 @@ versions fail explicitly.
 
 The policy applies only to native invocations and task workspaces. Global native
 configuration, credentials and organization/OS policies keep their existing
-owners; task delivery still follows its business authorization. Input-readiness
-and supported Codex composer checks remain. Unknown layouts, missing credentials,
-integration failures and launch errors stay visible. Use attach for business
-input. Reconnecting an already alive agent does not promise to resend an input
-lost across a process interruption.
+owners; task delivery still follows its business authorization. Automatic input
+uses Herdr's structured agent identity, readiness, launch and blocked states.
+For Codex and Claude, it then reads the bound pane's complete visible text only
+to reject explicit known menu or disabled-input patterns. Normal composers,
+status bars, directory displays, placeholders and borders are not required.
+Customized or unknown normal layouts proceed immediately after readiness; there
+is no layout whitelist or unknown-layout wait. Any supplied final task
+authorization guard runs after the read and binding/state recheck. Known blockers retain the
+pending initial input or continuation opportunity without advancing its submitted
+baseline or consuming execution recovery attempts; closing them permits a later
+patrol to continue. Failed, malformed or truncated reads remain unsent errors.
+The blocker set does not claim to recognize every future native screen. On macOS,
+`automatic` and `cleanup` inspection report composer evidence as unavailable;
+`manual` permits its lease holder to operate menus. Explicit handback and clean
+orderly recovery use the separate `resume` purpose: Codex and Claude require
+ANSI-preserved empty-field evidence without optional model, cwd or status-bar
+requirements. Codex placeholder words alone are insufficient: DIM renderer
+attributes and current field geometry distinguish them from literal or multiline
+drafts. Claude accepts a genuinely blank bordered field, not ambiguous Try text.
+Unknown or unsupported styles cannot become empty. Copilot retains
+unavailable composer evidence and its explicit handback responsibility. Durable
+leases, fences, draft dispositions, cleanup priority and unknown-input results
+retain their existing guarantees. A typed known blocker before any native write
+remains waiting after journal serialization and lifecycle pending projection;
+a possible write still produces an unknown outcome on failure.
+The worker supplies the initial task cwd at workspace creation and checks the
+original shell cwd only immediately before a fresh native start. Resource
+discovery, live-agent reconnection, input observation and stopping do not require
+pane and agent cwd metadata to agree. A human workspace at the same cwd does not prevent creation
+of a separately owned task workspace. Actual creation errors come from
+`workspace.create`. Original workspace/pane/terminal binding, final task
+authorization, process-stop evidence and prompt receipts remain checked. Missing credentials, integration failures and launch errors
+stay visible. Use attach for business input. Reconnecting an already alive agent
+does not promise to resend an input lost across a process interruption.
 
 When the original claim is absent from a successful complete inventory, the
 backend owns terminal resource cleanup. macOS Herdr writes its stop intent and

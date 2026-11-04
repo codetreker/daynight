@@ -80,8 +80,11 @@ The [ARM64 support decision](2026-11-04-macos-arm64-support.md) replaces that
 architecture-independent premise. Environment receipts continue retaining the
 actual OS, architecture, toolchain and tested source.
 
-The 180-second hook/callback, 120-second command and 10-minute job limits
-retain their settings. Setup and behavior consume separate hook/callback allowances;
+The 180-second hook/callback and 120-second command limits retain their settings.
+The [native phase decision](2026-11-04-parallel-native-cli-validation.md) replaces
+the combined platform job with independent ordinary and installed jobs, each
+bounded to 10 minutes. Their separate ceilings and duplicated bootstrap do not
+preserve the earlier total platform budget. Setup and behavior consume separate hook/callback allowances;
 this changes budget ownership and does not preserve the old scenario-total
 allowance or imply less total work. Ubuntu still builds the runtime matrix's
 packed artifact. The [development guide](../../../../docs/development.md) owns
