@@ -1,4 +1,3 @@
-import { CLEANUP_OPERATION_MS } from "../../cleanup-operation.js";
 import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -16,8 +15,8 @@ export const createWorkerSessionApi = (serverOrigin: string, serverToken: string
   };
   const prefix = (task: LocalTask): string => `/api/v1/projects/${task.projectId}/tasks/${task.taskId}/sessions`;
   return {
-    verifyUnregistered: async (identity: { projectId: string; taskId: string; claimId: string }, signal: AbortSignal): Promise<void> => {
-      const result = parseCurrentSessionResponse(await request(`/api/v1/projects/${identity.projectId}/tasks/${identity.taskId}/sessions/current`, undefined, signal, "GET", CLEANUP_OPERATION_MS));
+    verifyUnregistered: async (identity: { projectId: string; taskId: string; claimId: string }, signal: AbortSignal, timeoutMs = 30_000): Promise<void> => {
+      const result = parseCurrentSessionResponse(await request(`/api/v1/projects/${identity.projectId}/tasks/${identity.taskId}/sessions/current`, undefined, signal, "GET", timeoutMs));
       if (result.status !== "not_registered" || result.claimId !== identity.claimId) throw new Error("The original Web launch provenance is missing; an existing or superseded Session cannot be recreated or deleted. Restore its execution evidence.");
     },
     verifySupport: async (provider: string, signal: AbortSignal): Promise<void> => {

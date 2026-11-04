@@ -1501,12 +1501,6 @@ Controller cleanup-response waits are also capped by the remaining ten-minute
 agent deadline. Ordinary execution keeps its existing operation budgets. Failed
 stop or deletion retains responsibility and the error.
 
-File removal explicitly uses `force: true` for already absent entries while
-retaining ownership checks and nonrecursive unlink. Permission and I/O failures
-remain errors; removal does not apply a file chmod fallback. Git registration
-removal uses `--force --force`. Branches, commits and external link targets remain
-protected by the existing cleanup rules.
-
 Known-target cleanup observes that Herdr execution directly; worktree deletion
 validates only its target Git registration and directory. Shutdown proves the
 original processes stopped without depending on Git discovery or cleanup retry

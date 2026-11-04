@@ -30,7 +30,7 @@ Ordinary execution retains its existing operation budgets.
 The [worker design](../../../../docs/design/daynight-worker.md#结束清理与退出)
 owns the cleanup sequence. The
 [owned-directory decision](2026-11-04-worker-readonly-directory-cleanup.md)
-owns forced entry deletion and its link, permission and identity constraints.
+owns content removal and its link, permission and identity constraints.
 Failure continues to retain actual resources and cleanup responsibility.
 
 ## Alternatives

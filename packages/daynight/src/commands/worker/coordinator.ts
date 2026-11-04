@@ -1,4 +1,4 @@
-import { cleanupOperation } from "../cleanup-operation.js";
+import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
 import { readWorkerClaim } from "../../api/task-properties.js";
 import type { WebExecutionBackend } from "./backends/web.js";
 import type { WebExecutionStore } from "./backends/web-store.js";
@@ -206,7 +206,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         // Registration precedes every native launch. Missing local evidence alone proves nothing.
         if (local?.sessionId !== null && local?.sessionId !== undefined) throw new Error("The original native identity has no local Web stop evidence.");
         if (!options.verifyWebUnregistered) throw new Error("Web launch provenance cannot be verified.");
-        await options.verifyWebUnregistered(owner, signal ?? new AbortController().signal);
+        await options.verifyWebUnregistered(owner, signal ?? new AbortController().signal, CLEANUP_OPERATION_MS);
         if (deleteWorktree) { await cleanupOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), signal); if (local) options.store.completeTask(owner); }
         return;
       }
@@ -363,7 +363,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       else if (!jobs.has(key(local)) && !ending.has(key(local))) {
         if (local.agentControlMode === "web") {
           if (!options.verifyWebUnregistered || local.sessionId !== null) throw new Error("The ended Web claim has no original resource evidence; its ownership record is retained.");
-          await options.verifyWebUnregistered(local, normalSignal);
+          await options.verifyWebUnregistered(local, normalSignal, CLEANUP_OPERATION_MS);
         }
         options.store.completeTask(local);
       }
@@ -473,7 +473,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       let complete = true;
       for (const task of options.store.listUnfinishedTasks()) if (task.agentControlMode === "web" && options.webStore?.getTask(task) == null) {
         if (task.status === "pending" && task.sessionId === null && options.verifyWebUnregistered) {
-          try { await options.verifyWebUnregistered(task, new AbortController().signal); continue; }
+          try { await options.verifyWebUnregistered(task, new AbortController().signal, CLEANUP_OPERATION_MS); continue; }
           catch { /* Missing launch evidence must not be interpreted as a confirmed native stop. */ }
         }
         complete = false;

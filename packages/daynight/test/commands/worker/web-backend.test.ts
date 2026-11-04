@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { CLEANUP_OPERATION_MS } from "../../../src/commands/cleanup-operation.js";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -294,7 +295,7 @@ it.each([240_000, 300_001])("bounds Web worktree removal to five minutes (durati
 });
 
 
-it.each(["completed", "deadline", "cancelled"] as const)("keeps cleanup provenance reads bounded to five minutes (%s)", async outcome => {
+it.each(["completed", "deadline", "cancelled", "startup-deadline"] as const)("uses the requested cleanup or startup provenance budget (%s)", async outcome => {
   const api = createWorkerSessionApi("https://daynight.example", "test-token");
   const identity = { projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID() };
   const cancellation = new AbortController();
@@ -313,8 +314,14 @@ it.each(["completed", "deadline", "cancelled"] as const)("keeps cleanup provenan
     signal.addEventListener("abort", cancel, { once: true });
   })));
   let settled = false;
-  const result = api.verifyUnregistered(identity, cancellation.signal).then(() => { settled = true; return null; }, error => { settled = true; return error; });
+  const request = outcome === "startup-deadline" ? api.verifyUnregistered(identity, cancellation.signal) : api.verifyUnregistered(identity, cancellation.signal, CLEANUP_OPERATION_MS);
+  const result = request.then(() => { settled = true; return null; }, error => { settled = true; return error; });
   await vi.advanceTimersByTimeAsync(30_001);
+  if (outcome === "startup-deadline") {
+    expect(settled).toBe(true);
+    expect(await result).toMatchObject({ name: "TimeoutError" });
+    return;
+  }
   expect(settled).toBe(false);
   if (outcome === "cancelled") {
     cancellation.abort(new Error("cleanup cancelled"));

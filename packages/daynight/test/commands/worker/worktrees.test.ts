@@ -243,7 +243,7 @@ describe("worker repositories and task worktrees", () => {
 
   it("continues partial content deletion while preserving the original Git pointer", async () => {
     const f = await fixture(); const failure = new Error("controlled partial filesystem removal"); let partial = true;
-    const adapter = manager(f.root, { removeEntry: async (target, options) => { await rm(target, options); if (partial) { partial = false; throw failure; } } });
+    const adapter = manager(f.root, { removeDirectory: async (target, options) => { await rm(target, options); if (partial) { partial = false; throw failure; } } });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); const admin = administrativeDirectory(binding.worktreePath);
     const pointer = await readFile(path.join(binding.worktreePath, ".git"), "utf8");
     await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toBe(failure);
@@ -255,7 +255,7 @@ describe("worker repositories and task worktrees", () => {
 
   it("retains content and the Git pointer when the ownership marker changes during removal", async () => {
     const f = await fixture(); let marker = "";
-    const adapter = manager(f.root, { removeEntry: async (target, options) => {
+    const adapter = manager(f.root, { removeDirectory: async (target, options) => {
       await rm(target, options); await writeFile(marker, "human-owned\n");
     } });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
@@ -270,7 +270,7 @@ describe("worker repositories and task worktrees", () => {
   it("keeps cancellation joined and rejects overlapping cleanup until the original removal settles", async () => {
     const f = await fixture();
     const entered = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
-    const adapter = manager(f.root, { removeEntry: async (target, options) => {
+    const adapter = manager(f.root, { removeDirectory: async (target, options) => {
       entered.resolve(); await release.promise; await rm(target, options);
     } });
     const second = manager(f.root);
