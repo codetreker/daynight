@@ -779,6 +779,41 @@ describe("deleting a Step", () => {
   const menu = (id: string) => { fireEvent.click(document.querySelector(`[data-step-id="${id}"] .step-more`)!); fireEvent.click(screen.getByRole("menuitem", { name: "Delete step" })); };
   const edit = (id: string) => { fireEvent.click(document.querySelector(`[data-step-id="${id}"] .step-disclosure`)!); fireEvent.click(within(document.querySelector(`[data-step-id="${id}"]`)! ).getByRole("button", { name: "Edit step" })); };
   const phase = (value: string) => { read.mutation = { operation: { action: "stepDelete", stepId: "00000000", requestId: "request-delete" }, phase: value, error: null, reconciling: false, reconciliationError: null }; };
+  it.each([{ confirmed: false, present: true }, { confirmed: true, present: true }, { confirmed: true, present: false }])("retains an unknown draft after fresh readback: prior confirmation $confirmed, target present $present", ({ confirmed, present }) => {
+    const view = renderWithLocale(panel(), { locale: "en" }); edit("00000000");
+    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Unsaved revision" } });
+    menu("00000000"); fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete step" }));
+    read.stale = true;
+    if (confirmed) { phase("confirmed"); read.mutation.reconciling = true; publish(); view.rerender(panel()); }
+    read.resource = null; phase("unknown"); read.mutation.reconciling = true; publish(); view.rerender(panel());
+    read.resource = { ...resource(steps.slice(present ? 0 : 1, 4)), version: 4n }; read.stale = false;
+    phase("reconciled"); Object.assign(read.mutation, { reconciledFrom: "unknown" }); publish(); view.rerender(panel());
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsaved revision");
+    expect(navigationDraft.current?.isDirty()).toBe(true); expect(read.remove).toHaveBeenCalledOnce();
+  });
+  it("waits for the current confirmed owner to finish error-free reconciliation before cleanup", () => {
+    const view = renderWithLocale(panel(), { locale: "en" }); edit("00000000");
+    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Unsaved revision" } });
+    menu("00000000"); fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete step" }));
+    phase("confirmed"); read.mutation.reconciling = true; publish();
+    read.resource = { ...resource(steps.slice(1, 4)), version: 4n }; view.rerender(panel());
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsaved revision");
+    read.mutation = { ...read.mutation, reconciling: false, reconciliationError: new ApiError("network") }; view.rerender(panel());
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsaved revision");
+    read.mutation = { ...read.mutation, reconciliationError: null }; view.rerender(panel());
+    expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Round 2" })).toHaveFocus();
+  });
+  it("retains the draft if another request owns the current confirmation", () => {
+    const view = renderWithLocale(panel(), { locale: "en" }); edit("00000000");
+    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Unsaved revision" } });
+    menu("00000000"); fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete step" }));
+    phase("confirmed"); read.mutation.reconciling = true; publish(); view.rerender(panel());
+    phase("confirmed"); read.mutation.operation!.requestId = "other-delete"; publish();
+    read.resource = { ...resource(steps.slice(1, 4)), version: 4n }; view.rerender(panel());
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsaved revision");
+    expect(navigationDraft.current?.isDirty()).toBe(true);
+  });
   it("preserves a relative insertion draft when its anchor is deleted", () => {
     const view = renderWithLocale(panel(), { locale: "en" });
     fireEvent.click(screen.getByRole("button", { name: "More actions for Round 1" }));

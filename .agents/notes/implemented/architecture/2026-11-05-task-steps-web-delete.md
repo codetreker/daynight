@@ -14,9 +14,11 @@ The existing [shared write owner](2026-11-04-task-steps-web-status.md) submits
 and validates deletion against the complete previous collection. The confirmation
 identifies the record and explains the effects on its description, references
 and any dirty draft. The form has its own identity so a confirmed late receipt
-cannot clear a later draft. Once the validated result is admitted, the workspace
-clears only that target draft and locates the next or previous Step by ID, or
-the add control for an empty collection. Unknown outcomes retain the draft and
+cannot clear a later draft. Cleanup uses the current shared confirmation for
+the same request after error-free reconciliation and newer collection admission;
+the panel stores no independent confirmation latch. The workspace clears only
+that target draft and locates the next or previous Step by ID, or the add control
+for an empty collection. Unknown outcomes retain the draft and
 use the shared read-only recovery, without attributing observed state to the
 request.
 
@@ -25,8 +27,21 @@ request.
 **Discard the draft when deletion is requested.** Cancellation, refusal or an
 unknown result would destroy user input without a confirmed deletion.
 
+**Remember every validated confirmation in the panel.** This originally allowed
+focus and cleanup to follow a transient receipt publication. A replacement cache
+generation can retire that receipt before admission and reclassify the request
+as unknown; the latch would discard input after the owner retracts confirmation.
+The shared owner already preserves confirmed state through normal convergence.
+
+**Require only current target absence.** Readback can show absence after an
+unknown request without proving which history or operation removed the record.
+Absence cannot authorize draft cleanup.
+
 ## Consequences
 
 The delete action is available in every Step state and shares Task/Step write
 exclusion. Recovery can show current existence but cannot prove a lost request's
-history. Pagination bounds the mounted rows while focus follows stable IDs.
+history. Replacing cache history retains the draft even after an earlier
+validated receipt; cleanup also waits through reconciliation failures and cannot
+follow a different request. Pagination bounds the mounted rows while focus
+follows stable IDs.
