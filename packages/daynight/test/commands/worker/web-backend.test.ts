@@ -8,18 +8,19 @@ import { createWebExecutionBackend } from "../../../src/commands/worker/backends
 import type { WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import type { LocalTask } from "../../../src/commands/worker/backends/web-types.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
+import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { requestController } from "../../../src/commands/controller/local-client.js";
 const roots:string[]=[];const stores:ReturnType<typeof openWebExecutionStore>[]=[];
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllGlobals();for(const store of stores.splice(0))store.close();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
-const fixture=async(agent: "codex" | "claude" | "copilot" = "codex")=>{
+const fixture=async(agent: "codex" | "claude" | "copilot" = "codex", recoveryLimit = 2)=>{
  const base=path.resolve(import.meta.dirname,"../../../../../.tmp/web-backend-tests");await mkdir(base,{recursive:true});const home=await mkdtemp(path.join(base,"h-"));roots.push(home);
  const store=openWebExecutionStore(path.join(home,"worker.sqlite"));stores.push(store);
  const project={serverOrigin:"https://daynight.example",projectId:randomUUID(),repoUrl:"https://example.test/repo.git",localPath:home};
  const identity={...project,taskId:randomUUID(),claimId:randomUUID(),workerId:randomUUID(),worktreeId:randomUUID()};
- store.register({ ...identity, project, configuration: {agent,agentControlMode:"web",model:null,args:[],recoveryLimit:2}, userId: randomUUID() }, 1);
+ store.register({ ...identity, project, configuration: {agent,agentControlMode:"web",model:null,args:[],recoveryLimit}, userId: randomUUID() }, 1);
  const binding={repositoryPath:home,commonDirectory:path.join(home,".git"),worktreePath:path.join(home,".worktrees","daynight",identity.taskId),branch:`daynight/${identity.taskId}`};
  const git={prepareWorktree:vi.fn(async()=>binding),verifyWorktree:vi.fn(async()=>binding),findWorktree:vi.fn(async()=>null),removeWorktree:vi.fn(async()=>{}),prepareRepository:vi.fn(),dispose:vi.fn()} as unknown as WorkerGitManager;
  return {home,store,identity,git};
@@ -63,7 +64,7 @@ it.each([false,true])("only an orderly shutdown can resume at an exhausted recov
  const actions:string[]=[];const request:typeof requestController=async(ticket,action)=>{actions.push(action.kind);if(ticket.executionGeneration==="1")throw new Error("Original stopped controller is unreachable");return {requestId:randomUUID(),ok:true,snapshot:{...stopped,executionGeneration:ticket.executionGeneration,controllerInstanceId:ticket.controllerInstanceId,lifecycle:"ready",activity:"idle",nativeStopped:false,stoppedAt:null}};};
  const backend=createWebExecutionBackend({homeDirectory:f.home,store:f.store,git:f.git,launcher,platform:"macos",buildPrompt:()=>"managed",emit:()=>{},now:()=>20,request});
  if(orderly){const resumed=await backend.advance(task,new AbortController().signal);expect(resumed.webExecution?.executionGeneration).toBe("2");expect(resumed.recovery.count).toBe(2);expect(resumed.resources.nativeSession?.sessionId).toBe(nativeId);expect(actions).toEqual(["observe","observe"]);}
- else{await expect(backend.advance(task,new AbortController().signal)).rejects.toThrow("recovery budget is exhausted");expect(f.store.getTask(task)?.webExecution?.executionGeneration).toBe("1");}
+ else{const paused=await backend.advance(task,new AbortController().signal);expect(paused.recovery.pauseReason).toContain("recovery budget is exhausted");expect(f.store.getTask(task)?.webExecution?.executionGeneration).toBe("1");expect(launcher.prepare).not.toHaveBeenCalled();expect(launcher.launch).not.toHaveBeenCalled();}
 });
 
 
@@ -208,6 +209,319 @@ it("cleanup propagates a local snapshot write failure without taking the IPC fal
   expect(f.store.getTask(task)?.cleanup).toMatchObject({ input: "not-submitted", agentStopped: false, backendResourcesClosed: false });
 });
 
+
+it("blocks all preparation and input across repeated paused advances", async () => {
+  const f = await fixture();
+  f.store.beginRecovery(f.identity, 2); f.store.beginRecovery(f.identity, 3);
+  const paused = f.store.beginRecovery(f.identity, 4);
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const request = vi.fn();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: vi.fn(), emit: () => {}, now: () => 5, request });
+  for (let i = 0; i < 3; i++) expect((await backend.advance(paused, new AbortController().signal)).recovery).toEqual(paused.recovery);
+  expect(f.git.prepareWorktree).not.toHaveBeenCalled();
+  expect(f.git.verifyWorktree).not.toHaveBeenCalled();
+  expect(launcher.prepare).not.toHaveBeenCalled(); expect(launcher.launch).not.toHaveBeenCalled(); expect(request).not.toHaveBeenCalled();
+  expect(f.store.getTask(f.identity)?.webExecution).toBeNull();
+});
+
+
+const recoveryFixture = async (recoveryLimit = 2) => {
+  const f = await fixture("codex", recoveryLimit);
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never), 2);
+  vi.mocked(f.git.prepareWorktree).mockClear();
+  task = f.store.initializeWebExecution(task, 3);
+  task = f.store.updateWebExecution(task, { sessionId: randomUUID(), initialPrompt: "original assignment", launchSubmission: "acknowledged", ticketPath: path.join(f.home, "original-ticket.json"), controllerProcess: { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "birth", commandHash: "a".repeat(64) } }, 4);
+  task = f.store.bindNativeSession(task, { source: "controller", sessionId: randomUUID() }, 5);
+  task = f.store.beginRecovery(task, 6); task = f.store.beginRecovery(task, 7);
+  const execution = task.webExecution!;
+  const snapshot: ControllerSnapshot = { executionId: execution.executionId, claimId: task.claimId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, lifecycle: "stopped", nativeSessionId: task.resources.nativeSession!.sessionId, initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: execution.controllerProcess, nativeProcesses: [], nativeStopped: true, stoppedAt: new Date(0).toISOString(), error: "Original failure" };
+  const ticketFor = (record: LocalTask): ControllerLaunchTicket => {
+    const e = record.webExecution!;
+    return { schemaVersion: 1, launchId: e.launchId, executionId: e.executionId, controllerId: e.controllerId, controllerInstanceId: e.controllerInstanceId, sessionId: e.sessionId!, executionGeneration: e.executionGeneration, serverOrigin: record.serverOrigin, projectId: record.projectId, taskId: record.taskId, claimId: record.claimId, workerId: record.workerId, worktreeId: record.worktreeId, userId: record.userId!, provider: "codex", cwd: record.resources.worktree!.worktreePath, nativeHome: path.join(f.home, ".codex"), configuration: record.configuration!, initialOperationId: e.initialOperationId, initialPrompt: e.initialPrompt!, resumeNativeSessionId: record.resources.nativeSession?.sessionId ?? null, credentialFile: path.join(f.home, "grant.json"), ipcEndpoint: path.join(f.home, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date(0).toISOString() };
+  };
+  vi.spyOn(launchTickets, "readLaunchTicket").mockResolvedValue(ticketFor(task));
+  const saved = vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
+  const stopped = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
+  const launcher = { prepare: vi.fn(async (record: LocalTask) => ticketFor(record)), launch: vi.fn(async () => {}), refreshGrant: vi.fn(async () => {}) };
+  const request = vi.fn<typeof requestController>(async ticket => ({ requestId: randomUUID(), ok: true, snapshot: { ...snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "ready", activity: "idle", nativeStopped: false, stoppedAt: null, error: null } }));
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "replacement must not be used", emit: () => {}, now: () => 20, request });
+  return { ...f, task, snapshot, saved, stopped, launcher, request, backend };
+};
+
+it.each(["ready", "working"] as const)("keeps the healthy last recovery generation running at its exact budget (%s)", async lifecycleState => {
+  const f = await recoveryFixture();
+  f.stopped.mockResolvedValue(false);
+  f.saved.mockReturnValue({ ...f.snapshot, lifecycle: lifecycleState, activity: "working", nativeStopped: false, stoppedAt: null, error: null });
+  f.request.mockImplementation(async ticket => ({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: lifecycleState, activity: "working", nativeStopped: false, stoppedAt: null, error: null } }));
+  const observed = await f.backend.advance(f.task, new AbortController().signal);
+  expect(observed.recovery).toEqual({ count: 2, pauseReason: null, retryAuthorized: false });
+  expect(observed.webExecution?.executionGeneration).toBe("1");
+});
+
+it("persists diagnostic waiting when exhausted stop evidence is incomplete", async () => {
+  const f = await recoveryFixture();
+  f.stopped.mockRejectedValue(new Error("Process identity cannot be established."));
+  const paused = await f.backend.advance(f.task, new AbortController().signal);
+  expect(paused.recovery.pauseReason).toContain("Process identity cannot be established");
+  expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it.each(["ready", "working"] as const)("uses one explicit retry for the stopped original native identity without sending its assignment (%s)", async lifecycleState => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  f.request.mockImplementation(async ticket => ({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: lifecycleState, activity: lifecycleState === "working" ? "working" : "idle", nativeStopped: false, stoppedAt: null, error: null } }));
+  const result = await f.backend.advance(authorized, new AbortController().signal);
+  expect(result.recovery).toEqual({ count: 3, pauseReason: null, retryAuthorized: false });
+  expect(result.webExecution?.executionGeneration).toBe("2");
+  expect(result.resources.nativeSession).toEqual(f.task.resources.nativeSession);
+  expect(f.launcher.prepare.mock.calls.map(([record]) => record.webExecution?.executionGeneration)).toEqual(["2"]);
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+});
+
+it("consumes retry authorization and pauses again after a failed launch", async () => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  f.launcher.launch.mockRejectedValue(new Error("Retry launch failed."));
+  await expect(f.backend.advance(authorized, new AbortController().signal)).rejects.toThrow("Retry launch failed");
+  const result = f.store.getTask(f.task)!;
+  expect(result.recovery).toEqual({ count: 3, pauseReason: "Retry launch failed.", retryAuthorized: false });
+  await f.backend.advance(result, new AbortController().signal);
+  expect(f.launcher.launch).toHaveBeenCalledOnce();
+});
+
+it("rejects retry without complete original stop evidence before preparing anything", async () => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  f.stopped.mockResolvedValue(false);
+  await expect(f.backend.advance(authorized, new AbortController().signal)).rejects.toThrow("stop");
+  expect(f.store.getTask(f.task)?.recovery.retryAuthorized).toBe(false);
+  expect(f.store.getTask(f.task)?.recovery.pauseReason).not.toBeNull();
+  expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it("retains initializing until an explicit retry is actually observed ready", async () => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  f.request.mockImplementationOnce(async ticket => ({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", activity: "idle", nativeStopped: false, stoppedAt: null, error: null } }));
+  const starting = await f.backend.advance(authorized, new AbortController().signal);
+  expect(starting.webExecution?.activity).toBe("initializing");
+  expect(starting.recovery).toEqual({ count: 3, pauseReason: null, retryAuthorized: true });
+  f.saved.mockReturnValue({ ...f.snapshot, executionGeneration: starting.webExecution!.executionGeneration, controllerInstanceId: starting.webExecution!.controllerInstanceId, lifecycle: "ready", activity: "idle", nativeStopped: false, stoppedAt: null, error: null });
+  f.stopped.mockResolvedValue(false);
+  const ready = await f.backend.advance(starting, new AbortController().signal);
+  expect(ready.webExecution?.activity).toBe("idle");
+  expect(ready.webExecution?.executionGeneration).toBe("2");
+  expect(ready.recovery.count).toBe(3);
+});
+
+it("refuses an explicit retry whose native session identity is missing", async () => {
+  const f = await fixture();
+  f.store.pauseRecovery(f.identity, "Stopped without an original native identity.", 2);
+  const authorized = f.store.authorizeRecoveryRetry(f.identity, 3);
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: vi.fn(), emit: () => {}, now: () => 4 });
+  await expect(backend.advance(authorized, new AbortController().signal)).rejects.toThrow("original native session identity");
+  expect(f.store.getTask(f.identity)?.recovery.retryAuthorized).toBe(false);
+  expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(launcher.prepare).not.toHaveBeenCalled();
+});
+
+it("does not resend an initial assignment from a recovered generation", async () => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  f.request.mockImplementation(async ticket => ({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "ready", initialInputState: "not_submitted", activity: "idle", nativeStopped: false, stoppedAt: null, error: null } }));
+  await expect(f.backend.advance(authorized, new AbortController().signal)).rejects.toThrow("cannot resubmit");
+  expect(f.store.getTask(f.task)?.recovery.pauseReason).toContain("cannot resubmit");
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+});
+
+it("keeps a persisted pause ahead of shutdown restart provenance", async () => {
+  const f = await recoveryFixture();
+  const paused = f.store.beginRecovery(f.task, 8);
+  f.store.beginCleanup(paused, { kind: "shutdown", deadline: 100 }, 9);
+  f.store.confirmAgentStopped(paused, { agentStopped: true }, 10);
+  f.store.confirmBackendResourcesClosed(paused, { controllerStopped: true, endpointClosed: true }, 11);
+  const restored = f.store.clearShutdown(paused, 12);
+  for (let i = 0; i < 3; i++) expect((await f.backend.advance(restored, new AbortController().signal)).recovery).toEqual(paused.recovery);
+  expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+});
+
+it("does not let shutdown provenance revive a legacy exhausted failed generation", async () => {
+  const f = await recoveryFixture();
+  f.store.beginCleanup(f.task, { kind: "shutdown", deadline: 100 }, 8);
+  f.store.confirmAgentStopped(f.task, { agentStopped: true }, 9);
+  f.store.confirmBackendResourcesClosed(f.task, { controllerStopped: true, endpointClosed: true }, 10);
+  const restored = f.store.clearShutdown(f.task, 11);
+  const result = await f.backend.advance(restored, new AbortController().signal);
+  expect(result.recovery.pauseReason).toContain("recovery budget is exhausted");
+  expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it.each(["stopped", "ready"] as const)("persists legacy exhaustion before shutdown when the original writer is already gone (%s journal)", async lifecycleState => {
+  const f = await recoveryFixture();
+  f.saved.mockReturnValue({ ...f.snapshot, lifecycle: lifecycleState, error: null });
+  const shutdown = await f.backend.cleanup(f.task, "shutdown", 20, undefined, true);
+  expect(shutdown.recovery.pauseReason).toContain("recovery budget is exhausted");
+  const restored = f.store.clearShutdown(shutdown, 21);
+  await f.backend.advance(restored, new AbortController().signal);
+  expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it("does not immediately pause a healthy last generation when grant refresh fails", async () => {
+  const f = await recoveryFixture();
+  f.stopped.mockResolvedValue(false);
+  f.saved.mockReturnValue({ ...f.snapshot, lifecycle: "ready", activity: "working", nativeStopped: false, stoppedAt: null, error: null });
+  f.launcher.refreshGrant.mockRejectedValue(new Error("Grant service temporarily unavailable."));
+  await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toThrow("Grant service temporarily unavailable");
+  expect(f.store.getTask(f.task)?.recovery.pauseReason).toBeNull();
+});
+
+
+it("retains a single retry across starting, store reopen, and later native failure below the ordinary budget", async () => {
+  const f = await recoveryFixture(5);
+  f.store.pauseRecovery(f.task, "Execution failure threshold reached.", 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  f.request.mockImplementationOnce(async ticket => ({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", activity: "initializing", nativeStopped: false, stoppedAt: null, error: null } }));
+  const starting = await f.backend.advance(authorized, new AbortController().signal);
+  expect(starting.recovery).toEqual({ count: 3, pauseReason: null, retryAuthorized: true });
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: reopened, git: f.git, launcher: f.launcher, platform: "macos", buildPrompt: vi.fn(), emit: () => {}, now: () => 30, request: f.request });
+  f.request.mockRejectedValue(new Error("The retried generation stopped before becoming ready."));
+  await expect(backend.advance(reopened.getTask(f.task)!, new AbortController().signal)).rejects.toThrow("stopped before becoming ready");
+  expect(reopened.getTask(f.task)?.recovery).toEqual({ count: 3, pauseReason: "The retried generation stopped before becoming ready.", retryAuthorized: false });
+  expect(reopened.getTask(f.task)?.webExecution?.executionGeneration).toBe("2");
+});
+
+
+it("does not prepare an exhausted generation whose last ready journal cannot be observed live", async () => {
+  const f = await recoveryFixture();
+  f.stopped.mockResolvedValue(false);
+  f.saved.mockReturnValue({ ...f.snapshot, lifecycle: "ready", activity: "working", nativeStopped: false, stoppedAt: null, error: null });
+  f.request.mockRejectedValue(new Error("Original controller is unreachable."));
+  const paused = await f.backend.advance(f.task, new AbortController().signal);
+  expect(paused.recovery.pauseReason).toContain("unreachable");
+  expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it("retains a healthy exhausted generation through an actual orderly cleanup and restart", async () => {
+  const f = await recoveryFixture();
+  f.saved.mockReturnValue({ ...f.snapshot, lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null, error: null });
+  f.stopped.mockResolvedValueOnce(false).mockResolvedValue(true);
+  const shutdown = await f.backend.cleanup(f.task, "shutdown", 20, undefined, true);
+  expect(shutdown.recovery.pauseReason).toBeNull();
+  const restored = f.store.clearShutdown(shutdown, 21);
+  f.saved.mockReturnValue({ ...f.snapshot, error: null });
+  f.request.mockImplementation(async ticket => {
+    if (ticket.executionGeneration === "1") throw new Error("Original writer was stopped by orderly shutdown.");
+    return { requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null, error: null } };
+  });
+  const result = await f.backend.advance(restored, new AbortController().signal);
+  expect(result.recovery).toEqual({ count: 2, pauseReason: null, retryAuthorized: false });
+  expect(result.webExecution?.executionGeneration).toBe("2");
+});
+
+it("does not turn a pending retry into another orderly restart during shutdown", async () => {
+  const f = await recoveryFixture(5);
+  f.store.pauseRecovery(f.task, "Execution failure threshold reached.", 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  f.request.mockImplementationOnce(async ticket => ({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", activity: "initializing", nativeStopped: false, stoppedAt: null, error: null } }));
+  let starting = await f.backend.advance(authorized, new AbortController().signal);
+  starting = f.store.updateWebExecution(starting, { ticketPath: path.join(f.home, "retry-ticket.json") }, 21);
+  const shutdown = await f.backend.cleanup(starting, "shutdown", 30, undefined, true);
+  expect(shutdown.recovery).toEqual({ count: 3, pauseReason: "The explicit recovery attempt stopped before a successful observation.", retryAuthorized: false });
+  const restored = f.store.clearShutdown(shutdown, 31);
+  await f.backend.advance(restored, new AbortController().signal);
+  expect(f.launcher.launch).toHaveBeenCalledOnce();
+  expect(restored.webExecution?.executionGeneration).toBe("2");
+});
+
+it.each(["failed", "paused", "stopped", "stopping"] as const)("persists a failed explicit retry without sending an initial assignment (%s)", async lifecycleState => {
+  const f = await recoveryFixture(5);
+  f.store.pauseRecovery(f.task, "Execution failure threshold reached.", 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  f.request.mockImplementation(async ticket => ({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: lifecycleState, initialInputState: "not_submitted", error: "The retry did not become healthy." } }));
+  await expect(f.backend.advance(authorized, new AbortController().signal)).rejects.toThrow("did not become healthy");
+  expect(f.store.getTask(f.task)?.recovery).toEqual({ count: 3, pauseReason: "The retry did not become healthy.", retryAuthorized: false });
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+});
+
+it.each(["worktree", "prepare"] as const)("retries the same unsubmitted generation after %s preparation fails and the Worker store reopens", async failure => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  if (failure === "worktree") vi.mocked(f.git.verifyWorktree).mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
+  else f.launcher.prepare.mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
+  await expect(f.backend.advance(authorized, new AbortController().signal)).rejects.toThrow("Preparation temporarily unavailable");
+  const allocated = f.store.getTask(f.task)!;
+  expect(allocated.webExecution).toMatchObject({ executionGeneration: "2", launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [] });
+  expect(allocated.recovery).toEqual({ count: 3, pauseReason: "Preparation temporarily unavailable.", retryAuthorized: false });
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+  const shutdown = await f.backend.cleanup(allocated, "shutdown", 20, undefined, true);
+  f.store.clearShutdown(shutdown, 21);
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: reopened, git: f.git, launcher: f.launcher, platform: "macos", buildPrompt: vi.fn(), emit: () => {}, now: () => 30, request: f.request });
+  const resumed = await backend.advance(reopened.authorizeRecoveryRetry(f.task, 22), new AbortController().signal);
+  expect(resumed.recovery).toEqual({ count: 4, pauseReason: null, retryAuthorized: false });
+  expect(resumed.webExecution).toMatchObject({ executionGeneration: "2", launchId: allocated.webExecution!.launchId, controllerInstanceId: allocated.webExecution!.controllerInstanceId, initialOperationId: allocated.webExecution!.initialOperationId, restartAfterShutdown: false });
+  expect(resumed.resources.nativeSession).toEqual(allocated.resources.nativeSession);
+  expect(f.launcher.launch).toHaveBeenCalledOnce();
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+});
+
+it.each(["unknown", "controller", "native", "generation", "claim", "session", "native-session", "not-stopped", "missing-stop-time", "alive", "changed-journal"] as const)("rejects unsafe evidence when retrying an allocated unsubmitted generation (%s)", async changed => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  f.launcher.prepare.mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
+  await expect(f.backend.advance(f.store.authorizeRecoveryRetry(f.task, 9), new AbortController().signal)).rejects.toThrow("Preparation temporarily unavailable");
+  const allocated = f.store.getTask(f.task)!;
+  if (changed === "unknown") f.store.updateWebExecution(allocated, { launchSubmission: "unknown" }, 21);
+  if (changed === "controller") f.store.updateWebExecution(allocated, { controllerProcess: f.snapshot.controllerProcess }, 21);
+  if (changed === "native") f.store.updateWebExecution(allocated, { nativeProcesses: [f.snapshot.controllerProcess!] }, 21);
+  const previous = { ...f.snapshot };
+  if (changed === "generation") previous.executionGeneration = "0";
+  if (changed === "claim") previous.claimId = randomUUID();
+  if (changed === "session") previous.sessionId = randomUUID();
+  if (changed === "native-session") previous.nativeSessionId = randomUUID();
+  if (changed === "not-stopped") previous.nativeStopped = false;
+  if (changed === "missing-stop-time") previous.stoppedAt = null;
+  f.saved.mockReturnValue(previous);
+  if (changed === "alive") f.stopped.mockResolvedValue(false);
+  if (changed === "changed-journal") f.saved.mockReturnValueOnce(previous).mockReturnValue({ ...previous, error: "Evidence changed during inspection." });
+  const retry = f.store.authorizeRecoveryRetry(f.task, 22);
+  await expect(f.backend.advance(retry, new AbortController().signal)).rejects.toThrow();
+  expect(f.store.getTask(f.task)?.recovery).toMatchObject({ count: 3, retryAuthorized: false });
+  expect(f.store.getTask(f.task)?.recovery.pauseReason).not.toBeNull();
+  expect(f.store.getTask(f.task)?.webExecution?.executionGeneration).toBe("2");
+  expect(f.store.getTask(f.task)?.webExecution?.launchId).toBe(allocated.webExecution!.launchId);
+  expect(f.launcher.prepare).toHaveBeenCalledOnce(); expect(f.launcher.launch).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+});
+
+it("continues a consumed unsubmitted retry after a Worker reopen without consuming another allowance", async () => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  f.launcher.prepare.mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
+  await expect(f.backend.advance(f.store.authorizeRecoveryRetry(f.task, 9), new AbortController().signal)).rejects.toThrow("Preparation temporarily unavailable");
+  const allocated = f.store.getTask(f.task)!;
+  f.store.authorizeRecoveryRetry(allocated, 21);
+  const pending = f.store.retryUnsubmittedWebGeneration(allocated, f.snapshot, 22);
+  expect(pending.recovery).toEqual({ count: 4, pauseReason: null, retryAuthorized: true });
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: reopened, git: f.git, launcher: f.launcher, platform: "macos", buildPrompt: vi.fn(), emit: () => {}, now: () => 30, request: f.request });
+  const resumed = await backend.advance(reopened.getTask(f.task)!, new AbortController().signal);
+  expect(resumed.recovery).toEqual({ count: 4, pauseReason: null, retryAuthorized: false });
+  expect(resumed.webExecution?.launchId).toBe(allocated.webExecution!.launchId);
+  expect(resumed.webExecution?.executionGeneration).toBe("2");
+  expect(f.launcher.launch).toHaveBeenCalledOnce();
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+});
 
 it("reports deletion failure separately from the retained native cleanup result", async () => {
   const f = await fixture(), failure = new Error("EACCES: denied directory");
