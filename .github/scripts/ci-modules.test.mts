@@ -11,34 +11,46 @@ const all = { cli: true, server: true, web: true };
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
 for (const [path, expected] of [
-  ["packages/daynight/src/main.ts", { ...none, cli: true }],
-  ["packages/daynight/src/api/thread.ts", { ...none, cli: true, web: true }],
-  ["packages/daynight/src/api/json.ts", { ...none, cli: true, web: true }],
-  ["packages/daynight/src/api/json-source.ts", { ...none, cli: true, web: true }],
-  ["packages/daynight/src/api/validation.ts", { ...none, cli: true, web: true }],
-  ["packages/daynight/src/api/types.ts", { ...none, cli: true, web: true }],
-  ["packages/daynight/src/platform/text.ts", { ...none, cli: true, web: true }],
-  ["packages/daynight/src/platform/files.ts", { ...none, cli: true }],
-  ["packages/daynight/src/session/protocol.ts", { ...none, cli: true, web: true }],
-  ["packages/daynight/src/session/controls.ts", { ...none, cli: true, web: true }],
-  ["packages/daynight/src/session/v2/protocol.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/main.ts", { ...none, cli: true, server: true }],
+  ["packages/daynight/src/api/thread.ts", { ...none, cli: true, server: true, web: true }],
+  ["packages/daynight/src/api/json.ts", { ...none, cli: true, server: true, web: true }],
+  ["packages/daynight/src/api/json-source.ts", { ...none, cli: true, server: true, web: true }],
+  ["packages/daynight/src/api/validation.ts", { ...none, cli: true, server: true, web: true }],
+  ["packages/daynight/src/api/types.ts", { ...none, cli: true, server: true, web: true }],
+  ["packages/daynight/src/platform/text.ts", { ...none, cli: true, server: true, web: true }],
+  ["packages/daynight/src/platform/files.ts", { ...none, cli: true, server: true }],
+  ["packages/daynight/src/session/protocol.ts", { ...none, cli: true, server: true, web: true }],
+  ["packages/daynight/src/session/controls.ts", { ...none, cli: true, server: true, web: true }],
+  ["packages/daynight/src/session/v2/protocol.ts", { ...none, cli: true, server: true, web: true }],
   ["scripts/dev-install.mjs", { ...none, cli: true }],
   ["scripts/dev-install.test.mjs", { ...none, cli: true }],
-  ["packages/daynight/src/.gitignore", { ...none, cli: true }],
-  ["packages/daynight/src/commands/review/skills/daynight-review/SKILL.md", { ...none, cli: true }],
-  ["packages/daynight/src/commands/review/skills/daynight-review/README.md", { ...none, cli: true }],
-  ["packages/daynight/src/commands/review/skills/daynight-review/AGENTS.md", { ...none, cli: true }],
-  ["packages/daynight/src/README.md", { ...none, cli: true }],
+  ["packages/daynight/src/.gitignore", { ...none, cli: true, server: true }],
+  ["packages/daynight/src/commands/review/skills/daynight-review/SKILL.md", { ...none, cli: true, server: true }],
+  ["packages/daynight/src/commands/review/skills/daynight-review/README.md", { ...none, cli: true, server: true }],
+  ["packages/daynight/src/commands/review/skills/daynight-review/AGENTS.md", { ...none, cli: true, server: true }],
+  ["packages/daynight/src/README.md", { ...none, cli: true, server: true }],
+  ["packages/daynight/package.json", { ...none, cli: true, server: true }],
+  ["packages/daynight/tsconfig.json", { ...none, cli: true, server: true }],
+  ["packages/daynight/tsconfig.build.json", { ...none, cli: true, server: true }],
+  ["packages/daynight/config.example.yml", { ...none, cli: true, server: true }],
+  ["packages/daynight/scripts/clean-dist.ts", { ...none, cli: true, server: true }],
+  ["packages/daynight/scripts/copy-resources.ts", { ...none, cli: true, server: true }],
+  ["packages/daynight/scripts/project-task-acceptance.ts", { ...none, cli: true, server: true }],
+  ["packages/daynight/scripts/project-task-budgets.ts", { ...none, cli: true, server: true }],
+  ["packages/daynight/scripts/check-runtime.mjs", { ...none, cli: true }],
+  ["packages/daynight-web/scripts/publish-assets.mts", { ...none, server: true, web: true }],
+  ["packages/daynight-web/package.json", { ...none, server: true, web: true }],
   ["packages/daynight/test/tooling/check-version.test.ts", { ...none, cli: true }],
   ["packages/daynight/test/fixtures/installed-cli.ts", all],
+  ["packages/daynight/test/fixtures/installed-operation-limits.ts", { ...none, cli: true, server: true }],
   ["packages/daynight-server/internal/server/tasks.go", { ...none, server: true }],
   ["packages/daynight-server/.gitignore", { ...none, server: true }],
-  ["packages/daynight-web/src/App.vue", { ...none, web: true }],
-  ["packages/daynight-web/.gitignore", { ...none, web: true }],
+  ["packages/daynight-web/src/App.vue", { ...none, server: true, web: true }],
+  ["packages/daynight-web/.gitignore", { ...none, server: true, web: true }],
   ["deployment/localhost/Dockerfile", { ...none, web: true }],
   ["deployment/dev-ci/tests/run.sh", { ...none, web: true }],
-  ["patches/@dagrejs__dagre@3.1.1.patch", { ...none, web: true }],
-  ["patches/@xyflow__system@0.0.83.patch", { ...none, web: true }],
+  ["patches/@dagrejs__dagre@3.1.1.patch", { ...none, server: true, web: true }],
+  ["patches/@xyflow__system@0.0.83.patch", { ...none, server: true, web: true }],
   ["README.md", none],
   [".gitignore", none],
   ["packages/daynight/README.md", none],
@@ -67,7 +79,7 @@ for (const [path, expected] of [
 }
 
 test("combines module ownership without making documentation select a module", () => {
-  assert.deepEqual(selectModules(["docs/spec/daynight-web.md", "packages/daynight/src/main.ts", "packages/daynight-web/package.json"]), { ...all, server: false });
+  assert.deepEqual(selectModules(["docs/spec/daynight-web.md", "packages/daynight/src/main.ts", "packages/daynight-web/package.json"]), all);
   assert.deepEqual(selectModules([]), none);
 });
 
@@ -132,7 +144,7 @@ test("uses the explicit PR head and merge base when the target branch advances",
   repo.git("merge", "--no-ff", "feature", "-m", "Merge fixture feature");
   assert.notEqual(repo.git("rev-parse", "HEAD"), head);
   assert.deepEqual(await pullRequestPaths(repo.cwd, base, head), ["packages/daynight/src/main.ts"]);
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
 });
 
 test("counts both sides of cross-module renames and source moves into documentation", async (t) => {
@@ -165,7 +177,7 @@ test("retains whitespace, newlines, unicode, and leading dashes in Git paths", a
   for (const path of paths) repo.write(path);
   const head = repo.commit();
   assert.deepEqual(new Set(await pullRequestPaths(repo.cwd, repo.base, head)), new Set(paths));
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head }), { ...none, web: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head }), { ...none, server: true, web: true });
 });
 
 test("reads the complete change list beyond API file limits", async (t) => {

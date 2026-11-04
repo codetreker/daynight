@@ -286,26 +286,48 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const owner = remoteOwner(remoteTask);
     if (!sameClaim(task, owner) || readWorkerClaim(remoteTask.properties)!.workerId !== options.workerId || readWorkerClaim(remoteTask.properties)!.agent !== task.agent || readWorkerClaim(remoteTask.properties)!.agentControlMode !== (task.agentControlMode ?? "herdr")) throw new Error("The local execution does not match the observed original worker claim.");
     if (task.agentControlMode === "web") {
-      if (!execute) return;
       if (!options.webStore || !options.webBackend) throw new Error("The Web execution backend is unavailable.");
       const configuration = configurationFor(task);
-      requireImplementedWorkerBackend(configuration);
-      await options.verifyWebServer?.(configuration.agent, signal);
-      if (options.webStore.getTask(task) === null) {
-        if (!options.verifyWebUnregistered) throw new Error("Web launch provenance cannot be verified.");
-        await options.verifyWebUnregistered(task, signal);
-        if (task.sessionId !== null || readWorkerClaim(remoteTask.properties)!.nativeSessionId !== null) throw new Error("The original native identity has no local Web execution evidence.");
-      }
-      let record = options.webStore.register({ ...owner, project: projectFor(task), serverOrigin: options.serverOrigin, workerId: options.workerId, userId: readWorkerClaim(remoteTask.properties)!.userId, configuration }, now());
-      if (record.cleanup !== null) record = options.webStore.clearShutdown(record, now());
-      const result = await options.webBackend.advance(record, signal);
-      const nativeSessionId = result.resources.nativeSession?.sessionId ?? task.sessionId;
-      if (nativeSessionId !== null) options.store.setSessionId(task, nativeSessionId);
-      const phase = "executing" as const;
       const worker = readWorkerClaim(remoteTask.properties)!;
-      if (worker.phase !== phase || worker.nativeSessionId !== nativeSessionId || worker.herdr !== null) {
-        try { await options.remote.update(remoteTask, { phase, nativeSessionId, herdr: null }, signal); }
-        catch (error) { if (isWorkerCancellation(error, signal)) throw error; options.emit({ kind: "summary-error", task, message: "The Web execution summary was not confirmed; the next round will read it again.", error }); }
+      let record = options.webStore.getTask(task);
+      if (record !== null && (record.worktreeId !== owner.worktreeId || record.workerId !== options.workerId || record.userId !== worker.userId || record.serverOrigin !== options.serverOrigin)) throw new Error("The durable Web execution does not match the observed original worker claim.");
+      let observed = false;
+      try {
+        if (!execute) {
+          if (record !== null && record.recovery.pauseReason === null) record = options.webStore.pauseRecovery(record, "The Web execution failure limit was reached; explicit retry is required.", now());
+        } else if (record === null || record.recovery.pauseReason === null || record.recovery.retryAuthorized) {
+          requireImplementedWorkerBackend(configuration);
+          await options.verifyWebServer?.(configuration.agent, signal);
+          if (record === null) {
+            if (!options.verifyWebUnregistered) throw new Error("Web launch provenance cannot be verified.");
+            await options.verifyWebUnregistered(task, signal);
+            if (task.sessionId !== null || worker.nativeSessionId !== null) throw new Error("The original native identity has no local Web execution evidence.");
+          }
+          record = options.webStore.register({ ...owner, project: projectFor(task), serverOrigin: options.serverOrigin, workerId: options.workerId, userId: worker.userId, configuration }, now());
+          if (record.cleanup !== null) record = options.webStore.clearShutdown(record, now());
+          record = await options.webBackend.advance(record, signal);
+          observed = true;
+        }
+      } catch (error) {
+        if (isWorkerCancellation(error, signal)) throw error;
+        record = options.webStore.getTask(task);
+        if (record !== null && record.cleanup === null && (record.recovery.retryAuthorized || (failures.get(key(task)) ?? 0) + 1 > configuration.recoveryLimit)) {
+          record = options.webStore.pauseRecovery(record, error instanceof Error ? error.message : String(error), now());
+        }
+        throw error;
+      } finally {
+        // Summary transport is independent of native recovery and must remain live while paused.
+        record = options.webStore.getTask(task);
+        if (!signal.aborted && (observed || !execute || record?.recovery.pauseReason != null)) {
+          const nativeSessionId = record?.resources.nativeSession?.sessionId ?? task.sessionId ?? worker.nativeSessionId;
+          if (nativeSessionId !== null) options.store.setSessionId(task, nativeSessionId);
+          const phase = !execute || record?.recovery.pauseReason != null || record?.recovery.retryAuthorized
+            || record?.webExecution?.activity === "initializing" ? "waiting" as const : "executing" as const;
+          if (worker.phase !== phase || worker.nativeSessionId !== nativeSessionId || worker.herdr !== null) {
+            try { await options.remote.update(remoteTask, { phase, nativeSessionId, herdr: null }, signal); }
+            catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The Web execution summary was not confirmed; the next round will read it again.", error }); }
+          }
+        }
       }
       return;
     }
@@ -451,10 +473,22 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     advanceRetry: async (identity: ClaimIdentity): Promise<void> => {
       const { task, remoteTask } = await readSource(identity);
       if (task.status !== "active") throw new Error("Only an active original claim may be retried; pending work is started by worker run.");
+      const webRecord = task.agentControlMode === "web" ? options.webStore?.getTask(task) : null;
+      const worker = readWorkerClaim(remoteTask.properties)!;
+      if (task.agentControlMode === "web" && !webRecord) throw new Error("Retry requires the original Web execution evidence; it cannot start a replacement assignment.");
+      if (webRecord && (webRecord.worktreeId !== worker.worktreeId || webRecord.workerId !== worker.workerId || webRecord.userId !== worker.userId || webRecord.serverOrigin !== options.serverOrigin)) throw new Error("The original Web execution ownership no longer matches the active claim.");
       failures.delete(key(identity));
-      if (task.agentControlMode === "web" && options.webStore?.getTask(task)) options.webStore.authorizeRecoveryRetry(task, now());
       await ensureHerdr(normalSignal);
-      await serialize(identity, () => ensure(task, remoteTask, normalSignal));
+      await serialize(identity, async () => {
+        if (task.agentControlMode === "web" && options.webStore) {
+          let record = options.webStore.getTask(task);
+          if (record !== null) {
+            if (record.cleanup !== null) record = options.webStore.clearShutdown(record, now());
+            options.webStore.authorizeRecoveryRetry(record, now());
+          }
+        }
+        await ensure(task, remoteTask, normalSignal);
+      });
     },
     cleanupSource: async (identity: ClaimIdentity, settings: { deleteWorktree?: boolean } = {}): Promise<ResourceOwner> => {
       const { owner } = await readSource(identity);
