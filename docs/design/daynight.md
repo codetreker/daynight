@@ -48,6 +48,7 @@ daynight task show <task-id> [--json] [--project <project-id>]
 daynight task step
 daynight task step list <task-id> [--json] [--project <project-id>]
 daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
+daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task attachment
@@ -131,6 +132,9 @@ src/
       command.ts
       rendering.ts
       step.ts
+      step-add.ts
+      step-write.ts
+      step-write-errors.ts
       step-rendering.ts
       step-diagnostics.ts
       attachment.ts
@@ -296,8 +300,11 @@ project 操作不读写仓库绑定或 ignore 规则。`rendering.ts` 使用完�
 `commands/server/runtime.ts` 在首次配置读取前建立操作和信号取消源，配置完整时，
 读取、HTTP 和渲染共享期限与字节预算。仅识别出结构化的必要配置缺失时，释放初始
 操作的期限，在同一取消信号下完成引导；保存后的重新读取建立新操作及完整业务
-预算。回调返回 `string | void`：元数据操作返回完整字符串，在最终检查取消和期限后
-一次写 stdout；附件 read 通过 `CliContext.stdoutBytes` 逐段输出并返回 void。
+预算。回调返回字符串、void 或 `ConfirmedMutationOutput`：普通元数据返回完整字符串，
+在最终检查后一次写 stdout；附件 read 通过 `CliContext.stdoutBytes` 逐段输出。
+Thread 与 Step Add 的已确认结果交给现有受限字节输出生命周期，调用方提供
+`failureText(output|cleanup)`，保留各自的安全确认文本与原始原因。输出或清理失败
+不能抹去已确认事实，也不触发业务核对或重放。
 结束时先等待 `closeStdoutBytes` 关闭并回收已创建的输出辅助进程，再移除本次的信号
 监听器并释放操作，清理失败保留原因。SIGINT/SIGTERM 以及 Windows SIGBREAK 均
 进入这一取消源；配置读取接受同一 AbortSignal。Task 复用此执行层；它不控制 Go
@@ -314,7 +321,10 @@ Task 的 definition、command 和 rendering 分别拥有共享语法、操作组
 分页。完整的请求、排序和输出机制见
 [project/task 设计](daynight-project-task.md#api-映射与更新机制)。
 
-`task step` 在普通 Task 操作前分派至独立 `step.ts`，仅组合 list/show 读取；
+`task step` 在普通 Task 操作前分派至独立 `step.ts`，组合 list/show 读取及 Add；
+`step-add.ts` 编译 Add 参数与输出，`step-write.ts` 拥有实际使用的版本分支、不可变
+提交身份和最多一次同操作当前事实读取，`step-write-errors.ts` 保留明确拒绝、
+unknown 与已确认本地失败的事实。
 `step-rendering.ts` 保留服务顺序和全部展示内容，JSON 使用精确 bigint codec，
 文本将控制字符与 bidi 控制符转义为可见文本。`step-diagnostics.ts` 仅输出安全的
 公开服务错误、结构化的项目发现失败及资源/阶段上下文，原始内部原因通过 cause 保留。
@@ -325,7 +335,13 @@ Task 的 definition、command 和 rendering 分别拥有共享语法、操作组
 显式 project 不触发项目发现或父 Task GET，帮助在加载这些依赖前完成。
 完整资源解析和渲染后才经 stdoutBytes 在同一取消信号下输出；输出失败可能留下
 部分 stdout，不能据此把不完整 JSON 当作成功资源。
-当前读契约与输出由[Steps 要求](../spec/daynight-task-steps.md#cli-读取)拥有。
+Add 的独立短 ID 与请求 UUID 在递交前确定；显式版本一次 POST，默认版本
+先 GET Steps 再 POST。完整 201/Location/principal/资源及 +1/目标/新时间/位置核对
+通过后保留 `confirmedMutationId`；同一 transport 标记也服务既有 Thread。
+未知 Add 只在同一仍有效的 ServerSession/Operation 内尝试一次 UUID.r1 GET，
+仍以 unknown 非零退出，报告当前版本与 found/absent，不作历史归因或重放。
+取消或耗尽不创建脱离读取；确认后的清理/输出失败不降为 unknown。
+当前读写契约与输出由[Steps 要求](../spec/daynight-task-steps.md#cli-添加与结果确认)拥有。
 
 Task 的 `attachment.ts` 单独组合单文件上传、完整分页列表、原始读取和删除。
 API 客户端分别消费 JSON、字节流与 204 空响应，字节流不经过 UTF-8/JSON 解析或

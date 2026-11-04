@@ -12,7 +12,11 @@ export type ServerSession = {
   readonly serverUrl: string;
 };
 
-export type ConfirmedMutationOutput = { readonly kind: "confirmed-mutation"; readonly output: string; readonly identity: { readonly projectId: string; readonly taskId: string; readonly messageId: string } };
+export type ConfirmedMutationOutput = {
+  readonly kind: "confirmed-mutation";
+  readonly output: string;
+  readonly failureText: (phase: "output" | "cleanup") => string;
+};
 export type ServerCommand = (session: ServerSession) => Promise<string | void | ConfirmedMutationOutput>;
 
 export type ServerCommandOptions = {
@@ -35,7 +39,7 @@ export const runServerCommand = async (
   let failed = false;
   let failure: unknown;
   let confirmed: ConfirmedMutationOutput | undefined;
-  const confirmedFailure = (phase: "output" | "cleanup", cause: unknown): PublicDiagnosticError => new PublicDiagnosticError(`Message posted. Id: ${confirmed!.identity.messageId}\nThe message is confirmed, but local ${phase} failed.`, 1, { cause });
+  const confirmedFailure = (phase: "output" | "cleanup", cause: unknown): PublicDiagnosticError => new PublicDiagnosticError(confirmed!.failureText(phase), 1, { cause });
   try {
     for (const signal of signals) {
       const cancel = (): void => cancellation.abort(new Error(`Received ${signal}.`));

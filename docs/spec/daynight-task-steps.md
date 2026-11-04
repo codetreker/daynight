@@ -1,6 +1,6 @@
 # Task Steps 资源契约
 
-状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新、独立状态设置、位置移动、记录删除及 CLI list/show 读取已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
+状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新、独立状态设置、位置移动、记录删除及 CLI list/show 读取和 add 已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
 
 ## 所有权与模型
 
@@ -69,7 +69,23 @@ daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 
 读取结果拒绝未知或重复字段，必须具有完整的必填字段、正确的 Project/Task/Step 作用域、正 int64 父版本、唯一且已规范为小写的短 ID、合法状态、原值文本与 UTC 微秒时间字符串；不能将坏响应修成合法资源、跳过条目、重排集合或将失败显示为空集合。成功时 JSON stdout 仅包含一个完整值并以换行结束；错误写 stderr，`401` 提示 `daynight login`，不自动登录或重放。读取继承共享取消、期限与响应字节预算，单次 Steps 响应正文另受 64 MiB 资源上限约束；有效上限取配置的单响应预算与该资源上限的较小值，恰好达到上限允许，更严格的配置限制继续生效，共享默认预算不变。在完整校验与渲染成功前不输出部分资源；输出本身失败可能留下部分 stdout，必须同时非零退出并报告错误。
 
-帮助、Bash/zsh 补全及独立 CLI 手册仅列出 `list` 与 `show` 读取能力。完整项目选择、错误和输出约定由[客户端要求](daynight-project-task.md)拥有，命令实现与验证入口由[CLI 说明](../../packages/daynight/README.md#task-steps)拥有。
+帮助、Bash/zsh 补全及独立 CLI 手册列出当前已交付的 `list`、`show` 与 `add`。完整项目选择、错误和输出约定由[客户端要求](daynight-project-task.md)拥有，命令实现与验证入口由[CLI 说明](../../packages/daynight/README.md#task-steps)拥有。
+
+## CLI 添加与结果确认
+
+```text
+daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
+```
+
+标题必填，标题与说明遵守原值文本规则；说明可显式为空。省略说明或状态的语义分别为 `""`、`todo`。`--before` 与 `--after` 互斥，均省略时追加到末尾，锚点只在同 Task 中解释。显式短 ID 和锚点规范化为小写并保留前导零；省略 `--id` 时，在递交前只生成一次 UUIDv4 并取第一段作为完整短 ID。另生成独立的完整请求 UUID，经 `X-Request-ID` 传递，不进入 JSON；未知结果与 ID 冲突均不自动换 ID 或重发。
+
+显式 project/version 直接提交一次 POST；省略 `--if-version` 时先读取一次完整 Steps，再以该父版本提交一次 POST，预读失败不递交。精确版本不转为浮点数。显式版本不增加隐藏的项目、父 Task 或 Steps 预读。默认预读不保护基于更早材料形成的决定。请求 JSON 沿用 1 MiB 上限，计入转义，不截断文本。
+
+只有 `201`、有效 principal、规范目标 `Location` 和完整合法资源共同成立，且父版本恰为提交版本 +1、目标 ID 唯一、标题/说明/状态与有效输入一致、新项两端时间相等、末尾或锚点相邻位置正确，才确认新增。默认分支另核对预读的旧项内容、时间和相对顺序保持；显式版本分支不补造旧基线或为核对增加 GET。可读成功输出 `Step added. ID: <id>` 及确认后的完整集合；`--json` 只输出一个完整 `StepsResource` 和 LF。
+
+本地递交前失败与完整解码的 4xx 拒绝均明确失败；已确认的容量 409 保留 `encodedBytes`、`maxEncodedBytes` 与安全错误信息。已递交但没有可信完整回执的网络、5xx、取消或协议失败为 unknown：保留原 Project/Task/Step ID 与请求 UUID，stdout 不输出成功资源，退出 `1`。服务错误 ID 与响应回显 ID 分别记录，诊断关联不构成回显相等的确认门槛。
+
+unknown 最多在原认证会话与仍有效的同一 Operation 内，使用 `originalUUID.r1` 读取一次完整集合；只报告当前父版本和目标 found/absent，结果仍为 unknown、非零退出，不归因历史操作。取消、总期限或累计预算耗尽时不创建脱离的核对操作；核对无法完成时报告没有当前观察，并提供普通的显式 project list/show 指导，不使用旧预读代替观察。完整新增回执一经确认，后续本地清理、渲染或输出失败仍保留已确认身份，不降为 unknown 或触发核对；输出失败可能留下部分 stdout。
 
 ## 写入输入与添加结果
 
@@ -193,5 +209,9 @@ Task 元数据与 Steps 共享 `Task.version`。成功的真实 Steps 变化只�
 | ST-L1 | 安装后的 CLI 连接真实服务，完整读取非空、空集合和单项说明，保留保存顺序、规范短 ID、原值文本、全部字段与大于 2^53 的精确版本。 |
 | ST-L2 | 显式 project 在仓库外直接读取，帮助先于配置/Git/网络；坏字段、scope、重复或非规范 ID、读取失败和未支持入口明确非零退出，不伪造空态或部分成功。 |
 | ST-L3 | 可读安全转义、单个完整 JSON stdout、0/1/2 退出码、401 登录指导、共享取消/预算及仅 list/show 的帮助、补全和独立手册与安装产物一致。 |
+| ST-CA1 | 安装后的 Add 完成全部选项、原值文本、UUIDv4 短 ID/显式 ID 和末尾/锚点插入；成功确认完整 201/Location/身份/版本 +1/目标/时间/位置。 |
+| ST-CA2 | 显式 project/version 为一次 POST，默认版本为 GET Steps 后一次 POST，预读失败无写入；JSON 仅输出完整确认资源。 |
+| ST-CA3 | 已确认拒绝保留容量字节 details；未知结果保留原 ID/UUID，最多一次同操作 `.r1` 当前事实读取，取消/耗尽无脱离读取，无重放或换 ID。 |
+| ST-CA4 | 真实提交后丢响应仍为 unknown；确认后清理/输出失败仍保留确认。实际安装容量验证保持真实时钟、codec 与生产预算，并独立于日常 CI。 |
 
 [服务验证说明](../../packages/daynight-server/README.md#task-steps-api)拥有测试与独立压力验证命令；实际产物及运行结果随对应源码和 PR 保存。
