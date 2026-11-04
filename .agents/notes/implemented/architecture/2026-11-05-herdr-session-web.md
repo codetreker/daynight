@@ -23,6 +23,11 @@ starve ordinary readers in short viewports. Switching to a recording hides and
 disables the retained file preview without discarding upload drafts or iframe
 state; selecting a file restores the ordinary reader.
 
+Input sequences belong to the lease ID and control epoch. Discovering the native
+Session ID enriches an existing binding without resetting the relay's accepted
+sequence, so the client preserves its counter until the lease identity changes.
+Binding changes still independently fence pending operations and late receipts.
+
 Operation submission and receipt polling share one deadline. Explicit reads of
 an already unknown operation have a separate bounded window without replaying
 input. A missing receipt is ambiguous because admission can fail before the

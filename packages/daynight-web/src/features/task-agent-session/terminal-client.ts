@@ -97,13 +97,13 @@ export class TerminalSessionClient {
     }
     if (previous !== null && previous.sessionId !== next.sessionId) { this.invalidate(new ApiError('protocol', null, 'stale_fence')); return; }
     if (previous !== null && (!sameFence(previous, next) || this.pendingOperation?.command.type === 'operation' && previous.control?.controlEpoch !== next.control?.controlEpoch)) {
-      this.leaseKey = null; this.leaseSeq = 0n;
       if (this.view.pending && this.pendingOperation !== null) {
         if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null;
         this.publish({ pending: false, result: { operationId: this.pendingOperation.command.payload.operationId, state: 'unknown', errorCode: 'input_unknown' } });
         this.pendingOperation = { ...this.pendingOperation, generation: -1 };
       }
     }
+    // Binding enrichment can preserve the lease and its accepted input sequence.
     const lease = next.control?.lease;
     const key = lease === null || lease === undefined ? null : `${lease.leaseId}:${lease.controlEpoch}`;
     if (key !== this.leaseKey) { this.leaseKey = key; this.leaseSeq = 0n; }
