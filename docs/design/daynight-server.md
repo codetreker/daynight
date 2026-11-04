@@ -522,8 +522,12 @@ Go、web、CLI 和 shell completion 各自的检查内容及门槛保持。
 选择一个阶段。每种选择都在 Go build/test 前发布真实 Web 资源、准备固定 UniAuth
 夹具并构建安装 CLI，缺少工具、依赖或真实产物直接失败。两个 CI job 使用同一
 server selector，在各自 runner 与 PostgreSQL 服务上并行执行，分别保留 20 分钟
-上限，最终 `checks` 等待并检查两者。选择规则包含实际消费的 CLI 源码、打包和
-准备输入及 Web 构建输入。
+上限，最终 `checks` 等待并检查两者。CLI 启动入口、立即加载的命令定义、共享
+代码和 project/task/auth 等验收命令的输入继续选择 server；独立延迟加载命令的
+实现及资源仅选择 CLI。CLI manifest 使用 merge-base 与 PR head 的解析内容比较，
+仅忽略顶层 `version`，打包和准备输入的其他语义变更仍选择 server。Web 构建输入
+也选择两个 Go job。具体路径与失败行为由[仓库 CI 路由](../../README.md#ci-selection)
+拥有，取舍见[服务 CI 输入决策](../../.agents/notes/implemented/testing/2026-11-04-server-ci-input-selection.md)。
 
 覆盖率阶段保留 build、vet、race、固定版本 `go-cov` 与 strict raw profile 检查。
 编排层把 `cmd/e2e_tests` 的完整 module import path 传给 `--exclude-packages`，
