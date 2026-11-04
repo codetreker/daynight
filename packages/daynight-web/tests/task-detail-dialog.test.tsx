@@ -18,6 +18,7 @@ const snapshotDetails = new WeakMap<GraphSnapshot, readonly TaskDetail[]>();
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({
   TaskAttachmentsPanel: ({ projectId, taskId }: { readonly projectId: string; readonly taskId: string }) => <section aria-label="附件" data-project-id={projectId} data-task-id={taskId}><input aria-label="附件草稿" defaultValue="" /></section>,
 }));
+vi.mock('../src/features/task-agent-session/TaskSessionHost', async original => ({ ...await original<typeof import('../src/features/task-agent-session/TaskSessionHost')>(), ManagedSessionRecords: () => null }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;

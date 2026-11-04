@@ -23,7 +23,7 @@ import { matchesAgentPermissionReview, TaskAgentPermissionConfirmation, TaskAgen
 import { matchesStatusReview, TaskStatusConfirmation, type StatusConfirmation } from './TaskStatusConfirmation';
 import { useSessionMessages } from '../task-agent-session/messages';
 import { SessionFullscreenContext, type SessionFullscreenRegistration } from '../task-agent-session/useSessionFullscreen';
-import { TaskAgentSession } from '../task-agent-session/TaskAgentSession';
+import { TaskSessionHost, ManagedSessionRecords } from '../task-agent-session/TaskSessionHost';
 import { TaskStepsPanel } from './steps/TaskStepsPanel';
 import { TaskDetailReading } from './TaskDetailReading';
 import { TaskDetailActions } from './TaskDetailActions';
@@ -113,7 +113,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
   if (detail !== null) readingScope.current = scope;
   const worker = detail === null ? undefined : readWorkerClaim(detail.properties);
   const hasWebSession = useRef(false);
-  if (detail !== null) hasWebSession.current = worker?.agentControlMode === 'web';
+  if (detail !== null) hasWebSession.current = worker !== null && worker !== undefined;
   const currentClaim = worker !== undefined && worker.state !== 'completed' ? worker : null;
   const membership = useProjectMembers(projectId, currentClaim !== null);
   const viewer = useTaskCacheScope();
@@ -322,7 +322,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
               </div>
             </>
           )}
-          {readingScope.current === scope && status !== 'deleted' && access.status !== 'unavailable' && !viewer.isInvalidated && <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} available={detail !== null} description={detail?.description ?? ''} steps={(active, renderMarkdown) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} available={detail !== null} renderMarkdown={renderMarkdown} confirmationOwner={dialogRef} confirmationFallback={titleRef} onConfirmationChange={setStepConfirmationOpen} />} discussion={(active: boolean) => <TaskDiscussion projectId={projectId} taskId={taskId} active={active} parentUnavailable={isThreadScopeLoss(error)} owner={dialogRef} onDetailsOpenChange={(open) => { threadDetailsOccupied.current = open; }} />} {...(worker?.agentControlMode === 'web' ? { session: (active: boolean) => <TaskAgentSession key={worker.claimId} projectId={projectId} taskId={taskId} claimId={worker.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : detail === null && hasWebSession.current ? { session: () => null } : {})} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => detail === null ? null : <>
+          {readingScope.current === scope && status !== 'deleted' && access.status !== 'unavailable' && !viewer.isInvalidated && <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} available={detail !== null} description={detail?.description ?? ''} steps={(active, renderMarkdown) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} available={detail !== null} renderMarkdown={renderMarkdown} confirmationOwner={dialogRef} confirmationFallback={titleRef} onConfirmationChange={setStepConfirmationOpen} />} discussion={(active: boolean) => <TaskDiscussion projectId={projectId} taskId={taskId} active={active} parentUnavailable={isThreadScopeLoss(error)} owner={dialogRef} onDetailsOpenChange={(open) => { threadDetailsOccupied.current = open; }} />} {...(worker !== null && worker !== undefined ? { session: (active: boolean) => <TaskSessionHost mode={worker.agentControlMode} projectId={projectId} taskId={taskId} claimId={worker.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : detail === null && hasWebSession.current ? { session: () => null } : {})} sessionRecords={(active) => <ManagedSessionRecords projectId={projectId} taskId={taskId} active={active} />} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => detail === null ? null : <>
                 <div className="task-detail-columns">
                   <div className="task-detail-main">
                     <section className="task-detail-section" aria-label={m.description}>
