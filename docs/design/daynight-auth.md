@@ -158,6 +158,14 @@ Unicode `White_Space`。名称按原文存储，重复名称合法。资源 ID �
 version 后才接受相同原文。真实改名只更新 Team 名称、元数据 version 和 updatedAt，不触碰
 成员版本、Project ownership 或 grant；同值 no-op 不采样变更时钟或执行 UPDATE。
 
+成员目录与主体资格在同一个只读快照中读取；成员行关联规范用户资料，缺少用户行是完整性
+错误而不是静默丢弃。成员管理沿用 Team 排他锁，锁内重新读取操作者和目标的真实关系，先
+比较目标 version，再决定是否同角色 no-op。降低或移除 admin 时在同一锁内计数，保证并发
+自行降级或退出后仍有 admin。角色变化从 `team_member_versions` sequence 取得新版本，删除
+重加同样产生新版本；删除和变更均不访问 Project grant。提交确认后回执携带操作者剩余角色，
+不确定提交遵守相同的 unknown 合同。详细取舍见
+[成员管理决策](../../.agents/notes/implemented/architecture/2026-11-04-team-membership-management.md)。
+
 删除在取得 Team 锁后，另发一条不加行锁的 ownership `EXISTS` 查询。Read Committed 的新语句
 快照能看见取锁等待期间已提交的 ownership；把检查合并进最初的锁定查询会使用等待前的快照。
 检查使用既有 `project_ownership(team_id,project_id)` 索引。非空返回 team_not_empty，空集才在

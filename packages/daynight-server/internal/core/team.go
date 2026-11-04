@@ -26,3 +26,8 @@ type TeamInvitation struct {
 	ConsumedBy            *string
 	ConsumedAt, RevokedAt *time.Time
 }
+
+type TeamMemberProfile struct {
+	Membership TeamMember
+	Profile    ProjectParticipantProfile
+}

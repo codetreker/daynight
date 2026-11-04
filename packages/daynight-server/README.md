@@ -852,6 +852,26 @@ own the complete public contract. The
 [Team transaction design](../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
 owns existence locking, completion classification and independent versions.
 
+## Team membership API
+
+`GET /api/v1/teams/{teamId}/members` returns `{items}` only to current Team
+members. Each item contains the real membership fields and
+`profile:{name,email,avatarUrl}` with nullable fields. A missing canonical user
+fails the entire read. Project grants do not grant directory access.
+
+An admin changes an existing role with `PATCH /api/v1/teams/{teamId}/members/{userId}`
+and `{version,role,expectedUserId}`; the response is `{membership,actorRole}`.
+An admin or the member removes the relationship with DELETE at the same path
+and `{version,expectedUserId}`; the response is
+`{teamId,userId,removed:true,actorRole}`. The actor role is null after self-exit.
+Personal membership is immutable. A stale membership version fails even for a
+same-role request, and the final admin cannot be demoted or removed. Membership
+changes do not alter Project grants. The actor check precedes domain SQL, and
+unknown commit results must be reconciled without automatic replay.
+
+The [authentication requirements](../../docs/spec/daynight-auth.md#team-生命周期)
+own the full behavior and refusals.
+
 ## Team invitation API
 
 Current Team admins create, list and revoke invitations at
