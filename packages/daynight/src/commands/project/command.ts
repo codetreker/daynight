@@ -21,6 +21,12 @@ export const runProjectCommand = async (
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
+  if (command.command.name === "transfer") {
+    const { prepareTransfer, runTransfer } = await import("./transfer.js");
+    const prepared = prepareTransfer(command, context);
+    await dependencies.runServerCommand(context, (session) => runTransfer(command, context, session, prepared));
+    return;
+  }
   const name = command.command.name === "create" ? command.values[0]! : undefined;
   if (name !== undefined && !isNonemptyText(name)) {
     throw new UsageError("Project name must be nonempty UTF-8 text without NUL characters.", "daynight project create --help");

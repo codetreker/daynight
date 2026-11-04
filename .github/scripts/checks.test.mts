@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const workflow = readFileSync(new URL("../workflows/checks.yml", import.meta.url), "utf8");
@@ -17,6 +18,7 @@ test("the final gate waits for every independent validation stage", () => {
     assert.match(job, /^    needs: detect-changes$/m);
     assert.match(job, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
     assert.ok(job.includes(`run: bash scripts/check.sh --${mode}`));
+    assert.ok(job.includes("DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}"));
   }
   assert.match(gate, /JOB_RESULTS: \$\{\{ toJSON\(needs\.\*\.result\) \}\}/);
 });
@@ -38,7 +40,7 @@ test("both successful server jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-server", "verify-server-e2e"]) {
+for (const name of ["verify", "verify-installed", "verify-macos", "verify-server", "verify-server-e2e"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -57,9 +59,10 @@ test("change detection failure remains visible when application jobs skip", () =
 const ordinary = jobs.get("verify")!;
 const installed = jobs.get("verify-installed")!;
 const nativeStages = [ordinary, installed];
-const nativePlatforms = ["ubuntu-latest", "macos-26", "windows-latest"];
+const nativePlatforms = ["ubuntu-latest", "windows-latest"];
+const macos = jobs.get("verify-macos")!;
 
-test("ordinary and installed CLI matrices independently select the complete native platform set", () => {
+test("Ubuntu and Windows retain independent ordinary and installed CLI matrices", () => {
   for (const stage of nativeStages) {
     assert.match(stage, /^    needs: detect-changes$/m);
     assert.match(stage, /^    if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
@@ -71,9 +74,6 @@ test("ordinary and installed CLI matrices independently select the complete nati
     assert.match(stage, /^          check-latest: true$/m);
     assert.ok(stage.includes("run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"));
     assert.ok(stage.includes("run: node packages/daynight/scripts/validation-environment.ts"));
-    assert.ok(stage.includes("if: ${{ runner.os == 'macOS' }}"));
-    assert.ok(stage.includes("assert.equal(process.platform, 'darwin')"));
-    assert.ok(stage.includes("assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64')"));
     assert.ok(stage.includes("run: pnpm build"));
     assert.doesNotMatch(stage, /VITEST_MAX_WORKERS|--maxWorkers|--no-isolate|continue-on-error/);
   }
@@ -126,8 +126,157 @@ test("native stages retain phase-owned environment, acceptance and failure-probe
   }
 });
 
+const observedVitest = "node packages/daynight/scripts/observe-native-validation.mjs --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run";
+
+test("macOS termination diagnostics belong to ordinary validation and upload after failure", () => {
+  assert.match(ordinary, /name: Test the compiled CLI\n        run: pnpm --filter @codetreker\/daynight exec vitest run\n/);
+  for (const stage of nativeStages) assert.doesNotMatch(stage, /observe-native-validation|tests-termination|runner.os/);
+  assert.equal((workflow.match(/observe-native-validation\.mjs/g) ?? []).length, 1);
+  const phase = macosStep("ordinary-validation");
+  assert.ok(phase.includes(`          ${observedVitest}\n`));
+  assert.equal((phase.match(/exec vitest run/g) ?? []).length, 1);
+  assert.ok(!macosStep("installed-validation").includes("observe-native-validation"));
+  const upload = macosUploads.find((step) => artifactName(step) === "daynight-cli-tests-termination-macos-15")!;
+  assert.match(upload, /^        if: \$\{\{ always\(\) \}\}$/m);
+  assert.deepEqual(artifactPaths(upload), [".tmp/native-validation/"]);
+  assert.match(upload, /^          include-hidden-files: true$/m);
+  assert.match(upload, /^          if-no-files-found: warn$/m);
+  assert.match(upload, /^          retention-days: 30$/m);
+  assert.equal(permitsMacosStep(upload, { "ordinary-validation": "failure" }, false, false), true);
+  assert.ok(macos.indexOf(upload) > macos.indexOf(phase));
+  assert.ok(macos.indexOf(upload) < macos.indexOf(macosStep("installed-environment")));
+});
+
 test("unselected CLI stages may both skip while other selected modules succeed", () => {
-  assert.equal(runGate({ ...success, verify: "skipped", "verify-installed": "skipped", "verify-runtime": "skipped", "verify-completion": "skipped" }), 0);
+  assert.equal(runGate({ ...success, verify: "skipped", "verify-installed": "skipped", "verify-macos": "skipped", "verify-runtime": "skipped", "verify-completion": "skipped" }), 0);
+});
+
+const macosSteps = [...macos.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
+const macosStep = (id: string): string => {
+  const step = macosSteps.find((block) => block.includes(`        id: ${id}\n`));
+  assert.ok(step, `Missing macOS step ${id}`);
+  return step;
+};
+const macosUploads = uploadSteps(macos);
+const permitsMacosStep = (step: string, outcomes: Record<string, string>, cancelled: boolean, previousSuccess: boolean): boolean => {
+  const condition = step.match(/^        if: \$\{\{ (.+) \}\}$/m)?.[1];
+  if (condition === undefined) return previousSuccess && !cancelled;
+  if (!/\b(?:always|cancelled)\(\)/.test(condition) && !previousSuccess) return false;
+  return condition.split(" && ").every((term) => {
+    if (term === "always()") return true;
+    if (term === "!cancelled()") return !cancelled;
+    const comparison = term.match(/^steps\.([a-z0-9-]+)\.outcome (==|!=) '([a-z]+)'$/);
+    assert.ok(comparison, `Unsupported condition term: ${term}`);
+    const [, id, operator, expected] = comparison;
+    assert.ok(Object.hasOwn(outcomes, id!), `Missing outcome for ${id}`);
+    return operator === "==" ? outcomes[id!] === expected : outcomes[id!] !== expected;
+  });
+};
+
+test("one ARM64 macOS allocation runs both complete bounded validation phases", () => {
+  assert.match(macos, /^    needs: detect-changes$/m);
+  assert.match(macos, /^    if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
+  assert.match(macos, /^    runs-on: macos-15$/m);
+  assert.match(macos, /^    timeout-minutes: 20$/m);
+  assert.match(macos, /^          node-version: 24$/m);
+  assert.match(macos, /^          check-latest: true$/m);
+  assert.equal((macos.match(/run: pnpm install --frozen-lockfile/g) ?? []).length, 1);
+  assert.ok(macosStep("architecture").includes("assert.equal(process.platform, 'darwin')"));
+  assert.ok(macosStep("architecture").includes("assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64')"));
+  const ordinaryPhase = macosStep("ordinary-validation");
+  const installedPhase = macosStep("installed-validation");
+  assert.equal(macosSteps.filter((step) => step.includes("        id: ordinary-validation\n")).length, 1);
+  assert.equal(macosSteps.filter((step) => step.includes("        id: installed-validation\n")).length, 1);
+  assert.equal(ordinaryPhase.split("\n").filter((line) => line === `          ${observedVitest}`).length, 1);
+  assert.equal((installedPhase.match(/^          pnpm --filter @codetreker\/daynight exec vitest run --config vitest.acceptance.config.ts$/gm) ?? []).length, 1);
+  assert.match(ordinaryPhase, /^        timeout-minutes: 10$/m);
+  assert.match(installedPhase, /^        timeout-minutes: 10$/m);
+  assert.ok(ordinaryPhase.includes(`          pnpm typecheck\n          pnpm build\n          pnpm dev:test\n          ${observedVitest}\n`));
+  assert.ok(installedPhase.includes("          pnpm build\n          pnpm --filter @codetreker/daynight exec vitest run --config vitest.acceptance.config.ts\n"));
+  assert.doesNotMatch(macos, /strategy:|matrix\.|VITEST_MAX_WORKERS|--maxWorkers|--no-isolate|continue-on-error|--grep|--shard/);
+});
+
+test("the six logical native OS phases execute exactly once through one macOS allocation", () => {
+  const phases = nativeStages.flatMap((stage, index) => stage.match(/^        os: \[([^\]]+)\]$/m)![1]!.split(", ").map((os) => `${os}:${index === 0 ? "ordinary" : "installed"}`));
+  assert.ok(macosStep("ordinary-validation")); assert.ok(macosStep("installed-validation"));
+  phases.push("macos-15:ordinary", "macos-15:installed");
+  assert.deepEqual(phases.sort(), ["ubuntu-latest:ordinary", "ubuntu-latest:installed", "windows-latest:ordinary", "windows-latest:installed", "macos-15:ordinary", "macos-15:installed"].sort());
+  assert.equal(new Set(phases).size, 6);
+  const allocations = [...jobs.values()].reduce((count, stage) => count
+    + (/^    runs-on: macos-/m.test(stage) ? 1 : 0)
+    + (stage.match(/^        os: \[([^\]]+)\]$/m)?.[1]!.split(", ").filter((os) => os.startsWith("macos-")).length ?? 0), 0);
+  assert.equal(allocations, 1);
+  assert.match(jobs.get("verify-runtime")!, /^    needs: \[detect-changes, verify\]$/m);
+  assert.ok(!macos.includes("daynight-runtime-package"));
+});
+
+test("macOS artifacts retain exclusive phase names and ordinary upload precedes installed recording", () => {
+  assert.deepEqual(macosUploads.map(artifactName), ["daynight-cli-tests-macos-15", "daynight-cli-tests-probes-macos-15", "daynight-cli-tests-termination-macos-15", "daynight-cli-installed-macos-15", "daynight-cli-installed-probes-macos-15"]);
+  const names = [ordinary, installed, macos].flatMap((stage) => uploadSteps(stage).map(artifactName));
+  assert.equal(new Set(names).size, names.length);
+  assert.deepEqual(artifactPaths(macosUploads[0]!), [".tmp/validation-environment.json"]);
+  assert.deepEqual(artifactPaths(macosUploads[1]!), [".tmp/validation-probes.json"]);
+  assert.deepEqual(artifactPaths(macosUploads[3]!), artifactPaths(uploadSteps(installed)[0]!));
+  assert.deepEqual(artifactPaths(macosUploads[4]!), [".tmp/validation-probes.json"]);
+  const clear = macosStep("installed-evidence"); const recorder = macosStep("installed-environment");
+  for (const upload of macosUploads.slice(0, 3)) {
+    assert.ok(macos.indexOf(upload) < macos.indexOf(clear));
+    assert.ok(macos.indexOf(upload) < macos.indexOf(recorder));
+  }
+  assert.ok(macos.indexOf(clear) < macos.indexOf(recorder));
+  assert.ok(macos.indexOf(recorder) < macos.indexOf(macosStep("installed-validation")));
+  for (const upload of macosUploads.filter((step) => artifactName(step) !== "daynight-cli-tests-termination-macos-15")) assert.match(upload, /^          if-no-files-found: error$/m);
+});
+
+test("installed macOS validation survives ordinary failures but requires shared preparation and ARM64", () => {
+  const outcomes = { preparation: "success", architecture: "success", "installed-evidence": "success", "installed-environment": "success" };
+  for (const step of [macosStep("installed-evidence"), macosStep("installed-environment"), macosStep("installed-validation")]) {
+    assert.equal(permitsMacosStep(step, outcomes, false, false), true);
+    assert.equal(permitsMacosStep(step, outcomes, true, true), false);
+  }
+  for (const name of ["preparation", "architecture"]) {
+    for (const result of ["failure", "skipped", "cancelled"]) {
+      const failed = { ...outcomes, [name]: result };
+      assert.equal(permitsMacosStep(macosStep("installed-evidence"), failed, false, false), false);
+      assert.equal(permitsMacosStep(macosStep("installed-environment"), failed, false, false), false);
+    }
+  }
+  assert.equal(permitsMacosStep(macosStep("installed-environment"), { ...outcomes, "installed-evidence": "failure" }, false, false), false);
+});
+
+test("installed macOS artifacts use their own recorder outcome and cleared paths", () => {
+  const outcomes = { "installed-evidence": "success", "installed-environment": "success", "ordinary-environment": "success" };
+  assert.equal(permitsMacosStep(macosUploads[0]!, outcomes, false, false), true);
+  assert.equal(permitsMacosStep(macosUploads[1]!, outcomes, false, false), true);
+  for (const result of ["failure", "skipped", "cancelled"]) {
+    const failed = { ...outcomes, "installed-environment": result };
+    assert.equal(permitsMacosStep(macosStep("installed-validation"), failed, false, false), false);
+    assert.equal(permitsMacosStep(macosUploads[3]!, failed, false, false), false);
+    assert.equal(permitsMacosStep(macosUploads[4]!, failed, false, false), result !== "skipped");
+  }
+  assert.equal(permitsMacosStep(macosUploads[4]!, { ...outcomes, "installed-evidence": "failure" }, false, false), false);
+});
+
+test("the macOS evidence handoff removes only the two recorder paths", () => {
+  const temporary = fileURLToPath(new URL("../../.tmp/workflow-checks/", import.meta.url));
+  mkdirSync(temporary, { recursive: true });
+  const directory = mkdtempSync(`${temporary}evidence-`);
+  try {
+    mkdirSync(`${directory}/.tmp`);
+    for (const name of ["validation-environment.json", "validation-probes.json", "keep-evidence.json"]) writeFileSync(`${directory}/.tmp/${name}`, "ordinary evidence");
+    const command = macosStep("installed-evidence").match(/^        run: \|\n((?:          .+\n)+)/m)![1]!
+      .split("\n").filter(Boolean).map((line) => line.slice(10)).join("\n");
+    const run = () => spawnSync("bash", ["-e", "-c", command], { cwd: directory, encoding: "utf8", timeout: 5_000 });
+    const result = run();
+    if (result.error) throw result.error;
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(`${directory}/.tmp/validation-environment.json`), false);
+    assert.equal(existsSync(`${directory}/.tmp/validation-probes.json`), false);
+    assert.equal(readFileSync(`${directory}/.tmp/keep-evidence.json`, "utf8"), "ordinary evidence");
+    assert.equal(run().status, 0, "Already-absent recorder files are normal.");
+    mkdirSync(`${directory}/.tmp/validation-environment.json`);
+    assert.notEqual(run().status, 0, "Real evidence deletion failures must remain visible.");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 const selectedWebStep = gate.match(/      - name: Require selected Web jobs to succeed\n([\s\S]*?)(?=      - )/)![1]!;

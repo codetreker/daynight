@@ -67,6 +67,6 @@ without a late success starting another parent read. Cache restoration and
 retirement retain their current owners; the old operation cannot start their
 reads. Deterministic session tests hold committed receipt admission across these
 events and include live status and position convergence without write replay.
-The [append form](2026-11-04-task-steps-web-add.md) and
-[position writes](2026-11-04-task-steps-web-position.md) reuse the same owner;
-editing and deletion can do so without another gate.
+The [append and content form](2026-11-04-task-steps-web-add.md)
+and [position writes](2026-11-04-task-steps-web-position.md) reuse the same
+owner; [deletion](2026-11-05-task-steps-web-delete.md) uses that gate as well.

@@ -6,7 +6,7 @@
 
 所有 macOS Daynight 输入由同一 `HerdrInputArbiter` 派发：首次 assignment、自动 continuation、服务端转发的 paste/keys、终态 cleanup prompt。`durable.ts` 不调用 legacy `agent.prompt` 输入路径；`launch` 只启动进程，原 daemon、shell、native agent 的身份和运行 ledger 可靠提交后才开放输入。Linux/Windows legacy 与 Web Controller 保留各自既有路径。
 
-Session 注册继续声明 `observe=false`、`control=false`、`archive=false`。输入组件与服务端消费接口可隔离验证，但录制、网页预览、最终归档和产品组合能力尚未满足，不能仅凭输入传输成功启用完整 Herdr Session。
+macOS Worker 将输入仲裁与[持续录制及归档](herdr-recording.md)组合后声明 Session observe/control/archive 能力。输入组件的独立传输成功仍不证明页面端到端验收；控制结果不改变录制与归档的完整性。
 
 ## 按用途读取输入状态
 
@@ -17,6 +17,8 @@ Session 注册继续声明 `observe=false`、`control=false`、`archive=false`�
 | `automatic`、`cleanup` | Codex/Claude 以 `format=text`、`strip_ansi=true` 读取，使用共享 `nativeInputBlocker`，只拒绝明确的菜单或禁用输入；自定义或未知正常布局不等待正向识别。返回 `composer: unavailable`，不伪造空输入证据。 |
 | `manual` | 跳过可见界面排除，使 lease 持有人可以处理菜单；返回 `composer: unavailable`。原目标、lease、fence、进程和传输准入仍须满足。 |
 | `resume` | 显式交还和干净正常退出后的自动恢复使用专用 `hasEmptyResumeComposer`，通过 `pane.read` 的 `format=ansi`、`strip_ansi=false` 保留 renderer 属性。只有当前支持的真实空字段证据才可返回 empty，菜单、草稿、未知或样式不明的布局拒绝；可选 model、cwd、状态栏不是条件。Copilot 继续报告 unavailable，保留其显式交还责任。 |
+
+共享 blocker 将 Codex Session picker 的完整 Resume/Fork 标题、标题与 footer 之间的原生搜索或选中会话行、单独的 resume/fork/restore 主动作组合为菜单证据。原生 footer 会按优先级裁去次级控件，不能要求它们始终存在；搜索行覆盖空列表，选中行（含展开态的 `⌄` 标记）覆盖搜索位置被 inline error 替代的情况，包括视图密度保存失败。后续正常 prompt 排除历史菜单，单独的标题或正文中的动作说明不足以拒绝。其余菜单和禁用输入规则由同一 blocker 保留。
 
 Codex/Claude 的非人工读取须确认原 pane/workspace/tab、请求的 source/format、字符串正文及未截断事实；读取失败或目标/几何变化不授予输入。读取后重新核对目标、结构化状态和适用的最终 claim/paused 授权。一个批次已经写入 paste 后，后续帧仍核验原目标、权限和 fence，不把该批次自己的正文当作新的人工草稿而拒绝。
 
@@ -72,4 +74,4 @@ prepare 或消费响应丢失只读原 recoveryId 的回执；没有已确认结
 
 ## 验证边界
 
-真实 SQLite 与 socket 测试覆盖崩溃恢复、幂等、lease/epoch 竞争、未写与已写取消、cleanup 撤销、自动/清理/人工/交还的用途分离，以及 Web/legacy 回归。自动输入的未知正常布局放行、已知阻塞零写入持久等待、首次 pending 投影、写后未知结果不重放，与交还拒绝未知/草稿、区分 DIM 占位符与相同字面的普通样式正文、拒绝多行/歧义样式及 RGB/indexed color 伪 DIM、接受真实空字段分别验证。macOS 三 provider 的隔离界面验证覆盖 Unicode、多行 paste、Enter/Escape/Ctrl+C/方向键、同名错误目标和实际 PTY 尺寸。模拟协议、原生界面验证和完整产品组合验收是不同证据，不互相替代。
+真实 SQLite 与 socket 测试覆盖崩溃恢复、幂等、lease/epoch 竞争、未写与已写取消、cleanup 撤销、自动/清理/人工/交还的用途分离，以及 Web/legacy 回归。自动输入的未知正常布局放行、Resume/Fork/restore 的窄宽度重绑定主动作 footer 拒绝及其标题/搜索/列表证据与历史 prompt 反例、已知阻塞零写入持久等待、首次 pending 投影、写后未知结果不重放，与交还拒绝未知/草稿、区分 DIM 占位符与相同字面的普通样式正文、拒绝多行/歧义样式及 RGB/indexed color 伪 DIM、接受真实空字段分别验证。macOS 三 provider 的隔离界面验证覆盖 Unicode、多行 paste、Enter/Escape/Ctrl+C/方向键、同名错误目标和实际 PTY 尺寸。模拟协议、原生界面验证和完整产品组合验收是不同证据，不互相替代。

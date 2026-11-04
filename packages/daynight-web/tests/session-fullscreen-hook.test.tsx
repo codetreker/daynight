@@ -1,14 +1,14 @@
-import { useState } from 'react';
+import { useRef, useState, type RefObject } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { useBodyScrollLock } from '../src/app/useBodyScrollLock';
 import { SessionFullscreenContext, useSessionFullscreen, type SessionFullscreenRegistration } from '../src/features/task-agent-session/useSessionFullscreen';
 
 const client = {};
-function View({ active = true, identity = 'session-1', userId = 'user-1', owner = client }: {
-  active?: boolean; identity?: string | null; userId?: string; owner?: object;
+function View({ active = true, identity = 'session-1', userId = 'user-1', owner = client, fullscreenBoundary }: {
+  active?: boolean; identity?: string | null; userId?: string; owner?: object; fullscreenBoundary?: RefObject<HTMLElement | null>;
 }) {
-  const view = useSessionFullscreen({ client: owner, userId, active, identity });
+  const view = useSessionFullscreen({ client: owner, userId, active, identity, ...(fullscreenBoundary ? { fullscreenBoundary } : {}) });
   return <section ref={view.sectionRef} tabIndex={-1} data-testid="session" data-fullscreen={view.fullscreen} hidden={!active} onKeyDown={view.onKeyDown}>
     <button ref={view.buttonRef} onClick={view.toggle}>Toggle</button>
     <input aria-label="Draft" defaultValue="retained draft" />
@@ -18,6 +18,54 @@ function View({ active = true, identity = 'session-1', userId = 'user-1', owner 
 const toggle = () => fireEvent.click(screen.getByText('Toggle'));
 
 describe('Session fullscreen ownership', () => {
+  it('includes external chrome in a stable fullscreen boundary and restores its owned presentation', () => {
+    function Host() {
+      const boundary = useRef<HTMLDivElement>(null);
+      return <><button>Background</button><div ref={boundary} data-testid="boundary" data-session-fullscreen="previous">
+        <button>Name</button><View fullscreenBoundary={boundary} /><button>Details</button>
+      </div></>;
+    }
+    render(<Host />);
+    const boundary = screen.getByTestId('boundary'), input = screen.getByLabelText('Draft');
+    toggle();
+    expect(boundary).toHaveAttribute('data-session-fullscreen', 'true');
+    expect(boundary.style.getPropertyValue('--session-viewport-height')).toBe(`${window.innerHeight}px`);
+    expect(screen.getByText('Background')).toHaveAttribute('inert');
+    expect(screen.getByText('Name')).not.toHaveAttribute('inert');
+    act(() => screen.getByText('Details').focus());
+    expect(screen.getByText('Details')).toHaveFocus();
+    fireEvent.keyDown(screen.getByText('Details'), { key: 'Tab' });
+    expect(screen.getByText('Name')).toHaveFocus();
+    fireEvent.keyDown(screen.getByText('Name'), { key: 'Tab', shiftKey: true });
+    expect(screen.getByText('Details')).toHaveFocus();
+    fireEvent.keyDown(screen.getByText('Details'), { key: 'Escape' });
+    expect(boundary).toHaveAttribute('data-session-fullscreen', 'previous');
+    expect(boundary.style.getPropertyValue('--session-viewport-height')).toBe('');
+    expect(screen.getByLabelText('Draft')).toBe(input);
+    expect(screen.getByText('Toggle')).toHaveFocus();
+    expect(screen.getByText('Background')).not.toHaveAttribute('inert');
+  });
+
+  it('lets React modal keyboard handlers finish before the external fullscreen boundary', () => {
+    function Host() {
+      const boundary = useRef<HTMLDivElement>(null);
+      return <div ref={boundary} data-testid="boundary"><View fullscreenBoundary={boundary} />
+        <dialog open onKeyDown={event => { if (event.key === 'Escape' || event.key === 'Tab') event.stopPropagation(); }}>
+          <button>Modal control</button>
+        </dialog>
+      </div>;
+    }
+    render(<Host />); toggle();
+    const control = screen.getByText('Modal control');
+    act(() => control.focus());
+    expect(control).toHaveFocus();
+    expect(fireEvent.keyDown(control, { key: 'Tab', cancelable: true })).toBe(true);
+    expect(fireEvent.keyDown(control, { key: 'Escape', cancelable: true })).toBe(true);
+    expect(screen.getByTestId('boundary')).toHaveAttribute('data-session-fullscreen', 'true');
+    fireEvent.keyDown(screen.getByLabelText('Draft'), { key: 'Escape' });
+    expect(screen.getByTestId('boundary')).not.toHaveAttribute('data-session-fullscreen');
+  });
+
   it('retains the subtree and releases background scroll only after its own lock ends', () => {
     function Outer() { useBodyScrollLock(true); return <><button>Background</button><View /></>; }
     document.body.style.overflow = 'clip';

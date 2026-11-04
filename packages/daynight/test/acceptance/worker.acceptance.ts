@@ -347,7 +347,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     await writeFile(sentinel, "Keep the original uncommitted task result.\n");
     const sql = new Database(databaseFile, { readonly: true });
     try {
-      expect(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([{ name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
+      expect(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
+      expect(sql.prepare("SELECT COUNT(*) AS count FROM bots").get()).toEqual({ count: 0 });
+      expect(sql.prepare("SELECT COUNT(*) AS count FROM bot_executions").get()).toEqual({ count: 0 });
       expect((sql.prepare("PRAGMA table_info(projects)").all() as { name: string }[]).map((column) => column.name)).toEqual(["project_id", "repo_url", "local_path"]);
       expect((sql.prepare("PRAGMA table_info(tasks)").all() as { name: string }[]).map((column) => column.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
       expect(sql.prepare("SELECT DISTINCT agent_control_mode FROM tasks").all()).toEqual([{ agent_control_mode: "herdr" }]);
