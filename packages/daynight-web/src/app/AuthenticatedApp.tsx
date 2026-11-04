@@ -1,5 +1,12 @@
 import { CurrentAccountProvider } from './CurrentAccountContext';
 import { clearSessionDrafts } from '../features/task-agent-session/client';
+import { clearBotSessionStorage } from '../features/bots/session-storage';
+import { clearSessionDisplayPreference } from '../features/task-agent-session/useSessionDisplayPreference';
+
+function clearPrivateSessionState(userId: string): void {
+  clearSessionDrafts(userId);
+  for (const sessionId of clearBotSessionStorage(userId)) clearSessionDisplayPreference({ userId, sessionId });
+}
 import { TestSessionPage } from '../features/task-agent-session/TestSessionPage';
 import { TestSessionListPage } from '../features/task-agent-session/TestSessionListPage';
 import { useTestSessionListMessages } from '../features/task-agent-session/test-session-list-messages';
@@ -241,7 +248,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
       invitationRef.current = pending;
       setInvitation(pending);
     }
-    if (sessionRef.current.status === "authenticated") clearSessionDrafts(sessionRef.current.user.id);
+    if (sessionRef.current.status === "authenticated") clearPrivateSessionState(sessionRef.current.user.id);
     void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests(); ++generation.current; active.current?.abort(); active.current = null;
     setRevalidation("idle"); setSession({ status: "anonymous", ...(notice === undefined ? {} : { notice }) });
@@ -277,7 +284,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
       if (previous.status === "authenticated" && previous.user.id === user.id && !cacheScope.current?.isInvalidated) {
         setSession({ ...previous, user });
       } else {
-        if (previous.status === "authenticated") clearSessionDrafts(previous.user.id);
+        if (previous.status === "authenticated") clearPrivateSessionState(previous.user.id);
         void cacheScope.current?.invalidateScope();
         cacheScope.current = createTaskCacheScope({ userId: user.id, onIdentityMismatch: () => identityRecheck.current() });
         invalidateAuthRequests();
@@ -331,7 +338,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   }, [pauseIdentity]);
   const invalidateIdentity = useCallback(() => {
     if (invitationFlowRef.current) discardInvitation();
-    if (sessionRef.current.status === "authenticated") clearSessionDrafts(sessionRef.current.user.id);
+    if (sessionRef.current.status === "authenticated") clearPrivateSessionState(sessionRef.current.user.id);
     void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests();
     pauseIdentity();
