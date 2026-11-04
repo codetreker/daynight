@@ -17,7 +17,7 @@ CLI 创建私有项目，创建者自动成为管理员；Web 表单复用现有
 操作；网页元数据编辑不由登录功能增加，任务操作遵守[任务生命周期](daynight-server.md#状态与更新规则)。
 每个项目具有真实 Team 归属，现有资源入口统一计算 owner Team 与独立 Project grant 的有效权限。
 Personal 初始化和存量归属迁移遵守下述原子性与数据完整性要求。登录用户可以通过 Team API
-创建、读取、分页、改名和删除普通 Team；Team 的成员管理、邀请及项目转移保持各自的功能边界。
+创建、读取、分页、改名和删除普通 Team；当前 owner Team admin 可预览和转移项目。Team 成员管理、邀请及转移客户端保持各自的功能边界。
 
 可信 HTML 保持现有同源执行，复用主站会话、普通 iframe、相对资源和键盘交互。
 鉴权不能把独立预览域名、预览凭据或相关设施作为前提；该约束的选择依据记录在
@@ -189,6 +189,26 @@ Project ownership 引用的普通 Team 可删除，否则返回 `409 team_not_em
 清理失败返回安全的 `500 internal_error`，不把保存的领域拒绝当作最终结果。响应丢失或提交结果
 未知时只读取当前事实，不自动重放管理写入；当前值符合目标不能证明找回了原提交回执。
 
+## 项目归属转移
+
+`POST /api/v1/projects/{projectId}/transfer-preview` 接收 `{targetTeamId}`，只允许当前
+owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,name,version}`、
+`ownership:{teamId,version}` 和必填可空 `actorRole`。目标以规范小写 UUID 指定，返回的
+资料仅限名称和身份；不要求目标成员关系，也不提供目录或全局搜索。
+
+`POST /api/v1/projects/{projectId}/transfer` 接收必填
+`{ownership:{teamId,version},targetTeam:{id,version},expectedUserId}`。主体核对先于领域 SQL；
+提交前重新检查当前 owner Team admin、归属身份和版本、目标存在和元数据版本。过期观察返回
+`409 version_conflict`，不可见项目或不存在目标返回 `404 not_found`，仅有 Project admin
+而非 owner Team admin 返回 `403 forbidden`。同一 owner 仍核对权限和双方版本，返回
+`changed:false` 且不更新任何时间或版本；实际转移使 ownership version 加一，保留 Project
+身份及所有 grant 和邀请。版本耗尽时真实转移返回 `409 version_exhausted`。
+
+成功回执 `{projectId,changed,sourceTeam,ownerTeam,ownership,actorAccess}` 只在确认提交后
+返回；`actorAccess:null` 表示操作者成功转移后失权。无法确认提交返回
+`503 write_outcome_unknown`，丢失响应后即使项目读取为 404 也不能推断提交成功，不得自动重放。
+所有版本是精确正 int64，响应和方法拒绝使用 `no-store`。
+
 ## 项目、成员与邀请
 
 | 操作 | member | admin |
@@ -210,18 +230,30 @@ Project ownership 引用的普通 Team 可删除，否则返回 `409 team_not_em
 名册是当前 owner Team 成员与独立 Project grant 的去重并集；有效角色为两种来源在
 `none < member < admin` 下的最大值。只有继承权限时 directGrant 为 null；有效角色不等于可写授权记录。
 
-角色修改与移除读取 `directGrant.role/version`，不使用 effectiveRole 或合成版本。
-grant 版本是独立于 task.version 的不连续正 int64 JSON number；大于 `2^53` 仍须无损。
-`PATCH .../members/{userId}` 接受 `{version,role,expectedUserId}` 并返回真实 ProjectGrant；
-`DELETE` 接受 `{version,expectedUserId}`，成功仍为 204 无正文。服务端在任何领域 SQL 前
-验证 expectedUserId 与实际 principal；错主体返回 409 identity_mismatch，领域行和版本零变化。
-客户端核对成功、拒绝及空响应的 `Daynight-User-ID`，错主体触发现有身份重验，不安装结果。
-未确认的已发送写入保留结果未知与只读核对入口，不自动重放或重新启用原确认；后续读取只证明当前事实。
+独立授权的新增、修改和移除由有效 Project admin 执行，可针对本人或其他 admin；不改变 Team 角色，
+也不要求保留 direct admin。新增目标必须已经是有效 ProjectParticipant，外部用户仍须本人接受邀请，
+不能通过任意用户 ID 加入项目。Team admin 即使有 direct member grant，有效角色仍为 admin。
 
-过期修改返回 version_conflict；移除后重新加入获得新版本，旧观察仍冲突，
-无变化角色更新保留版本。有效 admin 可以删除或降级最后一位 direct admin；Team 关系与
-Project grant 独立，撤销一种来源不能撤销另一种来源。当前项目创建原子保存调用者 Personal
-归属、ownership 与 creator direct admin。
+`PUT /api/v1/projects/{projectId}/grants/{userId}` 接受
+`{version:null|正 int64,role:"member"|"admin",expectedUserId}`：null 要求 grant 不存在，
+正版本要求已存在且与真实 grant 版本相等。成功 200 返回 `{grant,actorAccess}`，其中 grant 是
+指定的完整 ProjectGrant。`DELETE` 同一路径接受 `{version:正 int64,expectedUserId}`，成功 200
+返回 `{projectId,userId,deleted:true,actorAccess}`。两种回执的 actorAccess 是同一事务中变更后的
+完整 ProjectAccess；本人失去项目访问时为 null，仍表示已确认成功。回执不包含项目内容或人员目录。
+
+角色修改与移除读取 `directGrant.role/version`，不使用 effectiveRole 或合成版本。grant 版本是
+独立于 task.version 的不连续正 int64 JSON number；大于 `2^53` 仍须无损。存在性或版本前置条件
+不匹配返回 409 `version_conflict`，目标不是有效 participant 返回 404 `not_found`。同角色更新也须先
+匹配版本，匹配后保留版本；移除后重新加入获得新版本，旧观察仍冲突。
+
+既有 `PATCH .../members/{userId}` 接受 `{version,role,expectedUserId}` 并返回真实 ProjectGrant；
+`DELETE` 接受 `{version,expectedUserId}`，成功仍为 204 无正文。旧路径只操作已有 direct grant，
+不存在时返回 not_found。所有这些写入在任何领域 SQL 前验证 expectedUserId 与实际 principal；
+错主体返回 409 identity_mismatch，领域行和版本零变化。客户端核对响应的 `Daynight-User-ID`，
+错主体触发身份重验，不安装结果。新的 grants 路径在无法确认 COMMIT 时返回 `write_outcome_unknown`；
+响应丢失同样不能证明提交结果。未确认的已发送写入不得自动重放，后续读取只证明当前事实，不能恢复
+原操作的成功回执。Team 关系与 Project grant 独立，
+撤销一种来源不能撤销另一种来源。当前项目创建原子保存调用者 Personal 归属、ownership 与 creator direct admin。
 
 既有项目按最早加入的现任 admin 的 Personal Team 回填；加入时间相同按 user UUID 稳定决定。
 全部既有用户，包括仅持 PAT 的用户，预先取得 Personal。零 admin 或坏引用使迁移整体失败，
@@ -230,9 +262,12 @@ Project grant 独立，撤销一种来源不能撤销另一种来源。当前项
 
 邀请固定七天，属于项目，创建者离任不自动撤销。创建时一次显示可复制链接；列表
 只显示元数据和撤销入口。有效期至消费、到期或管理员撤销。接受者必须登录并明确
-确认，GET、链接预览、inspect 和登录跳转不消费。有效邀请只允许查看项目名称等最小
-摘要。接受与消费原子提交，并发只增加一名新成员；已有直接成员关系不升级角色且不消费邀请。
-邀请 inspect/accept 保留现有成员结果 DTO，与 participant 名册的读取合同分开。
+确认，GET、链接预览、inspect 和登录跳转不消费。inspect 返回项目 ID、名称及当前
+主体的可空 directGrant 和 access，不公开成员目录。接受与消费原子提交，并发只增加一名
+新成员；已有直接授权保持原角色且不消费邀请，仅有继承权限的人仍新增 direct member。
+accept 返回真实 directGrant、有效 access、joined 和 consumed，成功后进入该项目。
+创建、撤销和接受携带 expectedUserId，服务端在任何领域 SQL 前核对主体；客户端核对
+响应主体，不自动重放未知写入。创建结果丢失时无法恢复一次性链接。
 
 ## 当前主体的项目权限
 
@@ -387,14 +422,15 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | 缺失、无效、撤销或到期用户凭据 | 401 unauthenticated JSON |
 | Team/项目不存在或当前主体没有对应成员资格 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
-| Team 管理或修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
-| 观察独立授权或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
+| Team 管理、项目转移、新增/修改/移除独立项目授权或创建、撤销、接受邀请时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
+| 独立授权存在性或观察版本不符；ownership 或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
+| 新增独立授权的目标不是有效 participant | 404 not_found |
 | 变更 Personal Team | 409 personal_team_immutable |
 | 删除仍有 Project ownership 引用的 Team | 409 team_not_empty |
-| Team 真实改名所需版本已达最大正 int64 | 409 version_exhausted；同值 no-op 仍有效 |
-| 无法确认 Team 管理 COMMIT 结果 | 503 write_outcome_unknown |
+| Team 真实改名或项目真实转移所需版本已达最大正 int64 | 409 version_exhausted；经核对的 no-op 仍有效 |
+| 无法确认 Team 管理、项目转移、独立授权或邀请写入的提交结果 | 503 write_outcome_unknown；不得自动重放 |
 | 生命周期前态不符或前置未完成 | 409 invalid_transition / dependency_unsatisfied |
-| 邀请已消费、到期或撤销 | 410 invitation_unavailable |
+| 邀请无效、已消费、到期、撤销或目标已删除 | 404 invitation_unavailable |
 | provider discovery 的 App 配置/凭据错误 | 503 identity_configuration |
 | provider discovery 的上游网络/协议错误 | 502 identity_unavailable |
 | provider discovery 超时 | 504 identity_timeout |

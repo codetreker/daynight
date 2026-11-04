@@ -21,7 +21,10 @@ transactions and read models. The existing
 [claim foundation](2026-10-24-worker-claim-foundation.md) retains execution
 authority. The [runtime reporting decision](2026-10-28-worker-runtime-reporting.md)
 owns the CLI producer's independent scheduling, read-only collection and
-process-local lifecycle.
+process-local lifecycle. The [cloud configuration decision](2026-11-04-worker-cloud-configuration.md)
+owns independently revisioned desired settings and application observations on
+the same Worker row, with an explicit report extension. It does not change task
+execution authority or the snapshot time-window rules.
 
 A dedicated workers row atomically stores server observation time, validated
 telemetry and a server-normalized task snapshot. Client reports carry task

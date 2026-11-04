@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -15,6 +16,7 @@ type Workers struct{ store *store.Store }
 func NewWorkers(database *store.Store) *Workers { return &Workers{store: database} }
 
 type WorkerReportResult struct {
+	Configuration  *core.WorkerConfigurationReceipt
 	ObservedAt     time.Time
 	LastReportedAt time.Time
 }
@@ -42,6 +44,16 @@ func (s *Workers) Report(ctx context.Context, principal core.Principal, workerID
 	if err != nil {
 		return WorkerReportResult{}, err
 	}
+	if input.Configuration != nil {
+		raw, marshalErr := json.Marshal(input.Configuration)
+		if marshalErr != nil {
+			return WorkerReportResult{}, invalidInput("Worker configuration exchange is invalid.")
+		}
+		input.Configuration, err = ParseWorkerConfigurationExchange(raw)
+		if err != nil {
+			return WorkerReportResult{}, err
+		}
+	}
 	var result WorkerReportResult
 	err = s.store.WriteWorker(ctx, func(tx *store.WorkerTx) error {
 		observedAt, err := tx.ObservedAt(ctx)
@@ -62,12 +74,18 @@ func (s *Workers) Report(ctx context.Context, principal core.Principal, workerID
 		if err != nil {
 			return err
 		}
+		if input.Configuration != nil {
+			result.Configuration, err = exchangeWorkerConfiguration(ctx, tx, principal, workerID, *input.Configuration)
+			if err != nil {
+				return err
+			}
+		}
 		result.LastReportedAt = stored.LastReportedAt
 		result.ObservedAt, err = tx.ObservedAt(ctx)
 		return err
 	})
 	if err != nil {
-		return WorkerReportResult{}, fmt.Errorf("report worker: %w", err)
+		return WorkerReportResult{}, workerConfigurationError("report worker", err)
 	}
 	return result, nil
 }

@@ -156,9 +156,9 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
     await expectMe(1, 304);
     expect(requests, 'Fresh admission reuses the persisted profile after reloading the document').toEqual([[alice.id]]);
 
-    const invitation = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: {} }); expect(invitation.status()).toBe(201);
+    const invitation = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: { expectedUserId: alice.id } }); expect(invitation.status()).toBe(201);
     const invitationBody = await invitation.json() as { link: string };
-    expect((await missing.post('/api/v1/invitations/accept', { data: { token: new URL(invitationBody.link).hash.slice(1) } })).status()).toBe(200);
+    expect((await missing.post('/api/v1/invitations/accept', { data: { token: new URL(invitationBody.link).hash.slice(1), expectedUserId: missingProfile.id } })).status()).toBe(200);
     const added = await createTask(api, project.id, { title: 'New assignee needs only one missing profile', assignedTo: missingProfile.id });
     await nextSync();
     const addedRow = page.locator(`#standalone-task-${added.id}`);
@@ -224,9 +224,9 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
   const aliceProfile = await profile(api), bobProfile = await profile(bob);
   try {
     const project = await createProject(api, { name: 'Assignee layout and full graph acceptance' });
-    const invitation = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: {} }); expect(invitation.status()).toBe(201);
+    const invitation = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: { expectedUserId: aliceProfile.id } }); expect(invitation.status()).toBe(201);
     const invitationBody = await invitation.json() as { link: string };
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitationBody.link).hash.slice(1) } })).status()).toBe(200);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitationBody.link).hash.slice(1), expectedUserId: bobProfile.id } })).status()).toBe(200);
     await seedUserProfile(aliceProfile.id, { name: longName, avatarUrl: new URL('/missing-assignee-avatar.png', baseURL).href });
     await seedUserProfile(bobProfile.id, { name: null, avatarUrl: null });
     const assigned = await createTask(api, project.id, { title: 'Current long-name assignee', assignedTo: aliceProfile.id, requiredPlatform: 'windows', description: Array.from({ length: 60 }, (_, index) => `## Reading ${index + 1}\n\nLong task material keeps the shared detail scrollable.`).join('\n\n') });
@@ -285,7 +285,7 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     await expect(goalRow.locator('.root-progress-label')).toHaveText('0/3 completed'); await goalRow.locator('.goal-toggle').click();
     await expect(goalRow.getByText('1 matching child tasks', { exact: true })).toBeVisible();
     await expect(page.locator(`#chain-task-${goal.id}-${child.id}`)).toBeVisible();
-    await expect(page.locator(`#chain-task-${goal.id}-${child.id} .graph-blocked-badge`)).toBeVisible();
+    await expect(page.locator(`#chain-task-${goal.id}-${child.id}`).locator('..').locator('.graph-blocked-badge')).toBeVisible();
     await expect(page.locator(`#chain-task-${goal.id}-${hiddenSibling.id}`)).toHaveCount(0);
     await page.locator(`#chain-task-${goal.id}-${child.id}`).click();
     await expect(detail(page).locator('.task-detail-blocked')).toBeVisible();

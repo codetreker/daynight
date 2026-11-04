@@ -82,10 +82,10 @@ test('project-settings', { annotation: { type: 'scenario', description: 'project
     const browserWrites: string[] = [];
     page.on('request', (request) => { if (request.method() === 'PATCH') browserWrites.push(request.url()); });
     allowBrowserWrites([{ method: 'PATCH', url: `${baseURL}${settingsPath}`, count: 4 }]);
-    const invitation = await bob.post(`${projectPath}/invitations`, { data: {} }); expect(invitation.status()).toBe(201);
-    const link = (await invitation.json() as { link: string }).link;
-    expect((await api.post('/api/v1/invitations/accept', { data: { token: new URL(link).hash.slice(1) } })).status()).toBe(200);
     const aliceId = await userId(api); const bobId = await userId(bob);
+    const invitation = await bob.post(`${projectPath}/invitations`, { data: { expectedUserId: bobId } }); expect(invitation.status()).toBe(201);
+    const link = (await invitation.json() as { link: string }).link;
+    expect((await api.post('/api/v1/invitations/accept', { data: { token: new URL(link).hash.slice(1), expectedUserId: aliceId } })).status()).toBe(200);
     const invitedAlice = (await memberList(bob, own.id)).items.find((member) => member.userId === aliceId)!;
     expect((await bob.patch(`${projectPath}/members/${aliceId}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: invitedAlice.directGrant!.version, role: 'admin', expectedUserId: bobId }) })).status()).toBe(200);
     const exact = 9_007_199_254_740_993n;

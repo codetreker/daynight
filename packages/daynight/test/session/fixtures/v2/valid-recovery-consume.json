@@ -1,0 +1,26 @@
+{
+  "protocol": "daynight.session.v2",
+  "schemaVersion": 2,
+  "projectionVersion": 1,
+  "sessionId": "00000000-0000-4000-8000-000000000006",
+  "claimId": "00000000-0000-4000-8000-000000000007",
+  "executionGeneration": "2",
+  "agentControlMode": "herdr",
+  "contentKind": "terminal_recording",
+  "type": "automation_recovery",
+  "payload": {
+    "recoveryId": "00000000-0000-4000-8000-000000000081",
+    "connectionEpoch": "2",
+    "controlEpoch": "5",
+    "previousGeneration": "1",
+    "stopOperationId": "00000000-0000-4000-8000-000000000082",
+    "binding": {
+      "instanceId": "private_herdr_1",
+      "sessionId": "daynight-worker",
+      "workspaceId": "workspace_1",
+      "paneId": "pane_1",
+      "terminalId": "term_641e9a1f10001",
+      "nativeSessionId": "original-native"
+    }
+  }
+}

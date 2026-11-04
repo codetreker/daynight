@@ -53,7 +53,7 @@ describe('Goal child execution duration', () => {
     const view = renderWithLocale(content(snapshot(tasks), onOpenTask), { locale, taskCache: true });
     expand();
     const running = [row('manual'), row('automatic')];
-    const names = locale === 'en' ? ['manualAssignee: UnassignedIn progress', 'automaticAssignee: UnassignedIn progress'] : ['manual负责人：未分配进行中', 'automatic负责人：未分配进行中'];
+    const names = locale === 'en' ? ['manualAssignee: Unassigned In progress', 'automaticAssignee: Unassigned In progress'] : ['manual负责人：未分配 进行中', 'automatic负责人：未分配 进行中'];
     for (const [index, element] of running.entries()) {
       expect(element).toHaveAccessibleName(names[index]!);
       expect(element.querySelector('time')).toHaveTextContent(locale === 'en' ? '< 1 min' : '不足 1 分钟');

@@ -1227,7 +1227,7 @@ func TestTerminalInitialDeliveryStateCannotRegressOrResolveWithoutDisposition(t 
 			t.Fatalf("%s became automatically sendable", prior)
 		}
 	}
-	if !terminalInitialProgress("pending", "dispatching", nil) || !terminalInitialProgress("dispatching", "unknown", nil) {
+	if !terminalInitialProgress("pending", "dispatching", nil) || !terminalInitialProgress("dispatching", "unknown", nil) || !terminalInitialProgress("dispatching", "pending", nil) {
 		t.Fatal("valid initial delivery progression rejected")
 	}
 	request := v2.ControlRequest{Action: "resume_automation", DraftHandled: true}
