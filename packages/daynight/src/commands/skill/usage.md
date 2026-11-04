@@ -1,6 +1,6 @@
 ---
 name: daynight
-description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads, attachments and ordered Step reads and additions with version-safe writes and explicit write outcomes.
+description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads, attachments and ordered Step reads, additions, updates, status changes and movement with version-safe writes and explicit write outcomes.
 ---
 
 # Daynight Project and Task Usage
@@ -69,7 +69,8 @@ daynight task step show <task-id> <step-id> --json --project <project-id>
 Steps are Task-owned ordered records with a title, Markdown description,
 `todo`/`in_progress`/`done`/`skipped` status and creation/update times. Their parent
 Task version is the collection version. Ordinary task show/list/graph output does
-not include the full collection. This CLI provides Step list/show reads, Add and Move.
+not include the full collection. This CLI provides Step list/show reads, Add,
+Update, Set-status and Move.
 
 List preserves saved order and prints the parent Task version, total count and
 one-based display number, full short ID, status and complete title for each
@@ -125,6 +126,35 @@ old pre-read, automatic retry or replacement ID. Server IDs are separate
 diagnostic facts, not an echo-equality gate. A confirmed receipt remains confirmed
 if local cleanup or output later fails; nonzero exit reports that local failure,
 and output failure may leave partial stdout.
+
+### Update Step content or status
+
+```bash
+daynight task step update <task-id> <step-id> [--title <text>] [--description <markdown>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped> [--if-version <version>] [--json] [--project <project-id>]
+```
+
+Update requires --title or --description; supply both to save them atomically.
+Omitted fields keep their values. --description="" clears the description.
+Titles require at least one non-Unicode-White_Space character; U+FEFF alone is
+valid and U+0085 alone is invalid. Title and Markdown text retain their original
+whitespace and characters. Set-status accepts all four states freely, including
+the current state, independently from Task status or other Steps.
+
+Explicit project/version sends exactly one PATCH for Update or PUT to /status
+for Set-status. Without --if-version, read complete Steps once before one write;
+a failed pre-read prevents submission. Same-value requests are no-op with the
+current version; stale versions still conflict and are never replayed.
+
+Confirmation requires a complete valid 200 collection with the exact submitted
+fields, target identity and unchanged or +1 version. With a pre-read, it also
+checks omitted values, order, every non-target field, creation time and the
+no-op/changed update-time branch. Explicit versions add no hidden read or invented
+baseline. Readable success prints `Step updated. ID: <id>` or
+`Step status set. ID: <id>` plus the complete confirmed collection. --json prints
+only that resource and LF. These writes share Add's request/response budgets,
+refusal details, original identity/request UUID, current-facts-only unknown
+observation and confirmed local-output/cleanup failure behavior.
 
 ### Move a Step
 

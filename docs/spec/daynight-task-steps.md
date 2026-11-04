@@ -1,6 +1,6 @@
 # Task Steps 资源契约
 
-状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新、独立状态设置、位置移动、记录删除及 CLI list/show 读取、add 和 move 已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
+状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新、独立状态设置、位置移动、记录删除及 CLI list/show 读取、add、update、set-status 和 move 已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
 
 ## 所有权与模型
 
@@ -69,7 +69,7 @@ daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 
 读取结果拒绝未知或重复字段，必须具有完整的必填字段、正确的 Project/Task/Step 作用域、正 int64 父版本、唯一且已规范为小写的短 ID、合法状态、原值文本与 UTC 微秒时间字符串；不能将坏响应修成合法资源、跳过条目、重排集合或将失败显示为空集合。成功时 JSON stdout 仅包含一个完整值并以换行结束；错误写 stderr，`401` 提示 `daynight login`，不自动登录或重放。读取继承共享取消、期限与响应字节预算，单次 Steps 响应正文另受 64 MiB 资源上限约束；有效上限取配置的单响应预算与该资源上限的较小值，恰好达到上限允许，更严格的配置限制继续生效，共享默认预算不变。在完整校验与渲染成功前不输出部分资源；输出本身失败可能留下部分 stdout，必须同时非零退出并报告错误。
 
-帮助、Bash/zsh 补全及独立 CLI 手册列出当前已交付的 `list`、`show`、`add` 与 `move`。完整项目选择、错误和输出约定由[客户端要求](daynight-project-task.md)拥有，命令实现与验证入口由[CLI 说明](../../packages/daynight/README.md#task-steps)拥有。
+帮助、Bash/zsh 补全及独立 CLI 手册列出当前已交付的 `list`、`show`、`add`、`update`、`set-status` 与 `move`。完整项目选择、错误和输出约定由[客户端要求](daynight-project-task.md)拥有，命令实现与验证入口由[CLI 说明](../../packages/daynight/README.md#task-steps)拥有。
 
 ## CLI 添加与结果确认
 
@@ -86,6 +86,21 @@ daynight task step add <task-id> --title <text> [--id <step-id>] [--description 
 本地递交前失败与完整解码的 4xx 拒绝均明确失败；已确认的容量 409 保留 `encodedBytes`、`maxEncodedBytes` 与安全错误信息。已递交但没有可信完整回执的网络、5xx、取消或协议失败为 unknown：保留原 Project/Task/Step ID 与请求 UUID，stdout 不输出成功资源，退出 `1`。服务错误 ID 与响应回显 ID 分别记录，诊断关联不构成回显相等的确认门槛。
 
 unknown 最多在原认证会话与仍有效的同一 Operation 内，使用 `originalUUID.r1` 读取一次完整集合；只报告当前父版本和目标 found/absent，结果仍为 unknown、非零退出，不归因历史操作。取消、总期限或累计预算耗尽时不创建脱离的核对操作；核对无法完成时报告没有当前观察，并提供普通的显式 project list/show 指导，不使用旧预读代替观察。完整新增回执一经确认，后续本地清理、渲染或输出失败仍保留已确认身份，不降为 unknown 或触发核对；输出失败可能留下部分 stdout。
+
+## CLI 更新与状态确认
+
+```text
+daynight task step update <task-id> <step-id> [--title <text>] [--description <markdown>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped> [--if-version <version>] [--json] [--project <project-id>]
+```
+
+`update` 至少提供标题或说明，两者可一次原子保存；省略的字段保持，`--description ''` 明确清空，标题和说明遵守原值文本规则。状态仅由 `set-status` 设置，四状态之间可任意显式转换，同状态允许 no-op，不添加流程或 Task 状态准入。
+
+显式 project/version 分别只递交一次 PATCH 或 PUT，不增加项目、父 Task 或 Steps 预读；默认先完整 GET Steps 再提交一次写入，预读失败不递交。精确 int64、1 MiB 请求限制、64 MiB 完整资源响应、认证、取消和累计预算与 Add 共用。
+
+成功必须为有效 principal 下的完整合法 `200 StepsResource`，目标存在且全部显式字段匹配，父版本只能为提交版本或 +1。有真实预读基线时，另核对集合长度、顺序及所有非目标字段/时间保持，目标的省略字段与创建时间保持；输入同值必须保持版本和目标更新时间，真实变化必须 +1 且目标更新时间变化。显式版本不补造旧字段或旧时间，不能用额外读取改变其请求预算。损坏、不匹配或不完整回执均不确认成功。
+
+可读成功分别为 `Step updated. ID: <id>` 或 `Step status set. ID: <id>` 加完整确认集合；`--json` 只输出该完整资源和 LF。no-op 不伪造新版本或时间。拒绝、容量 details、未知结果及确认后本地失败沿用[添加的结果处理](#cli-添加与结果确认)，诊断使用原操作名、Project/Task/Step 身份和请求 UUID；陈旧版本不自动重放。最多一次同操作只读核对只描述当前事实，不能确认某次未知修改。
 
 ## CLI 移动与结果确认
 
@@ -220,13 +235,17 @@ Task 元数据与 Steps 共享 `Task.version`。成功的真实 Steps 变化只�
 | ST-D4 | 删除释放 Task 内 ID，后续 POST 相同 ID 生成新记录；丢响应只读核对当前事实，不进行重放或推断历史归因。完整剩余候选在写前通过同一 codec，最大资源删除的实际 HTTP 验证独立于日常 CI。 |
 | ST-L1 | 安装后的 CLI 连接真实服务，完整读取非空、空集合和单项说明，保留保存顺序、规范短 ID、原值文本、全部字段与大于 2^53 的精确版本。 |
 | ST-L2 | 显式 project 在仓库外直接读取，帮助先于配置/Git/网络；坏字段、scope、重复或非规范 ID、读取失败和未支持入口明确非零退出，不伪造空态或部分成功。 |
-| ST-L3 | 可读安全转义、单个完整 JSON stdout、0/1/2 退出码、401 登录指导、共享取消/预算及当前已交付命令的帮助、补全和独立手册与安装产物一致。 |
+| ST-L3 | 可读安全转义、单个完整 JSON stdout、0/1/2 退出码、401 登录指导、共享取消/预算及已交付命令的帮助、补全和独立手册与安装产物一致。 |
 | ST-CA1 | 安装后的 Add 完成全部选项、原值文本、UUIDv4 短 ID/显式 ID 和末尾/锚点插入；成功确认完整 201/Location/身份/版本 +1/目标/时间/位置。 |
 | ST-CA2 | 显式 project/version 为一次 POST，默认版本为 GET Steps 后一次 POST，预读失败无写入；JSON 仅输出完整确认资源。 |
 | ST-CA3 | 已确认拒绝保留容量字节 details；未知结果保留原 ID/UUID，最多一次同操作 `.r1` 当前事实读取，取消/耗尽无脱离读取，无重放或换 ID。 |
+| ST-CA4 | 真实提交后丢响应仍为 unknown；确认后清理/输出失败仍保留确认。实际安装容量验证保持真实时钟、codec 与生产预算，并独立于日常 CI。 |
+| ST-CU1 | CLI update 的省略保留、空说明清空、标题/说明原值与原子保存成立；set-status 独立接受四状态自由转换。 |
+| ST-CU2 | 显式 project/version 一次 PATCH 或 PUT，默认 GET Steps 后一次写入；预读失败无写入，精确 int64 不舍入。 |
+| ST-CU3 | 只接受匹配目标的 no-op/+1 完整资源；真实基线下全部非目标及时间保持，陈旧不重放，未知保留原身份且只读观察不作归因。 |
 | ST-CM1 | 安装后的 move 完成首尾与相对移动，完整顺序、规范身份、所有 Step 内容时间和父业务字段保持；真实移动 +1，原位置及最大版本 no-op 保持版本和全部时间。 |
 | ST-CM2 | 位置恰好一个及自引用在请求前拒绝；显式一次 PUT、默认 GET 后 PUT，预读失败不写入；陈旧同值、失效锚点和未知响应明确暴露，未知最多一次同操作当前事实读取且不重放。 |
 | ST-CM3 | 完整 JSON、安全可读顺序、帮助、Bash/zsh 补全和独立手册与安装产物一致，坏位置、版本或完整集合结果不被当作确认。 |
-| ST-CA4 | 真实提交后丢响应仍为 unknown；确认后清理/输出失败仍保留确认。实际安装容量验证保持真实时钟、codec 与生产预算，并独立于日常 CI。 |
+
 
 [服务验证说明](../../packages/daynight-server/README.md#task-steps-api)拥有测试与独立压力验证命令；实际产物及运行结果随对应源码和 PR 保存。

@@ -20,8 +20,10 @@ arguments and selects an explicit canonical eight-hex ID or one UUIDv4 first
 segment. `step-write.ts` creates a separate request UUID and freezes the actual
 project/task/Step identity, payload and version. Explicit versions send one POST;
 default versions read complete Steps once before that POST. A failed pre-read
-prevents submission. The shared result handler serves Add and [Move](2026-11-04-task-steps-cli-move.md)
-through operation-tagged attempts without a registry of future mutations.
+prevents submission. The shared `executeStepWrite` handler serves Add,
+[content/status updates](2026-11-04-task-steps-cli-updates.md) and
+[Move](2026-11-04-task-steps-cli-move.md) through operation-tagged attempts,
+without a registry of future mutations.
 
 `addTaskStep` uses the existing transport, principal, JSON decoder and resource
 parser. It confirms only a 201 with canonical Location, correct scope, exact
@@ -32,8 +34,9 @@ or invent an old baseline. JSON output is only the complete confirmed resource;
 readable output prefixes that resource with the confirmed short ID.
 
 The existing transport confirmation marker is `confirmedMutationId`, consumed
-by Thread, Add and Move. It is set immediately after strict receipt checks and survives
-catch/finally cleanup along with decoded refusal metadata and original causes.
+by Thread and the Step writes. It is set immediately after strict receipt checks
+and survives catch/finally cleanup along with decoded refusal metadata and
+original causes.
 The shared runtime accepts caller-provided safe failureText for output/cleanup;
 Thread retains its existing wording. A confirmed Add remains confirmed after
 local rendering, output or cleanup failure and exits nonzero without becoming
@@ -91,5 +94,8 @@ Add and lost response after a real commit. Opt-in capacity stress uses the actua
 clock and producer bytes, separate from CLI JSON bytes and routine CI. Fixture
 calibration continues only after known complete results and fails on unknown
 receipts. Literal launchers, real Go/PostgreSQL interoperability and copied
-manual bytes keep their existing separate evidence owners. Move reuses this result handler and adds its own position/version confirmation.
-No Agent workflow mode, history store or recovery queue is introduced.
+manual bytes keep their existing separate evidence owners.
+[Content/status updates](2026-11-04-task-steps-cli-updates.md) and
+[Move](2026-11-04-task-steps-cli-move.md) reuse this result handler and add their
+own field, position and version confirmation. No Agent workflow mode, history
+store or recovery queue is introduced.
