@@ -17,7 +17,10 @@ existing lifecycle journal owns process identity and stopping. The
 [input design](../../../../docs/design/herdr-input-arbitration.md) owns state,
 lease, transport and handback contracts. Operation receipts are immutable;
 initial assignment identity survives separately from definitely-unsent retry
-attempts. Unknown initial delivery can only be resolved through a separately
+attempts. The relay accepts a fenced Worker's dispatching-to-pending projection
+after a durable zero-write rejection; it does not independently infer native
+write outcomes. Unknown, unconfirmed and completed progress cannot become pending,
+and the projection cannot restore suspended automation. Unknown initial delivery can only be resolved through a separately
 recorded human decision, never by rewriting the original transport outcome.
 
 The input journal's identity-checked final receipt owns transport completion even
@@ -75,6 +78,11 @@ current geometry without inventing a layout-to-PTY guarantee.
 Those records establish run identity and stopping, but do not distinguish a clean
 shutdown from a lost connection, manual draft or unknown input. An explicit
 online preparation lets the service persist this distinction before disconnect.
+
+**Suppress dispatching heartbeats to avoid retry transitions.** This hides real
+in-flight work from the service and leaves the producer and consumer state
+machines inconsistent. A confirmed zero-write outcome is a valid result of a
+dispatch attempt; uncertainty remains a separate, non-retryable outcome.
 
 ## Consequences
 

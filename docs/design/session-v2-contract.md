@@ -135,7 +135,10 @@ control_state 的 `state=automation|manual|suspended|closing|closed`；manual
 当且仅当 lease 非空，且 lease/control epoch 相同。paste/keys 只能在 manual
 可用；closing/closed 没有可用动作。`initialAssignment` 为
 `pending|dispatching|transport_completed|unknown|unconfirmed`；unknown/unconfirmed
-不能 automation，dispatching 不能 manual。
+不能 automation，dispatching 不能 manual。原受校验 Worker 在持久确认零写入后可发布
+`dispatching → pending`；服务端依赖 Worker 的输入 receipt 保证，不独立推断 native
+写入结果。`unknown`、`unconfirmed` 和 `transport_completed` 均不能退回 `pending`。
+owner、claim、generation、connection/control epoch 和 automation 交还限制继续适用。
 
 动作集合是 `acquire_control|renew_control|release_control|resume_automation|paste|keys`，
 control_request 只接受前四项。acquire 使用 null lease 与 false/null 确认字段；

@@ -24,7 +24,7 @@ Session 注册继续声明 `observe=false`、`control=false`、`archive=false`�
 
 生命周期与输入 journal 分别提交结果。若输入 receipt 已持久为 transport_completed、生命周期仍因提交间崩溃保留 unknown，恢复按 Session/claim、原运行/段/完整绑定、连接代次顺序及初始正文摘要核验该 receipt 后使用其已完成事实；不改写生命周期的历史 unknown。输入 journal 自身结果未知、缺失或归属不符仍禁止恢复。
 
-首次 assignment 有跨运行不变的身份和正文摘要。一次确定未写的失败保留其 rejected receipt；只有 pending 且自动准入再次有效时才生成新的持久尝试 ID。未知尝试不会轮转 ID，也不因 idle、重启或释放 lease 重发。其他操作重复 ID 仅返回原结果；同 ID 异正文拒绝。
+首次 assignment 有跨运行不变的身份和正文摘要。一次确定未写的失败保留其 rejected receipt；只有 pending 且自动准入再次有效时才生成新的持久尝试 ID。服务端接受原受校验 Worker 的 `dispatching → pending` 状态投影，使零写入拒绝之后的 heartbeat 保持通道可用；零写入证明由输入 journal 的 rejected receipt 承担。服务端不能把 `unknown`、`unconfirmed` 或 `transport_completed` 退回 `pending`，这项投影也不能将 suspended 恢复为 automation。未知尝试不会轮转 ID，也不因 idle、重启或释放 lease 重发。其他操作重复 ID 仅返回原结果；同 ID 异正文拒绝。
 
 旧生命周期存在但输入 journal 缺失时按 `unconfirmed` 接入，不推断可继续自动输入。生命周期中的原始首次结果继续保留；人工选择 `delivered_continue` 单独记录 actor、operation 和时间，不修改 unknown 操作结果。现有 v2 `control_state.initialAssignment=transport_completed` 在这项处置后投影为可继续的进度；它不是对原 unknown 操作的 provider ACK。
 

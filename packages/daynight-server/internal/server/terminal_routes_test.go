@@ -394,6 +394,86 @@ func TestTerminalWorkerAndBrowserWebSockets(t *testing.T) {
 	t.Fatal("revoked browser remained connected")
 }
 
+func terminalInitialInputChannel(t *testing.T) (terminalHTTPFixture, *websocket.Conn) {
+	t.Helper()
+	f := terminalHTTPSetup(t)
+	reg := f.message.Payload.(v2.Registration)
+	reg.Capabilities = v2.Capabilities{}
+	f.message.Payload = reg
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	worker, _, err := websocket.Dial(ctx, f.server.URL+f.base+"/"+f.message.SessionID+"/worker-channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + f.h.token}}, Subprotocols: []string{v2.Protocol}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = worker.CloseNow() })
+	sessionWSWrite(t, worker, f.message)
+	sessionWSKind(t, worker, "registration_ack")
+	ledger := f.message
+	ledger.Type = "generation_ledger"
+	ledger.Payload = v2.GenerationLedger{Runs: []v2.Run{{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}}}
+	sessionWSWrite(t, worker, ledger)
+	sessionWSKind(t, worker, "generation_ledger")
+	return f, worker
+}
+
+func TestTerminalWorkerChannelRetainsDefinitelyUnsentInitialRetry(t *testing.T) {
+	f, worker := terminalInitialInputChannel(t)
+	// These are Worker observations of one initial assignment. A rejected
+	// zero-write attempt returns to pending before a new admitted attempt starts.
+	for index, initial := range []string{"pending", "dispatching", "pending", "dispatching", "transport_completed"} {
+		message := f.message
+		message.Type = "control_state"
+		message.Payload = v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: initial, AvailableActions: []string{"acquire_control"}}
+		sessionWSWrite(t, worker, message)
+		ack := sessionWSKind(t, worker, "control_state")
+		var control v2.ControlState
+		if err := json.Unmarshal(ack["payload"], &control); err != nil {
+			t.Fatal(err)
+		}
+		if control.InitialAssignment != initial || control.State != "automation" || control.ConnectionEpoch != "1" || control.ControlEpoch != "1" {
+			t.Fatalf("initial observation %d was not acknowledged on the original channel: %+v", index, control)
+		}
+	}
+	response := terminalRequest(f.h, http.MethodGet, f.base+"/"+f.message.SessionID+"/state", "", v2.Protocol)
+	var state struct {
+		Connected bool            `json:"connected"`
+		Control   v2.ControlState `json:"control"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &state) != nil || !state.Connected || state.Control.InitialAssignment != "transport_completed" {
+		t.Fatal("initial retry closed the Worker channel or lost its durable result", response.Code, response.Body.String())
+	}
+}
+
+func TestTerminalWorkerChannelRejectsInitialReplayAfterUncertainOrFinalResult(t *testing.T) {
+	for _, initial := range []string{"unknown", "unconfirmed", "transport_completed"} {
+		t.Run(initial, func(t *testing.T) {
+			f, worker := terminalInitialInputChannel(t)
+			message := f.message
+			message.Type = "control_state"
+			state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "suspended", InitialAssignment: initial, AvailableActions: []string{}}
+			message.Payload = state
+			sessionWSWrite(t, worker, message)
+			sessionWSKind(t, worker, "control_state")
+			state.InitialAssignment = "pending"
+			message.Payload = state
+			sessionWSWrite(t, worker, message)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, _, err := worker.Read(ctx); err == nil || ctx.Err() != nil {
+				t.Fatalf("Worker channel did not reject %s to pending: %v", initial, err)
+			}
+			response := terminalRequest(f.h, http.MethodGet, f.base+"/"+f.message.SessionID+"/state", "", v2.Protocol)
+			var observed struct {
+				Control v2.ControlState `json:"control"`
+			}
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &observed) != nil || observed.Control.InitialAssignment != initial {
+				t.Fatal("rejected replay replaced the original initial result", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestTerminalDuplicateChannelsPreserveOriginalLease(t *testing.T) {
 	f := terminalHTTPSetup(t)
 	path := f.base + "/" + f.message.SessionID

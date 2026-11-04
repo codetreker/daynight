@@ -98,7 +98,10 @@ lease 为 30 秒，10 秒续约，授予和续约必须收到关联原请求的 
 `transport_completed` 只证明传输流程完成。重启把遗留 `dispatching` 收敛为
 `unknown`；幂等记录保留到最终封存并撤销所有写权限。
 
-首次 assignment 为独立稳定操作，只有 `pending` 能自动发送。首次派发与人工
+首次 assignment 为独立稳定操作，只有 `pending` 能自动发送。
+已确认零写入的拒绝必须保留原 receipt，并允许
+Worker 将首次进度从 `dispatching` 发布回 `pending` 后重新准入；
+`unknown`、`unconfirmed` 和 `transport_completed` 不得因此变为可重发状态。首次派发与人工
 接管互斥；`unknown` 或旧运行的 `unconfirmed` 不得自动补发任务说明。
 恢复自动执行需要用户确认已处理终端草稿；未知首次输入还需要显式
 `delivered_continue` 决定。Worker 重新核对 readiness、原 fence、最新 epoch 和

@@ -1,5 +1,10 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { once } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHerdrInputArbiter, type HerdrInputArbiter } from "../../../src/commands/worker/herdr/input-arbiter.js";
+import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-store.js";
 import WebSocket, { WebSocketServer } from "ws";
 import registrationFixture from "../../session/fixtures/v2/valid-registration.json" with { type: "json" };
 import dispatchFixture from "../../session/fixtures/v2/valid-control-dispatch.json" with { type: "json" };
@@ -28,11 +33,12 @@ const setup = async (configure?: (registration: Message<"registration">, record:
   let controlState: SessionV2Payloads["control_state"] = { connectionEpoch, controlEpoch: "1", state: "automation", lease: null, initialAssignment: "transport_completed", availableActions: ["acquire_control"], unavailableReason: null };
   let remote: HerdrSessionState = { status: "registered", protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: registration.sessionId, claimId: registration.claimId, executionGeneration: registration.executionGeneration, agentControlMode: "herdr", contentKind: "terminal_recording", owner: registration.payload.owner, binding: registration.payload.binding, connectionEpoch, connected: true, capabilities: registration.payload.capabilities, control: null, snapshot: null, ledger: { runs: record.runs.map(row => row.run), finalizationId: null }, archive: { state: "pending", sha256: null, byteLength: null, completeness: null, errorCode: null, finalizationId: null }, recording: [] };
   let suspended = 0, inputCalls = 0, stateFailure = false, suspendFailure = false;
+  let arbiter: HerdrInputArbiter | undefined;
   const errors: Error[] = [];
   let stateWait: Promise<void> | null = null;
   const api = { state: async () => { if (stateFailure) throw new Error("offline"); const snapshot = remote; await stateWait; return snapshot; } } as Pick<HerdrSessionApi, "state">;
   let handleControl: Parameters<typeof createHerdrInputSession>[0]["control"] = async () => { throw new Error("Unexpected control."); };
-  const session = createHerdrInputSession({ serverToken: "isolated", getRecord: () => record, state: () => controlState, suspend: () => { if (suspendFailure) throw new Error("Input journal unavailable"); suspended++; controlState = { ...controlState, state: "suspended", lease: null, controlEpoch: String(BigInt(controlState.controlEpoch) + 1n) }; }, onError: (_owner, error) => { errors.push(error); }, api: () => api,
+  const session = createHerdrInputSession({ serverToken: "isolated", getRecord: () => record, state: () => arbiter?.state() ?? controlState, suspend: () => { arbiter?.suspend(); if (suspendFailure) throw new Error("Input journal unavailable"); suspended++; controlState = { ...controlState, state: "suspended", lease: null, controlEpoch: String(BigInt(controlState.controlEpoch) + 1n) }; }, onError: (_owner, error) => { errors.push(error); }, api: () => api,
     control: (...args) => handleControl(...args), input: async (_owner, message) => { inputCalls++; return { operationId: message.payload.operationId, state: "transport_completed", errorCode: null }; } });
   cleanup.push(() => session.close());
   const connected = once(server, "connection"); const pending = session.register(registration); void pending.catch(() => {});
@@ -42,7 +48,7 @@ const setup = async (configure?: (registration: Message<"registration">, record:
   const ack = { ...registration, type: "registration_ack", payload: { registrationId: registration.payload.registrationId, connectionEpoch } };
   socket.send(JSON.stringify(ack)); await pending;
   const activate = () => { record.connectionEpoch = connectionEpoch; record.registrationRequest = null; session.activate(record.sessionId); };
-  return { session, socket, incoming, record, registration, activate, errors, waitState: (wait: Promise<void>) => { stateWait = wait; }, failSuspend: () => { suspendFailure = true; }, getLocal: () => controlState, setControl: (handler: typeof handleControl) => { handleControl = handler; }, count: () => ({ suspended, inputCalls }), failState: () => { stateFailure = true; }, setRemote: (value: Partial<HerdrSessionState>) => { remote = { ...remote, ...value }; }, setLocal: (value: Partial<SessionV2Payloads["control_state"]>) => { controlState = { ...controlState, ...value }; } };
+  return { session, socket, incoming, record, registration, activate, errors, useArbiter: (value: HerdrInputArbiter) => { arbiter = value; }, waitState: (wait: Promise<void>) => { stateWait = wait; }, failSuspend: () => { suspendFailure = true; }, getLocal: () => controlState, setControl: (handler: typeof handleControl) => { handleControl = handler; }, count: () => ({ suspended, inputCalls }), failState: () => { stateFailure = true; }, setRemote: (value: Partial<HerdrSessionState>) => { remote = { ...remote, ...value }; }, setLocal: (value: Partial<SessionV2Payloads["control_state"]>) => { controlState = { ...controlState, ...value }; } };
 };
 
 test("only activates the bridge after lifecycle registration commits", async () => {
@@ -255,4 +261,68 @@ test("a shutdown hold has a bounded confirmation window", async () => {
     await vi.advanceTimersByTimeAsync(25_000);
     expect(f.count().suspended).toBe(1); expect(f.session.connected(f.record.sessionId)).toBe(false);
   } finally { vi.useRealTimers(); }
+});
+
+
+test.each(["readiness", "cancel", "written"] as const)("publishes the durable initial %s result without confusing rejection with unknown input", async failure => {
+  const f = await setup();
+  const root = fileURLToPath(new URL("../../../../../.tmp/herdr-input/", import.meta.url));
+  mkdirSync(root, { recursive: true });
+  const directory = mkdtempSync(path.join(root, "publication-"));
+  cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
+  const store = openHerdrInputStore(path.join(directory, "input.sqlite"), { onMigration: () => {} });
+  cleanup.push(() => store.close());
+  const target = { sessionId: f.record.sessionId, claimId: f.record.claimId, executionGeneration: "1", connectionEpoch: "1", segmentId: f.record.segments[0]!.segmentId, binding: f.registration.payload.binding };
+  store.bind(target);
+  let rejectReadiness!: (reason: Error) => void, entered!: () => void;
+  const readinessEntered = new Promise<void>(resolve => { entered = resolve; });
+  let failing = true, writes = 0;
+  const arbiter = createHerdrInputArbiter({ store, sessionId: target.sessionId,
+    verify: async () => {
+      if (failing && failure !== "written") { entered(); await new Promise<void>((_resolve, reject) => { rejectReadiness = reject; }); }
+    },
+    execute: async (_batch, context) => {
+      await context.beforeWrite(); context.markWritten(); writes++;
+      if (failing && failure === "written") { entered(); await new Promise<void>((_resolve, reject) => { rejectReadiness = reject; }); }
+    },
+  });
+  f.useArbiter(arbiter); f.activate();
+  // Close the owner before disposing its real journal, including failed assertions.
+  cleanup.push(() => f.session.close());
+  const publish = async (initial: SessionV2Payloads["control_state"]["initialAssignment"], state: "automation" | "suspended") => {
+    const count = f.incoming.length;
+    await f.session.poll(target.sessionId);
+    await vi.waitFor(() => expect(f.incoming).toHaveLength(count + 1));
+    const message = f.incoming.at(-1)!;
+    expect(message).toMatchObject({ type: "control_state", payload: { initialAssignment: initial, state, connectionEpoch: "1" } });
+    if (message.type !== "control_state") throw new Error("Expected a control publication.");
+    f.setRemote({ control: { ...message.payload, availableActions: [] } });
+    f.socket.send(JSON.stringify(message));
+  };
+  await publish("pending", "automation");
+  const controller = new AbortController();
+  const request = { operationId: arbiter.record().initialOperationId, source: "initial" as const, text: "original assignment" };
+  const first = arbiter.submit(request, controller.signal);
+  await readinessEntered; await publish("dispatching", "automation");
+  if (failure === "cancel") controller.abort(new Error("Cancelled before input"));
+  else rejectReadiness(new Error("Readiness or transport failed"));
+  const receipt = await first;
+  if (failure === "cancel") rejectReadiness(new Error("Cancelled readiness settled"));
+  expect(receipt.state).toBe(failure === "written" ? "unknown" : "rejected");
+  expect(writes).toBe(failure === "written" ? 1 : 0);
+  await publish(failure === "written" ? "unknown" : "pending", failure === "written" ? "suspended" : "automation");
+  failing = false;
+  if (failure === "written") {
+    expect(await arbiter.submit(request)).toEqual(receipt);
+    expect(writes).toBe(1);
+  } else {
+    const retry = await arbiter.submit(request);
+    expect(retry.state).toBe("transport_completed");
+    expect(retry.operationId).not.toBe(receipt.operationId);
+    expect(arbiter.record().operations.find(op => op.operationId === receipt.operationId)?.result).toEqual(receipt);
+    expect(writes).toBe(1);
+    await publish("transport_completed", "automation");
+  }
+  expect(f.session.connected(target.sessionId)).toBe(true);
+  expect(f.count().suspended).toBe(0);
 });
