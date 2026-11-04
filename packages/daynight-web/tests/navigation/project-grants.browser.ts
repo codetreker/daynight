@@ -95,7 +95,7 @@ test('narrow screen cancellation makes no write and self removal shows the null-
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', { name: 'Remove direct grant for Alice' }).click();
   await dialog.getByRole('button', { name: 'Remove grant' }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'Direct grant for Alice removed' })).toContainText('You no longer have access to this project');
+  await expect(page.getByRole('status').filter({ hasText: 'Direct grant for Alice removed' })).toContainText('This change left you without access to the project');
   await expect(page.getByRole('button', { name: 'Return to projects' })).toBeVisible();
   expect(state.writes).toHaveLength(1);
   expect(state.writes[0]?.body).toBe(`{"version":1,"expectedUserId":"${actorId}"}`);

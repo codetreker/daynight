@@ -275,9 +275,9 @@ describe('authoritative project management', () => {
     click('移除 Alice 的单独授权'); expect(screen.getByText(/这会撤销对方的项目单独授权/)).toBeInTheDocument(); await dialogClick('移除授权');
     await waitFor(() => expect(auth.removeProjectGrant).toHaveBeenCalledOnce()); await readyMembers();
     expect(auth.removeProjectGrant).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'Alice', { version: 9223372036854775806n, expectedUserId: user.id }, expect.any(AbortSignal), expect.any(Function)); expect(removed).not.toHaveBeenCalled();
-    vi.mocked(auth.removeProjectGrant).mockImplementation(async (projectId, userId) => ({ projectId, userId, deleted: true, actorAccess: null }));
+    vi.mocked(auth.removeProjectGrant).mockImplementation(async (projectId, userId) => { vi.mocked(auth.getProjectAccess).mockRejectedValue(new ApiError('server', 404, 'not_found')); return { projectId, userId, deleted: true, actorAccess: null }; });
     click('移除 Jianjun 的单独授权'); expect(screen.getByText(/撤销你的项目单独授权/)).toBeInTheDocument(); await dialogClick('移除授权');
-    await screen.findByText('你已失去此项目的访问权限。'); expect(removed).not.toHaveBeenCalled(); click('返回项目'); expect(removed).toHaveBeenCalledOnce();
+    await screen.findByText('此变更使你失去了项目访问权限。'); expect(removed).not.toHaveBeenCalled(); click('返回项目'); expect(removed).toHaveBeenCalledOnce();
   });
 
   it('retains inherited administrator access after self-demotion', async () => {

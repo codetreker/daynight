@@ -35,7 +35,6 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
   const [dialog, setDialog] = useState<MemberDialog | null>(null);
   const [dialogError, setDialogError] = useState<unknown>(null);
   const [receipt, setReceipt] = useState<{ readonly name: string; readonly role: 'admin' | 'member' | null; readonly lostAccess: boolean } | null>(null);
-  const [receiptError, setReceiptError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
   const [grantIssue, setGrantIssue] = useState<{ readonly error: unknown; readonly observed: boolean } | null>(null);
   const grantIssueRef = useRef(grantIssue); grantIssueRef.current = grantIssue;
@@ -136,13 +135,8 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
     if (invitationAction) invitationSubmitting.current = true;
     if (grantAction && (grantSubmitting.current || action.kind === 'remove' && action.member.directGrant === null || grantIssueRef.current !== null && !grantIssueRef.current.observed)) return;
     if (grantAction) { grantSubmitting.current = true; grantIssueRef.current = null; setGrantIssue(null); }
-    setPending(true); setDialogError(null); setNotice(null); setReceipt(null); setReceiptError(null);
+    setPending(true); setDialogError(null); setNotice(null); setReceipt(null);
     const signal = controller.current!.signal;
-    let cacheTicket: Awaited<ReturnType<typeof access.session.scope.beginSync>> | null = null;
-    if (grantAction) {
-      try { cacheTicket = await access.session.scope.beginSync(projectId, signal); }
-      catch (failure) { grantSubmitting.current = false; if (!signal.aborted) { setPending(false); setDialogError(failure); } return; }
-    }
     try {
       if (action.kind === 'role' || action.kind === 'remove') {
         const result = action.kind === 'role'
@@ -156,8 +150,12 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
         callbacks.current.onMembershipChange?.();
         if (result.actorAccess === null) {
           setMembers(null); setInvitations(null); setUnavailable(true);
-          try { if (cacheTicket !== null) await access.session.scope.revokeProject(cacheTicket, signal); }
-          catch (failure) { if (!signal.aborted) setReceiptError(failure); }
+          access.session.scope.suspendProject(projectId);
+          const current = await access.session.revalidateAfterMutation();
+          if (current !== null && !signal.aborted && !access.session.scope.isInvalidated) {
+            setUnavailable(false);
+            await load(signal);
+          }
           return;
         }
         if (result.actorAccess.effectiveRole !== 'admin') setInvitations(null);
@@ -208,10 +206,9 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
     <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{m.title}</h1><p className="subtitle">{m.subtitle({ projectName })}</p></div>{admin && <button className="button primary" type="button" disabled={loading || !access.ready || invitationIssue !== null && !invitationIssue.observed} onClick={() => open({ kind: 'invite' })}>{m.invite}</button>}</div>
     {grantIssue !== null && <div className="notice warning" role="alert"><p>{grantIssue.observed ? m.grantObserved : m.grantUnknown}</p>{grantIssue.error instanceof ApiError && grantIssue.error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{grantIssue.error.requestId}</code></p>}<button className="button" type="button" disabled={loading || pending} onClick={() => { void load(controller.current!.signal).then((observed) => { if (observed && grantIssueRef.current !== null) { const issue = { ...grantIssueRef.current, observed: true }; grantIssueRef.current = issue; setGrantIssue(issue); } }); }}>{m.readCurrentMembers}</button></div>}
     {invitationIssue !== null && <div className="notice warning" role="alert"><p>{invitationIssue.observed ? m.invitationObserved : m.invitationUnknown}</p>{invitationIssue.error instanceof ApiError && invitationIssue.error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{invitationIssue.error.requestId}</code></p>}<button className="button" type="button" disabled={loading || pending} onClick={() => { void load(controller.current!.signal).then((observed) => { if (observed && invitationIssueRef.current !== null) { const issue = { ...invitationIssueRef.current, observed: true }; invitationIssueRef.current = issue; setInvitationIssue(issue); } }); }}>{m.readCurrentInvitations}</button></div>}
-    {receipt !== null && <div className="notice" role="status"><p>{receipt.role === null ? m.grantRemoved({ name: receipt.name }) : m.grantSaved({ name: receipt.name, role: receipt.role === 'admin' ? common.roleAdmin : common.roleMember })}</p>{receipt.lostAccess && <><p>{m.accessLost}</p><button className="button" type="button" onClick={onRemoved}>{m.returnToProjects}</button></>}</div>}
-    {receiptError !== null && <ManagementError error={receiptError} />}
+    {receipt !== null && <div className="notice" role="status"><p>{receipt.role === null ? m.grantRemoved({ name: receipt.name }) : m.grantSaved({ name: receipt.name, role: receipt.role === 'admin' ? common.roleAdmin : common.roleMember })}</p>{receipt.lostAccess && <><p>{m.accessLost}</p>{access.status !== 'ready' && <button className="button" type="button" onClick={onRemoved}>{m.returnToProjects}</button>}</>}</div>}
     {notice !== null && <div className="notice" role="status">{m.notice[notice]}</div>}
-    {(error !== null || receipt?.lostAccess !== true && access.error !== null) && <ManagementError error={error ?? access.error} retry={() => { void load(controller.current!.signal); }} />}
+    {(error !== null || access.error !== null && !(receipt?.lostAccess === true && access.error instanceof ApiError && access.error.kind === 'server' && access.error.status === 404 && access.error.code === 'not_found')) && <ManagementError error={error ?? access.error} retry={() => { void load(controller.current!.signal); }} />}
     {loading && <div className="empty-inline" role="status">{m.loading}</div>}
     {receipt?.lostAccess !== true && (unavailable || access.status === "unavailable") && error === null && access.error === null && <div className="notice error" role="alert">{common.notFound}</div>}
     {!loading && members !== null && !unavailable && access.status !== 'unavailable' && <>

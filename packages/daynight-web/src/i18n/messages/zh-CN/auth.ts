@@ -105,7 +105,7 @@ export const auth: AuthMessages = {
       memberNotice: "你可以读写项目中的任务和附件。成员与邀请由项目管理员管理。", membersTitle: "成员", accessDescription: "所有成员都可以读写项目资源。", memberColumn: "成员", roleColumn: "项目角色", actionColumn: "操作",
       effectiveColumn: "有效角色", teamColumn: "Team 继承", personalTeam: "个人", directColumn: "单独授权", noGrant: "无单独授权", noAccess: "无访问权限",
       grantChange: ({ before, after, effective }) => `单独授权：${before} → ${after}。变更后的项目角色：${effective}。`,
-      grantSaved: ({ name, role }) => `已将 ${name} 的单独授权保存为${role}。`, grantRemoved: ({ name }) => `已移除 ${name} 的单独授权。`, accessLost: "你已失去此项目的访问权限。", returnToProjects: "返回项目",
+      grantSaved: ({ name, role }) => `已将 ${name} 的单独授权保存为${role}。`, grantRemoved: ({ name }) => `已移除 ${name} 的单独授权。`, accessLost: "此变更使你失去了项目访问权限。", returnToProjects: "返回项目",
       roleLabel: ({ name }) => `${name} 的单独授权`, removeLabel: ({ name }) => `移除 ${name} 的单独授权`, remove: "移除授权",
       invitesTitle: "有效邀请", invitesDescription: "每个邀请链接只能使用一次，接受邀请后以成员身份加入。链接只在创建时显示。", invitesEmpty: "还没有有效邀请。创建邀请链接，邀请团队成员加入。", newInvitation: "邀请新成员",
       revokeLabel: ({ id }) => `撤销邀请 ${id}`, adminDescription: "读写项目、任务和附件，并管理项目成员及邀请。", memberDescription: "读写项目、任务和附件，与团队共同推进工作。",

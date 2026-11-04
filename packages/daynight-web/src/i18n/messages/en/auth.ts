@@ -151,7 +151,7 @@ export const auth: AuthMessages = {
       membersTitle: "Members", accessDescription: "All members can read and write project resources.", memberColumn: "Member", roleColumn: "Project role", actionColumn: "Actions",
       effectiveColumn: "Effective role", teamColumn: "Team inheritance", personalTeam: "Personal", directColumn: "Direct grant", noGrant: "No direct grant", noAccess: "No access",
       grantChange: ({ before, after, effective }) => `Direct grant: ${before} → ${after}. Resulting project role: ${effective}.`,
-      grantSaved: ({ name, role }) => `Direct grant for ${name} saved as ${role}.`, grantRemoved: ({ name }) => `Direct grant for ${name} removed.`, accessLost: "You no longer have access to this project.", returnToProjects: "Return to projects",
+      grantSaved: ({ name, role }) => `Direct grant for ${name} saved as ${role}.`, grantRemoved: ({ name }) => `Direct grant for ${name} removed.`, accessLost: "This change left you without access to the project.", returnToProjects: "Return to projects",
       roleLabel: ({ name }) => `Direct grant for ${name}`, removeLabel: ({ name }) => `Remove direct grant for ${name}`, remove: "Remove grant",
       invitesTitle: "Active invitations", invitesDescription: "Each invitation can be used once and grants the member role. Its link is shown only when created.",
       invitesEmpty: "No active invitations. Create an invitation link to invite a team member.", newInvitation: "Invite a new member",
