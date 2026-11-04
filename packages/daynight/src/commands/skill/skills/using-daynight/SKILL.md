@@ -46,7 +46,7 @@ Read only the files and required references for the current operation, not every
 | Write or read descriptions, attachments, and shared inputs | [Task content standard](references/task-content.md): boundaries, ownership, references, and sufficiency |
 | Create or register work | [Create task](references/create-task.md): duplicate checks, preparation, registration, and readback |
 | Organize a multi-stage objective | [Goal protocol](references/goal.md): stage confirmation, breakdown, and whole-Goal completion |
-| Review tasks and enable automatic execution | [Task handoff](references/handoff.md): content review and permission enablement |
+| Review tasks and enable automatic execution | [Task handoff](references/handoff.md): content and authenticated-responsibility review, then permission enablement |
 | Execute one user-specified task | [Ordinary task execution](references/run-task.md): starting, resuming, completion, and return |
 | Perform work shared by both execution modes | [Shared task execution](references/task-execution.md): inputs, delivery, waiting context, and completion conditions |
 | Execute an explicit worker assignment | [Managed task execution](references/autopilot-managed-task.md): sustained delivery, blocker handling, and original-claim completion |

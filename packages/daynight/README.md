@@ -773,8 +773,12 @@ case-equivalent duplicate/cross-declared UUIDs fail before configuration or
 network access. `--clear-dependencies` sends two empty sets and conflicts with
 either dependency option. An update needs at least one mutable
 field. Create/update accept `--assigned-to <user-uuid>`; update also accepts
-`--clear-assigned-to` to send null. Omission preserves an existing assignee; the
-set/clear options conflict, and invalid UUIDs or combinations fail before
+`--clear-assigned-to` to send null. CLI creation without `--assigned-to` reads
+the signed-in account through `/me` and submits its UUID. An explicit UUID skips
+that identity lookup. A failed or cancelled lookup prevents creation; the CLI
+does not substitute an unassigned task. Update omission preserves the existing
+assignee. Direct API callers retain optional assignment and may create unassigned
+tasks by omitting `assignedTo` or sending null. The set/clear options conflict, and invalid UUIDs or combinations fail before
 configuration, Git or HTTP access. Writes accept UUIDs, not the list tokens
 me/unassigned. A real assignment change atomically sets allowAgents=false; an
 equal assignment causes no permission reset; a pure equal update preserves

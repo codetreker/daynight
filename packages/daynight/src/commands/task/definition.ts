@@ -28,7 +28,7 @@ export const taskDefinition: CommandDefinition = {
       name: "create",
       description: "Create a todo task with optional dependencies",
       options: [{ ...titleOption, required: true }, descriptionOption, assignedToOption, requiredPlatformOption, dependencyOption, externalDependencyOption, projectOption, helpOption],
-      details: `New tasks start in todo with automatic execution disabled. Creating a task does not start execution. Without --assigned-to, the task is unassigned; an explicit UUID must identify a project member. Without --required-platform, execution has no platform restriction. Omitting both dependency options creates a task with no prerequisites.\n${dependencyDetails}`,
+      details: `New tasks start in todo with automatic execution disabled. Creating a task does not start execution. Without --assigned-to, the task is assigned to the signed-in account; an explicit UUID overrides this default and must identify a project member. If the current account cannot be read, creation fails without submitting a task. Without --required-platform, execution has no platform restriction. Omitting both dependency options creates a task with no prerequisites.\n${dependencyDetails}`,
     },
     {
       name: "list",
