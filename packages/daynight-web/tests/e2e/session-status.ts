@@ -4,6 +4,7 @@ import type { AuthenticatedAPI } from './authentication';
 import { createProject, createTask, executeTask, expect } from './fixtures';
 import { selectTaskList } from './project-view';
 import { openStatusController } from './session-status-controller';
+import { mockPollingIntervals, shortPollingInterval } from './polling';
 
 const rectangle = async (element: Locator) => element.evaluate(node => {
   const { x, y, width, height } = node.getBoundingClientRect();
@@ -11,6 +12,7 @@ const rectangle = async (element: Locator) => element.evaluate(node => {
 });
 
 export const verifySessionStatus = async (page: Page, api: AuthenticatedAPI, origin: string, info: TestInfo): Promise<void> => {
+  await mockPollingIntervals(page, { sessionSummary: shortPollingInterval });
   const project = await createProject(api, { name: 'Session status annotations' });
   const identity = await api.get('/api/v1/me');
   expect(identity.status()).toBe(200);

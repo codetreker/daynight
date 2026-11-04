@@ -11,6 +11,7 @@ import type { TaskDetail } from '../../src/api/types';
 import { createProject, createTask, startTask, executeTask, expect, seedRunningTaskStart, seedExternalDependencies, test, type Task } from './fixtures';
 import type { AuthenticatedAPI } from './authentication';
 import { expectedChainMembers } from './visible-topology';
+import { mockPollingIntervals, shortPollingInterval } from './polling';
 
 const card = (page: Page, id: string): Locator => page.locator(`.react-flow__node[data-id="${id}"] .task-node`);
 const duration = (scope: Locator): Locator => scope.locator('time.task-duration');
@@ -63,6 +64,7 @@ const rowLayout = async (scope: Locator): Promise<void> => {
 test.use({ trace: 'off', screenshot: 'off' });
 test('task-execution-time', { annotation: { type: 'scenario', description: 'task-execution-time' } }, async ({ page, api, baseURL }, info) => {
   if (baseURL === undefined) throw new Error('Execution-time acceptance requires the actual service origin.');
+  await mockPollingIntervals(page, { taskSync: shortPollingInterval });
   const cli = await createAcceptanceCli(baseURL, info.outputPath('installed-cli-execution-time'));
   const evidence = {
     scenario: 'task-execution-time', source: 'tests/e2e/task-execution-time.spec.ts', topology: process.env.DAYNIGHT_ACCEPTANCE_TARGET,
@@ -80,6 +82,8 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
   };
   let release!: () => void;
   const released = new Promise<void>((resolve) => { release = resolve; });
+  let graphHeld!: () => void;
+  const firstHeldGraph = new Promise<void>((resolve) => { graphHeld = resolve; });
   const activeRoutes = new Set<Promise<void>>();
   const failures: unknown[] = [];
   let routeRegistered = false;
@@ -90,6 +94,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
       message: failure instanceof Error ? failure.message : String(failure) });
   };
   const holdGraph = (route: Route): Promise<void> => {
+    graphHeld();
     const pending = (async () => { await released; await route.continue(); })();
     activeRoutes.add(pending);
     return pending.catch((failure: unknown) => { retainFailure('held-graph-route', failure); throw failure; })
@@ -183,10 +188,11 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     const ticking = card(page, crossing.id);
     await expect(duration(ticking)).toBeVisible();
     await expect(ticking.locator('.task-stuck-label')).toHaveCount(0);
-    const initial = await elapsed(ticking); expect(initial).toBeLessThan(3_600_000); expect(initial).toBeGreaterThan(3_580_000);
     expect(await page.evaluate(() => Date.now())).toBe(new Date('2055-01-01T00:00:00Z').getTime());
     evidence.progress.push('fresh-below-threshold-snapshot');
     await page.route((url) => url.pathname === syncPath, holdGraph); routeRegistered = true;
+    await firstHeldGraph;
+    const initial = await elapsed(ticking); expect(initial).toBeLessThan(3_600_000); expect(initial).toBeGreaterThan(3_580_000);
     const deliveredBefore = delivered;
     const inspection = ticking.locator('.task-node-body'); const details = ticking.locator('.task-node-details');
     await inspection.click(); await details.focus();
