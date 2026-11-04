@@ -1,5 +1,5 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
@@ -157,6 +157,31 @@ export const parseProjectAccess = (value: unknown, projectId: string, userId?: s
   };
   if (access.projectId !== projectId || access.ownerTeam.id !== access.ownership.teamId || access.canTransfer !== (access.teamRole === "admin") || access.effectiveRole !== effectiveRole(access.teamRole, access.directGrant)) return malformed();
   return access;
+};
+const sameTeamRef = (a: TeamRef, b: TeamRef): boolean => a.id === b.id && a.kind === b.kind && a.name === b.name;
+export const parseProjectTransferPreview = (value: unknown, targetTeamId: string): ProjectTransferPreview => {
+  const data = fields(value, ["sourceTeam", "targetTeam", "ownership", "actorRole"]);
+  const target = fields(data.targetTeam, ["id", "kind", "name", "version"]);
+  const preview: ProjectTransferPreview = {
+    sourceTeam: parseTeamRef(data.sourceTeam),
+    targetTeam: { ...parseTeamRef({ id: target.id, kind: target.kind, name: target.name }), version: resourceVersion(target.version) },
+    ownership: parseOwnership(data.ownership),
+    actorRole: data.actorRole === null ? null : projectRole(data.actorRole),
+  };
+  if (preview.sourceTeam.id !== preview.ownership.teamId || preview.targetTeam.id !== targetTeamId || preview.sourceTeam.id === targetTeamId && !sameTeamRef(preview.sourceTeam, preview.targetTeam)) return malformed();
+  return preview;
+};
+export const parseProjectTransferReceipt = (value: unknown, projectId: string, userId: string, preview: ProjectTransferPreview): ProjectTransferReceipt => {
+  const data = fields(value, ["projectId", "changed", "sourceTeam", "ownerTeam", "ownership", "actorAccess"]);
+  const receipt: ProjectTransferReceipt = {
+    projectId: id(data.projectId), changed: bool(data.changed), sourceTeam: parseTeamRef(data.sourceTeam),
+    ownerTeam: parseTeamRef(data.ownerTeam), ownership: parseOwnership(data.ownership),
+    actorAccess: data.actorAccess === null ? null : parseProjectAccess(data.actorAccess, projectId, userId),
+  };
+  const changed = preview.ownership.teamId !== preview.targetTeam.id;
+  if (receipt.projectId !== projectId || receipt.changed !== changed || receipt.sourceTeam.id !== preview.sourceTeam.id || !sameTeamRef(receipt.ownerTeam, preview.targetTeam) || !changed && !sameTeamRef(receipt.sourceTeam, receipt.ownerTeam) || receipt.ownership.teamId !== preview.targetTeam.id || receipt.ownership.version !== preview.ownership.version + (changed ? 1n : 0n)) return malformed();
+  if (receipt.actorAccess !== null && (!sameTeamRef(receipt.actorAccess.ownerTeam, receipt.ownerTeam) || receipt.actorAccess.ownership.teamId !== receipt.ownership.teamId || receipt.actorAccess.ownership.version !== receipt.ownership.version)) return malformed();
+  return receipt;
 };
 export const parseCreatedProject = (value: unknown, userId: string, teamId?: string): Project => {
   const data = fields(value, ["id", "name", "repoUrl", "settings", "ownership", "createdAt", "updatedAt", "access"]);

@@ -105,7 +105,7 @@ func lockSessionBot(ctx context.Context, tx pgx.Tx, id string) (*core.Bot, error
 		return nil, botMissing(err)
 	}
 	if bot.Deletion != nil {
-		return nil, fault("resource_conflict", "Bot is deleted.")
+		return &bot, fault("resource_conflict", "Bot is deleted.")
 	}
 	if bot.SessionID == nil || *bot.SessionID != id {
 		return nil, conflict()

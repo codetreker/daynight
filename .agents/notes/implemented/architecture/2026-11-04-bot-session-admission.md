@@ -81,8 +81,9 @@ preserves that path while recovery keeps the stronger known-ID condition.
 
 **Expose bound-Bot deletion with registration.** Persistent admission is necessary
 but does not perform native stopping or SQL, archive and Worker-private cleanup.
-The management endpoint continues to reject deletion of bound definitions until
-the complete cleanup responsibility can be preserved and discharged.
+At registration delivery, the management endpoint therefore rejected bound
+definitions. The [history deletion decision](2026-11-04-bot-history-deletion.md)
+now preserves and discharges server cleanup alongside a bound Worker receipt.
 
 ## Consequences
 
@@ -98,8 +99,7 @@ startup result records a past verified binding, not ongoing Worker availability.
 Current connectivity remains a Session observation.
 
 The server interfaces do not provide Worker process hosting, provider role
-injection, browser panes or physical history cleanup. Public deletion of a bound
-Bot remains refused. Cleanup must retain the Bot-before-Session order and exact
-responsibility, while allowing the minimum Bot record to outlive deleted Session
-rows. Server tests establish admission and transaction behavior; they do not prove
+injection or browser panes. The [history deletion decision](2026-11-04-bot-history-deletion.md)
+extends public deletion to bound Bots while retaining this lock order and exact
+responsibility, and allows the minimum Bot record to outlive deleted Session rows. Server tests establish admission and transaction behavior; they do not prove
 real provider execution or the combined assistant experience.

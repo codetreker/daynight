@@ -63,6 +63,17 @@ A lost, cancelled or malformed acceptance response can follow a commit. Do not
 replay it automatically or claim success from a later membership read: current
 facts cannot recover the original receipt.
 
+## Project transfers
+
+With authorization, use `project transfer` with a target Team UUID or an exact
+same-service Team link. The preview identifies the Project, source and destination
+and the actor's expected access. Confirm the decision interactively or use the
+boolean `--confirm` flag. The command submits the observed ownership and destination
+versions with the current identity; a conflict requires a new preview and decision.
+The receipt can confirm success with no remaining actor access. Do not replay an
+unknown submission automatically: a later Project read, including 404, cannot
+prove whether the transfer committed. Grants and invitations remain independent.
+
 ## Task Step writes
 
 Read `task step list <task-id> --json` for the complete current collection and

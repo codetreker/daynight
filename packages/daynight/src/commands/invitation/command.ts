@@ -34,7 +34,7 @@ export const runInvitationCommand = async (args: readonly string[], context: Cli
     const targetId = "team" in inspection ? inspection.team.id : inspection.projectId;
     context.stderr(`${account(user)}\n${renderInspection(inspection)}`);
     if (!confirmed) {
-      await confirmTeamChange(context, false, "Accept this invitation as the account shown above?", operation.signal);
+      await confirmTeamChange(context, false, "Accept this invitation as the account shown above?", operation.signal, undefined, "Invitation acceptance");
     }
     const requestId = randomUUID();
     let receipt;

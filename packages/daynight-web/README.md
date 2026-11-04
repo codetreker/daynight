@@ -1,7 +1,7 @@
 # daynight-web
 
 The React/TypeScript Web app provides a public product introduction and a private
-workspace. The workspace implements project browsing, account-owned Worker
+workspace. The workspace implements Team creation and settings, project browsing, account-owned Worker
 observations and cloud configuration, cursor pagination, request cancellation,
 runtime API decoding, native browser routing and a pure dependency graph model
 with horizontal layout. Project task views use an IndexedDB summary cache and the
@@ -30,7 +30,7 @@ projects, member and invitation management, CLI device authorization, and person
 `Application` responds to browser location under the persistent `LocaleProvider`: `/`
 shows the public introduction, `/setup` selects the zero-API guide, and other pages
 use the existing authenticated lifecycle. `/login` is explicit and `/projects` is
-the project index. Business APIs require a browser session or PAT; project
+the project index; `/teams/{teamId}/settings` opens Team settings. Business APIs require a browser session or PAT; project
 resources also require current membership, while Worker resources belong to the
 current account and filter their saved task observations by current project access. The Go service
 retains loopback-only listening. Trusted same-origin previews, relative resources
@@ -114,20 +114,23 @@ It composes the project list, graph, shared task-detail surfaces and My Workers
 list/detail with private project creation, account/token pages, member/invitation management,
 project execution-warning settings and explicit invitation acceptance.
 
-`WorkspaceSidebar` provides peer My projects and My Workers entries in its
-scrollable upper region. Accessible projects appear as indented links below My
-projects. The project index selects My projects; project, member and settings
-routes select the corresponding project. Both Worker routes select My Workers. Links preserve native
+`WorkspaceSidebar` provides a Team selector, the selected Team's project links,
+Shared with me and My Workers in its scrollable upper region. Shared projects
+stay outside the Team's indented list. Project, member and settings routes select
+the corresponding project; both Worker routes select My Workers. Links preserve native
 modified clicks, expose full names through accessible text and titles, and
 truncate long visible names. Project children appear in expanded desktop and
 mobile navigation and are hidden in the folded rail. Initial loading, empty and
 failed reads have localized feedback and retry; Load more traverses subsequent
 pages without removing earlier links on failure.
 
-The existing `/account` entry and sidebar toggle stay in the footer. Desktop widths are
-190px expanded and 68px collapsed. The footer stays reachable on long pages and
-short viewports; icon entries retain accessible names, hover titles and selected
-route styling. The topbar account link keeps its name and behavior.
+The sidebar toggle stays in the footer. Desktop widths are 190px expanded and
+68px collapsed. The footer stays reachable on long pages and short viewports;
+icon entries retain accessible names, hover titles and selected route styling.
+The topbar avatar opens an account menu whose Account settings item navigates to
+`/account`. The localized trigger exposes its expanded state; keyboard access,
+outside-click and Escape dismissal, focus restoration after Escape, and route
+change dismissal keep the menu usable across desktop and narrow viewports.
 
 `useSidebarPreference` saves only a JSON boolean under the origin-local
 `daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
@@ -148,8 +151,8 @@ policy. Sidebar changes preserve the mounted project, cache, detail and graph
 viewport without another request or synchronization loop. The
 [sidebar preference decision](../../.agents/notes/implemented/feature/2026-10-25-sidebar-preference.md)
 owns these state boundaries; the
-[account navigation decision](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
-owns bottom placement. Cross-tab live updates and server or cross-device
+[account menu decision](../../.agents/notes/implemented/feature/2026-11-04-topbar-account-menu.md)
+owns account entry placement. Cross-tab live updates and server or cross-device
 synchronization are outside the local persistence guarantee.
 
 Task details expose the versioned automatic-execution permission: one bilingual
@@ -283,7 +286,9 @@ The list uses only the actual summary: machine name, platform, last report time,
 task observation state and currently visible task count. It does not infer an OS
 release or load every detail. `null` task count means information unavailable;
 observed zero means idle. Stale task information retains its observation time.
-The complete collection groups online Workers first while preserving the
+The last report label and localized absolute date and time share one line; the
+time uses the browser time zone and includes seconds. The complete collection
+groups online Workers first while preserving the
 service’s creation-time and Worker ID order within each group. Heartbeats do not
 change that relative order.
 
@@ -693,7 +698,7 @@ index. Overview positioning can clear a filter that hides its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
-## Steps reading, status and position
+## Steps reading and writing
 
 Task details always expose Steps after Overview, in both the dialog and standalone
 page. `tab=steps` preserves the tab through direct access, reload and browser
@@ -727,7 +732,17 @@ readback keeps the submission gate closed. Position controls move up, down, to
 either end or relative to a selected Step. The picker filters the complete
 collection by name or ID, mounts at most 100 candidates and retains selection
 across filtering and pages. Confirmed moves locate the actual page and preserve
-expansion and focus by ID. Other Steps write controls are not exposed. At heights up to 500px, a single scrollable tab row reserves
+expansion and focus by ID. The add form appends or inserts before or after a
+selected Step, using the same bounded picker and preserving its anchor by ID.
+A missing anchor or a changed creation time leaves the draft intact and requires
+a new position decision.
+The shared owner validates the complete response, and an unknown result retains
+the original ID for read-only reconciliation. Confirmed additions locate and
+focus the new row. Existing Steps can be edited in the same draft workspace;
+identity and creation time prevent an old draft from updating a replacement.
+Deletion requires confirmation and preserves unrelated Steps and references; a
+deleted edited item requires an explicit draft decision. At heights up to 500px,
+a single scrollable tab row reserves
 reading space; the tab owner reveals its target after focus, selection styling
 and locale updates. At heights up to 600px, pagination scrolls with the list so
 its controls cannot cover the remaining reading area. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
@@ -1735,7 +1750,7 @@ independent native/container services, databases, private credentials and cleanu
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
 --shard=i/2`: fully-parallel controls case-level partitioning, while each database
 still executes one browser worker serially. The current canonical inventory is
-36 scenarios, divided into two disjoint sets of 18. Default file-level partitioning
+38 scenarios, divided into two disjoint sets of 19. Default file-level partitioning
 does not provide this case-level balance.
 
 Before preparing services, the runner collects the complete canonical functional
@@ -2115,8 +2130,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (72 ordinary cases; local stress adds five native cases
-for 41 native / 36 container, 77 total), current manual/periodic refresh,
+The selected inventory (76 ordinary cases; local stress adds five native cases
+for 43 native / 38 container, 81 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -2155,7 +2170,8 @@ the remaining functional scenarios.
 | W11 | Strict raw Go/V8 coverage reports, validated functional browser receipts and the final `checks` result; explicit local stress mode additionally validates complete performance receipts |
 | W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |
 | W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
-| Steps append | `task-step-add`: real-service append and CLI readback, pagination and focus, draft navigation, conflict and committed response loss, late receipt, bilingual desktop and narrow keyboard behavior |
+| Steps add | `task-step-add`: real-service append and relative insertion with CLI readback, pagination and focus, draft navigation, conflict and committed response loss, late receipt, bilingual desktop and narrow keyboard behavior |
+| Steps delete | `task-step-delete`: real-service removal, draft consequences, pagination focus, reference preservation, missing targets and unknown-result readback, bilingual desktop and narrow keyboard behavior |
 | Steps status | `task-step-status`, `task-step-access-retirement`: real-service status transitions, conflict, committed response loss and failed readback, malformed success, child 404 and parent deletion, late dialog receipt, bilingual desktop and narrow keyboard menus |
 | Steps position | `task-step-position`: real-service ordered moves, bounded search and paging, no-op, invalid anchor and self-reference, conflict and lost response, focus, bilingual narrow and touch controls |
 | W20 | `task-assignment`, `task-assignment-layout`: native field propagation, real exact-version assignment/clear PATCHes, same-value zero writes, conflict and committed-response-loss GET-only recovery, people identity/access presentation, local filters with full-chain facts, bilingual desktop/narrow menu, focus, scroll and fullscreen behavior |
