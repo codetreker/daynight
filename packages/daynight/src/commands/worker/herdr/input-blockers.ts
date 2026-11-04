@@ -31,6 +31,13 @@ const codexConfigurationFooter = new RegExp(`^[ \\t]*(?:${configurationFooter})[
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/selection_picker_tests.rs#L9-L43
 const keymapFooter = `(?:${configurationGroup}${footerSeparator})?${footerShortcut}${footerGap}edit(?:${footerGap}shortcut)?(?:${footerSeparator}${footerShortcut}${footerGap}custom)?(?:${footerSeparator}${footerShortcut}${footerGap}unbound)?${footerSeparator}${footerShortcut}${footerGap}close`;
 const codexKeymapFooter = new RegExp(`^[ \\t]*(?:${keymapFooter})[ \\t]*$`, "gmi");
+// MultiSelectPicker owns Space toggles, optional ordering, and configured save/cancel keys.
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/multi_select_picker.rs#L308-L329
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/multi_select_picker.rs#L606-L617
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/multi_select_picker.rs#L779-L802
+const multiSelectFooter = `space${footerGap}toggle(?:${footerSeparator}${footerShortcut}/${footerShortcut}${footerGap}reorder)?(?:${footerSeparator}${footerShortcut}${footerGap}save)?(?:${footerSeparator}${footerShortcut}${footerGap}cancel)?`;
+const codexMultiSelectFooter = new RegExp(`^[ \\t]*(?:${multiSelectFooter})[ \\t]*$`, "gmi");
+const codexShortMultiSelect = new RegExp(`^[ \\t\\r\\n]*(?:Type${footerGap}to${footerGap}search[ \\t]*\\r?\\n)?[ \\t]*(?:${multiSelectFooter})[ \\t\\r\\n]*$`, "i");
 // Custom bottom-pane views own these controls rather than the shared picker defaults.
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/plugin_catalog.rs#L1283-L1312
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/experimental_features_view.rs#L450-L465
@@ -50,6 +57,8 @@ const sessionFooter = `${footerShortcut}${footerGap}(?:resume|fork|restore)(?:[ 
 const namedCodexMenus = [
   { header: /^\s*Configuration\s*$/, footer: codexConfigurationFooter },
   { header: /^\s*Keymap\s*$/, footer: codexKeymapFooter },
+  { header: /^\s*Configure (?:Status Line|Terminal Title)\s*$/, footer: codexMultiSelectFooter },
+  { header: /^\s*Microphone: \S.*$/, footer: codexMultiSelectFooter },
   { header: /^\s*Plugins\s*$/, footer: new RegExp(`^[ \\t]*(?:${pluginFooter}|${pickerFooter})[ \\t]*$`, "gmi") },
   { header: /^\s*Experimental features\s*$/, footer: new RegExp(`^[ \\t]*(?:${experimentalFooter}|${experimentalStatus})[ \\t]*$`, "gmi") },
   { header: /^\s*Enable\/Disable Skills\s*$/, footer: new RegExp(`^[ \\t]*(?:${skillsFooter})[ \\t]*$`, "gmi") },
@@ -79,6 +88,10 @@ export const nativeInputBlocker = (agent: WorkerAgent, visible: string): NativeI
     };
     const footer = footerEnd(codexFooter);
     if (selectedRow >= 0 && footer > selectedRow && !laterPrompt(footer)) return "menu";
+    const checkbox = lines.findLastIndex(line => /^\s*[›»]\s+\[[ x]\]\s+\S/.test(line));
+    const emptyCheckboxSearch = lines.findLastIndex(line => /^\s*no matches\s*$/.test(line));
+    const multiSelectEnd = footerEnd(codexMultiSelectFooter);
+    if (codexShortMultiSelect.test(screen) || (checkbox >= 0 && multiSelectEnd > checkbox || emptyCheckboxSearch >= 0 && multiSelectEnd > emptyCheckboxSearch) && !laterPrompt(multiSelectEnd)) return "menu";
     for (const menu of namedCodexMenus) {
       const header = lines.findLastIndex(line => menu.header.test(line));
       const end = footerEnd(menu.footer);

@@ -118,5 +118,140 @@ export const nativeMenuScreens = [
     "name": "experimental_features_save_failed",
     "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__experimental_features_view__tests__experimental_features_save_failed.snap",
     "screen": "\n  Experimental features\n  Checked features are configured on. Some experimental features take effect\n  only in new tasks or after restarting the Codex server.\n  Saved but readback failed\n\n\n› [ ] Server network_proxy       Description supplied by the server.\n  [ ] Server future_feature      Description supplied by the server.\n  [ ] Server prevent_idle_sleep  Description supplied by the server.\n\n\n  Selections retained. Save to retry, or cancel to close.\n"
+  },
+  {
+    "name": "status_line_setup_popup_hardcoded_only",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__status_line_setup_popup_hardcoded_only.snap",
+    "screen": "  Configure Status Line\n  Select which items to display in the status line.\n\n  Type to search\n\n› [x] Use theme colors      Apply colors from the active /theme\n  ───────────────────────\n  [x] project-name          Project name (omitted when unavailable)\n  [x] git-branch            Current Git branch (omitted when unavailable)\n  [x] thread-title          Current thread title, or thread identifier when unnamed\n  [ ] model                 Current model name\n  [ ] model-with-reasoning  Current model name with reasoning level\n  [ ] reasoning             Current reasoning level\n↓\n  my-project · feat/awesome-feature · thread title\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "status_line_setup_popup_live_only",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__status_line_setup_popup_live_only.snap",
+    "screen": "  Configure Status Line\n  Select which items to display in the status line.\n\n  Type to search\n\n› [x] Use theme colors      Apply colors from the active /theme\n  ───────────────────────\n  [x] project-name          Project name (omitted when unavailable)\n  [x] git-branch            Current Git branch (omitted when unavailable)\n  [x] thread-title          Current thread title, or thread identifier when unnamed\n  [ ] model                 Current model name\n  [ ] model-with-reasoning  Current model name with reasoning level\n  [ ] reasoning             Current reasoning level\n↓\n  preview-live-root · feature/live-preview-branch · Live preview thread\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "status_line_setup_popup_mixed",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__status_line_setup_popup_mixed.snap",
+    "screen": "  Configure Status Line\n  Select which items to display in the status line.\n\n  Type to search\n\n› [x] Use theme colors      Apply colors from the active /theme\n  ───────────────────────\n  [x] project-name          Project name (omitted when unavailable)\n  [x] git-branch            Current Git branch (omitted when unavailable)\n  [x] thread-title          Current thread title, or thread identifier when unnamed\n  [x] daybreak              Whether Daybreak is enabled for this thread\n  [ ] model                 Current model name\n  [ ] model-with-reasoning  Current model name with reasoning level\n↓\n  my-project · feature/mixed-preview · Mixed preview thread · Daybreak on\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "status_line_setup_popup_rate_limits",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__status_line_setup_popup_rate_limits.snap",
+    "screen": "  Configure Status Line\n  Select which items to display in the status line.\n\n  Type to search\n\n› [x] Use theme colors      Apply colors from the active /theme\n  ───────────────────────\n  [x] monthly-limit         Remaining usage on the monthly usage limit (omitted when unavailable)\n  [x] weekly-limit          Remaining usage on the weekly usage limit (omitted when unavailable)\n  [ ] model                 Current model name\n  [ ] model-with-reasoning  Current model name with reasoning level\n  [ ] reasoning             Current reasoning level\n  [ ] current-dir           Current working directory\n↓\n  monthly 65% left · weekly 50% left\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "status_line_setup_popup_workspace_headline",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__status_line_setup_popup_workspace_headline.snap",
+    "screen": "  Configure Status Line\n  Select which items to display in the status line.\n\n  Type to search\n\n› [x] Use theme colors      Apply colors from the active /theme\n  ───────────────────────\n  [x] workspace-headline    Workspace notification headline (Enterprise workspaces only; omitted wh…\n  [ ] model                 Current model name\n  [ ] model-with-reasoning  Current model name with reasoning level\n  [ ] reasoning             Current reasoning level\n  [ ] current-dir           Current working directory\n  [ ] project-name          Project name (omitted when unavailable)\n↓\n  Workspace maintenance starts at 5pm\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "terminal_title_setup_popup_hardcoded_only",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__terminal_title_setup_popup_hardcoded_only.snap",
+    "screen": "  Configure Terminal Title\n  Select which items to display in the terminal title.\n\n  Type to search\n\n› [x] thread-title   Current thread title, or thread identifier when unnamed\n  [x] git-branch     Current Git branch (omitted when unavailable)\n  [x] task-progress  Latest task progress from update_plan (omitted until available)\n  [ ] app-name       Codex app name\n  [ ] project-name   Project name (falls back to current directory name)\n  [ ] current-dir    Current working directory\n  [ ] activity       Spinner while working, action-required message while blocked\n  [ ] run-state      Compact session run-state text (Ready, Working, Thinking)\n↓\n  thread title | feat/awesome-feature | Tasks 0/0\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "terminal_title_setup_popup_live_only",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__terminal_title_setup_popup_live_only.snap",
+    "screen": "  Configure Terminal Title\n  Select which items to display in the terminal title.\n\n  Type to search\n\n› [x] project-name   Project name (falls back to current directory name)\n  [x] thread-title   Current thread title, or thread identifier when unnamed\n  [x] git-branch     Current Git branch (omitted when unavailable)\n  [x] task-progress  Latest task progress from update_plan (omitted until available)\n  [ ] app-name       Codex app name\n  [ ] current-dir    Current working directory\n  [ ] activity       Spinner while working, action-required message while blocked\n  [ ] run-state      Compact session run-state text (Ready, Working, Thinking)\n↓\n  preview-live-root | Live preview thread | feature/live-preview-branch | Tasks 2/5\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "terminal_title_setup_popup_mixed",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__terminal_title_setup_popup_mixed.snap",
+    "screen": "  Configure Terminal Title\n  Select which items to display in the terminal title.\n\n  Type to search\n\n› [x] project-name   Project name (falls back to current directory name)\n  [x] thread-title   Current thread title, or thread identifier when unnamed\n  [x] task-progress  Latest task progress from update_plan (omitted until available)\n  [x] daybreak       Whether Daybreak is enabled for this thread\n  [ ] app-name       Codex app name\n  [ ] current-dir    Current working directory\n  [ ] activity       Spinner while working, action-required message while blocked\n  [ ] run-state      Compact session run-state text (Ready, Working, Thinking)\n↓\n  project | Mixed preview thread | Tasks 0/0 | Daybreak on\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "terminal_title_setup_popup_rate_limits",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__terminal_title_setup_popup_rate_limits.snap",
+    "screen": "  Configure Terminal Title\n  Select which items to display in the terminal title.\n\n  Type to search\n\n› [x] monthly-limit  Remaining usage on the monthly usage limit (omitted when unavailable)\n  [x] weekly-limit   Remaining usage on the weekly usage limit (omitted when unavailable)\n  [ ] app-name       Codex app name\n  [ ] project-name   Project name (falls back to current directory name)\n  [ ] current-dir    Current working directory\n  [ ] activity       Spinner while working, action-required message while blocked\n  [ ] run-state      Compact session run-state text (Ready, Working, Thinking)\n  [ ] thread-name    Current thread name (omitted when unnamed)\n↓\n  monthly 65% left | weekly 50% left\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "terminal_title_setup_popup_thread_usage",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__terminal_title_setup_popup_thread_usage.snap",
+    "screen": "  Configure Terminal Title\n  Select which items to display in the terminal title.\n\n  Type to search\n\n› [x] thread-credits         Estimated current-thread credits (Enterprise workspaces only; omitted …\n  [x] estimated-thread-cost  Estimated current-thread cost (Enterprise workspaces only; omitted whe…\n  [ ] app-name               Codex app name\n  [ ] project-name           Project name (falls back to current directory name)\n  [ ] current-dir            Current working directory\n  [ ] activity               Spinner while working, action-required message while blocked\n  [ ] run-state              Compact session run-state text (Ready, Working, Thinking)\n  [ ] thread-name            Current thread name (omitted when unnamed)\n↓\n  5.2 credits | ~$1.82\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "voice_input_channel_subset",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__realtime_settings__tests__voice_input_channel_subset.snap",
+    "screen": "  Microphone: Zen Go Synergy Core Playback\n  Select the input channels to mix. Select at least one.\n\n  Type to search\n\n  [x] Input 1\n› [x] Input 2\n  [ ] Input 3\n  [ ] Input 4\n\n  space toggle · enter save · esc cancel\n"
+  },
+  {
+    "name": "voice_input_channels",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__realtime_settings__tests__voice_input_channels.snap",
+    "screen": "  Microphone: Zen Go Synergy Core Playback\n  Select the input channels to mix. Select at least one.\n\n  Type to search\n\n› [x] Input 1\n  [ ] Input 2\n  [ ] Input 3\n  [ ] Input 4\n\n  space toggle · enter save · esc cancel\n"
+  },
+  {
+    "name": "voice_input_channels_empty",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__realtime_settings__tests__voice_input_channels_empty.snap",
+    "screen": "  Microphone: Mic\n  Select the input channels to mix. Select at least one.\n\n  Type to search\n\n› [ ] Input 1\n  [ ] Input 2\n  [ ] Input 3\n  [ ] Input 4\n\n  Select at least one input channel.\n  space toggle · enter save · esc cancel\n"
+  },
+  {
+    "name": "setup_view_snapshot_includes_hostname",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__status_line_setup__tests__setup_view_snapshot_includes_hostname.snap",
+    "screen": "\n  Configure Status Line\n  Select which items to display in the status line.\n\n  Type to search\n\n› [x] Use theme colors      Apply colors from the active /theme\n  ───────────────────────\n  [x] hostname              Current machine hostname (omitted when unavailable)\n  [x] current-dir           Current working directory\n  [ ] model                 Current model name\n  [ ] model-with-reasoning  Current model name with reasoning level\n  [ ] reasoning             Current reasoning level\n  [ ] project-name          Project name (omitted when unavailable)\n↓\n  ssh-build-01.example.com · ~/codex-rs\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "setup_view_snapshot_includes_thread_usage_items",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__status_line_setup__tests__setup_view_snapshot_includes_thread_usage_items.snap",
+    "screen": "                                                                                                    \n  Configure Status Line                                                                             \n  Select which items to display in the status line.                                                 \n                                                                                                    \n  Type to search                                                                                    \n                                                                                                    \n› [x] Use theme colors       Apply colors from the active /theme                                    \n  ───────────────────────                                                                           \n  [x] thread-credits         Estimated current-thread credits (Enterprise workspaces only; omitted …\n  [x] estimated-thread-cost  Estimated current-thread cost in USD (Enterprise workspaces only; omit…\n  [ ] model                  Current model name                                                     \n  [ ] model-with-reasoning   Current model name with reasoning level                                \n  [ ] reasoning              Current reasoning level                                                \n  [ ] current-dir            Current working directory                                              \n↓                                                                                                   \n  5.2 credits · ~$1.82                                                                              \n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "setup_view_snapshot_uses_runtime_preview_values",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__status_line_setup__tests__setup_view_snapshot_uses_runtime_preview_values.snap",
+    "screen": "                                                                        \n  Configure Status Line                                                 \n  Select which items to display in the status line.                     \n                                                                        \n  Type to search                                                        \n                                                                        \n› [x] Use theme colors      Apply colors from the active /theme         \n  ───────────────────────                                               \n  [x] model                 Current model name                          \n  [x] current-dir           Current working directory                   \n  [x] git-branch            Current Git branch (omitted when unavailabl…\n  [ ] model-with-reasoning  Current model name with reasoning level     \n  [ ] reasoning             Current reasoning level                     \n  [ ] project-name          Project name (omitted when unavailable)     \n↓                                                                       \n  gpt-5-codex · ~/codex-rs · jif/statusline-preview                     \n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "terminal_title_setup_basic",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__title_setup__tests__terminal_title_setup_basic.snap",
+    "screen": "                                                                                    \n  Configure Terminal Title                                                          \n  Select which items to display in the terminal title.                              \n                                                                                    \n  Type to search                                                                    \n                                                                                    \n› [x] project-name  Project name (falls back to current directory name)             \n  [x] activity      Spinner while working, action-required message while blocked    \n  [x] run-state     Compact session run-state text (Ready, Working, Thinking)       \n  [x] thread-title  Current thread title, or thread identifier when unnamed         \n  [ ] app-name      Codex app name                                                  \n  [ ] current-dir   Current working directory                                       \n  [ ] thread-name   Current thread name (omitted when unnamed)                      \n  [ ] git-branch    Current Git branch (omitted when unavailable)                   \n↓                                                                                   \n  [ ! ] Action Required | my-project | Working | thread title                       \n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "multi_select_first_page",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__multi_select_picker__tests__picker_appearance_renders_checkboxes_preview_and_overflow.snap",
+    "screen": "                                                \n  Status line                                   \n                                                \n  Type to search                                \n                                                \n› [x] Field 0              Status detail        \n  ───────────────────────                       \n  [ ] Field 1              Status detail        \n  [ ] Field 2              Status detail        \n  [ ] Field 3              Status detail        \n  [ ] Field 4              Status detail        \n  [ ] Field 5              Status detail        \n  [ ] Field 6              Status detail        \n↓                                               \n  Field 0                                       \n  space toggle · ←/→ reorder · enter save · esc \n  cancel                                        \n"
+  },
+  {
+    "name": "multi_select_last_page",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__multi_select_picker__tests__picker_appearance_renders_checkboxes_preview_and_overflow.snap",
+    "screen": "                                                \n  Status line                                   \n                                                \n  Type to search                                \n↑                                               \n  [ ] Field 4   Status detail                   \n  [ ] Field 5   Status detail                   \n  [ ] Field 6   Status detail                   \n  [ ] Field 7   Status detail                   \n  [ ] Field 8   Status detail                   \n  [ ] Field 9   Status detail                   \n› [x] Field 11  Status detail                   \n  [ ] Field 10  Status detail                   \n                                                \n  Field 0 · Field 11                            \n  space toggle · ←/→ reorder · enter save · esc \n  cancel                                        \n"
+  },
+  {
+    "name": "multi_select_no_matches",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__multi_select_picker__tests__picker_appearance_renders_checkboxes_preview_and_overflow.snap",
+    "screen": "                                                \n  Status line                                   \n                                                \n  z                                             \n                                                \nno matches                                      \n                                                \n  Field 0 · Field 11                            \n  space toggle · ←/→ reorder · enter save · esc \n  cancel                                        \n"
+  },
+  {
+    "name": "multi_select_height_1",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__multi_select_picker__tests__short_picker_preserves_selected_row_when_overflow_spacers_yield.snap",
+    "screen": "  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "multi_select_height_2",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__multi_select_picker__tests__short_picker_preserves_selected_row_when_overflow_spacers_yield.snap",
+    "screen": "\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "multi_select_height_3",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__multi_select_picker__tests__short_picker_preserves_selected_row_when_overflow_spacers_yield.snap",
+    "screen": "\n  Type to search\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "multi_select_height_4",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__multi_select_picker__tests__short_picker_preserves_selected_row_when_overflow_spacers_yield.snap",
+    "screen": "\n  Type to search\n› [ ] field-11\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "multi_select_height_5",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__multi_select_picker__tests__short_picker_preserves_selected_row_when_overflow_spacers_yield.snap",
+    "screen": "\n  Type to search\n  [ ] field-10\n› [ ] field-11\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "multi_select_height_6",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__multi_select_picker__tests__short_picker_preserves_selected_row_when_overflow_spacers_yield.snap",
+    "screen": "\n  Type to search\n↑\n› [ ] field-11\n\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
+  },
+  {
+    "name": "multi_select_height_7",
+    "source": "https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__multi_select_picker__tests__short_picker_preserves_selected_row_when_overflow_spacers_yield.snap",
+    "screen": "\n  Type to search\n↑\n  [ ] field-10\n› [ ] field-11\n\n  space toggle · ←/→ reorder · enter save · esc cancel\n"
   }
 ];

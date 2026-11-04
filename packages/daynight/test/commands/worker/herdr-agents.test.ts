@@ -833,6 +833,22 @@ describe("direct task resource management", () => {
   });
 
   it.each([
+    "space toggle · ←/→ reorder · enter save · esc cancel",
+    "space toggle · h/l reorder · f3 save · f2 cancel",
+    "space toggle · ctrl+x left/ctrl+x right reorder · f3 save · f2 cancel",
+    "space toggle · ←/→ reorder ·\nenter save · esc cancel",
+    "space toggle · enter save · esc cancel",
+    "space toggle · esc cancel",
+    "space toggle · f3 save",
+    "space toggle",
+  ])("recognizes the shared MultiSelectPicker controls without a title whitelist: %s", async footer => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.screen.text = `An arbitrary widget title\n› [x] Selected checkbox\n  [ ] Another checkbox\n${footer}`;
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each([
     configurationMenu,
     configurationMenu.replace(" · esc clear search/close", ""),
     configurationMenu.replace("/ search · enter toggle", "/ search ·\n  enter toggle"),
@@ -859,6 +875,9 @@ describe("direct task resource management", () => {
     { agent: "codex" as const, screen: "› 1. Historical choice\n› Current composer\nenter send ·\nesc cancel" },
     { agent: "codex" as const, screen: "› 1. Historical choice\n› Current composer\nenter send · esc cancel" },
     { agent: "codex" as const, screen: "Business prose: enter default · s session · esc back" },
+    { agent: "codex" as const, screen: "Business description of keyboard controls\nspace toggle · ←/→ reorder · enter save · esc cancel" },
+    { agent: "codex" as const, screen: "› [x] A literal checkbox draft\nenter send · esc cancel" },
+    { agent: "codex" as const, screen: "› [x] Old selection\nspace toggle · ←/→ reorder · enter save · esc cancel\n› Continue" },
     { agent: "codex" as const, screen: `${configurationMenu}\n\n› A custom current composer` },
     { agent: "codex" as const, screen: `${keymapMenu}\n\n› Continue` },
     { agent: "codex" as const, screen: "› Arbitrary business row\nleft/right group · enter edit · esc close" },
