@@ -8,8 +8,8 @@ import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, WorktreeBinding } from "./types.js";
 
 export type ManagedAssignment = LocalTask & { serverOrigin: string; workerId: string; worktreeId: string; configuration: ExecutionConfiguration; worktree: WorktreeBinding };
-const humanInterventionInstruction = "When human intervention is necessary to complete this assignment, you must set properties.paused=true on your own assigned task before waiting. Follow the using-daynight managed skill's Request user interaction workflow. Clear the pause only after the problem is resolved and valid authorization permits resuming this assignment.";
-const reviewWaitInstruction = "If review or CI is pending, wait and check it periodically yourself. When results arrive, address feedback, fix failures and complete the remaining delivery. Waiting is part of execution: do not end this turn or exit merely because review or CI is pending.";
+const humanInterventionInstruction = "When human intervention is necessary to complete this assignment, you must set properties.paused=true on your own assigned task before waiting. This requires specific information, a decision, authorization or an action that you cannot supply within the task scope and existing authority. Follow the using-daynight managed skill's Request user interaction workflow. Clear the pause only after the problem is resolved and valid authorization permits resuming this assignment.";
+const reviewWaitInstruction = "If review or CI is pending, wait and check it periodically yourself. Pending PR review, required reviewer approval, CI results and polling timeouts are not reasons to set properties.paused=true or request user intervention. When results arrive, address feedback, fix failures and complete the remaining delivery. Waiting is part of execution: do not end this turn or exit merely because review or CI is pending. Honor independent user pauses, restrictions and revocations.";
 
 export const createWorkerPromptBuilder = async (packageDirectory: string) => {
   const bundle = await captureInstalledSkill(packageDirectory);
