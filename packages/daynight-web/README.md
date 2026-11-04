@@ -2,9 +2,10 @@
 
 The React/TypeScript Web app provides a public product introduction and a private
 workspace. The workspace implements project browsing, account-owned Worker
-observations, cursor pagination, request cancellation, runtime API decoding, native
-browser routing and a pure dependency graph model with horizontal layout. Project task views
-use an IndexedDB summary cache and the authenticated task-sync endpoint.
+observations and cloud configuration, cursor pagination, request cancellation,
+runtime API decoding, native browser routing and a pure dependency graph model
+with horizontal layout. Project task views use an IndexedDB summary cache and the
+authenticated task-sync endpoint.
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
@@ -269,9 +270,11 @@ unavailable for editing.
 
 ## My Workers
 
-The account-owned `/workers` list and `/workers/{workerId}` detail show Workers
-that have reported within the last 72 hours. Both support direct access, reloads
-and login return destinations. They mount inside the existing authenticated
+The account-owned `/workers` list shows Workers that have reported within the
+last 72 hours. `/workers/{workerId}` combines Runtime overview and Configuration
+tabs: runtime observations retain that window, while cloud configuration is an
+independent, retained resource. Both routes support direct access, reloads and
+login return destinations. They mount inside the existing authenticated
 workspace and share its navigation, styles and language. Sidebar project loading
 or failure does not admit or block Worker reads. Worker ID participates in the
 page's resource key, content focus and mobile navigation lifetime.
@@ -280,8 +283,9 @@ The list uses only the actual summary: machine name, platform, last report time,
 task observation state and currently visible task count. It does not infer an OS
 release or load every detail. `null` task count means information unavailable;
 observed zero means idle. Stale task information retains its observation time.
-The complete collection sorts online first, latest report next and Worker ID as
-the stable tie-breaker.
+The complete collection groups online Workers first while preserving the
+service’s creation-time and Worker ID order within each group. Heartbeats do not
+change that relative order.
 
 Detail resource cards render actual OS type/release/version/architecture, CPU
 model/logical processor count/use, used/total memory and available/total capacity
@@ -305,14 +309,15 @@ resource identity and request generations fence late results. The shell's
 Same-account verification retains the last observation but rereads it; account
 replacement destroys the old workspace and its memory.
 
-One visible page owns one five-second single-flight refresh and one one-second
-ticker. The list traverses every cursor privately and replaces the collection
+The visible runtime observation view owns one five-second single-flight refresh
+and one one-second ticker. The list traverses every cursor privately and replaces the collection
 only when the whole traversal succeeds. A failed page retains the previous
 complete collection and exposes retry. Its last response supplies `observedAt`
 and the paired `performance.now()` receipt for a common server-time anchor.
 Online means less than 120 seconds since `lastReportedAt`; exactly 120 seconds
 is offline. Exactly 72 hours remains recent; later observations disappear, and
-an expired detail becomes unavailable. Browser wall-clock changes do not affect
+an expired runtime overview becomes unavailable. This does not clear or block
+the Configuration tab. Browser wall-clock changes do not affect
 these rules.
 
 Read failure, hidden state and identity checking freeze the last published
@@ -328,7 +333,8 @@ Actual refresh failures show the synchronization error, last successful
 observation and retry action throughout further attempts until success. Worker
 offline notices and probe failures retain their distinct meanings; browser
 connectivity does not establish Worker liveness. An admitted current-principal
-404 clears the old detail. Initial loading, initial failure, empty results and
+404 clears the old runtime observation. Configuration reads handle their own
+resource result. Initial loading, initial failure, empty results and
 retained-snapshot refresh failure have separate displays.
 
 Online badges use green. Offline text and dot use `#b54708` on `#fff0e6`, with
@@ -341,6 +347,49 @@ the server. Neither offline state, expiry nor a read error mutates a task or
 claim. Stable React identities preserve still-present keyboard targets during
 ticks and refreshes; desktop and 390px layouts wrap long names, paths and tasks.
 
+### Cloud runtime configuration
+
+Configuration edits the cloud target and shows the Worker's last reported
+application results. It supports concurrency, polling interval in milliseconds,
+recovery limit, default Agent/model/args, and selected Projects with native
+overrides. Repository root and local paths, Worker identity, service connection
+and credentials, and agent control mode remain locally managed.
+
+Project override controls preserve inheritance separately from an explicit
+provider-default model (`null`) and empty arguments (`[]`). Arguments are edited
+as a JSON string array. Invalid raw inputs remain in the form with validation
+feedback. The Project chooser loads the complete accessible directory; selected
+inaccessible Projects retain only their ID and saved override intent. Removing
+saved Projects requires confirmation before the single target PUT. Cancel and
+Escape make no write.
+
+A successful save confirms a target, not local application. Per-item results
+retain their target revision, actual value, pending/applying/applied/error state,
+current diagnostic, last failure and retry time. Project removal outcomes remain
+visible after the Project leaves the desired list. Offline Workers retain their
+last confirmed results and may receive a newly saved target when they reconnect.
+Without a recent runtime observation, the page does not invent a current online
+state. An uninitialized `desired:null` resource is not editable; the browser
+cannot create the first target.
+
+`api/worker-configuration.ts` strictly decodes the account-owned resource.
+`features/workers/configuration/model.ts` and `useWorkerConfiguration.ts` keep
+latest resource, draft baseline, raw input and submitted snapshot separate.
+Opening Configuration mounts its state; switching tabs preserves the mounted
+editor and draft while pausing configuration reads. The active, visible,
+identity-admitted tab performs its own five-second single-flight refresh without
+using the runtime observation clock.
+
+Background results do not replace draft input, focus or selection. Saving uses
+the draft's target revision; observation updates cannot invalidate that baseline.
+A conflict retains the draft and exposes the latest cloud value for explicit
+loading. Definite failures retain input. A potentially committed write is
+reconciled by GET before another save, without replaying PUT or attributing a
+matching current value to that request. Later input is not overwritten by an
+earlier submitted snapshot. Account and Worker lifetimes fence reads and writes;
+configuration and drafts stay in page memory, outside project storage and
+IndexedDB.
+
 The [Web requirements](../../docs/spec/daynight-web.md#我的-worker),
 [Web design](../../docs/design/daynight-web.md#我的-worker-列表与详情) and
 [observation decision](../../.agents/notes/implemented/architecture/2026-10-29-web-worker-observations.md)
@@ -348,7 +397,10 @@ own the page behavior and its rationale. The
 [snapshot protocol](../../docs/spec/daynight-worker-snapshots.md) owns the exact
 DTOs and permission filtering; the
 [client reporting contract](../../docs/spec/daynight-worker-reporting.md) owns
-collection, reporting and version age. Component or controlled-browser results
+collection, reporting and version age. The
+[configuration contract](../../docs/spec/daynight-worker-configuration.md) and
+[editor decision](../../.agents/notes/implemented/architecture/2026-11-04-web-worker-configuration-editor.md)
+own target/application semantics and form ownership. Component or controlled-browser results
 prove their stated frontend scope; combined Server, CLI and Web acceptance must
 separately establish real reporting, resources, permissions and recovery.
 

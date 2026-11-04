@@ -1,6 +1,6 @@
 # Worker 云端配置接口
 
-本文拥有账号级 Worker 目标配置与本机应用观测的服务端协议。[设计](../design/daynight-worker-configuration.md)拥有表示与事务；[运行快照](daynight-worker-snapshots.md)继续拥有机器报告、在线与近期窗口。配置接入不依赖 active claim，不改变 Task/claim 的数据、接口、认领或恢复规则。
+本文拥有账号级 Worker 目标配置与本机应用观测的服务端协议及消费者必须保持的数据含义。[设计](../design/daynight-worker-configuration.md)拥有表示与事务；[运行快照](daynight-worker-snapshots.md)继续拥有机器报告、在线与近期窗口。配置接入不依赖 active claim，不改变 Task/claim 的数据、接口、认领或恢复规则。
 
 ## 资源与认证
 
@@ -61,6 +61,14 @@ null 表示没有可确认的实际值，不是生效默认值。项目准备与
 error 表示当前失败，lastFailure 保留尚需报告的最近失败，nextAttemptAt 为 nullable RFC3339 本机重试期限。失败使用闭合 code/category/phase 及 occurredAt，不接受自由命令输出、配置正文或敏感信息。code 为 not_found、permission_denied、timeout、command_failed、invalid_output、invalid_configuration、io_error 或 unavailable；category 为 validation、repository、agent、runtime、storage；phase 为 validate、prepare、apply、stop、persist。error 只在 state:error 时存在；applied 必须具有非 null 实际值，nextAttemptAt 只用于 error 状态。pending/applying/error 可保留先前成功值。恢复可清除当前 error，不能提前丢弃尚未报告的失败。
 
 baseRevision 允许初始 "0"。desiredRevision 和每项 targetRevision 为正 int64 十进制字符串，不得引用未来目标。资源 observation 的 reportedAt 由数据库生成，仅在观测被接纳时更新，输入不能提供它。GET 中保留该次输入的 baseRevision，而下一次报告必须使用外层当前 observationRevision。普通或 CAS 被拒绝的机器报告不能更新这个应用确认时间。
+
+## Web 消费者
+
+“我的 Worker”详情的配置表单编辑 desired.value，以 desired.revision 保存完整目标；observationRevision 与 observation 只用于展示最近应用报告，不改变草稿的保存版本。页面的运行观测和配置分别读取：近期快照超窗的 404 不代表配置不存在，配置读取失败也不清除独立的运行观测。资源没有 supported 标志；desired:null 表示尚未首次导入，Web 不能使用 PUT 建立初值。
+
+表单保留项目覆盖的字段存在性、model:null 与 args:[]，并区分目标、尚未确认的实际值和每项结果。比较目标时保留各项 targetRevision 与实际值：值未变的独立项可沿用成功，项目准备/native 还需核对当前目标观测及后续移除版本；已移除项目的 projectRemoval 保留自己的状态和版本，结果仍应显示。observation.reportedAt 表示服务器接纳应用结果的时刻，不能以机器上报时间或保存目标的时间替代它。
+
+保存冲突、明确失败和响应未知保留草稿及无效原始输入。响应未知先读取当前资源核对，不重放 PUT，不根据同值核对推断先前写入成功。完整编辑与交互要求由[Web 需求](daynight-web.md#云端运行配置)拥有，机制由[Web 设计](../design/daynight-web.md#worker-云端配置编辑)拥有；Web 展示的应用结果来自 Worker 报告，不能作为本机副作用的独立证明。
 
 ## 失败与验证
 

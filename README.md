@@ -42,10 +42,14 @@ or run your own service. The interface supports English and Simplified Chinese.
   tasks across configured repositories, preserve ongoing work through restarts
   and stop ended executions while retaining resources until their cleanup
   and archive requirements are satisfied.
-- **Observe your Workers.** Open My Workers alongside My projects to see the
-  current account's recent Workers, online/offline state, resource and software
-  observations, and authorized task snapshots. Detail keeps the last report time
-  and distinguishes an unknown inventory from idle work.
+- **Observe and configure your Workers.** Open My Workers alongside My projects
+  to see the current account's recent Workers, online/offline state, resource and
+  software observations, and authorized task snapshots. Detail keeps the last
+  report time and distinguishes an unknown inventory from idle work. Its
+  configuration section edits cloud runtime targets and displays reported actual
+  values, partial failures and Project preparation or removal outcomes. Saved
+  targets remain distinct from applied results, and configuration is independent
+  of the recent-report window.
 - **Control a task session in the browser.** With `worker.agentControlMode: web`,
   view native messages, reasoning and tool results, send text, stop a turn, and
   answer supported approvals, questions and forms in the task’s Session tab.
@@ -54,9 +58,9 @@ or run your own service. The interface supports English and Simplified Chinese.
 
 Task Steps have [CLI list/show reads, atomic CLI Add and independent persisted HTTP reads and writes](docs/spec/daynight-task-steps.md), with complete ordered content, task-local identities and the shared parent Task version.
 
-Task creation and general editing use the CLI. The Web app provides project and Worker browsing,
-status and execution-setting controls, task deletion, attachment management and
-persistent task discussions.
+Task creation and general editing use the CLI. The Web app provides project and
+Worker browsing, Worker configuration editing, status and execution-setting
+controls, task deletion, attachment management and persistent task discussions.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 explains configuration, native prerequisites and explicit
 retry/release/resume controls. Complete platform acceptance remains

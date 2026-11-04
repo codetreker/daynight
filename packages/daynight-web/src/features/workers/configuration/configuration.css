@@ -1,0 +1,115 @@
+.worker-tabs { display: flex; gap: 7px; margin: 0 0 24px; border-bottom: 1px solid var(--line); }
+.worker-tabs button { border: 0; border-bottom: 2px solid transparent; background: none; color: #737d8e; padding: 11px 15px 13px; font-size: 12px; }
+.worker-tabs button[aria-selected="true"] { border-color: var(--indigo); color: var(--indigo); font-weight: 600; }
+.worker-tabs button:focus-visible { outline: 3px solid #8c8cf0; outline-offset: -3px; border-radius: 4px; }
+.worker-section[hidden] { display: none; }
+.configuration-toolbar { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+.configuration-layout { display: grid; grid-template-columns: minmax(0, 1fr) 286px; gap: 22px; align-items: start; }
+.configuration-main, .configuration-aside { min-width: 0; }
+.configuration-aside { position: sticky; top: 20px; }
+.config-panel { margin-bottom: 20px; }
+.config-panel .panel-heading { padding: 19px 22px; }
+.config-panel .panel-heading h2 { font-size: 14px; font-weight: 600; }
+.config-panel .panel-body { padding: 22px; }
+.config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 19px 22px; }
+.config-grid > .field { margin: 0; }
+.config-grid .field.full { grid-column: 1 / -1; }
+.worker-configuration .field :is(input, select, textarea):focus-visible { outline: 3px solid #8c8cf0; outline-offset: 2px; }
+.worker-configuration .field textarea { resize: vertical; min-height: 84px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; line-height: 1.7; }
+.field-unit { display: flex; align-items: center; gap: 9px; }
+.field-unit input { flex: 1; min-width: 0; }
+.field-unit > span { flex: none; font-size: 11px; color: var(--muted); }
+.application-feedback { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px; color: #7d889b; font-size: 10px; margin-top: 7px; line-height: 1.7; min-height: 17px; overflow-wrap: anywhere; }
+.application-feedback .current-value { color: #66748a; min-width: 0; overflow-wrap: anywhere; }
+.application-feedback .field-error { color: #9b4651; width: 100%; }
+.configuration-last-failure, .configuration-retry { width: 100%; }
+.configuration-last-failure { color: #8d727a; }
+.configuration-item-version { color: #8c95a3; }
+.configuration-result-label { color: #68758b; }
+.project-native-invalid { color: #9b4651; }
+.status-chip { display: inline-flex; align-items: center; gap: 4px; white-space: normal; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: 500; background: #f0f1f6; color: #737d8e; }
+.status-chip.applied { color: #398567; background: #eaf5ef; }
+.status-chip.pending, .status-chip.applying { color: #6a65b3; background: #f0f0fd; }
+.status-chip.error { color: #ad4b57; background: #fceff0; }
+.status-chip.unsaved { color: #916a2e; background: #fff5e5; }
+.native-summary { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; margin-top: -6px; }
+.native-summary .application-feedback { margin: 0; }
+.configuration-summary { padding: 5px 19px 9px; margin: 0; }
+.configuration-summary > div { padding: 13px 0; border-bottom: 1px solid #f0f1f5; }
+.configuration-summary > div:last-child { border-bottom: 0; }
+.configuration-summary dt { font-size: 11px; color: #758094; margin-bottom: 6px; }
+.configuration-summary dd { margin: 0; font-size: 12px; color: #435068; overflow-wrap: anywhere; }
+.summary-panel .worker-panel-heading { padding: 17px 19px; font-size: 13px; }
+.local-settings { margin-top: 19px; color: #7d889b; font-size: 11px; padding: 0 3px; }
+.local-settings summary { cursor: pointer; color: #637087; padding: 6px 0; }
+.local-settings summary:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 2px; border-radius: 3px; }
+.local-settings p { margin: 8px 0 0; line-height: 1.9; }
+.local-settings ul { margin: 8px 0 0; padding-left: 18px; line-height: 2; }
+.config-save-bar { display: flex; justify-content: flex-end; gap: 9px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+.config-save-bar .draft-summary { margin-right: auto; font-size: 11px; color: #7d889b; }
+.project-config-list { padding: 0 22px; }
+.project-config-item { padding: 18px 0; border-bottom: 1px solid #edf0f4; min-width: 0; }
+.project-config-item:last-child { border: 0; }
+.project-config-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 13px; }
+.project-config-identity { display: flex; gap: 11px; min-width: 0; }
+.project-config-icon { width: 32px; height: 32px; border-radius: 7px; background: #efeffd; color: #7777b7; display: flex; align-items: center; justify-content: center; flex: none; }
+.project-config-identity > div { min-width: 0; }
+.project-config-identity h3 { margin: 0; color: #435068; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.project-config-identity p { margin-top: 4px; color: #7d889b; font-size: 10px; overflow-wrap: anywhere; }
+.project-config-heading .button { padding: 4px 8px; font-size: 10px; flex: none; }
+.project-config-item > .application-feedback { margin-left: 43px; }
+.project-native { margin: 12px 0 0 43px; font-size: 11px; color: #68758b; }
+.project-native summary { cursor: pointer; width: fit-content; max-width: 100%; overflow-wrap: anywhere; }
+.project-native summary:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; border-radius: 3px; }
+.project-native .config-grid { padding-top: 16px; }
+.project-native .field label { font-size: 11px; }
+.project-native .field select + :is(input, textarea) { margin-top: 8px; }
+.native-inheritance-note { grid-column: 1 / -1; margin: -4px 0 0; color: #7d889b; font-size: 10px; line-height: 1.8; }
+.project-choices { margin-top: 17px; }
+.project-choice { display: flex; align-items: flex-start; gap: 12px; border: 1px solid #e5e8ee; border-radius: 7px; padding: 13px; margin-bottom: 9px; cursor: pointer; min-width: 0; }
+.project-choice:hover { background: #fafafe; }
+.project-choice:has(input:checked) { border-color: #bfbfec; background: #f8f8ff; }
+.project-choice input { width: 16px; height: 16px; accent-color: var(--indigo); flex: none; margin: 3px 0 0; }
+.project-choice input:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }
+.project-choice > span { min-width: 0; }
+.project-choice strong { display: block; font-size: 12px; color: #435068; font-weight: 600; overflow-wrap: anywhere; }
+.project-choice small { display: block; font-size: 10px; color: #7d889b; overflow-wrap: anywhere; margin-top: 3px; }
+.configuration-project-loading { display: flex; justify-content: center; padding: 14px; }
+.empty-projects { padding: 30px 20px; color: #7d889b; text-align: center; font-size: 12px; }
+.empty-projects .button { margin-top: 14px; }
+.configuration-notice { margin-bottom: 19px; }
+.configuration-notice .notice-heading { font-weight: 600; }
+.configuration-notice .notice-actions { margin-top: 10px; }
+.configuration-notice details { margin-top: 10px; font-size: 11px; }
+.configuration-notice summary { cursor: pointer; }
+.configuration-notice pre { margin: 9px 0 0; padding: 11px; border: 1px solid #e8dfcd; background: #fffdf8; border-radius: 5px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; }
+.configuration-dialog-subtitle { font-size: 12px; margin-top: 18px; }
+.affected-tasks { list-style: none; margin: 12px 0 0; padding: 0; }
+.affected-tasks li { padding: 12px 0; border-top: 1px solid #edf0f4; overflow-wrap: anywhere; color: #435068; }
+.affected-tasks small { display: block; color: #7d889b; margin-top: 4px; }
+@media (max-width: 1180px) {
+  .configuration-layout { grid-template-columns: minmax(0, 1fr); }
+  .configuration-aside { position: static; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+  .local-settings { margin-top: 0; padding-top: 5px; }
+}
+@media (max-width: 740px) {
+  .configuration-layout { gap: 18px; }
+  .config-grid { gap: 17px 14px; }
+  .configuration-aside { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+}
+@media (max-width: 600px) {
+  .config-grid { grid-template-columns: minmax(0, 1fr); }
+  .config-panel .panel-body, .config-panel .panel-heading { padding: 17px; }
+  .project-config-list { padding: 0 17px; }
+  .project-config-item { padding: 17px 0; }
+  .project-config-item > .application-feedback, .project-native { margin-left: 0; }
+  .project-native { margin-top: 14px; }
+  .project-config-heading { gap: 9px; }
+  .project-config-identity { gap: 8px; }
+  .project-config-icon { width: 28px; height: 28px; }
+  .project-config-identity h3 { font-size: 11px; }
+  .worker-tabs { margin-bottom: 20px; }
+  .worker-tabs button { padding: 10px 12px 12px; font-size: 11px; }
+  .config-save-bar .draft-summary { width: 100%; }
+  .config-save-bar > .button { flex: 1; }
+}
