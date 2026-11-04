@@ -11,6 +11,13 @@ serverUrl: https://daynight.cc
 # Remove or replace an old token before changing serverUrl manually. Keep secrets
 # out of repositories and logs; files containing a token need POSIX mode 0600.
 
+# Optional default Team per normalized service origin and account UUID. Prefer
+# `daynight team default set <uuid|personal>` to validate and save a selection.
+# An absent entry uses the account's Personal Team; a saved value is a Team UUID.
+# teamDefaults:
+#   https://daynight.cc:
+#     80be22c3-96d8-4ed1-bcd3-b820f2508c62: b95baeff-1522-4d99-a9b4-dfcb58392eca
+
 # Optional Agent-only CLI mappings (macOS/Linux), disabled when omitted or {}.
 # Keys are commands the Agent uses; values are executable names or absolute paths.
 # Only new Worker/Controller Agent environments receive these aliases.

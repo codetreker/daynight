@@ -56,6 +56,12 @@ supplied bindings share this entry point regardless of where a path originated.
 Project network queries and repository preparation run outside that queue. The
 configuration manager remains the single owner of `configuration.json` commits;
 binding admission owns only validation and registration of local mappings.
+Each inventory round captures the mappings it queries. Ownership loss,
+retirement, archive and cleanup decisions require that the affected Project was
+in that successful query. A mapping registered during the request is inspected
+on a later round, and the incomplete inventory is not published. This prevents
+asynchronous binding admission from turning an unqueried claim into evidence of
+absence without holding the configuration channel behind repository preparation.
 
 The existing reporter captures an immutable configuration snapshot for each
 request and binds acknowledgment to it. Only an accepted observation clears

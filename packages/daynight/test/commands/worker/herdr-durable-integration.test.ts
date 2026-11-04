@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
+import * as inputSessionModule from "../../../src/commands/worker/herdr/input-session.js";
+import { openHerdrRecordingStore } from "../../../src/commands/worker/herdr/recording-store.js";
+import { SESSION_V2_LIMITS } from "../../../src/session/v2/values.js";
 import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-store.js";
 import { inspectHerdrInput } from "../../../src/commands/worker/herdr/input-readiness.js";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
@@ -11,6 +14,13 @@ import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { Task } from "../../../src/api/types.js";
 import { cleanupOperation } from "../../../src/commands/cleanup-operation.js";
+import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/resource-disposal.js";
+import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
+import { readWorkerClaim } from "../../../src/api/task-properties.js";
+import { createExecutionDriver, type WorkerGitManager } from "../../../src/commands/worker/execution.js";
+import { openWorkerStore } from "../../../src/commands/worker/store.js";
+import { createHerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
@@ -37,15 +47,16 @@ afterEach(() => {
 });
 type Registration = Extract<SessionV2Message, { type: "registration" }>;
 type Ledger = Extract<SessionV2Message, { type: "generation_ledger" }>;
-const fixture = (realInspector = false) => {
+const fixture = (realInspector = false, driverResources = false) => {
   mkdirSync(root, { recursive: true }); const directory = mkdtempSync(path.join(root, "run-")); directories.push(directory);
-  const context: HerdrExecutionContext = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), cwd: directory, agent: "codex" };
+  const context: HerdrExecutionContext = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), cwd: driverResources ? path.join(directory, "repo", ".worktrees", "daynight", uuid(2)) : directory, agent: "codex" };
+  mkdirSync(context.cwd, { recursive: true });
   const ownerId = uuid(5), workerId = uuid(6), nativeId = uuid(7), serverOrigin = "https://daynight.example";
   const paths: WorkerPaths = { stateDirectory: directory, workerDirectory: path.join(directory, "worker"), configFile: path.join(directory, "config.yml"), databaseFile: path.join(directory, "worker.sqlite"), configurationFile: path.join(directory, "configuration.json"), lockFile: path.join(directory, "worker.lock"), herdrDirectory: path.resolve("/state/h"), logsDirectory: path.resolve("/state/logs"), temporaryDirectory: path.join(directory, "tmp") };
   let task: Task = { id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: context.claimId, state: "active", userId: ownerId, workerId, machine: { id: uuid(8), name: "test-machine" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId: context.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-04T00:00:00Z" } } };
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
-  const settings = { nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
+  const settings = { recordingBlocked: false, nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
   let beforePromptGuard: (() => void) | undefined;
   let beforeLaunchRetry: (() => void) | undefined;
   let recoveryDelay: ((stage: "publish" | "state" | "prepare", signal: AbortSignal | undefined) => Promise<void>) | undefined;
@@ -100,7 +111,7 @@ const fixture = (realInspector = false) => {
     register: async request => {
       registrations.push(structuredClone(request)); events.push(`register:${request.payload.mode}`);
       const connectionEpoch = request.payload.connectionEpoch === null ? "1" : String(BigInt(request.payload.connectionEpoch) + 1n);
-      remote = { status: "registered", protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: request.sessionId, claimId: request.claimId, executionGeneration: request.executionGeneration, agentControlMode: "herdr", contentKind: "terminal_recording", owner: structuredClone(request.payload.owner), binding: structuredClone(request.payload.binding), connectionEpoch, connected: true, capabilities: { observe: false, control: false, archive: false }, control: remote?.control ? { ...remote.control, state: "suspended", lease: null, connectionEpoch, availableActions: [] } : null, snapshot: null, ledger: remote?.ledger ?? { runs: [], finalizationId: null }, archive: { state: "pending", sha256: null, byteLength: null, completeness: null, errorCode: null, finalizationId: null }, recording: [] };
+      remote = { status: "registered", protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: request.sessionId, claimId: request.claimId, executionGeneration: request.executionGeneration, agentControlMode: "herdr", contentKind: "terminal_recording", owner: structuredClone(request.payload.owner), binding: structuredClone(request.payload.binding), connectionEpoch, connected: true, capabilities: request.payload.capabilities, control: remote?.control ? { ...remote.control, state: "suspended", lease: null, connectionEpoch, availableActions: [] } : null, snapshot: null, ledger: remote?.ledger ?? { runs: [], finalizationId: null }, archive: { state: "pending", sha256: null, byteLength: null, completeness: null, errorCode: null, finalizationId: null }, recording: remote?.recording ?? [] };
       return { ...request, type: "registration_ack", payload: { registrationId: request.payload.registrationId, connectionEpoch } };
     },
     ledger: async (request, epoch) => {
@@ -165,7 +176,7 @@ const fixture = (realInspector = false) => {
       ensureInstance: async () => { if (!state.started) { events.push("daemon-launch"); expect(read().preparation?.phase).toBe("launch_requested"); await options.onDaemonSpawn?.(state.daemonPid); state.started = true; } return { reconnected: false, version: "0.9.5", protocol: 22, snapshot: {} }; },
       stopInstance: async () => { throw new Error("Unsafe daemon close must not be used"); },
       tasks: {
-        pendingStops: () => [], listResources: async () => [],
+        pendingStops: () => [], listResources: async () => driverResources && state.launched ? [{ owner: context, workspaceId: state.binding.workspaceId, panes: [{ ...observation(), kind: "codex" as const, cwd: context.cwd }] }] : [],
         prepareWorkspace: async () => { events.push("workspace"); return state.binding; },
         syncWorkspaceName: async () => {}, observe: async () => observation(),
         processInfo: async () => ({ shellPid: state.shellPid, foregroundPids: state.launched ? [state.agentPid] : [state.shellPid] }),
@@ -183,6 +194,18 @@ const fixture = (realInspector = false) => {
   const reopen = (injectSessionApi = true) => {
     if (facade) { facade.lifecycle!.close(); facades.delete(facade); }
     facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => task, processControl: native,
+      readRecording: async (_record, signal) => {
+        if (settings.recordingBlocked) await new Promise<void>((_resolve, reject) => {
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+        return { width: 1, height: 1, rows: [[]] };
+      }, currentUserId: async () => ownerId,
+      archiveApi: { ...createHerdrArchiveApi(serverOrigin, "fixture-token"), state: async () => stateView(), recording: async (_expected, message) => {
+        const m = message as SessionV2Message;
+        if (m.type !== "recording_responsibility" || !remote) throw new Error("Unexpected recording fixture message");
+        remote.recording.push({ executionGeneration: m.executionGeneration, responsibility: m.payload, evidence: null }); return message;
+      } },
       inspectInput: async request => {
         if (realInspector) return inspectHerdrInput({ ...request, readSize: async () => ({ width: 100, height: 24 }), rpc: { request: async method => {
           const local = [...instances.values()].find(value => value.binding.terminalId === request.binding.terminalId)!;
@@ -220,7 +243,10 @@ const fixture = (realInspector = false) => {
   const register = () => facade.lifecycle!.registerClaim(context, ownerId);
   const prepare = () => facade.tasks.prepareWorkspace(context, task.title, operation());
   const start = (binding: HerdrTaskBinding) => facade.tasks.start(context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, operation());
-  return { context, paths, events, registrations, ledgers, inputs, launches, settings, observed, nativeId, read, stateView, register, prepare, start, reopen, get facade() { return facade; }, adjustControlRead: (hook: NonNullable<typeof adjustControlRead>) => { adjustControlRead = hook; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
+  return { context, paths, events, registrations, ledgers, inputs, launches, settings, observed, nativeId, api, read, stateView, register, prepare, start, reopen, readTask: async () => task,
+    revealNative: () => { for (const local of instances.values()) if (local.launched) local.nativeVisible = true; },
+    mutateRecord: (change: Parameters<HerdrLifecycleStore["update"]>[1]) => { const record = read(); return reader!.update(record, change); },
+    get facade() { return facade; }, adjustControlRead: (hook: NonNullable<typeof adjustControlRead>) => { adjustControlRead = hook; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
 };
 
 describe("durable Herdr facade with real SQLite", () => {
@@ -362,7 +388,7 @@ describe("durable Herdr facade with real SQLite", () => {
     await vi.advanceTimersByTimeAsync(269_999); expect(signals[0]!.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1); await result;
     expect(signals[0]!.aborted).toBe(true); expect(failure).toMatchObject({ kind: "deadline" });
-    expect(f.read().runs[0]!.phase).toBe("stopped_confirmed"); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+    expect(f.read().runs[0]!.phase).toBe("stopped_confirmed"); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
   });
   it("commits process proof and input admission before the first prompt without requiring a native session", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare();
@@ -373,7 +399,7 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(record.segments).toHaveLength(1); expect(record.segments[0]!.endedAt).toBeNull();
     expect(f.events.indexOf("capture:agent")).toBeLessThan(f.events.indexOf("initial-input"));
     expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
-    expect(f.registrations[0]!.payload.capabilities).toEqual({ observe: false, control: false, archive: false });
+    expect(f.registrations[0]!.payload.capabilities).toEqual({ observe: true, control: true, archive: true });
   });
   it("keeps the Session across shutdown and resumes the native conversation in a new generation", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
@@ -387,7 +413,7 @@ describe("durable Herdr facade with real SQLite", () => {
   });
   it.each([true, false])("prepares recovery with gated presentation and native identity known at launch %s", async nativeAtLaunch => {
     const f = fixture(); f.settings.nativeAtLaunch = nativeAtLaunch; f.register(); const binding = await f.prepare(); await f.start(binding);
-    expect(f.stateView().binding.nativeSessionId).toBe(nativeAtLaunch ? f.nativeId : null);
+    expect(f.stateView().binding.nativeSessionId).toBe(f.nativeId);
     await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
     expect(f.stateView().control?.availableActions).toEqual([]);
     expect(f.events).toContain("recovery-prepared");
@@ -398,24 +424,31 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(f.inputs.filter(value => !value.initial)).toHaveLength(1);
   });
   it.each(["before", "after"] as const)("observes an enriched ledger lost %s commit without replaying it", async boundary => {
-    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
-    expect(f.stateView().binding.nativeSessionId).toBeNull();
-    f.settings.ledgerFailure = boundary;
-    const stopped = f.facade.lifecycle!.stop(f.context, "shutdown", operation());
-    if (boundary === "before") await expect(stopped).rejects.toThrow(/unconfirmed|conflicts/);
-    else await stopped;
-    expect(f.events).toContain("stop"); expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
+    const f = fixture(); f.register(); const binding = await f.prepare();
+    const ledger = f.api.ledger;
+    f.api.ledger = (...args) => { if (args[0].payload.runs.at(-1)!.binding.nativeSessionId !== null) f.settings.ledgerFailure = boundary; return ledger(...args); };
+    const started = f.start(binding);
+    if (boundary === "before") await expect(started).rejects.toThrow(/unconfirmed|conflicts/);
+    else await started;
+    expect(f.read().initialAssignment).toBe("transport_completed");
     const enrichmentPosts = () => f.ledgers.filter(message => message.payload.runs.at(-1)?.binding.nativeSessionId === f.nativeId && message.payload.runs.at(-1)?.stoppedAt === null);
     expect(enrichmentPosts()).toHaveLength(1);
-    expect(f.events.filter(value => value === "prepare-post")).toHaveLength(boundary === "after" ? 1 : 0);
-    f.settings.ledgerFailure = "none"; f.reopen();
+    f.api.ledger = ledger; f.settings.ledgerFailure = "none";
     if (boundary === "before") {
+      await expect(f.facade.tasks.observe(f.context, binding, operation())).rejects.toThrow(/unconfirmed|conflicts/);
       await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow(/unconfirmed|conflicts/);
       expect(enrichmentPosts()).toHaveLength(1);
     } else {
+      await f.facade.tasks.observe(f.context, binding, operation());
+      expect(enrichmentPosts()).toHaveLength(1);
+      await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+      f.reopen();
       const next = await f.prepare(); await f.start(next);
       expect(f.inputs.filter(value => !value.initial)).toHaveLength(1);
     }
+    expect(f.inputs.filter(value => value.initial)).toHaveLength(1);
+    expect(f.events).toContain("stop"); expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
+    expect(f.events.filter(value => value === "prepare-post")).toHaveLength(boundary === "after" ? 1 : 0);
   });
   it.each(["connectionEpoch", "controlEpoch", "state", "lease", "initialAssignment", "unavailableReason"] as const)("does not ignore differing recovery authority field %s", async field => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
@@ -633,12 +666,238 @@ describe("durable Herdr facade with real SQLite", () => {
     await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow("segment journal unavailable"); failure.mockRestore();
     const stoppedAt = f.read().runs[0]!.run.stoppedAt;
     expect(stoppedAt).not.toBeNull(); expect(f.read().segments[0]!.endedAt).toBeNull();
+    const record = f.read();
+    const source = openHerdrRecordingStore({ directory: path.join(f.paths.workerDirectory, "herdr-recordings", record.sessionId), owner: record.owner, sessionId: record.sessionId, claimId: record.claimId });
+    const recordedEnd = source.recoveryBoundary(record.segments[0]!.segmentId).endedAt;
+    expect(Date.parse(recordedEnd)).toBeLessThanOrEqual(Date.parse(stoppedAt!));
     f.reopen(); expect(f.facade.tasks.pendingStops()).toHaveLength(1);
     const successor = await f.prepare();
-    expect(f.read().segments[0]!.endedAt).toBe(stoppedAt);
+    expect(f.read().segments[0]!.endedAt).toBe(recordedEnd);
     expect(f.ledgers.some(message => message.payload.runs[0]?.stopProof !== null)).toBe(true);
     await f.start(successor);
-    expect(f.read().runs).toHaveLength(2); expect(f.read().segments[0]!.endedAt).toBe(stoppedAt);
+    expect(f.read().runs).toHaveLength(2); expect(f.read().segments[0]!.endedAt).toBe(recordedEnd);
   });
 
+});
+
+
+it("registers recording responsibility before initial input and keeps capture after connection loss", async () => {
+  const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+  expect(f.stateView().recording[0]!.responsibility?.recordingEnabled).toBe(true);
+  await vi.waitFor(() => expect(f.facade.lifecycle!.archive!.resources()[0]!.sourceBytes).not.toBe("0"));
+  expect(f.registrations[0]!.payload.capabilities).toEqual({ observe: true, control: true, archive: true });
+  await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+  expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+});
+
+
+it("retains the original active binding when recording segment allocation is exhausted", async () => {
+  const maximum = SESSION_V2_LIMITS.maxSegments;
+  Object.assign(SESSION_V2_LIMITS, { maxSegments: 1 });
+  try {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    const segmentId = f.read().segments[0]!.segmentId;
+    f.reopen();
+    await f.facade.tasks.observe(f.context, binding, operation());
+    expect(f.read().segments).toHaveLength(1);
+    expect(f.read().segments[0]!.segmentId).toBe(segmentId);
+    expect(f.read().segments[0]!.endedAt).toBeNull();
+    expect(f.events.filter(value => value === "stop")).toHaveLength(0);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+    const record = f.read();
+    const source = openHerdrRecordingStore({ directory: path.join(f.paths.workerDirectory, "herdr-recordings", record.sessionId), owner: record.owner, sessionId: record.sessionId, claimId: record.claimId }).snapshot();
+    expect(source.runs[0]!.captureError).toBe("recording_limit");
+    const launches = f.events.filter(value => value === "daemon-launch").length;
+    await expect(f.prepare()).rejects.toThrow(/recording.*budget/i);
+    expect(f.events.filter(value => value === "daemon-launch")).toHaveLength(launches);
+  } finally { Object.assign(SESSION_V2_LIMITS, { maxSegments: maximum }); }
+});
+
+
+it("publishes a stable recovered screen after its new segment ledger is confirmed", async () => {
+  const create = inputSessionModule.createHerdrInputSession, delivered = vi.fn(async () => {});
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => ({ ...create(options), publishSnapshot: delivered }));
+  const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+  f.reopen(); delivered.mockClear();
+  f.recoveryDelay(async stage => { if (stage === "state") await new Promise(resolve => setTimeout(resolve, 30)); });
+  await f.facade.tasks.observe(f.context, binding, operation());
+  await vi.waitFor(() => expect(delivered).toHaveBeenCalled());
+  const record = f.read();
+  expect(record.segments).toHaveLength(2);
+  expect(record.publishedLedgerHash).toBe(herdrLedgerHash(record));
+  expect(delivered.mock.calls.at(-1)).toMatchObject([record.sessionId, { segmentId: record.segments[1]!.segmentId, recorded: true }]);
+});
+
+it.each(["initial input", "ordinary observation"] as const)("publishes the enriched ledger and cached screen after native identity appears during %s without restarting", async discovery => {
+  const create = inputSessionModule.createHerdrInputSession, delivered = vi.fn(async () => {});
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => ({ ...create(options), publishSnapshot: delivered }));
+  const f = fixture(); f.settings.nativeAfterInput = discovery === "initial input"; f.register(); const binding = await f.prepare();
+  expect(f.stateView().binding.nativeSessionId).toBeNull();
+  await f.start(binding);
+  if (discovery === "ordinary observation") {
+    expect(f.stateView().binding.nativeSessionId).toBeNull(); delivered.mockClear(); f.revealNative();
+    await f.facade.tasks.observe(f.context, binding, operation());
+  }
+  expect(f.stateView().binding.nativeSessionId).toBe(f.nativeId);
+  const record = f.read();
+  expect(record.publishedLedgerHash).toBe(herdrLedgerHash(record)); expect(record.ledgerRequest).toBeNull();
+  await vi.waitFor(() => expect(delivered.mock.calls.at(-1)).toMatchObject([record.sessionId, { binding: { nativeSessionId: f.nativeId }, segmentId: record.segments[0]!.segmentId, recorded: true }]));
+  expect(f.launches).toHaveLength(1); expect(record.segments).toHaveLength(1); expect(f.inputs).toHaveLength(1);
+});
+
+it("reconciles an unknown enrichment publication on later observation without replaying the initial input or ledger", async () => {
+  const create = inputSessionModule.createHerdrInputSession, delivered = vi.fn(async () => {});
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => ({ ...create(options), publishSnapshot: delivered }));
+  const f = fixture(); f.register(); const binding = await f.prepare();
+  const ledger = f.api.ledger, state = f.api.state; let unavailable = false;
+  f.api.ledger = async (...args) => { const result = await ledger(...args); if (args[0].payload.runs.at(-1)!.binding.nativeSessionId !== null) { unavailable = true; throw new Error("lost enrichment response"); } return result; };
+  f.api.state = (...args) => { if (unavailable) return Promise.reject(new Error("enrichment readback unavailable")); return state(...args); };
+  await expect(f.start(binding)).rejects.toThrow("enrichment readback unavailable");
+  const pending = f.read(); expect(pending.initialAssignment).toBe("transport_completed"); expect(pending.ledgerRequest).not.toBeNull();
+  expect(pending.publishedLedgerHash).not.toBe(herdrLedgerHash(pending));
+  expect(delivered.mock.calls.some(call => (call as unknown as [string, { binding: { nativeSessionId: string | null } }])[1].binding.nativeSessionId === f.nativeId)).toBe(false);
+  const count = f.ledgers.length; unavailable = false;
+  await f.facade.tasks.observe(f.context, binding, operation());
+  expect(f.ledgers).toHaveLength(count); expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+  expect(f.read().ledgerRequest).toBeNull(); expect(f.read().publishedLedgerHash).toBe(herdrLedgerHash(f.read()));
+  await vi.waitFor(() => expect(delivered.mock.calls.at(-1)).toMatchObject([pending.sessionId, { binding: { nativeSessionId: f.nativeId } }]));
+});
+
+it("keeps frames fenced when an enrichment ACK races a newer local lifecycle version", async () => {
+  const create = inputSessionModule.createHerdrInputSession, delivered = vi.fn(async () => {});
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => ({ ...create(options), publishSnapshot: delivered }));
+  const f = fixture(); f.register(); const binding = await f.prepare();
+  const ledger = f.api.ledger;
+  f.api.ledger = async (...args) => {
+    const result = await ledger(...args);
+    if (args[0].payload.runs.at(-1)!.binding.nativeSessionId !== null) f.mutateRecord(draft => { draft.automationBlocked = true; });
+    return result;
+  };
+  await expect(f.start(binding)).rejects.toThrow(/changed|version|conflict/i);
+  expect(f.read().ledgerRequest).not.toBeNull(); expect(f.read().publishedLedgerHash).not.toBe(herdrLedgerHash(f.read()));
+  expect(delivered.mock.calls.some(call => (call as unknown as [string, { binding: { nativeSessionId: string | null } }])[1].binding.nativeSessionId === f.nativeId)).toBe(false);
+  const count = f.ledgers.length;
+  await f.facade.tasks.observe(f.context, binding, operation());
+  expect(f.ledgers).toHaveLength(count); expect(f.inputs).toHaveLength(1); expect(f.read().automationBlocked).toBe(true);
+  await vi.waitFor(() => expect(delivered.mock.calls.at(-1)).toMatchObject([f.read().sessionId, { binding: { nativeSessionId: f.nativeId } }]));
+});
+
+it("does not replay the accepted assignment through the execution driver after enrichment response loss", async () => {
+  const f = fixture(false, true); f.register();
+  const store = openWorkerStore(f.paths.databaseFile);
+  try {
+    const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+    store.registerProject(project); store.registerPending({ ...f.context, agent: "codex" }); const task = store.activateTask(f.context);
+    const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+    const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
+      herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now });
+    const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 } };
+    const ledger = f.api.ledger, state = f.api.state; let unavailable = false;
+    f.api.ledger = async (...args) => { const result = await ledger(...args); if (args[0].payload.runs.at(-1)!.binding.nativeSessionId !== null) { unavailable = true; throw new Error("lost enrichment response"); } return result; };
+    f.api.state = (...args) => unavailable ? Promise.reject(new Error("enrichment readback unavailable")) : state(...args);
+    await expect(driver.advance(input)).rejects.toThrow("enrichment readback unavailable");
+    expect(f.read().initialAssignment).toBe("transport_completed"); expect(f.read().ledgerRequest).not.toBeNull();
+    f.api.ledger = ledger; unavailable = false;
+    await driver.advance(input);
+    expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+    expect(f.launches).toHaveLength(1); expect(f.read().ledgerRequest).toBeNull();
+    expect(store.getTask(task)?.sessionId).toBe(f.nativeId);
+  } finally { store.close(); }
+});
+
+
+it.each([true, false])("retains crash evidence when a terminal claim stops without reattaching, recorded: %s", async recorded => {
+  const f = fixture(); f.settings.recordingBlocked = !recorded;
+  f.register(); const binding = await f.prepare(); await f.start(binding);
+  const original = f.read(), source = () => openHerdrRecordingStore({ directory: path.join(f.paths.workerDirectory, "herdr-recordings", original.sessionId), owner: original.owner, sessionId: original.sessionId, claimId: original.claimId });
+  if (recorded) await vi.waitFor(() => expect(source().status().runs[0]!.registeredFrameCount).toBe("1"));
+  else expect(source().status().runs[0]!.registeredFrameCount).toBe("0");
+  f.reopen(); f.changeTask({ status: "done" });
+  await f.facade.lifecycle!.stop(f.context, "terminal", operation());
+  expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+  expect(f.read().segments).toHaveLength(1); expect(f.launches).toHaveLength(1); expect(f.inputs).toHaveLength(1);
+  if (recorded) {
+    expect(source().metadata().gaps).toMatchObject([{ reason: "checkpoint_lost", endElapsedMs: null }]);
+    const snapshot = source().snapshot(); expect(snapshot.runs[0]!.captureError).toBeNull();
+    expect(BigInt(snapshot.segments[0]!.durationMs)).toBe(BigInt(snapshot.index[0]!.lastElapsedMs) + 1n);
+  } else {
+    expect(source).toThrow(/source_corrupt/);
+    const events = readFileSync(path.join(f.paths.workerDirectory, "herdr-recordings", original.sessionId, "journal.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line).event);
+    expect(events).toContainEqual({ type: "error", executionGeneration: "1", code: "source_corrupt" });
+    expect(events.find(event => event.type === "gap").gap).toMatchObject({ reason: "checkpoint_lost", endElapsedMs: null });
+  }
+});
+
+
+it("releases a deleted claim with an unacknowledged stopped ledger for the next same-task claim after restart", async () => {
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const originalTask = await f.readTask();
+  f.changeTask({ status: "done", properties: { ...originalTask.properties, worker: { ...readWorkerClaim(originalTask.properties)!, state: "completed" } } });
+  f.settings.ledgerFailure = "before";
+  await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toThrow();
+  const stopped = f.read();
+  expect(stopped.runs[0]!.run.stopProof).not.toBeNull(); expect(stopped.segments.every(segment => segment.endedAt !== null)).toBe(true);
+  expect(stopped.publishedLedgerHash).not.toBe(herdrLedgerHash(stopped)); expect(f.facade.tasks.pendingStops()).toHaveLength(1);
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  let store = openWorkerStore(f.paths.databaseFile);
+  store.registerProject(project); store.activateTask(store.registerPending({ ...f.context, agent: "codex" }));
+  store.saveCleanupSchedule(f.context, { deadline: Date.now() + 600000, failures: 0, nextAttemptAt: 0, stage: "worktree-removal", lastError: null });
+  const deleted = await f.facade.lifecycle!.archive!.dispose({ ...f.context, sessionId: stopped.sessionId, operationId: uuid(991), action: "delete", confirmed: true }, operation(), async () => { rmSync(f.context.cwd, { recursive: true }); });
+  expect(reconcileDeletedHerdrResource(store, deleted)).toBe(true);
+  store.close(); store = openWorkerStore(f.paths.databaseFile); f.reopen();
+  const cancellation = new AbortController();
+  const candidate: Task = { ...originalTask, status: "todo", ready: true, properties: { pullRequests: [] } };
+  const granted: Task[] = [];
+  const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "claim"> = {
+    currentUserId: async () => uuid(5), ownInventory: async () => granted, candidates: async function* () { yield candidate; }, readTask: f.readTask,
+    claim: async (_candidate, descriptor) => {
+      const task: Task = { ...originalTask, properties: { ...originalTask.properties, worker: { ...readWorkerClaim(originalTask.properties)!, ...descriptor } } };
+      granted.push(task); f.changeTask(task); return task;
+    },
+  };
+  const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 };
+  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git: { listWorktrees: async () => [], findWorktree: async () => null } as unknown as WorkerGitManager, remote: remote as WorkerRemote,
+    workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1,
+    emit: () => {}, buildPrompt: () => "managed", signal: cancellation.signal, onClaim: () => cancellation.abort(new Error("Stop this test after successor admission")) });
+  try {
+    await coordinator.tick();
+    expect(granted).toHaveLength(1);
+    const next = readWorkerClaim(granted[0]!.properties)!;
+    expect(next.claimId).not.toBe(f.context.claimId); expect(store.getTask({ ...f.context, claimId: next.claimId })?.status).toBe("active");
+    expect(store.getTask(f.context)?.status).toBe("done"); expect(store.getCleanupSchedule(f.context)).toBeNull();
+    expect(f.facade.tasks.pendingStops().some(value => value.context.claimId === f.context.claimId)).toBe(false);
+    expect(f.facade.lifecycle!.responsibilities().some(value => value.claimId === f.context.claimId)).toBe(false);
+    expect(f.read().publishedLedgerHash).toBe(stopped.publishedLedgerHash); expect(f.read().ledgerRequest).toEqual(stopped.ledgerRequest);
+    expect(f.launches).toHaveLength(1); expect(f.events.filter(value => value === "stop")).toHaveLength(1);
+  } finally { await coordinator.shutdown(); store.close(); }
+});
+
+it.each(["abandon", "delete-intent", "wrong-owner", "stop-unknown"] as const)("keeps pending stopped responsibility for %s", async failure => {
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const task = await f.readTask(); f.changeTask({ status: "done", properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } } });
+  f.settings.ledgerFailure = "before"; f.settings.stopUnknown = failure === "stop-unknown";
+  await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toThrow();
+  const record = f.read(), request = { ...f.context, sessionId: record.sessionId, operationId: uuid(992), action: failure === "abandon" ? "abandon" as const : "delete" as const, confirmed: true as const };
+  if (failure === "wrong-owner") request.worktreeId = uuid(993);
+  if (failure === "abandon") await f.facade.lifecycle!.archive!.dispose(request, operation(), async () => { throw new Error("Abandon must retain the worktree"); });
+  else await expect(f.facade.lifecycle!.archive!.dispose(request, operation(), async () => { throw new Error("Deletion interrupted"); })).rejects.toThrow();
+  f.reopen();
+  expect(f.facade.tasks.pendingStops()).toHaveLength(1); expect(f.facade.lifecycle!.responsibilities()).toHaveLength(1);
+  expect(f.facade.lifecycle!.archive!.resources()[0]!.worktreeDeleted).toBe(false);
+});
+
+
+it("retains pending responsibility when the completed deletion journal belongs to another owner", async () => {
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const task = await f.readTask(); f.changeTask({ status: "done", properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } } });
+  f.settings.ledgerFailure = "before"; await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toThrow();
+  const record = f.read();
+  await f.facade.lifecycle!.archive!.dispose({ ...f.context, sessionId: record.sessionId, operationId: uuid(994), action: "delete", confirmed: true }, operation(), async () => rmSync(f.context.cwd, { recursive: true }));
+  const file = path.join(f.paths.workerDirectory, "herdr-archives", `${record.sessionId}.archive-state.json`);
+  const journal = JSON.parse(readFileSync(file, "utf8")); journal.state.owner.worktreeId = uuid(995);
+  journal.sha256 = createHash("sha256").update(canonicalSessionJson(journal.state)).digest("hex"); writeFileSync(file, JSON.stringify(journal));
+  f.reopen();
+  expect(f.facade.tasks.pendingStops()).toHaveLength(1); expect(f.facade.lifecycle!.responsibilities()).toHaveLength(1);
+  expect(f.facade.lifecycle!.archive!.resources()[0]).toMatchObject({ state: "failed", worktreeDeleted: false });
 });

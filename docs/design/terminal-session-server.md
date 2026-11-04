@@ -45,6 +45,7 @@ Herdr 的状态、历史、归档、capability 与派发沿用此入口；浏览
 | `GET /{sessionId}/archive` | archive_status 消息 |
 | `POST /{sessionId}/archive` | pending/failed 的 archive_status，或 unavailable 的 receipt 候选 |
 | `PUT /{sessionId}/archive` | 原始 archive v2 JSON；返回服务端不可变 receipt |
+| `GET /{sessionId}/archive/state` | 原 owner PAT 专用归档读回，包含原 ledger、recording 和 archive；任务删除后仍可使用，不授予控制操作 |
 | `GET /{sessionId}/archive/receipt` | 固定 receipt；尚未形成时 archive_pending |
 | `GET /{sessionId}/archive/content` | 验证后的原始 JSON 文件，仅 ready 可读 |
 

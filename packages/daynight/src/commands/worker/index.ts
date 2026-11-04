@@ -3,11 +3,13 @@ import type { CliContext } from "../../cli/context.js";
 import { parseCommand, renderCommandHelp } from "../../cli/schema.js";
 import { canonicalId } from "../../api/parse.js";
 import { parseVersionArgument } from "../../api/json.js";
+import type { WorkerResourceCommandRequest } from "./resource-disposal.js";
 import type { WorkerControlRequest } from "./control.js";
 import type { WorkerRepositoryCommandRequest } from "./configuration-guide.js";
 import { workerDefinition } from "./definition.js";
 
 export type WorkerCommandDependencies = {
+  resources: (options: { homeDirectory: string; request: WorkerResourceCommandRequest; output: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
   setup: (context: CliContext) => Promise<void>;
   attach: (options: { homeDirectory: string }) => Promise<void>;
   repository: (request: WorkerRepositoryCommandRequest, context: CliContext) => Promise<void>;
@@ -16,6 +18,7 @@ export type WorkerCommandDependencies = {
 };
 
 const defaultDependencies: WorkerCommandDependencies = {
+  resources: async options => (await import("./runtime.js")).runWorkerResources(options),
   setup: async (context) => (await import("./setup.js")).runWorkerSetup(context),
   attach: async (options) => (await import("./attach.js")).attachWorker(options),
   repository: async (request, context) => (await import("./configuration-guide.js")).runWorkerRepositoryCommand(request, context),
@@ -55,6 +58,29 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
       ? { kind: "list", json: command.options.has("--json") }
       : { kind: command.command.name as "add" | "remove", ...(rawProject === undefined ? {} : { projectId: uuid(rawProject, "Project ID") }) };
     await dependencies.repository(request, context);
+    return;
+  }
+  if (command.path.at(-2) === "resources") {
+    let request: WorkerResourceCommandRequest;
+    if (command.command.name === "list") request = { kind: "list" };
+    else {
+      const target = { taskId: uuid(command.values[0]!, "Task ID"), projectId: uuid(option("--project"), "Project ID"), claimId: uuid(option("--claim-id"), "Claim ID"), sessionId: uuid(option("--session-id"), "Session ID"), worktreeId: uuid(option("--worktree-id"), "Worktree ID") };
+      if (command.command.name === "retry") request = { ...target, kind: "retry" };
+      else {
+        const action = option("--action");
+        if (action !== "abandon" && action !== "delete") throw new UsageError("Resource action must be abandon or delete.", help);
+        if (!command.options.has("--confirm")) throw new UsageError("Resource disposal requires --confirm.", help);
+        request = { ...target, kind: "dispose", action, operationId: uuid(option("--operation-id"), "Operation ID"), confirmed: true };
+      }
+    }
+    await dependencies.resources({ homeDirectory: context.homeDirectory(), request, output: value => context.stdout(value) });
+    return;
+  }
+  if (command.command.name === "list" || command.command.name === "show") {
+    const request = command.command.name === "list"
+      ? { kind: "list" as const, json: command.options.has("--json") }
+      : { kind: "show" as const, workerId: uuid(command.values[0]!, "Worker ID"), json: command.options.has("--json") };
+    await (await import("./query.js")).runWorkerQuery(request, context);
     return;
   }
   const original = { taskId: uuid(command.values[0]!, "Task ID"), claimId: uuid(option("--claim-id"), "Claim ID"), ...(rawProject === undefined ? {} : { projectId: uuid(rawProject, "Project ID") }) };

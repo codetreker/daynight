@@ -61,7 +61,10 @@ authenticates and reads the cloud target before preparation. An empty target
 selection remains a valid reporting Worker. Prepared selected bindings supply
 execution; retained Project mappings continue serving ownership and resource
 inspection independently of selection. Managed values come from the cloud
-application manager rather than a second YAML read.
+application manager rather than a second YAML read. The [Bot inventory decision](2026-11-04-worker-bot-inventory.md)
+replaced the original run-time selection callback: run accepts an empty selection,
+while setup and repo commands retain explicit selection. Original task inventory
+and terminal cleanup schedules remain managed without selected repositories.
 
 The earlier local-startup preparation boundary was chosen after the
 [simplification decision](../simplification/2026-10-27-worker-claim-records.md)

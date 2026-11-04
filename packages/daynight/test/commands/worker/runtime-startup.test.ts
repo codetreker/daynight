@@ -1,8 +1,9 @@
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import Database from "better-sqlite3";
+import * as configurationFiles from "../../../src/config/files.js";
 import { ApiError } from "../../../src/api/client.js";
 import type { WorkerCloudDesired, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
 import { runWorker as runWorkerRuntime } from "../../../src/commands/worker/runtime.js";
@@ -66,11 +67,22 @@ const start = (f: Awaited<ReturnType<typeof fixture>>, extra: Partial<Parameters
   return { cancellation, running };
 };
 const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoordinatorOptions) => void = () => {}) => {
-  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => { check(options); cancellation.abort(); }));
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+    let current = options;
+    return {
+      updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
+      tick: vi.fn(async () => {
+        if (!current.readyProjectIds?.includes(uuid(1))) return;
+        try { check(current); } finally { cancellation.abort(); }
+      }),
+      shutdown: vi.fn(async () => true),
+    };
+  });
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.emit.mockReset();
   mocks.reporter.mockImplementation(reporter);
   mocks.remote.mockReturnValue({
     currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => resource(desired())),
@@ -176,6 +188,81 @@ describe("worker cloud-first startup", () => {
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
+  it("keeps configuration exchange live without publishing incomplete inventory and publishes after mapping recovers", async () => {
+    const f = await fixture(), controller = new AbortController(); cancellations.add(controller);
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.project.mockRejectedValue(new Error("Project lookup unavailable"));
+    const reported = reporter();
+    let channel!: ReporterOptions["configuration"];
+    mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration!; return reported; });
+    const inventory = { observedAt: "2026-11-04T00:00:00Z", claims: [] };
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      try {
+        expect(options.store.getProject({ projectId: uuid(1) })).toBeNull();
+        options.onInventory!(inventory);
+        expect(reported.publishInventory).not.toHaveBeenCalled();
+        const captured = channel!.capture();
+        expect(captured.observation).not.toBeNull();
+        remote.project.mockResolvedValue({ id: uuid(1), repoUrl: remoteUrl });
+        await channel!.accept(captured, { desired: { ...desired(), revision: "2" }, observationRevision: "0", observationAccepted: false });
+        await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull(), { timeout: 5000, interval: 10 });
+        options.onInventory!(inventory);
+        expect(reported.publishInventory).toHaveBeenCalledExactlyOnceWith(inventory);
+      } finally { controller.abort(); }
+    }));
+    await runWorker({ ...f, signal: controller.signal });
+  });
+
+  it("does not publish an in-flight inventory after the cloud target adds an unmapped project", async () => {
+    const f = await fixture(), controller = new AbortController(); cancellations.add(controller);
+    const second = { projectId: uuid(2), remote: "https://git.example/team/second.git", path: path.join(f.homeDirectory, "second") };
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { ...f.document.worker, repositories: [f.repository, second] } }));
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    let secondAvailable = false;
+    remote.project.mockImplementation(async (id: string) => {
+      if (id === uuid(2) && !secondAvailable) throw new Error("Project lookup unavailable");
+      return { id, repoUrl: id === uuid(1) ? remoteUrl : second.remote };
+    });
+    const reported = reporter(); let channel!: ReporterOptions["configuration"];
+    mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration!; return reported; });
+    const inventory = { observedAt: "2026-11-04T00:00:00Z", claims: [] };
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      try {
+        expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull();
+        const captured = channel!.capture();
+        await channel!.accept(captured, { desired: { ...desired([uuid(1), uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false });
+        options.onInventory!(inventory);
+        expect(reported.publishInventory).not.toHaveBeenCalled();
+        secondAvailable = true;
+        await channel!.accept(channel!.capture(), { desired: { ...desired([uuid(1), uuid(2)]), revision: "3" }, observationRevision: "0", observationAccepted: false });
+        await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(2) })).not.toBeNull(), { timeout: 5000, interval: 10 });
+        options.onInventory!(inventory);
+        expect(reported.publishInventory).toHaveBeenCalledExactlyOnceWith(inventory);
+      } finally { controller.abort(); }
+    }));
+    await runWorker({ ...f, signal: controller.signal });
+  });
+
+  it("registers every existing cloud project mapping before the first reconciliation on an empty database", async () => {
+    const f = await fixture(), controller = new AbortController(); cancellations.add(controller);
+    const second = { projectId: uuid(2), remote: "https://git.example/team/second.git", path: path.join(f.homeDirectory, "second") };
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { ...f.document.worker, repositories: [f.repository, second] } }));
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(desired([uuid(1), uuid(2)])));
+    remote.project.mockImplementation(async (id: string) => ({ id, repoUrl: id === uuid(1) ? remoteUrl : second.remote }));
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      try {
+        expect(options.store.listProjects()).toEqual(expect.arrayContaining([
+          { projectId: uuid(1), repoUrl: remoteUrl, localPath: f.repository.path },
+          { projectId: uuid(2), repoUrl: second.remote, localPath: second.path },
+        ]));
+        expect(options.store.listProjects()).toHaveLength(2);
+      } finally { controller.abort(); }
+    }));
+    await runWorker({ ...f, signal: controller.signal });
+    expect(mocks.coordinator).toHaveBeenCalledOnce();
+  });
+
   it("checks the cloud again before reusing a previously applied restart cache", async () => {
     const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
     finishAtTick(cancellation);
@@ -249,6 +336,80 @@ describe("worker cloud-first startup", () => {
     await runWorker({ ...f, signal: cancellation.signal });
     expect(mocks.coordinator).toHaveBeenCalledOnce(); expect(f.store!.getTask(localTask)).toEqual(localTask);
   });
+
+  it.each([false, true])("starts an empty cloud selection without repository discovery or interactive preparation (warm: %s)", async warm => {
+    const f = await fixture(warm, false), controller = new AbortController();
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(desired([])));
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      expect(options.repositories).toEqual([]);
+      expect(options.store.listProjects()).toEqual([]);
+      expect(options.store.listTasks()).toEqual([]);
+      expect(options.store.listCleanupSchedules()).toEqual([]);
+      controller.abort();
+    }));
+    await runWorker({ ...f, signal: controller.signal });
+    expect(remote.resolveProject).not.toHaveBeenCalled();
+    expect(mocks.git.mock.results[0]!.value.prepareRepository).not.toHaveBeenCalled();
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+  });
+
+  it("captures service credentials and worker settings from one configuration source", async () => {
+    const f = await fixture(false, true); const controller = new AbortController();
+    const replacement = stringify({ ...f.document, serverUrl: "https://other.example", worker: { repositories: [], maxConcurrent: 7 } });
+    const originalRead = configurationFiles.readConfigurationSource;
+    let replaced = false;
+    const read = vi.spyOn(configurationFiles, "readConfigurationSource").mockImplementation(async (...args) => {
+      const source = await originalRead(...args);
+      if (!replaced) { await writeFile(`${f.paths.configFile}.next`, replacement); await rename(`${f.paths.configFile}.next`, f.paths.configFile); replaced = true; }
+      return source;
+    });
+    cancellations.add(controller);
+    finishAtTick(controller, options => {
+      expect(options.serverOrigin).toBe(origin);
+      expect(options.maxConcurrent).toBe(1);
+      expect(options.repositories).toHaveLength(1);
+    });
+    try {
+      await runWorker({ ...f, signal: controller.signal });
+      expect(mocks.remote.mock.calls[0]![0]).toEqual({ serverUrl: origin, serverToken: token });
+    } finally { read.mockRestore(); }
+  });
+
+  it("rejects a second zero-repository runner under the same worker lock", async () => {
+    const f = await fixture(false, false); const controller = new AbortController();
+    mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    mocks.coordinator.mockReturnValue(coordinator(async () => { entered(); }));
+    const first = runWorker({ ...f, signal: controller.signal });
+    try {
+      await started;
+      await expect(runWorker(f)).rejects.toThrow(/already running|lock/i);
+      expect(mocks.coordinator).toHaveBeenCalledOnce();
+    } finally { controller.abort(); await first; }
+  });
+
+  it("keeps original task and cleanup responsibility with no configured repositories", async () => {
+    const f = await fixture(true, false); const controller = new AbortController();
+    mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+    const binding = { projectId: uuid(1), repoUrl: f.repository.remote, localPath: f.repository.path };
+    f.store!.registerProject(binding);
+    const pending = f.store!.registerPending({ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), agent: "codex" });
+    f.store!.activateTask(pending);
+    const cleanup = f.store!.saveCleanupSchedule({ ...pending, worktreeId: uuid(7) }, { deadline: 100, failures: 2, nextAttemptAt: 50, stage: "stop", lastError: "unconfirmed" });
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      expect(options.repositories).toEqual([]);
+      expect(options.store.getTask(pending)?.status).toBe("active");
+      expect(options.store.getCleanupSchedule(pending)).toEqual(cleanup);
+      expect(options.maxConcurrent).toBe(1);
+      controller.abort(new Error("Original inventory observed."));
+    }));
+    await runWorker({ ...f, signal: controller.signal });
+    expect(f.store!.getTask(pending)?.status).toBe("active");
+    expect(f.store!.getCleanupSchedule(pending)).toEqual(cleanup);
+  });
+
 });
 
 it.skipIf(process.platform === "win32")("binds an explicit Agent CLI alias only in the worker's native environment", async () => {
@@ -275,7 +436,8 @@ it("retains committed Worker state while a Web state failure leaves the configur
   await runWorker({ ...f, signal: cancellation.signal });
   expect(mocks.reporter).toHaveBeenCalledOnce(); expect(mocks.coordinator).not.toHaveBeenCalled();
   expect(mocks.reporter.mock.results[0]!.value.stop).toHaveBeenCalledOnce();
-  const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(7); worker.close();
+  const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(10);
+  expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 }); worker.close();
   const web = new Database(webFile);
   expect(web.pragma("user_version", { simple: true })).toBe(3);
   expect(web.prepare("SELECT value FROM retained").get()).toEqual({ value: "original" });
@@ -284,7 +446,12 @@ it("retains committed Worker state while a Web state failure leaves the configur
   const repaired = new AbortController(); cancellations.add(repaired); finishAtTick(repaired);
   await runWorker({ ...f, signal: repaired.signal });
   expect(mocks.coordinator).toHaveBeenCalledOnce();
-  const upgraded = new Database(webFile); expect(upgraded.pragma("user_version", { simple: true })).toBe(2); upgraded.close();
+  const upgradedWeb = new Database(webFile);
+  expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(2);
+  upgradedWeb.close();
+  const unchangedWorker = new Database(f.paths.databaseFile);
+  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(10);
+  unchangedWorker.close();
 });
 
 it("rebuilds unknown zero-version Web state before starting its coordinator", async () => {

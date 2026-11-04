@@ -2,6 +2,7 @@ import { uploadStoppedControllerArchive } from "../controller/archive-upload.js"
 import { readLaunchTicket, controllerExecutionDirectory } from "../controller/launch-ticket.js";
 import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
 import { readAgentCliAliases } from "../../config/agent-cli-aliases.js";
+import { loadServerConfiguration } from "../../config/server.js";
 import path from "node:path";
 import { maintainWorkerControllerGrants } from "./backends/grant-renewal.js";
 import { openWebExecutionStore } from "./backends/web-store.js";
@@ -11,6 +12,9 @@ import { createWorkerSessionApi } from "./backends/session-api.js";
 import type { WorkerEvent } from "./execution.js";
 import type { WorkerPaths } from "./paths.js";
 import { createHash } from "node:crypto";
+import { statfsSync } from "node:fs";
+import type { WorkerResourceCommandRequest } from "./resource-disposal.js";
+import { assertHerdrDisposalTarget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
 import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -44,6 +48,7 @@ import { createWorkerReporter } from "./reporter.js";
 import { createWorkerRepositoryAdmission } from "./repository-admission.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
+import { shutdownWorkerExecutions } from "./shutdown.js";
 import { createWorkerGitManager } from "./worktrees.js";
 
 const hasHerdrJournal = async (paths: WorkerPaths, platform: TaskPlatform): Promise<boolean> => {
@@ -69,14 +74,6 @@ const machineDescription = (platform: TaskPlatform): WorkerMachine => {
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   const value = bytes.toString("hex");
   return { id: `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`, name };
-};
-
-const hasWorkerDatabase = async (file: string): Promise<boolean> => {
-  try { await lstat(file); return true; }
-  catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
-    throw error;
-  }
 };
 
 const runtimeCancellation = (signal?: AbortSignal) => {
@@ -181,7 +178,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       },
       emit: event => { const task = event.task === undefined ? null : store.getTask(event.task); emit({ kind: event.kind, message: event.message, ...(task === null ? {} : { task }) }); },
     });
-    return { webStore, webBackend, launcher, backfillArchives, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, buildPrompt };
+    return { webStore, webBackend, launcher, backfillArchives, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, verifyWebStartupReporting: api.supportsStartupReports, buildPrompt };
   } catch (error) {
     try { webStore.close(); } catch (closeError) { throw new AggregateError([error, closeError], "Web runtime initialization and store shutdown failed."); }
     throw error;
@@ -213,6 +210,7 @@ export const runWorker = async (options: {
     const { serverUrl, serverToken } = local;
     if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
     lock = await acquireWorkerInstanceLock(paths);
+    signal.throwIfAborted();
     const workerId = await ensureWorkerIdentity(paths, signal);
     for (const directory of [paths.temporaryDirectory, paths.logsDirectory]) await mkdir(directory, { recursive: true, mode: 0o700 });
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
@@ -232,6 +230,23 @@ export const runWorker = async (options: {
     const getStore = (): ReturnType<typeof openWorkerStore> => store === undefined ? (store = openWorkerStore(paths.databaseFile)) : store;
     const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory })) : git;
     const { admit: admitRepository } = createWorkerRepositoryAdmission({ paths, store: getStore });
+    const bindingJobs = new Map<string, Promise<WorkerProject | undefined>>();
+    const resolveBinding = (projectId: string): Promise<WorkerProject | undefined> => {
+      const existing = bindingJobs.get(projectId);
+      if (existing !== undefined) return existing;
+      const job = (async () => {
+        const project = await remote.project(projectId, signal);
+        const currentStore = getStore();
+        const previous = currentStore.getProject({ projectId });
+        const mapped = previous === null ? await workerLocalRepositoryForProject(local, paths, project) : undefined;
+        if (previous === null && mapped === undefined) return undefined;
+        if (previous !== null) await remote.resolveProject({ repoUrl: previous.repoUrl, projectId }, signal);
+        return admitRepository(previous === null ? { projectId, repoUrl: mapped!.remote, localPath: mapped!.path } : previous, signal);
+      })();
+      bindingJobs.set(projectId, job);
+      void job.finally(() => { if (bindingJobs.get(projectId) === job) bindingJobs.delete(projectId); }).catch(() => undefined);
+      return job;
+    };
     const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, mode: local.agentControlMode, signal, emit });
     const view = (snapshot: WorkerConfigurationSnapshot): WorkerCoordinatorConfiguration | null => {
       const effective = snapshot.effective;
@@ -288,38 +303,44 @@ export const runWorker = async (options: {
     });
     signal.throwIfAborted();
     await manager.configureProjectAdapters({ prepare: async (projectId, applicationSignal) => {
-      const project = await remote.project(projectId, applicationSignal);
-      const currentStore = getStore();
-      const previous = currentStore.getProject({ projectId });
-      const mapped = previous === null ? await workerLocalRepositoryForProject(local, paths, project) : undefined;
-      if (previous === null && mapped === undefined) return false;
-      if (previous !== null) await remote.resolveProject({ repoUrl: previous.repoUrl, projectId }, applicationSignal);
-      const binding = await admitRepository(previous === null ? { projectId, repoUrl: mapped!.remote, localPath: mapped!.path } : previous, applicationSignal);
+      const binding = await resolveBinding(projectId);
+      if (binding === undefined) return false;
+      applicationSignal.throwIfAborted();
       const operation = createOperation({ signal: applicationSignal });
       try { await getGit().prepareRepository(binding, operation); }
       finally { operation.dispose(); }
       prepared.set(projectId, binding);
     } });
     const lazyHerdr = (environment: Awaited<ReturnType<typeof prepareWorkerAgentEnvironment>>): WorkerHerdrAdapter => new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => {
-      herdr = herdr === undefined ? platform === "macos" ? createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...environment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask }) : createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...environment }) : herdr;
+      herdr = herdr === undefined ? platform === "macos" ? createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...environment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...environment }) : herdr;
       return Reflect.get(herdr, property);
     } });
-    let attachmentShown = false, started = false;
+    let attachmentShown = false, started = false, initialMappingsComplete = false;
     while (!signal.aborted) {
       try {
         const current = view(manager.current());
         if (current !== null) {
-          const databaseExists = store !== undefined || await hasWorkerDatabase(paths.databaseFile);
-          if (current.repositories.length > 0 || databaseExists) {
+          if (!initialMappingsComplete && manager.current().desired !== null) {
+            await Promise.allSettled(manager.current().desired!.value.projects.map(project => resolveBinding(project.projectId)));
+            signal.throwIfAborted();
+            initialMappingsComplete = true;
+          }
+          {
             const currentStore = getStore();
-            if (coordinator === undefined && (current.repositories.length > 0 || currentStore.listUnfinishedTasks().length > 0)) {
+            if (coordinator === undefined) {
               if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, platform, emit);
               if (renewal === undefined) renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
                 onError: message => emit({ kind: "credential-renewal-error", message }),
               }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
               const environment = await nativeApplication.prepareEnvironment();
               coordinator = createWorkerCoordinator({ store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
-                hasHerdrJournal: await hasHerdrJournal(paths, platform), onInventory: reporter.publishInventory, onClaim: reporter.recordClaim,
+                hasHerdrJournal: await hasHerdrJournal(paths, platform),
+                availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
+                onInventory: inventory => {
+                  const desired = manager.current().desired;
+                  if (desired !== null && desired.value.projects.every(project => currentStore.getProject({ projectId: project.projectId }) !== null)) reporter!.publishInventory(inventory);
+                },
+                onClaim: reporter.recordClaim,
                 buildPrompt: web.buildPrompt, emit, signal });
             }
             if (coordinator !== undefined) {
@@ -355,10 +376,12 @@ export const runWorker = async (options: {
     if (coordinator !== undefined) {
       try {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });
-        if (!await coordinator.shutdown()) throw new Error("Some task resources could not be confirmed stopped and closed; the private Herdr instance was retained.");
-        const operation = createOperation({ limits: { totalMs: 30_000 } });
-        try { if (herdr !== undefined && herdr.lifecycle === undefined) await herdr.stopInstance(operation); }
-        finally { operation.dispose(); }
+        await shutdownWorkerExecutions({ tasks: async () => {
+          if (!await coordinator!.shutdown()) throw new Error("Some task resources could not be confirmed stopped and closed; the private Herdr instance was retained.");
+          const operation = createOperation({ limits: { totalMs: 30_000 } });
+          try { if (herdr !== undefined && herdr.lifecycle === undefined) await herdr.stopInstance(operation); }
+          finally { operation.dispose(); }
+        } });
       } catch (error) { failures.push(error); }
     }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
@@ -438,13 +461,14 @@ export const runWorkerControl = async (options: {
       }
     }
     const agentEnvironment = options.request.kind === "retry" ? nativeApplication.current() === undefined ? await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal) : nativeApplication.current()! : {};
-    const herdr = new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => { actualHerdr ??= platform === "macos" ? createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask }) : createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(actualHerdr, property); } });
+    const herdr = new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => { actualHerdr ??= platform === "macos" ? createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(actualHerdr, property); } });
     web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit);
     if (frozenRetry) coordinatorConfiguration = { repositories: [], globalConfiguration: web.webStore.getTask(sources[0]!)?.configuration ?? null, maxConcurrent: 1 };
     const machine = machineDescription(platform);
     const coordinator = createWorkerCoordinator({
       store, git, herdr, ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...coordinatorConfiguration,
       hasHerdrJournal: await hasHerdrJournal(paths, platform),
+      availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
       buildPrompt: await createWorkerPromptBuilder(options.packageDirectory), emit: diagnostics.emit, signal,
     });
     const result = await submitWorkerControl({
@@ -465,4 +489,59 @@ export const runWorkerControl = async (options: {
     cancellation.dispose();
   }
   throwFailures(failures);
+};
+
+/** Operates only retained resources under the same exclusive runner lock. */
+export const runWorkerResources = async (options: {
+  homeDirectory: string; request: WorkerResourceCommandRequest; output: (message: string) => void; signal?: AbortSignal;
+}): Promise<void> => {
+  const paths = resolveWorkerPaths(options.homeDirectory), platform = currentWorkerPlatform();
+  if (platform !== "macos") throw new Error("Herdr recording resource management requires macOS stop evidence.");
+  const lock = await tryAcquireWorkerInstanceLock(paths);
+  if (lock === null) throw new Error("Stop daynight worker run before inspecting or disposing retained resources.");
+  let herdr: WorkerHerdrAdapter | undefined, store: ReturnType<typeof openWorkerStore> | undefined, git: ReturnType<typeof createWorkerGitManager> | undefined;
+  const operation = createOperation({ ...(options.signal === undefined ? {} : { signal: options.signal }), limits: { totalMs: 300_000 } });
+  try {
+    if (!await hasHerdrJournal(paths, platform)) {
+      if (options.request.kind !== "list") throw new Error("The original Herdr lifecycle journal is missing; disposal is prohibited.");
+      options.output("[]\n"); return;
+    }
+    const { serverUrl, serverToken } = await loadServerConfiguration(paths, operation.signal);
+    if (serverToken === undefined) throw new Error("The original Worker credential is unavailable. Run daynight login with its original owner before resource management.");
+    const workerId = await ensureWorkerIdentity(paths, operation.signal);
+    const remote = createWorkerRemote({ serverUrl, serverToken });
+    herdr = createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId });
+    const archive = herdr.lifecycle?.archive;
+    if (!archive) throw new Error("The installed Worker does not support retained Herdr recording resources.");
+    if (options.request.kind === "list") { options.output(`${JSON.stringify(archive.resources(), null, 2)}\n`); return; }
+    const request = options.request;
+    const resource = archive.resources().find(value => value.sessionId === request.sessionId);
+    if (!resource) throw new Error("The requested original Session has no retained resource record.");
+    if (request.kind === "retry") {
+      const result = await archive.retry(request, operation);
+      options.output(`${JSON.stringify(result, null, 2)}\n`); return;
+    }
+    store = openWorkerStore(paths.databaseFile);
+    const project = store.getProject(request);
+    if (!project || path.join(project.localPath, ".worktrees", "daynight", request.taskId) !== resource.worktreePath) throw new Error("The original worktree path has no matching project binding.");
+    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
+    const result = await archive.dispose(request, operation, async () => {
+      operation.check();
+      const fresh = archive.resources().find(value => value.sessionId === request.sessionId);
+      if (!fresh) throw new Error("The original resource responsibility disappeared during disposal.");
+      // The archive owner first verifies the live claim and persists this exact
+      // intent. A local shutdown record alone cannot decide claim finality.
+      if (fresh.disposition?.operationId !== request.operationId || fresh.disposition.action !== request.action) throw new Error("The original authorized disposal intent is missing.");
+      assertHerdrDisposalTarget(fresh, request);
+      await git!.removeWorktree(project, request, operation);
+      if (await git!.findWorktree(project, request, operation) !== null) throw new Error("The original worktree remains after explicit deletion.");
+    });
+    reconcileDeletedHerdrResource(store, result);
+    options.output(`${JSON.stringify(result, null, 2)}\n`);
+  } finally {
+    operation.dispose();
+    try { await git?.dispose(); } finally {
+      try { herdr?.lifecycle?.close(); } finally { try { store?.close(); } finally { await lock.release(); } }
+    }
+  }
 };

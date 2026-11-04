@@ -147,7 +147,11 @@ const desiredTransition = (cache: Cache, desired: WorkerCloudDesired | null): Ca
     update({ kind: "projectPreparation", projectId: project.projectId }, !priorSelected.has(project.projectId));
     update({ kind: "projectNative", projectId: project.projectId });
   }
-  for (const projectId of priorSelected) if (!selected.has(projectId)) update({ kind: "projectRemoval", projectId }, true);
+  for (const projectId of priorSelected) if (!selected.has(projectId)) {
+    const key: WorkerCloudItemKey = { kind: "projectRemoval", projectId }, removal = items.get(keyOf(key));
+    // A started stop owns its original revision until it finishes, even if selection changes again.
+    if (removal === undefined || !removal.started || removal.value.state === "applied") update(key, true);
+  }
   return { ...nextCache, items: [...items.values()].sort((first, second) => keyOf(first.value.key).localeCompare(keyOf(second.value.key))) };
 };
 

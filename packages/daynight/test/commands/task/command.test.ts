@@ -25,6 +25,7 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
+    previewProjectTransfer: vi.fn(), transferProject: vi.fn(),
     updateTaskStep: async () => { throw new Error("Unused Step API method"); },
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
     moveTaskStep: vi.fn<ApiClient["moveTaskStep"]>(),
@@ -33,8 +34,12 @@ const fixture = (operation = createOperation()) => {
     listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),
     readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(currentUser),
+    inspectInvitation: vi.fn<ApiClient["inspectInvitation"]>(), acceptInvitation: vi.fn<ApiClient["acceptInvitation"]>(),
     getTeamCurrentUser: vi.fn<ApiClient["getTeamCurrentUser"]>(), listTeams: vi.fn<ApiClient["listTeams"]>(), getTeam: vi.fn<ApiClient["getTeam"]>(), createTeam: vi.fn<ApiClient["createTeam"]>(), renameTeam: vi.fn<ApiClient["renameTeam"]>(), deleteTeam: vi.fn<ApiClient["deleteTeam"]>(), listTeamProjects: vi.fn<ApiClient["listTeamProjects"]>(),
+    listTeamInvitations: vi.fn<ApiClient["listTeamInvitations"]>(), createTeamInvitation: vi.fn<ApiClient["createTeamInvitation"]>(), revokeTeamInvitation: vi.fn<ApiClient["revokeTeamInvitation"]>(),
+    listTeamMembers: vi.fn<ApiClient["listTeamMembers"]>(), setTeamMemberRole: vi.fn<ApiClient["setTeamMemberRole"]>(), removeTeamMember: vi.fn<ApiClient["removeTeamMember"]>(),
     getProjectAccess: vi.fn<ApiClient["getProjectAccess"]>(),
+    listBots: vi.fn<ApiClient["listBots"]>(), getBot: vi.fn<ApiClient["getBot"]>(), createBot: vi.fn<ApiClient["createBot"]>(), deleteBot: vi.fn<ApiClient["deleteBot"]>(), listWorkers: vi.fn<ApiClient["listWorkers"]>(), getWorker: vi.fn<ApiClient["getWorker"]>(),
     reportWorker: vi.fn<ApiClient["reportWorker"]>(), getWorkerConfiguration: vi.fn<ApiClient["getWorkerConfiguration"]>(), reportWorkerConfiguration: vi.fn<ApiClient["reportWorkerConfiguration"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),
     getTaskPropertySchema: vi.fn<ApiClient["getTaskPropertySchema"]>().mockResolvedValue(propertySchema),
@@ -65,7 +70,7 @@ const fixture = (operation = createOperation()) => {
   const dependencies = {
     resolveProject: vi.fn<TaskCommandDependencies["resolveProject"]>().mockResolvedValue(project),
     runServerCommand: vi.fn<TaskCommandDependencies["runServerCommand"]>(async (current, command) => {
-      const output = await command({ api, operation, serverUrl: "http://localhost:8787" });
+      const output = await command({ api, operation, serverUrl: "http://localhost:8787", serverConfiguration: { serverUrl: "http://localhost:8787" } });
       operation.check(); if (typeof output === "string") current.stdout(output); else if (output !== undefined) current.stdout(output.output);
     }),
   };

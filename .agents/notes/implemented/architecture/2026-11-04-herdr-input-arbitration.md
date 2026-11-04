@@ -75,8 +75,7 @@ transport completion, and does not release the durable manual state.
 
 This extends the [lifecycle decision](2026-11-04-herdr-worker-lifecycle.md).
 Its original process evidence and stop proof remain authoritative. The shared
-Session protocol and future recording consumer retain their own responsibilities;
-combined observe/control/archive capabilities remain disabled.
+Session protocol and the [recording consumer](2026-11-04-herdr-recording-finalization.md) retain their own responsibilities. The original input-only delivery kept combined capabilities disabled; the recorder now supplies the required persistence and archive integration.
 
 ## Alternatives
 
@@ -116,7 +115,7 @@ write revocation. Missing, corrupt or incompatible input evidence fails closed.
 A transport result never establishes model acceptance. Native local clients can
 still write concurrently, and attach can have effects before an input is rejected.
 
-Incomplete recording and UI remain gated rather than being advertised through
+Recording and UI require their own combination evidence rather than being advertised through
 input availability. Future consumers use the same original Session, terminal
 binding and control entry points. Expanding the supported native protocol or
 removing the handback requirement requires new provider and failure evidence.

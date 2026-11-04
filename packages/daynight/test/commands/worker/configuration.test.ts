@@ -173,6 +173,30 @@ describe("Worker cloud configuration application", () => {
     expect(item(manager.current(), "projectRemoval")).toMatchObject({ targetRevision: "2", state: "applied", appliedValue: true });
   });
 
+  it("keeps an in-flight removal across repeated selection changes", async () => {
+    const removing = deferred(), releaseRemoval = deferred();
+    const prepare = vi.fn(async () => {});
+    let removalSignal: AbortSignal | undefined;
+    const { manager, wait } = await fixture();
+    await manager.configureProjectAdapters({ prepare, remove: async (_projectId, signal) => { removalSignal = signal; removing.resolve(); await releaseRemoval.promise; } });
+    await manager.receive(desired("1"));
+    await wait(snapshot => snapshot.effective.projects[0]?.ready === true);
+    await manager.receive(desired("2", "original", false));
+    await removing.promise;
+    await manager.receive(desired("3"));
+    await manager.receive(desired("4", "original", false));
+    await manager.receive(desired("5"));
+    try {
+      expect(removalSignal?.aborted).toBe(false);
+      expect(item(manager.current(), "projectRemoval")).toMatchObject({ targetRevision: "2", state: "applying" });
+      expect(manager.current().effective.projects[0]?.ready).toBe(false);
+      expect(prepare).toHaveBeenCalledTimes(1);
+    } finally { releaseRemoval.resolve(); }
+    await wait(snapshot => snapshot.effective.projects[0]?.ready === true);
+    expect(item(manager.current(), "projectRemoval")).toMatchObject({ targetRevision: "2", state: "applied" });
+    expect(prepare).toHaveBeenCalledTimes(2);
+  });
+
   it("retains completed removal until its matching result has been acknowledged", async () => {
     const { manager, wait } = await fixture();
     await manager.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });

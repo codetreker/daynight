@@ -109,4 +109,4 @@ rollback 失败优先于嵌套业务拒绝。普通 Error envelope 保留 reques
 
 Web验证覆盖有界解码、账号/任务隔离与迟到响应、A/B/C连续读取、初始空后积压、历史/引用独立位置、发送revision与确认/未知边界、容量与固定项、键盘焦点及窄屏滚动。真实服务互操作与可控传输测试的证据分别记录，常规CI不运行压力负载。
 
-服务端沿用构建、vet、race、go-cov 和未经四舍五入的总 statement coverage 严格大于 90% 的门槛。[设计](../design/daynight-task-thread.md)拥有具体机制；[服务端指南](../../packages/daynight-server/README.md#task-thread-api)提供入口与验证方法。
+服务端沿用构建、vet、go-cov 和未经四舍五入的总 statement coverage 严格大于 90% 的门槛；race 按[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)在本地默认及 main CI 开启、PR CI 关闭。[设计](../design/daynight-task-thread.md)拥有具体机制；[服务端指南](../../packages/daynight-server/README.md#task-thread-api)提供入口与验证方法。

@@ -37,4 +37,5 @@ every Step and make large legal collections expensive to render and navigate.
 
 Filtering scans the in-memory collection and does not add a service query. The
 bounded DOM limits mounted controls but does not reduce collection transfer or
-memory. Content editing, insertion and deletion remain separate capabilities.
+memory. [Content editing](2026-11-04-task-steps-web-add.md) shares the form and
+write owner; [deletion](2026-11-05-task-steps-web-delete.md) uses the same session owner.

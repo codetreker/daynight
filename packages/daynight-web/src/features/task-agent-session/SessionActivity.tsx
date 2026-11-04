@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import type { SessionSnapshot } from '../../../../daynight/src/session/protocol';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 
-export function SessionActivity({ snapshot, connected, active, commandPending, interruptPending, interruptRequested, interruptAllowed, onInterrupt }: {
+export function SessionActivity({ snapshot, connected, active, suppressStatus = false, commandPending, interruptPending, interruptRequested, interruptAllowed, onInterrupt }: {
+  readonly suppressStatus?: boolean;
   readonly snapshot: SessionSnapshot | null; readonly connected: boolean; readonly active: boolean;
   readonly commandPending: boolean; readonly interruptRequested: boolean; readonly interruptPending: boolean; readonly interruptAllowed: boolean; readonly onInterrupt: () => void;
 }) {
@@ -23,11 +24,11 @@ export function SessionActivity({ snapshot, connected, active, commandPending, i
   const label = !connected || snapshot?.connectionState === 'disconnected' ? sessionNativeLabels.disconnected : !snapshot?.synchronized || snapshot.connectionState === 'synchronizing' ? sessionNativeLabels.synchronizing : commandPending && !working ? sessionNativeLabels.executingCommand : sessionNativeLabels[snapshot.activity];
   if (!working && !commandPending && !interruptPending) return null;
   return <div className="session-composer-activity" aria-label={m.agentActivity}>
-    <div className="session-activity-summary">
+    {!suppressStatus ? <div className="session-activity-summary">
     <span className={`session-activity-dot ${working && connected ? 'working' : ''}`} aria-hidden="true" /><span aria-live="polite" lang="en">{label}</span>
     {timed ? <time aria-label={m.elapsedTime} dateTime={`PT${seconds}S`}>{elapsed}</time> : null}
     {working && !Number.isFinite(startedAt) && connected ? <span className="session-control-note">{m.startTimeUnknown}</span> : null}
-    </div>
+    </div> : null}
     {working || commandPending || interruptPending ? <button type="button" className="session-interrupt" lang="en" disabled={!interruptAllowed || interruptPending} onClick={onInterrupt}>{interruptPending ? sessionNativeLabels.interrupting : interruptRequested ? sessionNativeLabels.interruptRequested : sessionNativeLabels.interrupt}</button> : null}
   </div>;
 }

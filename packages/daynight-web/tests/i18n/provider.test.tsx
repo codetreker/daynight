@@ -28,7 +28,10 @@ describe("language provider and selector", () => {
     const { unmount } = renderWithLocale(<Fixture />, { locale: "en" });
     const selectors = screen.getAllByRole<HTMLSelectElement>("combobox", { name: "语言 / Language" });
     expect(new Set(selectors.map((selector) => selector.id)).size).toBe(3);
-    selectors.forEach((selector) => expect(selector).toHaveValue("en"));
+    selectors.forEach((selector) => {
+      expect(selector).toHaveValue("en");
+      expect(selector.closest("label")).not.toHaveTextContent("语言 / Language");
+    });
     expect(write).not.toHaveBeenCalled();
     await user.tab();
     expect(selectors[0]).toHaveFocus();

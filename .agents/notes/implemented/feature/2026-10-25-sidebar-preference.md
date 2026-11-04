@@ -13,9 +13,8 @@ details retain their existing interaction and state ownership.
 ## Decision
 
 `WorkspaceSidebar` owns navigation presentation, with project navigation in its
-scrollable main region and the account destination and toggle in the footer.
-The [bottom account navigation decision](2026-10-25-bottom-account-navigation.md)
-owns that placement. Desktop expanded and folded widths are 190px and 68px.
+scrollable main region and the toggle in the footer. The [account menu decision](2026-11-04-topbar-account-menu.md)
+owns the account destination in the topbar. Desktop expanded and folded widths are 190px and 68px.
 Main entries keep icons, accessible names and hover titles when their text is hidden.
 Nested project links are hidden in the folded rail; the
 [project navigation decision](2026-10-27-sidebar-project-navigation.md) owns their

@@ -7,7 +7,11 @@ const completedSleep = { ...sleep, completedAtMs: 1793708557843 };
 for await (const line of createInterface({input:process.stdin})) {
  const m=JSON.parse(line);
  if(process.env.CODEX_TEST_REQUEST_LOG)appendFileSync(process.env.CODEX_TEST_REQUEST_LOG, JSON.stringify(m)+'\n');
- if(m.method==='initialize')out({id:m.id,result:{}});
+ if(m.method==='initialize') {
+  if(process.env.CODEX_TEST_INITIALIZE==='timeout')continue;
+  if(process.env.CODEX_TEST_INITIALIZE==='reject') {out({id:m.id,error:{code:-32602,message:'Fixture initialization rejected /private/profile token=private-value'}});continue;}
+  out({id:m.id,result:{}});
+ }
  if(m.method==='config/read')out({id:m.id,result:{config:JSON.parse(process.env.CODEX_TEST_EFFECTIVE_CONFIG ?? '{}')}});
  if(process.env.EXPECT_WORKER_PERMISSIONS && (m.method==='thread/start'||m.method==='thread/resume')) {
   const expected=process.env.EXPECT_WORKER_PERMISSIONS==='yes';

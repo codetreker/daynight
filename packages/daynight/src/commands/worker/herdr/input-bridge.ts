@@ -5,8 +5,8 @@ import { canonicalSessionJson, SESSION_V2_PROTOCOL } from "../../../session/v2/v
 
 type Message<K extends SessionV2Message["type"]> = Extract<SessionV2Message, { type: K }>;
 export type HerdrInputOffer = Message<"control_dispatch" | "operation">;
-export type HerdrInputPublication = Message<"control_ack" | "control_state" | "operation_result">;
-export type HerdrInputReceipt = Message<"control_state" | "operation_result">;
+export type HerdrInputPublication = Message<"control_ack" | "control_state" | "operation_result" | "snapshot">;
+export type HerdrInputReceipt = Message<"control_state" | "operation_result" | "snapshot">;
 export type HerdrInputBridgeOptions = {
   /** The owner persists this exact registration intent before opening the channel. */
   registration: Message<"registration">;
@@ -101,8 +101,8 @@ export const createHerdrInputBridge = (options: HerdrInputBridgeOptions) => {
       }).catch(error => stop(failure(error))).finally(() => { handlers--; });
       return;
     }
-    if (message.type === "control_state" || message.type === "operation_result") {
-      if (message.type === "control_state" && message.payload.connectionEpoch !== expectedEpoch) throw new Error("The Herdr control receipt has a stale connection epoch.");
+    if (message.type === "control_state" || message.type === "operation_result" || message.type === "snapshot") {
+      if ((message.type === "control_state" || message.type === "snapshot") && message.payload.connectionEpoch !== expectedEpoch) throw new Error("The Herdr control receipt has a stale connection epoch.");
       options.onReceipt?.(message);
       return;
     }
@@ -146,8 +146,8 @@ export const createHerdrInputBridge = (options: HerdrInputBridgeOptions) => {
     send: async (input: HerdrInputPublication): Promise<void> => {
       if (!registered || stopped) throw new Error("The Herdr input bridge is disconnected or not registered.");
       const message = parseSessionV2Message(input); assertFence(message);
-      if (message.type !== "control_ack" && message.type !== "control_state" && message.type !== "operation_result") throw new Error("Unsupported Herdr input publication.");
-      if (message.type === "control_state" && message.payload.connectionEpoch !== expectedEpoch || message.type === "control_ack" && message.payload.controlState.connectionEpoch !== expectedEpoch) throw new Error("The Herdr input publication has a stale connection epoch.");
+      if (message.type !== "control_ack" && message.type !== "control_state" && message.type !== "operation_result" && message.type !== "snapshot") throw new Error("Unsupported Herdr input publication.");
+      if ((message.type === "control_state" || message.type === "snapshot") && message.payload.connectionEpoch !== expectedEpoch || message.type === "control_ack" && message.payload.controlState.connectionEpoch !== expectedEpoch) throw new Error("The Herdr input publication has a stale connection epoch.");
       await write(message);
     },
     close: (): void => stop(new Error("The Herdr input bridge was closed by its owner.")),

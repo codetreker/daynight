@@ -40,7 +40,7 @@ Copilot 新建和精确恢复均将提供的 `instructions` 原文配置为 `sys
 
 ## 实现边界与验证
 
-该契约提供 ticket 校验、持久化、Controller 到 Provider 的共享传递，以及 Codex、Claude 和 Copilot 的原生角色映射。Bot 角色模板、首次角色冻结与 Worker 托管由各自消费者负责；共享字段和适配器可用不表示完整助手入口已启用，也不证明完整真实原生角色行为。独立 CLI 当前没有角色创建参数。
+该契约提供 ticket 校验、持久化、Controller 到 Provider 的共享传递，以及 Codex、Claude 和 Copilot 的原生角色映射。Bot 的[版本化模板与环境准备](bot-role-environment.md)由 Worker helper 提供，首次持久化、服务端冻结与托管接入由其消费者负责；共享字段和适配器可用不表示完整助手入口已启用，也不证明完整真实原生角色行为。独立 CLI 当前没有角色创建参数。
 
 验证须覆盖旧 Task/Test 字段与 hash 不变、非法输入及准确 UTF-8 边界、同 launchId 的角色改写拒绝、持久 ticket 经停止代际恢复后的原文传递、未知操作不重放，以及三个 Provider 的新建/恢复 options。Codex stdio 夹具还须验证 start/resume 原文、缺省字段、基础提示不覆盖、初始化无用户 turn、首个真实输入与设置保持，以及原生拒绝后的原错误和资源关闭。Claude 适配验证须覆盖新建与恢复的 preset append、无角色时字段缺失、零准备输入、原生设置和审批语义、SDK 启动失败及关闭。共享层模拟与 Provider 夹具仅证明各自传递和失败处理，真实 Provider 行为需独立运行证据。
 

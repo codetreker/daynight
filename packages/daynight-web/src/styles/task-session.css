@@ -98,3 +98,9 @@
 .auth-shell.test-session-shell .content { padding-bottom: 18px; min-height: min(100%, var(--session-composer-space, 0px)); }
 .test-session-shell .topbar { flex: 0 1 auto; min-height: 0; overflow: auto; }
 @media (max-height: 500px) { .auth-shell.test-session-shell .content { padding-bottom: 8px; } }
+
+.session-startup-details { flex: none; max-height: 28vh; overflow: auto; margin: 10px 26px; color: #68758a; font-size: 12px; overflow-wrap: anywhere; }
+.session-startup-details summary { width: fit-content; cursor: pointer; }
+.session-startup-details summary:focus-visible { outline: 2px solid #6262ba; outline-offset: 3px; }
+.session-startup-details p { max-width: 72ch; margin: 8px 0; }
+@media (max-width: 600px) { .session-startup-details { margin-inline: 12px; } }
