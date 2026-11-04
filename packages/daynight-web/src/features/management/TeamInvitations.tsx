@@ -21,6 +21,7 @@ export const TeamInvitations = ({ teamId, teamName, active, onRoute, editable, a
   const [action, setAction] = useState<Action | null>(null), [observed, setObserved] = useState(false);
   const [issue, setIssue] = useState<unknown>(null), [receipt, setReceipt] = useState<'revoked' | 'already' | null>(null);
   const uncertain = useRef(new Set<string>()), read = useRef<AbortController | null>(null);
+  const permissionNotified = useRef(false);
   const op = useOperation(admission), operation = useRef(op); operation.current = op;
   const permission = useRef(onPermissionChange); permission.current = onPermissionChange;
   const guard = useRef(onGuardChange); guard.current = onGuardChange;
@@ -37,13 +38,13 @@ export const TeamInvitations = ({ teamId, teamName, active, onRoute, editable, a
       const invitations = await listTeamInvitations(teamId, signal, { userId: admission.userId, onPrincipalMismatch: onIdentityMismatch });
       await admission.ready(signal);
       if (signal.aborted || admission.isInvalidated) return false;
-      setItems(invitations); return true;
+      permissionNotified.current = false; setItems(invitations); return true;
     } catch (failure) {
       if (signal.aborted || admission.isInvalidated) return false;
       try { await admission.ready(signal); } catch { return false; }
       if (signal.aborted || admission.isInvalidated) return false;
       setItems(null); setError(failure);
-      if (failure instanceof ApiError && failure.kind === 'server' && (failure.status === 403 || failure.status === 404)) permission.current();
+      if (failure instanceof ApiError && failure.kind === 'server' && (failure.status === 403 || failure.status === 404) && !permissionNotified.current) { permissionNotified.current = true; permission.current(); }
       return false;
     } finally { if (read.current === controller) { read.current = null; if (!signal.aborted && !admission.isInvalidated) setLoading(false); } }
   }, [active, editable, admission, teamId, onIdentityMismatch]);
@@ -71,7 +72,7 @@ export const TeamInvitations = ({ teamId, teamName, active, onRoute, editable, a
   return <>
     {isVisible && <>
       {loading && <div className="empty-inline" role="status">{m.loading}</div>}
-      {error !== null && <ManagementError error={error} retry={() => { void load(); }} />}
+      {error !== null && (error instanceof ApiError && error.kind === 'server' && (error.status === 403 || error.status === 404) ? <div className="notice error" role="alert"><p>{zh ? '无法读取此 Team 的邀请，请检查权限后重试。' : 'Unable to read invitations for this Team. Check your permissions and retry.'}</p>{error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{error.requestId}</code></p>}<button className="button" type="button" onClick={() => { permissionNotified.current = false; void load(); }}>{common.retry}</button></div> : <ManagementError error={error} retry={() => { permissionNotified.current = false; void load(); }} />)}
       {currentIssue !== null && currentIssue !== undefined && <div className="notice warning" role="alert"><p>{observed && !unknown ? m.invitationObserved : m.invitationUnknown}</p>{currentIssue instanceof ApiError && currentIssue.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{currentIssue.requestId}</code></p>}{unknown && <button className="button" type="button" disabled={loading || op.pending} onClick={check}>{m.readCurrentInvitations}</button>}</div>}
       {receipt && <div className="notice" role="status">{receipt === 'revoked' ? zh ? '邀请已撤销。' : 'Invitation revoked.' : zh ? '邀请已经撤销。' : 'Invitation was already revoked.'}</div>}
       <InvitationList invitations={items} disabled={loading || op.pending || unknown || error !== null} canRevoke={(invitation) => !uncertain.current.has(invitation.id)} onRevoke={(invitation) => open({ kind: 'revoke', invitation })} action={<button className="button primary" type="button" disabled={loading || op.pending || unknown || error !== null} onClick={() => open({ kind: 'create' })}>{m.invite}</button>} />

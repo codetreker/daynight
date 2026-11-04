@@ -36,6 +36,8 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
       state.betaMember.role = body.role as Role; state.betaMember.version += 10;
       return send({ membership: { teamId: betaId, userId: bob, role: state.betaMember.role, version: state.betaMember.version, createdAt: time, updatedAt: time }, actorRole: 'admin' });
     }
+    if (method === 'GET' && path === `/api/v1/teams/${teamId}/invitations`) return state.members.get(alice)?.role === 'admin' ? send({ items: [] }) : send(error('forbidden'), 403);
+    if (method === 'GET' && path === `/api/v1/teams/${betaId}/invitations`) return send({ items: [] });
     if (path === `/api/v1/teams/${personalId}/members`) return send({ items: roster(personalId) });
     if (path === `/api/v1/teams/${teamId}` && state.failReadsAfterWrite && state.writes.length > 0) return route.abort('failed');
     if (path === `/api/v1/teams/${teamId}`) return state.members.has(alice) ? send(team(teamId)) : send(error('not_found'), 404);

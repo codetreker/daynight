@@ -70,3 +70,17 @@ it('rejects a wrong-principal response without installing its secret', async () 
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create invitation link' }));
   await waitFor(() => expect(mismatch).toHaveBeenCalledOnce()); expect(screen.queryByDisplayValue(link)).toBeNull();
 });
+it.each([403, 404])('shows a persistent %s invitation denial without repeatedly refreshing Team permissions', async (status) => {
+  vi.mocked(listTeamInvitations).mockRejectedValueOnce(new ApiError('server', status, status === 403 ? 'forbidden' : 'not_found'))
+    .mockRejectedValueOnce(new ApiError('server', status, status === 403 ? 'forbidden' : 'not_found'))
+    .mockResolvedValue([invitation]);
+  const view = render(panel());
+  expect(await screen.findByRole('alert')).toHaveTextContent('Unable to read invitations for this Team');
+  expect(permission).toHaveBeenCalledOnce();
+  view.rerender(panel(false)); view.rerender(panel());
+  await waitFor(() => expect(listTeamInvitations).toHaveBeenCalledTimes(2));
+  await screen.findByRole('alert'); expect(permission).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  await screen.findByRole('button', { name: `Revoke invitation ${id}` });
+  expect(screen.queryByRole('alert')).toBeNull(); expect(listTeamInvitations).toHaveBeenCalledTimes(3);
+});
