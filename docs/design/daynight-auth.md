@@ -420,12 +420,12 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 不确定 PATCH 先重读 Project 和当前 access，核对失败阻止新写入并允许读重试，不把取消或导航视为远端回滚。
 仅权限核验失败的重试保留有效资源和设置草稿；完整资源核对仍用于资源错误、缺失及写结果不确定。
 具体数据和读取机制由[计时架构](daynight-task-timing.md)与[Web 架构](daynight-web.md#项目执行提醒设置)拥有。
-成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。
+项目成员页分别展示有效、Team 继承和单独授权，按 participant 的真实 grant 存在性与版本操作；确认回执提供提交后本人 access，失权时清除项目缓存并保留成功结果。成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。
 邀请的读取和写入响应核对主体；Project 接受页按 directGrant 展示真实关系，确认后消费回执并进入原项目。Team 接受页展示真实 Team 和本人关系，确认后的回执显示名称、ID、加入结果及安全返回入口。
 未确认的写入不自动重放，创建结果未知时一次性秘密无法恢复。
 401/换账号使共享请求 generation 失效并卸载旧项目和附件内容，
 失败不伪装成空列表。ownership.version、settings.version 与 nested directGrant.version 只在声明的资源路径无损解码，
-角色修改/移除以 bigint 提交真实 grant 观察值。其 JSON 与 204 响应均核对当前请求绑定的 principal；
+新增授权提交 null，角色修改/移除以 bigint 提交真实 grant 观察值。grants 回执核对当前请求绑定的 principal、目标和结果；
 身份错配清理旧 scope 并重验。已发送而未确认的授权写入关闭旧确认，保留 unknown 和读取当前状态入口；
 读取失败继续阻止写入，成功读取可建立新观察供重新审阅，不能据此声称找回原提交回执。
 顶层曾离开后重新可见且聚焦时，在后台重新核验 /me。正常等待状态与失败后的
@@ -651,6 +651,6 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 ## 交付边界
 
 真实 Personal 归属、存量迁移、登录与项目 writer、双来源准入及 Thread 强 fence 共同成立。
-普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；项目转移提供服务端预览和提交。Team 邀请的公开接收入口可登录、确认并加入；成员管理、邀请管理界面及转移客户端保持各自的功能所有权。当前 Project、access 与 participant
+普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；项目转移提供服务端预览和提交。Team 邀请的公开接收入口可登录、确认并加入；CLI 项目转移使用该预览和回执；成员管理、邀请管理界面及 Web 转移保持各自的功能所有权。当前 Project、access 与 participant
 公开真实 ownership 和完整权限来源，无占位来源或旧格式回退。
 可信同源 HTML 保持原权限模型，不引入预览安全系统。K1 和已准入传输语义保持。

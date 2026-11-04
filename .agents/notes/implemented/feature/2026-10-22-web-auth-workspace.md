@@ -23,7 +23,7 @@ tabs, graph, centered `TaskDetailDialog` and account-owned My Workers pages. The
 [Worker observation decision](../architecture/2026-10-29-web-worker-observations.md)
 owns their page-local data and freshness lifecycle inside the same authenticated
 identity; it does not add Worker data to the project cache. Workspace navigation
-keeps the account entry in its sidebar footer; the [account navigation decision](2026-10-25-bottom-account-navigation.md)
+places the account entry in the topbar avatar menu; the [account menu decision](2026-11-04-topbar-account-menu.md)
 owns its placement, and the [sidebar preference decision](2026-10-25-sidebar-preference.md)
 owns local folding and temporary narrow-screen navigation. Production `main.tsx`
 keeps the persistent `LocaleProvider` above public and authenticated branches. The

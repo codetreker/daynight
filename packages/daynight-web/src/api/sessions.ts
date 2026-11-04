@@ -6,6 +6,12 @@ import { parseBrowserMessage, parseCommandResponse, parseRegistrationResponse, p
 import { assertSessionFence, parseSessionCommand, type SessionCommand, type SessionOperation } from '../../../daynight/src/session/protocol';
 
 export type SessionChannel = { close(): void };
+export type BotSessionBinding = {
+  readonly ownerUserId: string;
+  readonly botId: string;
+  readonly sessionId: string;
+  readonly testExecutionId: string;
+};
 export type SessionApi = {
   archive(sessionId: string, signal: AbortSignal): Promise<SessionArchiveStatus>;
   archiveContent(sessionId: string, signal: AbortSignal): Promise<SessionArchive>;
@@ -22,13 +28,21 @@ export function createSessionApi(projectId: string, taskId: string, userId: stri
   return createBoundSessionApi(`${root}/current`, (id) => `${root}/${requestId(id)}`, userId, onPrincipalMismatch, parseCurrentSessionResponse);
 }
 export function createTestSessionApi(sessionId: string, userId: string, onPrincipalMismatch: () => void): SessionApi {
+  return createIndependentSessionApi(sessionId, userId, onPrincipalMismatch);
+}
+/** Bind Bot management's confirmed identity to the existing independent Session transport. */
+export function createBotSessionApi(binding: BotSessionBinding, onPrincipalMismatch: () => void): SessionApi {
+  requestId(binding.botId);
+  return createIndependentSessionApi(requestId(binding.sessionId), requestId(binding.ownerUserId), onPrincipalMismatch, requestId(binding.testExecutionId));
+}
+function createIndependentSessionApi(sessionId: string, userId: string, onPrincipalMismatch: () => void, testExecutionId?: string): SessionApi {
   const root = `/api/v1/test-sessions/${requestId(sessionId)}`;
   return createBoundSessionApi(root, (id) => {
     if (id !== sessionId) throw new ApiError('protocol');
     return root;
   }, userId, onPrincipalMismatch, (value) => {
     const { session } = parseRegistrationResponse(value);
-    if (session.sessionId !== sessionId || !session.testExecutionId || session.identity.ownerUserId !== userId) throw new ApiError('protocol');
+    if (session.sessionId !== sessionId || !session.testExecutionId || session.identity.ownerUserId !== userId || testExecutionId !== undefined && session.testExecutionId !== testExecutionId) throw new ApiError('protocol');
     return { status: 'registered', session };
   });
 }

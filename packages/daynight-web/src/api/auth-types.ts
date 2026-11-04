@@ -45,6 +45,8 @@ export type ProjectAccess = {
   readonly effectiveRole: ProjectRole;
   readonly directGrant: ProjectGrant | null;
 };
+export type ProjectGrantResult = { readonly grant: ProjectGrant; readonly actorAccess: ProjectAccess | null };
+export type RemoveProjectGrantResult = { readonly projectId: string; readonly userId: string; readonly deleted: true; readonly actorAccess: ProjectAccess | null };
 
 export type ProjectPersonVersion = {
   readonly userId: string;

@@ -354,6 +354,7 @@ flowchart TD
 | `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时读取 `/me`，再提交真实 `expectedUserId` 和原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
+| `project transfer` | 确定 Project 与 `/me`，读取目标预览，确认后提交 `POST /api/v1/projects/{id}/transfer` |
 | `team list` | `GET /api/v1/me`，再读取全部 `GET /api/v1/teams` 页 |
 | `team show`、`team default show` | `GET /api/v1/me`，再按选定 ID 读取 `GET /api/v1/teams/{id}` |
 | `team create` | `GET /api/v1/me`，确认后 `POST /api/v1/teams`，提交原始名称与 `expectedUserId` |
@@ -410,6 +411,12 @@ typed mutation API 绑定 `/me` 主体并校验响应主体、资源与删除回
 移除回执与 actor role。自行退出后 actor role 为 null，直接输出回执，避免权限已失效时的
 后续 GET 将成功误报为失败。确认、冲突、取消和未知提交遵循同一 Team 写入规则；配置
 默认值与独立 Project grant 均不因成员变化而改写。
+
+项目转移按现有仓库解析规则只读选择 Project，不持久化绑定，也不解析默认 Team。
+目标解析器只接受规范 UUID 或当前 origin 的精确 Team 页面链接。预览绑定当前主体，
+显示来源、目标与预期角色；确认后提交预览的 ownership 和目标版本。typed API 校验
+主体、目标和回执，直接消费提交结果，包括失权的 null access；未知结果不能由后续
+读取恢复。服务事务和权限机制由[鉴权架构](daynight-auth.md#数据与并发)拥有。
 
 Steps typed GET 复用 `exchange` 的认证、no-store、取消、期限与响应预算。显式 project
 直接访问所选路径，不增加项目发现、父 Task GET 或子项 404 后的隐藏核验。
