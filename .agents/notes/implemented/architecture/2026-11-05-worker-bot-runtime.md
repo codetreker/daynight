@@ -65,6 +65,11 @@ preserves the existing credential threshold without changing task polling.
 
 ## Consequences
 
+A spawned recovery child can precede its shared journal generation transition.
+Shutdown uses only current-fence snapshots but still attempts to stop the child
+from its persisted process birth proof. An unavailable current-generation stop
+record remains a reported failure after that attempt.
+
 Ordinary cwd and independent input semantics are preserved. Exact registration
 and role fingerprints survive response loss and upgrades. Additional local state
 is intentional: lost process outcomes retain private sources and alias ownership.

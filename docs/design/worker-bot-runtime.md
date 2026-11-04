@@ -38,6 +38,6 @@ grant 接收持久前代的 generation、Controller instance、recordId 和 stop
 
 通用 `maintainControllerGrants` 同时供 Task 和 Bot 使用，按执行隔离错误并抑制重复诊断；每个执行最多一个在途刷新，慢执行不延迟其它执行下一轮调度。Bot 的维护循环与发现循环并行运行，续期前检查当前绑定和凭据有效期，在相同 generation 下更新私有凭据文件。
 
-取消 `run` 或显式 `shutdown` 先关闭调度并取消在途管理操作，等待发现、续期和启动 job 全部结束，再对本地责任清单中每个 Bot 进行有界停止。停止不依赖远端可用性，按原 ticket 尝试 IPC stop，并通过原进程证明停止进程树；IPC 回执或 timeout 单独不决定结果。OS 确认与 journal 停证完成后才返回成功，不调用 StopTest、归档、cleanup prompt 或删除接口。每个 Bot 独立完成停止尝试，全部错误一并交给调用方；stores 与 Worker 实例锁必须保留到这些尝试完成。
+取消 `run` 或显式 `shutdown` 先关闭调度并取消在途管理操作，等待发现、续期和启动 job 全部结束，再对本地责任清单中每个 Bot 进行有界停止。停止不依赖远端可用性，按原 ticket 尝试 IPC stop，并通过原进程证明停止进程树；IPC 回执或 timeout 单独不决定结果。恢复子进程可能已提交，而共享 journal 尚未替换前代 snapshot；此时不把前代 snapshot 当作当前原生进程证据，仍依据父进程已保存的当前子进程出生证明尝试停止。当前代 journal 停证缺失仍报告失败并保留责任，不能借前代已停止状态宣称完成。OS 确认与 journal 停证完成后才返回成功，不调用 StopTest、归档、cleanup prompt 或删除接口。每个 Bot 独立完成停止尝试，全部错误一并交给调用方；stores 与 Worker 实例锁必须保留到这些尝试完成。
 
 `shutdownWorkerExecutions` 汇总 Task 和 Bot 的执行所有者，等待每项停止尝试并保留失败。Task 退出仍由 coordinator 和原 backend 完成，不把 Bot 停机规则注入 Task 归档及容量逻辑。正式 `runWorker` 尚未启用 Bot 调度或 `assistantHost` 广告；调用者的组合及 Bot 精确删除仍由各自生命周期入口负责。

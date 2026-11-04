@@ -202,3 +202,22 @@ test("shutdown ignores a never-started deletion projection without inventing a m
   expect(deleted.definition).toBeNull();
   await expect(f.process.shutdown(deleted, new AbortController().signal)).resolves.toBeUndefined();
 });
+
+test("shutdown stops a persisted recovery child before reporting that its journal still belongs to the predecessor", async () => {
+  const f = await recoveryFixture();
+  await f.manager.shutdown(f.current(), f.signal);
+  const previous = f.saved();
+  const nextProof = { ...previous.controllerProcess!, pid: 456, processGroupId: 456, startedAt: "next-child" };
+  f.launch.mockImplementationOnce(async options => {
+    await options.onSubmitting(); await options.onSpawned(nextProof);
+    throw new Error("cancelled before child opens journal");
+  });
+  await expect(f.restart().advance(f.current(), f.signal)).rejects.toThrow("cancelled before child opens journal");
+  expect(f.current().intent!.executionGeneration).toBe("2");
+  f.deps.confirmStopped.mockResolvedValue(false);
+  f.deps.stopProcesses.mockClear();
+  f.deps.recordStopped.mockRejectedValueOnce(new Error("Original controller stop evidence is unavailable"));
+  await expect(f.restart().shutdown(f.current(), f.signal)).rejects.toThrow(/stop evidence is unavailable/);
+  expect(f.deps.stopProcesses).toHaveBeenCalledWith(nextProof, [], expect.any(Number));
+  expect(f.executions.get(f.current())).toMatchObject({ controllerProcess: nextProof, launchSubmission: "unknown", snapshot: null });
+});

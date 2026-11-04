@@ -187,7 +187,15 @@ export const createBotProcess = (options: {
     let observed: ControllerSnapshot | null = null;
     try { observed = await observe(ticket, signal); }
     catch { signal.throwIfAborted(); }
-    const saved = observed ?? readSnapshot(record.intent!.journalPath) ?? execution.snapshot;
+    const candidate = observed ?? readSnapshot(record.intent!.journalPath);
+    // A recovery child may be spawned before it replaces the shared journal's
+    // stopped predecessor. Only the current fence can supply native proofs;
+    // the parent's persisted child proof still owns the stop attempt.
+    const matchesCurrent = (snapshot: ControllerSnapshot): boolean => snapshot.executionId === ticket.executionId
+      && snapshot.testExecutionId === ticket.testExecutionId && snapshot.claimId === undefined
+      && snapshot.sessionId === ticket.sessionId && snapshot.executionGeneration === ticket.executionGeneration
+      && snapshot.controllerInstanceId === ticket.controllerInstanceId;
+    const saved = candidate !== null && matchesCurrent(candidate) ? candidate : execution.snapshot;
     if (saved !== null) options.executions.update(record, { snapshot: saved });
     const proof = saved?.controllerProcess ?? execution.controllerProcess;
     if (proof === null) throw new Error("Bot shutdown has no original process proof; execution evidence is retained.");
@@ -196,7 +204,7 @@ export const createBotProcess = (options: {
     if (!alreadyStopped) {
       // Only a live, authenticated healthy observation earns orderly restart.
       // A stale ready journal cannot erase an earlier abnormal failure.
-      options.executions.markShutdown(record, observed !== null && ["ready", "working"].includes(observed.lifecycle)
+      options.executions.markShutdown(record, observed !== null && matchesCurrent(observed) && ["ready", "working"].includes(observed.lifecycle)
         && observed.error === null && observed.startup?.state === "ready" && !observed.nativeStopped);
       try { await request(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { signal, timeoutMs: 10_000 }); }
       catch { signal.throwIfAborted(); }
