@@ -147,3 +147,47 @@ func TestWorkerConfigurationStoreFailuresRetainCauses(t *testing.T) {
 }
 
 var sentinelConfigurationRollback = errors.New("intentional configuration transaction rollback")
+
+func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
+	database, admin, member, project := membershipFixture(t)
+	ctx := context.Background()
+	workerID := queryID(90)
+	putWorkerSnapshot(t, database, workerSnapshotFixture(admin.UserID, workerID, time.Now().UTC()))
+	value := storeWorkerConfiguration()
+	var desired core.WorkerDesiredConfiguration
+	if err := database.WriteWorker(ctx, func(tx *WorkerTx) error {
+		current, err := tx.WorkerConfiguration(ctx, admin.UserID, workerID)
+		if err != nil || current.Desired != nil || current.ObservationRevision != "0" {
+			t.Fatalf("initial configuration lock: %+v %v", current, err)
+		}
+		if err := tx.ConfigurationProjectAccess(ctx, admin.UserID, project.ID); err != nil {
+			t.Fatalf("owner Project access rejected: %v", err)
+		}
+		if err := tx.ConfigurationProjectAccess(ctx, member.UserID, project.ID); !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("inaccessible Project exposed: %v", err)
+		}
+		desired, err = tx.SetWorkerConfiguration(ctx, admin.UserID, workerID, 1, value)
+		if err != nil {
+			return err
+		}
+		if desired.Revision != "1" || desired.UpdatedAt.IsZero() || !reflect.DeepEqual(desired.Value, value) {
+			t.Fatalf("stored target result: %+v", desired)
+		}
+		observation := core.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []core.WorkerConfigurationItem{}}
+		return tx.SetWorkerConfigurationObservation(ctx, admin.UserID, workerID, 1, observation)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		current, err := snapshot.WorkerConfiguration(ctx, admin.UserID, workerID)
+		if err != nil {
+			return err
+		}
+		if current.Desired.Revision != "1" || !current.Desired.UpdatedAt.Equal(desired.UpdatedAt) || !reflect.DeepEqual(current.Desired.Value, value) || current.ObservationRevision != "1" || current.Observation == nil || current.Observation.ReportedAt.IsZero() {
+			t.Fatalf("configuration did not roundtrip: %+v", current)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -110,6 +110,10 @@ func (s *Workers) PutConfiguration(ctx context.Context, principal core.Principal
 		if actual != expected {
 			return &Fault{Code: "version_conflict", Message: "Worker configuration revision does not match."}
 		}
+		current.Desired.Value, err = normalizeWorkerConfiguration(current.Desired.Value)
+		if err != nil {
+			return err
+		}
 		if err := configurationProjects(ctx, tx, principal.UserID, current.Desired, value); err != nil {
 			return err
 		}

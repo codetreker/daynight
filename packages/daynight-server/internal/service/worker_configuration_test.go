@@ -366,3 +366,52 @@ func TestWorkerConfigurationRefusalDoesNotHideTransactionFailure(t *testing.T) {
 		t.Fatalf("rolled back refusal not returned: %v", err)
 	}
 }
+
+func TestWorkerConfigurationJSONBRoundtripPreservesSemanticEquality(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		lostAccess bool
+	}{{"identical PUT", false}, {"unrelated edit with lost access", true}} {
+		t.Run(test.name, func(t *testing.T) {
+			_, database, project, _, _ := taskService(t)
+			principal := workerMember(t, database, project.ID)
+			ctx := context.Background()
+			workers := NewWorkers(database)
+			id := uuid.NewString()
+			value := cloudWorkerConfiguration(project.ID)
+			value.Projects[0].NativeOverrides = map[string]json.RawMessage{
+				"args":  json.RawMessage(`["--foo","b\u0061r","quote\"value","\\path","中文"]`),
+				"model": json.RawMessage(`"model/\u006eame"`),
+			}
+			imported := importWorkerConfiguration(t, workers, principal, id, value)
+			read, err := workers.Configuration(ctx, principal, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.lostAccess {
+				if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID); err != nil {
+					t.Fatal(err)
+				}
+				read.Desired.Value.MaxConcurrent++
+			}
+			result, err := workers.PutConfiguration(ctx, principal, id, "1", read.Desired.Value)
+			if err != nil {
+				t.Fatalf("semantically unchanged project was rejected after JSONB roundtrip: %v", err)
+			}
+			if test.lostAccess {
+				if result.Desired.Revision != "2" || result.Desired.Value.MaxConcurrent != 3 {
+					t.Fatalf("unrelated scalar update was not applied: %+v", result)
+				}
+			} else if result.Desired.Revision != "1" || !result.Desired.UpdatedAt.Equal(imported.Configuration.Desired.UpdatedAt) {
+				t.Fatalf("identical PUT changed configuration after JSONB roundtrip: %+v", result.Desired)
+			}
+		})
+	}
+}
+
+func TestWorkerConfigurationRejectsUnencodableOverrides(t *testing.T) {
+	value := cloudWorkerConfiguration("")
+	value.Projects = []core.WorkerProjectConfiguration{{ProjectID: uuid.NewString(), NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`invalid`)}}}
+	_, err := normalizeWorkerConfiguration(value)
+	requireFault(t, err, "invalid_input")
+}
