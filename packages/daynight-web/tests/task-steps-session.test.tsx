@@ -73,6 +73,102 @@ it("keeps malformed success unknown when readback fails, then reconciles without
   expect(session.canSetStepStatus(projectId, taskId)).toBe(true); expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
 });
 
+it.each(["unknown", "conflict"] as const)("reconciles %s after the detail is closed and reopened while Steps read remains pending", async (outcome) => {
+  const scope = await seed(); const session = await open(scope); const pendingSteps = deferred<Response>(); const reopenedParent = deferred<Response>(); let submitted = false; let parentReads = 0;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PUT") { submitted = true; return outcome === "unknown" ? Promise.reject(new Error("Offline")) : Promise.resolve(failure(409, "version_conflict")); }
+    if (url.endsWith("/steps")) return submitted ? pendingSteps.promise : Promise.resolve(resourceResponse(resource(), TEST_VIEWER_ID));
+    if (submitted && ++parentReads > 1) return reopenedParent.promise;
+    return Promise.resolve(resourceResponse(body(), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); const releaseDetail = session.subscribe(projectId, taskId, vi.fn()); const releaseSteps = start(session);
+  session.requireOpeningRead(projectId, taskId); session.load(projectId, taskId, 1, "open"); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.setStepStatus(projectId, taskId, item.id, "done", 5n);
+  await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ refreshing: false, mutation: { phase: outcome, reconciling: true } })); expect(parentReads).toBe(1);
+  releaseDetail(); releaseSteps(); session.requireOpeningRead(projectId, taskId); session.subscribe(projectId, taskId, vi.fn()); start(session);
+  await waitFor(() => expect(parentReads).toBe(2)); pendingSteps.resolve(resourceResponse(resource(), TEST_VIEWER_ID));
+  expect(session.canSetStepStatus(projectId, taskId)).toBe(false); reopenedParent.resolve(resourceResponse(body(), TEST_VIEWER_ID));
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "reconciled", reconciledFrom: outcome, reconciling: false }));
+  expect(session.canSetStepStatus(projectId, taskId)).toBe(true); expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+});
+
+it("coalesces multiple openings while the prior opening's parent GET is in flight", async () => {
+  const scope = await seed(); const session = await open(scope); const oldParent = deferred<Response>(); const newParent = deferred<Response>(); const pendingSteps = deferred<Response>(); let submitted = false; let parentReads = 0;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PUT") { submitted = true; return Promise.reject(new Error("Offline")); }
+    if (url.endsWith("/steps")) return submitted ? pendingSteps.promise : Promise.resolve(resourceResponse(resource(), TEST_VIEWER_ID));
+    return submitted ? (++parentReads === 1 ? oldParent.promise : newParent.promise) : Promise.resolve(resourceResponse(body(), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); const release = start(session); session.requireOpeningRead(projectId, taskId); session.load(projectId, taskId, 1, "open"); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.setStepStatus(projectId, taskId, item.id, "done", 5n); await waitFor(() => expect(parentReads).toBe(1)); release();
+  session.requireOpeningRead(projectId, taskId); session.requireOpeningRead(projectId, taskId); pendingSteps.resolve(resourceResponse(resource(), TEST_VIEWER_ID));
+  expect(parentReads).toBe(1); oldParent.resolve(resourceResponse(body(), TEST_VIEWER_ID)); await waitFor(() => expect(parentReads).toBe(2));
+  expect(session.snapshot(projectId, taskId).mutation.reconciling).toBe(true); newParent.resolve(resourceResponse(body(), TEST_VIEWER_ID));
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "reconciled", reconciling: false }));
+  expect(parentReads).toBe(2); expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull();
+});
+
+it("does not retry a failed old-opening parent read until explicit recovery", async () => {
+  const scope = await seed(); const session = await open(scope); const oldParent = deferred<Response>(); let submitted = false; let parentReads = 0;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PUT") { submitted = true; return Promise.resolve(failure(409, "version_conflict")); }
+    if (url.endsWith("/steps")) return Promise.resolve(resourceResponse(resource(), TEST_VIEWER_ID));
+    if (submitted && ++parentReads === 1) return oldParent.promise;
+    return Promise.resolve(resourceResponse(body(), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); start(session); session.requireOpeningRead(projectId, taskId); session.load(projectId, taskId, 1, "open"); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.setStepStatus(projectId, taskId, item.id, "done", 5n); await waitFor(() => expect(parentReads).toBe(1)); session.requireOpeningRead(projectId, taskId);
+  oldParent.resolve(failure(500, "internal_error")); await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "conflict", reconciling: false, reconciliationError: { status: 500 } }));
+  await drainReads(scope); expect(parentReads).toBe(1); expect(session.canSetStepStatus(projectId, taskId)).toBe(false);
+  session.reconcile(projectId, taskId); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true)); expect(parentReads).toBe(2);
+});
+
+it("reads the reopened parent even when an old-opening response awaits summary admission", async () => {
+  const scope = await seed(); const session = await open(scope); const refresh = vi.fn(); session.subscribeProject(projectId, refresh); let submitted = false; let parentReads = 0;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PUT") { submitted = true; return Promise.reject(new Error("Offline")); }
+    if (url.endsWith("/steps")) return Promise.resolve(resourceResponse(resource(submitted ? 6n : 5n), TEST_VIEWER_ID));
+    if (submitted) parentReads++;
+    return Promise.resolve(resourceResponse(body(submitted ? 6n : 5n), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); start(session); session.requireOpeningRead(projectId, taskId); session.load(projectId, taskId, 1, "open"); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.setStepStatus(projectId, taskId, item.id, "done", 5n); await waitFor(() => expect(refresh.mock.calls.length).toBeGreaterThanOrEqual(3));
+  expect(parentReads).toBe(1); session.requireOpeningRead(projectId, taskId);
+  await waitFor(() => expect(parentReads).toBe(2)); await apply(scope, body(6n)); session.observe(projectId, taskId, node(scope));
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true)); expect(parentReads).toBe(2);
+});
+
+it("keeps retries bounded for a new opening and floor after a stale old-opening response", async () => {
+  const scope = await seed(); const session = await open(scope); const oldParent = deferred<Response>(); const pendingSteps = deferred<Response>(); let submitted = false; let parentReads = 0; let recover = false;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PUT") { submitted = true; return Promise.reject(new Error("Offline")); }
+    if (url.endsWith("/steps")) return !submitted ? Promise.resolve(resourceResponse(resource(), TEST_VIEWER_ID)) : recover ? Promise.resolve(resourceResponse(resource(6n), TEST_VIEWER_ID)) : pendingSteps.promise;
+    if (submitted && ++parentReads === 1) return oldParent.promise;
+    return Promise.resolve(resourceResponse(body(recover ? 6n : 5n), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); start(session); session.requireOpeningRead(projectId, taskId); session.load(projectId, taskId, 1, "open"); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.setStepStatus(projectId, taskId, item.id, "done", 5n); await waitFor(() => expect(parentReads).toBe(1)); session.requireOpeningRead(projectId, taskId);
+  await apply(scope, body(6n)); session.observe(projectId, taskId, node(scope)); pendingSteps.resolve(resourceResponse(resource(6n), TEST_VIEWER_ID)); oldParent.resolve(resourceResponse(body(), TEST_VIEWER_ID));
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "unknown", reconciling: false, reconciliationError: { kind: "protocol" } }));
+  expect(parentReads).toBe(3); expect(session.canSetStepStatus(projectId, taskId)).toBe(false); recover = true; session.reconcile(projectId, taskId);
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true)); expect(parentReads).toBe(4); expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+});
+
+it("finishes Steps reconciliation when a same-version graph mismatch clears", async () => {
+  const scope = await seed(); const session = await open(scope); const parent = deferred<Response>(); const steps = deferred<Response>(); let submitted = false;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PUT") { submitted = true; return Promise.reject(new Error("Offline")); }
+    if (url.endsWith("/steps")) return submitted ? steps.promise : Promise.resolve(resourceResponse(resource(), TEST_VIEWER_ID));
+    return submitted ? parent.promise : Promise.resolve(resourceResponse(body(), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); start(session); session.requireOpeningRead(projectId, taskId); session.load(projectId, taskId, 1, "open"); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.setStepStatus(projectId, taskId, item.id, "done", 5n); await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.reconciling).toBe(true));
+  session.observe(projectId, taskId, { ...node(scope), ready: false }); parent.resolve(resourceResponse(body(), TEST_VIEWER_ID)); steps.resolve(resourceResponse(resource(), TEST_VIEWER_ID));
+  await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ graphMismatch: true, mutation: { reconciling: true } }));
+  session.observe(projectId, taskId, node(scope)); await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "reconciled", reconciling: false }));
+  expect(session.canSetStepStatus(projectId, taskId)).toBe(true); expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+});
+
 it("treats a child 404 as a refusal and verifies the parent without retiring readable content", async () => {
   const scope = await seed(); const session = await open(scope);
   const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => Promise.resolve(options.method === "PUT" ? failure(404, "not_found") : resourceResponse(url.endsWith("/steps") ? resource() : body(), TEST_VIEWER_ID)));

@@ -36,6 +36,11 @@ test('step status writes converge through real service resources', { annotation:
   const other = await createTask(api, project.id, { title: 'Other task while waiting' });
   const deletedTask = await createTask(api, project.id, { title: 'Deleted parent acceptance' });
   const raceTask = await createTask(api, project.id, { title: 'Step reconciliation version advance' });
+  const reopenTask = await createTask(api, project.id, { title: 'Step reconciliation reopening' });
+  const reopenStepsPath = endpoint(project.id, reopenTask.id);
+  const reopenStepId = '5678abcd';
+  const reopenInitial = await api.post(reopenStepsPath, { data: { version: reopenTask.version, id: reopenStepId, title: 'Reopening step' } });
+  expect(reopenInitial.status()).toBe(201);
   const raceStepsPath = endpoint(project.id, raceTask.id);
   const raceStepId = '4567abcd';
   const raceInitial = await api.post(raceStepsPath, { data: { version: raceTask.version, id: raceStepId, title: 'Version advance step' } });
@@ -58,7 +63,10 @@ test('step status writes converge through real service resources', { annotation:
   const raceCollectionUrl = new URL(raceStepsPath, baseURL).href;
   const raceParentUrl = new URL(`/api/v1/projects/${project.id}/tasks/${raceTask.id}`, baseURL).href;
   const raceStatusUrl = new URL(`${raceStepsPath}/${raceStepId}/status`, baseURL).href;
-  allowBrowserWrites([{ method: 'PUT', url: statusUrl, count: 11 }, { method: 'PUT', url: deletedUrl, count: 1 }, { method: 'PUT', url: raceStatusUrl, count: 1 }]);
+  const reopenCollectionUrl = new URL(reopenStepsPath, baseURL).href;
+  const reopenParentUrl = new URL(`/api/v1/projects/${project.id}/tasks/${reopenTask.id}`, baseURL).href;
+  const reopenStatusUrl = new URL(`${reopenStepsPath}/${reopenStepId}/status`, baseURL).href;
+  allowBrowserWrites([{ method: 'PUT', url: statusUrl, count: 11 }, { method: 'PUT', url: deletedUrl, count: 1 }, { method: 'PUT', url: raceStatusUrl, count: 1 }, { method: 'PUT', url: reopenStatusUrl, count: 1 }]);
   let writes = 0;
   let mode: 'normal' | 'conflict' | 'lost' | 'invalid' | 'child404' | 'late' = 'normal';
   let releaseLate!: () => void;
@@ -223,6 +231,86 @@ test('step status writes converge through real service resources', { annotation:
     await expect(trigger(page, stepId)).toBeEnabled();
     expect(writes).toBe(11);
     await root(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
+    const frozenTime = new Date('2030-01-01T00:00:00Z');
+    await page.clock.install({ time: frozenTime }); await page.clock.pauseAt(frozenTime);
+    await page.goto(`/projects/${project.id}`);
+    await selectTaskList(page);
+    await page.getByRole('tab', { name: '独立任务', exact: true }).click();
+    await page.locator(`#standalone-task-${reopenTask.id}`).click();
+    await root(page).getByRole('tab', { name: '步骤', exact: true }).click();
+    await expect(trigger(page, reopenStepId)).toBeEnabled();
+    const reopenUpdatedAt = root(page).locator('.task-detail-metadata > div:nth-child(2) time');
+    const reopenInitialUpdatedAt = await reopenUpdatedAt.getAttribute('datetime');
+    expect(reopenInitialUpdatedAt).not.toBeNull();
+    let releaseReopenSteps!: () => void; let reopenStepsEntered!: () => void; let reopenStepsDelivered!: () => void;
+    let releaseReopenParent!: () => void; let firstReopenParentDelivered!: () => void;
+    const reopenStepsGate = new Promise<void>(resolve => { releaseReopenSteps = resolve; });
+    const reopenStepsWaiting = new Promise<void>(resolve => { reopenStepsEntered = resolve; });
+    const reopenStepsDone = new Promise<void>(resolve => { reopenStepsDelivered = resolve; });
+    const reopenParentGate = new Promise<void>(resolve => { releaseReopenParent = resolve; });
+    const firstReopenParent = new Promise<void>(resolve => { firstReopenParentDelivered = resolve; });
+    let reopenStarted = false; let reopening = false; let reopenReads = 0; let reopenWrites = 0; let reopenParentStarted = false;
+    let reopenFirstVersion: bigint | null = null; let reopenFirstUpdatedAt: string | null = null;
+    let reopenStepsVersion: bigint | null = null; let reopenedParentVersion: bigint | null = null;
+    const reopenEvents: string[] = [];
+    await page.route(reopenCollectionUrl, async route => {
+      if (!reopenStarted) { await route.continue(); return; }
+      reopenEvents.push('steps-held'); reopenStepsEntered(); await reopenStepsGate;
+      const response = await authenticatedAPI(page.context().request).fetch(route.request(), { timeout: 15_000, maxRetries: 0 });
+      expect(response.status()).toBe(200);
+      reopenStepsVersion = parseTaskSteps(parseApiJson(await response.text()), project.id, reopenTask.id).version;
+      await fulfillAuthenticatedResponse(route, response); reopenEvents.push('steps-delivered'); reopenStepsDelivered();
+    });
+    await page.route(reopenParentUrl, async route => {
+      if (!reopenStarted || route.request().method() !== 'GET') { await route.continue(); return; }
+      const readNumber = ++reopenReads; const openingRead = reopening;
+      if (openingRead) { reopenEvents.push('reopened-parent-held'); reopenParentStarted = true; await reopenParentGate; }
+      const response = await authenticatedAPI(page.context().request).fetch(route.request(), { timeout: 15_000, maxRetries: 0 });
+      expect(response.status()).toBe(200);
+      const parent = parseApiJson(await response.text()) as { version: bigint; updatedAt: string };
+      if (readNumber === 1) { reopenFirstVersion = parent.version; reopenFirstUpdatedAt = parent.updatedAt; }
+      if (openingRead) reopenedParentVersion = parent.version;
+      await fulfillAuthenticatedResponse(route, response);
+      if (readNumber === 1) { reopenEvents.push('first-parent-delivered'); firstReopenParentDelivered(); }
+      if (openingRead) reopenEvents.push('reopened-parent-delivered');
+    });
+    await page.route(reopenStatusUrl, async route => {
+      reopenWrites += 1;
+      const response = await authenticatedAPI(page.context().request).fetch(route.request(), { timeout: 15_000, maxRetries: 0 });
+      expect(response.status()).toBe(200); reopenStarted = true; reopenEvents.push('write-response-lost'); await route.abort('connectionfailed');
+    });
+    try {
+      await choose(page, reopenStepId, 'done');
+      await Promise.all([reopenStepsWaiting, firstReopenParent]);
+      expect(reopenFirstUpdatedAt).not.toBeNull(); expect(reopenFirstUpdatedAt).not.toBe(reopenInitialUpdatedAt);
+      await expect(reopenUpdatedAt).toHaveAttribute('datetime', reopenFirstUpdatedAt!);
+      reopenEvents.push('first-parent-admitted'); expect(reopenReads).toBe(1);
+      await expect(trigger(page, reopenStepId)).toBeDisabled();
+      await root(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
+      await expect(root(page)).toHaveCount(0); reopenEvents.push('dialog-closed');
+      reopening = true; reopenEvents.push('reopen-requested');
+      await page.locator(`#standalone-task-${reopenTask.id}`).click();
+      await root(page).getByRole('tab', { name: '步骤', exact: true }).click(); reopenEvents.push('dialog-reopened');
+      await expect(trigger(page, reopenStepId)).toBeDisabled();
+      await expect(root(page).locator('.task-status-trigger')).toBeDisabled();
+      expect(reopenWrites).toBe(1);
+      releaseReopenSteps(); await reopenStepsDone;
+      expect(reopenStepsVersion).toBe(reopenFirstVersion);
+      await expect.poll(() => reopenParentStarted, { timeout: 15_000 }).toBe(true);
+      await expect(trigger(page, reopenStepId)).toBeDisabled();
+      await expect(root(page).locator('.task-status-trigger')).toBeDisabled();
+      releaseReopenParent();
+      await expect(trigger(page, reopenStepId)).toHaveText(/已完成/);
+      await expect(trigger(page, reopenStepId)).toBeEnabled();
+      await expect(root(page).locator('.task-status-trigger')).toBeEnabled();
+      await expect(root(page).getByRole('alert')).toContainText('先前请求的结果仍未知');
+      expect(reopenedParentVersion).toBe(reopenFirstVersion); expect(reopenWrites).toBe(1);
+      await info.attach('step-reopening-reconciliation', { contentType: 'application/json', body: Buffer.from(JSON.stringify({ events: reopenEvents, version: String(reopenFirstVersion), parentReads: reopenReads, writes: reopenWrites })) });
+    } finally {
+      releaseReopenSteps(); releaseReopenParent();
+      await page.unroute(reopenStatusUrl); await page.unroute(reopenParentUrl); await page.unroute(reopenCollectionUrl);
+      await page.clock.resume();
+    }
     await page.goto(`/projects/${project.id}/tasks/${raceTask.id}?tab=steps`);
     await expect(trigger(page, raceStepId)).toBeEnabled();
     const parentUpdatedAt = root(page).locator('.task-detail-metadata > div:nth-child(2) time');

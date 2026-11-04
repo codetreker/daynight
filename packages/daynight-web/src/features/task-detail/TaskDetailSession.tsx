@@ -43,8 +43,8 @@ type StepsRead = {
   state: TaskStepsState;
   generation: number;
   recoveryReads: number;
-  parentRetryFloor: bigint | null;
-  parentRequestedFloor: bigint | null;
+  parentRetry: { readonly floor: bigint; readonly opening: number } | null;
+  parentRequested: { readonly floor: bigint; readonly opening: number } | null;
   cacheGeneration: string | null;
   // Verified versions remain a lower bound after their full collections are released.
   floor: bigint | null;
@@ -156,7 +156,7 @@ export class TaskDetailSessions {
     const key = `${projectId}/${taskId}`;
     let entry = this.entries.get(key);
     if (entry === undefined) {
-      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetryFloor: null, parentRequestedFloor: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
+      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetry: null, parentRequested: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
       this.entries.set(key, entry);
     }
     return entry;
@@ -164,11 +164,15 @@ export class TaskDetailSessions {
   private publish(entry: Entry, state: DetailState): void {
     entry.state = state;
     this.synchronizeSteps(entry);
+    this.finishStepReconciliation(entry);
     for (const listener of entry.listeners) listener();
   }
   private publishSteps(steps: StepsRead, state: TaskStepsState): void {
     steps.state = state;
+    const entry = this.entry(steps.projectId, steps.taskId);
+    const finished = this.finishStepReconciliation(entry);
     for (const listener of steps.listeners) listener();
+    if (finished) for (const listener of entry.listeners) listener();
   }
   private clearSteps(steps: StepsRead, state: TaskStepsState, retire = true): void {
     steps.generation++;
@@ -203,15 +207,16 @@ export class TaskDetailSessions {
     return correlationId === undefined ? getTask(entry.steps.projectId, entry.steps.taskId, signal, admission)
       : getTask(entry.steps.projectId, entry.steps.taskId, signal, admission, correlationId);
   }
-  private finishStepReconciliation(entry: Entry): void {
+  private finishStepReconciliation(entry: Entry): boolean {
     const mutation = entry.state.mutation;
     const steps = entry.steps;
     const version = steps.state.resource?.version;
     if (mutation.operation?.action !== "stepStatus" || !mutation.reconciling || steps.state.stale || steps.state.error !== null || version === undefined ||
-      entry.state.detail?.version !== version || this.summaryVersion(steps.projectId, steps.taskId) !== version || entry.state.requiresFreshRead || entry.state.error !== null) return;
-    this.publish(entry, { ...entry.state, mutation: { ...mutation, phase: mutation.phase === "unknown" || mutation.phase === "conflict" ? "reconciled" : mutation.phase,
-      ...(mutation.phase === "unknown" || mutation.phase === "conflict" ? { reconciledFrom: mutation.phase } : {}), reconciling: false, reconciliationError: null } });
+      entry.state.detail?.version !== version || this.summaryVersion(steps.projectId, steps.taskId) !== version || entry.state.requiresFreshRead || entry.state.error !== null) return false;
+    entry.state = { ...entry.state, mutation: { ...mutation, phase: mutation.phase === "unknown" || mutation.phase === "conflict" ? "reconciled" : mutation.phase,
+      ...(mutation.phase === "unknown" || mutation.phase === "conflict" ? { reconciledFrom: mutation.phase } : {}), reconciling: false, reconciliationError: null } };
     if (steps.listeners.size === 0) this.clearSteps(steps, emptyTaskStepsState, false);
+    return true;
   }
   private stepsFloor(entry: Entry): bigint | null {
     const pending = entry.pending;
@@ -269,10 +274,13 @@ export class TaskDetailSessions {
   }
   private scheduleStepParent(entry: Entry, floor: bigint | null): void {
     const steps = entry.steps;
-    if (entry.state.mutation.operation?.action !== "stepStatus" || !entry.state.mutation.reconciling || floor === null ||
-      entry.state.detail === null || entry.state.detail.version >= floor || entry.pending !== null && entry.pending.detail.version >= floor || steps.parentRequestedFloor === floor) return;
-    // Schedule once per observed floor; an obsolete response gets one bounded retry.
-    steps.parentRequestedFloor = floor;
+    const opening = entry.openingGeneration;
+    const currentDetail = entry.state.detail !== null && entry.state.detail.version >= (floor ?? 0n) && entry.liveOpeningGeneration === opening;
+    const currentPending = entry.pending !== null && entry.pending.detail.version >= (floor ?? 0n) && entry.pending.readOpeningGeneration === opening;
+    if (entry.state.mutation.operation?.action !== "stepStatus" || !entry.state.mutation.reconciling || floor === null || currentDetail || currentPending ||
+      steps.parentRequested?.floor === floor && steps.parentRequested.opening === opening) return;
+    // Each floor and opening shares a read; an obsolete response gets one bounded retry.
+    steps.parentRequested = { floor, opening };
     entry.queuedRead = { revision: entry.state.revision, reconciliation: false };
     this.drainReads(steps.projectId, steps.taskId);
   }
@@ -328,7 +336,6 @@ export class TaskDetailSessions {
     const previous = steps.state.resource;
     if (previous !== null && previous.version === resource.version && !sameSteps(previous, resource)) throw new ApiError("protocol");
     this.publishSteps(steps, { resource: previous !== null && previous.version === resource.version ? previous : resource, status: "ready", refreshing: false, stale: false, error: null });
-    this.finishStepReconciliation(entry);
   }
   private async readSteps(entry: Entry): Promise<void> {
     const steps = entry.steps;
@@ -522,8 +529,9 @@ export class TaskDetailSessions {
     void this.read(projectId, taskId, entry.state.revision, entry.state.mutation.operation !== null, true);
   }
   private reconcileSteps(entry: Entry): void {
-    entry.steps.parentRequestedFloor = this.stepsFloor(entry);
-    entry.steps.parentRetryFloor = null;
+    const floor = this.stepsFloor(entry);
+    entry.steps.parentRequested = floor === null ? null : { floor, opening: entry.openingGeneration };
+    entry.steps.parentRetry = null;
     this.publish(entry, { ...entry.state, requiresFreshRead: true, mutation: { ...entry.state.mutation, reconciling: true, reconciliationError: null } });
     this.refreshProject(entry.steps.projectId);
     void this.read(entry.steps.projectId, entry.steps.taskId, entry.state.revision, false, true);
@@ -575,10 +583,9 @@ export class TaskDetailSessions {
       entry.admitted && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
       (generation === null || generation === entry.generation);
     if (!current()) return;
-    if (entry.steps.parentRequestedFloor !== null && detail.version >= entry.steps.parentRequestedFloor && readOpeningGeneration === entry.openingGeneration && entry.queuedRead?.reconciliation === false && entry.state.mutation.operation?.action === "stepStatus") entry.queuedRead = null;
     if (detail.projectId !== projectId || detail.id !== taskId) throw new ApiError("protocol");
     if (entry.committedVersion !== null && detail.version < entry.committedVersion) {
-      if (this.retryStepParent(entry, revision)) return;
+      if (this.retryStepParent(entry, revision, readOpeningGeneration)) return;
       throw new ApiError("protocol");
     }
     let admitted: DetailAdmission;
@@ -599,8 +606,10 @@ export class TaskDetailSessions {
       catch (error) { if (!isAbortError(error) || signal.aborted || this.scope.isInvalidated) throw error; }
     }
     if (!current()) return;
+    const requested = entry.steps.parentRequested;
+    if (requested !== null && detail.version >= requested.floor && readOpeningGeneration === requested.opening && requested.opening === entry.openingGeneration && entry.queuedRead?.reconciliation === false && entry.state.mutation.operation?.action === "stepStatus") entry.queuedRead = null;
     if (admitted.kind === "older") {
-      if (this.retryStepParent(entry, revision)) return;
+      if (this.retryStepParent(entry, revision, readOpeningGeneration)) return;
       this.publish(entry, { ...entry.state, refreshing: false, requiresFreshRead: true,
         mutation: reconciliation ? { ...entry.state.mutation, reconciling: false, reconciliationError: new ApiError("protocol") } : entry.state.mutation });
       return;
@@ -628,18 +637,20 @@ export class TaskDetailSessions {
     this.publish(entry, { ...entry.state, revision, loadedRevision: revision,
       detail: preserveCollection(entry.state.detail, materializeDetail(admitted.detail, node)), status: "ready", refreshing: false,
       requiresFreshRead: entry.liveVersion !== detail.version || entry.liveOpeningGeneration !== entry.openingGeneration || entry.mismatch !== null, graphMismatch: entry.mismatch !== null, error: storageError, mutation });
-    this.finishStepReconciliation(entry);
     if (entry.mismatch !== null || reconciliation) this.refreshProject(projectId);
     if (entry.liveOpeningGeneration !== entry.openingGeneration) {
       if (entry.queuedRead === null) entry.queuedRead = { revision, reconciliation: false };
       this.drainReads(projectId, taskId);
     }
   }
-  private retryStepParent(entry: Entry, revision: number): boolean {
+  private retryStepParent(entry: Entry, revision: number, readOpeningGeneration: number | null): boolean {
     if (entry.state.mutation.operation?.action !== "stepStatus" || !entry.state.mutation.reconciling) return false;
     const floor = this.stepsFloor(entry);
-    if (floor === null || entry.steps.parentRetryFloor === floor) throw new ApiError("protocol");
-    entry.steps.parentRetryFloor = floor;
+    if (floor === null) throw new ApiError("protocol");
+    if (readOpeningGeneration === entry.openingGeneration) {
+      if (entry.steps.parentRetry?.floor === floor && entry.steps.parentRetry.opening === entry.openingGeneration) throw new ApiError("protocol");
+      entry.steps.parentRetry = { floor, opening: entry.openingGeneration };
+    }
     entry.queuedRead = { revision, reconciliation: false };
     this.drainReads(entry.steps.projectId, entry.steps.taskId);
     return true;
@@ -691,7 +702,8 @@ export class TaskDetailSessions {
     } finally {
       if (generation === entry.generation) {
         entry.read = null;
-        if (entry.queuedRead === null && openingGeneration !== entry.openingGeneration) {
+        if (entry.queuedRead === null && openingGeneration !== entry.openingGeneration &&
+          !(entry.state.mutation.operation?.action === "stepStatus" && entry.state.mutation.reconciliationError !== null)) {
           entry.queuedRead = { revision: entry.state.revision, reconciliation: false };
         }
         this.drainReads(projectId, taskId);
@@ -832,8 +844,8 @@ export class TaskDetailSessions {
     this.cancelRead(projectId, taskId);
     if (operation.action === "stepStatus") {
       entry.steps.recoveryReads = 0;
-      entry.steps.parentRetryFloor = null;
-      entry.steps.parentRequestedFloor = null;
+      entry.steps.parentRetry = null;
+      entry.steps.parentRequested = null;
       entry.steps.generation++;
       entry.steps.read?.abort(); entry.steps.read = null;
       entry.steps.admission?.abort(); entry.steps.admission = null;
@@ -885,7 +897,8 @@ export class TaskDetailSessions {
             validated = true;
             entry.committedVersion = result.version;
             if (this.disposed) return;
-            entry.steps.parentRequestedFloor = this.stepsFloor(entry);
+            const floor = this.stepsFloor(entry);
+            entry.steps.parentRequested = floor === null ? null : { floor, opening: entry.openingGeneration };
             this.publish(entry, { ...entry.state, requiresFreshRead: true, mutation: { operation, phase: "confirmed", error: null, reconciling: true, reconciliationError: null } });
             await this.acceptSteps(entry, result, requestTicket, entry.steps.generation, signal);
             this.refreshProject(projectId);
