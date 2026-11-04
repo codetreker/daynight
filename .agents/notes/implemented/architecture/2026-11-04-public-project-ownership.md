@@ -78,9 +78,11 @@ client may reject the complete source fields; deployment must pair the service
 and matching consumers. Cache rebuild costs a complete task snapshot after
 upgrade, while keeping actor authority outside durable records.
 
-Ordinary Team management, transfer and new Team commands/pages remain separate
-capabilities. Their later addition can reuse real ownership and independent grant
-facts without changing the cache's permission boundary. The
+The [Team lifecycle decision](2026-11-04-team-lifecycle.md) owns ordinary Team
+metadata and empty deletion separately from these public Project projections.
+Member management, transfer and new Team commands/pages remain separate
+capabilities. They can reuse real ownership and independent grant facts without
+changing the cache's permission boundary. The
 [Personal ownership decision](2026-11-04-personal-project-ownership.md),
 [access projection](2026-11-03-project-access-projection.md) and
 [participant projection](2026-11-04-project-participant-projection.md) retain

@@ -16,11 +16,13 @@
 现有 PostgreSQL task 事务规则不扩展为文件与元数据的原子提交保证。
 
 [鉴权架构](daynight-auth.md)定义已接入运行时的 UniAuth 身份交接、本地用户、会话、
-访问令牌、CLI 设备授权及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
+访问令牌、CLI 设备授权、Team 生命周期及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
 [身份基础模块](../../.agents/notes/implemented/architecture/2026-10-22-identity-credentials.md)
 提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
 提供事务内授权、私有创建和邀请。`server.New(Dependencies, Config, logger)`
-返回 `(http.Handler, error)`，验证配置并统一注册身份、成员和全部业务路由。
+返回 `(http.Handler, error)`，验证配置并统一注册身份、Team、成员和全部业务路由。
+Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据与生命周期事务)拥有，
+不引入 Project/Task 的反向锁依赖。
 每个资源 service 方法显式接收 `core.Principal`；不保留匿名业务入口或私有创建/列表
 别名。[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 记录组合、凭据隐私与验证边界。
@@ -120,8 +122,8 @@ service/store；请求仍只经过一次现有日志包装。HTML、图、Worker
 `/login`、`/projects`、项目页、账号级 `/workers` 与 `/workers/{workerId}`、公开静态使用引导 `/setup`、
 `/projects/{projectId}/tasks/{taskId}` 完整详情和其附件路径入口。
 [公开入口设计](daynight-landing.md)区分介绍、认证和工作台；使用引导在认证组件外挂载，
-不发起身份核验或其他 API 请求。`/login`、`/setup` 和 `/workers` 根及后代命名空间在
-callback 配置验证中保留，冲突在路由注册前拒绝。GET 沿用 HEAD 语义，其他方法返回 405，未知形状不回退 index。UI 的无效 ID 仍交付
+不发起身份核验或其他 API 请求。`/login`、`/setup`、`/workers`、`/teams` 根及后代，
+以及 `/api/v1/teams` 命名空间在 callback 配置验证中保留，冲突在路由注册前拒绝。GET 沿用 HEAD 语义，其他方法返回 405，未知形状不回退 index。UI 的无效 ID 仍交付
 index 后由前端显示未找到页面。独立附件命名空间复用原始路径守卫，在 ServeMux
 清理和重定向前拒绝非法路径；数据与授权仍由已有任务、图和附件接口负责，机制见
 [详情页面设计](daynight-task-inspection.md#独立完整任务详情)及
@@ -283,6 +285,8 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 
 | 方法与路径 | 操作 |
 |---|---|
+| `GET/POST /api/v1/teams` | 本人成员资格分页；原子创建普通 Team 和创建者 admin |
+| `GET/PATCH/DELETE /api/v1/teams/{teamId}` | 读取本人关系，按元数据版本改名或核对名称后删除空 Team |
 | `POST /api/v1/projects` | 创建 project |
 | `GET /api/v1/projects` | 分页列出 project |
 | `GET /api/v1/projects/{projectId}` | 获取 project |

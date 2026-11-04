@@ -20,7 +20,7 @@
 [架构](../design/daynight-task-attachments.md)拥有附件机制。
 
 [鉴权需求](daynight-auth.md)定义已接入主站的 UniAuth 登录、Daynight 会话、个人
-访问令牌、CLI 设备授权和项目成员授权；[架构](../design/daynight-auth.md)拥有机制。全部 project、task、
+访问令牌、CLI 设备授权、Team 生命周期和项目成员授权；[架构](../design/daynight-auth.md)拥有机制。全部 Team、project、task、
 图和附件业务请求必须通过认证。项目准入统一计算当前 owner Team role 与独立 direct grant role
 的最大值；没有任何有效来源时不可访问。真实 Personal 归属、初始化和存量迁移由
 [鉴权要求](daynight-auth.md)拥有。[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
@@ -169,8 +169,16 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 
 ## HTTP API
 
+Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确版本和写入结果由
+[鉴权需求](daynight-auth.md#team-生命周期)拥有；下表保留服务的完整资源入口索引。
+
 | 方法 | 路径 | 结果 |
 |---|---|---|
+| `POST` | `/api/v1/teams` | 创建普通 Team 与创建者 admin，返回 `201`、Team 和 Location |
+| `GET` | `/api/v1/teams` | 按本人成员资格返回 Team 分页 |
+| `GET` | `/api/v1/teams/{teamId}` | 返回 Team 与本人真实成员关系，不可见时 `404` |
+| `PATCH` | `/api/v1/teams/{teamId}` | 当前 admin 按元数据 version 保存原文名称，返回 `200` 和 Team |
+| `DELETE` | `/api/v1/teams/{teamId}` | 当前 admin 核对 version/name，原子删除空普通 Team，返回 `200` 和有限回执 |
 | `POST` | `/api/v1/projects` | 创建 project，返回 `201` 和资源 |
 | `GET` | `/api/v1/projects` | 返回 project 分页列表 |
 | `GET` | `/api/v1/projects/{projectId}` | 返回 project，缺失时 `404` |
@@ -346,18 +354,22 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | `400` | `invalid_input` | 格式、字段、分页参数、依赖引用、自身或重复依赖不合法，以及读取到非法存储属性值 |
 | `401` | `unauthenticated` | 会话或个人访问令牌缺失、失效或已撤销 |
 | `403` | `forbidden` | 普通成员执行管理员操作，或 Cookie 会话写请求来源不符合要求 |
-| `404` | `not_found` | 路径资源缺失、当前用户不是项目成员或 task 不属于指定 project |
+| `404` | `not_found` | 路径资源缺失、当前用户不是对应 Team/项目成员或 task 不属于指定 project |
 | `405` | `method_not_allowed` | 已知路径使用不支持的方法，并返回 `Allow` |
-| `409` | `version_conflict` | 任务元数据、生命周期、Steps 或项目设置的期望版本过期 |
+| `409` | `version_conflict` | 任务元数据、生命周期、Steps、Team 元数据或项目设置的期望版本过期；删除 Team 的名称原文不匹配 |
+| `409` | `identity_mismatch` | Team 管理输入的 expectedUserId 与实际 principal 不符，领域行和版本零变化 |
+| `409` | `personal_team_immutable` | 变更 Personal Team |
+| `409` | `team_not_empty` | 删除仍有 Project ownership 引用的 Team |
 | `409` | `step_id_conflict` | 同一 Task 内添加的 Step ID 已存在；版本检查先于身份与锚点检查 |
 | `409` | `steps_limit_exceeded` | Steps 真实变化候选超过完整编码容量，返回 encodedBytes/maxEncodedBytes |
-| `409` | `version_exhausted` | Steps 真实变化所需的父 Task 版本已达最大正 int64；同值 no-op 仍有效 |
+| `409` | `version_exhausted` | Steps 父 Task 或 Team 真实改名所需版本已达最大正 int64；同值 no-op 仍有效 |
 | `409` | `invalid_transition` | in_progress 中禁止实际切换 allowAgents/requiredPlatform/assignedTo，或删除目标仍有 active worker 归属 |
 | `409` | `dependency_cycle` | 候选依赖图成环 |
 | `409` | `dependency_unsatisfied` | 进入 active/done 或元数据候选违反前置完成规则、done 重开存在 active/done 直接后继，或严格删除存在未删除引用者 |
 | `409` | `graph_limit_exceeded` | 任务链查询的返回集合或 task-sync 的全项目集合超过节点或依赖上限，返回精确数量和支持上限 |
 | `410` | `task_deleted` | 授权成员访问已软删除任务；不表示项目访问撤回 |
-| `500` | `internal_error` | 内部或持久化操作失败，响应不泄露数据库连接信息或 SQL |
+| `500` | `internal_error` | 内部、持久化或事务清理操作失败，响应不泄露数据库连接信息或 SQL |
+| `503` | `write_outcome_unknown` | 无法确认 Team 管理 COMMIT 结果，不自动重放写入 |
 
 ## 运行与范围
 

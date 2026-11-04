@@ -14,6 +14,7 @@ import (
 type listCursor struct {
 	Version            int                `json:"version"`
 	Kind               string             `json:"kind"`
+	UserID             string             `json:"userId,omitempty"`
 	ProjectID          string             `json:"projectId"`
 	Status             *string            `json:"status"`
 	Ready              *bool              `json:"ready"`
@@ -28,6 +29,7 @@ type listCursor struct {
 
 type listScope struct {
 	Kind               string
+	UserID             string
 	ProjectID          string
 	Status             *string
 	Ready              *bool
@@ -79,7 +81,7 @@ func listPage(request PageRequest, scope listScope) (store.Page, error) {
 	}
 	id, err := CanonicalID(cursor.ID)
 	if err != nil || id != cursor.ID || cursor.Version != expectedVersion || cursor.Kind != scope.Kind ||
-		cursor.ProjectID != scope.ProjectID || !equalOptional(cursor.Status, scope.Status) ||
+		cursor.UserID != scope.UserID || cursor.ProjectID != scope.ProjectID || !equalOptional(cursor.Status, scope.Status) ||
 		!equalOptional(cursor.Ready, scope.Ready) || !equalOptional(cursor.AllowAgents, scope.AllowAgents) || !equalOptional(cursor.CompatiblePlatform, scope.CompatiblePlatform) || !equalOptional(cursor.WorkerID, scope.WorkerID) || !equalOptional(cursor.WorkerUserID, scope.WorkerUserID) || cursor.CreatedAt.IsZero() {
 		return store.Page{}, invalidInput("Cursor is invalid for this list.")
 	}
@@ -92,7 +94,7 @@ func encodeProjectCursor(project core.Project) (string, error) {
 }
 
 func encodeListCursor(scope listScope, createdAt time.Time, id string) (string, error) {
-	cursor := listCursor{Version: 1, Kind: scope.Kind, ProjectID: scope.ProjectID, Status: scope.Status,
+	cursor := listCursor{Version: 1, Kind: scope.Kind, UserID: scope.UserID, ProjectID: scope.ProjectID, Status: scope.Status,
 		Ready: scope.Ready, AllowAgents: scope.AllowAgents, CompatiblePlatform: scope.CompatiblePlatform, WorkerID: scope.WorkerID, WorkerUserID: scope.WorkerUserID, CreatedAt: createdAt, ID: id}
 	if scope.Kind == "tasks" {
 		assignment, err := taskAssignmentScope(scope.AssignedTo)
