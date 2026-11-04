@@ -165,6 +165,7 @@ daynight task step
 daynight task step list <task-id> [--json] [--project <project-id>]
 daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step move <task-id> <step-id> (--before <step-id> | --after <step-id> | --first | --last) [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
@@ -937,7 +938,7 @@ daynight task step show <task-id> <step-id> --json --project <project-id>
 
 Steps are an independent ordered resource owned by a Task. The
 [resource contract](../../docs/spec/daynight-task-steps.md#cli-读取) owns their
-fields and read behavior. The CLI provides `list`, `show` and `add`; the parent Task's
+fields and read behavior. The CLI provides `list`, `show`, `add` and `move`; the parent Task's
 ordinary show/list/graph does not contain the full Steps collection. Step status
 is `todo`, `in_progress`, `done` or `skipped`, independent from Task status.
 
@@ -972,7 +973,7 @@ output failure can still leave partial stdout and is reported as a failure.
 Errors go to stderr with exit status 1; argument errors use 2 and success uses 0.
 A 401 includes `daynight login` guidance without automatic login or retry.
 Help, Bash/zsh completion and the standalone manual expose the delivered
-list/show/add commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
+list/show/add/move commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 maps the real-service installed Node-entry read case, separate maximum-resource
 check and their normal fixture prerequisites. The packed CLI acceptance runner
 checks literal `daynight`/`dn` launchers through cross-spawn on native platforms.
@@ -1020,6 +1021,37 @@ flag. Once a full receipt is confirmed, later cleanup/render/output failure keep
 that confirmed fact and identity, with nonzero exit; output failure may leave
 partial stdout. The [Steps contract](../../docs/spec/daynight-task-steps.md#cli-添加与结果确认)
 owns these outcome rules and the server guide maps installed Add verification.
+
+### Move a Step
+
+```bash
+daynight task step move <task-id> <step-id> --first --project <project-id>
+daynight task step move <task-id> <step-id> --after <anchor-id> --if-version <observed-version> --json --project <project-id>
+```
+
+Exactly one of `--before`, `--after`, `--first` or `--last` is required. Target
+and anchor IDs are complete Task-local eight-hex values, normalized to lowercase
+with leading zeros preserved. A relative anchor must be another Step in the same
+Task. Invalid combinations and self-reference fail before configuration or network
+access. Movement preserves every Step's identity, content, status and timestamps.
+Moving to the current position is a no-op; it still checks the submitted version.
+
+Explicit project/version sends one PUT to the target's position resource. Without
+`--if-version`, one complete Steps GET supplies the version before one PUT; failed
+pre-read prevents submission. Confirmation requires a complete valid resource,
+matching requested position and either the submitted version or version +1.
+With an actual pre-read, confirmation also checks every record and its times,
+all surviving relative order, and exactly no-op versus +1. Explicit versions
+retain the one-write budget and cannot compare an unobserved earlier collection.
+
+Readable success prints `Step moved. ID: <id>` and the service-confirmed order;
+`--json` emits only the complete resource and LF. Known refusals preserve service
+codes, request IDs and capacity details. Unknown Move results retain the original
+Project/Task/Step identity and request UUID, use at most one same-live-operation
+`.r1` GET to report current facts, and remain unknown with exit 1 and empty
+success stdout. No PUT is replayed. Cancellation or exhausted operation budgets
+prevent detached recovery; confirmed local output/cleanup failures retain the
+confirmed result and nonzero exit, as with Add.
 
 ## Task deletion
 
