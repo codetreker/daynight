@@ -29,6 +29,9 @@ export type InspectionMessages = {
     readonly phase: Readonly<Record<WorkerPhase, string>>;
     readonly membersLoading: string;
     readonly membersError: string;
+    readonly membersProtocolError: string;
+    readonly membersRecovery: string;
+    readonly openFreshPage: string;
     readonly retryMembers: string;
     readonly formerMember: string;
     readonly withdraw: string;

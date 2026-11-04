@@ -54,12 +54,33 @@ describe('claim ownership presentation', () => {
   it('keeps unresolved member information visible and exposes a read-only retry', () => {
     const retry = vi.fn();
     const view = renderWithLocale(<TaskClaimSummary worker={worker} members={[]} membershipStatus="loading" membershipError={null} onRetryMembers={retry} canWithdraw={false} />, { locale: 'en' });
-    expect(screen.getByRole('status')).toHaveTextContent('Loading claim owner and permissions');
+    expect(screen.getByRole('status')).toHaveTextContent('Loading claim owner details');
+    expect(screen.getByRole('status')).not.toHaveTextContent(/permissions/i);
     expect(screen.queryByText('Former project member')).toBeNull();
     view.rerender(<TaskClaimSummary worker={worker} members={[]} membershipStatus="error" membershipError={new ApiError('server', 503, 'unavailable', 'claim-members')} onRetryMembers={retry} canWithdraw={false} />);
     expect(screen.getByRole('alert')).toHaveTextContent('claim-members');
+    expect(screen.getByRole('alert')).not.toHaveTextContent(/permissions/i);
     fireEvent.click(screen.getByRole('button', { name: 'Retry member details' }));
     expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it.each(['en', 'zh-CN'] as const)('offers a separate document for an unreadable profile response without replacing the current page (%s)', (locale) => {
+    const url = `/projects/${detail.projectId}/tasks/${detail.id}?tab=discussion`;
+    const retry = vi.fn();
+    const view = renderWithLocale(<TaskClaimSummary worker={worker} members={[]} membershipStatus="error" membershipError={new ApiError('protocol', 200, 'protocol', 'profile-response')} onRetryMembers={retry} canWithdraw onWithdraw={vi.fn()} profileRecoveryUrl={url} />, { locale });
+    const alert = screen.getByRole('alert');
+    expect(alert).not.toHaveTextContent(/permissions|撤回权限/);
+    expect(alert).toHaveTextContent(locale === 'en' ? 'cannot be read by this page' : '当前页面无法读取');
+    expect(alert).toHaveTextContent(locale === 'en' ? 'drafts stay in this tab' : '草稿保留在此标签页');
+    const recovery = within(alert).getByRole('link', { name: locale === 'en' ? 'Open task in a new tab' : '在新标签页打开任务' });
+    expect(recovery).toHaveAttribute('href', url);
+    expect(recovery).toHaveAttribute('target', '_blank');
+    expect(recovery).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.getByRole('button', { name: locale === 'en' ? 'Force withdraw' : '强制撤回' })).toBeEnabled();
+    expect(retry).not.toHaveBeenCalled();
+    view.rerender(<TaskClaimSummary worker={worker} members={[]} membershipStatus="error" membershipError={new ApiError('network')} onRetryMembers={retry} canWithdraw={false} profileRecoveryUrl={url} />);
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(screen.getByRole('alert')).not.toHaveTextContent(/permissions|撤回权限/);
   });
 
   it.each([
