@@ -2,12 +2,27 @@ package sessionrelay
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
+
+func TestStartupTaskReadPropagatesCancellation(t *testing.T) {
+	f := setup(t)
+	err := f.s.transact(context.Background(), func(tx pgx.Tx) error {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := taskWorker(ctx, tx, f.task, task{})
+		return err
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled task evidence read: %v", err)
+	}
+}
 
 func TestCurrentStartupNegotiationFiltersStaleReports(t *testing.T) {
 	f := setup(t)
