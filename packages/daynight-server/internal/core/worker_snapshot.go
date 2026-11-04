@@ -63,6 +63,7 @@ type WorkerTaskInventory struct {
 }
 
 type WorkerReport struct {
+	Configuration *WorkerConfigurationExchange
 	Telemetry     WorkerTelemetry
 	TaskInventory *WorkerTaskInventory
 }
