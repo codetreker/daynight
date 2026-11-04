@@ -39,7 +39,7 @@ TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更
 
 paused 复用通用可写属性定义、独立属性行及任务整体 version。布尔 codec 严格接受 true/false，保留显式 false，拒绝 null 及其它类型；不创建新列或默认属性行。公开 property 修改允许在 in_progress 时执行，继续保留 worker 归属与普通任务字段。
 
-CLI 通用属性对象保持所有键，Worker 的 typed reader 只在消费处解释 paused。缺席表示周期 ping 未暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在实际周期输入递交前读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。
+CLI/Web 通用属性对象保持所有键，typed reader 在消费处严格解释 paused。缺席表示周期 ping 未暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在实际周期输入递交前读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
 
 ## 独立表与读取
 
@@ -102,7 +102,7 @@ Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。�
 
 ## 客户端与现有入口
 
-CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR/Worker reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 键。
+CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、paused 与 Worker reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 键。
 
 CLI 使用 properties 查看当前值或 --schema 定义，以 set-property/remove-property 修改一个完整属性；create/update 没有 PR 专用参数。property dispatch 在项目发现之前处理 schema 模式，修改只把原始参数作为 valueText 交给既有 ApiClient exchange。显式版本直接写，默认先读属性资源；不先取得 schema，不解析值或拆分字面属性名。参数、补全和 PropertyResource 输出由 [CLI 设计](daynight-project-task.md)拥有，[命令决策](../../.agents/notes/implemented/architecture/2026-10-30-generic-task-property-commands.md)保存取舍。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
 
@@ -124,4 +124,4 @@ task-sync 的 snapshot/delta 使用共同批量读取器，在父任务的同一
 
 每属性一行对应设置/删除单位，付出的成本是批量装配；整任务 JSON 行仍耦合写入单位，继续拆 PR 项又会引入独立项身份和顺序机制。文本值保留既有字符语义，当前没有任意 JSON 内容 SQL 查询需求。静态 native validator 明确业务规则，schema 只负责发现；对动态属性、全文查询或属性级版本的支持需要独立契约。
 
-验证由需求 TP-V1–TP-V8 约束，覆盖真实 PostgreSQL 的迁移、快照、并发与回滚，HTTP 的 schema/版本/严格值/400 与 500，CLI/Web 的完整对象和缺失读取，Worker inventory/reporting 与 Session 锁交错。保留现有 Go build/vet/race/go-cov、CLI typecheck/test/build 和 Web 覆盖/生产浏览器门禁，不以绿灯代替生命周期证据。文档验证包括本地链接、当前事实/历史记录的界限和新文件。
+验证由需求 TP-V1–TP-V9 约束，覆盖真实 PostgreSQL 的迁移、快照、并发与回滚，HTTP 的 schema/版本/严格值/400 与 500，CLI/Web 的完整对象和缺失读取，Worker inventory/reporting 与 Session 锁交错。保留现有 Go build/vet/race/go-cov、CLI typecheck/test/build 和 Web 覆盖/生产浏览器门禁，不以绿灯代替生命周期证据。文档验证包括本地链接、当前事实/历史记录的界限和新文件。

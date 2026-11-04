@@ -451,7 +451,7 @@ and records cleanup failures.
 
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. It runs thirty-one native functional workflows, then the same
+parallel. It runs thirty-two native functional workflows, then the same
 container workflows and complete container cleanup. The explicit local
 `pnpm web:acceptance:stress` command adds the fixed native capacity cases after
 those phases. Both modes require Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and
@@ -486,8 +486,8 @@ Default CLI service acceptance retains two bounded deadline probes and
 `.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
 the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
 claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
-functional mode requires thirty-one scenarios per target (62 total); stress mode
-adds five native capacity scenarios (36 native / 31 container, 67 total) and
+functional mode requires thirty-two scenarios per target (64 total); stress mode
+adds five native capacity scenarios (37 native / 32 container, 69 total) and
 `native/capacity/performance.json`. Both
 modes retain strict source/browser identity, combined authentication and owned
 resource cleanup. Local measurements prove only their recorded source and host;

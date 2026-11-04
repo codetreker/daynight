@@ -283,7 +283,7 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 ### 任务详情提示
 
-`TaskDetailSurface` 内的公共提示层承接状态、自动执行、平台、复制、保留详情、刷新失败和过期快照反馈；独立页保留图快照时的刷新失败，以及顶部语言偏好读取/保存提示，也进入该层；语言选择器的其他调用位置保持自身呈现。浮层位于容器右下方，不参与标题、页签和面板的高度分配，并限制堆叠宽高，长错误在气泡内部滚动。首次加载失败和附件列表、预览的内容状态仍属于各自面板。
+`TaskDetailSurface` 内的公共提示层承接状态、自动执行、暂停解除、平台、复制、保留详情、刷新失败和过期快照反馈；独立页保留图快照时的刷新失败，以及顶部语言偏好读取/保存提示，也进入该层；语言选择器的其他调用位置保持自身呈现。浮层位于容器右下方，不参与标题、页签和面板的高度分配，并限制堆叠宽高，长错误在气泡内部滚动。首次加载失败和附件列表、预览的内容状态仍属于各自面板。
 
 普通与成功气泡显示 3 秒，错误和带操作气泡显示 8 秒，支持手动关闭；悬停或焦点在气泡内时暂停，离开后继续计时。语言切换和普通重绘保留原展示期限；已经确认的成功不在重开详情时重播。关闭或超时只改变呈现，不改变 mutation、原始错误、版本、新鲜度或禁写状态。未解决的刷新与 GET 核对可从紧凑浮动入口重新打开；气泡消失时若焦点仍在其中，恢复到有效入口，保持模态焦点约束。
 
@@ -296,6 +296,18 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 两个方向复用 `TaskConfirmation` 的模态、取消初始焦点、长任务名滚动、下层 inert 和焦点恢复。确认冻结目标布尔值、身份、源状态和精确版本；后台已知变化使确认失效。`TaskDetailSession` 与状态设置及平台确认共用同一个进行中 operation；pending、未知或必需核对期间阻止相冲突写入，关闭/重开详情、切换任务或项目不会把原操作交给新资源。普通可选周期 GET 不废弃仍有效的版本。
 
 确认后 `setTaskAgentPermission` 通过普通 task PATCH 提交目标许可与精确 bigint 数字。成功响应核验原 project/task、未变生命周期、目标许可和单次版本增长，然后安装完整详情并刷新图；许可变更保持执行起止、PR 和依赖。冲突重读并重新审阅，明确失败保持原值，网络/5xx/协议错误或响应丢失先 GET 核对，不重放 PATCH。`in_progress` 禁止实际切换；该锁不改变明确执行、ready 或依赖语义。
+
+### 暂停展示与解除
+
+`readTaskPaused` 在完整详情与 task-sync 摘要准入时严格消费布尔 `paused`；缺席返回 absent，显式 false 保留为已存储值，错误类型产生协议错误。`task-cache/projection.ts` 从完整摘要派生 `pausedTaskIds`，由 `TaskProjection` 与 `GraphSnapshot` 携带。图节点仍显式剥离 properties 和 version；完整属性保留在摘要 map，不把展示需求扩展为新的服务端字段或图协议。
+
+项目任务区的暂停 context 将同一集合提供给列表、任务链和图。任务自身的琥珀色标识共用图标和双语文案，根任务的标识与整链暂停数量分别表达。项目概览与任务列表标题从完整项目集合计数，链标题从完整普通分量计数，均不从当前筛选、分页或可见子图推断完整数量。概览标题旁的可操作暂停数量沿既有定位路径进入具体暂停任务；六项统计、任务三态和页签未完成数不承担暂停语义。
+
+`TaskDetailSurface` 在公共头部呈现暂停区域，读取当前完整 task 的属性，覆盖弹窗、独立页、全屏及全部阅读页签。`Unpause` 按钮直接调用详情会话的解除操作；运行态不构成锁定，准入、陈旧读取与未决写入沿用普通任务写入规则。按钮提交中禁用并显示 busy，区域保留已确认的暂停状态。失败、冲突和未知结果进入既有公共提示层与 GET 核对入口，错误不挤压阅读区。
+
+解除操作通过普通 task PATCH 发送精确 `version` 与 `properties:{paused:false}`，返回完整 TaskDetail，复用每任务串行写入 owner、历史准入与缓存安装。确认响应只允许本次 paused 值和相应版本/更新时间变化，状态、计时、许可、负责人、平台、依赖、worker 与其他属性必须保持。成功先确认远端结果，再安装完整详情并刷新匹配项目；冲突读取后重新决定，未知结果只读核对且不重放，后来的目标值不证明原请求成功。关闭、切换和旧历史结果不解除新操作的共享写锁。
+
+该入口只解除 task 的周期输入暂停，不发原生启动或恢复指令，不修改 worker.phase；Web backend 的恢复失败等待与其 retry 授权继续由运行时拥有。[Web 暂停操作决策](../../.agents/notes/implemented/feature/2026-11-04-task-pause-web-controls.md)保存展示、投影和写入复用的取舍；[周期输入暂停决策](../../.agents/notes/implemented/feature/2026-11-02-task-paused-worker-pings.md)拥有原生递交边界。
 
 ### 认领归属与强制撤回
 
@@ -319,9 +331,9 @@ TaskDetailSession 将 withdraw 纳入同一单任务 operation，与状态、许
 
 ### 版本化状态设置与任务会话
 
-`TaskDetailSession.tsx` 按 project/task 保存详情与 status/allowAgents/requiredPlatform/assignedTo/删除操作；工作空间 provider
+`TaskDetailSession.tsx` 按 project/task 保存详情与 status/allowAgents/暂停解除/requiredPlatform/assignedTo/删除操作；工作空间 provider
 按 user ID 和身份 generation 隔离，导航保留当前操作，登出或身份替换卸载，晚到结果不进入新身份。
-它只协调当前工作空间，不是服务端所有权锁。状态、许可、平台、负责人和删除操作共用单写入 owner；需要确认的操作共用一个确认 union，
+它只协调当前工作空间，不是服务端所有权锁。状态、许可、暂停解除、平台、负责人和删除操作共用单写入 owner；需要确认的操作共用一个确认 union，
 pending、stale、unknown、读取/核对失败期间均阻止任务写入，关闭详情不代表事务回滚。
 
 共享头部保留实际标题及标题复制、全屏、“…”菜单和关闭入口，ID 及其复制位于概览，继承应用语言。
@@ -864,7 +876,7 @@ Project、分页 Project 与图内 Project.settings 的版本通过专用 `proje
 
 生产页面通过 task-sync 读取任务摘要，合并完整本地集合后物化 `TaskGraph`，不调用
 服务端 task-graph。`task-cache/projection.ts` 从完整摘要计算 blockedBy、ready 和六项
-summary，显式去掉 version 与 properties 后形成保留 assignedTo 的图节点；完整属性保留在摘要 map 中。摘要解析严格要求 nullable assignedTo 并复用 parseTaskProperties，sameSummary 比较与详情 summaryOf 保留 assignedTo 和完整属性并使用 sameTaskProperties 比较全部键与 JSON 值，不因对象键序产生同版本差异。随后由既有 `buildGraphIndex` 验证依赖、状态、容量、统计与无环条件。所有依赖
+summary，显式去掉 version 与 properties 后形成保留 assignedTo 的图节点；完整属性保留在摘要 map 中，`pausedTaskIds` 单独承载从摘要派生的暂停展示集合。摘要解析严格要求 nullable assignedTo、合法的可选 paused 布尔值并复用 parseTaskProperties，sameSummary 比较与详情 summaryOf 保留 assignedTo 和完整属性并使用 sameTaskProperties 比较全部键与 JSON 值，不因对象键序产生同版本差异。随后由既有 `buildGraphIndex` 验证依赖、状态、容量、统计与无环条件。所有依赖
 必须在本地完整集合中可解析；完整上游闭包供 Web 链图使用，不采用 CLI 的一层外部前置边界。
 [时间窗口架构](daynight-task-sync.md)拥有同步、持久化、版本、水位、身份和发布机制。
 
@@ -998,8 +1010,8 @@ API 数据和固定图集。
 gateway 夹具取得正常浏览器会话和 PAT，数据准备与安装 CLI 使用同一授权通道。
 App 与用户凭据只保存在私有 0600 元数据，公开回执和截图不包含秘密。受控外部
 provider 响应证明 gateway/SDK 协议，不等同于真实上游账号登录。
-默认原生目标包含三十一个功能场景，容器目标经实际生产镜像 gateway 执行同一个
-三十一场景功能集合。显式本地压力模式另加五个原生容量/超限场景。`refresh-staleness` 验证自动读取后图、统计和当前详情
+默认原生目标包含三十二个功能场景，容器目标经实际生产镜像 gateway 执行同一个
+三十二场景功能集合。显式本地压力模式另加五个原生容量/超限场景。`refresh-staleness` 验证自动读取后图、统计和当前详情
 的一致更新，以及保留浏览、焦点和附件状态的故障恢复；定时器、可见性、请求串行与
 资源切换另由 hook/组件测试验证。浏览器顺序和清理屏障由[CI 构建归属](#ci-构建归属)定义。日常 localhost 栈
 不参与测试。`project-view-tabs` 覆盖两类分类及依赖迁移、独立任务直接详情、独立完成筛选、
@@ -1009,6 +1021,7 @@ PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` �
 单独允许已登记 project/task 的 PUT status 和精确请求次数；六个鉴权场景仅放行各自
 登记的精确管理请求；`project-settings` 另只放行四次登记设置 PATCH，覆盖成功、409、真实提交后丢失响应及降权 403，重读失败后只重试读取。该场景还检查真实大版本、项目隔离、成员只读及双语 320px/390px 控件与导航边界及文字不截断。`task-agent-permission` 只允许登记任务的许可 PATCH 和精确请求次数，覆盖普通成员双向确认、取消/Escape、锁定、冲突、已提交响应丢失与读取核对、详情关闭/切换后的请求归属、严格布尔/精确版本及双语窄屏几何；未知写入只核对，不重放。`task-platform` 仅允许登记任务的精确平台 PATCH，覆盖状态行选择后确认、当前值无操作、各取消路径零写入和下拉框焦点恢复、确认后设置/清除、状态/许可共享锁、冲突与真实丢响应后的 GET 核对、跨任务归属、人工开始后锁定、字段传播及双语 320px/390px 窄屏。
 `task-assignment` 仅放行登记任务和精确次数的负责人 PATCH，验证设置/清空、同值零写入、冲突、真实提交丢响应与 GET-only 恢复，以及完整材料保持。`task-assignment-layout` 覆盖双语 1366px/390px/320px、长姓名与 null 姓名、头像失败、菜单焦点与滚动/全屏、失权人员显示、只读浏览，以及隐藏兄弟任务时仍保持完整链进度和依赖事实。
+`task-pause` 覆盖项目概览、独立任务与任务链、图和公共详情头部的暂停发现，完整项目/分量数量口径、精确版本解除与完整材料保持、提交防重、版本冲突及真实提交丢响应后的 GET-only 核对，以及中英文窄屏。浏览器只允许已登记任务的解除暂停 PATCH 与精确次数，未知结果不重放。
 
 平台确认的浏览器辅助函数先等待下拉框可用，再聚焦并确认焦点，随后才选择选项；缓存详情可见不表示实时读取已允许编辑。取消后的原值、焦点恢复和零写入断言保持独立验证，不在取消后强制聚焦，也不放宽超时或重试规则。附件组件测试将删除确认框的 DOM 移除与被动清理中的焦点恢复分开，在附件重载仍挂起时等待预览区域实际获得焦点，随后放行重载并继续验证焦点保持。[可观测验收就绪决策](../../.agents/notes/archived/testing/2026-10-20-observable-acceptance-readiness.md)记录这项前置条件。
 
@@ -1023,7 +1036,7 @@ PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` �
 runner 的服务重启 callback 与显式安装回执路径；目标 probe 在校验 run/source/
 容器标记后读取实际 staging/SQL，客户端发送成功不作为服务端准入证据。详细机制由
 [组合鉴权验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)拥有。
-这两份回执与常规 62 项 Playwright 场景并列；本地压力模式另有五项容量场景，
+这两份回执与常规 64 项 Playwright 场景并列；本地压力模式另有五项容量场景，
 不复制容量矩阵或改变其测量、预算和清理屏障；运行结果与真实上游人工登录分别留证。
 
 双语功能的三个稳定场景由[语言设计](daynight-web-i18n.md#验证与证据归属)定义，使用同一受监控页面与场景级 locale；首屏和偏好、图/详情/附件状态、错误及窄屏布局分别提供定向检查。语言不会复制容量矩阵或改变阶段与清理屏障。
@@ -1038,9 +1051,9 @@ runner 的服务重启 callback 与显式安装回执路径；目标 probe 在�
 
 Playwright 固定单 worker、零 retry；报告必须包含全部要求的唯一场景、一次成功
 执行、有效 PNG 附件及一致的汇总，跳过、重试、flaky、缺失、多余或重复场景及
-全局错误均失败。默认与 CI 严格要求原生、容器各三十一个唯一功能场景；显式本地
-压力模式将原生 functional/capacity 两份报告严格合并为三十六个唯一场景，容器仍为
-三十一个。原生与容器及同目标各阶段浏览器身份必须一致。
+全局错误均失败。默认与 CI 严格要求原生、容器各三十二个唯一功能场景；显式本地
+压力模式将原生 functional/capacity 两份报告严格合并为三十七个唯一场景，容器仍为
+三十二个。原生与容器及同目标各阶段浏览器身份必须一致。
 CI 要求当前 Linux 或 macOS 平台与浏览器回执一致、锁定 Playwright 的完整 Chromium channel `chromium`、干净 checkout，且 git SHA 必须
 等于 `GITHUB_SHA`；本机可以显式选择现有 Chromium，回执必须记录这一差异。
 完整 CI 工作流仍在 Linux 上执行；macOS 本机默认运行相同功能与恢复验收，显式压力模式保留相同容量矩阵及预算。
@@ -1067,7 +1080,7 @@ PDF 预览通过轮询 iframe 的实际 compositor 截图，验证 fixture 专�
 
 chain、merge 和 external 夹具保留从源向末端的节点创建批次，先通过真实 API 创建无依赖任务，再从末端向源补齐依赖。merge/external 按逆拓扑层执行完整 PATCH 批次，同层最多六请求，层间等待；每次保留返回的新 Task/version。merge 的额外边探针使用最终任务版本，external 在依赖补齐后以最终 sink 版本执行既有外部依赖分类。shared 保留直接构造。完整 API 读回仍逐 ID 校验普通/外部依赖，以实际快照顺序选择可见概览；构造顺序不改变图规模、五次测量或独立超限检查。[夹具构造决策](../../.agents/notes/implemented/testing/2026-10-28-web-capacity-fixture-construction.md)记录新增写请求的成本与选择依据。
 
-每次从 trusted 输入到完整可见概览、根可操作和两次 animation frame，openMs≤3,000；select/detail/zoom/pan≤300。普通 Details→关闭→立即缩放/平移之后，可信选择可见任务，再执行高亮态同序列；每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。依赖检查验证完整 H、隐藏祖先去重及独立曲线/paint/marker。`visibility[5]` 逐次保留 repetition、overviewNodes/Edges、addedNodes/Edges、expandedNodes/Edges、resetNodes/Edges、selectedId 和 hiddenUpstream，要求顺序、预算、精确增量和 reset 计数正确。布局/渲染诊断与网络独立计量，1,001 节点和 5,001 边仍完整 409 拒绝。本地压力模式的 67 场景（原生 36、容器 31）、原有预算、timeout、零 retry 和清理保持；常规 CI 要求 62 个功能场景及严格 coverage。鉴权和生命周期合并后源码仍需完整运行回执。
+每次从 trusted 输入到完整可见概览、根可操作和两次 animation frame，openMs≤3,000；select/detail/zoom/pan≤300。普通 Details→关闭→立即缩放/平移之后，可信选择可见任务，再执行高亮态同序列；每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。依赖检查验证完整 H、隐藏祖先去重及独立曲线/paint/marker。`visibility[5]` 逐次保留 repetition、overviewNodes/Edges、addedNodes/Edges、expandedNodes/Edges、resetNodes/Edges、selectedId 和 hiddenUpstream，要求顺序、预算、精确增量和 reset 计数正确。布局/渲染诊断与网络独立计量，1,001 节点和 5,001 边仍完整 409 拒绝。本地压力模式的 69 场景（原生 37、容器 32）、原有预算、timeout、零 retry 和清理保持；常规 CI 要求 64 个功能场景及严格 coverage。鉴权和生命周期合并后源码仍需完整运行回执。
 
 每个容量 dataset 的 `feedbackDiagnostics` 增量保存每次 open/detail/zoom/pan 的
 `kind`、`repetition`、`start`、`capturedAt`、`conditionAt`、`frame1At`、

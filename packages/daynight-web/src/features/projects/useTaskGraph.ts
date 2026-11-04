@@ -10,6 +10,7 @@ import type { CachedProject, SyncTicket, TaskCacheScope } from "../task-cache/pr
 export type GraphSnapshot = {
   readonly graph: TaskGraph;
   readonly index: GraphIndex;
+  readonly pausedTaskIds: ReadonlySet<string>;
 } & ({
   readonly observedAt: string;
   readonly receivedMonotonic: number;
@@ -44,7 +45,7 @@ export const useTaskGraph = (projectId: string) => {
   const publish = useCallback((project: CachedProject) => {
     const sample = receipt.current;
     if (!liveAccess.current || sample === null) return;
-    setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, ...sample }, status: "ready", refreshing: false, error: null });
+    setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, ...sample }, status: "ready", refreshing: false, error: null });
   }, [projectId, scope]);
   const request = useCallback(async (automatic = false) => {
     if (automatic && active.current !== null) return;
@@ -69,7 +70,7 @@ export const useTaskGraph = (projectId: string) => {
         if (project !== null && scope.canPreviewProject(projectId)) {
           const localTime = Date.now();
           const receivedMonotonic = performance.now();
-          const snapshot: GraphSnapshot = { graph: project.graph, index: project.index, observedAt: null,
+          const snapshot: GraphSnapshot = { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, observedAt: null,
             receivedMonotonic, receivedAt: null, revision: 0, localTime };
           setState((previous) => {
             const current = previous.projectId === projectId && previous.scope === scope;

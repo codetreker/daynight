@@ -102,10 +102,11 @@ workflow for necessary human input.
 
 ## Consequences
 
-The generic commands expose pause control without a new command family or Web
-control. Operators use `task set-property TASK_ID paused true`, set false, or
-remove the property with the usual exact-version rules. Storage and full task
-projections need no migration or default-value injection.
+The generic commands expose pause control without a new command family.
+Operators use `task set-property TASK_ID paused true`, set false, or remove the
+property with the usual exact-version rules. The [Web pause decision](2026-11-04-task-pause-web-controls.md)
+adds visible discovery and an operator unpause action using the same property.
+Storage and full task projections need no migration or default-value injection.
 
 Each periodic native input decision requires a current authenticated service
 read. A service failure prevents the ping while preserving observation and
