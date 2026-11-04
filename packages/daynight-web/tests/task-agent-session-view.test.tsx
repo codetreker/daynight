@@ -170,5 +170,5 @@ it('defers width-driven composer sizing outside ResizeObserver delivery and canc
   mounted.unmount();
   expect(cancel).toHaveBeenCalledWith(sequence);
   expect(frames.size).toBe(0);
-  expect(disconnect).toHaveBeenCalledOnce();
+  expect(disconnect).toHaveBeenCalledTimes(callbacks.length);
 });

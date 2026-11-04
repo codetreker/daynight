@@ -85,6 +85,32 @@ describe("public and authenticated entry ownership", () => {
     expect(location.hash).toBe('');
   });
 
+  it("removes a Team secret from navigation state and captures the same link reopened in this tab", async () => {
+    const secret = "dnteam_reopened";
+    const teamId = "00000000-0000-4000-8000-000000000010";
+    const team = { id: teamId, kind: "ordinary", name: "Example Team" };
+    const membership = { teamId, userId: user.id, role: "member", version: 1, createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+    window.history.replaceState(null, "", `/team-invitations#${secret}`);
+    let inspections = 0;
+    const fetcher = vi.fn((url: string) => {
+      if (url === "/api/v1/team-invitations/inspect") return Promise.resolve(++inspections === 1 ? json({ team, membership: null }) : json({ error: { code: "invitation_unavailable", message: "unavailable", requestId: "entry" } }, 404));
+      if (url === "/api/v1/team-invitations/accept") return Promise.resolve(json({ team, membership, joined: true, consumed: true }));
+      return Promise.resolve(defaultResponse(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    mount();
+    expect(window.location.hash).toBe("");
+    expect(JSON.stringify(window.history.state)).not.toContain(secret);
+    fireEvent.click(await screen.findByRole("button", { name: "Accept invitation and join" }));
+    await screen.findByRole("heading", { name: "You joined this Team" });
+    window.location.hash = secret;
+    await screen.findByRole("heading", { name: "Invitation unavailable" });
+    expect(inspections).toBe(2);
+    expect(window.location.hash).toBe("");
+    expect(JSON.stringify(window.history.state)).not.toContain(secret);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(1);
+  });
+
   it("preserves a direct attachment and selected tab through the independent login entry", async () => {
     const destination = "/projects/00000000-0000-4000-8000-000000000010/tasks/00000000-0000-4000-8000-000000000011/attachments/docs/guide.md?tab=overview";
     window.history.replaceState(null, "", destination);
@@ -132,7 +158,7 @@ describe("public and authenticated entry ownership", () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url === "/api/v1/me" ? anonymous() : defaultResponse(url))));
     const login = vi.fn(); mount(login);
     fireEvent.click(await screen.findByRole("button", { name: "Sign in with GitHub" }));
-    expect(screen.getByText("Sign in through UniAuth to review your project invitation.")).toBeVisible();
+    expect(screen.getByText("Sign in through UniAuth to review your invitation.")).toBeVisible();
     expect(screen.getByText(/Sign-in was not completed/)).toBeVisible();
     expect(window.sessionStorage.getItem(invitationStorageKey)).not.toBeNull();
     expect(window.location.search).not.toContain("authError");

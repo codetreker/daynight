@@ -25,6 +25,8 @@ export class ApiError extends Error {
   readonly code: string;
   readonly requestId: string | null;
   readonly graphLimit: GraphLimitDetails | undefined;
+  readonly serverMessage: string | undefined;
+  readonly stepsLimit: { readonly encodedBytes: number; readonly maxEncodedBytes: number } | undefined;
 
   constructor(
     kind: ApiError["kind"],
@@ -33,6 +35,8 @@ export class ApiError extends Error {
     requestId: string | null = null,
     graphLimit?: GraphLimitDetails,
     cause?: unknown,
+    serverMessage?: string,
+    stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number },
   ) {
     const message = kind === "network"
       ? "Unable to connect to the server. Please try again."
@@ -46,6 +50,8 @@ export class ApiError extends Error {
     this.code = code;
     this.requestId = requestId;
     this.graphLimit = graphLimit;
+    this.serverMessage = serverMessage;
+    this.stepsLimit = stepsLimit;
   }
 }
 
@@ -138,7 +144,7 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   return response;
 };
 
-export const json = async <T>(response: Response, signal: AbortSignal, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown> = async (value) => parseApiJson(await value.text())): Promise<T> => {
+export const json = async <T>(response: Response, signal: AbortSignal, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown> = async (value) => parseApiJson(await value.text()), includeStepsError = false): Promise<T> => {
   let body: unknown;
   try {
     const contentType = response.headers.get("Content-Type");
@@ -152,8 +158,8 @@ export const json = async <T>(response: Response, signal: AbortSignal, parse: (d
   }
   try {
     if (response.ok) return parse(body);
-    const serverError = parseServerError(body);
-    throw new ApiError("server", response.status, serverError.code, serverError.requestId, serverError.graphLimit);
+    const serverError = parseServerError(body, includeStepsError);
+    throw new ApiError("server", response.status, serverError.code, serverError.requestId, serverError.graphLimit, undefined, serverError.serverMessage, serverError.stepsLimit);
   } catch (error) {
     if (error instanceof ApiError) throw error;
     throw new ApiError("protocol", response.status, "protocol", null, undefined, error);
@@ -218,10 +224,10 @@ export type TaskResponseAdmission = {
   readonly onWriteConfirmed?: () => void;
 };
 
-export const getTask = async (projectId: string, taskId: string, signal: AbortSignal, admission: TaskResponseAdmission): Promise<TaskDetail> => {
+export const getTask = async (projectId: string, taskId: string, signal: AbortSignal, admission: TaskResponseAdmission, correlationId?: string): Promise<TaskDetail> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
-  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, { headers: { Accept: "application/json" } });
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, { headers: { Accept: "application/json", ...(correlationId === undefined ? {} : { "X-Request-ID": correlationId }) } });
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   return json(response, signal, (data) => parseTaskDetail(data, project, task));
 };

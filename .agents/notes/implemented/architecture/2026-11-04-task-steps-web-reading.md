@@ -71,11 +71,11 @@ tab reachability and the existing reading-height guarantees.
 
 ## Consequences
 
-The browser reads Steps without requiring a Session or enabling new write
-operations. Adding forms, draft protection and Steps mutations remains separate
-work; their affordable extension depends on retaining the same submission owner,
-Task-root renderer and stable row IDs. The current view does not introduce a
-second mutation lifecycle or temporary editing controls.
+The original reader did not require a Session or enable write operations. The
+[status write decision](2026-11-04-task-steps-web-status.md) extends the same
+submission owner. Adding forms and their draft protection remains separate work;
+their affordable extension depends on retaining that owner, the Task-root
+renderer and stable row IDs.
 
 Pagination bounds mounted rows, not resource decoding or memory while active.
 Reopening the tab reads again after releasing the prior collection. API, session,

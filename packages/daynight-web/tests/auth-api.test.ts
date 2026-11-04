@@ -1,7 +1,7 @@
 import { directAccessFixture } from "./helpers/taskSync";
 import { stringifyWireJson } from "./helpers/wireJson";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole } from "../src/api/auth";
+import { acceptTeamInvitation, inspectTeamInvitation, acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole } from "../src/api/auth";
 import { ApiError, checkAttachmentPreview, invalidateAuthRequests, listProjects, pauseAuthRequests, request, subscribeUnauthorized } from "../src/api/client";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
@@ -454,5 +454,24 @@ describe("identity-bound grant mutation responses", () => {
     const fetcher = mock(response(member));
     await expect(setMemberRole(projectId, userId, { version: 1n, role: "member", expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol", status: 200 });
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("Team invitation API", () => {
+  const team = { id: projectId, kind: "ordinary", name: "Team" };
+  const membership = { teamId: projectId, userId, role: "member", version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time };
+  it("checks identity, precise membership versions and the target of an acceptance", async () => {
+    const fetcher = mock(response({ team, membership }));
+    expect(await inspectTeamInvitation("dnteam_secret", userId, signal(), vi.fn())).toEqual({ team, membership });
+    expect(fetcher.mock.calls[0]).toEqual(["/api/v1/team-invitations/inspect", expect.objectContaining({ body: JSON.stringify({ token: "dnteam_secret" }) })]);
+    fetcher.mockResolvedValueOnce(response({ team, membership, joined: true, consumed: true }));
+    expect(await acceptTeamInvitation("dnteam_secret", projectId, userId, signal(), vi.fn())).toEqual({ team, membership, joined: true, consumed: true });
+    fetcher.mockResolvedValueOnce(response({ team, membership: { ...membership, userId: otherId }, joined: true, consumed: true }));
+    await expect(acceptTeamInvitation("dnteam_secret", projectId, userId, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
+    fetcher.mockResolvedValueOnce(response({ team, membership, joined: true, consumed: false }));
+    await expect(acceptTeamInvitation("dnteam_secret", projectId, userId, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
+    fetcher.mockResolvedValueOnce(response({ team: { ...team, id: otherId }, membership, joined: true, consumed: true }));
+    await expect(acceptTeamInvitation("dnteam_secret", projectId, userId, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
   });
 });

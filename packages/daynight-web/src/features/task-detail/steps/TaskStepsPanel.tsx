@@ -2,6 +2,7 @@ import { useEffect, useId, useState, type ReactNode } from "react";
 import { ApiError } from "../../../api/client";
 import { useI18n } from "../../../i18n/LocaleProvider";
 import { useTaskSteps } from "../useTaskSteps";
+import { StepStatusMenu } from "./StepStatusMenu";
 import "../../../styles/task-steps.css";
 
 const PAGE_SIZE = 100;
@@ -39,11 +40,21 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
   const explanation = error instanceof ApiError ? error.kind === "network" ? m.networkError
     : error.kind === "protocol" ? m.protocolError : error.status === 404 ? m.unavailable
       : error.status === 403 ? m.denied : m.requestFailed : m.requestFailed;
+  const mutation = state.mutation;
+  const stepMutation = mutation.operation?.action === "stepStatus" ? mutation : null;
+  const pendingStepId = mutation.operation?.action === "stepStatus" && mutation.phase === "pending" ? mutation.operation.stepId : null;
+  const unresolved = stepMutation?.phase === "unknown" || stepMutation?.phase === "conflict" || stepMutation?.reconciliationError != null;
+  const mutationError = stepMutation?.error;
+  const resolvedConflict = stepMutation?.phase === "reconciled" && stepMutation.reconciledFrom === "conflict";
+  const resolvedUnknown = stepMutation?.phase === "reconciled" && stepMutation.reconciledFrom === "unknown";
+  const refusal = mutationError instanceof ApiError ? mutationError.status === 404 ? m.statusMissing : mutationError.status === 403 ? m.statusDenied
+    : mutationError.code === "version_exhausted" ? m.statusExhausted : mutationError.code === "steps_limit_exceeded" ? m.statusCapacity
+      : mutationError.code === "invalid_input" ? m.statusInvalid : m.statusRefused : m.statusRefused;
 
   return <section className="steps-workspace" aria-label={m.title}>
     <div className="steps-toolbar">
       <strong className="steps-counts">{resource === null ? m.title : m.count(format.number(total))}</strong>
-      <button className="button steps-refresh" type="button" aria-label={m.refresh} aria-busy={busy} disabled={busy || !active} onClick={state.retry}>
+      <button className="button steps-refresh" type="button" aria-label={m.refresh} aria-busy={busy} disabled={busy || !active || unresolved} onClick={state.retry}>
         {busy ? <span className="spinner" aria-hidden="true" /> : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 11-2l3 3M4 16l3 3a7 7 0 0 0 11-2" /></svg>}
       </button>
     </div>
@@ -51,7 +62,19 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
       <h3>{resource === null ? m.loadFailed : m.refreshFailed}</h3><p>{explanation}</p>
       {resource !== null && <p>{m.retained}</p>}
       {error instanceof ApiError && error.requestId !== null && <p className="request-id">{messages.common.requestId} <code>{error.requestId}</code></p>}
-      <button className="button" type="button" disabled={busy || !active} onClick={state.retry}>{m.retry}</button>
+      <button className="button" type="button" disabled={busy || !active || unresolved} onClick={state.retry}>{m.retry}</button>
+    </div>}
+    {stepMutation !== null && (unresolved || resolvedConflict || resolvedUnknown || stepMutation.phase === "refused") && <div className="steps-error" role="alert">
+      {stepMutation.phase === "unknown" && <p>{m.unknown}</p>}
+      {stepMutation.phase === "conflict" && <p>{m.conflict}</p>}
+      {resolvedConflict && <p>{m.conflictReconciled}</p>}
+      {resolvedUnknown && <p>{m.unknownReconciled}</p>}
+      {stepMutation.phase === "refused" && <p>{refusal}</p>}
+      {stepMutation.phase === "refused" && mutationError instanceof ApiError && mutationError.stepsLimit !== undefined && <p>{m.capacityDetails(format.number(mutationError.stepsLimit.encodedBytes), format.number(mutationError.stepsLimit.maxEncodedBytes))}</p>}
+      {mutationError instanceof ApiError && mutationError.requestId !== null && <p className="request-id">{messages.common.requestId} <code>{mutationError.requestId}</code></p>}
+      {stepMutation.reconciliationError !== null && <p>{m.checkFailed}</p>}
+      {unresolved && <button className="button" type="button" disabled={stepMutation.reconciling} onClick={state.reconcile}>{stepMutation.reconciling ? m.checking : m.checkState}</button>}
+      {stepMutation.phase === "refused" && mutationError instanceof ApiError && mutationError.status === 404 && <button className="button" type="button" disabled={busy || !active} onClick={state.retry}>{m.checkState}</button>}
     </div>}
     {resource === null && (busy || state.status === "waiting") && <div className="steps-skeleton" role="status" aria-label={m.loading}>{[0, 1, 2, 3].map((row) => <div key={row}><span /><span /><span /></div>)}</div>}
     {resource !== null && total === 0 && <div className="steps-empty"><p>{m.empty}</p></div>}
@@ -73,7 +96,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
               <span className="step-chevron" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m6 3 5 5-5 5" /></svg></span>
               <span className="step-number" aria-hidden="true">{format.number(start + index + 1)}</span><span className="step-title">{step.title}</span>
             </button>
-            <div className="step-controls"><span className={`step-status step-status-${step.status}`}>{m.status[step.status]}</span><code className="step-id">{step.id}</code></div>
+            <div className="step-controls"><StepStatusMenu step={step} available={state.canSetStatus} busy={pendingStepId === step.id} onSelect={(status) => state.setStatus(step.id, status, resource.version)} /><code className="step-id">{step.id}</code></div>
           </div>
           <div id={bodyId} className="step-detail" hidden={!open}>
             {open && <>{step.description === "" ? <p className="step-detail-empty">{m.noDescription}</p> : renderMarkdown(step.description)}

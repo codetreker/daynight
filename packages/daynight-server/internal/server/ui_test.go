@@ -45,7 +45,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 	if len(entries) != 1 || entries[0]["type"] != "http_request" || entries[0]["route"] != "GET /{$}" || entries[0]["request_id"] != "project-test" {
 		t.Fatalf("UI must reuse exactly one request logger: %+v", entries)
 	}
-	for _, target := range []string{"/login", "/login?returnPath=%2Fprojects&private-query=value", "/projects", "/projects?private-query=value", "/shared-projects", "/teams/00000000-0000-4000-8000-000000000099", "/teams/invalid-private-team", "/workers", "/workers?private-query=value", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker"} {
+	for _, target := range []string{"/team-invitations", "/login", "/login?returnPath=%2Fprojects&private-query=value", "/projects", "/projects?private-query=value", "/shared-projects", "/teams/00000000-0000-4000-8000-000000000099", "/teams/invalid-private-team", "/workers", "/workers?private-query=value", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker"} {
 		response := projectRequest(handler, http.MethodGet, target, "")
 		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), root.Body.Bytes()) || response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("product entry did not return the production index: %d", response.Code)
@@ -70,7 +70,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 		}
 	}
 	for _, target := range []string{
-		"/unknown-private-page", "/setup/", "/setup/private-child", "/setup-private", "/login/", "/login/private-child", "/login-private", "/projects/", "/projects-list", "/projects/id/extra", "/projects/id/members/extra", "/projects/id/settings/extra",
+		"/unknown-private-page", "/team-invitations/child", "/team-invitations/", "/setup/", "/setup/private-child", "/setup-private", "/login/", "/login/private-child", "/login-private", "/projects/", "/projects-list", "/projects/id/extra", "/projects/id/members/extra", "/projects/id/settings/extra",
 		"/projects/id/tasks", "/projects/id/tasks/task/unknown", "/projects/id/tasks/task/unknown/file", "/projects/id/tasks/task/attachment/file",
 		"/workers/", "/workers-list", "/workers/id/extra", "/workers/id/assets/missing.js",
 		"/teams/", "/teams/id/extra", "/shared-projects/extra",
