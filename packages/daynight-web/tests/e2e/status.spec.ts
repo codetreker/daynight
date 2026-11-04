@@ -1,18 +1,21 @@
 import { readProjectSnapshot } from './project-snapshot';
 import { closeChain, openChain } from './chain-dialog';
 import { selectTaskList } from './project-view';
-import { randomUUID, createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { dirname } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { APIResponse, Locator, Page, Route, TestInfo } from '@playwright/test';
-import { createAcceptanceCli } from '../../scripts/acceptance/installed-cli.mts';
+import { validateInstalledCli, type InstalledCliReceipt } from '../../scripts/acceptance/installed-cli.mts';
 import { parseApiJson, stringifyApiJson } from '../../src/api/json';
 import { parseServerError, parseTaskDetail } from '../../src/api/parse';
 import { buildGraphIndex } from '../../src/features/task-graph/model';
 import type { TaskDetail, TaskStatus } from '../../src/api/types';
 import { attachmentDownloadUrl } from '../../src/api/client';
-import { createProject, createTask, expect, seedTaskVersion, seedExternalDependencies, setTaskStatus, test } from './fixtures';
+import { createTask, expect, seedTaskVersion, seedExternalDependencies, setTaskStatus, test, type StatusPreparation } from './fixtures';
 import { expectCenteredTaskDetail } from './detail-dialog';
 import { authenticatedAPI, fulfillAuthenticatedResponse, type AuthenticatedAPI } from './authentication';
+
+test.use({ preparationFamily: 'status' });
 
 const states: readonly TaskStatus[] = ['todo', 'in_progress', 'done'];
 const labels = { 'zh-CN': { todo: '待处理', in_progress: '进行中', done: '已完成' }, en: { todo: 'To do', in_progress: 'In progress', done: 'Done' } };
@@ -75,15 +78,23 @@ const read = async (api: AuthenticatedAPI, project: string, task: string): Promi
   const response = await api.get(taskPath(project, task)); expect(response.status()).toBe(200);
   return parseTaskDetail(parseApiJson(await response.text()), project, task);
 };
-const actor = async (page: Page, info: TestInfo, name: string) => {
+const actor = async (page: Page, info: TestInfo, name: string, prepared: StatusPreparation) => {
   const receiptPath = process.env.DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT;
   if (receiptPath === undefined) throw new Error('Status evidence requires an installed CLI receipt.');
-  const cli = await createAcceptanceCli(origin(info), info.outputPath(`installed-cli-${name}`));
-  const evidence = { scenario: name, topology: process.env.DAYNIGHT_ACCEPTANCE_TARGET, installedCli: JSON.parse(await readFile(receiptPath, 'utf8')) as unknown,
+  const raw = JSON.parse(await readFile(receiptPath, 'utf8')) as InstalledCliReceipt;
+  const installedCli = await validateInstalledCli(receiptPath, dirname(raw.root));
+  const cli = prepared.cli;
+  const evidence = { scenario: name, topology: process.env.DAYNIGHT_ACCEPTANCE_TARGET, installedCli, sharedPreparation: prepared.setupReceiptPath,
     commands: [] as { argv: readonly string[]; exitCode: number; stdout: string; stderr: string }[],
     writes: [] as { taskId: string; body: string; status: number; responseBody: string; requestId: string | null }[],
     snapshots: [] as { label: string; task: TaskDetail }[], controlledFaults: [] as string[] };
-  const run = async (argv: readonly string[]) => { const result = await cli.run(argv); evidence.commands.push({ argv, ...result }); return result; };
+  const pendingCommands = new Set<Promise<Awaited<ReturnType<typeof cli.run>>>>();
+  const run = async (argv: readonly string[]) => {
+    const pending = cli.run(argv);
+    pendingCommands.add(pending);
+    try { const result = await pending; evidence.commands.push({ argv, ...result }); return result; }
+    finally { pendingCommands.delete(pending); }
+  };
   const success = async (argv: readonly string[]): Promise<string> => { const result = await run(argv); expect(result.exitCode).toBe(0); expect(result.stderr).toBe(''); return result.stdout; };
   const show = async (project: string, task: string, label: string): Promise<TaskDetail> => {
     const value = parseTaskDetail(parseApiJson(await success(['task', 'show', task, '--project', project, '--json'])), project, task);
@@ -96,19 +107,25 @@ const actor = async (page: Page, info: TestInfo, name: string) => {
     const response = await authenticatedAPI(page.context().request).fetch(route.request(), { timeout: 15_000, maxRetries: 0 });
     evidence.writes.push({ taskId, body, status: response.status(), responseBody: await response.text(), requestId: response.headers()['x-request-id'] ?? null }); return response;
   };
-  const attach = async () => info.attach(`${name}-receipt`, { contentType: 'application/json',
-    body: Buffer.from(JSON.stringify(evidence, (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value, 2)) });
-  return { cli, evidence, run, success, show, capture, attach };
+  const attach = async () => {
+    const completed = await Promise.allSettled([...pendingCommands]);
+    await info.attach(`${name}-receipt`, { contentType: 'application/json',
+      body: Buffer.from(JSON.stringify(evidence, (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value, 2)) });
+    const failures = completed.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Status case CLI commands failed while draining.');
+  };
+  return { evidence, run, success, show, capture, attach };
 };
 const resourceId = (text: string): string => {
   const ids = [...text.matchAll(/^ID: ([0-9a-f-]{36})$/gm)]; expect(ids).toHaveLength(1); return ids[0]![1]!;
 };
 
-test('task-status', { annotation: { type: 'scenario', description: 'task-status' } }, async ({ page, api, allowStatusWrites }, info) => {
+test('task-status', { annotation: { type: 'scenario', description: 'task-status' } }, async ({ page, api, allowStatusWrites, statusPreparation }, info) => {
   await pauseAutomaticRefresh(page);
-  const lifecycle = await actor(page, info, 'task-status');
+  const lifecycle = await actor(page, info, 'task-status', statusPreparation);
   try {
-    const project = resourceId(await lifecycle.success(['project', 'create', `Status ${randomUUID()}`, '--repo', `https://example.com/status/${randomUUID()}`]));
+    const project = statusPreparation.projectId;
     const id = resourceId(await lifecycle.success(['task', 'create', '--project', project, '--title', '完整任务标题 '.repeat(20), '--description', '# 状态交付\n\n保留正文、PR、附件与阅读位置。', '--required-platform', 'macos']));
     const initial = await lifecycle.show(project, id, 'created'); expect(initial).toMatchObject({ status: 'todo', version: 1n, properties: {}, ready: true, allowAgents: false, requiredPlatform: 'macos', startedAt: null, completedAt: null });
     await lifecycle.success(['task', 'set-property', id, 'pullRequests', JSON.stringify([{ url: 'https://example.com/pull/1', title: 'Preserved reference' }]), '--project', project, '--if-version', String(initial.version)]);
@@ -165,13 +182,13 @@ test('task-status', { annotation: { type: 'scenario', description: 'task-status'
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await screenshot(page, info, `status-confirmation-en-${width}`); await page.keyboard.press('Escape');
     }
-  } finally { await lifecycle.attach(); await lifecycle.cli.close(); }
+  } finally { await lifecycle.attach(); }
 });
 
-test('task-status-conflicts', { annotation: { type: 'scenario', description: 'task-status-conflicts' } }, async ({ page, api, allowStatusWrites }, info) => {
+test('task-status-conflicts', { annotation: { type: 'scenario', description: 'task-status-conflicts' } }, async ({ page, api, allowStatusWrites, statusPreparation }, info) => {
   await pauseAutomaticRefresh(page);
-  const lifecycle = await actor(page, info, 'task-status-conflicts');
-  const project = await createProject(api); const task = await createTask(api, project.id, { title: '版本冲突与完整内容重新审阅' });
+  const lifecycle = await actor(page, info, 'task-status-conflicts', statusPreparation);
+  const project = { id: statusPreparation.projectId }; const task = await createTask(api, project.id, { title: '版本冲突与完整内容重新审阅' });
   const prerequisite = await createTask(api, project.id, { title: '普通与外部前置' });
   const blocked = await createTask(api, project.id, { title: '依赖拒绝', dependsOn: [prerequisite.id] });
   allowStatusWrites([{ origin: origin(info), projectId: project.id, taskId: task.id, status: 'in_progress', count: 2 },
@@ -218,13 +235,13 @@ test('task-status-conflicts', { annotation: { type: 'scenario', description: 'ta
     await expect(detail(page).locator('.task-detail-relation-external')).toHaveCount(0);
     expect(lifecycle.evidence.writes).toHaveLength(3);
     await screenshot(page, info, 'status-conflict-reloaded');
-  } finally { await page.unroute(endpoint); await lifecycle.attach(); await lifecycle.cli.close(); }
+  } finally { await page.unroute(endpoint); await lifecycle.attach(); }
 });
 
-test('task-status-recovery', { annotation: { type: 'scenario', description: 'task-status-recovery' } }, async ({ page, api, allowStatusWrites }, info) => {
+test('task-status-recovery', { annotation: { type: 'scenario', description: 'task-status-recovery' } }, async ({ page, api, allowStatusWrites, statusPreparation }, info) => {
   await pauseAutomaticRefresh(page);
-  const lifecycle = await actor(page, info, 'task-status-recovery');
-  const project = await createProject(api); const task = await createTask(api, project.id, { title: '丢响应后的实际状态核对' });
+  const lifecycle = await actor(page, info, 'task-status-recovery', statusPreparation);
+  const project = { id: statusPreparation.projectId }; const task = await createTask(api, project.id, { title: '丢响应后的实际状态核对' });
   const other = await createTask(api, project.id, { title: '隔离其他任务的写入会话' });
   allowStatusWrites([{ origin: origin(info), projectId: project.id, taskId: task.id, status: 'in_progress', count: 1 },
     { origin: origin(info), projectId: project.id, taskId: task.id, status: 'done', count: 1 },
@@ -271,13 +288,13 @@ test('task-status-recovery', { annotation: { type: 'scenario', description: 'tas
     const reopened = await lifecycle.show(project.id, task.id, 'reopened-after-pending'); expect(reopened).toMatchObject({ status: 'todo', startedAt: null, completedAt: null });
     expect(lifecycle.evidence.writes).toHaveLength(3);
     await screenshot(page, info, 'status-recovered');
-  } finally { rejectReadback = false; release.resolve(); await page.unroute(endpoint); await page.unroute(resource); await lifecycle.attach(); await lifecycle.cli.close(); }
+  } finally { rejectReadback = false; release.resolve(); await page.unroute(endpoint); await page.unroute(resource); await lifecycle.attach(); }
 });
 
-test('task-status-transitions', { annotation: { type: 'scenario', description: 'task-status-transitions' } }, async ({ page, api, allowStatusWrites }, info) => {
+test('task-status-transitions', { annotation: { type: 'scenario', description: 'task-status-transitions' } }, async ({ page, api, allowStatusWrites, statusPreparation }, info) => {
   await pauseAutomaticRefresh(page);
-  const lifecycle = await actor(page, info, 'task-status-transitions');
-  const project = await createProject(api, { name: 'Nine status assignments and direct dependency protection' });
+  const lifecycle = await actor(page, info, 'task-status-transitions', statusPreparation);
+  const project = { id: statusPreparation.projectId };
   const cases: { current: TaskStatus; target: TaskStatus; task: TaskDetail }[] = [];
   for (const current of states) for (const target of states) {
     const created = await createTask(api, project.id, { title: `${current} → ${target}` });
@@ -319,5 +336,5 @@ test('task-status-transitions', { annotation: { type: 'scenario', description: '
     const rejected = await lifecycle.run(['task', 'set-status', cases[0]!.task.id, 'proposed', '--project', project.id]);
     expect(rejected.exitCode).toBe(2); expect(rejected.stderr).toContain('Unknown status "proposed". Expected todo or in_progress or done.');
     await screenshot(page, info, 'status-nine-transitions');
-  } finally { await lifecycle.attach(); await lifecycle.cli.close(); }
+  } finally { await lifecycle.attach(); }
 });

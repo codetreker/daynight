@@ -16,6 +16,8 @@ export type WorkerControlRequest =
   | { kind: "resume"; taskId: string; projectId?: string; claimId: string; version: bigint };
 
 type ControlCoordinator = {
+  assertCanAcquire(target: Pick<ClaimIdentity, "projectId" | "taskId">): void;
+  registerClaim(task: Task): void;
   advanceRetry(identity: ClaimIdentity): Promise<void>;
   cleanupSource(identity: ClaimIdentity, settings: { deleteWorktree?: boolean }): Promise<ResourceOwner>;
   completeSource(owner: ResourceOwner): Promise<void>;
@@ -76,6 +78,7 @@ export const submitWorkerControl = async (options: {
     requireImplementedWorkerBackend(repository.configuration);
     if (repository.configuration.agentControlMode === "web") { if (!options.verifyWebServer) throw new Error("Web backend capabilities are unavailable."); await options.verifyWebServer(repository.configuration.agent, signal); }
     await remote.authorizeControl(projectId, worker.userId, signal);
+    coordinator.assertCanAcquire({ projectId, taskId: request.taskId });
     const descriptor: WorkerClaimDescriptor = { claimId: randomUUID(), workerId: options.workerId, worktreeId: randomUUID(), machine: options.machine, platform: options.platform, agent: repository.configuration.agent, ...(repository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}) };
     options.emit({ kind: "management-request", message: `Resume ${projectId}/${request.taskId}: previousClaimId=${request.claimId}, claimId=${descriptor.claimId}, worktreeId=${descriptor.worktreeId}.` });
     const granted = await confirmMutation(
@@ -83,6 +86,7 @@ export const submitWorkerControl = async (options: {
       (task) => matchesGrant(task, identity, descriptor, principal), "resume",
     );
     const task = store.registerPending({ projectId, taskId: granted.id, claimId: descriptor.claimId, agent: descriptor.agent, agentControlMode: descriptor.agentControlMode ?? "herdr" });
+    coordinator.registerClaim(granted);
     return { task, message: `New resume claim ${task.claimId} committed as pending; worker run will start its new execution.` };
   }
   if (source === undefined || source.status === "done") throw new Error("Management requires the original unfinished local execution.");
@@ -106,5 +110,5 @@ export const submitWorkerControl = async (options: {
     }, "release",
   );
   await coordinator.completeSource(owner);
-  return { task: store.getTask(identity), message: `${request.kind} completed for claim ${request.claimId}; its local resources were removed.` };
+  return { task: store.getTask(identity), message: `${request.kind} completed for claim ${request.claimId}; its original execution stopped, and local cleanup follows the backend archive requirements.` };
 };

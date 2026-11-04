@@ -39,7 +39,8 @@ decision](2026-10-28-web-quality-worker-capacity.md); its `forks` pool, file
 isolation, all ordinary cases and full product-source manifest remain unchanged.
 
 Browser mode installs pinned Chromium with Linux dependencies under the existing
-600-second bound, then invokes ordinary core acceptance. That runner owns native
+600-second bound, runs the focused navigation-contract Playwright command with
+its separate 180-second bound, then invokes ordinary core acceptance. That runner owns native
 and container preparation, atomic permission release, recovery and cleanup.
 The [functional target decision](2026-11-04-web-functional-target-overlap.md)
 replaces the original native-before-container functional browser order with

@@ -1,3 +1,4 @@
+import '../../styles/task-status-rows.css';
 import { TaskPausedBadge, useTaskPaused } from "../task-pause/TaskPause";
 import { memo, useCallback, useId, useLayoutEffect, useRef, type FocusEvent, type MouseEvent } from 'react';
 import { useReactFlow, type Node, type NodeProps } from '@xyflow/react';
@@ -99,7 +100,7 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
   const inspect = useCallback(() => { data.onInspectTask(data.task.id); }, [data.onInspectTask, data.task.id]);
   const expandable = data.expansions.prerequisites.ids.length > 0 || data.expansions.successors.ids.length > 0;
   return (
-    <div className={`task-node task-node-${data.task.status} task-node-${inspection}${data.kind === 'external' ? ' task-node-external' : ''}${execution?.overdue ? ' task-node-stuck' : ''}${paused ? ' task-node-paused' : ''} nodrag nopan`} data-inspection={inspection} style={{ pointerEvents: 'auto' }}>
+    <div className={`task-node task-node-${data.task.status} task-node-${inspection}${data.kind === 'external' ? ' task-node-external' : ''}${execution?.overdue ? ' task-node-stuck' : ''}${paused ? ' task-node-paused' : ''} nodrag nopan`} data-task-status={data.task.status} data-inspection={inspection} style={{ pointerEvents: 'auto' }}>
       <button type="button" ref={body} className="task-node-body nodrag nopan"
         aria-label={`${m.nodeLabel({ title, status: common.status[data.task.status], blocked: data.task.blockedBy.length > 0, external: data.kind === 'external' })}${paused ? `, ${pause.label}` : ''}${m.inspectionSuffix[inspection]}`}
         aria-describedby={execution === null ? undefined : descriptionId}

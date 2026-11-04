@@ -20,6 +20,21 @@ export const runTaskStepCommand = async (command: Command, context: CliContext, 
     await runTaskStepAddCommand(command, context, dependencies);
     return;
   }
+  if (command.command.name === "update" || command.command.name === "set-status") {
+    const { runTaskStepUpdateCommand } = await import("./step-update.js");
+    await runTaskStepUpdateCommand(command, context, dependencies);
+    return;
+  }
+  if (command.command.name === "move") {
+    const { runTaskStepMoveCommand } = await import("./step-move.js");
+    await runTaskStepMoveCommand(command, context, dependencies);
+    return;
+  }
+  if (command.command.name === "delete") {
+    const { runTaskStepDeleteCommand } = await import("./step-delete.js");
+    await runTaskStepDeleteCommand(command, context, dependencies);
+    return;
+  }
   const name = command.command.name as "list" | "show";
   let projectId: string | undefined, taskId: string | undefined, stepId: string | undefined;
   let phase: "prepare" | "request" | "render" | "output" = "prepare";

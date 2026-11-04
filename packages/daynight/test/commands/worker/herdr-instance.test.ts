@@ -80,6 +80,47 @@ afterEach(async () => {
 });
 
 describe("private Herdr instance", () => {
+  it("waits for durable daemon registration before observing readiness", async () => {
+    const setup = await fixture();
+    let captured = 0;
+    const instance = createHerdrInstance({ paths: setup.worker, environment: setup.environment, spawnProcess: setup.start,
+      onDaemonSpawn: async pid => { captured = pid; throw new Error("journal refused"); }, retainOnStartupFailure: true });
+    await expect(instance.ensure(operation())).rejects.toThrow("journal refused");
+    expect(captured).toBeGreaterThan(0);
+    expect(children.at(-1)!.signalCode).toBeNull();
+  });
+  it.skipIf(!existsSync(new URL("../../../dist/commands/worker/herdr/instance.js", import.meta.url)))
+  .each(["registration", "readiness"] as const)("lets the parent exit naturally while retaining its daemon after %s failure", async (failure) => {
+    const f = await fixture(failure === "readiness" ? { FIXTURE_SERVER_VERSION: "0.8.2" } : {});
+    const resultFile = path.join(f.root, "startup-result.json");
+    const instanceUrl = new URL("../../../dist/commands/worker/herdr/instance.js", import.meta.url).href;
+    const operationUrl = new URL("../../../dist/api/operation.js", import.meta.url).href;
+    const source = `import {spawn} from 'node:child_process';import {writeFileSync} from 'node:fs';import {createHerdrInstance} from ${JSON.stringify(instanceUrl)};import {createOperation} from ${JSON.stringify(operationUrl)};
+const config=JSON.parse(process.argv[1]);let daemonPid;const instance=createHerdrInstance({paths:config.worker,retainOnStartupFailure:true,spawnProcess:(_file,args,options)=>spawn(process.execPath,[config.script,...args],options),onDaemonSpawn:async pid=>{daemonPid=pid;if(config.failure==='registration')throw new Error('journal refused');}});
+const operation=createOperation({limits:{totalMs:5000,requestMs:5000}});try{await instance.ensure(operation);writeFileSync(config.resultFile,JSON.stringify({daemonPid,unexpectedSuccess:true}));}catch(error){writeFileSync(config.resultFile,JSON.stringify({daemonPid,error:error.message}));}finally{operation.dispose();}`;
+    const parent = spawn(process.execPath, ["--input-type=module", "--eval", source, JSON.stringify({ worker: f.worker, script: f.script, resultFile, failure })],
+      { env: f.environment, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+    children.push(parent);
+    let stderr = ""; parent.stderr!.on("data", (data: Buffer) => { stderr += data.toString(); });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => parent.once("close", (code, signal) => resolve({ code, signal })));
+    const retained = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: () => { throw new Error("The retained daemon must not be replaced"); } });
+    try {
+      await waitUntil(async () => await present(resultFile) && await present(f.ready));
+      const result = JSON.parse(await readFile(resultFile, "utf8")) as { daemonPid: number; error?: string };
+      expect(result.error).toMatch(failure === "registration" ? /journal refused/ : /protocol 22/);
+      expect(Number(await readFile(f.ready, "utf8"))).toBe(result.daemonPid);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const outcome = await Promise.race([closed, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 2_000); })]);
+        expect(outcome, stderr || "Retained daemon handle prevented the parent from exiting naturally").toEqual({ code: 0, signal: null });
+      } finally { if (timer !== undefined) clearTimeout(timer); }
+      expect(await createHerdrVersionObserver(f.worker).observe(operation())).toBe(failure === "readiness" ? "0.8.2" : "0.9.5");
+    } finally {
+      if (parent.exitCode === null && parent.signalCode === null) { parent.kill("SIGKILL"); await closed; }
+      await retained.stop(operation(2_000));
+    }
+  }, 15_000);
+
   it("observes absence without creating private paths or starting a daemon", async () => {
     const setup = await fixture();
     const absent = { herdrDirectory: path.join(setup.root, "a"), logsDirectory: setup.worker.logsDirectory };

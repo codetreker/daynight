@@ -1,6 +1,7 @@
 import { readCodexConfiguration } from "./herdr/codex-config.js";
 import type { WorkerPaths } from "./paths.js";
-import type { HerdrWorkspaceEnvironment } from "./herdr/agents.js";
+import type { HerdrExecutionContext, HerdrExecutionOwner, HerdrWorkspaceEnvironment } from "./herdr/agents.js";
+import type { Operation } from "../../api/operation.js";
 import { createHerdrAgentManager } from "./herdr/agents.js";
 import { createHerdrInstance, createHerdrNativeEnvironment } from "./herdr/instance.js";
 import { createHerdrPreflight } from "./herdr/preflight.js";
@@ -14,6 +15,7 @@ export type {
   HerdrAgentConfiguration,
   HerdrAgentObservation,
   HerdrAgentStartInput,
+  HerdrAgentLaunchInput,
   HerdrPromptReceipt,
   HerdrPromptResult,
   HerdrPromptGuard,
@@ -28,6 +30,9 @@ export const createWorkerHerdr = (options: {
   executable?: string;
   environment?: NodeJS.ProcessEnv;
   agentEnvironment?: Readonly<{ PATH?: string; DN_CONFIG_DIR?: string }>;
+  onDaemonSpawn?: (pid: number) => Promise<void>;
+  retainOnStartupFailure?: boolean;
+  isolatedRun?: boolean;
 }) => {
   const inheritedEnvironment = options.environment === undefined ? process.env : options.environment;
   const instance = createHerdrInstance({ ...options, environment: inheritedEnvironment });
@@ -59,4 +64,13 @@ export const createWorkerHerdr = (options: {
   };
 };
 
-export type WorkerHerdrAdapter = ReturnType<typeof createWorkerHerdr>;
+export type WorkerHerdrLifecycle = {
+  registerClaim(context: HerdrExecutionContext, ownerUserId: string): void;
+  assertCanAdvance(context: HerdrExecutionContext): void;
+  hasPreparedRun(owner: HerdrExecutionOwner): boolean;
+  responsibilities(): HerdrExecutionOwner[];
+  isStopped(owner: HerdrExecutionOwner): boolean;
+  stop(owner: HerdrExecutionOwner, reason: "shutdown" | "terminal", operation: Operation): Promise<void>;
+  close(): void;
+};
+export type WorkerHerdrAdapter = ReturnType<typeof createWorkerHerdr> & { lifecycle?: WorkerHerdrLifecycle };

@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { test as base, expect } from '@playwright/test';
+import { test as base, expect, type TestInfo } from '@playwright/test';
 import { command } from '../../scripts/acceptance/process.mts';
 import { recordBrowserOwnership } from '../../scripts/acceptance/browser.mts';
 import type { ExecutionPlatform, TaskProperties, WritableTaskProperties } from '../../src/api/types';
 import { attachmentDownloadUrl } from '../../src/api/client';
-import { bearerContext, browserAuthentication, type AuthenticatedAPI } from './authentication';
+import { bearerContext, browserAuthentication, createApiToken, tokenContext, type AuthenticatedAPI } from './authentication';
+import { createAcceptanceCli } from '../../scripts/acceptance/installed-cli.mts';
 
 export { expect };
 export type AttachmentWriteExpectation = {
@@ -33,7 +34,20 @@ type AttachmentWritePolicy = {
   readonly registerBrowser: (entries: readonly BrowserWriteExpectation[]) => void;
 };
 export type BrowserWriteExpectation = { readonly method: 'POST' | 'PATCH' | 'PUT' | 'DELETE'; readonly url: string; readonly count: number };
+export type StatusPreparation = {
+  projectId: string;
+  cli: Awaited<ReturnType<typeof createAcceptanceCli>>;
+  setupReceiptPath: string;
+  apiContext(): Promise<AuthenticatedAPI>;
+};
+type WorkerPreparation = {
+  status(origin: string, info: TestInfo): Promise<StatusPreparation>;
+  controls(origin: string, api: AuthenticatedAPI, info: TestInfo): Promise<Project>;
+};
 export const test = base.extend<{
+  preparationFamily: 'isolated' | 'status' | 'task-controls';
+  statusPreparation: StatusPreparation;
+  controlProject: Project;
   api: AuthenticatedAPI;
   authentication: 'automatic' | 'visible';
   authenticatedContext: void;
@@ -42,7 +56,77 @@ export const test = base.extend<{
   allowStatusWrites: AttachmentWritePolicy['registerStatuses'];
   attachmentWritePolicy: AttachmentWritePolicy;
   allowBrowserWrites: AttachmentWritePolicy['registerBrowser'];
-}>({
+}, { workerPreparation: WorkerPreparation }>({
+  preparationFamily: ['isolated', { option: true }],
+  workerPreparation: [async ({ playwright }, use, workerInfo) => {
+    let origin: string | undefined;
+    let status: Promise<StatusPreparation> | undefined;
+    let controls: Promise<Project> | undefined;
+    let cli: StatusPreparation['cli'] | undefined;
+    const bindOrigin = (value: string, info: TestInfo): void => {
+      const url = new URL(value);
+      if (!['http:', 'https:'].includes(url.protocol) || url.origin !== value || (origin !== undefined && origin !== value)
+        || info.workerIndex !== workerInfo.workerIndex) {
+        throw new Error('Shared preparation requires one exact service origin per worker.');
+      }
+      origin = value;
+    };
+    const prepareStatus = async (value: string, info: TestInfo): Promise<StatusPreparation> => {
+      const directory = join(evidenceDirectory(), 'shared-preparation', `status-worker-${workerInfo.workerIndex}`);
+      const setupReceiptPath = join(directory, 'setup.json');
+      const apiToken = await createApiToken(value);
+      try {
+        const client = await createAcceptanceCli(value, join(directory, 'cli'));
+        cli = client;
+        const argv = ['project', 'create', `Status ${randomUUID()}`, '--repo', `https://example.com/status/${randomUUID()}`];
+        const result = await client.run(argv);
+        expect(result.exitCode).toBe(0); expect(result.stderr).toBe('');
+        const ids = [...result.stdout.matchAll(/^ID: ([0-9a-f-]{36})$/gm)]; expect(ids).toHaveLength(1);
+        const projectId = ids[0]![1]!;
+        const receiptPath = process.env.DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT;
+        if (receiptPath === undefined) throw new Error('Shared status preparation requires its installed CLI receipt.');
+        const installedCli = JSON.parse(await readFile(receiptPath, 'utf8')) as unknown;
+        await writeFile(setupReceiptPath, `${JSON.stringify({ origin: value, workerIndex: workerInfo.workerIndex,
+          parallelIndex: workerInfo.parallelIndex, projectId, installedCli, command: { argv, ...result } }, null, 2)}\n`);
+        await info.attach('shared-status-preparation', { path: setupReceiptPath, contentType: 'application/json' });
+        return { projectId, cli: client, setupReceiptPath, apiContext: async () => tokenContext(playwright.request, value, apiToken) };
+      } catch (error) {
+        if (cli !== undefined) {
+          try { await cli.close(); }
+          catch (cleanup) { throw new AggregateError([error, cleanup], 'Status preparation and owned CLI cleanup failed.', { cause: error }); }
+        }
+        throw error;
+      }
+    };
+    try {
+      await use({
+        status: (value, info) => {
+          bindOrigin(value, info);
+          return status ??= prepareStatus(value, info);
+        },
+        controls: (value, api, info) => {
+          bindOrigin(value, info);
+          return controls ??= createProject(api, { name: 'Task controls acceptance' });
+        },
+      });
+    } finally {
+      const results = await Promise.allSettled([status, controls].filter((pending) => pending !== undefined));
+      const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+      if (cli !== undefined) {
+        try { await cli.close(); } catch (error) { failures.push(error); }
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, 'Worker preparation or owned CLI cleanup failed.');
+    }
+  }, { scope: 'worker' }],
+  statusPreparation: async ({ baseURL, preparationFamily, workerPreparation }, use, info) => {
+    if (baseURL === undefined || preparationFamily !== 'status') throw new Error('Status preparation requires its service origin and scenario family.');
+    await use(await workerPreparation.status(baseURL, info));
+  },
+  controlProject: async ({ baseURL, preparationFamily, workerPreparation, api }, use, info) => {
+    if (baseURL === undefined || preparationFamily !== 'task-controls') throw new Error('Task control preparation requires its service origin and scenario family.');
+    await use(await workerPreparation.controls(baseURL, api, info));
+  },
   authentication: ['automatic', { option: true }],
   authenticatedContext: async ({ context, baseURL, authentication }, use) => {
     if (baseURL === undefined) throw new Error('Browser authentication requires the exact product origin.');
@@ -50,9 +134,11 @@ export const test = base.extend<{
     await use();
   },
   page: async ({ page, authenticatedContext }, use) => { void authenticatedContext; await use(page); },
-  api: async ({ playwright, baseURL }, use) => {
+  api: async ({ playwright, baseURL, preparationFamily, workerPreparation }, use, info) => {
     if (baseURL === undefined) throw new Error('API fixture authentication requires the exact product origin.');
-    const context = await bearerContext(playwright.request, baseURL);
+    const context = preparationFamily === 'status'
+      ? await (await workerPreparation.status(baseURL, info)).apiContext()
+      : await bearerContext(playwright.request, baseURL);
     try { await use(context); } finally { await context.dispose(); }
   },
   attachmentWritePolicy: async ({}, use) => {

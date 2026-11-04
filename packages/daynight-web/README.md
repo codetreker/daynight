@@ -1578,6 +1578,16 @@ The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
 were never imported by a test. Empty, malformed and incomplete reports fail.
 
+The focused navigation browser suite builds a minimal editor host from the
+production router, admitted-location owner and task confirmation. It checks draft
+admission independently of Steps forms and HTTP writes, including indexed
+history traversal, retirement, beforeunload, keyboard focus and both languages at
+320px. Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
+tests/navigation/playwright.config.ts` after installing Chromium. The browser CI
+entry runs it before full-stack acceptance. Its results and failure captures
+are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
+inside the browser CI artifact directory.
+
 The required comparison is `covered * 10 > total * 9` using BigInt. Exactly 90%
 fails independently of display rounding. Pure-type declarations contribute zero
 statements only after the pinned TypeScript compiler's emitted JavaScript proves
@@ -1620,8 +1630,9 @@ separate local stress configuration; browser and Go gates remain required.
 
 `node packages/daynight-web/scripts/ci.mts browser` installs pinned Chromium and
 Linux dependencies under the
-existing 600-second bound, then calls the same ordinary core acceptance runner
-as `pnpm web:acceptance`. This job retains real embedded Go builds, both
+existing 600-second bound, runs the focused navigation-contract Playwright
+command with a separate 180-second bound, then calls the same ordinary core
+acceptance runner as `pnpm web:acceptance`. This job retains real embedded Go builds, both
 native/container functional targets, dev-ci lifecycle fixtures, persistence
 checks and recovery. Capacity and timing workloads run through the explicit
 local stress command, which refuses CI. Browser installation precedes core preparation; the core has no
@@ -1789,12 +1800,29 @@ pending protection, stale conflicts and committed-response-loss GET-only
 reconciliation, and covers English/Chinese narrow layouts. Pause counts retain
 their complete project/component scope independently of status and list filters.
 
-The [status journeys](tests/e2e/status.spec.ts) reuse the packed CLI and each
-target's authenticated service with the same Alice identity. Origin, method,
-headers and body pass through the redacting authenticated wrapper unchanged;
-receipts exclude credentials. Status scenarios are task-status, task-status-conflicts,
-task-status-recovery and task-status-transitions. The status-transition extension
-was validated against its 28-per-target functional inventory with five additional
+The [status journeys](tests/e2e/status.spec.ts) are task-status,
+task-status-conflicts, task-status-recovery and task-status-transitions. Within
+one Playwright worker incarnation and exact service origin, they share an
+Alice API PAT, a separately acquired CLI PAT/client, and a project created through
+the installed CLI. Each case opens a fresh API request context and independently
+validates the installed package's source and artifact hashes. Its command, write
+and snapshot receipt remains case-owned. The shared setup receipt records the
+actual project-creation command once; case receipts reference that source-qualified
+receipt. Worker teardown drains preparation and closes its owned CLI client.
+
+The automatic-permission, platform and assignment journeys share only a project
+within the same worker. Their API authentication stays case-owned, and assignment
+retains its normal Bob login, invitation and acceptance assertions. All seven
+journeys retain fresh browser contexts, pages, storage and normal browser logins;
+each creates its own mutable tasks and retains its exact write/fault assertions.
+A common worker-fixture registration and test-scoped family option preserve
+worker-pool reuse. Restarted workers prepare new resources. The
+[shared preparation decision](../../.agents/notes/implemented/testing/2026-11-04-web-scenario-preparation.md)
+records ownership and measurement limits.
+
+Origin, method, headers and body pass through the redacting authenticated wrapper
+unchanged; receipts exclude credentials. The status-transition extension was
+validated against its 28-per-target functional inventory with five additional
 native capacity/limit checks (61 combined); the current complete inventory below
 also includes later functional scenarios.
 

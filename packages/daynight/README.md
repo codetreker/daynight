@@ -135,7 +135,7 @@ daynight logout                      # Revoke and remove the current CLI credent
 daynight worker                     # Show worker help
 daynight worker setup               # Check prerequisites and choose an agent and Projects
 daynight worker run                 # Run until interrupted
-daynight worker attach              # Open the worker Herdr session
+daynight worker attach              # Connect to an existing Herdr task runtime
 daynight worker repo list [--json]
 daynight worker repo add [--project <project-id>]
 daynight worker repo remove [--project <project-id>]
@@ -165,6 +165,10 @@ daynight task step
 daynight task step list <task-id> [--json] [--project <project-id>]
 daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step update <task-id> <step-id> [--title <text>] [--description <markdown>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped> [--if-version <version>] [--json] [--project <project-id>]
+daynight task step move <task-id> <step-id> (--before <step-id> | --after <step-id> | --first | --last) [--if-version <version>] [--json] [--project <project-id>]
+daynight task step delete <task-id> <step-id> [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
@@ -198,8 +202,8 @@ dn --skill
 
 `--skill` prints one standalone English project/task usage manual from the
 current package. It covers project selection, task queries and writes,
-dependencies, properties, attachments and ordered Step list/show reads and Add. Other
-capabilities are discovered
+dependencies, properties, attachments and ordered Step list/show reads, Add, Update,
+Set-status, Move and Delete. Other capabilities are discovered
 through `daynight --help`, with exact options in each subcommand's help. The
 output preserves the manual's original bytes, including YAML
 frontmatter and the final newline. The document has no package-relative
@@ -888,8 +892,10 @@ writable. To set PR references, supply the whole ordered array of url/title
 objects, preserving every entry still needed.
 
 The writable boolean property `paused` controls periodic worker continuation
-pings. Set it to `true` to suppress those pings, or set it to `false` or remove
-it to restore the usual policy. An absent key remains absent in reads. The
+pings. The macOS durable Herdr path also checks it before every automatic input.
+Set it to `true` to suppress those inputs, or set it to `false` or remove it to
+restore the usual policy. Observation, original-run stopping and human attach
+remain available. An absent key remains absent in reads. The
 property can change during an active claim without changing task status,
 execution ownership or timing:
 
@@ -937,7 +943,8 @@ daynight task step show <task-id> <step-id> --json --project <project-id>
 
 Steps are an independent ordered resource owned by a Task. The
 [resource contract](../../docs/spec/daynight-task-steps.md#cli-读取) owns their
-fields and read behavior. The CLI provides `list`, `show` and `add`; the parent Task's
+fields and read behavior. The CLI provides `list`, `show`, `add`, `update`,
+`set-status`, `move` and `delete`; the parent Task's
 ordinary show/list/graph does not contain the full Steps collection. Step status
 is `todo`, `in_progress`, `done` or `skipped`, independent from Task status.
 
@@ -972,7 +979,7 @@ output failure can still leave partial stdout and is reported as a failure.
 Errors go to stderr with exit status 1; argument errors use 2 and success uses 0.
 A 401 includes `daynight login` guidance without automatic login or retry.
 Help, Bash/zsh completion and the standalone manual expose the delivered
-list/show/add commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
+list/show/add/update/set-status/move/delete commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 maps the real-service installed Node-entry read case, separate maximum-resource
 check and their normal fixture prerequisites. The packed CLI acceptance runner
 checks literal `daynight`/`dn` launchers through cross-spawn on native platforms.
@@ -1020,6 +1027,101 @@ flag. Once a full receipt is confirmed, later cleanup/render/output failure keep
 that confirmed fact and identity, with nonzero exit; output failure may leave
 partial stdout. The [Steps contract](../../docs/spec/daynight-task-steps.md#cli-添加与结果确认)
 owns these outcome rules and the server guide maps installed Add verification.
+
+### Update content or status
+
+```bash
+daynight task step update <task-id> <step-id> --title "Review round 2" --description "Findings and [result](result.md)" --project <project-id>
+daynight task step update <task-id> <step-id> --description="" --if-version <observed-version> --json --project <project-id>
+daynight task step set-status <task-id> <step-id> skipped --if-version <observed-version> --json --project <project-id>
+```
+
+Update requires --title or --description and saves both atomically when supplied.
+Omitted fields keep their values; an empty description explicitly clears it. Titles
+require a non-Unicode-White_Space character, including a valid standalone U+FEFF;
+standalone U+0085 is invalid. All text is preserved without trimming. Status uses
+the separate set-status command and accepts any of the four states directly,
+including the current state, independently from Task status or other Steps.
+
+An explicit project/version sends exactly one PATCH for content or one PUT to
+/status. Without --if-version, the command reads complete Steps once before that
+single write; failed pre-read prevents submission. Versions retain exact int64
+digits, and requests share Add's 1 MiB JSON bound and operation budgets.
+
+A complete valid 200 receipt must match scope, target ID and explicitly submitted
+fields, with parent version unchanged or increased by one. When a pre-read exists,
+confirmation also checks omitted fields, collection order, all non-target fields
+and target creation time. Equal values require unchanged version and timestamps;
+actual changes require version +1 and a changed target update time. An explicit
+version adds no hidden GET and cannot prove old values that were never read.
+Readable success prefixes the confirmed collection with `Step updated. ID: <id>`
+or `Step status set. ID: <id>`; --json prints only the complete resource and LF.
+
+These operations share Add's refusal, capacity-details, unknown-result and
+confirmed-local-failure handling. Stale versions are never replayed, and a later
+current-facts read cannot confirm the historical mutation. The
+[update contract](../../docs/spec/daynight-task-steps.md#cli-更新与状态确认)
+owns the complete confirmation rules.
+
+### Move a Step
+
+```bash
+daynight task step move <task-id> <step-id> --first --project <project-id>
+daynight task step move <task-id> <step-id> --after <anchor-id> --if-version <observed-version> --json --project <project-id>
+```
+
+Exactly one of `--before`, `--after`, `--first` or `--last` is required. Target
+and anchor IDs are complete Task-local eight-hex values, normalized to lowercase
+with leading zeros preserved. A relative anchor must be another Step in the same
+Task. Invalid combinations and self-reference fail before configuration or network
+access. Movement preserves every Step's identity, content, status and timestamps.
+Moving to the current position is a no-op; it still checks the submitted version.
+
+Explicit project/version sends one PUT to the target's position resource. Without
+`--if-version`, one complete Steps GET supplies the version before one PUT; failed
+pre-read prevents submission. Confirmation requires a complete valid resource,
+matching requested position and either the submitted version or version +1.
+With an actual pre-read, confirmation also checks every record and its times,
+all surviving relative order, and exactly no-op versus +1. Explicit versions
+retain the one-write budget and cannot compare an unobserved earlier collection.
+
+Readable success prints `Step moved. ID: <id>` and the service-confirmed order;
+`--json` emits only the complete resource and LF. Known refusals preserve service
+codes, request IDs and capacity details. Unknown Move results retain the original
+Project/Task/Step identity and request UUID, use at most one same-live-operation
+`.r1` GET to report current facts, and remain unknown with exit 1 and empty
+success stdout. No PUT is replayed. Cancellation or exhausted operation budgets
+prevent detached recovery; confirmed local output/cleanup failures retain the
+confirmed result and nonzero exit, as with Add.
+
+### Delete a Step
+
+```bash
+daynight task step delete <task-id> <step-id> --project <project-id>
+daynight task step delete <task-id> 00ABCDEF --if-version <observed-version> --json --project <project-id>
+```
+
+Delete removes the specified Task-local record and description in any Step
+status. Referenced attachments, PRs, Sessions and other materials remain; there
+is no history or restore command. IDs normalize case while preserving leading
+zeros. Explicit project/version sends one JSON DELETE whose body contains only
+version. Without --if-version, one complete Steps GET supplies the version;
+a failed pre-read prevents DELETE.
+
+A complete valid 200 receipt must confirm scope, principal, version +1 and target
+absence. With a real pre-read, all remaining records must retain their fields,
+times and relative order. Explicit versions do not add a hidden baseline read.
+Readable output is `Step deleted. ID: <id>` plus the full confirmed remaining
+collection; --json prints only the complete resource and LF. Deleting the last
+record returns steps: []. Repeated deletion, a deleted parent, version conflict
+and version exhaustion remain visible errors.
+
+Delete shares Add's request identity, refusal, unknown, cancellation and confirmed
+local-failure handling. Its one eligible read reports current found/absent facts;
+absence does not prove that the unknown request deleted the original record,
+and a current same-ID record need not be that original record. No DELETE is
+replayed. The [deletion contract](../../docs/spec/daynight-task-steps.md#cli-删除与结果确认)
+owns these guarantees.
 
 ## Task deletion
 
@@ -1171,8 +1273,9 @@ records binary transport and output ownership.
 
 `daynight worker run` is a foreground reconciler. It claims eligible ready tasks
 assigned to its authenticated account across configured repositories, runs native agents through the claim's Herdr or
-Web backend, and cleans resources when the original claim leaves its complete
-inventory. The agent owns delivery, acceptance, evidence and final claim-bound
+Web backend, and stops executions when the original claim leaves its complete
+inventory. Resource deletion also requires the backend's cleanup and archive
+conditions. The agent owns delivery, acceptance, evidence and final claim-bound
 completion. Worker follows the CLI platform support policy: Linux, Windows and
 Apple Silicon (ARM64) macOS.
 
@@ -1391,7 +1494,9 @@ daynight worker run
 
 First use generates and atomically saves stable root workerId. One instance owns
 `worker/` state under the selected configuration root (default `~/.daynight/worker/`), its SQLite, lock, logs, temporary resources and
-private Herdr. Each task uses branch `daynight/<task-id>` and directory
+private Herdr resources. On macOS, each actual run has its own existing Herdr
+daemon and durable lifecycle record; Linux and Windows use the shared private
+daemon. Each task uses branch `daynight/<task-id>` and directory
 `<repository>/.worktrees/daynight/<task-id>`. Valid claims retain their dirty
 worktree; task branches and commits remain after terminal cleanup.
 
@@ -1405,7 +1510,8 @@ The title is display text. Ownership checks and the managed agent name use only
 those four canonical UUIDs; renaming a task does not change its claim, worktree,
 agent name or native conversation. Herdr and Git ownership markers share that
 four-field identity. The configured service address remains available to API
-requests and the managed assignment, outside resource identity. One retained
+requests and the managed assignment; the macOS lifecycle journal additionally
+binds the service, Worker and authenticated owner to the original runtime. One retained
 worker state directory belongs to one configured service.
 
 The next successful complete claim inventory supplies the latest task title.
@@ -1441,7 +1547,8 @@ for another claim of that task remains untouched.
 
 Status is pending, active or done. Pending is an actual acquired claim waiting
 for startup; active owns startup, running, recovery or cleanup responsibility;
-done means the ended claim's resources have been cleaned. Completed rows remain,
+done means the claim's local execution has ended. macOS Herdr may still retain
+its worktree and separate archive responsibility. Completed rows remain,
 and at most one claim for the same Project/task can be active. A removed config
 entry stops new acquisition but its saved Project mapping continues reconciliation.
 Mappings with unfinished tasks or actual managed resources cannot be rebound.
@@ -1450,9 +1557,14 @@ The state directory belongs to the configured single service, Daynight account
 and workerId. Finish old executions before changing those identities and
 rebuilding local state. The running process pins its startup authenticated user;
 the claim-index database does not retain prior-service or prior-account recovery
-scopes. The claim index and cleanup schedule share `user_version=7`; upgrading
+scopes. macOS Herdr execution evidence lives separately in
+`worker/herdr-executions.sqlite`, with original run/process identities, Session
+registration and connection state, input admission, stop journal and segment
+boundaries. Missing evidence does not authorize recreation. An existing
+unversioned or incompatible lifecycle journal is retained and rejected, not
+reset. The claim index and cleanup schedule share `user_version=7`; upgrading
 version 5 preserves its Project and task rows, while version 6 to 7 removes
-notification submission flags and preserves the remaining cleanup schedule. All five business databases
+notification submission flags and preserves the remaining cleanup schedule. The five non-lifecycle business databases
 reset `user_version=0` after their ownership checks: the original schema and data
 are discarded, then the baseline and numbered upgrades rebuild the current
 format. This includes existing empty files and query access. Known valid nonzero
@@ -1479,35 +1591,67 @@ unmapped Projects are preserved with a diagnostic.
 Capacity is the claim-deduplicated union of active rows, actual owned resources,
 already selected cleanup responsibilities and adapter stop confirmations still
 pending. An orphan keeps its slot and same-task barrier until all cleanup has
-finished, even without a local row or after its pane has closed. Git
+finished, even without a local row or after its pane has closed. On macOS, a
+confirmed Herdr stop with closed segments and an acknowledged ledger releases
+the execution slot while its retained worktree keeps the same-task barrier. A
+queued recovery still reserves a slot. Git
 markers identify a claim rather than a worker. A Git-only resource must be tied
 to a local row, the private Herdr instance or a current own claim before this
 worker can clean it; otherwise it is reported and preserved.
 
+A candidate with retained same-task resources is skipped before remote claim.
 An unknown claim response emits Warning and creates no resources. The worker
 finds the actual grant in a later complete inventory instead of replaying the
-request. A late grant can remain pending while local active slots are full.
+request. A late grant can remain pending while local active slots are full. On
+macOS, only a grant confirmed in its original acquisition or manual resume
+operation can register fresh launch provenance. An inventory-recovered claim
+without that durable record remains unknown; empty remote summaries cannot
+authorize another launch.
 
-Pending startup and new acquisition both rotate Projects after each successful
-slot allocation. Pending rows have priority, with stable task-ID order inside
-each Project; new candidates retain server ready order. A busy Project does not
-fill every free slot before another Project gets its turn.
+Each reconciliation round acquires at most one new task across all configured
+Projects, even when more slots remain free or the granted task must stay pending.
+The next acquisition waits until the next round after `pollIntervalMs`, continuing
+Project rotation and preserving server ready order within each Project. Empty
+Projects are skipped. Existing pending rows have startup priority, with stable
+task-ID order inside each Project; they can use multiple free slots in one round,
+rotating Projects after each successful slot allocation.
 
-Native recovery uses current resources and the recorded session ID:
+macOS Herdr recovery uses the original lifecycle journal:
 
 | State | Action |
 |---|---|
-| Matching agent is alive | Reconnect and observe without resending the startup prompt. |
-| Agent needs starting, session_id is present | Resume that native session using the recorded agent type. |
-| Agent needs starting, session_id is NULL | Emit `info`, start a fresh native conversation, and save its ID in the same row. |
+| Matching original run is alive | Reconnect the same Session, advance only its connection epoch, and open a segment with an explicit restart gap. Do not resend the assignment. |
+| Original run is confirmed stopped, its native ID and first-input result are known, and its claim remains valid | Resume the same native conversation in the next execution generation. |
+| Launch, input or stop evidence is unknown, or a possibly launched run has no native ID | Retain responsibility and the worktree; do not create another conversation. |
 
-When a native process must restart, the worker stops/closes an existing
-inactive workspace and creates a new one with the current native environment
-and an empty pane-level session reference. Herdr restore can retain the old
-native reference while restoring the shell without its extra launch environment.
-The saved SQLite session_id still selects resume or fresh startup; an inactive
-pane's retained reference is not saved as a newly observed session ID. A live
-agent keeps its current connection.
+Native launch and initial input are separate. The original daemon, shell and
+agent identities must be durably recorded before input admission. The native
+session ID can arrive after the first input. Before the native mutation, the
+adapter rechecks the original claim, pause state, process identities and
+admission. Unknown input outcomes are not replayed across restart.
+
+On Linux and Windows, when a native Agent exits unexpectedly and current
+resources confirm its pane is inactive, normal patrol automatically stops/closes that workspace and creates
+a new one with the current native environment and an empty pane-level session
+reference. Herdr restore can retain the old native reference while restoring the
+shell without its extra launch environment. The saved SQLite session_id selects
+resume or fresh startup; an inactive pane's retained reference is not saved as a
+newly observed session ID. A live agent keeps its current connection.
+
+A replacement shell can still be initializing when Herdr rejects `agent.start`
+with `agent_pane_busy`. The adapter retries this explicit rejection for at most
+two seconds while the original workspace, pane, terminal and cwd remain owned,
+no Agent has appeared, and foreground process evidence confirms shell
+initialization. Cancellation and the original operation deadline still apply.
+Recovery within that call does not consume an execution failure attempt. Busy
+foreground programs, missing process evidence, changed identities and unknown
+launch outcomes remain visible errors; unknown launches are observed before
+another decision.
+
+On macOS, shell-readiness retries stay inside the same durable launch intent.
+They do not create another generation or send the assignment. A successful
+launch still requires durable native process identity before input admission;
+an unknown response or a crash cannot authorize another launch or replay.
 
 Startup, recovery and continuation prompts require autonomous decisions within
 the task scope and existing authorization. Human intervention requires specific
@@ -1548,23 +1692,26 @@ submission baseline. Setting false or removing the property therefore permits
 a later ping even when native observation counters have not changed. Read
 failures remain visible and send no ping. The last service read and native
 submission are separate operations; pausing does not retract input already sent.
-This property controls only periodic continuation. It preserves current native
-execution, initial or deferred assignments, observation, recovery and cleanup.
-Web execution currently sends no such periodic pings.
+The legacy path applies this property to periodic continuation. The macOS
+durable path also checks it before initial, deferred and resumed automatic
+input. Observation, original-run stopping and human attach remain available;
+pausing does not terminate a native process. Web execution currently sends no
+such periodic pings.
 
 A non-NULL saved session ID remains the recovery identity. A different native
 ID reported during startup, live reconnection or before deferred input is an
 error: the saved ID is retained and that input is not sent. A genuine live
 agent's ID may fill a NULL record; inactive pane references remain excluded.
 
-The NULL rule also covers interruption before a newly started native ID was saved.
-It retains the task, claim and worktree and requires no history scan or approval
-gate. A failed resume of a known ID remains an error. Business launch/input
-receipts, process observations and execution retries remain local to the current
-call or process in Herdr mode. Terminal cleanup retains its separate persistent
-schedule. Herdr execution recovery counts reset on restart; reaching
-recoveryLimit keeps the task active with a visible error until explicit retry or
-another run. Web recovery follows the persistent rules below.
+The legacy NULL rule covers interruption before a newly started native ID was
+saved. On macOS that window is protected by the lifecycle journal: missing
+identity or an unconfirmed launch cannot authorize a replacement. Recovery
+counts and current model/args selection remain process-local; reaching
+recoveryLimit preserves responsibility and reports an error. Retrying or
+restarting does not bypass durable unknown-input or stop restrictions. Terminal cleanup retains its separate persistent
+resource identity, original deadline and retry schedule across restart. A failed
+resume of a known ID remains an error. Web recovery follows the persistent
+rules below.
 
 For human input, use another interactive terminal:
 
@@ -1572,11 +1719,15 @@ For human input, use another interactive terminal:
 daynight worker attach
 ```
 
-Attach opens only the existing private Herdr session. It needs no Daynight
-credential or service request, does not open SQLite or take the worker lock,
-and does not start a replacement daemon. Detaching leaves worker and tasks
-running. Original task panes retain their native XDG and private HISTFILE;
-client routing comes from the existing attachment descriptor.
+Attach needs no Daynight credential or service request and does not take the
+worker lock or start a replacement daemon. On macOS with a lifecycle journal,
+it reads the current schema without migration or recovery, selects among
+unfinished recorded runs, and verifies the original daemon plus both socket
+peers before connecting. Paused tasks remain attachable. An unreadable journal
+or missing runtime is an error; only installations without a journal use the
+legacy shared session. Detaching preserves execution. Task panes retain their
+native XDG and private HISTFILE; client routing uses the original instance's
+attachment descriptor.
 
 Every fresh or resumed native process uses fixed full access and task-folder
 trust. Copilot receives `--allow-all --no-ask-user --no-sandbox` and per-workspace
@@ -1607,7 +1758,25 @@ integration failures and launch errors stay visible. Use attach for business
 input. Reconnecting an already alive agent does not promise to resend an input
 lost across a process interruption.
 
-During normal reconciliation, when the original claim is absent from a
+When the original claim is absent from a successful complete inventory, the
+backend owns terminal resource cleanup. macOS Herdr writes its stop intent and
+close request before controlled stopping. It checks original process birth and
+audit identities, stops only its isolated runtime, persists the stop proof,
+closes segments and confirms the same-generation ledger with the service.
+Unknown identity, replacement or stop outcomes retain responsibility and block
+new runs. A journal write failure permits only an unconfirmed best-effort stop;
+pane disappearance cannot prove success after restart.
+
+Herdr lifecycle registration advertises `observe=false`, `control=false` and
+`archive=false`. Terminal recording, browser control and archive finalization
+are not enabled. Consequently macOS Herdr terminal cleanup retains its worktree
+and separate archive responsibility even after confirmed stopping. It does not
+send a cleanup prompt or claim a final ready archive. A terminal run can mark
+its local execution row done and release its slot after segment and ledger
+confirmation, while
+the retained worktree continues to block another claim for the same task.
+
+For Linux/Windows legacy Herdr and Web, when the original claim is absent from a
 successful complete inventory, the worker asks its agent to release attributable
 temporary files, services and processes outside the worktree. It gives the
 original agent an advisory cleanup opportunity until fresh observations permit
@@ -1628,7 +1797,7 @@ original processes stopped without depending on Git discovery or cleanup retry
 backoff. Unrelated repository or sibling-worktree registration errors are
 reported separately and do not prevent a healthy agent from stopping.
 
-Each bounded Herdr cleanup call sends one advisory message to the still-live
+Each bounded legacy Herdr cleanup call sends one advisory message to the still-live
 original agent, then reads fresh snapshots until idle permits stopping, resources
 disappear, or the original deadline expires. Sequence counters and interactive
 readiness are not required. Failed or unknown notification results retain their
@@ -1673,8 +1842,10 @@ still requires its original backend even if current configuration uses Web;
 backend initialization and retries remain local to that cleanup job and cannot
 block unrelated Web execution. External temporary resources may remain after
 direct interruption.
-Normal completion, release, withdrawal and manual-control cleanup use the same
-advisory notification and observed resource-removal targets. Pending stop confirmations must settle before the private
+Normal completion, release, withdrawal and manual-control cleanup use their
+backend's observed resource targets; the advisory notification applies to legacy
+Herdr and Web. On macOS, shutdown closes the original run and segments without
+finalizing the Session; recovery requires the original durable stop and native ID. Pending stop confirmations must settle before the private
 Herdr instance stops; stop errors remain visible, and uncertain stopping retains
 that instance and the affected resources. Before closing a verified orphan
 workspace with no local task row, cleanup and exit save its observed native
@@ -1683,6 +1854,10 @@ then remove its retained worktree and unblock a later claim for the same task.
 An unknown original agent type retains the workspace with a visible error;
 current configuration does not establish that historical type. Unproven Git-only
 resources remain untouched.
+
+The [Herdr lifecycle design](../../docs/design/herdr-worker-lifecycle.md) defines
+the persisted identities, crash boundaries and supported macOS process scope;
+it does not promise to stop arbitrary detached background services.
 
 stderr and JSONL logs identify worker, platform, Project/task/claim, agent and
 known session ID. After credential redaction, the terminal renderer shortens each
@@ -1767,9 +1942,10 @@ to determine completion. A recorded done status never suppresses these checks.
 Native stop and the service's ready archive receipt precede worktree removal. Worker shutdown stops
 owned processes while preserving unfinished claims, worktrees and native history.
 The [session design](../../docs/design/task-session-protocol.md) owns stopping,
-recovery and relay details. Herdr business recovery remains process-local; both
-modes retain terminal cleanup responsibility, its original deadline and retry
-policy in the independent schedule, without resource-completion flags.
+recovery and relay details. Herdr uses the separate platform-specific lifecycle
+described above and never adopts Web Controller tickets as execution evidence.
+Both modes retain terminal cleanup responsibility, its original deadline and
+retry policy in the independent schedule, without resource-completion flags.
 
 The worker starts `daynight controller codex|claude|copilot --launch-id <uuid>`
 from a private immutable launch ticket. Its cwd, profile, claim, generation,
@@ -1864,8 +2040,9 @@ daynight worker retry <task-id> --claim-id <claim-id> --project <project-id>
 ```
 
 In Herdr mode, retry connects the live agent or resumes its recorded native
-session. A NULL ID starts a fresh conversation in the same task worktree with an
-`info` event. Its extra attempt and recovery count remain process-local.
+session. On macOS, missing launch provenance, unknown stop/input outcomes or a
+missing original native ID after launch block replacement. The Linux/Windows
+legacy NULL-ID path starts fresh in the same task worktree with an `info` event. Its extra attempt and recovery count remain process-local.
 
 In Web mode, retry persists one authorization to recover the original native
 session. It still requires the original active claim, matching generation and
@@ -1888,7 +2065,11 @@ notify and stop agent → close workspace → submit remote change
 → confirm source ownership ended → delete worktree → local done
 ```
 
-The worktree is retained until remote confirmation. A refusal leaves it available
+macOS Herdr release instead confirms the durable original stop without a
+cleanup prompt, submits the remote change, and retains the worktree until
+archive finalization is available. The ordering above applies to legacy Herdr;
+Web also applies its own archive gate. The worktree is retained until remote
+confirmation. A refusal leaves it available
 for original execution recovery; success followed by local deletion failure is
 finished by the next run's ordinary absent-claim cleanup. Stopping failure cannot
 supply stoppedConfirmed. Explicit --if-version is never replaced during cleanup.
@@ -1911,9 +2092,13 @@ Remote Worker control reads the caller's current `/projects/{id}/access`
 projection for administrator authority and verifies its project/principal binding;
 member profile reads retain their separate directory responsibility. Grant
 versions preserve the full positive int64 range.
-It preserves the explicit manual permission/platform exception, obtains fresh
+An original Herdr archive/worktree reservation rejects resume before a remote
+claim is submitted. Otherwise it preserves the explicit manual
+permission/platform exception, obtains fresh
 claim/worktree identities with current settings, and registers pending with a
-NULL native session ID. Start run to execute it.
+NULL native session ID. On macOS, the confirmed new grant also records fresh
+launch provenance; any retained old worktree still blocks replacement until its
+cleanup conditions are met. Start run to execute an eligible pending claim.
 
 Web task details show the current claiming user, machine, agent and phase. The
 original owner or a project admin can confirm **Force withdraw** for active or

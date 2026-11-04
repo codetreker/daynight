@@ -9,7 +9,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../src/app/App';
 import { AuthenticatedApp } from '../src/app/AuthenticatedApp';
-import { navigateTaskDetail, taskDetailUrl } from '../src/app/router';
+import { navigateTaskDetail, replaceRoute, taskDetailUrl } from '../src/app/router';
 import { TaskDetailDialog } from '../src/features/task-detail/TaskDetailDialog';
 import type { TaskDetail, TaskSync } from '../src/api/types';
 import { detailFixture, graphFixture, resourceResponse, snapshotFixture } from './helpers/taskDetail';
@@ -432,7 +432,7 @@ describe('standalone full task details', () => {
     expect(screen.getByRole('heading', { name: '页面不存在' })).toBeVisible();
     expect(fetcher).not.toHaveBeenCalled();
     view.unmount();
-    window.history.replaceState(null, '', address('overview', 'docs/guide.md') + '&authError=login_failed');
+    replaceRoute(address('overview', 'docs/guide.md') + '&authError=login_failed');
     vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/v1/me' ? new Response('{}', { status: 401, headers: { 'Content-Type': 'application/json' } }) : resourceResponse({ providers: ['github'] })));
     const login = vi.fn();
     localeRender(<AuthenticatedApp navigateToLogin={login} />);

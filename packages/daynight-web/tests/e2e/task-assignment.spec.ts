@@ -2,8 +2,10 @@ import type { Locator, Page } from '@playwright/test';
 import { parseApiJson } from '../../src/api/json';
 import { parseTaskDetail } from '../../src/api/parse';
 import { authenticatedAPI, bearerContext, fulfillAuthenticatedResponse } from './authentication';
-import { createProject, createTask, expect, test, updateTask, type Task } from './fixtures';
+import { createTask, expect, test, updateTask, type Task } from './fixtures';
 import { selectTaskList } from './project-view';
+
+test.use({ preparationFamily: 'task-controls' });
 
 const scenario = { annotation: { type: 'scenario', description: 'task-assignment' } };
 const taskPath = (projectId: string, taskId: string): string => `/api/v1/projects/${projectId}/tasks/${taskId}`;
@@ -18,12 +20,12 @@ const choose = async (page: Page, name: string): Promise<void> => {
   await expect(popup(page)).toHaveCount(0);
 };
 
-test('task-assignment', scenario, async ({ page, api, playwright, allowBrowserWrites }, info) => {
+test('task-assignment', scenario, async ({ page, api, playwright, allowBrowserWrites, controlProject }, info) => {
   const origin = info.project.use.baseURL;
   if (typeof origin !== 'string') throw new Error('Assignment acceptance requires the actual service origin.');
   const bob = await bearerContext(playwright.request, origin, 'bob');
   try {
-    const project = await createProject(api, { name: 'Task assignment transaction acceptance' });
+    const project = controlProject;
     const aliceProfile = await (await api.get('/api/v1/me')).json() as { id: string; name: string };
     const bobProfile = await (await bob.get('/api/v1/me')).json() as { id: string; name: string };
     const invitationResponse = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: {} });

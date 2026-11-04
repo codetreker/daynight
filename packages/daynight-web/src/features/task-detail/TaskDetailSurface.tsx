@@ -3,9 +3,11 @@ import { ProjectAccessBoundary, useProjectAccess } from "../projects/ProjectAcce
 import { isThreadScopeLoss } from '../task-thread/api';
 import { TaskDiscussion } from '../task-thread/TaskDiscussion';
 import { readPullRequests, readTaskPaused, readWorkerClaim } from "../../api/task-properties";
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
-import { taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
+import { navigate, taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
+import { browserNavigation } from '../../app/navigation';
+import { DraftNavigationConfirmation, TaskDraftBoundary, useDraftNavigationDecision, useRetireTaskDraft } from './TaskDraftNavigation';
 import { LanguageSelector } from '../../i18n/LanguageSelector';
 import type { AttachmentKeyboardOwner } from './attachments/AttachmentPreview';
 import type { AttachmentApi } from './attachments/useAttachments';
@@ -20,6 +22,7 @@ import { TaskStatusFeedback, TaskStatusMenu } from './TaskStatus';
 import { matchesAgentPermissionReview, TaskAgentPermissionConfirmation, TaskAgentPermissionFeedback, TaskAgentPermissionSwitch, type AgentPermissionConfirmation } from './TaskAgentPermission';
 import { matchesStatusReview, TaskStatusConfirmation, type StatusConfirmation } from './TaskStatusConfirmation';
 import { useSessionMessages } from '../task-agent-session/messages';
+import { SessionFullscreenContext, type SessionFullscreenRegistration } from '../task-agent-session/useSessionFullscreen';
 import { TaskAgentSession } from '../task-agent-session/TaskAgentSession';
 import { TaskDetailReading } from './TaskDetailReading';
 import { TaskDetailActions } from './TaskDetailActions';
@@ -70,7 +73,12 @@ export type TaskDetailSurfaceProps = TaskDetailCommonProps & ({
 
 export const TaskDetailPageBar = ({ projectId }: { readonly projectId: string }) => {
   const { messages } = useI18n();
-  return <div className="task-detail-page-topbar"><a className="task-detail-page-back" href={`/projects/${encodeURIComponent(projectId)}`}>{messages.inspection.detail.returnToProject}</a><LanguageSelector renderNotice={(notice, issue) => <TaskDetailNotice event={issue} tone="warning" recoverable>{notice}</TaskDetailNotice>} /></div>;
+  return <div className="task-detail-page-topbar"><a className="task-detail-page-back" href={`/projects/${encodeURIComponent(projectId)}`} onClick={followProjectLink}>{messages.inspection.detail.returnToProject}</a><LanguageSelector renderNotice={(notice, issue) => <TaskDetailNotice event={issue} tone="warning" recoverable>{notice}</TaskDetailNotice>} /></div>;
+};
+
+const followProjectLink: import('react').MouseEventHandler<HTMLAnchorElement> = (event) => {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault(); navigate(event.currentTarget.href);
 };
 
 const TaskDetailError = ({ error }: { readonly error: unknown }) => {
@@ -89,6 +97,7 @@ const TaskDetailError = ({ error }: { readonly error: unknown }) => {
 const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen }: TaskDetailSurfaceProps) => {
   const sessionMessages = useSessionMessages();
   const modal = presentation === 'dialog';
+  const requestClose = () => { if (onClose !== undefined) browserNavigation().requestAction(onClose); };
   const scope = `${projectId}/${taskId}`;
   const [localNavigation, setLocalNavigation] = useState<{ readonly scope: string; readonly value: TaskDetailNavigation }>({ scope, value: { tab: 'overview', path: null } });
   const selection = navigation === undefined ? localNavigation.scope === scope ? localNavigation.value : { tab: 'overview', path: null } as const : navigation;
@@ -104,6 +113,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
   const membership = useProjectMembers(projectId, currentClaim !== null);
   const viewer = useTaskCacheScope();
   const access = useProjectAccess(projectId);
+  useRetireTaskDraft(task.status === 'deleted' || access.status === 'unavailable');
   useEffect(() => { if (currentClaim !== null && access.status === 'loading') void access.session.revalidate(); }, [currentClaim !== null, access.status, access.session]);
   const mayWithdraw = currentClaim !== null && access.ready && mayWithdrawClaim(currentClaim, viewer.userId, access.access!.effectiveRole);
   type TaskConfirmationState = DeletionConfirmation | StatusConfirmation | WithdrawalConfirmation | (AgentPermissionConfirmation & { readonly kind: 'allowAgents' }) |
@@ -118,8 +128,18 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
     ? matchesStatusReview(confirmation, detail) && task.canSetStatus
     : confirmation.kind === 'allowAgents' ? matchesAgentPermissionReview(confirmation, detail) && task.canSetAgentPermission
       : matchesPlatformReview(confirmation, detail) && task.canSetRequiredPlatform);
-  const confirmationOpen = confirmation !== null && confirmationValid;
+  const draftDecision = useDraftNavigationDecision();
+  const confirmationOpen = draftDecision !== null || confirmation !== null && confirmationValid;
+  useLayoutEffect(() => { if (draftDecision !== null) setConfirmation(null); }, [draftDecision]);
   const threadDetailsOccupied = useRef(false);
+  const [sessionLayoutChanged, setSessionLayoutChanged] = useState(false);
+  const [sessionFullscreen, setSessionFullscreen] = useState<SessionFullscreenRegistration | null>(null);
+  const sessionFullscreenRef = useRef(sessionFullscreen); sessionFullscreenRef.current = sessionFullscreen;
+  const registerSessionFullscreen = useCallback((registration: SessionFullscreenRegistration) => {
+    setSessionLayoutChanged(true);
+    setSessionFullscreen(registration);
+    return () => setSessionFullscreen(current => current?.owner === registration.owner ? null : current);
+  }, []);
   useLayoutEffect(() => { if (confirmation !== null && !confirmationValid) setConfirmation(null); }, [confirmation, confirmationValid]);
   const confirm = (): void => {
     if (confirmation === null || !confirmationValid) return;
@@ -160,8 +180,9 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
   }, [fullscreen.active]);
   const onEscape = () => {
     if (confirmationOpen || threadDetailsOccupied.current) return;
+    if (sessionFullscreenRef.current !== null) { sessionFullscreenRef.current.exit(); return; }
     if (fullscreen.active) changeFullscreen(false);
-    else onClose?.();
+    else requestClose();
   };
   const callbacks = useRef({ onEscape, onRestoreFocus, confirmationOpen });
   callbacks.current = { onEscape, onRestoreFocus, confirmationOpen };
@@ -182,7 +203,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
   useLayoutEffect(() => {
     if (!modal && !fullscreen.active) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (callbacks.current.confirmationOpen || threadDetailsOccupied.current || event.defaultPrevented) return;
+      if (callbacks.current.confirmationOpen || threadDetailsOccupied.current || sessionFullscreenRef.current !== null || event.defaultPrevented) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         callbacks.current.onEscape();
@@ -213,7 +234,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
   }, []);
 
   useLayoutEffect(() => {
-    if (modal && !confirmationOpen && !threadDetailsOccupied.current && !dialogRef.current!.contains(document.activeElement)) closeRef.current!.focus();
+    if (modal && !confirmationOpen && !threadDetailsOccupied.current && sessionFullscreenRef.current === null && !dialogRef.current!.contains(document.activeElement)) closeRef.current!.focus();
   }, [taskId, status, error, snapshot.revision, confirmationOpen]);
 
   const snapshotNode = snapshot.index.nodes.get(taskId);
@@ -228,7 +249,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
     const kind = external ? m.externalDependency : m.ordinaryDependency;
     return (
       <li key={id}>
-        <button className="task-detail-relation" type="button" aria-label={m.relationLabel({ title, kind })} onClick={() => onSelectTask(id)}>
+        <button className="task-detail-relation" type="button" aria-label={m.relationLabel({ title, kind })} onClick={() => browserNavigation().requestAction(() => onSelectTask(id))}>
           <span className={`task-detail-relation-dot${node === undefined ? '' : ` task-detail-dot-${node.status}`}`} aria-hidden="true" />
           <span>{title}</span>
           <span className={`task-detail-relation-kind${external ? ' task-detail-relation-external' : ''}`}>{kind}</span>
@@ -238,8 +259,8 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
     );
   };
 
-  const content = <>
-      <Surface className={`${modal ? 'task-detail-dialog' : 'task-detail-page'}${fullscreen.active ? ' task-detail-fullscreen' : ''}${currentClaim === null ? '' : ' task-detail-has-claim'}`} ref={dialogRef} role={modal ? 'dialog' : undefined} aria-modal={modal ? true : undefined} aria-labelledby={headingId} tabIndex={modal ? undefined : -1}>
+  const content = <SessionFullscreenContext value={registerSessionFullscreen}>
+      <Surface className={`${modal ? 'task-detail-dialog' : 'task-detail-page'}${fullscreen.active ? ' task-detail-fullscreen' : ''}${sessionFullscreen === null ? '' : ' task-detail-session-fullscreen'}${sessionLayoutChanged ? ' task-detail-session-layout' : ''}${currentClaim === null ? '' : ' task-detail-has-claim'}`} ref={dialogRef} role={modal ? 'dialog' : undefined} aria-modal={modal ? true : undefined} aria-labelledby={headingId} tabIndex={modal ? undefined : -1}>
         <TaskDetailNotifications fallbackFocus={titleRef}>
         {!modal && <div hidden={fullscreen.active}><TaskDetailPageBar projectId={projectId} /></div>}
         <header className="task-detail-header">
@@ -248,12 +269,12 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
             {detail !== null && <TaskCopyButton key={`${scope}/${detail.title}`} value={detail.title} label={m.copyTaskTitle} failure={m.copyTitleFailed} />}
           </div>
           <div className="task-detail-header-actions">
-            {!modal && fullscreen.active && <a className="button task-detail-project-return" href={`/projects/${encodeURIComponent(projectId)}`}>{m.returnToProject}</a>}
+            {!modal && fullscreen.active && <a className="button task-detail-project-return" href={`/projects/${encodeURIComponent(projectId)}`} onClick={followProjectLink}>{m.returnToProject}</a>}
             <button className="button task-detail-fullscreen-toggle" type="button" ref={fullscreenRef} aria-label={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} title={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} aria-pressed={fullscreen.active} onClick={() => changeFullscreen(!fullscreen.active)}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d={fullscreen.active ? 'M9 3v6H3m12-6v6h6M9 21v-6H3m12 6v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m6 0h6v-6'} /></svg>
             </button>
             {(modal || detail !== null) && <TaskDetailActions key={scope} {...(modal ? { popout } : {})} canDelete={task.canDelete} {...(detail === null ? {} : { onDelete: () => requestConfirmation({ kind: 'delete', detail, removeDepends: true }) })} />}
-            {modal ? <button className="button task-detail-close" type="button" ref={closeRef} aria-label={m.close} onClick={onClose}>
+            {modal ? <button className="button task-detail-close" type="button" ref={closeRef} aria-label={m.close} onClick={requestClose}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
             </button> : null}
           </div>
@@ -262,7 +283,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
           {status === 'loading' && (
             <div className="task-detail-state" role="status" aria-label={m.loading}><span className="spinner" aria-hidden="true" /></div>
           )}
-          {status === 'deleted' && <div className="task-detail-state task-detail-deleted" role="status"><p>{messages.inspection.deletion.deletedExplanation}</p><a className="button" href={`/projects/${encodeURIComponent(projectId)}`}>{m.returnToProject}</a></div>}
+          {status === 'deleted' && <div className="task-detail-state task-detail-deleted" role="status"><p>{messages.inspection.deletion.deletedExplanation}</p><a className="button" href={`/projects/${encodeURIComponent(projectId)}`} onClick={followProjectLink}>{m.returnToProject}</a></div>}
           {status === 'error' && (
             <div className="task-detail-state task-detail-error" role="alert" aria-labelledby={headingId}>
               <TaskDetailError error={error} />
@@ -353,7 +374,8 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
         </TaskDetailNotice>
         </TaskDetailNotifications>
       </Surface>
-      {confirmation !== null && confirmationValid && (confirmation.kind === 'withdraw'
+      <DraftNavigationConfirmation owner={dialogRef} fallbackFocus={titleRef} taskTitle={detail?.title ?? taskId} />
+      {draftDecision === null && confirmation !== null && confirmationValid && (confirmation.kind === 'withdraw'
         ? <TaskWithdrawalConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />
         : confirmation.kind === 'delete'
         ? <TaskDeletionConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />
@@ -362,8 +384,8 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
         : confirmation.kind === 'allowAgents'
           ? <TaskAgentPermissionConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />
           : <TaskPlatformConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />)}
-    </>;
-  return modal ? <div className="task-detail-backdrop" onClick={(event) => { if (event.target === event.currentTarget && !confirmationOpen && !threadDetailsOccupied.current) onClose!(); }}>{content}</div> : content;
+    </SessionFullscreenContext>;
+  return modal ? <div className="task-detail-backdrop" onClick={(event) => { if (event.target === event.currentTarget && !confirmationOpen && !threadDetailsOccupied.current && sessionFullscreenRef.current === null) requestClose(); }}>{content}</div> : content;
 };
 
-export const TaskDetailSurface = (props: TaskDetailSurfaceProps) => <ProjectAccessBoundary projectId={props.projectId}><TaskDetailContent {...props} /></ProjectAccessBoundary>;
+export const TaskDetailSurface = (props: TaskDetailSurfaceProps) => <ProjectAccessBoundary projectId={props.projectId}><TaskDraftBoundary projectId={props.projectId} taskId={props.taskId} page={props.presentation === 'page'}><TaskDetailContent {...props} /></TaskDraftBoundary></ProjectAccessBoundary>;

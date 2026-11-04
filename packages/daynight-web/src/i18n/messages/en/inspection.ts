@@ -2,6 +2,10 @@ import { pause } from "./pause";
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  draftNavigation: {
+    title: 'Discard unsaved changes?', question: 'Leave this task and discard your unsaved changes?',
+    explanation: 'Your unsaved draft will be lost.', discard: 'Discard and leave', keep: 'Keep editing', close: 'Cancel leaving',
+  },
   pause,
   discussion: {
     title: "Discussion", empty: "No discussion yet", loading: "Loading discussion", refresh: "Refresh discussion",

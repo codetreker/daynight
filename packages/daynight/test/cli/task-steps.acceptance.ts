@@ -19,7 +19,7 @@ const step: TaskStep = { id: "00abcdef", title: "  <完整&> 中文😀\u001b[31
 const resource: StepsResource = { projectId, taskId, version: 9_007_199_254_740_993n, steps: [step, { ...step, id: "00000000", status: "in_progress", description: "Another complete description." }] };
 type Result = { readonly code: number | null; readonly stdout: string; readonly stderr: string };
 
-it("runs both packed launchers through Steps reads, help and safe read failures", async () => {
+it("runs both packed launchers through Steps reads, delivered help and safe read failures", async () => {
   const installed = await createInstalledCli();
   const { receipt } = installed;
   const fixture = path.join(receipt.root, ".tmp", "Steps launcher fixture 中文");
@@ -109,14 +109,18 @@ it("runs both packed launchers through Steps reads, help and safe read failures"
         const result = await invoke(launcher, args);
         expect(result.stdout).toContain("Usage: daynight task step");
         expect(result.stdout).not.toContain("--if-version");
-        expect(result.stdout).not.toMatch(/\n\s+(?:update|set-status|move|delete)\s/);
+        if (args.length <= 3) {
+          for (const command of ["list", "show", "add", "update", "set-status", "move", "delete"]) {
+            expect(result.stdout).toMatch(new RegExp(`\\n\\s+${command}\\s`));
+          }
+        }
       }
       await invoke(launcher, ["task", "step", "add", taskId], 2);
       await invoke(launcher, ["task", "step", "show", taskId, "prefix"], 2);
     }
     expect(await readFile(config, "utf8")).toBe("serverUrl: [\n");
     expect(requests).toEqual([]);
-    scenarios.push("daynight-and-dn-help-before-config-and-unsupported-write-usage");
+    scenarios.push("daynight-and-dn-help-before-config-and-missing-write-arguments");
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
     const address = server.address(); if (address === null || typeof address === "string") throw new Error("Missing packed Steps test listener.");
     await writeFile(config, `serverUrl: http://127.0.0.1:${address.port}\nserverToken: fixture-token\n`);
