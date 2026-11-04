@@ -252,7 +252,7 @@ export const runWorker = async (options: {
     if (coordinator !== undefined) {
       try {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });
-        if (!await coordinator.shutdown()) throw new Error("Some task agents could not stop; the private Herdr instance was retained.");
+        if (!await coordinator.shutdown()) throw new Error("Some task resources could not be confirmed stopped and closed; the private Herdr instance was retained.");
         const operation = createOperation({ limits: { totalMs: 30_000 } });
         try { await herdr?.stopInstance(operation); }
         finally { operation.dispose(); }
