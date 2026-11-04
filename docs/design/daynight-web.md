@@ -778,58 +778,70 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 
 ### CI 构建归属
 
-同一个 Web 模块选择结果并行启用 `verify-web-quality` 与 `verify-web`，两个 job 各保留
-20分钟上限，最终`checks`同时依赖二者及其他已选择模块。浏览器消费的CLI `src/api/`、`src/session/`和精确的`src/platform/text.ts`变更同时选择CLI与Web；共享workflow变更仍选择全部模块，合并结果验证及未选择job的`skipped`语义保持。
+同一个 Web 模块选择结果启用独立的 `verify-web-quality` 与两个 `verify-web` 矩阵分片，
+每个 job 保留 20 分钟上限。浏览器消费的 CLI `src/api/`、`src/session/` 和精确的
+`src/platform/text.ts` 变更同时选择 CLI 与 Web；共享 workflow 变更仍选择全部模块。
+最终 `checks` 保留前置结果的 `success`/未选择 `skipped` 门禁，并要求已选择的 Web
+质量与矩阵实际成功，再验证两份分片摘要。路由和 main push 全量规则由
+[仓库 CI 路由](../../README.md#ci-selection)拥有。
 
-质量 job 使用 `scripts/ci.mts` 的内部 `quality` 模式，串行执行 `test:harness` 和
-`test:coverage`，每个命令分别限时 180 秒。后者执行常规 Vitest/V8 文件，保留完整产品源码清单与严格语句覆盖率
-检查；只有该子进程的复制环境设置 `VITEST_MAX_WORKERS=4`，`forks` pool 和文件隔离不变。
-该并发数按当前公开仓库的标准 `ubuntu-latest` 独立质量 runner 的 4 CPU 容量校准，依据和
-历史竞争条件见[worker 容量决策](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)。
-仅测试文件逐项通过不足以证明 V8 报告和严格 checker 完成。质量 job 归档原始覆盖率及
-完整源码清单摘要。
+质量 job 通过 `scripts/ci.mts quality` 串行执行 `test:harness` 与 `test:coverage`，
+每个命令分别限时 180 秒。后者运行普通 Vitest/V8 文件并保留完整产品源码清单与严格
+语句覆盖率；只有该子进程的复制环境设置 `VITEST_MAX_WORKERS=4`，`forks` pool 与
+文件隔离不变。并发数按公开标准 Linux 独立 runner 的四 CPU 校准，依据及历史竞争
+条件见[worker 容量决策](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)。
+质量产物保留原始覆盖率与完整源码清单；测试文件逐项通过不能替代 V8 报告及 checker 完成。
 
-浏览器 job 和 `verify-server` 继续使用固定 Node/pnpm，在干净 checkout 从锁文件安装
-依赖并构建真实 UI。Go gate 仍负责 build/vet/race/go-cov。浏览器 job 运行原有 dev-ci
-生命周期 fixture；workflow 选择官方 Ubuntu package archives，随后通过 `scripts/ci.mts`
-的 `browser` 模式安装固定 Chromium 及 Linux 依赖，保留 600 秒命令上限，再调用普通
-core acceptance。镜像源选择由 [PR #148](https://github.com/codetreker/daynight/pull/148)
-拥有；命令或 job 超时仍使检查失败。
+两个浏览器 job 分别调用 `scripts/ci.mts browser --shard=1/2` 与 `--shard=2/2`。
+固定 Chromium/Linux 依赖安装保留 600 秒上限，Node/pnpm 与冻结锁文件安装保持。
+每个 runner 构建独立的真实 UI/Go、数据库、UniAuth、安装 CLI 和正常 dev-ci 容器目标。
+Go 相关 job 继续复用以 server `go.sum` 标识的模块/编译缓存，Go gate 仍失效测试结果缓存。
 
-CI 命令包装保留进程组所有权：命令结束后由 `requireGroupStopped` 确认其所属进程组已停止，
-不能仅凭 leader 退出认定清理完成。命令错误、取消和清理错误均传播，同时失败时保留
-完整原因。core 不再拥有质量/浏览器准备 callback、空成功阶段或覆盖率准入观察器。
-本地 acceptance 继续使用已安装浏览器，不因 CI 拆分增加质量命令或准备等待。
+Playwright 参数为 `--fully-parallel --workers=1 --retries=0 --shard=i/2`：
+fully-parallel 使内置分片按 case 选择，每套数据库的实际执行仍为单 worker 串行。
+当前规范清单为 32 个稳定 scenario ID，两份各 16 个、互不重叠。服务准备前，runner
+使用与执行相同的功能参数先收集完整规范清单，再收集所选分片；只把通过校验的 ID
+写入已有 evidence 的 `selection`，并记录 `shard: { current, total: 2 }`。
+功能 ID 与组合鉴权检查名由纯 `inventory.mts` 统一拥有。遗漏、重复、未知 ID、
+错误分片或收集错误均失败。容器 callback 从现有 run/source 绑定的父回执取得同一选择，
+原生和容器分别按该清单校验实际结果。
 
-core 并行准备原生 UI/Go/PostgreSQL 和正常 dev-ci 源码构建/启动。dev-ci 继续拥有本次
-唯一镜像、运行镜像身份校验与完整 shell 清理。原生功能阶段及其浏览器回收通过后，
-runner 原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的容器执行许可。
-容器 callback 登记身份后等待并验证该许可，保留 900 秒等待上限，再记录浏览器 inventory
-并执行原有全部功能场景。`ready.json` 保留准备时间的诊断用途，不授予浏览器执行权。
+每个分片内部继续并行准备原生 UI/Go/PostgreSQL 与正常 dev-ci 源码构建/启动。
+dev-ci 拥有唯一镜像、实际运行镜像身份校验和完整 shell 清理。原生准备完成安装 CLI
+后，runner 原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的容器许可。
+容器 callback 登记身份并验证许可，保留 900 秒等待上限，再记录浏览器 inventory；
+其功能浏览器与原生功能浏览器重叠，`ready.json` 只记录诊断时间。
+每个 phase 的 profile 留在独立私有根；命令结束后必须确认整个所属进程组停止。
+错误、取消、意外服务退出和清理失败都传播并排空已启动任务。两个目标结束后才做
+run-wide CLI 回收，避免清除另一活动目标的命令或凭据。
 
-普通 core 与 CI 在两目标功能、组合鉴权和清理结束后完成。显式本地 `--stress` 模式
-才在原生准备、功能阶段、完整 dev-ci 退出清理与容器浏览器回收结束后，于仍存活的
-原生 Go/PostgreSQL 上执行全部容量/超限场景。任何 core 失败都取消并排空已启动任务；
-原生进程意外退出同样取消其他任务。本地容量保留单浏览器 worker、零 retries、固定输入、
-几何与时间门槛，并与本 runner 的构建、功能检查和清理隔离。独立压力配置及原始
-Playwright 压力入口在非空 `CI` 环境下拒绝，默认发现排除容量 spec。
-质量命令位于另一个 runner，不分片功能场景，也不为容量增加跨 job 准入协议。
-[本地压力测试决策](../../.agents/notes/implemented/testing/2026-11-03-local-stress-suites.md)
-拥有常规 CI 与显式压力验证的划分。
+较轻的 shard 2 统一拥有全部 28 项 navigation-contract、部署生命周期 fixture、
+原生/容器各十一项 combined-auth，以及真实附件持久化与成对备份恢复。
+归属仅由分片身份推导。Shard 1 完成其功能和所有所属资源清理；两个分片都保留
+镜像身份、浏览器、CLI 与 dev-ci 清理证明。矩阵 `fail-fast` 为 false，使另一个分片在
+失败后仍能完成诊断和清理。默认本地普通入口继续单次执行完整 32+32 功能与两个
+combined-auth；本地 `--stress` 不分片，并在资源准备前拒绝 shard 组合及 CI 环境。
+本地容量只在完整功能、dev-ci、浏览器及共享 CLI 屏障之后运行，保留原预算与数据集。
 
-两个 Go-consuming job 继续复用以 server `go.sum` 为依赖身份的 Go 模块/编译缓存；
-Go gate 仍先失效测试结果缓存。浏览器 job 的恢复与产物归档绑定同一个实际验收步骤。
+质量产物仍为 `daynight-web-coverage`。完整浏览器产物分别为
+`daynight-web-acceptance-1` 与 `daynight-web-acceptance-2`，第二份含一次性检查回执。
+各分片还把已有 `acceptance/*/evidence.json` 作为固定名字
+`daynight-web-summary-1`/`daynight-web-summary-2` 上传，保留 `runID/evidence.json`
+层次，所有产物维持 30 天留存。最终 `checks` 在原有 job 结果门禁之后，仅对选中 Web
+检出当前源码、设置 Node 24、下载这两份小摘要，无需 pnpm 安装或传递二进制、镜像和
+资源归属。`report.mts --shards file1 file2` 要求不同 run ID、恰好 1/2 与 2/2、
+当前 `GITHUB_SHA` 与检出 tree、clean/pass、准确的双目标和 phase 清理、每份准确选择、
+两份规范并集各覆盖一次，且只有 shard 2 拥有两个完整十一项鉴权回执。
+缺摘要、选中 job 被跳过、错误来源、功能重复/缺失、鉴权错归属或清理不完整均使原门禁失败。
+
+[两分片决策](../../.agents/notes/implemented/testing/2026-11-04-web-ci-case-shards.md)
+记录重复准备、runner minutes 和估算时长的取舍；实际收益绑定被测源码、工作量及 runner。
+[功能目标决策](../../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
+继续拥有单个 runner 内的目标隔离和许可；
+[质量隔离决策](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
+拥有独立质量职责及命令预算。原有
 [流水线决策](../../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
-记录 core 阶段、目标和恢复的原始选择；
-[质量 job 隔离决策](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
-拥有两类 job 的职责、命令边界和替代方案。拆分不证明先前超时的 CPU/I/O 原因，也不保证
-hosted 运行更快；实际结果绑定被测源码、工作量和 runner。
-
-完整 core run 只准备一次已安装 CLI，在原生与容器附件功能场景中复用。生产浏览器与
-恢复结束后，Ubuntu 浏览器 job 继续执行既有 `deployment/dev-ci/tests/attachments.mts`，
-将附件卷和配套备份恢复回执归档到同一部署证据产物。质量与浏览器产物分别保留其身份和
-既有留存期限。最终 `checks` 只接受所有前置 job 的 `success` 或 `skipped`；失败、取消
-及其他结果使汇总失败。PR 路由和 main push 全量规则由[仓库 CI 路由](../../README.md#ci-selection)拥有。
+保留原始选择的历史依据。
 
 ## 执行耗时与提醒
 
@@ -1136,13 +1148,16 @@ dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty �
 起止时间、Playwright 进程/组、浏览器身份及 `browserCleanup`。
 `native/functional/`、`container/` 分别保留原始 Playwright JSON、场景截图和浏览器身份；
 本地压力模式另写 `native/capacity/`，容量的原 schema 1 性能回执位于
-`native/capacity/performance.json`。额外必需的 schema 1 `kind: auth-combined` 回执为
-`native/auth-combined/target.json` 和 `container/auth-combined/target.json`；每份
-严格要求十一项具名检查、源码/浏览器/安装包、重启前后进程身份及浏览器/资源清理。
+`native/capacity/performance.json`。本地普通/压力入口与 CI shard 2 必须包含 schema 1
+`kind: auth-combined` 的 `native/auth-combined/target.json` 和
+`container/auth-combined/target.json`；每份严格要求十一项具名检查、源码/浏览器/安装包、
+重启前后进程身份及浏览器/资源清理。Shard 1 不包含这两个鉴权回执。
+分片顶层 evidence 另记录 `shard` 与 `selection`；本地完整回执无分片元数据。
 回执不保存凭据、配置 body 或原始日志，私有日志扫描只记录安全结果；既有场景
-报告校验保持独立。CI 的 `daynight-web-acceptance` 产物同时归档
-这些文件与 `.tmp/dev-ci/`、`.tmp/attachment-deployment-*/`，独立 `daynight-web-coverage` 归档原始语句报告及源码
-清单。web job 被选中后，任何执行或清理失败必须让该 job 失败。
+报告校验保持独立。CI 的 `daynight-web-acceptance-1`/`daynight-web-acceptance-2`
+分别归档所属验收与 `.tmp/dev-ci/`，第二份还包含一次性 navigation 与
+`.tmp/attachment-deployment-*/`。独立 `daynight-web-coverage` 归档原始语句报告及源码
+清单，小摘要供原有最终门禁验证完整并集。已选择 job 的执行或清理失败必须使该 job 失败。
 
 恢复命令为 `node packages/daynight-web/scripts/acceptance.mts --cleanup [run-id]`，
 默认读取最近一次回执，缺失回执不操作资源。恢复只接受顶层 schema 3，schema 1、schema 2

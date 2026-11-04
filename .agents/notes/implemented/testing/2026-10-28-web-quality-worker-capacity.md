@@ -63,10 +63,12 @@ fork isolation contract. Worker-count calibration leaves the pool unchanged.
 
 The quality command can use its dedicated standard runner's four CPUs while
 preserving every command, coverage, process-group cleanup and browser gate.
-The browser job owns both complete functional targets with one browser worker
-and zero retries. Complete capacity inputs and their original budgets remain in
-the explicit local browser stress path. The historical worker-count comparison
-introduced no shards, reduced inputs or larger allowances.
+Browser validation retains one worker and zero retries per database. The later
+[case-shard decision](2026-11-04-web-ci-case-shards.md) distributes CI cases across
+two independent browser runners and verifies their complete target union.
+Complete capacity inputs and their original budgets remain in the explicit local
+stress path. The historical worker-count comparison introduced no shards,
+reduced inputs or larger allowances.
 
 More concurrent test processes can increase peak memory and expose shared test
 resources. The configured runner capacity and matched complete-suite comparison

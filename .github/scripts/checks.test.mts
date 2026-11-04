@@ -53,3 +53,28 @@ test("unaffected application jobs may all skip while detection succeeds", () => 
 test("change detection failure remains visible when application jobs skip", () => {
   assert.notEqual(runGate(Object.fromEntries(required.map((name) => [name, name === "detect-changes" ? "failure" : "skipped"]))), 0);
 });
+
+const selectedWebStep = gate.match(/      - name: Require selected Web jobs to succeed\n([\s\S]*?)(?=      - )/)![1]!;
+const selectedWebCommand = selectedWebStep.match(/        run: \|\n((?:          .+\n)+)/)![1]!
+  .split("\n").filter(Boolean).map((line) => line.slice(10)).join("\n");
+
+test("selected Web evidence requires actual quality and shard success before downloads", () => {
+  assert.match(selectedWebStep, /^        if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
+  assert.match(selectedWebStep, /WEB_QUALITY_RESULT: \$\{\{ needs.verify-web-quality.result \}\}/);
+  assert.match(selectedWebStep, /WEB_SHARD_RESULT: \$\{\{ needs.verify-web.result \}\}/);
+  assert.ok(gate.indexOf("Require selected Web jobs to succeed") < gate.indexOf("Download first Web shard summary"));
+});
+
+for (const quality of ["success", "skipped", "failure", "cancelled"]) {
+  for (const shards of ["success", "skipped", "failure", "cancelled"]) {
+    test(`selected Web quality=${quality} shards=${shards} executes the workflow guard`, () => {
+      const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
+        env: { ...process.env, WEB_QUALITY_RESULT: quality, WEB_SHARD_RESULT: shards },
+        encoding: "utf8", timeout: 5_000,
+      });
+      if (result.error) throw result.error;
+      assert.equal(result.signal, null);
+      assert.equal(result.status === 0, quality === "success" && shards === "success");
+    });
+  }
+}
