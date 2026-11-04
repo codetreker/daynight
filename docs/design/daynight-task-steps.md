@@ -275,7 +275,7 @@ Steps workspace 按 Task 身份保存一个新增表单、草稿、预览及放�
 | 生产浏览器 | 草稿、已编号历史项单次/连续 Back/Forward 的取消及采用、四状态、排序/删除焦点、中英文、320px、长内容、241 项分页、有界目标选择、跨页移动和末页删除。 |
 | 指令语义与分发 | 持久 Steps 被保留、Session 日志不被上传；项目自定流程不被固化。打包/安装字节检查和语义情境分别报告。 |
 
-真实集成验收连接持久化服务、打包 CLI 与生产 Web，覆盖跨端互读、重启和故障。沿用 Go build/vet/race/go-cov 及严格大于 90% 覆盖门槛、CLI typecheck/test/build 和 Web 质量/浏览器门禁；原型检查只证明呈现。
+真实集成验收连接持久化服务、打包 CLI 与生产 Web，覆盖跨端互读、重启和故障。沿用 Go build/vet/go-cov 及严格大于 90% 覆盖门槛、CLI typecheck/test/build 和 Web 质量/浏览器门禁；Go race 按[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)在本地默认/main 开启、PR 关闭；原型检查只证明呈现。
 
 | 组件输出 | 技术依赖 |
 |---|---|

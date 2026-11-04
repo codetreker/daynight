@@ -102,4 +102,4 @@ ready 要求 code 为 null；failed 要求非空、良构 Unicode 错误码。re
 
 ## 验证要求
 
-真实隔离 PostgreSQL 测试覆盖名字创建、稳定候选、显式离线拒绝、跨机器和 Provider 参数隔离、默认观测时效、反序成功偏好、失败不提交、偏好事务回滚、并发重复 ID、不同指纹、组合 Worker 归属、失效凭据、事务回滚、分页、精确 int64、删除重放和任务不变。Session 测试另覆盖并发与丢失响应登记、首次角色原子冻结、错误 Worker/owner/版本/native/fence、普通 Test 绕过拒绝、代际停证及精确重放、真实同步 ready、父 PAT 撤销、浏览器换身份和持久删除后所有旧入口拒绝。HTTP 测试覆盖认证、严格请求解析、真实绑定引用和删除后响应隐藏。完整服务端检查使用 [服务端验证命令](../../packages/daynight-server/README.md)，包含 race 与覆盖率门禁。这些检查不证明真实 Provider、Worker 托管或完整助手交互已交付。
+真实隔离 PostgreSQL 测试覆盖名字创建、稳定候选、显式离线拒绝、跨机器和 Provider 参数隔离、默认观测时效、反序成功偏好、失败不提交、偏好事务回滚、并发重复 ID、不同指纹、组合 Worker 归属、失效凭据、事务回滚、分页、精确 int64、删除重放和任务不变。Session 测试另覆盖并发与丢失响应登记、首次角色原子冻结、错误 Worker/owner/版本/native/fence、普通 Test 绕过拒绝、代际停证及精确重放、真实同步 ready、父 PAT 撤销、浏览器换身份和持久删除后所有旧入口拒绝。HTTP 测试覆盖认证、严格请求解析、真实绑定引用和删除后响应隐藏。完整服务端检查使用[服务端验证命令](../../packages/daynight-server/README.md#race-instrumentation)，包含覆盖率门禁；race 在本地默认及 main CI 开启、PR CI 关闭。这些检查不证明真实 Provider、Worker 托管或完整助手交互已交付。

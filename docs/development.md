@@ -404,8 +404,8 @@ responsibility independently with `bash scripts/check.sh --coverage` or
 `bash scripts/check.sh --e2e`; each prepares its own required inputs and installed
 CLI. Both require PostgreSQL, whose absence fails validation.
 
-Coverage validation builds the binary, runs vet and race-enabled `go-cov`, and
-enforces total statement coverage strictly greater than 90%, package coverage of
+Coverage validation builds the binary, runs vet and `go-cov`, and enforces total
+statement coverage strictly greater than 90%, package coverage of
 at least 85%, and function coverage of at least 80%, with critical-block checks
 enabled. The raw profile supplies an exact strict comparison; exactly 90% fails
 independently of display rounding. No production files or functions are excluded.
@@ -421,11 +421,18 @@ single-response and 256 MiB cumulative decoded-byte probes run only through the
 explicit local stress entrypoint, preserving real exact-limit and +1-byte tests.
 Each receipt identifies actual deadlines and mock status.
 
-E2E validation runs the complete `cmd/e2e_tests` package with race detection,
-`-count=1` and a ten-minute timeout, including its freshly built race-enabled
-server and independent installed CLI. It owns built-process scenarios and
-source/artifact provenance, concurrency, refusal and cleanup assertions. It does
-not consume the coverage installation or run deadline probes.
+E2E validation runs the complete `cmd/e2e_tests` package with `-count=1` and a
+ten-minute timeout, including its freshly built server and independent installed
+CLI. E2E owns built-process scenarios, source/artifact provenance, concurrency,
+refusal and cleanup assertions. It does not consume the coverage installation or
+run deadline probes.
+
+Both modes use `DAYNIGHT_TEST_RACE`: absent means enabled locally, while the
+workflow sets `false` for PR events and `true` for main pushes. Only literal
+`true` and `false` are valid. Coverage and E2E commands receive the selected mode
+explicitly, and the E2E server matches its test binary's actual instrumentation.
+The [server race policy](../packages/daynight-server/README.md#race-instrumentation)
+owns commands and receipt interpretation.
 
 When [CI selection](#ci-selection) selects the server, `verify-server` and
 `verify-server-e2e` run concurrently on separate runners, each with its own
@@ -810,7 +817,8 @@ owns those resource lifetimes. The
 owns detailed receipt and wall-time interpretation rules.
 The Go coverage, Go E2E and Web browser jobs restore module and compiler caches
 keyed by the server `go.sum`. Coverage validation expires Go test results before
-database/race/coverage checks; E2E uses `-count=1` to require fresh observations.
+database and coverage checks; E2E uses `-count=1` to require fresh observations.
+Race instrumentation follows the PR/main/local policy described above.
 The web pipeline retains the full production build and unique image identity check. One packed/installed CLI is reused by the native
 and container browser attachment journeys. After the web pipeline and recorded
 resource recovery, Ubuntu browser shard 2 runs the existing real-container
