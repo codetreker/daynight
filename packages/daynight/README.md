@@ -1640,7 +1640,7 @@ newly observed session ID. A live agent keeps its current connection.
 
 A replacement shell can still be initializing when Herdr rejects `agent.start`
 with `agent_pane_busy`. The adapter retries this explicit rejection for at most
-two seconds while the original workspace, pane, terminal and cwd remain owned,
+two seconds while the original workspace, pane and terminal remain owned,
 no Agent has appeared, and foreground process evidence confirms shell
 initialization. Cancellation and the original operation deadline still apply.
 Recovery within that call does not consume an execution failure attempt. Busy
@@ -1752,11 +1752,17 @@ versions fail explicitly.
 
 The policy applies only to native invocations and task workspaces. Global native
 configuration, credentials and organization/OS policies keep their existing
-owners; task delivery still follows its business authorization. Input-readiness
-and supported Codex composer checks remain. Unknown layouts, missing credentials,
-integration failures and launch errors stay visible. Use attach for business
-input. Reconnecting an already alive agent does not promise to resend an input
-lost across a process interruption.
+owners; task delivery still follows its business authorization. Automatic input
+uses Herdr's structured agent identity, readiness, launch and blocked states. It
+does not inspect terminal text, status bars, directory displays, borders or menus.
+The worker supplies the task cwd at workspace creation and native launch; resource
+discovery, input observation and stopping do not require pane and agent cwd
+metadata to agree. A human workspace at the same cwd does not prevent creation
+of a separately owned task workspace. Actual creation errors come from
+`workspace.create`. Original workspace/pane/terminal binding, final task
+authorization, process-stop evidence and prompt receipts remain checked. Missing credentials, integration failures and launch errors
+stay visible. Use attach for business input. Reconnecting an already alive agent
+does not promise to resend an input lost across a process interruption.
 
 When the original claim is absent from a successful complete inventory, the
 backend owns terminal resource cleanup. macOS Herdr writes its stop intent and

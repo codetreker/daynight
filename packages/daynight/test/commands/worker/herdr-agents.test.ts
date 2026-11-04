@@ -22,8 +22,6 @@ const claimId = "33333333-3333-4333-8333-333333333333";
 const worktreeId = "44444444-4444-4444-8444-444444444444";
 const nativeId = "55555555-5555-4555-8555-555555555555";
 const configuration: HerdrAgentConfiguration = { agent: "codex", model: "model-a", args: ["--config", "model_reasoning_effort=low", "--no-alt-screen"] };
-const composerScreen = "  >_ OpenAI Codex (v0.164.0)\n\n› Ask Codex to do anything\n\n  GPT-6.1 Sol default · /task\n";
-const trustScreen = "  Folder access\n  /task\n\n  Trust this folder? Codex can read, edit, and run files here.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit\n";
 
 const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspaceEnvironment: HerdrWorkspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, readCodexConfig = async (_args: readonly string[], _cwd: string, _operation: Operation): Promise<unknown> => ({ config: {} })) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-agent-tests"); await mkdir(scratch, { recursive: true });
@@ -71,10 +69,6 @@ const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspace
     }
     if (method === "agent.start") return { type: "agent_started", agent: launch(params), argv: [kind, ...params.args as string[]] };
     if (method === "agent.prompt") { prompts.push(String(params.text)); return { type: "agent_prompted", agent: structuredClone(agents.find((value) => value.pane_id === params.target)) }; }
-    if (method === "agent.read") {
-      const pane = panes.find((value) => value.pane_id === params.target)!;
-      return { type: "pane_read", read: { pane_id: pane.pane_id, workspace_id: pane.workspace_id, tab_id: pane.tab_id, source: "visible", format: "text", text: composerScreen, revision: 0, truncated: false } };
-    }
     if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: params.pane_id, shell_pid: 100, foreground_process_group_id: 100, foreground_processes: (processes.get(String(params.pane_id)) ?? []).map((value) => ({ pid: value, name: value === 100 ? "shell" : kind })) } };
     if (method === "tab.create") {
       const workspace = workspaces.find((value) => value.workspace_id === params.workspace_id)!; const created = addPane(workspace, String(params.label));
@@ -100,7 +94,7 @@ const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspace
 };
 const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
   const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
-  const result = await f.manager.start(f.context, binding, { configuration: { ...configuration, agent: f.context.agent, args: f.context.agent === "codex" ? configuration.args : ["--allow-all-tools"] }, prompt: "initial" }, operation());
+  const result = await f.manager.start(f.context, binding, { configuration: { ...configuration, agent: f.context.agent, args: f.context.agent === "codex" ? configuration.args : f.context.agent === "copilot" ? ["--allow-all-tools"] : [] }, prompt: "initial" }, operation());
   expect(result.nativeSession?.sessionId).toBe(nativeId); return binding;
 };
 
@@ -154,6 +148,10 @@ describe("native argument ownership", () => {
     expect(() => buildHerdrAgentArguments(configuration, "/task", "prefix")).toThrow("exact original session UUID");
     expect(() => buildHerdrAgentArguments(configuration, "relative")).toThrow("absolute path");
   });
+  it("owns Claude resume and model arguments while refusing print, prompt, and settings overrides", () => {
+    expect(buildHerdrAgentArguments({ agent: "claude", model: "sonnet", args: ["--permission-mode", "default"] }, "/task", nativeId)).toEqual(["--resume", nativeId, "--model", "sonnet", "--permission-mode", "default", "--dangerously-skip-permissions"]);
+    for (const arg of ["--print", "--resume", "--session-id", "--settings", "--setting-sources", "business prompt"]) expect(() => validateHerdrAgentArguments("claude", [arg])).toThrow();
+  });
 });
 
 describe("direct task resource management", () => {
@@ -205,8 +203,6 @@ describe("direct task resource management", () => {
     f.hook(async (method) => method === "pane.process_info" ? { type: "pane_process_info", process_info: { pane_id: "replacement", shell_pid: 100, foreground_processes: [] } } : undefined);
     await expect(f.manager.processInfo(f.context, binding, operation())).rejects.toThrow("another pane");
   });
-
-  const visible = (f: Awaited<ReturnType<typeof fixture>>, binding: HerdrTaskBinding, screen: string, extra: Entry = {}): HerdrRpcResult => ({ type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, tab_id: f.panes.find((pane) => pane.pane_id === binding.paneId)!.tab_id, source: "visible", format: "text", text: screen, revision: 0, truncated: false, ...extra } });
 
   it("creates one workspace with native XDG settings and rediscovers it without receipts", async () => {
     const environment = { XDG_CONFIG_HOME: "/native/config", XDG_STATE_HOME: "/native/state" };
@@ -623,14 +619,14 @@ describe("direct task resource management", () => {
     expect(f.prompts).toEqual([]);
   });
 
-  it("reports a definitely unsent startup prompt while the current native process is blocked", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
-    f.hook(async (method, params) => { if (method !== "agent.start") return undefined; const agent = f.launch(params); agent.agent_status = "blocked"; return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] }; });
-    await expect(f.manager.start(f.context, binding, { configuration, prompt: "task" }, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", promptSubmission: "not-submitted" }); expect(f.prompts).toEqual([]);
+  it.each(["codex", "claude"] as const)("reports a definitely unsent startup prompt while %s reports blocked", async (kind) => {
+    const f = await fixture(kind); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.hook(async (method, params) => { if (method !== "agent.start") return undefined; const agent = f.launch(params); agent.agent_status = "blocked"; return { type: "agent_started", agent, argv: [kind, ...params.args as string[]] }; });
+    await expect(f.manager.start(f.context, binding, { configuration: { agent: kind, model: null, args: [] }, prompt: "task" }, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", promptSubmission: "not-submitted" }); expect(f.prompts).toEqual([]);
   });
 
-  it("can submit a process-local deferred first prompt before SessionStart has reported an ID", async () => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); delete f.agents[0]!.agent_session;
+  it.each(["codex", "claude"] as const)("can submit a deferred first prompt before %s SessionStart has reported an ID", async (kind) => {
+    const f = await fixture(kind); const binding = await launch(f); f.prompts.splice(0); delete f.agents[0]!.agent_session;
     await f.manager.submitPrompt(f.context, binding, "deferred assignment", operation());
     expect(f.prompts).toEqual(["deferred assignment"]);
     f.agents[0]!.interactive_ready = false;
@@ -650,31 +646,34 @@ describe("direct task resource management", () => {
     expect(f.prompts).toEqual([]); expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
   });
 
-  it("rejects false idle/readiness on a real folder trust screen", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, trustScreen) : undefined);
-    await expect(f.manager.start(f.context, binding, { configuration, prompt: "must not accept trust" }, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", promptSubmission: "not-submitted" });
-    expect(f.prompts).toEqual([]); expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+  it.each(["codex", "claude"] as const)("delivers %s initial and continuation input without terminal presentation metadata", async (kind) => {
+    const f = await fixture(kind); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.hook(async (method) => { if (method === "agent.read") throw new Error("Terminal presentation is unavailable"); return undefined; });
+    await f.manager.start(f.context, binding, { configuration: { agent: kind, model: null, args: [] }, prompt: "managed\nassignment" }, operation());
+    f.agents[0]!.agent_status = "idle";
+    await f.manager.submitPrompt(f.context, binding, "continue", operation());
+    expect(f.prompts).toEqual(["managed\nassignment", "continue"]);
+    expect(f.calls.some((call) => call.method === "agent.read")).toBe(false);
   });
 
-  it.each(["› Ask Codex to do anything", "» Ask Codex to do anything", "› Ask a follow-up question"])("accepts the current native composer %s", async (marker) => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, composerScreen.replace("› Ask Codex to do anything", marker)) : undefined);
-    await f.manager.start(f.context, binding, { configuration, prompt: "exact\ntext" }, operation()); expect(f.prompts).toEqual(["exact\ntext"]);
+  it("keeps owned input, resource discovery and stopping independent of live cwd metadata", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    const subdirectory = path.join(f.context.cwd, "packages"); await mkdir(subdirectory);
+    f.panes[0]!.cwd = subdirectory;
+    f.agents[0]!.cwd = path.join(subdirectory, "daynight");
+    expect(await f.manager.prepareWorkspace(f.context, taskTitle, operation())).toEqual(binding);
+    expect(await f.manager.observe(f.context, binding, operation())).toMatchObject({ binding, kind: "codex" });
+    expect(await f.manager.listResources(operation())).toMatchObject([{ panes: [{ binding, cwd: f.agents[0]!.cwd }] }]);
+    await f.manager.submitPrompt(f.context, binding, "continue in the original agent", operation());
+    expect(f.prompts).toEqual(["continue in the original agent"]);
+    await f.manager.stopAndClose(f.context, binding, operation());
+    expect(f.workspaces).toEqual([]);
+    expect(f.executing.has(200)).toBe(false);
   });
 
-  it("waits through provisional frames during the current operation", async () => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); let reads = 0;
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, ++reads < 4 ? "initializing" : composerScreen) : undefined);
-    await f.manager.submitPrompt(f.context, binding, "cleanup", operation()); expect(reads).toBe(4); expect(f.prompts).toEqual(["cleanup"]);
-  });
-
-  it("can skip input after readiness waits without reporting a submission", async () => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); let reads = 0; let guarded = 0;
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, ++reads < 3 ? "initializing" : composerScreen) : undefined);
-    const result = await f.manager.submitPrompt(f.context, binding, "periodic", operation(), async () => {
-      expect(reads).toBe(3); guarded += 1; return false;
-    });
+  it("can skip input after checking the native agent without reporting a submission", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); let guarded = 0;
+    const result = await f.manager.submitPrompt(f.context, binding, "periodic", operation(), async () => { guarded += 1; return false; });
     expect(result).toMatchObject({ submission: "skipped", observation: { binding } });
     expect(guarded).toBe(1); expect(f.prompts).toEqual([]);
   });
@@ -691,30 +690,6 @@ describe("direct task resource management", () => {
     const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); const failure = new Error("fresh task read failed");
     await expect(f.manager.submitPrompt(f.context, binding, "periodic", operation(), async () => { throw failure; })).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted", cause: failure });
     expect(f.prompts).toEqual([]);
-  });
-
-  it("preserves input errors and sends nothing when readiness observation expires", async () => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, "Resuming session…") : undefined);
-    await expect(f.manager.submitPrompt(f.context, binding, "cleanup", operation(25))).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", cause: { kind: "deadline" } }); expect(f.prompts).toEqual([]);
-  });
-
-  it.each(["› 1. Yes, proceed\n  2. No\n\nPress enter to confirm or esc to cancel", "Input disabled", "Viewing sub-agent thread"])("keeps current modal or disabled surface interactive: %s", async (screen) => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); f.agents[0]!.agent_status = "working";
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, screen) : undefined);
-    await expect(f.manager.submitPrompt(f.context, binding, "cleanup", operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted" }); expect(f.prompts).toEqual([]);
-  });
-
-  it.each([{ pane_id: "foreign" }, { workspace_id: "foreign" }, { tab_id: "foreign" }, { source: "recent" }, { format: "ansi" }, { revision: undefined }, { truncated: undefined }, { truncated: true }, { text: undefined }])("rejects invalid visible native input %j", async (extra) => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); f.agents[0]!.agent_status = "working";
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, composerScreen, extra) : undefined);
-    await expect(f.manager.submitPrompt(f.context, binding, "cleanup", operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted" }); expect(f.prompts).toEqual([]);
-  });
-
-  it("does not input after the pane's terminal changes during a screen observation", async () => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
-    f.hook(async (method) => { if (method !== "agent.read") return undefined; const result = visible(f, binding, composerScreen); f.panes[0]!.terminal_id = "replacement"; return result; });
-    await expect(f.manager.submitPrompt(f.context, binding, "cleanup", operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted" }); expect(f.prompts).toEqual([]);
   });
 
   it("retains structured unknown transport failures without manufacturing success", async () => {
@@ -803,26 +778,26 @@ describe("direct task resource management", () => {
     await expect(f.manager.listResources(operation())).rejects.toThrow("provider differ");
   });
 
-  it("reports unavailable worktree paths before creating anything", async () => {
-    const f = await fixture(); await rm(f.context.cwd, { recursive: true });
-    await expect(f.manager.prepareWorkspace(f.context, taskTitle, operation())).rejects.toMatchObject({ submission: "not-submitted", cause: { code: "ENOENT" } }); expect(f.calls).toEqual([]);
+  it("creates an owned workspace when a human workspace uses the same directory", async () => {
+    const f = await fixture();
+    const human = { workspace_id: "human-workspace", label: "Human workspace" };
+    f.workspaces.push(human);
+    f.panes.push({ workspace_id: human.workspace_id, pane_id: "human-pane", terminal_id: "human-terminal", cwd: f.context.cwd });
+    const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    expect(binding.workspaceId).not.toBe(human.workspace_id);
+    expect(f.workspaces).toContainEqual(human);
+    expect(await f.manager.listResources(operation())).toMatchObject([{ owner: { projectId, taskId, claimId, worktreeId }, workspaceId: binding.workspaceId }]);
+    expect(f.calls.filter((call) => call.method === "workspace.create")).toHaveLength(1);
   });
 });
 
-it("launches and resumes Claude only with its original hook identity and visible composer", async () => {
+it("launches and resumes Claude with its original hook identity", async () => {
   const f = await fixture("claude"); const prepared = await f.manager.prepareWorkspace(f.context,taskTitle,operation());
-  f.hook(async method => method === "agent.read" ? { type: "pane_read", read: { pane_id:prepared.paneId,workspace_id:prepared.workspaceId,tab_id:f.panes[0]!.tab_id,source:"visible",format:"text",text:"─────────────────\n❯\n─────────────────\n? for shortcuts",revision:0,truncated:false } } : undefined);
   const config = { agent:"claude" as const, model:"sonnet", args:[] };
   const result = await f.manager.start(f.context,prepared,{ ...prepared,configuration:config,prompt:"managed task",resumeSessionId:nativeId },operation());
   expect(result.kind).toBe("claude"); expect(result.nativeSession?.sessionId).toBe(nativeId);
   expect(f.calls.find(call=>call.method==="agent.start")?.params.args).toEqual(["--resume",nativeId,"--model","sonnet","--dangerously-skip-permissions"]);
   expect(f.prompts).toEqual(["managed task"]);
-});
-it("does not type into Claude trust even when its native hook and OSC state say ready", async () => {
-  const f = await fixture("claude"); const prepared = await f.manager.prepareWorkspace(f.context,taskTitle,operation());
-  f.hook(async method => method === "agent.read" ? { type:"pane_read",read:{pane_id:prepared.paneId,workspace_id:prepared.workspaceId,tab_id:f.panes[0]!.tab_id,source:"visible",format:"text",text:"Do you trust the files in this folder?\n❯ 1. Yes\nEnter to confirm · Esc to cancel",revision:0,truncated:false} } : undefined);
-  await expect(f.manager.start(f.context,prepared,{...prepared,configuration:{agent:"claude",model:null,args:[]},prompt:"business"},operation())).rejects.toMatchObject({promptSubmission:"not-submitted"});
-  expect(f.prompts).toEqual([]);
 });
 
 

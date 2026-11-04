@@ -31,6 +31,9 @@ fixed invocation policy for fresh and resumed processes. The [workspace naming
 and identity decision](2026-10-28-worker-workspace-names.md) uses task titles as
 mutable display prefixes and four stable UUIDs as owner identity, replacing the
 original origin/project/task/claim/worktree label and whole-label name hash.
+The [structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
+replaces visible-composer parsing and repeated cwd metadata equality checks with
+Herdr structured readiness and the original workspace/pane/terminal binding.
 Native environment reconnection stays read-only; a separate serialized naming
 operation may update the display prefix. The original receipts,
 history prerequisites, persisted PID provenance and native-consent handling below
@@ -108,52 +111,34 @@ stale-terminal or mismatched map evidence returns rebind-required with
 unverified-workspace-environment and performs no launch/input. There is no
 receipt cache, environment rename or shell-export adoption protocol.
 
-Task labels persist origin/project/task/claim/worktree identity and are joined
-to actual workspace/pane/terminal IDs and cwd. Duplicate or ambiguous resources
-fail visibly. Native launch queues argv first and verifies the acknowledged
-target and frozen arguments. Provider idle/interactive-ready flags alone do not
-authorize text plus Enter. The shared submit boundary checks the current same
-binding and actual visible Codex business-composer surface before mutation. The
-adapter then binds the official native SessionStart reference after the first
-permitted caller input. Explicit resume also requires the durable original ID
-and necessary history, and its reported ID must match after input. Prompt
-acknowledgement proves text-plus-Enter PTY submission, not model receipt or task
-completion. Per-pane mutations are serialized.
+Task labels originally persisted origin/project/task/claim/worktree identity
+and were joined to actual workspace/pane/terminal IDs and cwd. Native launch
+queued argv first and verified the acknowledged target and frozen arguments.
+The adapter bound the official native SessionStart reference after the first
+permitted caller input. Explicit resume required the durable original ID and
+necessary history, and its reported ID had to match after input. Prompt
+acknowledgement proved text-plus-Enter PTY submission, not model receipt or task
+completion. Per-pane mutations were serialized; those receipt and ordering
+boundaries remain separate from the input-readiness decision.
 
-First/restart submission requires a usable business-composer surface. Recognized
-folder trust, authorization and selection screens are blocking: the input
-remains not-submitted with original launch evidence, without text, extra Enter
-or native trust changes. Unknown screens are observed within the original
-Operation budget rather than treated as ready after a delay. Non-initial working
-input retains existing queue semantics while still excluding blocking;
-idle/unknown input needs the usable composer surface. Cleanup and /exit share
-this boundary, while force stopping uses original resource proof, not input to
-an authorization screen.
+The original shared submit boundary additionally read visible Codex and Claude
+terminal text before mutation. It required recognized business-composer layouts,
+including a nonloading Codex model/directory footer or Claude's prompt borders
+and shortcut hints. Recognized trust, authorization, selection and disabled
+screens were rejected; unknown layouts waited within the operation budget.
+Readback also checked response completeness, pane/workspace/tab association and
+terminal/cwd again. The intent was to avoid sending Enter to native consent
+screens, as recorded under Alternatives. Custom or cropped footers could not
+satisfy that positive predicate even when Herdr reported a ready agent.
 
-The guard reads the owned agent's visible text through the existing API and
-checks complete/untruncated response shape, pane/workspace/tab association and
-original terminal/cwd again. Missing, malformed or truncated reads are known
-not-submitted before mutation; readable but unknown surfaces use bounded
-observation. A current usable composer takes precedence over old trust
-scrollback. A version banner or a valid revision value, including zero, is not a
-native input-ready event or semantic receipt.
-
-The startup/restart positive predicate supports the checked standard/default
-Codex business layout: a composer plus a nonloading model-with-reasoning and
-current-directory footer. Ask/header text alone is insufficient because a
-provisional startup screen can contain it. Custom or cropped footers and other
-unrecognized visible layouts remain unknown within the original Operation;
-expiry before a supported surface appears is known not-submitted. The operator
-must finish blocking decisions or restore the supported native layout in the
-original session before public retry. This deliberately limits layout support
-without adding an ANSI terminal framework, changing configuration or claiming a
-universal ready/draft/semantic-consumption signal.
-
-This is a narrow current-surface guard, not a terminal framework, arbitrary
-human-draft parser or native consumption receipt. It neither clears manual draft
-text nor reclassifies a previously submitted/unknown prompt because the composer
-looks empty. Native consent is an explicit operator decision in the original
-session or normal prerequisite configuration.
+The [structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
+removes that duplicate visible-text admission and repeated cwd metadata
+comparison. Current input uses Herdr's structured readiness, launch and blocked
+states after original workspace/pane/terminal and agent identity verification.
+The worker owns the launch directory; terminal presentation and cwd telemetry
+do not determine whether an already-bound task can receive input. Neither an
+empty-looking composer nor a ready status changes a submitted or unknown
+prompt into a never-submitted one.
 
 The controller owns the complete startup and restart prompt, including explicit
 worker-managed environment, using-daynight autopilot-managed-task mode and the
@@ -290,8 +275,8 @@ removal still follows confirmed original-agent stop and workspace closure.
 Claude is supported in Herdr mode using its native TUI and exact --resume ID.
 Preflight requires the current official SessionStart hook, its documented
 matcher, effective settings that permit hooks and exact transcript history.
-Automatic input requires the positive Claude composer, never idle alone;
-onboarding, trust and approval surfaces retain not-submitted provenance. Parent
+Automatic input uses the same Herdr structured readiness and binding checks as
+the other native providers, without parsing Claude prompt borders or hints. Parent
 CLAUDECODE and CLAUDE_CODE_ENTRYPOINT identities are removed with inherited
 Herdr/Codex routing identities. Web Claude uses a separate SDK backend and does
 not pass through this terminal adapter.
@@ -308,7 +293,7 @@ native arguments, and multiline instructions need the terminal paste/Enter
 semantics supplied by agent.prompt. Separating launch readiness from input also
 keeps the acknowledgement boundary explicit.
 
-**Treat native readiness as proof that Enter submits business text.** Codex
+**Original visible-composer admission.** Codex
 0.164's [directory-trust
 caller](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/onboarding/directory_trust.rs#L73-L128)
 uses an independent onboarding screen before the business composer. The default
@@ -320,8 +305,11 @@ can choose the highlighted trust action. Thus an ignored paste followed by Enter
 can approve native consent instead of submitting the assignment. This is a
 separate input owner from the main startup draft/composer pump. Earlier
 successful native input/history observations remain scoped to the sessions and
-readiness conditions exercised; a visible blocking startup screen requires its
-own current-surface check.
+readiness conditions exercised. This motivated the original visible-composer
+guard. Its layout-dependent refusal of already-ready managed input is why the
+[structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
+replaces that additional guard while retaining fixed native startup controls and
+Herdr's blocked state.
 
 **Require a new official session ID before the first input.** Codex 0.164 runs
 SessionStart lazily when preparing the first user turn for both new and resumed

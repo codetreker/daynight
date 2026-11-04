@@ -81,10 +81,6 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
       agents.push(current); launches.push({ environment: environments.get(String(params.pane_id))!, args: params.args as string[], paneId: String(params.pane_id) });
       return { type: "agent_started", agent: current, argv: [agent, ...params.args as string[]] };
     }
-    if (method === "agent.read") {
-      const pane = panes.find((entry) => entry.pane_id === params.target)!;
-      return { type: "pane_read", read: { pane_id: pane.pane_id, workspace_id: pane.workspace_id, tab_id: pane.tab_id, source: "visible", format: "text", text: "› Ask Codex to do anything\n\n  GPT-6.1 Sol low · /task\n", revision: 0, truncated: false } };
-    }
     if (method === "agent.prompt") {
       const current = agents.find((entry) => entry.pane_id === params.target)!;
       if (firstTurnCompletion !== undefined) {
@@ -257,32 +253,9 @@ describe("execution from current Herdr resources", () => {
     expect(f.readTask).toHaveBeenCalledTimes(4);
   });
 
-  it("checks fresh pause state after native readiness waits", async () => {
-    const f = await fixture("codex", staleId);
-    f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
-    const request = f.rpc.request;
-    let reads = 0;
-    vi.spyOn(f.rpc, "request").mockImplementation(async (method, params, operation) => {
-      const result = await request(method, params, operation);
-      if (method === "agent.read" && ++reads === 1) {
-        expect(f.readTask).not.toHaveBeenCalled();
-        f.remoteTask.properties.paused = true;
-        return { ...result, read: { ...result.read as Entry, text: "initializing" } };
-      }
-      return result;
-    });
-    await f.driver.advance(f.input);
-    expect(reads).toBe(2);
-    expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
-    expect(f.readTask).toHaveBeenCalledOnce();
-    delete f.remoteTask.properties.paused;
-    await f.driver.advance(f.input);
-    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
-  });
-
-  it("checks fresh pause state after waiting for workspace serialization", async () => {
-    const f = await fixture("copilot", staleId);
-    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+  it.each(["codex", "copilot"] as const)("checks fresh pause state after waiting for %s workspace serialization", async (agent) => {
+    const f = await fixture(agent, staleId);
+    f.agents.push({ ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const submit = vi.spyOn(f.manager, "submitPrompt");
@@ -299,6 +272,9 @@ describe("execution from current Herdr resources", () => {
     } finally { release(); operation.dispose(); }
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
     expect(f.readTask).toHaveBeenCalledOnce();
+    delete f.remoteTask.properties.paused;
+    await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
   });
 
   it.each(["read failure", "invalid pause"])("exposes %s without sending or consuming the continuation decision", async (failureKind) => {

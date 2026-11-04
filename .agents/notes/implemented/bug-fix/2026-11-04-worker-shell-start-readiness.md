@@ -16,8 +16,11 @@ The Herdr adapter handles shell initialization within the serialized native
 `HerdrAgentManager.launch` operation, also used by the legacy `start` path.
 It retries only the explicit `agent_pane_busy` rejection for
 at most two seconds, with the original operation's cancellation and deadline.
-Before each retry it verifies the owned workspace, pane, terminal and cwd,
-requires that no Agent has appeared, and reads current `pane.process_info`.
+Before each retry it verifies the owned workspace, pane and terminal, requires
+that no Agent has appeared, and reads current `pane.process_info`. The
+[structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
+removes repeated cwd metadata equality checks; workspace creation and native
+launch supply the task directory.
 The shell PID must match the foreground process group, and its foreground
 process entry must identify a supported shell by name or argv[0]. Missing
 evidence or changed ownership cannot authorize another start.

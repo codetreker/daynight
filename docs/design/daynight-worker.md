@@ -166,7 +166,7 @@ Worker 状态库以原索引结构作为版本 5 基线，版本 6 增加 cleanu
 
 Herdr 的 label 同时承担 workspace 显示名称。名称以经过终端安全转义的完整 title 开头，随后是 ` | daynight:` 与四字段 canonical JSON。解析器只读取最后一个分隔符之后的严格身份 JSON；标题可包含相同分隔符或 JSON 片段，不参与归属比较。读取时只按身份后缀识别，展示标题为空或含未转义字符不改变归属；身份格式不符返回 null，忽略该 workspace；Git 注册扫描同样跳过缺失或格式不符的 marker；无注册普通目录不会成为全局扫描失败的依据。两处只容忍格式解析失败，IO 与已识别资源的完整性校验继续报错。Unicode Cc、行分隔符和双向显示控制字符转为字面量 `\u{hex}`；其余文本包括 emoji 的 ZWJ 保留。完整 title 和身份不在 CLI 中截断，Herdr 决定当前终端宽度内的显示。
 
-Agent name 为 `dn_` 加四字段 canonical JSON 的 SHA-256 前 24 位十六进制字符，与 title 无关。创建、发现、观察、停止和清理比较四项身份，再核对实际 workspace/pane/terminal/cwd；清理不需要可读取的 task title。名称与归属分离的选择和 Herdr API 限制见[命名决策](../../.agents/notes/implemented/architecture/2026-10-28-worker-workspace-names.md)。
+Agent name 为 `dn_` 加四字段 canonical JSON 的 SHA-256 前 24 位十六进制字符，与 title 无关。创建、发现、观察、停止和清理比较四项身份，再核对实际 workspace/pane/terminal；cwd 由创建 workspace 与原生启动拥有，发现、输入和停止不重复要求 cwd 元数据相等。创建 workspace 只按稳定归属查重，其他 workspace 使用同一 cwd 不构成身份冲突；实际创建错误由 workspace.create 返回。停止依赖原绑定及进程停止证据；Git 删除保留独立的目录归属校验；清理不需要可读取的 task title。名称与归属分离的选择和 Herdr API 限制见[命名决策](../../.agents/notes/implemented/architecture/2026-10-28-worker-workspace-names.md)。
 
 现有 own-claim inventory 已提供完整 Task。协调器把最新 title 作为展示输入传递，复用 task 的串行操作，在下一轮成功清单后按实际 label 差异调用 `workspace.rename({workspace_id,label})`。活 workspace 与恢复超限任务仍有同步机会；不新增查询、SQLite 列或后台任务。请求前后核对稳定身份与实际 workspace ID；取消后不提交新请求，已发送请求的迟到结果不授予归属或允许重新创建。Herdr 的 `workspace_info` 响应只确认内存名称更新并安排保存，重启仍依据最新 title 与 snapshot 再对账。
 
@@ -210,7 +210,7 @@ Codex 修复在安装 RPC 之前要求当前 worker 启动的私有 daemon 子�
 
 macOS 的原运行必须有持久来源。原 agent 仍存活时接入同一 Session，只增加 connectionEpoch 并建立显式间断的新段，不重发 assignment。需要重新启动时，必须已有原运行的可靠停止证明、原 nativeSessionId 和已确认的首次输入结果，再以同一 Session/native conversation 建立下一 executionGeneration。prepared 运行只有在原 daemon、shell 和端点身份一致时才能继续原启动；launch_requested 恢复、未知输入或停止保持阻断。nativeSessionId 可以在首次输入后补齐，不作为取得原生进程身份的前置条件。
 
-新 pane 的 shell 可能仍在执行初始化。Adapter 的 `HerdrAgentManager.launch` 在 workspace 串行操作中只对明确拒绝的 `agent_pane_busy` 启用最多 2 秒的等待与重试，沿用 Herdr 官方 CLI 的 shell 初始化判据：当前 `pane.process_info` 指向原 pane，shell PID 与前台进程组相同，前台列表包含该 PID 且名称或 argv[0] 是受支持的 shell。每次重试重新核对原 workspace/pane/terminal/cwd 和 Agent 状态；出现 Agent、归属变化、进程证据不足或期限届满时停止重试，保留错误。缺少前台进程组观察的平台不推断 shell 就绪。RPC 结果未知时不重发。等待与重试使用原操作取消和期限，每次按剩余预算计算启动 timeout；在调用内恢复成功不增加 Coordinator 的执行失败次数。机制、依据及代价见[shell 初始化恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-04-worker-shell-start-readiness.md)。
+新 pane 的 shell 可能仍在执行初始化。Adapter 的 `HerdrAgentManager.launch` 在 workspace 串行操作中只对明确拒绝的 `agent_pane_busy` 启用最多 2 秒的等待与重试，沿用 Herdr 官方 CLI 的 shell 初始化判据：当前 `pane.process_info` 指向原 pane，shell PID 与前台进程组相同，前台列表包含该 PID 且名称或 argv[0] 是受支持的 shell。每次重试重新核对原 workspace/pane/terminal 和 Agent 状态；出现 Agent、归属变化、进程证据不足或期限届满时停止重试，保留错误。缺少前台进程组观察的平台不推断 shell 就绪。RPC 结果未知时不重发。等待与重试使用原操作取消和期限，每次按剩余预算计算启动 timeout；在调用内恢复成功不增加 Coordinator 的执行失败次数。机制、依据及代价见[shell 初始化恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-04-worker-shell-start-readiness.md)。
 
 macOS durable adapter 在调用 launch 前已保存 `launch_requested`。上述重试只处理同次调用内明确未启动的拒绝，保持原运行代次，不发送 assignment；launch 成功后仍先提交原 native 进程证明，再开放输入。未知响应、进程身份变化及崩溃不能获得新的启动许可，也不能通过重发 assignment 恢复。
 
@@ -242,7 +242,7 @@ Codex 保留 `--no-daemon [resume <session_id>]` 前缀，在配置参数后追�
 
 参数校验在启动 RPC 前拒绝 Copilot 的 assisted approval、sandbox、deny/tool restriction，以及 Codex 的 approval/sandbox 控制和重复的系统 bypass 开关。缺少原生能力明确失败。策略只作用于本次命令和任务 workspace，不写全局 native 配置；认证、业务授权及组织/操作系统策略保留各自归属。
 
-保留当前输入 readiness 与 Codex composer 检查，启动输入只提交到可用的业务 composer。需要业务人工输入时通过 worker attach 在原终端处理。Legacy 的启动回执、输入提交状态和停止观察只留当前调用；macOS 保存原运行和输入结果，未知结果阻断重放，但传输完成也不证明模型恰好处理一次。原生历史可用性由原生命令报告，不额外扫描 provider 数据库或会话 manifest。
+所有 provider 的自动输入统一使用 Herdr 结构化观察：核对原 workspace/pane/terminal 和 agent 身份，等待启动结束及所需的 interactive_ready，blocked 状态拒绝输入。Worker 不通过 agent.read 解析界面文案、状态栏、目录、边框或菜单，也不把 pane/agent 的 cwd 元数据相等作为输入条件；任务 cwd 已由 workspace 创建与原生启动指定。发送前仍执行调用方的最终授权检查，并核对 agent.prompt 回执。需要业务人工输入时通过 worker attach 在原终端处理。Legacy 的启动回执、输入提交状态和停止观察只留当前调用；macOS 保存原运行和输入结果，未知结果阻断重放，但传输完成也不证明模型恰好处理一次。原生历史可用性由原生命令报告，不额外扫描 provider 数据库或会话 manifest。取舍及原界面检查的历史原因见[结构化输入准入决策](../../.agents/notes/implemented/simplification/2026-11-04-worker-structured-input-readiness.md)。
 
 Herdr 自动恢复计数及超限等待只在当前进程中维护，重启清零。达到 recoveryLimit 后保留 active 与错误，可用人工 retry 或重启重新尝试。Web 使用前述持久恢复暂停，普通重启不提供额外授权。
 

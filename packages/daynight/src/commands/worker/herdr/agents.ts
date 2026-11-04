@@ -11,8 +11,6 @@ import type { ResourceOwner } from "../types.js";
 import { parseResourceOwner, resourceOwnerKey, sameResourceOwner } from "../resource-owner.js";
 import { buildHerdrAgentArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
 import type { HerdrAgentConfiguration } from "./arguments.js";
-import { claudeInputSurface } from "./claude-input.js";
-import { codexInputSurface } from "./codex-input.js";
 import { HerdrRpcError } from "./rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "./rpc.js";
 
@@ -152,10 +150,6 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     const data = object(result.snapshot, "Herdr snapshot");
     return { workspaces: array(data.workspaces, "Herdr workspaces").map((value) => object(value, "Herdr workspace")), panes: array(data.panes, "Herdr panes").map((value) => object(value, "Herdr pane")), agents: array(data.agents, "Herdr agents").map((value) => object(value, "Herdr agent")), tabs: array(data.tabs, "Herdr tabs").map((value) => object(value, "Herdr tab")) };
   };
-  const verifyCwd = async (actual: unknown, context: { cwd: string }): Promise<void> => {
-    const actualPath = text(actual, "Herdr pane cwd");
-    if (!path.isAbsolute(actualPath) || path.normalize(await realpath(actualPath)) !== path.normalize(await realpath(context.cwd))) throw new Error("The Herdr pane cwd differs from the original task worktree.");
-  };
   const readOwned = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation, allowMissingPane = false) => {
     if (binding.session !== session) throw new Error("The task binding belongs to another Herdr session.");
     const data = await snapshot(operation);
@@ -166,7 +160,6 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     if (panes.length !== 1) throw new Error("The original task pane is missing or duplicated.");
     const pane = panes[0]!;
     if (pane.workspace_id !== binding.workspaceId || pane.terminal_id !== binding.terminalId) throw new Error("The task pane or terminal identity has changed.");
-    await verifyCwd(pane.cwd, context);
     return { data, workspace: matching[0]!, pane };
   };
   const readNameOwnership = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation, submission: "not-submitted" | "unknown") => {
@@ -196,7 +189,6 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     const agent = candidates[0];
     const info = agent === undefined ? pane! : agent;
     if (info.workspace_id !== binding.workspaceId || info.terminal_id !== binding.terminalId) throw new Error("The task agent observation belongs to another workspace or terminal.");
-    await verifyCwd(info.cwd, context);
     const kind = optionalText(info.agent, "Native agent kind");
     if (kind !== null && kind !== context.agent) throw new Error("The task pane hosts a different native agent.");
     const name = optionalText(info.name, "Managed agent name");
@@ -249,44 +241,16 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       }
     }
   };
-  const visibleCodexSurface = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation) => {
-    const owned = await readOwned(context, binding, operation);
-    const tabId = text(owned.pane!.tab_id, "Input pane tab ID");
-    const result = expectedResult(await options.rpc.request("agent.read", { target: binding.paneId, source: "visible", format: "text", strip_ansi: true }, operation), "pane_read");
-    const read = object(result.read, "Visible native input surface");
-    if (read.pane_id !== binding.paneId || read.workspace_id !== binding.workspaceId || read.tab_id !== tabId || read.source !== "visible" || read.format !== "text") throw new Error("The visible input surface does not identify the original task pane and requested source.");
-    if (typeof read.text !== "string" || typeof read.truncated !== "boolean") throw new TypeError("The visible input surface must contain text and an explicit truncation fact.");
-    counter(read.revision, "Visible input revision");
-    if (read.truncated) throw new Error("The original native input surface was truncated and cannot authorize automatic input.");
-    // Herdr 0.9.5 reports revision zero. It is not a freshness or input receipt.
-    const confirmed = await readOwned(context, binding, operation);
-    if (confirmed.pane!.tab_id !== tabId) throw new Error("The original input pane changed tabs during the visible surface observation.");
-    return context.agent === "claude" ? claudeInputSurface(read.text) : codexInputSurface(read.text);
-  };
   const submit = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, initialPrompt = false, beforeSubmit?: HerdrPromptGuard): Promise<HerdrPromptResult> => {
     if (typeof prompt !== "string" || prompt.length === 0) throw new HerdrAgentActionError("The caller prompt must be nonempty text.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
     let before: HerdrAgentObservation;
-    const verifyInputAgent = (current: HerdrAgentObservation): void => {
-      const knownAgent = current.kind === context.agent || current.nativeSession?.agent === context.agent || (initialPrompt && current.name === herdrExecutionAgentName(context));
-      if (!knownAgent || current.launchPending || ((initialPrompt || current.nativeSession === null) && !current.interactiveReady) || current.status === "blocked") throw new Error("The original native agent is not ready for input.");
-    };
     try {
-      while (true) {
-        before = await observation(context, binding, operation);
-        verifyInputAgent(before);
-        if (context.agent !== "codex" && context.agent !== "claude") break;
-        const surface = await visibleCodexSurface(context, binding, operation);
-        if (surface === "blocked") throw new Error("The original Codex input surface requires operator action; automatic input was not submitted.");
-        before = await observation(context, binding, operation);
-        verifyInputAgent(before);
-        if (surface === "composer" || (!initialPrompt && before.status === "working")) break;
-        await wait(operation);
-      }
-      // Input readiness can wait through native frames after workspace serialization.
-      // Recheck caller authorization only once those waits have finished.
+      before = await observation(context, binding, operation);
+      const knownAgent = before.kind === context.agent || before.nativeSession?.agent === context.agent || (initialPrompt && before.name === herdrExecutionAgentName(context));
+      if (!knownAgent || before.launchPending || ((initialPrompt || before.nativeSession === null) && !before.interactiveReady) || before.status === "blocked") throw new Error("The original native agent is not ready for input.");
       if (beforeSubmit !== undefined && !await beforeSubmit(operation)) return { submission: "skipped", observation: before };
       operation.check();
-    } catch (cause) { throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The original native input surface could not be verified.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" }); }
+    } catch (cause) { throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The original native agent input readiness could not be verified.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" }); }
     const result = await mutation("agent.prompt", { target: binding.paneId, text: prompt }, "agent_prompted", operation);
     try {
       const returned = object(result.agent, "Prompt agent receipt");
@@ -352,7 +316,6 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           if (info.workspace_id !== workspaceId || info.terminal_id !== terminalId) throw new Error("The owned Herdr agent association is inconsistent.");
           const cwd = optionalText(info.cwd, "Owned pane cwd");
           if (cwd !== null && !path.isAbsolute(cwd)) throw new TypeError("The owned Herdr pane cwd must be absolute.");
-          if (pane.cwd !== undefined && cwd !== null && path.normalize(text(pane.cwd, "Owned terminal cwd")) !== path.normalize(cwd)) throw new Error("The owned Herdr pane and agent cwd differ.");
           const kind = optionalText(info.agent, "Owned agent kind");
           if (kind !== null && kind !== "codex" && kind !== "copilot" && kind !== "claude") throw new Error("The owned task workspace hosts an unsupported native agent.");
           const native = info.agent_session === undefined ? null : object(info.agent_session, "Owned native session");
@@ -377,7 +340,6 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       let createPossible = false;
       try {
         const label = herdrExecutionLabel(context, title);
-        const expectedCwd = path.normalize(await realpath(context.cwd));
         const data = await snapshot(operation);
         const matching = data.workspaces.filter((workspace) => matchesWorkspaceOwner(workspace, context));
         if (matching.length > 1) throw new Error("The task workspace identity is duplicated.");
@@ -389,9 +351,6 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           const binding = { session, workspaceId, paneId: text(pane.pane_id, "Task pane ID"), terminalId: text(pane.terminal_id, "Task terminal ID") };
           await readOwned(context, binding, operation);
           return binding;
-        }
-        for (const pane of data.panes) {
-          if (typeof pane.cwd === "string" && [expectedCwd, path.normalize(path.resolve(context.cwd))].includes(path.normalize(path.resolve(pane.cwd)))) throw new Error("The requested task cwd already belongs to a different Herdr workspace.");
         }
         createPossible = true;
         const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: { ...workspaceEnvironment, ...nativeAgentPermissionEnvironment(context.agent) } }, "workspace_created", operation);
@@ -476,7 +435,6 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       for (const pane of currentPanes) {
         const paneId = text(pane.pane_id, "Stop pane ID");
         if (paneId === binding.paneId && pane.terminal_id !== binding.terminalId) throw new Error("The task terminal identity changed before stopping.");
-        await verifyCwd(pane.cwd, context);
         const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: paneId }, operation), "pane_process_info");
         const info = object(result.process_info, "Current stop process observation");
         if (info.pane_id !== paneId) throw new Error("The stop process observation belongs to another pane.");

@@ -93,7 +93,7 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 - Copilot 与 Codex 的每次 fresh/resume 启动固定使用 full access，并为本次任务目录启用信任，免除原生工具权限、目录信任及 hook trust 确认。Copilot 使用 `--allow-all --no-ask-user --no-sandbox`，并覆盖本次 workspace 环境为 `COPILOT_ALLOW_ALL=true`、`COPILOT_ASSISTED_APPROVAL=false`；Codex 使用 `--no-daemon`、`--dangerously-bypass-approvals-and-sandbox`、`--dangerously-bypass-hook-trust` 及当前真实任务路径的调用级 trusted 配置。该策略不是可选配置；不能通过 args 降低权限或恢复确认。
 - Codex 每次 fresh/resume 启动在配置参数之后以两个独立 argv 传入 `-c`、`check_for_update_on_startup=false`，覆盖同名配置，关闭本次启动的更新检查和交互提示，使任务能够进入正常输入流程。该设置通过 Herdr 启动选项传递，任务 prompt 保持独立；Copilot 启动方式不变。
 - 固定策略只作用于本次原生命令及任务 workspace，不改写全局 native 配置（包括用户 `config.toml`）、凭据或组织/操作系统策略。业务执行和交付仍遵循任务授权；缺失认证、集成或能力明确报错，不降级为等待权限确认。
-- 保留官方 native/Herdr 集成、当前参数和 composer readiness 校验。原生历史可用性由原生命令报告，不扫描 provider 数据库或会话 manifest。已知 ID 恢复失败保持可见，不静默清除 ID。启动输入只提交到可用的业务 composer。
+- 自动输入使用 Herdr 的结构化 agent 身份、interactive_ready、launch_pending 和 blocked 状态，不解析可见终端的占位文案、状态栏、目录、边框或菜单。Worker 创建 workspace 时指定任务 cwd；发现、输入观察及停止不因 pane 与 agent 的 cwd 元数据缺失、不同或变化而拒绝，也不因其他 workspace 使用相同 cwd 而拒绝创建。目录创建错误由实际 workspace.create 返回。workspace/pane/terminal 绑定、当前任务授权、进程停止证据和投递结果仍分别核验。原生历史可用性由原生命令报告，不扫描 provider 数据库或会话 manifest；已知 ID 恢复失败保持可见，不静默清除 ID。
 - macOS 必须将原生启动与首次输入分离，可靠保存原 daemon/shell/native agent 的 boot、出生标识及资源绑定后才开放输入。nativeSessionId 可在首次输入后补齐；已知值不可更换。首次输入 pending/dispatching/transport_completed/unknown 跨重启保存，未知结果阻断自动重放，传输成功不等于业务处理恰好一次。
 - macOS 普通重连保持同一 Session 和 executionGeneration，只提升 connectionEpoch；只有原运行已确认停止、claim 有效、native ID 与首次输入结果可用于恢复，才增加实际运行 generation。每次启动或重连产生段边界并显式记录间断，不推算停机期间录制内容。
 - Herdr Session v2 必须沿用原 Worker 身份，不使用 Web Controller ticket；observe/control/archive 能力均为 false，不宣称网页控制、终端录制或最终归档可用。Legacy 启动回执和输入基线仍只在当前进程，人工输入通过 worker attach。
