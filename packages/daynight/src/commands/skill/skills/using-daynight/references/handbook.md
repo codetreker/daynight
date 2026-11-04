@@ -27,6 +27,7 @@ Do not treat this skill's workflow names as CLI commands or infer commands from 
 | Create, list, or inspect projects | `project create`, `project list`, `project show` | [Project management](project-management.md) |
 | Read Team context and projects | `team list`, `team show`, `team projects`, `team default show` | [Project management](project-management.md#team-context) |
 | Manage ordinary Teams | `team create`, `team rename`, `team delete` | [Project management](project-management.md#team-context), [write safety](write-safety.md#team-writes) |
+| Read and manage Team members | `team member list`, `team member set-role`, `team member remove`, `team leave` | [Project management](project-management.md#team-context), [write safety](write-safety.md#team-writes) |
 | Query tasks | `task list`, `task ready`, `task show` | [Task management](task-management.md#task-queries) |
 | Read or maintain Task Steps | `task step list/show/add/update/set-status/move/delete` | [Task Steps](task-management.md#task-steps) |
 | Read task dependency graphs | `task graph <task-id>` | [Verify dependency changes](task-management.md#verify-dependency-changes) |

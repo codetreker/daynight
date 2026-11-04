@@ -1,5 +1,5 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
@@ -46,17 +46,45 @@ const parseTeamRef = (value: unknown): TeamRef => {
   if ((team.kind === "personal") !== (team.name === null)) return malformed();
   return team;
 };
+const teamRole = (value: unknown): TeamRole => value === "member" || value === "admin" ? value : malformed();
+const parseTeamMember = (value: unknown, teamId: string, userId?: string): TeamMember => {
+  const member = fields(value, ["teamId", "userId", "role", "version", "createdAt", "updatedAt"]);
+  const parsed = { teamId: id(member.teamId), userId: id(member.userId), role: teamRole(member.role), version: resourceVersion(member.version), createdAt: timestamp(member.createdAt), updatedAt: timestamp(member.updatedAt) };
+  if (parsed.teamId !== teamId || userId !== undefined && parsed.userId !== userId) return malformed();
+  return parsed;
+};
 export const parseTeam = (value: unknown, userId: string, teamId?: string): Team => {
   const data = fields(value, ["id", "kind", "name", "version", "createdAt", "updatedAt", "membership"]);
   const ref = parseTeamRef({ id: data.id, kind: data.kind, name: data.name });
-  const member = fields(data.membership, ["teamId", "userId", "role", "version", "createdAt", "updatedAt"]);
-  const membership: Team["membership"] = {
-    teamId: id(member.teamId), userId: id(member.userId),
-    role: member.role === "member" || member.role === "admin" ? member.role : malformed(),
-    version: resourceVersion(member.version), createdAt: timestamp(member.createdAt), updatedAt: timestamp(member.updatedAt),
-  };
-  if (membership.teamId !== ref.id || membership.userId !== userId || teamId !== undefined && ref.id !== teamId || ref.kind === "personal" && membership.role !== "admin") return malformed();
+  const membership = parseTeamMember(data.membership, ref.id, userId);
+  if (teamId !== undefined && ref.id !== teamId || ref.kind === "personal" && membership.role !== "admin") return malformed();
   return { ...ref, version: resourceVersion(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt), membership };
+};
+export const parseTeamMembers = (value: unknown, teamId: string, actorId: string): readonly TeamMemberWithProfile[] => {
+  const data = fields(value, ["items"]);
+  const items = array(data.items, (value): TeamMemberWithProfile => {
+    const item = fields(value, ["teamId", "userId", "role", "version", "createdAt", "updatedAt", "profile"]);
+    const { profile: rawProfile, ...rawMember } = item;
+    const member = parseTeamMember(rawMember, teamId);
+    const profile = fields(rawProfile, ["name", "email", "avatarUrl"]);
+    return { ...member, profile: { name: profile.name === null ? null : text(profile.name), email: profile.email === null ? null : text(profile.email), avatarUrl: profile.avatarUrl === null ? null : text(profile.avatarUrl) } };
+  });
+  if (new Set(items.map((item) => item.userId)).size !== items.length || !items.some((item) => item.userId === actorId)) return malformed();
+  return items;
+};
+export const parseTeamMemberRoleReceipt = (value: unknown, actorId: string, previous: TeamMember, role: TeamRole): TeamMemberRoleReceipt => {
+  const data = fields(value, ["membership", "actorRole"]);
+  const membership = parseTeamMember(data.membership, previous.teamId, previous.userId);
+  const actorRole = teamRole(data.actorRole);
+  if (membership.role !== role || membership.createdAt !== previous.createdAt || (previous.role === role ? membership.version !== previous.version || membership.updatedAt !== previous.updatedAt : membership.version <= previous.version) || actorRole !== (actorId === previous.userId ? role : "admin")) return malformed();
+  return { membership, actorRole };
+};
+export const parseRemoveTeamMemberReceipt = (value: unknown, actorId: string, member: TeamMember): RemoveTeamMemberReceipt => {
+  const data = fields(value, ["teamId", "userId", "removed", "actorRole"]);
+  const teamId = id(data.teamId), userId = id(data.userId);
+  const actorRole = data.actorRole === null ? null : teamRole(data.actorRole);
+  if (teamId !== member.teamId || userId !== member.userId || data.removed !== true || (userId === actorId ? actorRole !== null : actorRole !== "admin")) return malformed();
+  return { teamId, userId, removed: true, actorRole };
 };
 export const parseTeamDeleteReceipt = (value: unknown, teamId: string): { readonly teamId: string; readonly deleted: true } => {
   const data = fields(value, ["teamId", "deleted"]);

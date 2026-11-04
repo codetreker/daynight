@@ -30,6 +30,14 @@ the explicit or default Team. Their confirmation, version and uncertain-result
 rules are in [write safety](write-safety.md#team-writes); use the commands' help
 for exact syntax.
 
+Use `team member list` to inspect the selected Team's member directory. With
+authorization, `team member set-role` changes an existing member's role,
+`team member remove` removes a member, and `team leave` removes the current
+user. An ordinary Team must retain an admin; Personal membership is immutable.
+These operations do not change Project grants or the configured default. Their
+membership version, confirmation and receipt rules are in
+[write safety](write-safety.md#team-writes).
+
 ## Register a project
 
 With authorization, use `project create` to register the repository as a project.

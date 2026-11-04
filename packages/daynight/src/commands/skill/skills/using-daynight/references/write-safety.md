@@ -41,6 +41,17 @@ submits the real name and version; it does not waive authorization or service
 preconditions. Without confirmation, a non-interactive call does not write.
 Personal Teams cannot be renamed or deleted, and deletion requires an empty Team.
 
+Use `team member list` to observe the target's real membership version before
+changing its role or removing it; `team leave` uses the current user's membership
+version. Supply the exact positive int64 through `--if-version` for a decision
+based on an earlier observation. A Team version or Project grant version is not
+a membership version. A mismatch with the current observation fails before the
+write; a conflict requires a fresh observation and decision. Membership writes
+also require interactive confirmation or `--confirm`. The service retains an
+admin in ordinary Teams and refuses Personal membership changes. A confirmed
+receipt reports the actor's remaining Team role; self-exit consumes that receipt
+without an additional permission-sensitive Team read.
+
 A lost, cancelled or malformed response can follow a commit. Do not repeat the
 write automatically. Read current facts before another decision, but do not
 claim the original operation succeeded merely because current state matches;
