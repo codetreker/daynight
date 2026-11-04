@@ -32,6 +32,9 @@ and reduces the Bot to deletion responsibility. Filesystem failures and SQL
 rollback never restore admission. A retry tolerates already removed files and
 cannot downgrade a concurrent completed cleanup. Live caches are invalidated
 locally after deletion and on other instances when persistent removal is observed.
+The Controller's preliminary scope lookup must also invalidate on a missing
+Session: it runs before the shared loader, including on socket disconnect.
+Other database errors do not establish removal and preserve cached state.
 
 The [specification](../../../../docs/spec/assistant.md) owns completion semantics
 and the public receipt. The [design](../../../../docs/design/assistant.md) owns

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
@@ -108,5 +109,65 @@ func TestMissingDurableSessionCannotRetainOldLiveCache(t *testing.T) {
 	defer f.s.liveMutex.Unlock()
 	if f.s.live[id] != nil {
 		t.Fatal("missing durable Session retained its old live cache")
+	}
+}
+
+func TestBotDeletionCompletedElsewhereInvalidatesControllerOnlyCache(t *testing.T) {
+	for _, entry := range []string{"poll", "disconnect"} {
+		t.Run(entry, func(t *testing.T) {
+			f, out, _, _ := connectBot(t)
+			ctx := context.Background()
+			id := out.Session.SessionID
+			pending := &pendingContent{fence: out.Session.ControllerFence, request: map[string]any{}, reply: make(chan contentReply, 1)}
+			if _, err := f.s.content.add(pending); err != nil {
+				t.Fatal(err)
+			}
+			files, err := local.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = files.Close() })
+			other := New(f.s.DB)
+			other.files = files
+			request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+			if _, err = other.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {
+				t.Fatal(err)
+			}
+			receipt := botCleanupReceipt(out, request.DeletionID)
+			receipt.Stop.StopProof.Kind = ""
+			done, err := other.CompleteBotDeletion(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, receipt)
+			if err != nil || done.Deletion.ServerCleanup.State != "completed" {
+				t.Fatalf("other instance cleanup: %+v %v", done, err)
+			}
+			f.s.liveMutex.Lock()
+			cached := f.s.live[id] != nil && len(f.s.live[id].value.Events) > 0
+			f.s.liveMutex.Unlock()
+			if !cached {
+				t.Fatal("fixture did not retain the old instance's conversation")
+			}
+			if entry == "poll" {
+				_, err = f.s.Poll(ctx, out.Session.ControllerFence)
+			} else {
+				err = f.s.Disconnect(ctx, out.Session.ControllerFence)
+			}
+			if err == nil {
+				t.Fatal("removed Session accepted a Controller request")
+			}
+			f.s.liveMutex.Lock()
+			cached = f.s.live[id] != nil
+			f.s.liveMutex.Unlock()
+			if cached {
+				t.Fatal("Controller-only observation retained deleted conversation content")
+			}
+			select {
+			case reply := <-pending.reply:
+				botFault(t, reply.err, "resource_conflict")
+				if reply.result != nil {
+					t.Fatal("deleted Session returned pending content")
+				}
+			default:
+				t.Fatal("Controller-only observation retained pending content")
+			}
+		})
 	}
 }
