@@ -74,8 +74,8 @@ describe('completed task chain visibility', () => {
     expect(screen.getByLabelText('显示 2 条，共 4 条任务链')).toHaveTextContent('2 / 4');
     expect([count('任务总数'), count('已完成'), count('待处理')]).toEqual(['8', '5', '3']);
     fireEvent.click(graphButton('00000000-0000-4000-8000-000000000001'));
-    expect(within(root('00000000-0000-4000-8000-000000000001')).getByText('进行中')).toBeVisible();
-    expect(root('00000000-0000-4000-8000-000000000001').querySelector('.root-status')).toHaveClass('graph-status-in_progress');
+    expect(within(root('00000000-0000-4000-8000-000000000001').parentElement!).getByText('进行中')).toBeVisible();
+    expect(root('00000000-0000-4000-8000-000000000001').parentElement!.querySelector('.root-status')).toHaveClass('graph-status-in_progress');
     const projection = screen.getByTestId('projection');
     expect([...projection.querySelectorAll('[data-node-id]')].map((item) => item.getAttribute('data-node-id'))).toEqual(['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']);
     expect([...projection.querySelectorAll('[data-edge]')].map((item) => item.getAttribute('data-edge'))).toEqual(['00000000-0000-4000-8000-000000000001->00000000-0000-4000-8000-000000000002']);
