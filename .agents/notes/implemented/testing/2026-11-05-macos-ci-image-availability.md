@@ -13,6 +13,11 @@ The [C1 platform requirement](../../../../docs/spec/daynight.md#c1-包与平台)
 Apple Silicon ARM64 without requiring macOS 26. Another supported ARM64 image
 can preserve that boundary while changing the selected hosted image.
 
+Native execution also exposed a preparation precondition in identity-swap
+fixtures: renaming their read-only cache directory could fail before the product
+identity guard was exercised. The fixture must create the intended replacement
+portably while preserving the original read-only state seen by that guard.
+
 ## Decision
 
 The native macOS phases select explicit standard `macos-15`. The
@@ -33,6 +38,23 @@ places both phases in one 20-minute job with separate 10-minute validation
 bounds. Race policy and final checks retain their settings. The
 [development guide](../../../../docs/development.md) owns the current image and
 validation commands. There is no automatic fallback selection mechanism.
+
+### Portable identity-swap fixtures
+
+[Apple's rename documentation](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/rename.2.html)
+records the write-disabled directory restriction even when a rename keeps the
+same parent. The fixture actor uses the handle bound to its original cache inode
+to enable write permission only for the rename, then restores `0555` in `finally`
+before the product operation resumes. A swap intercepted during `chmod` restores
+that state first, then delegates the product's requested mode through the same
+original handle. The held-inode `0755` proof, foreign-directory `0555` state,
+data and identity assertions retain their original meaning.
+
+The product cleanup algorithm and refusal behavior remain unchanged. The actor
+must complete the actual swap before its guard assertions can establish the
+intended interleaving; an operating-system setup error cannot substitute for
+that observation. This is a portability precondition for qualification on the
+selected native image, with fresh macOS execution still required.
 
 ## Alternatives
 
