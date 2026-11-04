@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	"github.com/google/uuid"
 )
 
@@ -30,6 +31,7 @@ func TestInstalledCLIProjectParticipantsAcceptance(t *testing.T) {
 		ownership := project.Ownership
 		profile := api.ProjectParticipantProfile{Name: user.Name, Email: user.Email, AvatarURL: user.AvatarURL}
 		ordinaryID := uuid.NewString()
+		participantCount := 1
 		for _, name := range []string{"canonical_profile", "nullable_profile", "direct_only", "inherited_only", "mixed_sources"} {
 			t.Run(name, func(t *testing.T) {
 				if name == "nullable_profile" {
@@ -40,8 +42,23 @@ func TestInstalledCLIProjectParticipantsAcceptance(t *testing.T) {
 				var teamRole any = "admin"
 				switch name {
 				case "direct_only":
+					browser := testauth.Browser(t)
+					testauth.Login(t, browser, process.origin, "bob")
+					response, err := browser.Get(process.origin + "/api/v1/me")
+					if err != nil {
+						t.Fatal("cannot read ordinary Team administrator")
+					}
+					var teamAdmin api.User
+					decodeErr := json.NewDecoder(response.Body).Decode(&teamAdmin)
+					closeErr := response.Body.Close()
+					if response.StatusCode != http.StatusOK || decodeErr != nil || closeErr != nil || teamAdmin.ID == user.ID {
+						t.Fatal("ordinary Team administrator is not a distinct canonical user")
+					}
+					browser.CloseIdleConnections()
 					fixture.exec(t, "INSERT INTO teams(id,name) VALUES($1,'Installed owner')", ordinaryID)
+					fixture.exec(t, "INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')", ordinaryID, teamAdmin.ID)
 					fixture.exec(t, "UPDATE project_ownership SET team_id=$2,version=version+1 WHERE project_id=$1", project.ID, ordinaryID)
+					participantCount = 2
 					ownerTeam = api.TeamRef{ID: ordinaryID, Kind: "ordinary", Name: new("Installed owner")}
 					ownership = api.ProjectOwnership{TeamID: ordinaryID, Version: 2}
 					teamRole = nil
@@ -63,6 +80,7 @@ func TestInstalledCLIProjectParticipantsAcceptance(t *testing.T) {
 					"profile": profile, "version": "9007199254740993",
 					"ownerTeam": ownerTeam, "ownership": ownership,
 					"inheritedFrom": inheritedFrom, "directRole": directRole, "teamRole": teamRole,
+					"participantCount": participantCount,
 				})
 				if err != nil {
 					t.Fatal("cannot encode private participant API input")
@@ -99,8 +117,9 @@ try {
   } });
   const participants = await client.listProjectMembers(config.projectId);
   assert.equal(requests, 1);
-  assert.equal(participants.length, 1);
-  const participant = participants[0];
+  assert.equal(participants.length, config.participantCount);
+  const participant = participants.find(item => item.userId === config.userId);
+  assert.notEqual(participant, undefined);
   assert.deepEqual(Object.keys(participant).sort(), ["directGrant", "effectiveRole", "inheritedFrom", "profile", "userId"]);
   assert.equal(participant.userId, config.userId);
   assert.equal(participant.effectiveRole, "admin");
@@ -118,6 +137,8 @@ try {
     assert.equal(participant.directGrant.version, BigInt(config.version));
   }
   const raw = JSON.parse(wire);
+  const rawParticipant = raw.items.find(item => item.userId === config.userId);
+  assert.notEqual(rawParticipant, undefined);
   assert.deepEqual(Object.keys(raw).sort(), ["actorAccess", "items"]);
   assert.deepEqual(Object.keys(raw.actorAccess).sort(), ["canTransfer", "directGrant", "effectiveRole", "ownerTeam", "ownership", "projectId", "teamRole"]);
   assert.equal(raw.actorAccess.projectId, config.projectId);
@@ -127,13 +148,13 @@ try {
   assert.equal(raw.actorAccess.teamRole, config.teamRole);
   assert.equal(raw.actorAccess.canTransfer, config.teamRole === "admin");
   assert.equal(raw.actorAccess.directGrant?.role ?? null, config.directRole);
-  assert.deepEqual(raw.items[0].inheritedFrom, participant.inheritedFrom);
-  assert.deepEqual(Object.keys(raw.items[0]).sort(), ["directGrant", "effectiveRole", "inheritedFrom", "profile", "userId"]);
-  assert.deepEqual(raw.items[0].profile, config.profile);
+  assert.deepEqual(rawParticipant.inheritedFrom, participant.inheritedFrom);
+  assert.deepEqual(Object.keys(rawParticipant).sort(), ["directGrant", "effectiveRole", "inheritedFrom", "profile", "userId"]);
+  assert.deepEqual(rawParticipant.profile, config.profile);
   if (config.directRole !== null) {
     assert.match(wire, new RegExp('"version"\\s*:\\s*' + config.version + '(?=[,}])'));
-    assert.equal(participant.directGrant.createdAt, raw.items[0].directGrant.createdAt);
-    assert.equal(participant.directGrant.updatedAt, raw.items[0].directGrant.updatedAt);
+    assert.equal(participant.directGrant.createdAt, rawParticipant.directGrant.createdAt);
+    assert.equal(participant.directGrant.updatedAt, rawParticipant.directGrant.updatedAt);
   }
 } finally {
   operation.dispose();
