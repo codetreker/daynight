@@ -29,7 +29,7 @@ const functionalScenarios = ['project-list', 'project-graph', 'detail-navigation
   'language-startup-preferences', 'language-state-preservation', 'language-errors-and-narrow',
   'task-description-markdown', 'task-status', 'task-status-conflicts', 'task-status-recovery', 'task-status-transitions', 'task-agent-permission', 'task-platform', 'task-assignment', 'task-assignment-layout',
   'auth-login-session', 'auth-project-isolation', 'auth-project-members', 'auth-personal-tokens',
-  'auth-invitations', 'auth-resource-session', 'project-settings', 'task-execution-time', 'task-pause'] as const;
+  'auth-invitations', 'auth-resource-session', 'project-settings', 'task-execution-time', 'task-pause', 'task-step-status', 'task-step-access-retirement'] as const;
 const capacityScenarios = ['capacity-chain', 'capacity-merge', 'capacity-shared', 'capacity-external', 'capacity-limits'] as const;
 
 const json = async (path: string, value: unknown): Promise<void> => {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/client";
 import { parseApiJson, stringifyApiJson } from "../src/api/json";
-import { getTaskSteps, parseTaskSteps } from "../src/api/task-steps";
+import { getTaskSteps, parseTaskSteps, setTaskStepStatus } from "../src/api/task-steps";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
 const taskId = "20000000-0000-0000-0000-00000000000b";
@@ -29,6 +29,17 @@ describe("complete Steps resources", () => {
 });
 
 describe("Steps transport", () => {
+  it("sends one scoped status write with the exact version and request identity", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response(resource)); vi.stubGlobal("fetch", fetcher);
+    const owner = { ...admission(), onWriteConfirmed: vi.fn() }; const signal = new AbortController().signal;
+    await expect(setTaskStepStatus(projectId, taskId, "0000000A", "skipped", resource.version, signal, owner, "request-id")).resolves.toEqual(resource);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a/status`, expect.objectContaining({ method: "PUT", body: '{"version":9223372036854775807,"status":"skipped"}', headers: expect.objectContaining({ "X-Request-ID": "request-id" }) }));
+    expect(owner.onWriteConfirmed).toHaveBeenCalledOnce();
+  });
+  it("preserves Steps capacity details and the service message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ error: { code: "steps_limit_exceeded", message: "Resource too large.", requestId: "r1", details: { encodedBytes: 67108865, maxEncodedBytes: 67108864 } } }, 409)));
+    await expect(setTaskStepStatus(projectId, taskId, "0000000a", "todo", 1n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ kind: "server", code: "steps_limit_exceeded", serverMessage: "Resource too large.", stepsLimit: { encodedBytes: 67108865, maxEncodedBytes: 67108864 } });
+  });
   it("uses canonical scope, credentials, no-store, exact version and one GET", async () => {
     const fetcher = vi.fn().mockResolvedValue(response(resource));
     vi.stubGlobal("fetch", fetcher);

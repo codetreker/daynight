@@ -42,19 +42,19 @@ const functionalNames = ['project-list', 'project-graph', 'detail-navigation', '
   'failure-recovery', 'deep-links', 'keyboard-focus', 'narrow-layout', 'task-attachments', 'task-detail-page', 'project-view-tabs',
   'language-startup-preferences', 'language-state-preservation', 'language-errors-and-narrow',
   'task-description-markdown', 'task-status', 'task-status-conflicts', 'task-status-recovery', 'task-status-transitions', 'task-agent-permission', 'task-platform', 'task-assignment', 'task-assignment-layout',
-  'auth-login-session', 'auth-project-isolation', 'auth-project-members', 'auth-personal-tokens', 'auth-invitations', 'auth-resource-session', 'project-settings', 'task-execution-time', 'task-pause'] as const;
+  'auth-login-session', 'auth-project-isolation', 'auth-project-members', 'auth-personal-tokens', 'auth-invitations', 'auth-resource-session', 'project-settings', 'task-execution-time', 'task-pause', 'task-step-status', 'task-step-access-retirement'] as const;
 const capacityNames = ['capacity-chain', 'capacity-merge', 'capacity-shared', 'capacity-external', 'capacity-limits'] as const;
 const stressNativeNames = [...functionalNames, ...capacityNames];
 const scenario = (name: string): Scenario => ({ name, title: name, durationMs: 12, screenshots: [`/owned/${name}.png`] });
 
 test('keeps functional and explicit local stress inventory totals distinct', () => {
-  assert.equal(functionalNames.length, 32);
-  assert.equal(functionalNames.length * 2, 64);
-  assert.equal(stressNativeNames.length, 37);
-  assert.equal(stressNativeNames.length + functionalNames.length, 69);
+  assert.equal(functionalNames.length, 34);
+  assert.equal(functionalNames.length * 2, 68);
+  assert.equal(stressNativeNames.length, 39);
+  assert.equal(stressNativeNames.length + functionalNames.length, 73);
 });
 
-test('verifies exactly thirty-two functional scenarios for the container target', () => {
+test('verifies exactly thirty-four functional scenarios for the container target', () => {
   const scenarios = readReport(report([...functionalNames]), functionalNames);
   assert.equal(scenarios.length, functionalNames.length);
   assert.deepEqual(scenarios.map(({ name }) => name), functionalNames);

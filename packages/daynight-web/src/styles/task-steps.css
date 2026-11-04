@@ -22,7 +22,14 @@
 .step-title { color: #344258; font-size: 12px; font-weight: 500; line-height: 1.65; overflow-wrap: anywhere; }
 .step-controls { display: flex; align-items: center; gap: 11px; flex: none; }
 .step-id { display: inline-block; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; color: #929bac; user-select: all; }
-.step-status { display: inline-block; padding: 4px 8px; border: 1px solid; border-radius: 5px; font-size: 10px; white-space: nowrap; }
+.step-status-picker { position: relative; }
+.step-status { display: inline-block; padding: 4px 8px; border: 1px solid; border-radius: 5px; font: inherit; font-size: 10px; white-space: nowrap; cursor: pointer; }
+.step-status:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }
+.step-status[aria-disabled=true] { cursor: not-allowed; opacity: .7; }
+.step-status-reason { display: none; position: absolute; z-index: 51; top: calc(100% + 5px); right: 0; width: 200px; max-width: calc(100vw - 32px); padding: 8px; border: 1px solid #dce0e8; border-radius: 5px; background: #fff; color: #344258; font-size: 11px; box-shadow: 0 4px 12px #17244726; }
+.step-status-picker:hover .step-status-reason, .step-status:focus-visible + .step-status-reason { display: block; }
+.step-status-picker .task-status-option span:first-child { flex: 1; }
+.step-status-menu { inset: auto; margin: 0; box-sizing: border-box; max-height: calc(100dvh - 16px); overflow-y: auto; }
 .step-status-todo { background: #f0f2f6; color: #737f92; border-color: #e6e9ef; }
 .step-status-in_progress { background: #edf2ff; color: #4e74bd; border-color: #dce6fa; }
 .step-status-done { background: #eaf5ef; color: #438365; border-color: #dbece2; }

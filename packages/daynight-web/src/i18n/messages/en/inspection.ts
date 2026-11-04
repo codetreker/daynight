@@ -10,6 +10,12 @@ export const inspection: InspectionMessages = {
     count: (count) => `${count} steps`, status: { todo: "To do", in_progress: "In progress", done: "Done", skipped: "Skipped" },
     created: "Created", updated: "Updated", pagination: "Steps pages", previous: "Previous", next: "Next", page: "Page",
     range: (start, end, total) => `${start}–${end} of ${total} steps`,
+    statusMenu: (title) => `Status for ${title}`, statusUnavailable: "Wait for the current task and steps to be checked before changing status.",
+    conflict: "The task changed. Read the current steps before choosing a status again.", unknown: "The status change outcome is unknown. Read the current steps before another change.",
+    checkState: "Read current steps", checking: "Reading current steps", checkFailed: "Current steps could not be checked. Changes remain unavailable.",
+    statusRefused: "The server refused the status change.", statusMissing: "This step was not found. Read the current steps before choosing again.", statusDenied: "You do not have permission to change this step.",
+    statusExhausted: "The task version is exhausted; this change cannot be saved.", statusCapacity: "This change would exceed the steps resource size limit.", statusInvalid: "The server rejected the status request as invalid.",
+    capacityDetails: (encoded, maximum) => `Encoded size: ${encoded} bytes; limit: ${maximum} bytes.`,
   },
   draftNavigation: {
     title: 'Discard unsaved changes?', question: 'Leave this task and discard your unsaved changes?',

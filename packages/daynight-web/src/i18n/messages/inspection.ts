@@ -12,6 +12,11 @@ export type InspectionMessages = {
     readonly created: string; readonly updated: string;
     readonly pagination: string; readonly previous: string; readonly next: string; readonly page: string;
     readonly range: (start: string, end: string, total: string) => string;
+    readonly statusMenu: (title: string) => string; readonly statusUnavailable: string;
+    readonly conflict: string; readonly unknown: string; readonly checkState: string; readonly checking: string; readonly checkFailed: string;
+    readonly statusRefused: string; readonly statusMissing: string; readonly statusDenied: string;
+    readonly statusExhausted: string; readonly statusCapacity: string; readonly statusInvalid: string;
+    readonly capacityDetails: (encoded: string, maximum: string) => string;
   };
   readonly draftNavigation: {
     readonly title: string; readonly question: string; readonly explanation: string; readonly discard: string; readonly keep: string; readonly close: string;
