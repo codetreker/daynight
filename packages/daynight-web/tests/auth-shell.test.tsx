@@ -951,21 +951,23 @@ describe("authenticated application shell", () => {
   });
 
   it("clears the workspace and stops automatic graph reads after a resource401", async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     window.history.replaceState(null, "", `/projects/${projectId}`);
     let expired = false;
     const fetcher = install((url) => expired && isTaskSync(url) ? fail(401, "unauthenticated") : defaults(url));
-    await act(async () => { render(<AuthenticatedApp />); });
-    await vi.waitFor(async () => {
-      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-      expect(screen.getByRole("heading", { name: "私有项目" })).toBeInTheDocument();
+    const initialSync = Promise.withResolvers<void>();
+    const applySync = TaskCacheScope.prototype.applySync;
+    vi.spyOn(TaskCacheScope.prototype, "applySync").mockImplementation(function (this: TaskCacheScope, ...args) {
+      const result = applySync.apply(this, args);
+      void result.then(() => initialSync.resolve(), initialSync.reject);
+      return result;
     });
+    await act(async () => { render(<AuthenticatedApp />); });
+    await act(async () => initialSync.promise);
+    expect(screen.getByRole("heading", { name: "私有项目" })).toBeInTheDocument();
     expired = true;
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-    await vi.waitFor(async () => {
-      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-      expect(screen.getByRole("heading", { name: "登录你的工作空间" })).toBeInTheDocument();
-    });
+    await screen.findByRole("heading", { name: "登录你的工作空间" });
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
     const graphReads = () => fetcher.mock.calls.filter(([url]) => isTaskSync(url)).length;
     expect(graphReads()).toBe(2);
