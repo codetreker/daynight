@@ -294,8 +294,6 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 | `POST /api/v1/projects` | 创建 project |
 | `GET /api/v1/projects` | 分页列出 project |
 | `GET /api/v1/projects/{projectId}` | 获取 project |
-| `PUT/DELETE /api/v1/projects/{projectId}/grants/{userId}` | 按真实 grant 的存在性及版本管理独立授权 |
-| `POST /api/v1/projects/{projectId}/transfer-preview`、`POST /api/v1/projects/{projectId}/transfer` | 预览并按归属与目标版本转移项目 |
 | `PATCH /api/v1/projects/{projectId}/settings` | 管理员按观察设置版本保存分钟阈值，返回完整 Project |
 | `POST /api/v1/projects/{projectId}/tasks` | 创建 `todo` task |
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
