@@ -99,6 +99,12 @@ runtime 从已读回 ticket 条件构造 `ProviderOptions.instructions`，新建
 
 生成新 generation 的生产者负责携带已冻结的原文。journal 保存整份 ticket hash 和原执行/停止/native 身份，不增加角色副本或角色变更机制；它不能独立判断生产者是否在两代间换了模板。Bot 的版本化模板、首次准备与服务端冻结不由这个共享层承担。三种 Provider 的原生追加映射也有各自实现与运行验收；共享透传不宣称原生追加或完整 Bot 托管已经可用。取舍见[角色传递决策](../../.agents/notes/implemented/architecture/2026-11-04-controller-role-instructions.md)。
 
+### Claude 角色追加
+
+Claude adapter 在新建和 resume 共用的 `query` options 中，将存在的 `instructions` 映射为 `systemPrompt: { type: "preset", preset: "claude_code", append: instructions }`。preset 保留 Claude Code 原生基础提示，append 接收完整原文；没有角色时不设置 `systemPrompt`。角色不进入 `InputStream`，因此初始化无需构造用户需求或创建 turn。
+
+此映射独立于 `sessionId`/`resume` 选择及新建时的 model、effort、permissionMode、sandbox 配置。恢复前仍验证历史的原 native identity 与 cwd，恢复时不覆盖已保存设置。审批仍等待 matching native tool result，初始化异常继续关闭 query，流丢失继续使未确认操作保持未知。适配器不拥有角色冻结存储；调用者负责提供同一冻结文本。选择依据见 [Claude 追加角色决策](../../.agents/notes/implemented/architecture/2026-11-04-claude-role-append.md)。
+
 ### Copilot SDK 与私有 runtime
 
 Copilot adapter 固定使用 `@github/copilot-sdk` 1.0.11 与随包安装的 `@github/copilot` 1.0.83。Controller 直接 spawn CLI 对应平台 binary 的 `--headless --no-auto-update`，避免 npm launcher 的同步包装进程遮蔽真实 PID。随机连接 token 通过私有子进程环境传入，SDK 以 `RuntimeConnection.forUri` 连接该进程的 loopback TCP endpoint；这条连接既不共享其他 runtime，也不承载 TUI。真实 child 经 `onSpawn` 登记进程身份，继承 Controller 的 POSIX 进程组或 Windows Job 约束，沿用统一停止证明。
