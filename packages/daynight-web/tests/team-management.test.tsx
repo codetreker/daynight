@@ -49,6 +49,13 @@ describe("Team management", () => {
     create(); fireEvent.change(screen.getByLabelText(/Team name/), { target: { value: "Name" } }); fireEvent.click(screen.getByRole("button", { name: "Create Team" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("unknown"); expect(createTeam).toHaveBeenCalledTimes(1); expect(created).not.toHaveBeenCalled();
   });
+  it("blocks a repeated submission before unknown state has rendered", async () => {
+    const response = Promise.withResolvers<Team>(); vi.mocked(createTeam).mockImplementation(async (_id, _name, _signal, _mismatch, dispatch) => { dispatch(); return response.promise; });
+    create(); fireEvent.change(screen.getByLabelText(/Team name/), { target: { value: "Name" } }); const form = document.getElementById("create-team-form")!;
+    fireEvent.submit(form); await waitFor(() => expect(createTeam).toHaveBeenCalledTimes(1));
+    await act(async () => { response.reject(new ApiError("network")); for (let i = 0; i < 10; i++) await Promise.resolve(); fireEvent.submit(form); });
+    expect(await screen.findByRole("alert")).toHaveTextContent("unknown"); expect(createTeam).toHaveBeenCalledTimes(1);
+  });
   it("keeps Personal and member settings read-only", async () => {
     vi.mocked(getTeam).mockResolvedValueOnce(team("Member", 1n, "member")); settings();
     expect(await screen.findByDisplayValue("Member")).toBeDisabled(); expect(screen.getByRole("button", { name: "Delete Team" })).toBeDisabled();

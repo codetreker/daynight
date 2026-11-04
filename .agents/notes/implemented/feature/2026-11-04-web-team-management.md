@@ -19,6 +19,8 @@ and precise version. Creation and rename use direct form submission. Identity
 admission and response validation bind each mutation to its actor; uncertain
 writes remain unknown and offer reads without replay. Successful creation and
 deletion navigate through the existing account-scoped Team preference.
+Settings retain their draft, confirmation and operation result across same-user
+identity checks; a Team read cannot replace a pending or unknown mutation result.
 
 ## Alternatives
 
