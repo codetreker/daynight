@@ -16,7 +16,6 @@ type WorkspaceSidebarProps = {
   readonly routeKey: string;
   readonly projectsActive: boolean;
   readonly workersActive?: boolean;
-  readonly accountActive: boolean;
   readonly activeProjectId: string | null;
   readonly testSessionsActive?: boolean;
   readonly identityChecking: boolean;
@@ -24,7 +23,7 @@ type WorkspaceSidebarProps = {
   readonly onNavigate: () => void;
 };
 
-export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, workersActive = false, accountActive, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate }: WorkspaceSidebarProps) => {
+export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, workersActive = false, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate }: WorkspaceSidebarProps) => {
   const { messages: { auth: { shell: m }, workspace: { app, projects: p } } } = useI18n();
   const projects = useProjectList();
   const testMessages = useTestSessionListMessages();
@@ -132,7 +131,6 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
         </nav>
       </div>
       <div className="sidebar-bottom">
-        <a className="nav-button account-nav" href="/account" onClick={follow} aria-label={m.accountSettings} title={m.accountSettings} aria-current={accountActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">◎</span><span className="nav-text">{m.accountSettings}</span></a>
         <div className="sidebar-workspace">{m.teamWorkspace}<small>{app.localWorkspaceDetail}</small></div>
         <button ref={toggle} className="sidebar-toggle" type="button" aria-controls="workspace-sidebar" aria-expanded={expanded} aria-label={toggleLabel} title={toggleLabel} onClick={() => {
           if (!narrow) onToggle();

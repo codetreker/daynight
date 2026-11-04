@@ -19,7 +19,7 @@ export type AuthMessages = {
     readonly members: string;
     readonly projectSettings: string;
     readonly teamWorkspace: string;
-    readonly accountLink: (args: { readonly name: string }) => string;
+    readonly accountMenu: (args: { readonly name: string }) => string;
     readonly currentAccount: string;
     readonly genericProject: string;
     readonly accessUnavailable: string;

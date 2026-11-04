@@ -31,6 +31,7 @@ import { LanguageSelector } from "../i18n/LanguageSelector";
 import { WorkersPage } from "../features/workers/WorkersPage";
 import { WorkerDetailPage } from "../features/workers/WorkerDetailPage";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
+import { AccountMenu } from "./AccountMenu";
 import { useSidebarPreference } from "./useSidebarPreference";
 import { useBrowserLocation } from './browser-location';
 import "../styles/auth.css";
@@ -79,7 +80,7 @@ const Workspace = ({ user, children, route, onSignOut, blocked, identityChecking
   useLayoutEffect(() => { content.current?.focus(); }, [route.kind, resourceId]);
   return (
     <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}${route.kind === "testSession" ? " test-session-shell" : ""}`} aria-hidden={blocked} inert={blocked}>
-      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + (resourceId === null ? "" : `:${resourceId}`)} projectsActive={route.kind === "projects"} workersActive={route.kind === "workers" || route.kind === "worker"} activeProjectId={"projectId" in route ? route.projectId : null} accountActive={route.kind === "account"} testSessionsActive={route.kind === "testSessions" || route.kind === "testSession"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
+      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + (resourceId === null ? "" : `:${resourceId}`)} projectsActive={route.kind === "projects"} workersActive={route.kind === "workers" || route.kind === "worker"} activeProjectId={"projectId" in route ? route.projectId : null} testSessionsActive={route.kind === "testSessions" || route.kind === "testSession"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
       <div className="workspace" ref={workspace}>
         <a className="skip-link" href="#main-content">{app.skipToContent}</a>
         <header className="topbar">
@@ -87,7 +88,7 @@ const Workspace = ({ user, children, route, onSignOut, blocked, identityChecking
           <div className="account-actions">
             <a className="setup-guide-link" href="/setup" target="_blank" rel="noopener noreferrer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v15M3 4h5a5 5 0 0 1 4 2 5 5 0 0 1 4-2h5v15h-5a5 5 0 0 0-4 2 5 5 0 0 0-4-2H3z" /></svg>{setup.navigation}</a>
             <LanguageSelector />
-            <a className="account-button" href="/account" onClick={followLink} aria-label={m.accountLink({ name: accountLabel(user, m.currentAccount) })}><span className="avatar" aria-hidden="true">{accountLabel(user, m.currentAccount).slice(0, 1).toUpperCase()}</span><span className="account-name">{accountLabel(user, m.currentAccount)}</span></a>
+            <AccountMenu name={accountLabel(user, m.currentAccount)} />
             <button className="inline-link" type="button" onClick={onSignOut}>{m.signOut}</button>
           </div>
         </header>

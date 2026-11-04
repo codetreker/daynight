@@ -23,7 +23,6 @@
 .auth-shell .sidebar-project-action:hover { color: #fff; }
 .auth-shell .sidebar-project-action:disabled { opacity: .6; cursor: wait; }
 .auth-shell .sidebar-bottom { display: block; flex: none; padding: 14px 0 0; overflow-wrap: anywhere; }
-.auth-shell .sidebar-bottom .account-nav { margin: 0; }
 .auth-shell .sidebar-workspace { padding: 14px 12px 0; }
 .auth-shell .sidebar-toggle { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 12px; padding: 8px; border: 1px solid #ffffff24; border-radius: 6px; background: transparent; color: #b1bdd0; font-size: 11px; }
 .auth-shell .sidebar-toggle > :first-child { font-size: 23px; line-height: 20px; }

@@ -447,7 +447,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     heldChecks[1]!.release();
     await heldChecks[1]!.completed;
     await expect(page.locator('body')).not.toHaveClass(/auth-session-checking/);
-    await expect(page.getByRole('link', { name: '账户设置：Alice', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '账户菜单：Alice', exact: true })).toBeVisible();
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
     pendingGraphWindows.push({ identity: 'changed-user', baseline: changedUserGraphBaseline, beforeRelease: graphRequests.length });
     const deniedGraph = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${own.id}/task-sync`
@@ -459,7 +459,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(graphRefusal.status()).toBe(404);
     expect(graphRefusal.headers()['daynight-user-id']).toBe(bobUser.id);
     expect((await graphRefusal.json() as { error: { code: string } }).error.code).toBe('not_found');
-    await expect(page.getByRole('link', { name: '账户设置：Bob', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '账户菜单：Bob', exact: true })).toBeVisible();
     await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
     await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
@@ -613,7 +613,7 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   expect((await active.json() as { items: { id: string }[] }).items.map((item) => item.id)).toContain(metadata.id);
   await browserAuthentication(context, baseURL, 'bob');
   await page.goto('/projects');
-  await expect(page.getByRole('link', { name: '账户设置：Bob', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '账户菜单：Bob', exact: true })).toBeVisible();
   await openInvitation(page, metadata.link);
   await expect(page.getByRole('heading', { name: '你受邀加入一个项目' })).toBeVisible();
   await expect(page.locator('.invite-account .person-name')).toHaveText('Bob');

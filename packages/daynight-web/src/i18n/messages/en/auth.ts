@@ -16,7 +16,7 @@ export const auth: AuthMessages = {
     projectSettings: "Project settings",
     members: "Project members",
     teamWorkspace: "Team workspace",
-    accountLink: ({ name }) => `Account settings: ${name}`,
+    accountMenu: ({ name }) => `Account menu: ${name}`,
     currentAccount: "Current account",
     genericProject: "Project",
     accessUnavailable: "Project not found or access unavailable",

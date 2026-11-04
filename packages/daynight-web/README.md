@@ -123,10 +123,13 @@ mobile navigation and are hidden in the folded rail. Initial loading, empty and
 failed reads have localized feedback and retry; Load more traverses subsequent
 pages without removing earlier links on failure.
 
-The existing `/account` entry and sidebar toggle stay in the footer. Desktop widths are
-190px expanded and 68px collapsed. The footer stays reachable on long pages and
-short viewports; icon entries retain accessible names, hover titles and selected
-route styling. The topbar account link keeps its name and behavior.
+The sidebar toggle stays in the footer. Desktop widths are 190px expanded and
+68px collapsed. The footer stays reachable on long pages and short viewports;
+icon entries retain accessible names, hover titles and selected route styling.
+The topbar avatar opens an account menu whose Account settings item navigates to
+`/account`. The localized trigger exposes its expanded state; keyboard access,
+outside-click and Escape dismissal, focus restoration after Escape, and route
+change dismissal keep the menu usable across desktop and narrow viewports.
 
 `useSidebarPreference` saves only a JSON boolean under the origin-local
 `daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
@@ -147,8 +150,8 @@ policy. Sidebar changes preserve the mounted project, cache, detail and graph
 viewport without another request or synchronization loop. The
 [sidebar preference decision](../../.agents/notes/implemented/feature/2026-10-25-sidebar-preference.md)
 owns these state boundaries; the
-[account navigation decision](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
-owns bottom placement. Cross-tab live updates and server or cross-device
+[account menu decision](../../.agents/notes/implemented/feature/2026-11-04-topbar-account-menu.md)
+owns account entry placement. Cross-tab live updates and server or cross-device
 synchronization are outside the local persistence guarantee.
 
 Task details expose the versioned automatic-execution permission: one bilingual

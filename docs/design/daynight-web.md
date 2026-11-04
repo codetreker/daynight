@@ -67,13 +67,17 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 `AuthenticatedApp` 的 Workspace 保持路由、认证屏障与正文所有权，`WorkspaceSidebar`
 负责导航呈现。侧栏分为可滚动的 `.sidebar-main` 和不收缩的 `.sidebar-bottom`：
-前者持有品牌、“我的项目”及缩进项目列表、与之平级的“我的 Worker”主入口，后者持有同一个 `/account` 链接、工作区说明及切换按钮。
+前者持有品牌、“我的项目”及缩进项目列表、与之平级的“我的 Worker”主入口，后者持有工作区说明及切换按钮。
 项目子项消费与项目列表页面相同的分页目录，直接复用导航 `follow` 的路由和修饰键处理。
 普通列表和链接提供层级语义；完整名称作为链接名称及 title，视觉文字允许省略。
 项目、成员及设置路由将 projectId 传给侧栏选中对应子项，项目父入口只在 `/projects` 选中；`/workers` 及 Worker 详情共同激活 Worker 入口。Worker 资源 ID 同时进入 Workspace 正文焦点 effect 与侧栏 routeKey，详情组件另以 workerId 作为 key，A/B 切换不会沿用旧抽屉或资源请求。
 桌面折叠和手机竖条以 `display: none` 排除项目子项交互，展开桌面或手机覆盖导航时显示。
-sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部入口。
+sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部切换按钮。
 链接的 `aria-current` 提供当前路由或项目选中态；主入口的图标、可访问名称及悬停提示在竖条中仍然可用。
+
+顶栏头像和姓名触发账户菜单，菜单中的“账户设置”沿用 `/account` 路由。触发器暴露本地化
+名称及展开状态，菜单支持键盘访问；触发器再次点击、外部点击、Escape 和页面切换关闭菜单，
+Escape 后焦点回到触发器。菜单限制在视口内，适应窄屏、长姓名和默认头像。
 
 `useSidebarPreference` 独立管理桌面 `collapsed`。origin-local
 `daynight.web.sidebar.collapsed` 只接受 JSON boolean，缺失时为 false 且不写入。
@@ -93,8 +97,8 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 侧栏状态不参与用户、项目、缓存或详情的 React key。宽度变化仅改变布局，图沿用已有
 尺寸观察，不重新初始化视口或增加读取、缓存及轮询器。跨标签实时同步与服务端同步可独立
 扩展，当前记录只表示一个本地外观值。[侧栏偏好决策](../../.agents/notes/implemented/feature/2026-10-25-sidebar-preference.md)
-拥有状态、错误与身份边界的取舍；[账户导航决策](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
-保留底部入口布局的原始理由。
+拥有状态、错误与身份边界的取舍；[账户菜单决策](../../.agents/notes/implemented/feature/2026-11-04-topbar-account-menu.md)
+拥有当前入口及其替代底部入口的理由。
 
 ### 我的 Worker 列表与详情
 
