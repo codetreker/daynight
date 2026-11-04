@@ -101,6 +101,9 @@ var taskStepsSQL string
 //go:embed migrations/031_terminal_sessions.sql
 var terminalSessionsSQL string
 
+//go:embed migrations/032_personal_project_ownership.sql
+var personalProjectOwnershipSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -140,6 +143,7 @@ var schemaMigrations = []migration{
 	{version: 29, sql: taskThreadsSQL},
 	{version: 30, sql: taskStepsSQL},
 	{version: 31, sql: terminalSessionsSQL},
+	{version: 32, sql: personalProjectOwnershipSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

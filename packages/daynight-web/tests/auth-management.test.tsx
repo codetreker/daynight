@@ -218,10 +218,10 @@ describe('authoritative project management', () => {
     expect(screen.getByText('Very long project name · 管理协作成员与加入邀请')).toBeInTheDocument();
   });
 
-  it('protects the last admin and submits exact observed int64 version on confirmed promotion', async () => {
+  it('allows the last direct admin to change grants and submits the exact observed int64 version on confirmed promotion', async () => {
     const change = vi.fn(); members({ onMembershipChange: change }); await readyMembers();
-    expect(screen.getByRole('combobox', { name: 'Jianjun 的项目角色' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '移除 Jianjun' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Jianjun 的项目角色' })).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: '移除 Jianjun' })).not.toBeDisabled();
     fireEvent.change(screen.getByRole('combobox', { name: 'Alice 的项目角色' }), { target: { value: 'admin' } });
     expect(auth.setMemberRole).not.toHaveBeenCalled();
     await dialogClick('取消'); expect(screen.getByRole('combobox', { name: 'Alice 的项目角色' })).toHaveValue('member');
@@ -259,18 +259,63 @@ describe('authoritative project management', () => {
     vi.mocked(auth.listMembers).mockResolvedValueOnce([member(user.id, 'admin'), member('Alice', 'admin')]).mockResolvedValue([member(user.id), member('Alice', 'admin')]);
     members(); await readyMembers();
     fireEvent.change(screen.getByRole('combobox', { name: 'Jianjun 的项目角色' }), { target: { value: 'member' } });
-    expect(screen.getByText(/变更后，你将失去成员管理权限/)).toBeInTheDocument(); await dialogClick('保存角色');
+    expect(screen.getByText(/你通过 Team 获得的权限保持不变/)).toBeInTheDocument(); await dialogClick('保存角色');
     await screen.findByText(/成员与邀请由项目管理员管理/); expect(screen.queryByRole('button', { name: '邀请成员' })).toBeNull();
   });
 
   it('confirms and removes another member with its observed version, then navigates after explicit self-removal', async () => {
     vi.mocked(auth.listMembers).mockResolvedValue([member(user.id, 'admin'), member('Alice', 'admin')]);
     const removed = vi.fn(); members({ onRemoved: removed }); await readyMembers();
-    click('移除 Alice'); expect(screen.getByText(/对方的浏览器和访问令牌/)).toBeInTheDocument(); await dialogClick('移除成员');
+    click('移除 Alice'); expect(screen.getByText(/这会撤销对方的项目单独授权/)).toBeInTheDocument(); await dialogClick('移除成员');
     await waitFor(() => expect(auth.removeMember).toHaveBeenCalledOnce()); await readyMembers();
     expect(auth.removeMember).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'Alice', { version: 9223372036854775806n, expectedUserId: user.id }, expect.any(AbortSignal), expect.any(Function)); expect(removed).not.toHaveBeenCalled();
-    click('移除 Jianjun'); expect(screen.getByText(/你将无法继续访问这个项目/)).toBeInTheDocument(); await dialogClick('移除成员');
+    vi.mocked(auth.removeMember).mockImplementation(async () => { vi.mocked(auth.getProjectAccess).mockRejectedValue(new ApiError('server', 404, 'not_found')); });
+    click('移除 Jianjun'); expect(screen.getByText(/撤销你的项目单独授权/)).toBeInTheDocument(); await dialogClick('移除成员');
     await waitFor(() => expect(removed).toHaveBeenCalledOnce());
+  });
+
+  it('retains inherited administrator access after self-demotion', async () => {
+    const changed = { ...member(user.id, 'member'), effectiveRole: 'admin' as const };
+    vi.mocked(auth.setMemberRole).mockImplementation(async () => {
+      vi.mocked(auth.listMembers).mockResolvedValue([changed, member('Alice')]);
+      vi.mocked(auth.getProjectAccess).mockResolvedValue({ effectiveRole: 'admin', directGrant: changed.directGrant });
+      return changed.directGrant!;
+    });
+    members(); await readyMembers();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Jianjun 的项目角色' }), { target: { value: 'member' } });
+    await dialogClick('保存角色'); await readyMembers();
+    expect(screen.getByRole('combobox', { name: 'Jianjun 的项目角色' })).toHaveValue('member');
+    expect(screen.getByRole('button', { name: '邀请成员' })).not.toBeDisabled();
+    expect(auth.setMemberRole).toHaveBeenCalledOnce();
+  });
+
+  it.each(['member', 'admin'] as const)('retains inherited %s access after removing its own direct grant', async (effectiveRole) => {
+    const removed = vi.fn();
+    vi.mocked(auth.removeMember).mockImplementation(async () => {
+      vi.mocked(auth.listMembers).mockResolvedValue([{ ...member(user.id, effectiveRole), directGrant: null }, member('Alice')]);
+      vi.mocked(auth.getProjectAccess).mockResolvedValue({ effectiveRole, directGrant: null });
+    });
+    members({ onRemoved: removed }); await readyMembers();
+    click('移除 Jianjun'); await dialogClick('移除成员');
+    await waitFor(() => expect(auth.listMembers).toHaveBeenCalledTimes(2)); await readyMembers();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByText('Jianjun')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '移除 Jianjun' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Jianjun 的项目角色' })).toBeNull();
+    if (effectiveRole === 'admin') expect(screen.getByRole('button', { name: '邀请成员' })).not.toBeDisabled();
+    else expect(screen.queryByRole('button', { name: '邀请成员' })).toBeNull();
+    expect(removed).not.toHaveBeenCalled(); expect(auth.removeMember).toHaveBeenCalledOnce();
+  });
+
+  it.each([new ApiError('network'), new ApiError('server', 500, 'internal_error'), new ApiError('protocol')])('keeps a failed access recheck visible after confirmed self-removal without replaying it: %s', async (failure) => {
+    const removed = vi.fn();
+    vi.mocked(auth.removeMember).mockImplementation(async () => { vi.mocked(auth.getProjectAccess).mockRejectedValue(failure); });
+    members({ onRemoved: removed }); await readyMembers();
+    click('移除 Jianjun'); await dialogClick('移除成员');
+    await screen.findByRole('alert');
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(removed).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument();
+    expect(auth.removeMember).toHaveBeenCalledOnce();
   });
 
   it('creates a seven-day once-only invitation and revokes it without retaining its link', async () => {
@@ -366,7 +411,7 @@ describe('participant grants and unconfirmed writes', () => {
     expect(screen.getByRole('combobox', { name: 'Alice 的项目角色' })).toHaveValue('member');
     expect(screen.queryByRole('combobox', { name: 'Inherited 的项目角色' })).toBeNull();
     expect(screen.queryByRole('button', { name: '移除 Inherited' })).toBeNull();
-    expect(screen.getByRole('combobox', { name: 'Jianjun 的项目角色' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Jianjun 的项目角色' })).not.toBeDisabled();
   });
   it('handles identity mismatch through the scope owner without treating it as a grant conflict', async () => {
     const mismatch = vi.fn();

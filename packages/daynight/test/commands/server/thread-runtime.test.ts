@@ -18,7 +18,7 @@ const messageId = "44444444-4444-4444-8444-444444444444";
 const body = "A complete message";
 const message = { id: messageId, author: { userId, displayName: null, Agent: false }, body, createdAt: "2026-11-03T10:20:30.000Z" };
 const receipt = `Message posted.\nId: ${messageId}\n`;
-const confirmed = (): ConfirmedMutationOutput => ({ kind: "confirmed-mutation", output: receipt, identity: { projectId, taskId, messageId } });
+const confirmed = (): ConfirmedMutationOutput => ({ kind: "confirmed-mutation", output: receipt, failureText: (phase) => `Message posted. Id: ${messageId}\nThe message is confirmed, but local ${phase} failed.` });
 const response = (): Response => new Response(JSON.stringify(message), { status: 201, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
 let directory: string;
 beforeAll(async () => {

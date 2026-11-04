@@ -93,7 +93,7 @@ func TestArchiveImmutableReadAfterControllerAndClaimDisappear(t *testing.T) {
 	if _, err = restarted.ArchiveStatus(ctx, f.p, "", "", v.SessionID); err == nil {
 		t.Fatal("task archive in test scope")
 	}
-	if _, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
+	if _, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = restarted.ArchiveContent(ctx, f.p, f.project, f.task, v.SessionID); err == nil {
@@ -226,7 +226,7 @@ func TestArchiveMemberCanReadButCannotPublish(t *testing.T) {
 	}{
 		{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,($1::uuid)::text,now(),now())`, []any{member.UserID}},
 		{`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1::uuid,$2,sha256(($1::uuid)::text::bytea),'archive reader',now())`, []any{member.CredentialID, member.UserID}},
-		{`INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'admin')`, []any{f.project, member.UserID}},
+		{`INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, []any{f.project, member.UserID}},
 	} {
 		if _, err := f.s.DB.Pool.Exec(ctx, statement.sql, statement.args...); err != nil {
 			t.Fatal(err)

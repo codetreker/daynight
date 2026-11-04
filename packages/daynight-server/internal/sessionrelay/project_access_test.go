@@ -19,14 +19,14 @@ func TestProjectAdmissionUsesCallerTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
 		t.Fatal(err)
 	}
 	admin, err := member(ctx, tx, f.p, f.project, time.Now())
 	if err != nil || admin {
 		t.Fatal("admission ignored the caller's uncommitted role", admin, err)
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
+	if _, err = tx.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
 		t.Fatal(err)
 	}
 	_, err = member(ctx, tx, f.p, f.project, time.Now())
@@ -46,7 +46,7 @@ func TestProjectAdmissionDoesNotHoldGrantUntilCommit(t *testing.T) {
 		t.Fatal("initial admission failed", admin, err)
 	}
 	// Revocation must commit while the admitted Session transaction remains open.
-	if _, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
+	if _, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
 		t.Fatal("Session admission blocked grant revocation", err)
 	}
 	_, err = member(ctx, tx, f.p, f.project, time.Now())
@@ -67,7 +67,15 @@ func TestProjectAdmissionRequiresCanonicalProjectAndUser(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err := f.s.Current(ctx, f.p, f.project, f.task)
-			assertAdmissionDenied(t, err)
+			if table == "users" {
+				var query *store.Error
+				var refusal *service.Fault
+				if !errors.As(err, &query) || errors.As(err, &refusal) {
+					t.Fatal("missing canonical access profile was hidden as a refusal", err)
+				}
+			} else {
+				assertAdmissionDenied(t, err)
+			}
 		})
 	}
 }
@@ -75,7 +83,7 @@ func TestProjectAdmissionRequiresCanonicalProjectAndUser(t *testing.T) {
 func TestProjectAdmissionPreservesQueryFailure(t *testing.T) {
 	f, _ := connectFixture(t)
 	ctx := context.Background()
-	if _, err := f.s.DB.Pool.Exec(ctx, `ALTER TABLE project_members RENAME TO unavailable_project_members`); err != nil {
+	if _, err := f.s.DB.Pool.Exec(ctx, `ALTER TABLE project_grants RENAME TO unavailable_project_grants`); err != nil {
 		t.Fatal(err)
 	}
 	_, err := f.s.Current(ctx, f.p, f.project, f.task)

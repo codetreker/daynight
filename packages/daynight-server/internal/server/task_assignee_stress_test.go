@@ -110,7 +110,7 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 		SELECT person,person::text,'Sample person',NULL,now(),now() FROM unnest($1::uuid[]) person`, ids[1:]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO project_members(project_id,user_id,role)
+	if _, err := pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role)
 		SELECT $1,person,'member' FROM unnest($2::uuid[]) person`, project.ID, ids[1:]); err != nil {
 		t.Fatal(err)
 	}
@@ -127,10 +127,10 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 	for index := 1; index < len(ids); index += 2 {
 		former = append(former, ids[index])
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=ANY($2::uuid[])`, project.ID, former); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=ANY($2::uuid[])`, project.ID, former); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `ANALYZE tasks; ANALYZE users; ANALYZE project_members; ANALYZE task_properties; ANALYZE task_dependencies`); err != nil {
+	if _, err := pool.Exec(ctx, `ANALYZE tasks; ANALYZE users; ANALYZE project_grants; ANALYZE task_properties; ANALYZE task_dependencies`); err != nil {
 		t.Fatal(err)
 	}
 	query := url.Values{}

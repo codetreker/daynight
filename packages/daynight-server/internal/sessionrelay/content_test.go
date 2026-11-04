@@ -247,7 +247,7 @@ func TestContentMembershipIsRecheckedAfterResponse(t *testing.T) {
 	for _, q := range []struct {
 		sql  string
 		args []any
-	}{{`INSERT INTO users(id,uniauth_id,created_at,updated_at)VALUES($1::uuid,($1::uuid)::text,now(),now())`, []any{viewer.UserID}}, {`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at)VALUES($1,$2,$3,'reader',now(),now()+interval '1 day')`, []any{viewer.CredentialID, viewer.UserID, hash[:]}}, {`INSERT INTO project_members(project_id,user_id,role)VALUES($1,$2,'admin')`, []any{f.project, viewer.UserID}}} {
+	}{{`INSERT INTO users(id,uniauth_id,created_at,updated_at)VALUES($1::uuid,($1::uuid)::text,now(),now())`, []any{viewer.UserID}}, {`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at)VALUES($1,$2,$3,'reader',now(),now()+interval '1 day')`, []any{viewer.CredentialID, viewer.UserID, hash[:]}}, {`INSERT INTO project_grants(project_id,user_id,role)VALUES($1,$2,'admin')`, []any{f.project, viewer.UserID}}} {
 		if _, err := f.s.DB.Pool.Exec(ctx, q.sql, q.args...); err != nil {
 			t.Fatal(err)
 		}
@@ -256,7 +256,7 @@ func TestContentMembershipIsRecheckedAfterResponse(t *testing.T) {
 	reader.p = viewer
 	done := readPage(ctx, reader, v, "tail", "", 2)
 	request := nextContent(t, f, v)
-	if _, err := f.s.DB.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, f.project, viewer.UserID); err != nil {
+	if _, err := f.s.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, viewer.UserID); err != nil {
 		t.Fatal(err)
 	}
 	replyContent(t, f, v, request, pageResult(request["historyEpoch"].(string), localEntry(t, "1")), nil)

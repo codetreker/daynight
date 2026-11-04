@@ -164,6 +164,7 @@ daynight task show <task-id> [--json] [--project <project-id>]
 daynight task step
 daynight task step list <task-id> [--json] [--project <project-id>]
 daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
+daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
@@ -197,7 +198,7 @@ dn --skill
 
 `--skill` prints one standalone English project/task usage manual from the
 current package. It covers project selection, task queries and writes,
-dependencies, properties, attachments and ordered Step list/show reads. Other
+dependencies, properties, attachments and ordered Step list/show reads and Add. Other
 capabilities are discovered
 through `daynight --help`, with exact options in each subcommand's help. The
 output preserves the manual's original bytes, including YAML
@@ -938,13 +939,13 @@ daynight task step show <task-id> <step-id> --json --project <project-id>
 
 Steps are an independent ordered resource owned by a Task. The
 [resource contract](../../docs/spec/daynight-task-steps.md#cli-读取) owns their
-fields and read behavior. The CLI provides `list` and `show`; the parent Task's
+fields and read behavior. The CLI provides `list`, `show` and `add`; the parent Task's
 ordinary show/list/graph does not contain the full Steps collection. Step status
 is `todo`, `in_progress`, `done` or `skipped`, independent from Task status.
 
 Project and Task arguments are complete UUIDs. A Step argument is exactly eight
 hex characters, normalized to lowercase on input with leading zeros preserved;
-full UUIDs, prefixes and display numbers are invalid. Explicit `--project`
+full UUIDs, prefixes and display numbers are invalid. For reads, explicit `--project`
 works outside Git and sends the selected Steps GET directly, without hidden
 project or parent reads. Without it, normal repository project discovery runs.
 Group and operation help complete before configuration, Git or network work.
@@ -972,13 +973,55 @@ no partial resource reaches stdout before full validation and rendering. An
 output failure can still leave partial stdout and is reported as a failure.
 Errors go to stderr with exit status 1; argument errors use 2 and success uses 0.
 A 401 includes `daynight login` guidance without automatic login or retry.
-Help, Bash/zsh completion and the standalone manual expose only these delivered
-read commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
+Help, Bash/zsh completion and the standalone manual expose the delivered
+list/show/add commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 maps the real-service installed Node-entry read case, separate maximum-resource
 check and their normal fixture prerequisites. The packed CLI acceptance runner
 checks literal `daynight`/`dn` launchers through cross-spawn on native platforms.
 Manual copy/byte checks establish package resource fidelity separately from
 these complementary runtime and launcher checks.
+
+### Add a Step
+
+```bash
+daynight task step add <task-id> --title "Coding round 2" --description "Review findings" --project <project-id>
+daynight task step add <task-id> --title "Review round 2" --id 00abcdef --status todo --after <step-id> --if-version <observed-version> --json --project <project-id>
+```
+
+Add requires a raw nonblank title. Description may be empty; omitted description
+and status mean empty text and todo. Before/after are mutually exclusive Task-local
+anchors; omitting both appends. Input IDs normalize without losing leading zeros.
+Without an explicit ID, the command selects the first eight-hex segment of one
+UUIDv4 before submission. A separate full UUID identifies the POST through
+X-Request-ID. Neither identity is regenerated after a conflict or unknown result.
+
+An explicit project/version sends one POST without discovery or resource pre-reads.
+Without --if-version, the command reads complete Steps once and posts that parent
+version once; failed pre-read prevents POST. All calls use the same operation,
+credentials and budgets. JSON request encoding retains the 1 MiB body bound,
+including escaping, without truncating submitted text.
+
+Confirmation requires 201, principal and canonical Location plus a complete valid
+resource, exact version +1, the requested target fields, equal new timestamps
+and correct append/anchor placement. A default pre-read also permits checking
+that prior items remain unchanged. Explicit versions do not add a hidden GET.
+Readable success is `Step added. ID: <id>` plus the complete confirmed collection;
+--json emits only that full resource and LF.
+
+A decoded 4xx remains a known refusal, including capacity encodedBytes and
+maxEncodedBytes. A dispatched write without a trusted full receipt stays unknown,
+exits 1 and prints no success resource. At most one full GET with originalUUID.r1
+may observe current version and target found/absent inside the same still-live
+operation. Presence or absence never attributes the historical Add. Cancellation,
+operation deadline or total-byte exhaustion creates no detached recovery; no
+observation uses old pre-read data as a fallback. Diagnostics retain original
+Project/Task/Step IDs and request UUID, report observed server IDs separately,
+and provide ordinary explicit-project list/show guidance. Echo equality is not a
+confirmation condition. There is no replay, replacement ID or public request-ID
+flag. Once a full receipt is confirmed, later cleanup/render/output failure keeps
+that confirmed fact and identity, with nonzero exit; output failure may leave
+partial stdout. The [Steps contract](../../docs/spec/daynight-task-steps.md#cli-添加与结果确认)
+owns these outcome rules and the server guide maps installed Add verification.
 
 ## Task deletion
 
@@ -1484,11 +1527,28 @@ session ID can arrive after the first input. Before the native mutation, the
 adapter rechecks the original claim, pause state, process identities and
 admission. Unknown input outcomes are not replayed across restart.
 
-Linux and Windows retain the legacy recovery path: a live agent reconnects;
-a missing agent resumes the recorded native ID, or starts fresh with an `info`
-event when the index ID is NULL. An inactive workspace is stopped and recreated
-with its original task ownership and current native environment; its stale
-pane-level session reference is not adopted as a new native ID.
+On Linux and Windows, when a native Agent exits unexpectedly and current
+resources confirm its pane is inactive, normal patrol automatically stops/closes that workspace and creates
+a new one with the current native environment and an empty pane-level session
+reference. Herdr restore can retain the old native reference while restoring the
+shell without its extra launch environment. The saved SQLite session_id selects
+resume or fresh startup; an inactive pane's retained reference is not saved as a
+newly observed session ID. A live agent keeps its current connection.
+
+A replacement shell can still be initializing when Herdr rejects `agent.start`
+with `agent_pane_busy`. The adapter retries this explicit rejection for at most
+two seconds while the original workspace, pane, terminal and cwd remain owned,
+no Agent has appeared, and foreground process evidence confirms shell
+initialization. Cancellation and the original operation deadline still apply.
+Recovery within that call does not consume an execution failure attempt. Busy
+foreground programs, missing process evidence, changed identities and unknown
+launch outcomes remain visible errors; unknown launches are observed before
+another decision.
+
+On macOS, shell-readiness retries stay inside the same durable launch intent.
+They do not create another generation or send the assignment. A successful
+launch still requires durable native process identity before input admission;
+an unknown response or a crash cannot authorize another launch or replay.
 
 Startup, recovery and continuation prompts require autonomous decisions within
 the task scope and existing authorization. Human intervention requires specific

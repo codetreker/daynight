@@ -21,8 +21,11 @@ func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testi
 		t.Fatal(err)
 	}
 	s := &Store{Pool: pool}
-	_, p, session := testAuthRecords(t, s)
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	user, session := identitySession(uuid.NewString(), "historical:"+uuid.NewString())
+	mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,$3,$3)`, user.ID, user.UniAuthID, now)
+	mustQueryExec(t, s, `INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5)`, session.ID, user.ID, session.TokenHash, session.CreatedAt, session.ExpiresAt)
+	p := core.Principal{Kind: core.SessionCredential, UserID: user.ID, CredentialID: session.ID}
 	finite := deviceStoreCredential(now)
 	finite.ExpiresAt = storeTokenExpiry(now.Add(30 * 24 * time.Hour))
 	if err := s.CreatePAT(ctx, p, finite); err != nil {

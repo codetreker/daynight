@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
@@ -425,6 +425,117 @@ describe("direct task resource management", () => {
     f.hook(async (method, params) => { if (method === "agent.start") { f.launch(params); throw failure; } return undefined; });
     await expect(f.manager.start(f.context, binding, { configuration, prompt: "assignment" }, operation())).rejects.toMatchObject({ submission: "unknown", cause: failure });
     expect((await f.manager.start(f.context, binding, { configuration, prompt: "assignment" }, operation())).nativeSession?.sessionId).toBe(nativeId);
+    expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1); expect(f.prompts).toEqual([]);
+  });
+
+  const busyShell = () => new HerdrRpcError("agent target pane is not an available shell", { method: "agent.start", requestId: "busy", code: "agent_pane_busy", submission: "unknown" });
+  const shellProcesses = (binding: HerdrTaskBinding, extra: Entry = {}): HerdrRpcResult => ({ type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: 100, foreground_process_group_id: 100, foreground_processes: [{ pid: 100, name: "/bin/bash", argv: ["-bash"] }, { pid: 101, name: "shell startup script" }], ...extra } });
+
+  it.each(["/bin/bash", "-zsh", "/usr/local/bin/fish", "C:\\shell\\pwsh.exe"])("retries a rejected launch while the original %s shell initializes", async (shell) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    let attempts = 0;
+    f.hook(async (method) => {
+      if (method === "agent.start" && ++attempts < 3) throw busyShell();
+      if (method === "pane.process_info") return shellProcesses(binding, { foreground_processes: [{ pid: 100, name: "initializing", argv: [shell] }, { pid: 101, name: "startup script" }] });
+      return undefined;
+    });
+    expect((await f.manager.start(f.context, binding, { configuration, prompt: "assignment" }, operation())).nativeSession?.sessionId).toBe(nativeId);
+    const starts = f.calls.filter((call) => call.method === "agent.start");
+    expect(starts).toHaveLength(3);
+    expect(starts.every((call) => call.params.pane_id === binding.paneId)).toBe(true);
+    expect(f.prompts).toEqual(["assignment"]); expect(f.preflights()).toBe(1);
+  });
+
+  it("retries the split launch without requiring SessionStart or submitting initial input", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    let attempts = 0;
+    f.hook(async (method, params) => {
+      if (method === "pane.process_info") return shellProcesses(binding);
+      if (method !== "agent.start") return undefined;
+      if (++attempts === 1) throw busyShell();
+      const agent = f.launch(params); delete agent.agent_session;
+      return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] };
+    });
+    const launched = await f.manager.launch(f.context, binding, { configuration }, operation());
+    expect(attempts).toBe(2);
+    expect(launched).toMatchObject({ interactiveReady: true, nativeSession: null });
+    expect(f.prompts).toEqual([]);
+    await f.manager.submitInitialPrompt(f.context, binding, "assignment", operation());
+    expect(f.prompts).toEqual(["assignment"]);
+    expect(attempts).toBe(2);
+  });
+
+  it("bounds shell initialization retries and retains the actual rejected launch", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const failure = busyShell();
+    let attempts = 0;
+    let now = performance.now();
+    const op = operation();
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      f.hook(async (method) => {
+        if (method === "agent.start") { if (++attempts === 2) now += 2001; throw failure; }
+        if (method === "pane.process_info") return shellProcesses(binding);
+        return undefined;
+      });
+      await expect(f.manager.start(f.context, binding, { configuration, prompt: "assignment" }, op)).rejects.toMatchObject({ action: "agent.start", submission: "rejected", cause: failure });
+      expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(2); expect(f.prompts).toEqual([]);
+    } finally { clock.mockRestore(); }
+  });
+
+  it.each([
+    { foreground_process_group_id: 200 },
+    { foreground_process_group_id: undefined },
+    { shell_pid: undefined },
+    { foreground_processes: [] },
+    { foreground_processes: [{ pid: 100, name: "codex", argv: ["codex"] }] },
+    { foreground_processes: [{ pid: 200, name: "bash", argv: ["bash"] }] },
+  ])("retains pane busy without shell initialization evidence: %j", async (info) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const failure = busyShell();
+    f.hook(async (method) => { if (method === "agent.start") throw failure; if (method === "pane.process_info") return shellProcesses(binding, info); return undefined; });
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "assignment" }, operation())).rejects.toMatchObject({ submission: "rejected", cause: failure });
+    expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1); expect(f.prompts).toEqual([]);
+  });
+
+  it.each([undefined, "agent_pane_unavailable", "agent_start_input_failed"])("does not retry a launch without a definite pane-busy rejection: %s", async (code) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const failure = new HerdrRpcError("launch unconfirmed", { method: "agent.start", requestId: "start", submission: "unknown", ...(code === undefined ? {} : { code }) });
+    f.hook(async (method) => { if (method === "agent.start") throw failure; return undefined; });
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "assignment" }, operation())).rejects.toMatchObject({ cause: failure });
+    expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+    expect(f.calls.filter((call) => call.method === "pane.process_info")).toEqual([]); expect(f.prompts).toEqual([]);
+  });
+
+  it("stops shell-readiness retry when the original terminal changes", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.hook(async (method) => { if (method === "agent.start") { f.panes[0]!.terminal_id = "replacement"; throw busyShell(); } return undefined; });
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "assignment" }, operation())).rejects.toThrow("terminal identity has changed");
+    expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1); expect(f.prompts).toEqual([]);
+  });
+
+  it("observes a native launch appearing during shell readiness without submitting another start", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const failure = busyShell();
+    f.hook(async (method) => {
+      if (method === "agent.start") throw failure;
+      if (method === "pane.process_info") { f.launch({ pane_id: binding.paneId, name: herdrExecutionAgentName(f.context) }); return shellProcesses(binding); }
+      return undefined;
+    });
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "assignment" }, operation())).rejects.toMatchObject({ submission: "rejected", cause: failure });
+    expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1); expect(f.prompts).toEqual([]);
+  });
+
+  it("preserves cancellation before another shell-readiness attempt", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const controller = new AbortController(); const op = createOperation({ signal: controller.signal }); operations.push(op);
+    const cancelled = new Error("stop shell readiness");
+    f.hook(async (method) => {
+      if (method === "agent.start") throw busyShell();
+      if (method === "pane.process_info") { controller.abort(cancelled); return shellProcesses(binding); }
+      return undefined;
+    });
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "assignment" }, op)).rejects.toMatchObject({ kind: "cancelled", cause: cancelled });
     expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1); expect(f.prompts).toEqual([]);
   });
 

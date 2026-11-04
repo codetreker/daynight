@@ -211,6 +211,8 @@ export const parseServerError = (value: unknown): ServerError => {
     const raw = record(data.details);
     details = {
       ...(raw.taskIds === undefined ? {} : { taskIds: ids(raw.taskIds) }),
+      ...(raw.encodedBytes === undefined ? {} : { encodedBytes: count(raw.encodedBytes) }),
+      ...(raw.maxEncodedBytes === undefined ? {} : { maxEncodedBytes: count(raw.maxEncodedBytes) }),
       ...(raw.nodeCount === undefined ? {} : { nodeCount: count(raw.nodeCount) }),
       ...(raw.edgeCount === undefined ? {} : { edgeCount: count(raw.edgeCount) }),
       ...(raw.maxNodes === undefined ? {} : { maxNodes: count(raw.maxNodes) }),
@@ -218,5 +220,6 @@ export const parseServerError = (value: unknown): ServerError => {
     };
   }
   if (code === "graph_limit_exceeded" && (details?.nodeCount === undefined || details.edgeCount === undefined || details.maxNodes !== 1000 || details.maxEdges !== 5000 || (details.nodeCount <= details.maxNodes && details.edgeCount <= details.maxEdges))) return malformed();
+  if (code === "steps_limit_exceeded" && (details?.encodedBytes === undefined || details.maxEncodedBytes !== 67_108_864 || details.encodedBytes <= details.maxEncodedBytes)) return malformed();
   return { code, message, requestId, ...(details === undefined ? {} : { details }) };
 };

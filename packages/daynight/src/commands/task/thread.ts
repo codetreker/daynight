@@ -62,7 +62,7 @@ export const runTaskThreadCommand = async (command: Command, context: CliContext
       }
       const message = await api.postTaskThreadMessage(projectId, taskId!, post!);
       confirmedMessageId = message.id;
-      return { kind: "confirmed-mutation", output: renderThreadPostReceipt(message), identity: { projectId, taskId: taskId!, messageId: message.id } };
+      return { kind: "confirmed-mutation", output: renderThreadPostReceipt(message), failureText: (phase) => `Message posted. Id: ${message.id}\nThe message is confirmed, but local ${phase} failed.` };
     });
   } catch (cause) {
     if (cause instanceof PublicDiagnosticError) throw cause;

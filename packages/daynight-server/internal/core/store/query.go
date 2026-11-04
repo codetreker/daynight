@@ -58,11 +58,25 @@ func queryError(phase string, err error) error {
 	return &Error{Phase: phase, Cause: err}
 }
 
-const projectProjection = `id::text, name, repo_url, created_at, updated_at, settings_version, execution_warning_minutes`
+const projectProjection = `p.id::text, p.name, p.repo_url, p.created_at, p.updated_at, p.settings_version, p.execution_warning_minutes,
+	owner_team.id::text, o.version, o.updated_at`
+
+const projectRelation = `projects p LEFT JOIN project_ownership o ON o.project_id=p.id LEFT JOIN teams owner_team ON owner_team.id=o.team_id`
 
 func scanProject(row pgx.Row) (core.Project, error) {
 	var project core.Project
-	err := row.Scan(&project.ID, &project.Name, &project.RepoURL, &project.CreatedAt, &project.UpdatedAt, &project.Settings.Version, &project.Settings.ExecutionWarningMinutes)
+	var teamID *string
+	var version *int64
+	var ownershipUpdatedAt *time.Time
+	err := row.Scan(&project.ID, &project.Name, &project.RepoURL, &project.CreatedAt, &project.UpdatedAt, &project.Settings.Version, &project.Settings.ExecutionWarningMinutes,
+		&teamID, &version, &ownershipUpdatedAt)
+	if err != nil {
+		return core.Project{}, err
+	}
+	if teamID == nil || version == nil || ownershipUpdatedAt == nil {
+		return core.Project{}, fmt.Errorf("project ownership is missing")
+	}
+	project.Ownership = core.ProjectOwnership{TeamID: *teamID, Version: *version, UpdatedAt: ownershipUpdatedAt.UTC()}
 	project.CreatedAt = project.CreatedAt.UTC()
 	project.UpdatedAt = project.UpdatedAt.UTC()
 	return project, err

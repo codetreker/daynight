@@ -16,7 +16,7 @@ JSON 列表字段见[描述省略决策](../../.agents/notes/implemented/simplif
 CLI 同步保留 `startedAt`、`completedAt`、`observedAt` 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
 服务端[负责人设计](daynight-task-assignment.md)拥有原生 assignedTo、任务筛选和项目内人员读取。CLI 的 Task/graph 严格解析、普通元数据设置/清空、list 筛选及当前ID输出已实现，复用同一字段契约，不增加人名或头像请求。
-[Steps 资源要求](../spec/daynight-task-steps.md#cli-读取)扩展独立的 task step list/show 读取；它不将完整 Steps 加入普通 Task 投影。
+[Steps 资源要求](../spec/daynight-task-steps.md)扩展独立的 task step list/show 读取与 Add；它不将完整 Steps 加入普通 Task 投影。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、通用 CLI 属性命令与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 使用通用 JSON map，键缺失不补值，worker 的公开写入限制由服务端定义拥有。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
 
@@ -35,7 +35,7 @@ CLI 默认使用 `https://daynight.cc`，显式 `login/logout` 管理通过设�
 [鉴权架构](daynight-auth.md)和[需求](../spec/daynight-auth.md)拥有完整项目授权机制与行为；生产服务对全部
 项目、任务、图和附件业务请求强制鉴权。设备登录复用现有 UniAuth 浏览器会话批准，
 取得的凭据进入正常配置与 Bearer 请求通道；既有真实服务及预算验收的 PAT bootstrap 继续用于其独立验证。仓库关联不保存凭据、
-不授予项目访问权；旧项目由部署者手工补齐成员关系。专用 set-status 与现有资源读写共用当前成员权限；管理员额外管理成员、邀请和项目提醒设置，不另设
+不授予项目访问权；现有 Project 的真实 Personal 归属及其迁移由[鉴权架构](daynight-auth.md#数据与并发)拥有。专用 set-status 与现有资源读写共用 owner Team 与 direct grant 计算的当前有效权限；管理员额外管理独立授权、邀请和项目提醒设置，不另设
 状态专属角色。
 
 ## 现有基础与交付边界
@@ -91,7 +91,8 @@ Project 的定义由 [`definition.ts`](../../packages/daynight/src/commands/proj
 [补全设计](daynight-completion.md)拥有。命令组先解析参数和帮助，校验名称及详情
 UUID，再惰性加载共享 server runtime 和业务渲染。Task 的 definition、command 和
 rendering 分别拥有语法、API/仓库关联组合及可读/JSON 输出，属性 dispatch 组合相同 server session 和版本化属性资源。
-Step 分派先于普通 Task 分支；`step.ts` 只组合 list/show 的共享项目解析和 typed GET，
+Step 分派先于普通 Task 分支；`step.ts` 组合 list/show 读取与 Add 分派；`step-add.ts` 先编译原值参数与短 ID，
+`step-write.ts` 再组合实际版本分支、不可变尝试和同操作事实核对，
 `step-rendering.ts` 单独拥有完整 Steps/Step 资源的文本与 JSON 输出，
 `step-diagnostics.ts` 拥有安全公开诊断并保留内部 cause。四状态 Step 类型
 不复用 TaskStatus。帮助与本地 ID 参数校验完成后才加载配置、Git 或 HTTP。
@@ -157,9 +158,10 @@ CLI 登录/退出在锁内共同核对 origin/token，保留其他能力已完�
 
 共享 runtime 将同一信号传给 `loadServerConfiguration`；配置读取层接受可选的
 `AbortSignal` 并传入 `readFile`，同步 YAML 解析完成后再次检查操作状态。已正规化
-的 server 地址、API 客户端及操作对象组成 `ServerSession`。业务 callback 返回
-`string | void`：元数据命令返回完整渲染字符串，runtime 最终检查后调用一次 stdout；
-附件 read 通过可等待的字节输出逐段写入并返回 void。SIGINT、SIGTERM 及 Windows
+的 server 地址、API 客户端及操作对象组成 `ServerSession`。普通元数据 callback 返回完整字符串，runtime 最终检查后一次写 stdout；附件 read
+通过可等待的字节输出逐段写入。Thread 与 Step Add 返回 `ConfirmedMutationOutput`，
+其确认事实与调用者的安全 failureText 进入既有受限回执输出生命周期，后续本地
+输出或清理失败仍保留确认。SIGINT、SIGTERM 及 Windows
 SIGBREAK 触发同一取消源。结束时先等待 `closeStdoutBytes` 关闭并回收实际创建的
 辅助进程，再移除自身监听器并 dispose 操作，保留其他消费者的监听器。真实 CLI
 上下文始终提供该关闭函数，注入上下文可省略它。命令和清理失败均保留原因。
@@ -355,6 +357,7 @@ flowchart TD
 | `task show <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}` |
 | `task step list <id>` | 一次 `GET /api/v1/projects/{projectId}/tasks/{id}/steps`，完整有序资源，无 query 或分页 |
 | `task step show <id> <step-id>` | 一次 `GET /api/v1/projects/{projectId}/tasks/{id}/steps/{stepId}`，按 Task 内规范短 ID 读取 |
+| `task step add <id>` | 显式版本一次 `POST /api/v1/projects/{projectId}/tasks/{id}/steps`；默认先完整 GET Steps 再 POST，成功 201 返回完整资源 |
 | `task update <id>` | 可选先 GET task，再 PATCH 同一路径，只写元数据 |
 | `task set-status <id> <status> [--claim-id <claim-id>]` | 可选先 GET task，再 PUT 同一 task 的 `/status`；普通 body 为 version/status，显式 done claim 完成为 version/status/claimId |
 | `task delete <id> [--remove-depends]` | 可选先 GET task，再 DELETE 同一路径提交精确 version；可选开关明确发送 removeDepends=true 解除全部传入引用，默认严格删除；成功 `204`，保留任务与附件 |
@@ -378,6 +381,26 @@ Steps typed GET 复用 `exchange` 的认证、no-store、取消、期限与响�
 当前资源解析失败、字段或 scope 不匹配均为协议错误，不返回空态或部分结果。
 Steps 正文的有效单响应上限是配置预算与 64 MiB 资源上限的较小值，边界采用包含式
 检查；exchange 继续累计操作字节，更严格配置和共享默认期限/预算均保持。
+
+`addTaskStep` 接受实际 Add 输入和 `{requestId, previous?}`。原值文本、四状态、
+锚点与精确版本先校验，JSON 正文以 1 MiB 为上限。显式短 ID 或一次 UUIDv4 第一段
+确定目标，另一个完整 UUID 作为请求 ID，不从服务回显反推或替换原请求身份。
+完整 201 必须具有规范 Location、principal、正确 scope 与 +1 版本、目标字段、
+相等的新项时间及正确位置；默认预读存在时，还检查旧项内容/时间/相对顺序。
+显式版本不为该确认补加 GET。成功只输出服务确认资源。
+
+`step-write-errors.ts` 保留递交前失败、完整 4xx 拒绝、unknown 与已确认事实。
+公开容量 details 的 encodedBytes/maxEncodedBytes 在类型和 parser 中严格保留；
+任意损坏详情不能被丢弃后冒充正常拒绝。未知 Add 至多以原 UUID.r1 在同一仍有效
+Operation/API/身份内 GET 一次完整集合，只报告当前版本与目标 found/absent，
+不改变 unknown、非零退出或空成功 stdout。操作已取消/耗尽时不另建读取，不从
+旧预读补造观察，也不重发或换 ID。原服务/响应 ID 单独保留，回显相等不参与确认。
+
+共享 exchange 的 `confirmedMutationId` 供 Thread 与 Add 两个实际调用者使用，
+在严格回执核对后设置并穿过 catch/finally 清理。已知 4xx 与已确认结果的元信息
+和错误链不因清理失败丢失。确认结果由 runtime 的 `ConfirmedMutationOutput`
+交给既有受限输出通道，具体命令提供 failureText，Thread 文案保持其现有语义。
+确认后本地清理、渲染或输出失败仍明确保留已确认身份，不触发未知核对。
 
 `task list` 的状态选择和展示顺序属于命令层。默认从完整结果中排除 `done`；
 `--all` 保留所有状态，`--status` 使用既有单状态查询，两者互斥并在任何 I/O 前
@@ -525,6 +548,10 @@ terminalText。创建和更新分别以 `Task created.`、`Task updated.` 表明
 同时展示，保留既有状态、ready、依赖、阻塞和创建/更新时间，不能把预览称为完整标题。
 新增起止字段和图时钟由 JSON 保留，不为可读渲染器增加标签。所有字段
 使用终端转义且不补齐等宽列，空间随资源内容总长度线性增长。
+
+Step Add 的可读成功前缀为 `Step added. ID: <id>`，JSON 无前缀，仅含完整确认资源。
+未知诊断保留原 Project/Task/Step 与 UUID，当前事实和“没有当前观察”分别表达，
+提供普通显式 project list/show 指导，不输出完整提交正文或任意内部 cause。
 
 Step 文本由 `step-rendering.ts` 输出 Task、精确父版本与总数，以及按保存顺序的
 展示编号、完整短 ID、状态和完整标题；show 另含完整说明、创建/更新时间及项目作用域。

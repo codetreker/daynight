@@ -95,13 +95,6 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(access, core.ProjectAccess{ProjectID: project.ID, UserID: admin.UserID, Role: core.ProjectAdmin, DirectGrant: &current.Grant}) {
 			t.Fatalf("write admission: %+v %v", access, err)
 		}
-		count, err := tx.AdminCount(ctx)
-		if err != nil {
-			return err
-		}
-		if count != 1 {
-			t.Fatal("initial admin count")
-		}
 		return tx.CreateInvitation(ctx, invitation)
 	}); err != nil {
 		t.Fatal(err)
@@ -202,8 +195,8 @@ func TestMembershipStorageConstraintsRollbackAndBoundedCleanup(t *testing.T) {
 	s, admin, _, project := membershipFixture(t)
 	ctx := context.Background()
 	for _, sql := range []string{
-		`INSERT INTO project_members (project_id,user_id,role) VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002','owner')`,
-		`INSERT INTO project_members (project_id,user_id,role,version) VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002','member',0)`,
+		`INSERT INTO project_grants (project_id,user_id,role) VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002','owner')`,
+		`INSERT INTO project_grants (project_id,user_id,role,version) VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002','member',0)`,
 		`INSERT INTO project_invitations (id,project_id,created_by,token_hash,created_at,expires_at) VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000003',decode('00','hex'),now(),now()+interval '1 day')`,
 		`INSERT INTO project_invitations (id,project_id,created_by,token_hash,created_at,expires_at,consumed_at) VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000003',decode(repeat('00',32),'hex'),now(),now()+interval '1 day',now())`,
 	} {
@@ -213,7 +206,7 @@ func TestMembershipStorageConstraintsRollbackAndBoundedCleanup(t *testing.T) {
 			t.Fatalf("invalid record accepted: %v", err)
 		}
 	}
-	if _, err := s.Pool.Exec(ctx, `CREATE FUNCTION reject_member() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test member rollback'; END $$; CREATE TRIGGER reject_member BEFORE INSERT ON project_members FOR EACH ROW EXECUTE FUNCTION reject_member()`); err != nil {
+	if _, err := s.Pool.Exec(ctx, `CREATE FUNCTION reject_member() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test member rollback'; END $$; CREATE TRIGGER reject_member BEFORE INSERT ON project_grants FOR EACH ROW EXECUTE FUNCTION reject_member()`); err != nil {
 		t.Fatal(err)
 	}
 	id := uuid.NewString()
@@ -224,7 +217,7 @@ func TestMembershipStorageConstraintsRollbackAndBoundedCleanup(t *testing.T) {
 	if err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1)`, id).Scan(&exists); err != nil || exists {
 		t.Fatalf("half project remained: %t %v", exists, err)
 	}
-	if _, err := s.Pool.Exec(ctx, `DROP TRIGGER reject_member ON project_members; DROP FUNCTION reject_member()`); err != nil {
+	if _, err := s.Pool.Exec(ctx, `DROP TRIGGER reject_member ON project_grants; DROP FUNCTION reject_member()`); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -243,12 +236,12 @@ func TestMembershipStorageConstraintsRollbackAndBoundedCleanup(t *testing.T) {
 }
 
 func TestMembershipStorageOperationalFailures(t *testing.T) {
-	for _, phase := range []string{"private-project", "project-member", "project-access", "write-access", "accessible", "members", "target-member", "admin-count", "set-role", "remove", "add", "inspect", "lock", "create", "list-invites", "revoke", "consume"} {
+	for _, phase := range []string{"private-project", "project-member", "project-access", "write-access", "accessible", "members", "target-member", "set-role", "remove", "add", "inspect", "lock", "create", "list-invites", "revoke", "consume"} {
 		t.Run(phase, func(t *testing.T) {
 			s, admin, member, project := membershipFixture(t)
 			ctx := context.Background()
 			invite := newStoredInvitation(project, admin, "fault")
-			table := "project_members"
+			table := "project_grants"
 			if phase == "private-project" {
 				table = "projects"
 			}
@@ -289,8 +282,6 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 						_, err = tx.ProjectAccess(ctx, admin)
 					case "target-member":
 						_, err = tx.DirectProjectMember(ctx, member.UserID)
-					case "admin-count":
-						_, err = tx.AdminCount(ctx)
 					case "set-role":
 						_, err = tx.SetMemberRole(ctx, admin.UserID, core.ProjectMemberRole)
 					case "remove":

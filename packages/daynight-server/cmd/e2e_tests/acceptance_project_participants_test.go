@@ -20,7 +20,7 @@ func TestInstalledCLIProjectParticipantsAcceptance(t *testing.T) {
 		cli := newAcceptanceCLI(t, receipt, scenario)
 		project := process.project(t, "Installed participant API")
 		user := acceptanceDecode[api.User](t, process.request(context.Background(), http.MethodGet, "/api/v1/me", nil, ""), http.StatusOK)
-		fixture.exec(t, "UPDATE project_members SET version=$3 WHERE project_id=$1 AND user_id=$2", project.ID, user.ID, int64(9007199254740993))
+		fixture.exec(t, "UPDATE project_grants SET version=$3 WHERE project_id=$1 AND user_id=$2", project.ID, user.ID, int64(9007199254740993))
 		program := filepath.Join(cli.root, "project-participants.mjs")
 		if err := os.WriteFile(program, []byte(projectParticipantsAcceptanceProgram), 0o600); err != nil {
 			t.Fatal("cannot write the installed participant API caller")

@@ -118,6 +118,7 @@ const bounded = (parent: Operation, maximumMs: number) => {
     limits: { ...parent.limits, totalMs: milliseconds, requestMs: Math.min(milliseconds, parent.limits.requestMs) },
     check,
     remainingMs: (): number => { check(); return Math.max(0, Math.min(parent.remainingMs(), deadline - performance.now())); },
+    remainingBytes: (): number => { check(); return parent.remainingBytes(); },
     consume: (bytes: number): void => { check(); parent.consume(bytes); },
     dispose: (): void => { clearTimeout(timer); parent.signal.removeEventListener("abort", abort); },
   } satisfies Operation;

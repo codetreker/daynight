@@ -289,7 +289,7 @@ func TestTerminalCurrentRejectsCorruptStateAndMissingAuthority(t *testing.T) {
 	if err != nil || state["status"] != "not_applicable" {
 		t.Fatal(state, err)
 	}
-	if _, err := f.s.DB.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
+	if _, err := f.s.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.s.CurrentTerminal(ctx, f.p, f.project, f.task); err == nil {
