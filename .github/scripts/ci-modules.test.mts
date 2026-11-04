@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
@@ -8,6 +8,8 @@ import { detectModules, pullRequestPaths, selectModules, type ModuleSelection } 
 
 const none = { cli: false, server: false, web: false };
 const all = { cli: true, server: true, web: true };
+const noChecks = { ...none, release: false };
+const allChecks = { ...all, release: false };
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
 for (const [path, expected] of [
@@ -143,7 +145,7 @@ test("a PR changing only root ignore rules selects no application jobs", async (
   repo.write(".gitignore", ".tmp/\n/.daynight/\n");
   const head = repo.commit();
   assert.deepEqual(await pullRequestPaths(repo.cwd, base, head), [".gitignore"]);
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), none);
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), noChecks);
 });
 
 test("uses the explicit PR head and merge base when the target branch advances", async (t) => {
@@ -157,7 +159,7 @@ test("uses the explicit PR head and merge base when the target branch advances",
   repo.git("merge", "--no-ff", "feature", "-m", "Merge fixture feature");
   assert.notEqual(repo.git("rev-parse", "HEAD"), head);
   assert.deepEqual(await pullRequestPaths(repo.cwd, base, head), ["packages/daynight/src/main.ts"]);
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, cli: true, server: true });
 });
 
 test("counts both sides of cross-module renames and source moves into documentation", async (t) => {
@@ -181,7 +183,7 @@ test("retains deleted module paths", async (t) => {
   const base = repo.commit();
   rmSync(join(repo.cwd, "packages/daynight-server/deleted.go"));
   const head = repo.commit();
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, server: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, server: true });
 });
 
 test("retains whitespace, newlines, unicode, and leading dashes in Git paths", async (t) => {
@@ -190,7 +192,7 @@ test("retains whitespace, newlines, unicode, and leading dashes in Git paths", a
   for (const path of paths) repo.write(path);
   const head = repo.commit();
   assert.deepEqual(new Set(await pullRequestPaths(repo.cwd, repo.base, head)), new Set(paths));
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head }), { ...none, server: true, web: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head }), { ...noChecks, server: true, web: true });
 });
 
 test("reads the complete change list beyond API file limits", async (t) => {
@@ -213,8 +215,62 @@ const cliManifest = {
   metadata: { version: "1.0.0" },
 };
 
+test("a strictly version-only manifest PR selects one release check", async (t) => {
+  const repo = repository(t);
+  repo.write(cliManifestPath, JSON.stringify(cliManifest));
+  const base = repo.commit();
+  repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1" }, null, 2));
+  const head = repo.commit();
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, release: true });
+});
+
+for (const [path, expected] of [
+  ["docs/development.md", { ...noChecks, cli: true }],
+  ["packages/daynight/README.md", { ...noChecks, cli: true }],
+  ["packages/daynight/src/commands/worker/runtime.ts", { ...noChecks, cli: true }],
+  ["packages/daynight/src/main.ts", { ...noChecks, cli: true, server: true }],
+  ["packages/daynight-web/src/App.vue", { ...noChecks, cli: true, server: true, web: true }],
+  ["pnpm-lock.yaml", allChecks],
+  [".github/workflows/checks.yml", allChecks],
+] as const) {
+  test(`version plus ${path} retains ordinary module checks`, async (t) => {
+    const repo = repository(t);
+    repo.write(cliManifestPath, JSON.stringify(cliManifest));
+    const base = repo.commit();
+    repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1" }));
+    repo.write(path);
+    const head = repo.commit();
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), expected);
+  });
+}
+
+for (const change of ["delete", "rename"] as const) {
+  test(`version plus documentation ${change} retains ordinary CLI checks`, async (t) => {
+    const repo = repository(t);
+    repo.write(cliManifestPath, JSON.stringify(cliManifest));
+    repo.write("docs/original.md");
+    const base = repo.commit();
+    repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1" }));
+    if (change === "delete") rmSync(join(repo.cwd, "docs/original.md"));
+    else renameSync(join(repo.cwd, "docs/original.md"), join(repo.cwd, "docs/renamed.md"));
+    const head = repo.commit();
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, cli: true });
+  });
+}
+
+for (const versionChange of [false, true]) {
+  test(`manifest executable-mode changes retain server checks with version change ${versionChange}`, async (t) => {
+    const repo = repository(t);
+    repo.write(cliManifestPath, JSON.stringify(cliManifest));
+    const base = repo.commit();
+    if (versionChange) repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1" }));
+    chmodSync(join(repo.cwd, cliManifestPath), 0o755);
+    const head = repo.commit();
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, cli: true, server: true });
+  });
+}
+
 for (const [label, updated] of [
-  ["version-only", { ...cliManifest, version: "1.0.1" }],
   ["format-only", cliManifest],
   ["key-order-only", Object.fromEntries(Object.entries(cliManifest).reverse())],
 ] as const) {
@@ -224,7 +280,7 @@ for (const [label, updated] of [
     const base = repo.commit();
     repo.write(cliManifestPath, JSON.stringify(updated, null, 2));
     const head = repo.commit();
-    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true });
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, cli: true });
   });
 }
 
@@ -243,7 +299,7 @@ for (const [field, updated] of [
     const base = repo.commit();
     repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1", [field]: updated }));
     const head = repo.commit();
-    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, cli: true, server: true });
   });
 }
 
@@ -262,7 +318,7 @@ test("worker prompts, bundled instructions and a version-only manifest select on
     "packages/daynight/test/commands/worker/prompts.test.ts",
   ]) repo.write(path);
   const head = repo.commit();
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, cli: true });
 });
 
 test("version-only manifest refinement preserves server selection from other changed inputs", async (t) => {
@@ -273,10 +329,10 @@ test("version-only manifest refinement preserves server selection from other cha
   repo.write("packages/daynight/src/commands/task/command.ts");
   repo.write("packages/daynight/src/commands/worker/prompts.ts");
   const head = repo.commit();
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, cli: true, server: true });
 });
 
-test("manifest comparison uses merge base and PR head rather than the target or checked-out tree", async (t) => {
+test("release selection uses merge base and PR head rather than the target or checked-out tree", async (t) => {
   const repo = repository(t);
   repo.write(cliManifestPath, JSON.stringify(cliManifest));
   repo.commit();
@@ -287,7 +343,7 @@ test("manifest comparison uses merge base and PR head rather than the target or 
   repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, dependencies: { dependency: "2.0.0" } }));
   const base = repo.commit();
   repo.write(cliManifestPath, "invalid uncommitted JSON");
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, release: true });
 });
 
 for (const change of ["add", "delete", "type"] as const) {
@@ -301,7 +357,7 @@ for (const change of ["add", "delete", "type"] as const) {
       if (change === "type") symlinkSync("../../README.md", join(repo.cwd, cliManifestPath));
     }
     const head = repo.commit();
-    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, cli: true, server: true });
   });
 }
 
@@ -325,17 +381,17 @@ test("moving server-used CLI source into a lazy command still selects server", a
   mkdirSync(join(repo.cwd, "packages/daynight/src/commands/worker"), { recursive: true });
   renameSync(join(repo.cwd, "packages/daynight/src/commands/task/moved.ts"), join(repo.cwd, "packages/daynight/src/commands/worker/moved.ts"));
   const head = repo.commit();
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...noChecks, cli: true, server: true });
 });
 
 test("pushes always run the complete workload", async () => {
-  assert.deepEqual(await detectModules({ event: "push" }), all);
+  assert.deepEqual(await detectModules({ event: "push" }), allChecks);
 });
 
 test("an unchanged PR selects no application workload", async (t) => {
   const repo = repository(t);
   assert.deepEqual(await pullRequestPaths(repo.cwd, repo.base, repo.base), []);
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head: repo.base }), none);
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head: repo.base }), noChecks);
 });
 
 test("rejects unknown events, malformed SHAs, and unavailable commits", async (t) => {
@@ -358,5 +414,5 @@ test("command entry point writes module selections to GitHub outputs", async (t)
     env: { ...process.env, MODULE_EVENT: "pull_request", MODULE_BASE: repo.base, MODULE_HEAD: head, GITHUB_OUTPUT: output },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  assert.equal(readFileSync(output, "utf8"), "cli=false\nserver=true\nweb=false\n");
+  assert.equal(readFileSync(output, "utf8"), "cli=false\nserver=true\nweb=false\nrelease=false\n");
 });

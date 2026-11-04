@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 2
     outputs:
       cli: ${{ steps.modules.outputs.cli }}
+      release: ${{ steps.modules.outputs.release }}
       server: ${{ steps.modules.outputs.server }}
       web: ${{ steps.modules.outputs.web }}
     steps:
@@ -39,6 +40,47 @@ jobs:
           MODULE_BASE: ${{ github.event.pull_request.base.sha }}
           MODULE_HEAD: ${{ github.event.pull_request.head.sha }}
         run: node .github/scripts/ci-modules.mts
+
+  verify-release:
+    name: verify (CLI release)
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+      NPM_CONFIG_CACHE: ${{ github.workspace }}/.tmp/npm-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - run: pnpm install --frozen-lockfile --filter @codetreker/daynight --store-dir .tmp/pnpm-store
+      - run: pnpm build
+      - name: Validate the release manifest and prepare its artifact
+        run: node packages/daynight/scripts/publish.ts prepare "$GITHUB_SHA"
+      - name: Install the release artifact
+        run: |
+          mkdir -p .tmp/npm-release/consumer
+          printf '{"private":true}\n' > .tmp/npm-release/consumer/package.json
+          npm install --prefix .tmp/npm-release/consumer --ignore-scripts --no-audit --no-fund --package-lock=false "$GITHUB_WORKSPACE/.tmp/npm-release/artifact/package.tgz"
+      - name: Verify the installed release version and help
+        run: |
+          expected_version="$(node -p 'JSON.parse(require("node:fs").readFileSync("packages/daynight/package.json", "utf8")).version')"
+          for command in daynight dn; do
+            actual_version="$(.tmp/npm-release/consumer/node_modules/.bin/"$command" --version)"
+            test "$actual_version" = "$expected_version"
+            .tmp/npm-release/consumer/node_modules/.bin/"$command" --help
+          done
 
   verify:
     name: verify (${{ matrix.os }})
@@ -436,7 +478,7 @@ jobs:
           retention-days: 30
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-runtime, verify-completion, verify-server, verify-server-e2e, verify-web-quality, verify-web]
+    needs: [detect-changes, verify-release, verify, verify-runtime, verify-completion, verify-server, verify-server-e2e, verify-web-quality, verify-web]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:

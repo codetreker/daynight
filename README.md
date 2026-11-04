@@ -327,7 +327,8 @@ from all changed paths, including deletions and both sides of renames:
 | `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI, Go server coverage/E2E, Web quality and Web browser acceptance |
 | Implementation and resources under CLI `commands/worker/`, `controller/`, `review/`, `skill/`, `update/` or `completion/`, except `definition.ts` | CLI |
 | Other `packages/daynight/src/` paths, including command definitions | CLI and Go server coverage/E2E |
-| CLI `package.json` changes only to top-level `version`, JSON formatting or object key order | CLI |
+| A PR changing only the CLI `package.json` top-level `version`, with unchanged regular-file mode and other parsed fields | One Linux release build/package/install smoke check |
+| Other CLI `package.json` changes limited to top-level `version`, JSON formatting or object key order | CLI |
 | Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
 | Other `packages/daynight/` paths | Linux, macOS ARM64 and Windows CLI, runtime compatibility, plus shell completion |
 | `packages/daynight-server/` | Go server coverage and E2E |
@@ -344,8 +345,14 @@ Their `definition.ts` files are loaded at startup and retain server selection.
 Other CLI source remains a conservative server input. The manifest comparison
 uses committed merge-base and head contents, ignoring only the top-level
 `version` field. Manifest additions, deletions and file-type changes select both
-server jobs; malformed modified manifests fail detection. Exact preparation
-inputs are listed in [the selector](.github/scripts/ci-modules.mts).
+server jobs; malformed modified manifests fail detection. A PR with exactly one
+modified path can use `verify-release` only when that path is the CLI manifest,
+its regular-file mode is unchanged, its version string changes, and all other
+parsed fields are equal. Formatting-only changes and any additional changed
+path retain ordinary selection. The release check validates the existing stable
+version syntax, builds and packs the CLI, then installs the artifact and checks
+both command aliases' version and help. Exact preparation inputs are listed in
+[the selector](.github/scripts/ci-modules.mts).
 
 Documentation exclusions apply after CLI source ownership; changes selecting
 several modules run their union. The Web selector enables parallel quality and
