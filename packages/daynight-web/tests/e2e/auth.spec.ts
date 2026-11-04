@@ -1,6 +1,7 @@
 import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
 import { stringifyApiJson } from "../../src/api/json";
 import { selectTaskList } from './project-view';
+import { expectLanguageLayout } from './language-layout';
 import { randomUUID } from 'node:crypto';
 import type { Page, Route, TestInfo } from '@playwright/test';
 import { attachmentDownloadUrl, attachmentPreviewUrl } from '../../src/api/client';
@@ -58,7 +59,7 @@ test.describe('visible authentication protocol', () => {
       for (const width of [320, 361, 375, 390]) {
         await page.setViewportSize({ width, height: 844 });
         await expect(page.locator('.site-header .brand')).toBeVisible();
-        await expect(page.locator('.site-header select')).toBeVisible();
+        await expectLanguageLayout(page.locator('.site-header select'));
         await expect(page.locator('.site-header .nav-start')).toBeVisible();
         const geometry = await page.locator('.landing-page .site-header').evaluate((header) => ({
           viewport: window.innerWidth,
@@ -108,7 +109,11 @@ test.describe('visible authentication protocol', () => {
       await narrowHeaderFits('Identity unavailable');
     } finally { await page.unroute(`${baseURL}/api/v1/me`, unavailableIdentity); }
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
+    await narrowHeaderFits('Chinese');
+    await picture(page, info, 'language-selector-landing-narrow');
     await page.setViewportSize(originalViewport);
+    await expectLanguageLayout(page.locator('.site-header select'));
+    await picture(page, info, 'language-selector-landing-desktop');
     await expect(page.locator('.landing-page')).toBeVisible();
     await expect(page.locator('.auth-shell')).toHaveCount(0);
     await page.locator('.landing-page a[href="/login"]').first().click();
