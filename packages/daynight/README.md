@@ -1508,10 +1508,13 @@ operation can register fresh launch provenance. An inventory-recovered claim
 without that durable record remains unknown; empty remote summaries cannot
 authorize another launch.
 
-Pending startup and new acquisition both rotate Projects after each successful
-slot allocation. Pending rows have priority, with stable task-ID order inside
-each Project; new candidates retain server ready order. A busy Project does not
-fill every free slot before another Project gets its turn.
+Each reconciliation round acquires at most one new task across all configured
+Projects, even when more slots remain free or the granted task must stay pending.
+The next acquisition waits until the next round after `pollIntervalMs`, continuing
+Project rotation and preserving server ready order within each Project. Empty
+Projects are skipped. Existing pending rows have startup priority, with stable
+task-ID order inside each Project; they can use multiple free slots in one round,
+rotating Projects after each successful slot allocation.
 
 macOS Herdr recovery uses the original lifecycle journal:
 

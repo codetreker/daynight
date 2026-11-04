@@ -501,6 +501,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           registerClaim(granted);
           options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
           if (!blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted);
+          return;
         } catch (error) {
           if (isWorkerCancellation(error, normalSignal)) throw error;
           options.emit({ kind: "warning", message: `Claim request for ${candidate.projectId}/${candidate.id}/${claimId} did not confirm a grant; the next complete inventory will reconcile it.`, error });
