@@ -83,7 +83,9 @@ Project access returns 404 `not_found`. The actor guard precedes domain SQL and
 reports 409 `identity_mismatch`. A commit whose result cannot be confirmed
 returns 503 `write_outcome_unknown`; a later read establishes current facts, not
 the original outcome, and callers must not automatically replay the write.
-Invitation result DTOs retain their existing contract.
+Invitation inspection returns the current direct grant and effective access; acceptance
+returns the real grant, post-write access and joined/consumed flags. Create, revoke
+and accept bind `expectedUserId` before domain SQL.
 Worker administrator checks consume access, while claim ownership and acquisition
 assignment requirements retain their separate rules.
 The project settings API provides a versioned execution-warning threshold that
