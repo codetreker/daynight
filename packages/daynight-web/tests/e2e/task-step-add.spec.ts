@@ -61,7 +61,7 @@ test('append steps with draft protection and recovery through the real service',
     await root(page).getByRole('tab', { name: '概览', exact: true }).click();
     await root(page).getByRole('tab', { name: '步骤', exact: true }).click();
     await expect(form(page).getByRole('textbox', { name: '标题' })).toHaveValue('新增真实步骤');
-    await page.locator('.sidebar a.nav-button[href="/projects"]').click();
+    await page.locator('.task-detail-page-back').click();
     await expect(page.getByRole('alertdialog')).toBeVisible();
     await page.getByRole('alertdialog').getByRole('button', { name: '继续编辑' }).click();
     await expect(form(page).getByRole('textbox', { name: '标题' })).toHaveValue('新增真实步骤');
