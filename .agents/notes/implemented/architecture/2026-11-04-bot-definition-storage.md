@@ -33,8 +33,9 @@ lock order. The [specification](../../../../docs/spec/assistant.md) and
 
 **Expose an explicit-configuration create endpoint immediately.** This would
 make the storage kernel callable but establish a public contract requiring
-settings that name-only creation must resolve. Creation remains an internal
-service entry until default resolution can supply the confirmed public contract.
+settings that name-only creation must resolve. The definition-only delivery therefore kept creation internal.
+The [default-resolution decision](2026-11-04-bot-default-resolution.md) adds the
+name-only public entry without exposing that explicit-configuration kernel.
 
 **Let deletion intent accept a bound Session immediately.** Recording only the
 Bot marker would leave ordinary Session paths able to read or write history.
@@ -49,8 +50,9 @@ Task. Exact duplicate requests retain the original frozen configuration and
 cleanup identity. Sequence gaps after rollback or conflicting insertion are
 acceptable; creation order promises ordering, not consecutive numbering.
 
-Default resolution, native execution, Session registration and actual history
-cleanup remain separate capabilities. Pending deletion can persist indefinitely
+Default resolution now composes with the definition kernel through the
+[default-resolution decision](2026-11-04-bot-default-resolution.md). Native
+execution, Session registration and actual history cleanup remain separate capabilities. Pending deletion can persist indefinitely
 until cleanup consumers are available. Those consumers must preserve credential
 checks, Bot-before-Session locking and original-request reconciliation; they
 cannot turn existing Task or Test endpoints into alternative Bot lifecycle paths.
