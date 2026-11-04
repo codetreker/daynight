@@ -74,6 +74,10 @@ func ErrorKind(err error) string {
 }
 
 func knownFault(err error) (*service.Fault, bool) {
+	var botOperation *service.BotOperationError
+	if errors.As(err, &botOperation) {
+		return nil, false
+	}
 	var validation *taskproperties.ValidationError
 	if errors.As(err, &validation) && onlyPropertyValidation(err) {
 		return &service.Fault{Code: "invalid_input", Message: validation.Error(), Cause: err}, true
