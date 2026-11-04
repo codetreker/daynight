@@ -382,7 +382,7 @@ JSON 保留所输出 API 字段的名称、类型和原始字符串，不应用�
 | V9 | 更新覆盖读取版本、显式期望版本、并发冲突、空描述、依赖替换及清空；服务拒绝保留 task ID 且没有隐式重试 |
 | V10 | 多页查询与 `--json` 仅完整成功后输出；task list 默认排除 done，支持 `--all` 和显式状态、互斥参数在 I/O 前拒绝、ready 交集及跨页稳定分组；文本列表省略描述、版本和时间，所有筛选形式的 JSON 列表仅省略 description 且保留其余全部字段、原始 PR 字符串、精确版本和时间戳，其他 task 资源输出保持完整；图保持完整响应字段并正确报告超限，stdout 可直接由 JSON parser 读取 |
 | V11 | 单次期限、持续推进 cursor 耗尽总期限、单响应和累计字节超限、锁竞争、用户取消、错误响应、无效 JSON、损坏缓存及磁盘失败分别给出正确 stderr 和退出码；超限无部分输出或后续副作用，写响应未确认不产生虚假失败确定性 |
-| V12 | CLI 既有 `pnpm typecheck`、`pnpm test`、`pnpm build` 及相关安装验收通过；Linux、macOS、Windows 的 Git、锁及文件替换有原生证据 |
+| V12 | CLI 既有 `pnpm typecheck`、`pnpm test`、`pnpm build` 及相关安装验收通过；Linux、macOS ARM64、Windows 的 Git、锁及文件替换有原生证据 |
 | V13 | `task ready` 的默认和显式 limit、参数在 I/O 前拒绝、单次 `ready=true` 查询、合法 cursor 不续页、稳定服务顺序、完整 int64 JSON、空结果及超量/非 ready/重复 ID 响应拒绝均可观察；`task list --ready` 仍完整翻页，真实服务证明选择前 N 项及依赖完成后的 ready 变化 |
 | V14 | `--allow-agents true/false` 的 update/list/ready 路径、静态补全、非法值在 I/O 前拒绝、字段必填严格读取、分页前筛选及跨页保留、返回筛选不符拒绝、精确版本/同值/运行锁与响应丢失不重试、JSON 及可读许可输出通过适用安装入口验证 |
 | V15 | 平台 create/update 设置、update 清除与互斥、list/ready 兼容筛选、全部 shell 补全、非法值在 I/O 前拒绝、必填 null/枚举资源严格读取、兼容条件跨页保留和响应校验、精确版本/同值/运行锁/拒绝不重试及 JSON/可读平台输出通过适用安装入口和真实服务验证 |

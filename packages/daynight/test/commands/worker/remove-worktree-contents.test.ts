@@ -1,4 +1,5 @@
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
@@ -39,7 +40,8 @@ const deferred = () => {
 
 afterEach(async () => {
   vi.mocked(open).mockImplementation(actualFs.open);
-  operations.splice(0).forEach(entry => entry.dispose());
+  try { operations.splice(0).forEach(entry => entry.dispose()); }
+  finally { vi.useRealTimers(); vi.restoreAllMocks(); }
   for (const target of restoreModes.splice(0)) {
     try { if (!(await lstat(target)).isSymbolicLink()) await chmod(target, 0o700); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -194,6 +196,11 @@ describe("owned worktree content removal", () => {
     const f = await fixture();
     await writeFile(path.join(f.target, "one"), "one"); await writeFile(path.join(f.target, "two"), "two");
     const entered = deferred(); const release = deferred(); const controller = new AbortController();
+    let elapsed = 0;
+    if (stop === "deadline") {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+    }
     const op = stop === "cancellation" ? operation(controller.signal) : createOperation({ limits: { totalMs: 30 } });
     if (stop === "deadline") operations.push(op);
     let settled = false;
@@ -202,7 +209,11 @@ describe("owned worktree content removal", () => {
     }).then(() => { settled = true; return null; }, error => { settled = true; return error; });
     await Promise.race([entered.promise, result.then(error => { throw error ?? new Error("Removal never entered the controlled filesystem operation."); })]);
     if (stop === "cancellation") controller.abort(new Error("stop"));
-    else if (!op.signal.aborted) await new Promise<void>(resolve => op.signal.addEventListener("abort", () => resolve(), { once: true }));
+    else {
+      elapsed = 30;
+      await vi.advanceTimersByTimeAsync(30);
+    }
+    expect(op.signal.aborted).toBe(true);
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(settled).toBe(false);
     expect((await readdir(f.target)).length).toBe(3);

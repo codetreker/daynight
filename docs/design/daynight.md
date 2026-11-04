@@ -1,7 +1,7 @@
 # Daynight 客户端架构设计
 
 状态：`packages/daynight/` 是通过 `@codetreker/daynight` 分发的 TypeScript 客户端
-命令工具包，支持 Linux、macOS 和 Windows。`review` 提供 GitHub PR 审查，`worker` 提供前台任务认领与资源对账，`update`
+命令工具包，支持 Linux、Windows 和 Apple Silicon（ARM64）macOS，不支持 Intel macOS。`review` 提供 GitHub PR 审查，`worker` 提供前台任务认领与资源对账，`update`
 管理当前 npm 全局安装，`login/logout` 管理 CLI 凭据，review 拥有仓库配置和首次引导，`completion` 生成 Bash 和 zsh
 的原生补全脚本并安装启动配置；`--skill` 输出独立的 CLI 使用手册，`skill` 提供公开 `using-daynight` skill 的交互安装。project/task
 CLI 的共享配置、HTTP、仓库关联基础及 project/task 命令已完成，安装产物、真实服务

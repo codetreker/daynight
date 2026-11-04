@@ -17,6 +17,11 @@ cleanup finished. Re-entering Web cleanup with its now-completed record rejects
 the mutation and can retain the final slot indefinitely despite successful
 physical removal.
 
+Testing an in-flight deadline requires expiring the deadline after the controlled
+filesystem mutation has entered. A real 30-millisecond deadline armed before
+ownership and directory checks can expire during those checks, leaving the
+intended join behavior untested.
+
 ## Decision
 
 The [worker design](../../../../docs/design/daynight-worker.md#git-工作区与资源身份)
@@ -36,6 +41,13 @@ Cancellation joins submitted filesystem operations and descriptor closes. An
 in-process guard rejects overlapping removals for the same physical repository
 and task until the original call settles. This supplements the coordinator's
 existing task serialization; it does not replace the worker instance lock.
+
+The in-flight deadline test controls both the timeout queue and the imported
+Node monotonic clock. It waits for the removal-entry barrier with time paused,
+then advances both clocks by the original 30 milliseconds. Filesystem operations
+and immediate callbacks remain real, preserving the proof that an admitted
+mutation settles before rejection and no later mutation starts. The operation
+is disposed before the clocks and spies are restored.
 
 For repeated cleanup of a completed Web record, the coordinator requires full
 stop, backend closure, and deletion evidence, then rechecks the original claim's
