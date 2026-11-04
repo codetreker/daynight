@@ -171,7 +171,7 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
     await expect(addedRow.locator('.assignee-name')).toHaveText(changedName);
     expect(requests, 'A profile version change fetches only that person').toEqual([[alice.id], [missingProfile.id], [missingProfile.id]]);
     const membersResponse = await api.get(`/api/v1/projects/${project.id}/members`); expect(membersResponse.status()).toBe(200);
-    const member = parseMembers(await decodeMembersJson(new Response(await membersResponse.text())), project.id).find((member) => member.userId === missingProfile.id);
+    const member = parseMembers(await decodeMembersJson(new Response(await membersResponse.text())), project.id).items.find((member) => member.userId === missingProfile.id);
     if (member === undefined) throw new Error('Access-only cache validation requires the current direct membership.');
     expect((await api.delete(`/api/v1/projects/${project.id}/members/${missingProfile.id}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: member.directGrant!.version, expectedUserId: alice.id }) })).status()).toBe(204);
     await nextSync();
@@ -298,7 +298,7 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     await expect(page.locator('.task-assignee-filter .assignee-trigger')).toHaveText('Everyone'); await expect(goalRow).toBeVisible();
 
     const membersResponse = await api.get(`/api/v1/projects/${project.id}/members`); expect(membersResponse.status()).toBe(200);
-    const former = parseMembers(await decodeMembersJson(new Response(await membersResponse.text())), project.id).find((member) => member.userId === bobProfile.id);
+    const former = parseMembers(await decodeMembersJson(new Response(await membersResponse.text())), project.id).items.find((member) => member.userId === bobProfile.id);
     if (former === undefined) throw new Error('Former-assignee acceptance requires the exact current Bob membership.');
     expect((await api.delete(`/api/v1/projects/${project.id}/members/${bobProfile.id}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: former.directGrant!.version, expectedUserId: aliceProfile.id }) })).status()).toBe(204);
     await page.reload();

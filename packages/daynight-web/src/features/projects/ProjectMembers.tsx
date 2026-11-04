@@ -25,7 +25,7 @@ export const useProjectMembers = (projectId: string, enabled = true): Membership
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, scope.signal]);
     setState({ projectId, scope, status: 'loading', members: [], error: null });
-    void listMembers(projectId, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch }).then((members) => {
+    void listMembers(projectId, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch }).then(({ items: members }) => {
       if (!signal.aborted) setState({ projectId, scope, status: 'ready', members, error: null });
     }).catch((error: unknown) => {
       if (!signal.aborted && !isAbortError(error)) setState({ projectId, scope, status: 'error', members: [], error });

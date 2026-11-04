@@ -108,7 +108,7 @@ handbook 保持为命令用途索引与规则导航。索引只列命令名称�
 逐项用法，也不暴露本地绑定文件和忽略规则等内部实现。其他模式按需读取它，现有 CLI
 与附件规范继续拥有完整命令契约。
 
-项目定位与失败处理由 `references/project-management.md` 拥有，查询、元数据、状态与依赖规则由 `references/task-management.md` 拥有，版本、冲突、不确定写入与附件并发由 `references/write-safety.md` 拥有。ready 是有界候选，
+项目定位与失败处理由 `references/project-management.md` 拥有，查询、Steps 操作、元数据、状态与依赖规则由 `references/task-management.md` 拥有，版本、冲突、不确定写入与附件并发由 `references/write-safety.md` 拥有。持久 Steps 与 Session 内容的归属由 `references/task-content.md` 拥有，执行时按项目规则维护 Steps 的指引由 `references/task-execution.md` 拥有。ready 是有界候选，
 创建顺序不表达相关性，空结果不能证明没有进行中或被阻塞的工作。list 读取全部匹配
 分页，默认排除 `done`；需要包含已完成任务的完整清单或核对历史登记时必须显式包含
 已完成任务，对应选项由 CLI help 说明。文本列表是摘要；JSON 列表仅省略

@@ -188,7 +188,7 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 }
 
 func userResponse(user core.User) api.User {
-	return api.User{ID: user.ID, Email: user.Email, EmailVerified: user.EmailVerified, Name: user.Name, AvatarURL: user.AvatarURL}
+	return api.User{ID: user.ID, Email: user.Email, EmailVerified: user.EmailVerified, Name: user.Name, AvatarURL: user.AvatarURL, PersonalTeam: teamRefResponse(user.PersonalTeam)}
 }
 func tokenResponse(c core.PersonalAccessToken) api.PersonalAccessToken {
 	return api.PersonalAccessToken{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.UTC(), ExpiresAt: utcTokenExpiry(c.ExpiresAt)}

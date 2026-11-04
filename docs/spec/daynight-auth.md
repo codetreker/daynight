@@ -50,6 +50,10 @@ Personal 初始化和存量归属迁移遵守下述原子性与数据完整性�
 与 registry 的交集；上游 App 配置/凭据错误返回 503，网络或协议错误返回 502，
 超时返回 504，与当前用户会话的 401 分开处理。
 
+`GET /me` 必须返回完整的 personalTeam:TeamRef，Personal 的 kind 为 personal、name 为 null，
+ID 为真实且唯一的 Personal Team UUID。CLI 与 Web 严格拒绝缺失、非法或普通 Team 引用，
+不能扫描列表猜测默认归属，也不能在读取时创建或修复关系。
+
 浏览器使用服务端持久化的主站会话。生产 Cookie 为 host-only、Secure、HttpOnly、
 SameSite=Lax；显式 HTTP 主站测试配置使用不带 Secure/`__Host-` 的测试 Cookie
 名称，仍为 host-only、HttpOnly、Lax。它与 SDK gateway 的回环 HTTP 开关独立。
@@ -152,8 +156,8 @@ Web 只为 `/me` 使用浏览器的 no-cache 重验模式，由浏览器 HTTP �
 不等同于 Agent 执行或交付的会话授权。
 
 项目/任务 ID、仓库地址与本地绑定不是凭据。`GET /api/v1/projects/{projectId}/members`
-返回 `{items: ProjectParticipant[]}`。每项包含 `userId`、必填 `profile` 对象、
-`effectiveRole` 和必填可空 `directGrant`；profile 的 name/email/avatarUrl 三个字段必填且可为 null。
+返回 `{items: ProjectParticipant[],actorAccess:ProjectAccess}`。每项包含 `userId`、必填 `profile` 对象、
+`effectiveRole`、必填可空 `inheritedFrom:{team:TeamRef,role}` 和 `directGrant`；profile 的 name/email/avatarUrl 三个字段必填且可为 null。
 缺少规范用户行是完整性错误，整个读取失败，不能静默删去该来源或伪装成空资料。
 名册是当前 owner Team 成员与独立 Project grant 的去重并集；有效角色为两种来源在
 `none < member < admin` 下的最大值。只有继承权限时 directGrant 为 null；有效角色不等于可写授权记录。
@@ -185,12 +189,20 @@ Project grant 独立，撤销一种来源不能撤销另一种来源。当前项
 ## 当前主体的项目权限
 
 `GET /api/v1/projects/{projectId}/access` 在当前读取快照内返回本人权限：
-`{effectiveRole,directGrant}` 两个键必填，effectiveRole 为 admin 或 member。
+`{projectId,ownerTeam,ownership,effectiveRole,teamRole,directGrant,canTransfer}` 全部键必填。
+ownerTeam 是同快照 TeamRef，ownership:{teamId,version} 对应真实归属，版本为无损正 int64。
+teamRole 为 null/member/admin，effectiveRole 是实际双来源的最大角色，canTransfer 仅由
+owner Team admin 决定。Project 创建、详情、分页、图、task-sync 和客户端缓存均必填
+相同内在 ownership 形状；GET Project 另带同快照新鲜 access。
 directGrant 为 null 或完整的 projectId、userId、role、version、createdAt、updatedAt；
 其版本是实际独立授权的正 int64 JSON number，时间为 UTC，不附带姓名、邮箱或头像。
 只有继承权限时返回 directGrant:null；独立授权存在时返回其真实 role/version，
 即使继承角色更高也不改写 grant。未准入和缺失项目沿用 not_found，
 真实查询或事务失败不能表现为 null grant 或默认角色。响应保留认证主体头和 no-store。
+成员读取返回 `{items,actorAccess}`，两者来自同一快照；participant 必含可空
+inheritedFrom:{team:TeamRef,role} 和 directGrant。Team 名称和成员资料只留在当前身份与
+项目的内存中，不写入任务缓存。全部当前消费者同次更新，缺字段、错误归属及损坏关系
+明确失败，不使用旧形状 fallback。
 
 Web 的项目、设置、成员、Task 弹层及独立 Task/附件页面使用同一份身份/项目绑定的
 内存权限投影控制本人操作；CLI Worker 管理读取当前 access。完整成员资料只承担

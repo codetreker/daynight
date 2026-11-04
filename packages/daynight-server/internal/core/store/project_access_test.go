@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func ordinaryProjectTeam(t *testing.T, database *Store, projectID string) string {
@@ -26,6 +27,7 @@ func TestProjectAccessCombinesEveryRealSourceWithoutChangingGrants(t *testing.T)
 	database, _, person, project := membershipFixture(t)
 	ctx := context.Background()
 	teamID := ordinaryProjectTeam(t, database, project.ID)
+	mustQueryExec(t, database, `UPDATE project_ownership SET version=9007199254740993 WHERE project_id=$1`, project.ID)
 	roles := []core.ProjectRole{"", core.ProjectMemberRole, core.ProjectAdmin}
 	for _, teamRole := range roles {
 		for _, directRole := range roles {
@@ -62,6 +64,11 @@ func TestProjectAccessCombinesEveryRealSourceWithoutChangingGrants(t *testing.T)
 					} else if err != nil || access.Role != expected || !reflect.DeepEqual(access.DirectGrant, before) {
 						t.Fatalf("source access: %#v expectedRole=%s grant=%#v %v", access, expected, before, err)
 					}
+					if !absent {
+						if access.OwnerTeam.ID != teamID || access.OwnerTeam.Kind != "ordinary" || access.OwnerTeam.Name == nil || *access.OwnerTeam.Name != "Owner team" || access.Ownership.TeamID != teamID || access.Ownership.Version != 9007199254740993 || access.CanTransfer != (teamRole == core.ProjectAdmin) || (access.TeamRole == nil) != (teamRole == "") || access.TeamRole != nil && *access.TeamRole != teamRole {
+							t.Fatalf("real ownership and actor source: %#v", access)
+						}
+					}
 					page, err := snapshot.AccessibleProjects(ctx, person, Page{Limit: 10})
 					if err != nil || len(page.Items) != btoi(!absent) {
 						t.Fatalf("filtered inherited project list: %#v %v", page, err)
@@ -71,6 +78,11 @@ func TestProjectAccessCombinesEveryRealSourceWithoutChangingGrants(t *testing.T)
 						t.Fatalf("deduplicated source roster: %#v %v", people, err)
 					}
 					for _, p := range people {
+						if p.UserID == person.UserID {
+							if (p.InheritedFrom == nil) != (teamRole == "") || p.InheritedFrom != nil && (p.InheritedFrom.Team.ID != teamID || p.InheritedFrom.Team.Name == nil || *p.InheritedFrom.Team.Name != "Owner team" || p.InheritedFrom.Team.Kind != "ordinary" || p.InheritedFrom.Role != teamRole) {
+								t.Fatalf("participant inheritance facts: %#v", p)
+							}
+						}
 						if p.UserID == person.UserID && (p.EffectiveRole != expected || !reflect.DeepEqual(p.DirectGrant, before)) {
 							t.Fatalf("roster source facts: %#v", p)
 						}
@@ -292,5 +304,60 @@ func TestThreadAuthorizationRechecksTeamSourceAfterLockWait(t *testing.T) {
 				t.Fatalf("pre-wait Team role retained: %#v %v", access, err)
 			}
 		})
+	}
+}
+
+type sourceInsertionTracer struct {
+	matched    bool
+	afterGrant func()
+}
+
+func (tracer *sourceInsertionTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	tracer.matched = strings.Contains(data.SQL, "FROM project_grants WHERE project_id=$1 AND user_id=$2 FOR SHARE")
+	return ctx
+}
+
+func (tracer *sourceInsertionTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {
+	if tracer.matched && tracer.afterGrant != nil {
+		tracer.matched = false
+		apply := tracer.afterGrant
+		tracer.afterGrant = nil
+		apply()
+	}
+}
+
+func TestLockedProjectAccessDoesNotPublishAnUnlockedNewSource(t *testing.T) {
+	database, owner, person, project := membershipFixture(t)
+	teamID := ordinaryProjectTeam(t, database, project.ID)
+	ctx := context.Background()
+	mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, person.UserID)
+	config := database.Pool.Config().Copy()
+	tracer := &sourceInsertionTracer{afterGrant: func() {
+		mustQueryExec(t, database, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, teamID, person.UserID)
+	}}
+	config.ConnConfig.Tracer = tracer
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	access, err := LockProjectAuthorization(ctx, tx, person.UserID, project.ID)
+	if err != nil || tracer.afterGrant != nil || access.Role != core.ProjectMemberRole || access.TeamRole != nil || access.CanTransfer || access.DirectGrant == nil || access.DirectGrant.Role != core.ProjectMemberRole {
+		t.Fatalf("unlocked source entered strong admission: %#v %v", access, err)
+	}
+	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		current, err := snapshot.ProjectAccess(ctx, person, project.ID)
+		if err != nil || current.Role != core.ProjectAdmin || !current.CanTransfer {
+			t.Fatalf("new source was not actually committed: %#v %v", current, err)
+		}
+		_, err = snapshot.ProjectAccess(ctx, owner, project.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

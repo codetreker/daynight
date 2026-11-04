@@ -16,7 +16,7 @@ import { TaskDetailSessionBoundary } from '../src/features/task-detail/TaskDetai
 import { createTaskSessionWorld } from './helpers/taskSessions';
 import { detailFixture, resourceResponse, snapshotFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { TEST_VIEWER_ID } from './helpers/taskSync';
+import { directAccessFixture, TEST_VIEWER_ID } from './helpers/taskSync';
 
 const initial = (): TaskSessionSnapshot => ({ ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), executionGeneration: '1', connectionEpoch: '1', lastEventSeq: '0' });
 let world: ReturnType<typeof createTaskSessionWorld>;
@@ -24,8 +24,8 @@ let root: HTMLElement;
 beforeEach(() => {
   world = createTaskSessionWorld();
   root = document.createElement('div'); root.id = 'root'; document.body.append(root);
-  vi.spyOn(auth, 'listMembers').mockResolvedValue([]);
-  vi.spyOn(auth, 'getProjectAccess').mockResolvedValue({ effectiveRole: 'admin', directGrant: null });
+  vi.spyOn(auth, 'listMembers').mockImplementation(async (projectId) => ({ items: [], actorAccess: directAccessFixture(projectId, TEST_VIEWER_ID, 'admin') }));
+  vi.spyOn(auth, 'getProjectAccess').mockImplementation(async (projectId) => directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
   vi.stubGlobal('fetch', vi.fn(async () => resourceResponse({ items: [], nextCursor: null }, TEST_VIEWER_ID)));
 });
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });

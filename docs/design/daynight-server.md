@@ -144,7 +144,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 | 对象 | 字段与含义 |
 |---|---|
-| Project | `id`、非空 `name`、`repoUrl`、`createdAt`、`updatedAt`，以及具体 `settings`（正 int64 version、正 int32 executionWarningMinutes）；内部真实 `Ownership` 保存 TeamID、Version、UpdatedAt，公开字段仍由当前 Project DTO 决定 |
+| Project | `id`、非空 `name`、`repoUrl`、`createdAt`、`updatedAt`，以及具体 `settings`（正 int64 version、正 int32 executionWarningMinutes）；内部真实 `Ownership` 保存 TeamID、Version、UpdatedAt，公开内在字段必含 `ownership:{teamId,version}`；GET 另含同快照 access |
 | Task | `id`、`projectId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt` |
 | TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false） |
 | WorkerSnapshot | 认证 userId 与 workerId、不可变创建时刻、服务端最近报告时刻、typed telemetry 与规范化任务观测；[独立机制](daynight-worker-snapshots.md) |

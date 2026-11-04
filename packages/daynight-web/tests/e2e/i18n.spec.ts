@@ -219,9 +219,12 @@ test.describe('Web language journeys', () => {
     // Settle readiness around the controlled focus observation before measuring locale-only requests.
     const projectSettingsLink = page.locator(`.project-title-actions a[href="/projects/${project.id}/settings"]`);
     await expect(projectSettingsLink).toHaveCount(1);
-    const focusedAccess = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/access` && response.status() === 200);
+    const accessUrl = new URL(`/api/v1/projects/${project.id}/access`, baseURL).href;
+    const focusedAccess = page.waitForResponse((response) => response.url() === accessUrl && response.request().method() === 'GET');
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    expect(await (await focusedAccess).finished()).toBeNull();
+    const accessResponse = await focusedAccess;
+    expect(accessResponse.status()).toBe(200);
+    expect(await accessResponse.finished()).toBeNull();
     await expect(projectSettingsLink).toHaveCount(1);
     const beforeModalSwitch = [...reads];
     await changeDetailLanguage('zh-CN');

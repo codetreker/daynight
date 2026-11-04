@@ -1,10 +1,11 @@
-import type { ProjectPersonVersion, ProjectAccess } from "./auth-types";
+import type { ProjectAccess, ProjectOwnership, ProjectPersonVersion } from "./auth-types";
 
 export type ExecutionPlatform = "windows" | "linux" | "macos";
 
 export type TaskStatus = "todo" | "in_progress" | "done";
 
 export type Project = {
+  readonly ownership: ProjectOwnership;
   readonly id: string;
   readonly name: string;
   readonly repoUrl: string;

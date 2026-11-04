@@ -13,7 +13,7 @@ import { formatError } from "../../src/platform/diagnostics.js";
 const id = "11111111-1111-1111-1111-111111111111";
 const otherId = "22222222-2222-2222-2222-222222222222";
 const serverUrl = "http://localhost:8787";
-const project: Project = { id, name: "Project", repoUrl: "https://git.example/Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z" };
+const project: Project = { id, name: "Project", repoUrl: "https://git.example/Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z" };
 const directories: string[] = [];
 const operations: Operation[] = [];
 afterEach(async () => {

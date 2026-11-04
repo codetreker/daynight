@@ -25,7 +25,7 @@ const node = (id: string, titlePreview: string, dependsOn: readonly string[]): G
   ready: dependsOn.length === 0, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time,
 });
 const graph = (tasks: readonly GraphTask[]): TaskGraph => ({
-  project: { id: projectId, name: 'Task repartition', repoUrl: 'https://github.com/example/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
+  project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Task repartition', repoUrl: 'https://github.com/example/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
   observedAt: time, tasks,
   summary: { total: tasks.length, todo: tasks.length, inProgress: 0, done: 0,
     ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => !task.ready).length },

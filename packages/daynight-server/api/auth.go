@@ -8,6 +8,7 @@ type User struct {
 	EmailVerified *bool   `json:"emailVerified"`
 	Name          *string `json:"name"`
 	AvatarURL     *string `json:"avatarUrl"`
+	PersonalTeam  TeamRef `json:"personalTeam"`
 }
 
 type PersonalAccessToken struct {

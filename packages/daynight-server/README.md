@@ -25,7 +25,7 @@ The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
 Task assignee. Ordinary task creation/PATCH and full Task, summary and graph
 producers carry it. Native assignee filtering and project-scoped people reads
-are implemented. The Web consumes assignment with schema-5 persistent profile
+are implemented. The Web consumes assignment with schema-6 persistent profile
 content, strict task parsing, people presentation, mutation and local list filters. The CLI consumes the required
 nullable field and supports assignment/clearing, current-ID output and explicit
 list filters.
@@ -47,17 +47,23 @@ Authentication and user-read failures retain no-store errors and cannot return
 browser-managed revalidation across reloads without a custom identity store.
 Stored `ProjectGrant` facts and their real observation versions are distinct from
 computed `ProjectAccess`. The authenticated
-`GET /api/v1/projects/{projectId}/access` returns exactly
-`{effectiveRole,directGrant}`. Both keys are required; a present grant contains
-only its project/user IDs, stored role, int64 JSON-number version and UTC creation
-and update times. Inherited-only admission has a null grant; failed admission
-remains an error. It returns no member profiles, accepts no query
-parameters, supports GET/HEAD and preserves the principal response header and
-no-store policy. Resource admission and accessible-project filtering use
+`GET /api/v1/projects/{projectId}/access` returns required projectId, ownerTeam,
+ownership, effectiveRole, teamRole, directGrant and canTransfer. TeamRef has an
+id, personal/ordinary kind and a nullable raw name; Personal names are null.
+Ownership contains the real teamId and positive int64 JSON-number version.
+A present grant contains its project/user IDs, stored role, exact version and
+UTC creation/update times. teamRole is null/member/admin; canTransfer is true
+only for an owner Team admin. Inherited-only admission has a null grant; failed
+admission remains an error. The endpoint returns no member profiles, accepts no
+query parameters, supports GET/HEAD and preserves the principal response header
+and no-store policy. Resource admission and accessible-project filtering use
 the canonical relation that computes the maximum of owner Team and direct-grant
 roles under `none < member < admin`. GET project members returns
-`{items: ProjectParticipant[]}` with `userId`, a required `profile` object
-(nullable `name`, `email`, `avatarUrl`), `effectiveRole` and nullable `directGrant`.
+`{items: ProjectParticipant[], actorAccess: ProjectAccess}` from one snapshot.
+Each participant has userId, a required profile object (nullable name, email and
+avatarUrl), effectiveRole, nullable inheritedFrom:{team:TeamRef,role} and nullable
+directGrant. The Web publishes actorAccess through its existing identity,
+project and observation fences before using the roster for management.
 Raw owner-Team and grant candidates survive the canonical-user LEFT JOIN;
 missing user rows fail the whole roster instead of disappearing. Inherited-only
 participants have a null grant, while any direct grant retains its own real
@@ -96,7 +102,7 @@ repeatable-read snapshot. Every snapshot and delta, including an empty delta,
 also returns required top-level `actorAccess` using the access endpoint's DTO and
 complete `assigneeVersions` entries `{userId,version,hasProjectAccess}` for the
 qualified people catalogue. The existing admission result supplies access in the
-same snapshot; its nested grant version remains an exact int64 JSON number.
+same snapshot; its nested ownership and grant versions remain exact int64 JSON numbers.
 People metadata contains no names or avatars, is UUID-sorted and distinct, and
 uses the same qualification and content versions as task-assignees. Any profile
 query, integrity or transaction failure fails the whole sync. Hashing reads all
@@ -110,14 +116,14 @@ transaction-completion faults remain 500 internal_error and take precedence over
 a saved property validation refusal. A stored project epoch invalidates caches after supported
 history replacement and transactional task soft deletion. The Web persists
 summaries and details and replaces them atomically after an epoch change. Its
-schema-5 upgrade adds a separate profiles store while retaining valid schema-4
-task data and user fences. Upgrades from versions 1, 2 or 3 still rebuild
-incompatible project, summary and detail stores, rotate user fences and clear old
-watermarks before a complete snapshot. Profile content is reusable after reload
+schema-6 upgrade adds a separate profiles store while retaining valid schema-5
+task data, required Project ownership and user fences. Upgrades from versions 1,
+2, 3 or 4 still rebuild incompatible project, summary and detail stores, rotate
+user fences and clear old watermarks before a complete snapshot. Profile content is reusable after reload
 only after current identity/project admission and version matching; access stays
 in the live manifest. Ordinary task epoch replacement can retain matching profile
-content while all publication remains generation-fenced. Absent properties or assignedTo in old summaries cannot be
-inferred as an empty object or null. Graph nodes omit properties,
+content while all publication remains generation-fenced. Missing properties, assignedTo or Project ownership in old records cannot
+receive defaults. Graph nodes omit properties,
 and cached values grant no detail or mutation admission. Complete properties
 increase transport, parsing and summary storage costs: node/edge limits and the
 detail-cache byte budget do not bound total summary bytes. Network, decoding and
@@ -769,7 +775,10 @@ grant. Canonical login UPSERT, Personal initialization and session creation shar
 one transaction; repeat and concurrent login reuse the unique Team and validate
 its owner admin. Authentication does not repair broken Personal state. Internal
 Project reads require real ownership and report integrity errors for a missing
-row; the public Project/account DTOs retain their existing fields. Lists contain
+row. Public Project DTOs add required ownership:{teamId,version} across create,
+GET, list, graph and sync. GET additionally returns fresh access from the same
+read snapshot. GET /me adds a required personalTeam:TeamRef read from the real
+validated Personal relationship. Lists contain
 only projects admitted by the same current dual-source relation.
 Names preserve accepted text and must be nonempty UTF-8 without NUL. Repository addresses accept HTTPS, SSH URL and SCP
 syntax, including SSH aliases and `@` inside repository paths. HTTPS userinfo,

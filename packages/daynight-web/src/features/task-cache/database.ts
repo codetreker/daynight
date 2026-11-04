@@ -3,7 +3,7 @@ import type { Project, TaskDetail, TaskSummary } from "../../api/types";
 import type { ProjectPerson } from "../../api/auth-types";
 
 export const TASK_CACHE_DATABASE = "daynight-task-cache";
-export const TASK_CACHE_SCHEMA = 5;
+export const TASK_CACHE_SCHEMA = 6;
 export const TASK_CACHE_STORES = ["userScopes", "projects", "summaries", "details", "profiles"] as const;
 export type UserScopeRecord = { readonly userId: string; readonly userFence: string };
 export type ProjectRecord = {
@@ -68,7 +68,7 @@ export class TaskCacheDatabase {
             store.createIndex("by-user", "userId");
             store.createIndex("by-project", ["userId", "projectId"]);
           }
-        } else if (oldVersion < 4) {
+        } else if (oldVersion < 5) {
           const rebuild = async () => {
             for (const name of ["projects", "summaries", "details"] as const) await transaction.objectStore(name).clear();
             for await (const cursor of transaction.objectStore("userScopes")) await cursor.update({ userId: cursor.value.userId, userFence: crypto.randomUUID() });

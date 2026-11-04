@@ -376,9 +376,13 @@ jobs:
           retention-days: 30
 
   verify-web:
-    name: verify (web)
+    name: verify (web ${{ matrix.shard }}/2)
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.web == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -411,26 +415,37 @@ jobs:
           cache: true
           cache-dependency-path: packages/daynight-server/go.sum
       - name: Verify isolated deployment lifecycle
+        if: ${{ matrix.shard == 2 }}
         run: bash deployment/dev-ci/tests/run.sh
       - name: Select official Ubuntu package archives
         run: sudo bash .github/scripts/use-ubuntu-archives.sh /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt
       - name: Verify production dashboard and container deployment
         id: web-acceptance
-        run: node packages/daynight-web/scripts/ci.mts browser
+        run: node packages/daynight-web/scripts/ci.mts browser --shard=${{ matrix.shard }}/2
       - name: Recover recorded dashboard acceptance resources
         if: ${{ always() && steps.web-acceptance.outcome != 'skipped' }}
         run: node packages/daynight-web/scripts/acceptance.mts --cleanup
       - name: Verify attachment persistence and paired backup restoration
+        if: ${{ matrix.shard == 2 }}
         run: node deployment/dev-ci/tests/attachments.mts
       - name: Upload production browser and cleanup evidence
         if: ${{ always() && steps.web-acceptance.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: daynight-web-acceptance
+          name: daynight-web-acceptance-${{ matrix.shard }}
           path: |
             packages/daynight-web/.tmp/acceptance/
             .tmp/dev-ci/
             .tmp/attachment-deployment-*/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload functional shard summary
+        if: ${{ always() && steps.web-acceptance.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-web-summary-${{ matrix.shard }}
+          path: packages/daynight-web/.tmp/acceptance/*/evidence.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
@@ -444,3 +459,35 @@ jobs:
         env:
           JOB_RESULTS: ${{ toJSON(needs.*.result) }}
         run: jq --exit-status 'all(.[]; . == "success" or . == "skipped")' <<< "$JOB_RESULTS"
+      - name: Require selected Web jobs to succeed
+        if: ${{ needs.detect-changes.outputs.web == 'true' }}
+        env:
+          WEB_QUALITY_RESULT: ${{ needs.verify-web-quality.result }}
+          WEB_SHARD_RESULT: ${{ needs.verify-web.result }}
+        run: |
+          test "$WEB_QUALITY_RESULT" = success
+          test "$WEB_SHARD_RESULT" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ needs.detect-changes.outputs.web == 'true' }}
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ needs.detect-changes.outputs.web == 'true' }}
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Download first Web shard summary
+        if: ${{ needs.detect-changes.outputs.web == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-web-summary-1
+          path: .tmp/web-shards/1
+      - name: Download second Web shard summary
+        if: ${{ needs.detect-changes.outputs.web == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-web-summary-2
+          path: .tmp/web-shards/2
+      - name: Verify complete Web shard evidence
+        if: ${{ needs.detect-changes.outputs.web == 'true' }}
+        run: node packages/daynight-web/scripts/acceptance/report.mts --shards .tmp/web-shards/1/*/evidence.json .tmp/web-shards/2/*/evidence.json

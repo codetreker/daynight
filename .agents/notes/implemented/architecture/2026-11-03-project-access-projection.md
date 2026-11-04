@@ -12,7 +12,9 @@ response must not restore a prior account, project or authorization observation.
 ## Decision
 
 GET project access and TaskSync expose the same required
-`{effectiveRole,directGrant}` projection. The nullable grant contains only its real
+`{projectId,ownerTeam,ownership,effectiveRole,teamRole,directGrant,canTransfer}`
+projection. Owner Team and ownership come from the same snapshot; canTransfer
+is true only for the owner Team admin. The nullable grant contains only its real
 project/user IDs, role, positive int64 version and timestamps. A present direct
 source produces its actual grant; inherited-only access has a null grant. The
 [Personal ownership decision](2026-11-04-personal-project-ownership.md) activates
@@ -53,7 +55,8 @@ not abort or replay accepted writes.
 
 Access stays outside persistent Project and Task records. Existing member reads
 retain claim-owner name/email, loading, failure/retry and former-member display;
-the caller's controls use access independently. Nested grant versions are decoded
+the caller's controls use access independently. Members reads publish their same-snapshot actorAccess through the same
+observation fences. Nested ownership and grant versions are decoded
 losslessly only at their declared protocol path, preserving opaque task-property
 JSON values. The [auth design](../../../../docs/design/daynight-auth.md) and
 [task-sync design](../../../../docs/design/daynight-task-sync.md) own the complete

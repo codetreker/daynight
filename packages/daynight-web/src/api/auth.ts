@@ -1,7 +1,7 @@
 import { ApiError, assertResponsePrincipal, isAbortError, json, read, request, requestId, type TaskResponseAdmission } from "./client";
 import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitations, parseMember, parseMembers, decodeMembersJson, parseProjectGrant, parseMemberVersion, parseProjectAccess, decodeProjectAccessJson, parseRole, parseToken, parseTokens, parseUser } from "./auth-parse";
 import { array, boolean, id, malformed, project, record, string, timestamp } from "./parse";
-import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectParticipant, ProjectGrant, ProjectPeople, ProjectPeopleQuery, ProjectPerson, ProjectRole, ProjectAccess, User } from "./auth-types";
+import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectParticipants, ProjectGrant, ProjectPeople, ProjectPeopleQuery, ProjectPerson, ProjectRole, ProjectAccess, User } from "./auth-types";
 import type { Project } from "./types";
 import { parseProfileVersion } from "./profile-version";
 import { decodeProjectJson } from "./project-json";
@@ -79,12 +79,12 @@ export const createProject = (input: { readonly name: string; readonly repoUrl: 
   if (input.name.trim() === "" || input.repoUrl.trim() === "" || input.name.includes("\0") || input.repoUrl.includes("\0")) throw new ApiError("protocol");
   return send("/api/v1/projects", "POST", 201, JSON.stringify(input), signal, project, decodeProjectJson);
 };
-export const listMembers = (projectId: string, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<readonly ProjectParticipant[]> => {
+export const listMembers = (projectId: string, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<ProjectParticipants> => {
   const project = requestId(projectId);
   return authOperation(signal, async () => {
     const response = await request(`${projectUrl(project)}/members`, signal, { headers: { Accept: "application/json" } });
     if (admission !== undefined) assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
-    return json(response, signal, (data) => parseMembers(data, project), decodeMembersJson);
+    return json(response, signal, (data) => parseMembers(data, project, admission?.userId), decodeMembersJson);
   });
 };
 const parseProjectPeople = (value: unknown, requested: readonly string[] | null): ProjectPeople => {

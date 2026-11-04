@@ -1,6 +1,6 @@
 # Task 负责人设计
 
-状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 负责人命令、Web 负责人写入/展示/筛选和 schema 5 持久资料缓存，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
+状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 负责人命令、Web 负责人写入/展示/筛选和 schema 6 持久资料缓存，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
 
 ## 数据所有权
 
@@ -86,7 +86,7 @@ TaskDetailSession 继续唯一拥有所有 Task mutation，assignedTo action 复
 
 HTTP200确认后才能抬高已提交版本下限；响应读取失败或未知结果沿既有GET核对队列，不重放PATCH。更高版本完整当前值可替代原意图，旧历史/旧owner不能发布结果。确认、摘要同步与详情持久化继续属于现有ticket/generation边界。
 
-Web 所有 Task/detail/summary/graph 解析和比较纳入 assignedTo。schema 5 在 schema 4 上增加独立 profiles store 并保留任务内容及 userFence；1/2/3 升级仍清除不兼容 projects/summaries/details、清水位并轮换 userFence，不把缺字段解释为 null。可变人员内容按自身 version 独立持久化，不进入 Task version 或任务记录。
+Web 所有 Task/detail/summary/graph 解析和比较纳入 assignedTo。原生负责人最初通过 schema 4 进入缓存，真实 Project ownership 在 schema 5 引入时要求重建旧格式。当前 schema 6 增加独立 profiles store：从 schema 5 升级保留兼容任务内容及 userFence；1/2/3/4 升级仍清除不兼容 projects/summaries/details、清水位并轮换 userFence，不把缺字段解释为 null。完整升级范围由[缓存设计](daynight-task-sync.md)拥有。可变人员内容按自身 version 独立持久化，不进入 Task version 或任务记录。
 
 ## Web 人员与界面所有者
 
@@ -114,4 +114,4 @@ ProjectPage 从完整 index 导出匹配 ID，再在显示集合和分页前相�
 
 查询验证过滤先于分页、完整 scope、旧任务游标拒绝和其他列表版本不变、worker inventory 组合、自动候选本人筛选与 claim 事务负责人校验。目录验证两种模式的原始引用完整性、隐私、精确覆盖、100/101 边界、真实快照并发及所有失败路径。至少 10000 任务和 100 人员的生产查询 EXPLAIN ANALYZE BUFFERS 与响应样本通过显式本地 `bash scripts/stress.sh`（在服务模块内）运行，并绑定被测代码；常规 Go CI 排除该压力样本，保留真实 PostgreSQL 的过滤、游标、权限及失败路径验证和严格覆盖率门槛。数量样本不改变 Web 图规模限制，也不是生产容量上限。
 
-Web 验证覆盖 schema 5 持久资料、schema 4 无损升级及早期格式重建、mutation 同值/确认下限/材料保持、人员清单/内容版本/在途合并及负向撤权 fence、跨标签页新 generation 尚无在线清单（assigneeVersions:null）时立即撤回旧人员与 ready 目录、新清单后零重复下载复用内容、完整链筛选、菜单焦点及双语窄屏。生产功能场景task-assignment与task-assignment-layout分别拥有真实写入/未知结果核对，以及身份/布局/完整图显示的验证；完整inventory由Web验收所有者定义。
+Web 验证覆盖 schema 6 持久资料、schema 5 无损升级及 schema 1/2/3/4 重建、mutation 同值/确认下限/材料保持、人员清单/内容版本/在途合并及负向撤权 fence、跨标签页新 generation 尚无在线清单（assigneeVersions:null）时立即撤回旧人员与 ready 目录、新清单后零重复下载复用内容、完整链筛选、菜单焦点及双语窄屏。生产功能场景task-assignment与task-assignment-layout分别拥有真实写入/未知结果核对，以及身份/布局/完整图显示的验证；完整inventory由Web验收所有者定义。

@@ -37,6 +37,7 @@ const nanoseconds = (timestamp: string): bigint => {
 };
 
 export const directAccessFixture = (projectId: string, userId = TEST_VIEWER_ID, role: "member" | "admin" = "member"): ProjectAccess => ({
+  projectId, ownerTeam: { id: "00000000-0000-4000-8000-000000000701", kind: "personal", name: null }, ownership: { teamId: "00000000-0000-4000-8000-000000000701", version: 1n }, teamRole: null, canTransfer: false,
   effectiveRole: role, directGrant: { projectId, userId, role, version: 1n, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z" },
 });
 

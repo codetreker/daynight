@@ -200,7 +200,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
   let installed: Awaited<ReturnType<typeof createInstalledCli>> | undefined;
   let failure: unknown;
   let failInventory = false;
-  const projects: Project[] = [1, 2].map((number) => ({ id: uuid(number), name: `Repo ${number}`, repoUrl: `https://git.example/worker/repo-${number}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }));
+  const projects: Project[] = [1, 2].map((number) => ({ id: uuid(number), name: `Repo ${number}`, repoUrl: `https://git.example/worker/repo-${number}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time }));
   const tasks: FixtureTask[] = projects.map((project, index) => ({ id: uuid(index + 10), projectId: project.id, title: `Managed ${index + 1}`, description: "Fixture task", properties: { pullRequests: [] }, status: "todo", allowAgents: true, assignedTo: uuid(100), requiredPlatform: "linux", version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }));
   const send = (response: ServerResponse, value: unknown, status = 200): void => { response.writeHead(status, { "content-type": "application/json", ...(status >= 200 && status < 300 ? { "Daynight-User-ID": uuid(100) } : {}) }); response.end(stringifyApiJson(value)); };
   const refusal = (response: ServerResponse): void => send(response, { error: { code: "version_conflict", message: "Fixture version conflict", requestId: "worker-fixture" } }, 409);
@@ -220,7 +220,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         const observedAt = new Date().toISOString();
         send(response, { observedAt, lastReportedAt: observedAt }); return;
       }
-      if (url.pathname === "/api/v1/me" && request.method === "GET") { send(response, { id: uuid(100), email: null, emailVerified: null, name: null, avatarUrl: null }); return; }
+      if (url.pathname === "/api/v1/me" && request.method === "GET") { send(response, { id: uuid(100), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } }); return; }
       if (url.pathname === "/api/v1/projects" && request.method === "GET") { send(response, { items: projects, nextCursor: null }); return; }
       if (project !== undefined && parts.length === 5 && request.method === "GET") { send(response, project); return; }
       if (task !== undefined && parts.length === 7 && request.method === "GET") { send(response, task); return; }

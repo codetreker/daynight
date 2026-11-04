@@ -15,9 +15,13 @@ task summaries have not changed.
 ## Decision
 
 The authenticated profile owner persists content and its server-issued version
-per viewer, project and profile user under userFence. IndexedDB schema 5 adds a
-profiles store; upgrading schema 4 preserves compatible task records and fences,
-while earlier formats retain their required task rebuild. Persisted content is
+per viewer, project and profile user under userFence. IndexedDB schema 6 adds a
+profiles store; upgrading schema 5 preserves compatible ownership-complete task
+records, fences and watermarks. The
+[public ownership decision](../architecture/2026-11-04-public-project-ownership.md)
+introduced schema 5 and the required rebuild of versions 1 through 4, whose
+Project records lack ownership. Those upgrades still clear incompatible derived
+stores, rotate user fences and require a complete snapshot. Persisted content is
 used only after live /me identity verification and a successful current-project
 sync supplies the complete qualified-person manifest.
 
@@ -49,7 +53,8 @@ corresponding content and admission.
 
 /me uses browser-managed HTTP caching with private, no-cache and a strong ETag
 over its complete identity-bound representation. The handler authenticates and
-reads the current user before returning bodyless 304 for an unchanged validator.
+reads the current user and validates the actual Personal Team before returning
+bodyless 304 for an unchanged validator.
 Only this client endpoint overrides the normal no-store fetch policy. Initial
 and foreground identity verification retain their existing gate, errors and
 account-change behavior; there is no second custom /me IndexedDB.

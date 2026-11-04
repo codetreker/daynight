@@ -26,7 +26,7 @@ func TestProjectParticipantHTTPContractGrantWritesAndIdentity(t *testing.T) {
 		t.Fatalf("participant response: %s %#v", response.Body, response.Header())
 	}
 	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || len(envelope) != 1 || envelope["items"] == nil {
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || len(envelope) != 2 || envelope["items"] == nil || envelope["actorAccess"] == nil {
 		t.Fatalf("roster envelope: %s %v", response.Body, err)
 	}
 	var raw []map[string]json.RawMessage
@@ -34,7 +34,7 @@ func TestProjectParticipantHTTPContractGrantWritesAndIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	for index, participant := range people.Items {
-		if len(raw[index]) != 4 || raw[index]["userId"] == nil || raw[index]["profile"] == nil || raw[index]["effectiveRole"] == nil || raw[index]["directGrant"] == nil || participant.DirectGrant == nil {
+		if len(raw[index]) != 5 || raw[index]["userId"] == nil || raw[index]["profile"] == nil || raw[index]["effectiveRole"] == nil || raw[index]["directGrant"] == nil || participant.DirectGrant == nil {
 			t.Fatalf("participant fields: %#v", raw[index])
 		}
 		var profile map[string]json.RawMessage
@@ -69,7 +69,7 @@ func TestProjectParticipantHTTPContractGrantWritesAndIdentity(t *testing.T) {
 		}
 	}
 	after := decodeResponse[api.ProjectParticipantList](t, h.call("GET", base, "", h.admin), 200)
-	if !reflect.DeepEqual(after, people) {
+	if !reflect.DeepEqual(after.Items, people.Items) {
 		t.Fatal("wrong expected actor changed participant grants or profiles")
 	}
 	for _, body := range []string{`{"version":1,"role":"member"}`, `{"version":1,"role":"member","expectedUserId":null}`, `{"version":1,"role":"member","expectedUserId":42}`, `{"version":1,"role":"member","expectedUserId":"invalid"}`} {

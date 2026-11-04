@@ -56,6 +56,7 @@ export type User = {
   readonly emailVerified: boolean | null;
   readonly name: string | null;
   readonly avatarUrl: string | null;
+  readonly personalTeam: TeamRef;
 };
 
 export type TaskAttachment = {
@@ -78,11 +79,23 @@ export type ProjectSettings = {
   readonly executionWarningMinutes: number;
 };
 
+export type TeamRef = {
+  readonly id: string;
+  readonly kind: "personal" | "ordinary";
+  readonly name: string | null;
+};
+
+export type ProjectOwnership = {
+  readonly teamId: string;
+  readonly version: bigint;
+};
+
 export type Project = {
   readonly id: string;
   readonly name: string;
   readonly repoUrl: string;
   readonly settings: ProjectSettings;
+  readonly ownership: ProjectOwnership;
   readonly createdAt: string;
   readonly updatedAt: string;
 };
@@ -97,11 +110,17 @@ export type ProjectGrant = {
 };
 
 export type ProjectAccess = {
+  readonly projectId: string;
+  readonly ownerTeam: TeamRef;
+  readonly ownership: ProjectOwnership;
+  readonly teamRole: "admin" | "member" | null;
+  readonly canTransfer: boolean;
   readonly effectiveRole: "admin" | "member";
   readonly directGrant: ProjectGrant | null;
 };
 
 export type ProjectParticipant = {
+  readonly inheritedFrom: { readonly team: TeamRef; readonly role: "admin" | "member" } | null;
   readonly userId: string;
   readonly profile: {
     readonly name: string | null;

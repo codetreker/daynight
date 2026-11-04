@@ -69,7 +69,7 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
   const membersURL = `**/api/v1/projects/${project.id}/members`;
   await page.route(membersURL, async (route) => {
     const response = await api.get(`/api/v1/projects/${project.id}/members`);
-    const body = { items: parseMembers(await decodeMembersJson(new Response(await response.text())), project.id) };
+    const body = parseMembers(await decodeMembersJson(new Response(await response.text())), project.id);
     const headers = { ...response.headers() }; delete headers['content-length'];
     await route.fulfill({ status: response.status(), headers, body: stringifyWireJson({ ...body, items: body.items.map((member) => member.userId === readWorkerClaim(current.properties)!.userId ? { ...member, profile: { ...member.profile, name: ownerName, email: account } } : member) }) });
   });

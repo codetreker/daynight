@@ -46,8 +46,10 @@ array order remain observable. The
 the property feed expansion and its schema-3 rebuild; the
 [assignment decision](2026-11-03-task-assignment-foundation.md) owns required
 nullable field consumption. The
+[public ownership decision](2026-11-04-public-project-ownership.md) introduced the
+schema-5 rebuild for required Project ownership. The
 [profile-reuse decision](../bug-fix/2026-11-04-task-view-request-reuse.md) extends
-the shared database to schema 5 without changing compatible schema-4 task rows. Older bodies cannot replace newer content. The feed exposes
+the shared database to schema 6 without changing compatible schema-5 task rows. Older bodies cannot replace newer content. The feed exposes
 current task rows and may skip intermediate business versions. A newer GET
 waits while its version is ahead of the summary and is admitted on an exact
 match. If the summary overtakes a pending payload, the session discards that
