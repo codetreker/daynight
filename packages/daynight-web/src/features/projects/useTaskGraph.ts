@@ -121,6 +121,7 @@ export const useTaskGraph = (projectId: string) => {
     const lifetime = new AbortController();
     const unsubscribe = scope.subscribe((event) => {
       if (event.projectId !== projectId) return;
+      if (event.accessRestored === true) { void request(); return; }
       if (event.accessRevoked === true) {
         liveAccess.current = false; receipt.current = null;
         setState({ projectId, scope, snapshot: null, status: "error", refreshing: false, error: event.error });

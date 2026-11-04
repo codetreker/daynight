@@ -27,7 +27,7 @@ const movedSteps = (resource: StepsResource, stepId: string, placement: StepPlac
   remaining.splice(to, 0, resource.steps[from]!);
   return remaining;
 };
-type TaskMutationReview = { readonly detail: TaskDetail; readonly cacheGeneration: string };
+type TaskMutationReview = { readonly detail: TaskDetail; readonly cacheGeneration: string; readonly scopeRevision: number };
 class TaskMutationReviewExpired extends Error {}
 export type TaskMutationState = {
   readonly operation: TaskMutationOperation | null;
@@ -145,10 +145,13 @@ export class TaskDetailSessions {
   };
   constructor(private readonly scope: TaskCacheScope) {
     this.releaseScope = scope.subscribe((event) => {
+      if (event.accessRevoked) this.projectGenerations.set(event.projectId, null);
       for (const entry of this.entries.values()) {
         if (entry.steps.projectId !== event.projectId) continue;
-        if (event.accessRevoked) this.clearSteps(entry.steps, { ...emptyTaskStepsState, status: "error", error: event.error });
-        else this.synchronizeSteps(entry);
+        if (event.accessRevoked) {
+          this.observe(event.projectId, entry.steps.taskId, undefined, false);
+          this.clearSteps(entry.steps, { ...emptyTaskStepsState, status: "error", error: event.error });
+        } else this.synchronizeSteps(entry);
       }
     });
     scope.signal.addEventListener("abort", this.onScopeRetired, { once: true });
@@ -323,7 +326,7 @@ export class TaskDetailSessions {
   private async acceptSteps(entry: Entry, resource: StepsResource, ticket: SyncTicket, generation: number, signal: AbortSignal): Promise<void> {
     const steps = entry.steps;
     const current = () => !this.disposed && !this.scope.isInvalidated && !signal.aborted && generation === steps.generation &&
-      (steps.listeners.size > 0 || this.stepOperationNeedsResource(entry)) && entry.admitted && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(steps.projectId) === ticket.cacheGeneration;
+      (steps.listeners.size > 0 || this.stepOperationNeedsResource(entry)) && entry.admitted && ticket.scopeRevision === this.scope.getProjectRevision(steps.projectId) && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(steps.projectId) === ticket.cacheGeneration;
     await this.scope.ready(signal);
     if (!current()) return;
     const observed = this.stepsFloor(entry);
@@ -443,7 +446,7 @@ export class TaskDetailSessions {
       const deniedError = cacheGeneration === null ? entry.state.error : null;
       this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: deniedError === null ? "loading" : "error", refreshing: false,
         requiresFreshRead: true, graphMismatch: false, error: deniedError,
-        mutation: restored ? idleMutation() : { ...entry.state.mutation, reconciling: false, reconciliationError: null } });
+        mutation: restored ? idleMutation() : { ...entry.state.mutation, reconciling: false, reconciliationError: cacheGeneration === null ? entry.state.mutation.reconciliationError : null } });
     }
     const changed = lifecycleChanged || restored || entry.observedVersion !== version;
     entry.observedGeneration = cacheGeneration;
@@ -597,7 +600,7 @@ export class TaskDetailSessions {
   private async accept(projectId: string, taskId: string, detail: TaskDetail, ticket: SyncTicket, revision: number, reconciliation: boolean, signal: AbortSignal, generation: number | null = null, writeGeneration: number | null = null, readOpeningGeneration: number | null = null): Promise<void> {
     const entry = this.entry(projectId, taskId);
     const current = (): boolean => !signal.aborted && !this.disposed && !this.scope.isInvalidated && entry.state.status !== "deleted" &&
-      entry.admitted && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
+      entry.admitted && ticket.scopeRevision === this.scope.getProjectRevision(projectId) && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
       (generation === null || generation === entry.generation);
     if (!current()) return;
     if (detail.projectId !== projectId || detail.id !== taskId) throw new ApiError("protocol");
@@ -836,7 +839,7 @@ export class TaskDetailSessions {
     return null;
   }
   private mutationIsCurrent(projectId: string, entry: Entry, operation: TaskMutationOperation, ticket: SyncTicket): boolean {
-    return !this.scope.isInvalidated && entry.state.mutation.operation === operation && this.projectGeneration(projectId) === ticket.cacheGeneration;
+    return !this.scope.isInvalidated && entry.state.mutation.operation === operation && ticket.scopeRevision === this.scope.getProjectRevision(projectId) && this.projectGeneration(projectId) === ticket.cacheGeneration;
   }
   private admitMutationOutcome(projectId: string, taskId: string, operation: TaskMutationOperation, ticket: SyncTicket | null, error: unknown = null): boolean {
     const entry = this.entry(projectId, taskId);
@@ -867,6 +870,7 @@ export class TaskDetailSessions {
     const project = this.scope.getAuthorizedProject(projectId);
     if (this.scope.isInvalidated || entry.state.mutation.operation !== operation || !entry.admitted ||
       entry.observedGeneration !== review.cacheGeneration || ticket.cacheGeneration !== review.cacheGeneration ||
+      ticket.scopeRevision !== review.scopeRevision || this.scope.getProjectRevision(projectId) !== review.scopeRevision ||
       project?.manifest.cacheGeneration !== review.cacheGeneration || this.summaryVersion(projectId, taskId) !== operation.version ||
       isTaskStale(project.index.nodes.get(taskId), review.detail)) throw new TaskMutationReviewExpired();
   }
@@ -897,7 +901,7 @@ export class TaskDetailSessions {
     const previousSteps = isStepOperation(operation) ? entry.steps.state.resource : null;
     const reviewedGeneration = this.projectGeneration(projectId);
     if (reviewedGeneration === null) return;
-    const review: TaskMutationReview = { detail: previous, cacheGeneration: reviewedGeneration };
+    const review: TaskMutationReview = { detail: previous, cacheGeneration: reviewedGeneration, scopeRevision: this.scope.getProjectRevision(projectId) };
     this.cancelRead(projectId, taskId);
     if (isStepOperation(operation)) {
       entry.steps.recoveryReads = 0;
