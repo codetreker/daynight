@@ -196,10 +196,12 @@ continues to own terminal sessions in the default mode.
 
 `repo add` lists accessible Projects for multiselection. Use `--project
 PROJECT_UUID` for an explicit noninteractive registration; `worker repo list`
-and `worker repo remove` inspect or change the selection. With an empty
-repository list, interactive `worker run` also guides Project selection before
-starting new tasks. Startup saves configured Project mappings before reading
-its complete current claim inventory, including after a local database reset.
+and `worker repo remove` inspect or change the selection. `worker run` accepts
+an empty repository list without prompting and can start from an ordinary
+directory. Add repositories explicitly to enable new task acquisition. Startup
+saves configured Project mappings before reading its complete current claim
+inventory, including after a local database reset; existing claims and cleanup
+responsibilities remain managed even when no repositories are configured.
 
 New registrations use `worker.repositoryRoot`, defaulting to `~/daynights`, and
 keep existing paths when the root changes. Review's clone-root setting is

@@ -69,11 +69,11 @@ it("preserves native polling values, asynchronous settlement and cancellation", 
   expect(polling.requested).toEqual([1_000, 1_000, 1_000]);
 });
 
-const fixture = async (maxConcurrent = 1) => {
+const fixture = async (maxConcurrent = 1, registerProject = true) => {
   const base = path.resolve("../../.tmp/minimal-coordinator-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "r-")); directories.push(root);
   let store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store);
-  const project: WorkerProject = { projectId: uuid(10), repoUrl: "https://example.test/owner/repo.git", localPath: path.join(root, "repo") }; store.registerProject(project);
+  const project: WorkerProject = { projectId: uuid(10), repoUrl: "https://example.test/owner/repo.git", localPath: path.join(root, "repo") }; if (registerProject) store.registerProject(project);
   const candidates = [task(project.projectId, uuid(100)), task(project.projectId, uuid(101))];
   const grants = new Map<string, Task>();
   const worktrees = new Map<string, { owner: ResourceOwner; binding: WorktreeBinding }>();
@@ -207,6 +207,19 @@ describe("worker report publication boundaries", () => {
     expect(registerClaim).not.toHaveBeenCalled();
     expect(f.tasks.start).not.toHaveBeenCalled();
     await f.coordinator.shutdown();
+  });
+
+  it("does not start Herdr from a default configuration without repositories or task responsibility", async () => {
+    const f = await fixture(1, false);
+    const coordinator = createWorkerCoordinator({ ...f.options, repositories: [] });
+    await coordinator.tick();
+    expect(f.remote.ownInventory).toHaveBeenCalledOnce();
+    expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+    expect(f.tasks.listResources).not.toHaveBeenCalled();
+    expect(f.tasks.start).not.toHaveBeenCalled();
+    expect(f.store.listTasks()).toEqual([]);
+    expect(await coordinator.shutdown()).toBe(true);
+    expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
   });
 
   it("publishes a complete inventory before native resource discovery can fail", async () => {

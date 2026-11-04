@@ -90,7 +90,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     return current.agent === task.agent ? { ...current, agentControlMode: task.agentControlMode ?? "herdr" } : { agent: task.agent, agentControlMode: task.agentControlMode ?? "herdr", model: null, args: [], recoveryLimit: current.recoveryLimit };
   };
   // Cleanup-only backend access stays inside its claim job and retry schedule.
-  const needsHerdr = (): boolean => options.globalConfiguration.agentControlMode !== "web"
+  const needsHerdr = (): boolean => options.globalConfiguration.agentControlMode !== "web" && options.store.listProjects().length > 0
     || options.repositories.some(repository => repository.configuration.agentControlMode !== "web")
     || options.store.listUnfinishedTasks().some(task => task.agentControlMode !== "web" && !ending.has(key(task)));
   const hasHerdrCleanup = (): boolean => [...ending.values()].some(owner => options.store.getTask(owner)?.agentControlMode !== "web" && options.webStore?.getTask(owner) == null);
