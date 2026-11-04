@@ -206,18 +206,20 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     await modal.getByRole('tab', { name: '讨论', exact: true }).click();
     const modalDraft = '  Modal layout draft\n\n  preserved indentation\n';
     await modal.getByRole('textbox', { name: '讨论消息', exact: true }).fill(modalDraft);
-    for (const width of [2560, 3840]) {
-      await page.setViewportSize({ width, height: 1100 });
-      discussionLayouts.push(await discussionLayout(page, modal, threadMessage.id, modalDraft, 900, info, `task-discussion-modal-${width}`));
-      await modal.getByRole('button', { name: '进入全屏', exact: true }).click();
-      await expect(modal).toHaveClass(/task-detail-fullscreen/);
-      discussionLayouts.push(await discussionLayout(page, modal, threadMessage.id, modalDraft, 1280, info, `task-discussion-fullscreen-${width}`));
-      await modal.getByRole('button', { name: '退出全屏', exact: true }).click();
-      await expect(modal).not.toHaveClass(/task-detail-fullscreen/);
-      await modal.getByRole('tab', { name: '概览', exact: true }).click();
-      await modal.getByRole('tab', { name: '讨论', exact: true }).click();
-      await expect(modal.getByRole('textbox', { name: '讨论消息', exact: true })).toHaveValue(modalDraft);
-    }
+    await test.step('Verify modal and fullscreen discussion layouts', async () => {
+      for (const width of [2560, 3840]) {
+        await page.setViewportSize({ width, height: 1100 });
+        discussionLayouts.push(await discussionLayout(page, modal, threadMessage.id, modalDraft, 900, info, `task-discussion-modal-${width}`));
+        await modal.getByRole('button', { name: '进入全屏', exact: true }).click();
+        await expect(modal).toHaveClass(/task-detail-fullscreen/);
+        discussionLayouts.push(await discussionLayout(page, modal, threadMessage.id, modalDraft, 1280, info, `task-discussion-fullscreen-${width}`));
+        await modal.getByRole('button', { name: '退出全屏', exact: true }).click();
+        await expect(modal).not.toHaveClass(/task-detail-fullscreen/);
+        await modal.getByRole('tab', { name: '概览', exact: true }).click();
+        await modal.getByRole('tab', { name: '讨论', exact: true }).click();
+        await expect(modal.getByRole('textbox', { name: '讨论消息', exact: true })).toHaveValue(modalDraft);
+      }
+    });
     await page.setViewportSize(modalViewport);
     await modal.getByRole('tab', { name: '概览', exact: true }).click();
 
@@ -400,42 +402,49 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     const loginTarget = `${attachmentPageUrl(project.id, task.id, 'docs/guide.md')}?tab=overview`;
     await loginReturn(browser, origin, loginTarget, title);
 
-    const readerViewport = reader.viewportSize();
-    if (readerViewport === null) throw new Error('Discussion layout acceptance requires an explicit viewport.');
-    await surface(reader).getByRole('tab', { name: '讨论', exact: true }).click();
+    const layoutReader = reader;
+    const layoutReaderViewport = layoutReader.viewportSize();
+    if (layoutReaderViewport === null) throw new Error('Discussion layout acceptance requires an explicit viewport.');
+    await surface(layoutReader).getByRole('tab', { name: '讨论', exact: true }).click();
     const pageDraft = '  Standalone layout draft\n\n  preserved indentation\n';
-    await surface(reader).getByRole('textbox', { name: '讨论消息', exact: true }).fill(pageDraft);
-    for (const width of [1440, 2560, 3840]) {
-      await reader.setViewportSize({ width, height: 1100 });
-      discussionLayouts.push(await discussionLayout(reader, surface(reader), threadMessage.id, pageDraft, width === 1440 ? 1080 : 1280, info, `task-discussion-page-${width}`));
-      await tab(reader, 'overview').click();
-      await surface(reader).getByRole('tab', { name: '讨论', exact: true }).click();
-      await expect(surface(reader).getByRole('textbox', { name: '讨论消息', exact: true })).toHaveValue(pageDraft);
-    }
-    await reader.setViewportSize(readerViewport); await tab(reader, 'overview').click();
+    await surface(layoutReader).getByRole('textbox', { name: '讨论消息', exact: true }).fill(pageDraft);
+    await test.step('Verify standalone discussion reading layouts', async () => {
+      for (const width of [1440, 2560, 3840]) {
+        await layoutReader.setViewportSize({ width, height: 1100 });
+        discussionLayouts.push(await discussionLayout(layoutReader, surface(layoutReader), threadMessage.id, pageDraft, width === 1440 ? 1080 : 1280, info, `task-discussion-page-${width}`));
+        await tab(layoutReader, 'overview').click();
+        await surface(layoutReader).getByRole('tab', { name: '讨论', exact: true }).click();
+        await expect(surface(layoutReader).getByRole('textbox', { name: '讨论消息', exact: true })).toHaveValue(pageDraft);
+      }
+    });
+    await layoutReader.setViewportSize(layoutReaderViewport); await tab(layoutReader, 'overview').click();
 
     const layouts: unknown[] = [];
-    for (const locale of ['zh-CN', 'en']) {
-      await surface(reader).getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
-      for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) {
-        await reader.setViewportSize(viewport); await tab(reader, 'overview').click();
-        await expect(surface(reader).locator('.task-detail-header')).toBeInViewport({ ratio: 1 });
-        expect(await reader.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-        const overviewBody = surface(reader).locator('.task-detail-panel-overview');
-        await overviewBody.evaluate(element => { element.scrollTop = element.scrollHeight; });
-        expect(await overviewBody.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
-        await expect(surface(reader).locator('.task-detail-header')).toBeInViewport({ ratio: 1 });
-        await tab(reader, 'attachments').click();
-        const panes = await attachments.locator('.attachment-sidebar,.attachment-preview-pane').evaluateAll(elements => elements.map(element => {
-          const bounds = element.getBoundingClientRect(); return { x: bounds.x, right: bounds.right, y: bounds.y, height: bounds.height };
-        }));
-        expect(panes[0]!.right).toBeLessThanOrEqual(panes[1]!.x + 1); expect(panes[0]!.y).toBe(panes[1]!.y); expect(panes[1]!.height).toBeGreaterThan(80);
-        expect(await reader.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-        await picture(reader, info, `task-detail-page-${locale}-${viewport.width}x${viewport.height}`);
-        layouts.push({ locale, viewport, panes });
+    await test.step('Verify bilingual standalone task and attachment layouts', async () => {
+      for (const locale of ['zh-CN', 'en']) {
+        await surface(layoutReader).getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
+        for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) {
+          await layoutReader.setViewportSize(viewport); await tab(layoutReader, 'overview').click();
+          await expect(surface(layoutReader).locator('.task-detail-header')).toBeInViewport({ ratio: 1 });
+          expect(await layoutReader.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          const overviewBody = surface(layoutReader).locator('.task-detail-panel-overview');
+          await overviewBody.evaluate(element => { element.scrollTop = element.scrollHeight; });
+          expect(await overviewBody.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+          await expect(surface(layoutReader).locator('.task-detail-header')).toBeInViewport({ ratio: 1 });
+          await tab(layoutReader, 'attachments').click();
+          const panes = await attachments.locator('.attachment-sidebar,.attachment-preview-pane').evaluateAll(elements => elements.map(element => {
+            const bounds = element.getBoundingClientRect(); return { x: bounds.x, right: bounds.right, y: bounds.y, height: bounds.height };
+          }));
+          expect(panes[0]!.right).toBeLessThanOrEqual(panes[1]!.x + 1); expect(panes[0]!.y).toBe(panes[1]!.y); expect(panes[1]!.height).toBeGreaterThan(80);
+          expect(await layoutReader.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          await picture(layoutReader, info, `task-detail-page-${locale}-${viewport.width}x${viewport.height}`);
+          layouts.push({ locale, viewport, panes });
+        }
       }
-    }
-    await verifyClaimReadingLayouts(reader, api, info);
+    });
+    await test.step('Verify worker claim reading layouts', async () => {
+      await verifyClaimReadingLayouts(layoutReader, api, info);
+    });
     expect(errors).toEqual([]);
     for (const [key, count] of expectedWrites) expect(writes.filter(write => write === key), `Exact standalone browser writes: ${key}`).toHaveLength(count);
     expect(writes.filter(write => !expectedWrites.has(write))).toEqual([]);

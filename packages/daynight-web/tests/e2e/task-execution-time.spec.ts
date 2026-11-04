@@ -193,13 +193,16 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     const retained = await details.elementHandle(); if (retained === null) throw new Error('The focused Details control is missing.');
     const beforeGeometry = await graphGeometry(page);
     const began = performance.now();
-    await expect.poll(() => elapsed(ticking), { timeout: 5_000 }).toBeGreaterThan(initial + 1000);
-    await expect(ticking.locator('.task-stuck-label')).toHaveText('可能卡住了', { timeout: 25_000 });
-    const crossed = await elapsed(ticking); expect(crossed).toBeGreaterThan(3_600_000);
-    expect(delivered, 'Warning crosses without a new graph response').toBe(deliveredBefore);
-    expect(await graphGeometry(page)).toEqual(beforeGeometry); await expect(details).toBeFocused();
-    expect(await retained.evaluate((element) => element.isConnected && element === document.activeElement)).toBe(true);
-    expect(await duration(ticking).evaluate((element) => element.closest('[aria-live]'))).toBeNull();
+    const crossed = await test.step('Observe the real warning threshold crossing without task sync', async () => {
+      await expect.poll(() => elapsed(ticking), { timeout: 5_000 }).toBeGreaterThan(initial + 1000);
+      await expect(ticking.locator('.task-stuck-label')).toHaveText('可能卡住了', { timeout: 25_000 });
+      const crossed = await elapsed(ticking); expect(crossed).toBeGreaterThan(3_600_000);
+      expect(delivered, 'Warning crosses without a new graph response').toBe(deliveredBefore);
+      expect(await graphGeometry(page)).toEqual(beforeGeometry); await expect(details).toBeFocused();
+      expect(await retained.evaluate((element) => element.isConnected && element === document.activeElement)).toBe(true);
+      expect(await duration(ticking).evaluate((element) => element.closest('[aria-live]'))).toBeNull();
+      return crossed;
+    });
     evidence.timing = { initial, crossed, realCrossingWaitMs: performance.now() - began, deliveredBefore, deliveredAtCrossing: delivered, wrongClientWallTime: '2055-01-01T00:00:00Z', geometryPreserved: true, focusedDetailsPreserved: true };
     await screenshot(page, info, 'execution-real-threshold-crossing');
     evidence.progress.push('real-threshold-crossing-with-stable-focus-and-geometry');
@@ -220,11 +223,13 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     expect(graph.tasks.find(({ id }) => id === crossing.id)!.startedAt).toBe(running.startedAt);
     expect(Date.parse(graph.observedAt)).toBeLessThan(new Date('2055-01-01T00:00:00Z').getTime());
 
-    await settings(90); await expect(ticking.locator('.task-stuck-label')).toHaveCount(0, { timeout: 10_000 });
-    expect(await graphGeometry(page)).toEqual(beforeGeometry); await expect(details).toBeFocused();
-    expect((await record(project.id, crossing.id, 'higher-threshold-preserves-start')).startedAt).toBe(running.startedAt);
-    await settings(60); await expect(ticking.locator('.task-stuck-label')).toHaveText('可能卡住了', { timeout: 10_000 });
-    expect((await record(project.id, crossing.id, 'lower-threshold-preserves-start')).startedAt).toBe(running.startedAt);
+    await test.step('Observe saved warning settings through task sync', async () => {
+      await settings(90); await expect(ticking.locator('.task-stuck-label')).toHaveCount(0, { timeout: 10_000 });
+      expect(await graphGeometry(page)).toEqual(beforeGeometry); await expect(details).toBeFocused();
+      expect((await record(project.id, crossing.id, 'higher-threshold-preserves-start')).startedAt).toBe(running.startedAt);
+      await settings(60); await expect(ticking.locator('.task-stuck-label')).toHaveText('可能卡住了', { timeout: 10_000 });
+      expect((await record(project.id, crossing.id, 'lower-threshold-preserves-start')).startedAt).toBe(running.startedAt);
+    });
     await closeChain(page);
     await page.getByRole('tab', { name: '独立任务', exact: true }).click();
     const unknownRunning = page.locator(`#standalone-task-${legacy.id}`);
@@ -239,8 +244,10 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     await expect(ticking.locator('.task-stuck-label')).toHaveCount(0);
     const frozen = await duration(ticking).getAttribute('datetime');
     expect(await elapsed(ticking)).toBe(Date.parse(completed.completedAt!) - Date.parse(completed.startedAt!));
-    const freezeResponse = page.waitForResponse((response) => new URL(response.url()).pathname === syncPath);
-    await freezeResponse; expect(await duration(ticking).getAttribute('datetime')).toBe(frozen);
+    await test.step('Verify completed duration remains frozen across the next poll', async () => {
+      const freezeResponse = page.waitForResponse((response) => new URL(response.url()).pathname === syncPath);
+      await freezeResponse; expect(await duration(ticking).getAttribute('datetime')).toBe(frozen);
+    });
     evidence.timing.completedDuration = frozen; evidence.progress.push('completed-duration-frozen-across-poll');
     const unknownBeforeCompletion = await record(project.id, legacy.id, 'legacy-before-completion');
     expect(unknownBeforeCompletion).toEqual(legacyUnknown);
@@ -251,51 +258,53 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     await retained.dispose();
     await openTimingChain();
 
-    for (const locale of ['zh-CN', 'en'] as const) {
-      await closeChain(page);
-      await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
-      await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链', exact: true }).click();
-      await openTimingChain();
-      await expect(page.locator('.root-toggle')).toHaveCount(1);
-      await expect(card(page, multiParent.id)).toHaveCount(1);
-      await expect(card(page, roots[0]!.id)).toHaveCount(1);
-      await expect(card(page, roots[1]!.id)).toHaveCount(1);
-      await expect(page.locator('.task-node-external')).toHaveCount(1);
-      await expect(card(page, multiParent.id).locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
-      const manualCard = card(page, manualGraph.id);
-      expect(await elapsed(manualCard)).toBeGreaterThan(3_600_000);
-      await expect(manualCard).not.toHaveClass(/task-node-stuck/);
-      await expect(manualCard.locator('.task-stuck-label')).toHaveCount(0);
-      await expect(manualCard.locator('.task-node-body')).not.toHaveAccessibleDescription(/Possibly stuck|可能卡住了/);
-      await expect(duration(card(page, brief.id))).toContainText(locale === 'en' ? '< 1 min' : '不足 1 分钟');
-      expect(await page.locator('.root-toggle time.task-duration').count(), 'Chain summaries have no individual task duration').toBe(0);
-      for (const width of [390, 320]) {
-        await page.setViewportSize({ width, height: 1000 });
-        await cardLayout(card(page, multiParent.id)); await cardLayout(ticking); await cardLayout(card(page, brief.id)); await cardLayout(card(page, external.id));
-        await expect(card(page, external.id)).toHaveClass(/task-node-external/);
-        await expect(card(page, external.id)).toHaveClass(/task-node-stuck/);
-        expect(await card(page, external.id).evaluate((element) => getComputedStyle(element).borderTopStyle)).toBe('dashed');
-        await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-        evidence.layouts.push({ locale, width, kind: 'graph' }); await screenshot(page, info, `execution-graph-${locale}-${width}`);
+    await test.step('Verify bilingual execution-time layouts', async () => {
+      for (const locale of ['zh-CN', 'en'] as const) {
+        await closeChain(page);
+        await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
+        await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链', exact: true }).click();
+        await openTimingChain();
+        await expect(page.locator('.root-toggle')).toHaveCount(1);
+        await expect(card(page, multiParent.id)).toHaveCount(1);
+        await expect(card(page, roots[0]!.id)).toHaveCount(1);
+        await expect(card(page, roots[1]!.id)).toHaveCount(1);
+        await expect(page.locator('.task-node-external')).toHaveCount(1);
+        await expect(card(page, multiParent.id).locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
+        const manualCard = card(page, manualGraph.id);
+        expect(await elapsed(manualCard)).toBeGreaterThan(3_600_000);
+        await expect(manualCard).not.toHaveClass(/task-node-stuck/);
+        await expect(manualCard.locator('.task-stuck-label')).toHaveCount(0);
+        await expect(manualCard.locator('.task-node-body')).not.toHaveAccessibleDescription(/Possibly stuck|可能卡住了/);
+        await expect(duration(card(page, brief.id))).toContainText(locale === 'en' ? '< 1 min' : '不足 1 分钟');
+        expect(await page.locator('.root-toggle time.task-duration').count(), 'Chain summaries have no individual task duration').toBe(0);
+        for (const width of [390, 320]) {
+          await page.setViewportSize({ width, height: 1000 });
+          await cardLayout(card(page, multiParent.id)); await cardLayout(ticking); await cardLayout(card(page, brief.id)); await cardLayout(card(page, external.id));
+          await expect(card(page, external.id)).toHaveClass(/task-node-external/);
+          await expect(card(page, external.id)).toHaveClass(/task-node-stuck/);
+          expect(await card(page, external.id).evaluate((element) => getComputedStyle(element).borderTopStyle)).toBe('dashed');
+          await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          evidence.layouts.push({ locale, width, kind: 'graph' }); await screenshot(page, info, `execution-graph-${locale}-${width}`);
+        }
+        await closeChain(page);
+        await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务', exact: true }).click();
+        const showAll = page.locator('.completed-chain-control input'); await showAll.check();
+        const row = page.locator(`#standalone-task-${standalone.id}`);
+        await expect(row.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
+        const manualRow = page.locator(`#standalone-task-${manualStandalone.id}`);
+        expect(await elapsed(manualRow)).toBeGreaterThan(3_600_000);
+        await expect(manualRow).not.toHaveClass(/standalone-row-stuck/);
+        await expect(manualRow.locator('.task-stuck-label')).toHaveCount(0);
+        await expect(manualRow).not.toHaveAccessibleDescription(/Possibly stuck|可能卡住了/);
+        const unknown = page.locator(`#standalone-task-${legacy.id}`); await expect(unknown).toBeVisible(); await expect(unknown.locator('.root-status')).toHaveText(locale === 'en' ? 'Done' : '已完成'); await expect(duration(unknown)).toHaveCount(0); await expect(unknown.locator('.task-stuck-label')).toHaveCount(0);
+        await expect(duration(page.locator(`#standalone-task-${briefRow.id}`))).toContainText(locale === 'en' ? '< 1 min' : '不足 1 分钟');
+        for (const width of [390, 320]) {
+          await page.setViewportSize({ width, height: 1000 }); await rowLayout(row); await rowLayout(unknown);
+          await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          evidence.layouts.push({ locale, width, kind: 'standalone' }); await screenshot(page, info, `execution-standalone-${locale}-${width}`);
+        }
       }
-      await closeChain(page);
-      await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务', exact: true }).click();
-      const showAll = page.locator('.completed-chain-control input'); await showAll.check();
-      const row = page.locator(`#standalone-task-${standalone.id}`);
-      await expect(row.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
-      const manualRow = page.locator(`#standalone-task-${manualStandalone.id}`);
-      expect(await elapsed(manualRow)).toBeGreaterThan(3_600_000);
-      await expect(manualRow).not.toHaveClass(/standalone-row-stuck/);
-      await expect(manualRow.locator('.task-stuck-label')).toHaveCount(0);
-      await expect(manualRow).not.toHaveAccessibleDescription(/Possibly stuck|可能卡住了/);
-      const unknown = page.locator(`#standalone-task-${legacy.id}`); await expect(unknown).toBeVisible(); await expect(unknown.locator('.root-status')).toHaveText(locale === 'en' ? 'Done' : '已完成'); await expect(duration(unknown)).toHaveCount(0); await expect(unknown.locator('.task-stuck-label')).toHaveCount(0);
-      await expect(duration(page.locator(`#standalone-task-${briefRow.id}`))).toContainText(locale === 'en' ? '< 1 min' : '不足 1 分钟');
-      for (const width of [390, 320]) {
-        await page.setViewportSize({ width, height: 1000 }); await rowLayout(row); await rowLayout(unknown);
-        await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-        evidence.layouts.push({ locale, width, kind: 'standalone' }); await screenshot(page, info, `execution-standalone-${locale}-${width}`);
-      }
-    }
+    });
     await page.reload();
     await expect(page.getByRole('tab', { name: /^(任务列表|Task list)$/, exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator(`#standalone-task-${legacy.id}`)).toBeVisible();

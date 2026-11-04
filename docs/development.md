@@ -728,7 +728,10 @@ phases or split functional browser scenarios. The
 records the isolation and scheduling constraints.
 The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
 records the responsibility and budget boundaries without claiming a measured
-CPU/I/O cause or guaranteed hosted speedup.
+CPU/I/O cause or guaranteed hosted speedup. The existing functional Playwright
+JSON reports also expose named phases for the largest journeys; the
+[Web validation guide](../packages/daynight-web/README.md#production-browser-acceptance)
+explains their wall-time and residual interpretation limits.
 The Go coverage, Go E2E and Web browser jobs restore module and compiler caches
 keyed by the server `go.sum`. Coverage validation expires Go test results before
 database/race/coverage checks; E2E uses `-count=1` to require fresh observations.

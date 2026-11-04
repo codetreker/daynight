@@ -1968,6 +1968,17 @@ clean hosted delivery results. The
 [paint decision](../../.agents/notes/archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
 retains raster evidence and visual tolerances needed to assess that mechanism.
 
+Functional `playwright.json` reports retain named body steps for attachment
+fixture uploads, preview/deletion matrices, task-page reading layouts and
+execution-time synchronization. Compare each test's total with its sibling step
+durations; a parent duration already includes its nested steps. The remaining time includes
+fixture/authentication setup, unwrapped actions, screenshots outside the named
+blocks and teardown; it is not pure fixture time. The pinned JSON reporter omits
+steps nested under fixture hooks. These wall-time observations do not alter
+assertions, deadlines or acceptance thresholds and do not establish CPU or I/O
+causality. The [journey timing decision](../../.agents/notes/implemented/testing/2026-11-04-web-journey-timing.md)
+records the reporting and privacy limits.
+
 Capacity receipts also retain per-interaction `feedbackDiagnostics`: input,
 capture, first ready condition, first/second frame and final end timestamps,
 status/error and phase differences. Missing milestones stay null. Each repetition
