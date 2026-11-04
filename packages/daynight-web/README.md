@@ -1566,8 +1566,11 @@ and other results fail the gate. Shared workflow changes retain the existing
 all-module selection rule.
 
 `node packages/daynight-web/scripts/ci.mts quality` runs `test:harness` and the complete
-`test:coverage` command serially. Each retains a separate 180-second deadline,
-so harness duration cannot consume the coverage command's budget. Only the
+`test:coverage` command serially. The harness has a 180-second deadline and
+coverage has a separate 240-second deadline, including V8 reporting and the
+strict statement checker. Harness duration cannot consume the coverage budget.
+The [coverage budget decision](../../.agents/notes/implemented/testing/2026-11-04-web-coverage-command-budget.md)
+owns this allowance and its evidence limits. Only the
 Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=4`, retaining
 its `forks` pool, per-file isolation, full product manifest and strict statement
 gate. The [worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)

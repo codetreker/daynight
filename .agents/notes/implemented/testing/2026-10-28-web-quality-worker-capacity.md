@@ -4,9 +4,10 @@ Status: implemented
 
 ## Problem
 
-The complete Web Vitest/V8 command runs near its existing 180-second deadline.
-Its worker budget was selected while coverage shared a four-CPU runner with
-Docker preparation. Quality now has a dedicated runner, so retaining that
+At the time of worker calibration, the complete Web Vitest/V8 command ran near
+its 180-second deadline. Its worker budget had been selected while coverage
+shared a four-CPU runner with Docker preparation. Quality had gained a dedicated
+runner, so retaining that
 contention reserve can leave available CPU unused without reducing the required
 coverage workload.
 
@@ -14,9 +15,11 @@ coverage workload.
 
 The coverage child in `scripts/ci.mts quality` receives
 `VITEST_MAX_WORKERS=4`. The Node harness still runs first and retains its own
-180-second deadline. Coverage retains its separate 180-second deadline, `forks`
-pool, per-file isolation, complete product-source inventory and strict unrounded
-statement-coverage gate. The [local stress decision](2026-11-03-local-stress-suites.md)
+180-second deadline. Coverage uses the separate 240-second deadline owned by
+the [coverage budget decision](2026-11-04-web-coverage-command-budget.md); worker
+calibration originally retained 180 seconds. Its `forks` pool, per-file
+isolation, complete product-source inventory and strict unrounded
+statement-coverage gate remain. The [local stress decision](2026-11-03-local-stress-suites.md)
 subsequently separates scale workloads from ordinary discovery while retaining
 compact correctness cases and the same product coverage manifest.
 
