@@ -23,10 +23,17 @@ Automatic assignment, continuation and cleanup check the original
 workspace/pane/terminal and native agent identity, launch state, required
 interactive readiness and blocked state. For Codex and Claude, they then read
 the bound pane's complete visible text only to reject explicit known menu or
-disabled-input patterns. A selected picker row
-with its source-defined accept/cancel controls, or a recognized disabled input
-row, returns a definitely not-submitted result. Picker controls include selected
-item actions, secondary shortcuts, runtime key bindings and wrapped hints.
+disabled-input patterns. A selected picker row with its source-defined
+accept/cancel controls, or a recognized disabled input row, returns a definitely
+not-submitted result. Picker controls include selected item actions, secondary
+shortcuts, runtime key bindings and wrapped hints. Codex Session pickers can
+prune every secondary footer control at narrow widths while retaining a labeled
+resume, fork or restore action. That primary-only form requires the complete
+Resume/Fork title, a source-defined search or selected session row between the
+title and footer, and no later prompt. Search evidence also covers an empty
+result list; a selected row remains evidence when an inline error replaces the
+search line. The [Session footer packing](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L2475-L2618)
+retains high-priority labeled controls before falling back to key-only hints.
 Codex's [picker footer](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/popup_consts.rs#L16-L63)
 and [disabled input rendering](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L4873-L4954)
 identify the concrete patterns. Ordinary prose mentioning cancellation is not a
@@ -110,6 +117,14 @@ handler](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d225
 can ignore text while [Enter handling](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/onboarding/trust_directory.rs#L212-L255)
 selects the highlighted action. Rejecting explicit known menus and disabled
 input retains that distinction without identifying every normal composer.
+
+**Require a secondary Session footer control.** The original bounded Session
+footer pattern required another action beside resume, fork or restore. With a
+long primary key binding, the native renderer can prune all those controls even
+though the title, search and session list remain visible. Paste then belongs to
+search, and Enter can accept a result; transport completion does not establish
+assignment delivery. Recognizing the primary-only form with its title and
+search/list evidence preserves refusal without treating a lone action as a menu.
 
 **Use an empty-composer predicate for every input purpose.** Returning control
 to automation must not accept an unknown field or draft as empty. Applying that

@@ -11,6 +11,7 @@ import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worke
 import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
 import { nativeKeyDisplays } from "../../fixtures/native-key-displays.js";
 import { nativeDisabledClips } from "../../fixtures/native-disabled-placeholders.js";
+import { narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
 
 type Entry = Record<string, unknown>;
 const directories: string[] = [];
@@ -263,6 +264,18 @@ describe("direct task resource management", () => {
       .replace("enter resume", `enter ${action}`).replace("esc new", "esc clear search").replace("⌃c quit", "⌃c exit");
     await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
     expect(f.prompts).toEqual([]);
+  });
+
+  it.each(narrowSessionPickerScreens)("retains input until the primary-only $action session picker closes", async ({ screen }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    expect(f.prompts).toEqual([]);
+    f.screen.text = `${screen}\n› Any custom current composer`;
+    await expect(f.manager.submitInitialPrompt(f.context, binding, "initial", operation())).resolves.toMatchObject({ submission: "submitted" });
+    await f.manager.submitPrompt(f.context, binding, "continuation", operation());
+    expect(f.prompts).toEqual(["initial", "continuation"]);
   });
 
   it("returns a launched process before its first input or native SessionStart", async () => {

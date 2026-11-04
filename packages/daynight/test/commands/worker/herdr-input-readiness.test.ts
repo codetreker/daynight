@@ -3,15 +3,16 @@ import { createOperation } from "../../../src/api/operation.js";
 import { inspectHerdrInput } from "../../../src/commands/worker/herdr/input-readiness.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrAgentObservation, HerdrTaskBinding } from "../../../src/commands/worker/herdr.js";
+import { narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
 
 const binding: HerdrTaskBinding = { session: "w", workspaceId: "ws", paneId: "pane", terminalId: "terminal" };
-const fixture = () => {
+const fixture = (width = 97) => {
   const calls: string[] = [];
   const observation: HerdrAgentObservation = { binding, kind: "copilot", name: null, status: "idle", launchPending: false, interactiveReady: true, nativeSession: null, stateChangeSeq: 1, completionSeq: 0 };
   const snapshot = { panes: [{ pane_id: "pane", terminal_id: "terminal", workspace_id: "ws", tab_id: "tab" }], layouts: [{ tab_id: "tab", workspace_id: "ws", panes: [{ pane_id: "pane", rect: { width: 100, height: 25 } }] }] };
   let visible = "";
   const operation = createOperation();
-  const inspect = (purpose: "automatic" | "manual" | "resume" | "cleanup" = "automatic") => inspectHerdrInput({ binding, provider: observation.kind as "codex" | "claude" | "copilot", purpose, operation, observe: async () => observation, readSize: async () => ({ width: 97, height: 23 }),
+  const inspect = (purpose: "automatic" | "manual" | "resume" | "cleanup" = "automatic") => inspectHerdrInput({ binding, provider: observation.kind as "codex" | "claude" | "copilot", purpose, operation, observe: async () => observation, readSize: async () => ({ width, height: 23 }),
     rpc: { request: async (method, params) => { calls.push(method); if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: "pane", shell_pid: 123, tty: "/dev/ttys001" } }; if (method === "ping") return { type: "pong", version: "0.9.5" }; if (method === "session.snapshot") return { type: "session_snapshot", snapshot }; return { type: "pane_read", read: { pane_id: "pane", workspace_id: "ws", tab_id: "tab", source: "visible", format: params.format, text: visible, truncated: false, revision: 0 } }; } } });
   return { observation, snapshot, calls, operation, inspect, text: (text: string) => { visible = text; } };
 };
@@ -63,6 +64,35 @@ it.each(["automatic", "cleanup"] as const)("uses only known blockers for %s inpu
       expect(f.calls).not.toContain("pane.read");
     } finally { f.operation.dispose(); }
   }
+});
+
+it.each(narrowSessionPickerScreens)("refuses the primary-only $action picker at its original PTY width", async ({ action, screen, width }) => {
+  const f = fixture(width); f.observation.kind = "codex";
+  try {
+    for (const visible of [screen, screen.replace("Type to search", "Search: original"), screen.replace("Type to search", "Failed to read session metadata"), screen.replace("  › Original session\n    now", " No sessions yet")]) {
+      f.text(visible);
+      for (const purpose of ["automatic", "cleanup"] as const) await expect(f.inspect(purpose)).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    }
+    f.text(screen);
+    await expect(f.inspect("resume")).rejects.toMatchObject({ code: "automation_suspended" });
+    f.calls.splice(0);
+    await expect(f.inspect("manual")).resolves.toMatchObject({ width, composer: "unavailable" });
+    expect(f.calls).not.toContain("pane.read");
+    for (const visible of [
+      `${screen}\n› Any custom current composer`,
+      screen.replace(/(?:Resume|Fork) a previous session/, "A discussion of previous sessions"),
+      screen.replace("a previous session", "a previous sess"),
+      screen.replace(" Type to search\n\n  › Original session\n    now", " A business example"),
+      screen.replace(`⌃⇧⌥⌘fwd del ${action}`, "⌃⇧⌥⌘fwd del send"),
+      screen.replace("⌃⇧⌥⌘fwd del", "f25"),
+      screen.replace(` ⌃⇧⌥⌘fwd del ${action}`, ` Prose about ⌃⇧⌥⌘fwd del ${action}`),
+    ]) {
+      f.text(visible);
+      await expect(f.inspect()).resolves.toMatchObject({ composer: "unavailable" });
+    }
+    expect(f.calls).not.toContain("terminal.attach");
+    expect(f.calls).not.toContain("agent.prompt");
+  } finally { f.operation.dispose(); }
 });
 
 it.each(["codex", "claude"] as const)("requires honest current %s empty-input evidence only for resume", async provider => {
