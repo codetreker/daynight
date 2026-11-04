@@ -68,17 +68,25 @@ Bot 生命周期验证 Worker PAT；共享 Session 继续验证 owner 的当前�
 
 HTTP DTO 将版本及创建序号编码为字符串，并投影实际关联的 sessionId/testExecutionId；尚未登记时两者为 null。删除后整体省略 `BotDefinition`，仅保留最小责任，避免单独漏删某个配置或角色字段。内部数据库对象不直接序列化为管理响应。
 
-## 删除边界
+## 删除与清理事务
 
-删除事务先锁 Bot，核对 owner、原请求身份和当前版本，再存入删除责任。精确重复请求返回原结果；新的删除请求不能覆盖已有责任。达到 int64 上限时拒绝版本递增。
+公开 DELETE 由同一 `sessionrelay.Service` 处理。删除事务先锁 Bot，核对 owner、原请求身份和当前版本，再按 `bot_id` 查询并锁定所有实际关联 Session，撤销 grant/连接授权，最后存入删除责任。登记、归档上传和清理都使用 Bot → Session → archive metadata 锁序；已获准上传先完成，随后删除屏障生效。删除先提交时旧上传在文件写入前被拒绝。普通 Task 的历史归档流程不改变。
 
-当前管理接口仅支持未绑定 Session 的删除意图，两个清理阶段均保持 pending。已绑定 Session 的公开删除仍被拒绝；已有持久删除准入检查提供共享入口所需的锁序与拒绝语义，但没有承担进程停证、SQL/归档删除或 Worker 私有资料清理。完整删除须按 Bot → Session → archive metadata 顺序记录责任、冻结新读写并清理实际关联资源，不能由列表隐藏推断完成。
+屏障事务单独提交，不与物理删除同生共死。提交后丢弃本实例的 live cache 和 pending content；其它实例在下一次权威读取观察 deletion 或 Session 已不存在时也丢弃对应内容。Controller 的 scope 预查询发生在共享 load 之前，因此该预查询确认 Session 不存在时也清除缓存与等待正文，覆盖只有 Poll 或 Disconnect 到达的旧连接；数据库查询失败本身不等于持久删除。异步正文返回前的二次准入阻止删除后交付迟到内容。进程缓存只服务当前连接，不能恢复持久删除记录。
 
-Bot 表不保存 Task 关系，删除操作没有 Task 更新 SQL。普通目录、共享 native home、Task worktree 和其它任务均不属于定义删除的副作用。
+Worker 完成接口要求有效 PAT、owner、绑定 Worker 和原 deletionId，直接核验原 Session 的 fence、Controller 身份及停证。已连接或曾提交 source/native 身份的执行不能声明 `never_started`。成功回执的规范化 SHA-256 存在 `deletion.receiptDigest` 中，与 Worker completed 结果一起提交。该内部字段不进入管理 DTO；Session 行清理后仍能精确核对重复回执。相同 failed state/code 在验证身份后返回原结果，不推进版本；错误码改变可记录新的失败。失败回执可由有效 completed 回执推进，但 completed 不能被不同回执覆盖。
+
+服务端清理使用新事务，持有 Bot 和所有实际关联 Session 行锁。按 `bot_id` 查齐关联，而非仅相信 `bots.session_id`。逐行核对 owner、独立 scope 和 web backend，然后调用 `Storage.DeleteSessionArchives` 清理固定 `session-archives/<sessionId>/`，覆盖未提交 metadata 的孤立对象。存储接口只接受规范化非零 UUID，不接受任意 bucket 或前缀；逐级目录句柄、文件身份核对和符号链接拒绝保护其它命名空间。部分删除、取消或同步失败保持错误，可按相同命名空间重试；不存在也执行目录持久化屏障。
+
+SQL 删除清单明确包含 `session_events`、`session_timeline`、`session_operations`、`session_resources`、`session_archives`、`session_recording_evidence`，最后删除 `task_sessions`。前四表没有级联，后两表没有 Session 外键，不能依赖父行删除隐式清理。完成后清空 Bot 的 Session 引用、角色、配置和名字等非责任数据，仅保留 owner/Worker、请求指纹、删除身份及两方结果。各实际阶段变化推进版本，int64 上限拒绝继续递增。
+
+文件删除无法随 SQL 回滚。文件或 SQL 失败时数据库事务回滚，独立事务记录 `server_cleanup_failed`，保留已经提交的屏障与 Worker 回执。再次清理可接受文件已不存在；不得把失败状态覆盖到并发重试已提交的 completed。提交结果未知仍按原身份查询，不把网络失败当作失败确认或新请求授权。
+
+该流程不读写 Task、用户普通目录或 native home。服务端 completed 仅与绑定 Worker 的 completed 回执共同证明可管理范围完成，不证明远端进程的独立观测或 Provider 全局历史擦除。实现取舍见[删除清理决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-history-deletion.md)。
 
 ## 扩展约束
 
-公开创建消费默认解析机制，Worker 生命周期消费稳定的 Session 绑定、grant 和报告接口。未组合托管能力前不启用完整助手 UI 入口。Provider 实际启动与恢复、角色模板、Worker 退出和私有资料清理仍由各自执行组件负责；服务端接受注册或报告不证明这些组件已完成端到端验收。历史清理必须扩展删除事务并保留重复请求对账能力，公开创建返回 pending 不表示完整托管功能可用。
+公开创建消费默认解析机制，Worker 生命周期消费稳定的 Session 绑定、grant 和报告接口。未组合托管能力前不启用完整助手 UI 入口。Provider 实际启动与恢复、角色模板、Worker 退出和私有资料清理仍由各自执行组件负责；服务端接受注册或报告不证明这些组件已完成端到端验收。删除消费者必须保留原停证、重复请求对账和两方阶段判定，公开创建返回 pending 不表示完整托管功能可用。
 
 默认与偏好取舍见[默认解析决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-default-resolution.md)。管理定义取舍见[管理定义决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-definition-storage.md)。
 

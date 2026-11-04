@@ -76,3 +76,26 @@ export const StepMoveDialog = ({ step, steps, available, onCancel, onConfirm }: 
     <footer className="dialog-footer"><button className="button" type="button" ref={cancel} onClick={onCancel}>{m.cancelMove}</button><button className="button primary" type="button" disabled={!available || selectedId === null || missing} onClick={() => { if (selectedId !== null && selectedId !== step.id && !missing) onConfirm(selectedId, placement); }}>{m.confirmMove}</button></footer>
   </dialog>;
 };
+
+export const StepAddTargetDialog = ({ steps, selectedId, onCancel, onConfirm }: {
+  readonly steps: readonly TaskStep[]; readonly selectedId: string | null;
+  readonly onCancel: () => void; readonly onConfirm: (id: string) => void;
+}) => {
+  const { messages: { inspection: { steps: m } } } = useI18n();
+  const [selected, setSelected] = useState(selectedId);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const missing = selected !== null && !steps.some((step) => step.id === selected);
+  useLayoutEffect(() => { const element = dialog.current!; element.showModal(); cancel.current?.focus(); return () => element.close(); }, []);
+  return <dialog className="auth-dialog step-move-dialog" ref={dialog} aria-labelledby={titleId} onCancel={(event) => { event.preventDefault(); event.stopPropagation(); onCancel(); }} onKeyDown={(event) => {
+    event.stopPropagation();
+    if (event.key !== "Tab") return;
+    const items = dialogFocusables(event.currentTarget); const first = items[0]; const last = items[items.length - 1];
+    if (first && last && (!items.includes(document.activeElement as HTMLElement) || document.activeElement === (event.shiftKey ? first : last))) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
+  }}>
+    <header className="dialog-header"><h2 id={titleId}>{m.selectTarget}</h2></header>
+    <div className="dialog-body step-move-body"><StepTargetPicker steps={steps} selectedId={selected} onSelect={setSelected} />{missing && <p role="alert">{m.targetMissing}</p>}</div>
+    <footer className="dialog-footer"><button className="button" type="button" ref={cancel} onClick={onCancel}>{m.cancel}</button><button className="button primary" type="button" disabled={selected === null || missing} onClick={() => { if (selected !== null && !missing) onConfirm(selected); }}>{m.confirmTarget}</button></footer>
+  </dialog>;
+};
