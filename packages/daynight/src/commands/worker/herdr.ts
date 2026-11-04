@@ -65,6 +65,7 @@ export const createWorkerHerdr = (options: {
 };
 
 export type WorkerHerdrLifecycle = {
+  archive?: import("./herdr/resource-types.js").HerdrArchiveResources;
   registerClaim(context: HerdrExecutionContext, ownerUserId: string): void;
   assertCanAdvance(context: HerdrExecutionContext): void;
   hasPreparedRun(owner: HerdrExecutionOwner): boolean;

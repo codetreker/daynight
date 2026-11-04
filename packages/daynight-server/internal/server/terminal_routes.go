@@ -69,6 +69,7 @@ func (h *sessionRoutes) registerTerminalRoutes(mux *http.ServeMux) {
 		sessionBase + "/{sessionId}/worker-messages":                  "POST",
 		sessionBase + "/{sessionId}/worker-channel":                   "GET",
 		sessionBase + "/{sessionId}/archive/receipt":                  "GET",
+		sessionBase + "/{sessionId}/archive/state":                    "GET",
 		sessionBase + "/{sessionId}/recording-evidence/{evidenceId}":  "GET",
 		sessionBase + "/{sessionId}/automation-recovery/{recoveryId}": "GET",
 	} {
@@ -193,6 +194,10 @@ func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p 
 		case strings.HasSuffix(path, "/archive/receipt"):
 			if _, err = queryValues(r); err == nil {
 				result, err = h.service.TerminalReceipt(r.Context(), p, project, task, id)
+			}
+		case strings.HasSuffix(path, "/archive/state"):
+			if _, err = queryValues(r); err == nil {
+				result, err = h.service.TerminalArchiveState(r.Context(), p, project, task, id)
 			}
 		case strings.HasSuffix(path, "/archive"):
 			if _, err = queryValues(r); err == nil {

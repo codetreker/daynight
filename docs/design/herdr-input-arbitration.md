@@ -6,7 +6,7 @@
 
 所有 macOS Daynight 输入由同一 `HerdrInputArbiter` 派发：首次 assignment、自动 continuation、服务端转发的 paste/keys、终态 cleanup prompt。`durable.ts` 不调用 legacy `agent.prompt` 输入路径；`launch` 只启动进程，原 daemon、shell、native agent 的身份和运行 ledger 可靠提交后才开放输入。Linux/Windows legacy 与 Web Controller 保留各自既有路径。
 
-Session 注册继续声明 `observe=false`、`control=false`、`archive=false`。输入组件与服务端消费接口可隔离验证，但录制、网页预览、最终归档和产品组合能力尚未满足，不能仅凭输入传输成功启用完整 Herdr Session。
+macOS Worker 将输入仲裁与[持续录制及归档](herdr-recording.md)组合后声明 Session observe/control/archive 能力。输入组件的独立传输成功仍不证明页面端到端验收；控制结果不改变录制与归档的完整性。
 
 ## 持久状态与操作身份
 

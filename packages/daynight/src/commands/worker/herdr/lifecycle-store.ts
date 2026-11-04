@@ -71,7 +71,6 @@ export const parseHerdrLifecycleRecord = (value: unknown): HerdrLifecycleRecord 
   if (o.registrationRequest !== null) {
     const request = parseSessionV2Message(o.registrationRequest);
     if (request.type !== "registration" || request.sessionId !== record.sessionId || request.claimId !== record.claimId || request.payload.registrationId !== record.registrationId || !same(request.payload.owner, record.owner)) return reject("The pending registration belongs to another execution.");
-    if (Object.values(request.payload.capabilities).some(Boolean)) return reject("Herdr lifecycle registration cannot advertise unimplemented combined capabilities.");
     record.registrationRequest = request;
   }
   if (o.ledgerRequest !== null) {
@@ -157,7 +156,7 @@ const validateChange = (before: HerdrLifecycleRecord, after: HerdrLifecycleRecor
   if (after.segments.length < before.segments.length) reject("Capture segment history cannot be removed.");
   for (const [index, previous] of before.segments.entries()) {
     const next = after.segments[index]!;
-    if (previous.endedAt !== null && !same(previous, next)) reject("A closed capture segment is immutable.");
+    if (previous.endedAt !== null && !same({ ...previous, binding: next.binding }, next)) reject("A closed capture segment observation boundary is immutable.");
     assertTerminalBinding(previous.binding, next.binding);
     const { endedAt: _end, durationMs: _duration, binding: _binding, ...stable } = previous;
     const { endedAt: _nextEnd, durationMs: _nextDuration, binding: _nextBinding, ...nextStable } = next;

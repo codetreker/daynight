@@ -330,6 +330,62 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.events.some(event => event.kind === "cleanup-error")).toBe(false);
   });
 
+  it("advances one stopped archive per round and deletes only after its receipt", async () => {
+    const f = await fixture();
+    f.options.repositories = [];
+    const owners = [1, 2].map(n => ({ projectId: f.project.projectId, taskId: uuid(970 + n), claimId: uuid(980 + n), worktreeId: uuid(990 + n) }));
+    const retained = owners.map((owner, i) => ({ owner, sessionId: uuid(1000 + i), stopped: true, terminal: true, worktreePath: f.bind(owner).worktreePath, sourcePath: path.join(f.root, `source-${i}`), sourceBytes: "10", state: "pending" as const, error: null, nextAttemptAt: null, worktreeDeleted: false, disposition: null }));
+    for (const owner of owners) { f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" })); f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) }); }
+    let receiptReady = false;
+    const archive = { resources: () => retained, advance: vi.fn(async () => receiptReady), cleaned: (owner: ResourceOwner) => { retained.find(value => value.owner.claimId === owner.claimId)!.worktreeDeleted = true; } };
+    Object.assign(f.herdr, { lifecycle: { responsibilities: () => owners.filter(owner => !retained.find(value => value.owner.claimId === owner.claimId)!.worktreeDeleted), isStopped: () => true, archive, registerClaim: () => {}, assertCanAdvance: () => {} } });
+    await f.coordinator.tick();
+    await eventually(() => expect(archive.advance).toHaveBeenCalledTimes(1));
+    expect(f.worktrees.size).toBe(2);
+    receiptReady = true;
+    await f.coordinator.tick();
+    await eventually(() => expect(f.worktrees.size).toBe(1));
+    expect(archive.advance).toHaveBeenCalledTimes(2);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.worktrees.size).toBe(0));
+    expect(archive.advance).toHaveBeenCalledTimes(3);
+  });
+
+  it("retains archive deletion backoff across coordinator restart without rerunning native cleanup", async () => {
+    const f = await fixture(); f.options.repositories = [];
+    const owner = { projectId: f.project.projectId, taskId: uuid(975), claimId: uuid(985), worktreeId: uuid(995) };
+    f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    const retained = { owner, sessionId: uuid(1005), stopped: true, terminal: true, worktreePath: f.bind(owner).worktreePath, sourcePath: path.join(f.root, "source"), sourceBytes: "10", state: "ready", error: null, nextAttemptAt: null, worktreeDeleted: false, disposition: null };
+    const stop = vi.fn(async () => { throw new Error("An archive cannot stop an Agent again"); });
+    const archive = { resources: () => [retained], advance: vi.fn(async () => true), cleaned: () => { retained.worktreeDeleted = true; } };
+    Object.assign(f.herdr, { lifecycle: { responsibilities: () => retained.worktreeDeleted ? [] : [owner], isStopped: () => true, archive, stop } });
+    vi.mocked(f.git.removeWorktree).mockRejectedValueOnce(new Error("Original resource is busy"));
+    await f.coordinator.tick();
+    await eventually(() => expect(f.store.getCleanupSchedule(owner)?.nextAttemptAt).toBe(6000));
+    const recovered = createWorkerCoordinator(f.options);
+    f.clock(5999); await recovered.tick();
+    expect(archive.advance).toHaveBeenCalledTimes(1); expect(stop).not.toHaveBeenCalled();
+    f.clock(6000); await recovered.tick();
+    await eventually(() => expect(retained.worktreeDeleted).toBe(true));
+    expect(stop).not.toHaveBeenCalled(); expect(archive.advance).toHaveBeenCalledTimes(2);
+    expect(f.store.getCleanupSchedule(owner)).toBeNull();
+  });
+
+  it("blocks new acquisition by retained resource budgets without restarting stopped claims", async () => {
+    const f = await fixture();
+    const owner = { projectId: f.project.projectId, taskId: uuid(970), claimId: uuid(980), worktreeId: uuid(990) };
+    const record = { owner, sessionId: uuid(1000), stopped: true, terminal: true, worktreePath: f.bind(owner).worktreePath, sourcePath: path.join(f.root, "source"), sourceBytes: "2147483648", state: "failed", error: "source_corrupt", nextAttemptAt: null, worktreeDeleted: false, disposition: null };
+    Object.assign(f.herdr, { lifecycle: { responsibilities: () => [owner], isStopped: () => true, archive: { resources: () => [record], advance: async () => { throw new Error("Failed archives must not retry automatically"); } } } });
+    await f.coordinator.tick();
+    expect(f.grants.size).toBe(0);
+    expect(f.tasks.start).not.toHaveBeenCalled();
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "warning", message: expect.stringMatching(/source budget/) }));
+    record.sourceBytes = "0";
+    await f.coordinator.tick();
+    await eventually(() => expect(f.grants.size).toBe(1));
+  });
+
   it("reserves a stopped run's slot while its active claim is resuming", async () => {
     const f = await fixture();
     const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(941), worktreeId: uuid(942) };

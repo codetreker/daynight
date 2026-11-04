@@ -199,3 +199,14 @@ describe("persistent Herdr Session connection", () => {
     f.state = stateFor(stopped, "2"); await expect(publishHerdrLedger(f.store, f.identity, f.api)).rejects.toThrow(); expect(f.ledgers).toHaveLength(0);
   });
 });
+
+it("persists combined recording capability intent and reconciles its original connection", async () => {
+  const f = await fixture();
+  const capabilities = { observe: true, control: true, archive: true };
+  await connectHerdrSession(f.store, f.identity, f.api, undefined, capabilities);
+  expect(f.registrations[0]!.payload.capabilities).toEqual(capabilities);
+  f.state = { ...f.state!, capabilities };
+  await connectHerdrSession(f.store, f.identity, f.api, undefined, capabilities);
+  expect(f.registrations[1]!.payload.capabilities).toEqual(capabilities);
+  expect(f.store.get(f.identity)!.connectionEpoch).toBe("2");
+});

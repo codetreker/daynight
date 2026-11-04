@@ -12,6 +12,7 @@ import type { Task, TaskPlatform, WorkerMachine, WorkerTaskInventory, WorkerTask
 import { ensureCleanupSchedule } from "./cleanup-schedule.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
 import { createCleanupDriver } from "./cleanup.js";
+import { assertHerdrResourceBudget } from "./resource-disposal.js";
 import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "./execution.js";
 import { HerdrAgentActionError, HerdrRpcError } from "./herdr.js";
@@ -24,6 +25,7 @@ import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, W
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
 export type WorkerCoordinatorOptions = {
   hasHerdrJournal?: boolean;
+  availableDiskBytes?: () => bigint;
   webBackend?: WebExecutionBackend; webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
   serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
@@ -61,6 +63,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   let nextPendingProject = 0;
   let shuttingDown = false;
   let ticking = false;
+  let archiveJob: Promise<void> | null = null;
+  let archiveCursor = "";
   const cancel = (): void => {
     shuttingDown = true;
     const reason = normalSignal.aborted ? normalSignal.reason : new Error("Worker shutdown requested.");
@@ -281,6 +285,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
 
   const launchCleanups = (): void => {
     for (const [identityKey, owner] of ending) {
+      // A stopped archive owns its separate persisted retry schedule. Native
+      // cleanup must not consume or erase that schedule after a runner restart.
+      if (hasWorktreeIdentity(owner) && lifecycle()?.archive && isStopped(owner)) continue;
       if (jobs.has(identityKey)) continue;
       if (now() < (cleanupRetries.get(identityKey)?.nextAttemptAt ?? 0)) continue;
       // Creation and ownership validation run inside the isolated job's error boundary.
@@ -397,10 +404,46 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const count = failures.get(key(task)) ?? 0;
     startJob(task, (signal) => ensure(task, remoteTask, signal, count <= configurationFor(task).recoveryLimit), false);
   };
+  const advanceArchive = (inventory: ReadonlyMap<string, Task>): void => {
+    const archive = lifecycle()?.archive;
+    if (!archive || archiveJob !== null || shuttingDown) return;
+    const candidates = archive.resources().filter(resource => resource.stopped && !resource.worktreeDeleted
+      && resource.disposition === null && !inventory.has(key(resource.owner))
+      && (["pending", "ready", "unavailable"].includes(resource.state) || resource.state === "failed" && resource.nextAttemptAt !== null)
+      && (resource.nextAttemptAt === null || resource.nextAttemptAt <= now())
+      && !jobs.has(key(resource.owner)) && options.store.getProject(resource.owner) !== null
+      && now() >= (options.store.getCleanupSchedule(resource.owner)?.nextAttemptAt ?? 0))
+      .sort((left, right) => left.sessionId.localeCompare(right.sessionId));
+    const selected = candidates.find(resource => resource.sessionId > archiveCursor) ?? candidates[0];
+    if (!selected) return;
+    archiveCursor = selected.sessionId;
+    const owner = selected.owner;
+    const job = serialize(owner, async () => {
+      if (!isStopped(owner)) throw new Error("The retained original execution no longer has confirmed stop evidence.");
+      const ready = await cleanupOperation(operation => archive.advance(owner, operation), normalSignal);
+      if (!ready) return;
+      try {
+        await cleanupOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), normalSignal);
+        if (await cleanupOperation(operation => options.git.findWorktree(projectFor(owner), owner, operation), normalSignal) !== null) throw new Error("The original archived worktree still exists after cleanup.");
+        archive.cleaned(owner);
+        options.store.deleteCleanupSchedule(owner);
+        ending.delete(key(owner));
+        cleanupRetries.delete(key(owner));
+      } catch (error) {
+        const previous = ensureCleanupSchedule(options.store, owner, now()), failures = previous.failures + 1;
+        options.store.saveCleanupSchedule(previous, { ...previous, failures, nextAttemptAt: now() + Math.min(300_000, 5000 * 2 ** Math.min(failures - 1, 6)), stage: "worktree-removal", lastError: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
+    }).catch(error => {
+      if (!isWorkerCancellation(error, normalSignal)) options.emit({ kind: "cleanup-error", message: `Herdr archive finalization for ${key(owner)} remains incomplete; the original source and resource responsibility are retained.`, error });
+    }).finally(() => { if (archiveJob === job) archiveJob = null; });
+    archiveJob = job;
+  };
   const reconcile = async (): Promise<void> => {
     launchCleanups();
     await options.remote.currentUserId(normalSignal);
     const inventory = await ownInventory(normalSignal);
+    advanceArchive(inventory);
     options.onInventory?.({ observedAt: new Date(now()).toISOString(), claims: [...inventory.values()].map(task => ({ projectId: task.projectId, taskId: task.id, claimId: readWorkerClaim(task.properties)!.claimId })) });
     // Ownership loss is authoritative even when the following resource observations fail.
     for (const local of options.store.listUnfinishedTasks()) {
@@ -488,7 +531,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if ([...resources.owners.values()].some(owner => owner.projectId === candidate.projectId && owner.taskId === candidate.id)) throw new Error("An original task resource still reserves its worktree; a new claim cannot be acquired.");
         }
         catch (error) {
-          options.emit({ kind: "warning", message: `Skipping ${candidate.projectId}/${candidate.id}: its original archive responsibility and worktree reservation prevent a new claim.`, error });
+          options.emit({ kind: "warning", message: `Skipping ${candidate.projectId}/${candidate.id}: ${error instanceof Error ? error.message : "retained resource admission failed"}`, error });
           continue;
         }
         requireImplementedWorkerBackend(repository.configuration);
@@ -514,6 +557,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const assertCanAcquire = (target: Pick<ClaimIdentity, "projectId" | "taskId">): void => {
     const retained = responsibilities();
+    assertHerdrResourceBudget(lifecycle()?.archive?.resources() ?? [], options.availableDiskBytes?.() ?? 1073741824n);
     if (retained.some(owner => owner.projectId === target.projectId && owner.taskId === target.taskId)) throw new Error("The original Herdr worktree remains reserved until archive finalization; a new claim cannot be acquired.");
   };
   const registerClaim = (task: Task): void => {
@@ -574,6 +618,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       cancel();
       normalSignal.removeEventListener("abort", cancel);
       await Promise.all(jobs.values());
+      await archiveJob;
       let complete = true;
       for (const task of options.store.listUnfinishedTasks()) if (task.agentControlMode === "web" && options.webStore?.getTask(task) == null) {
         if (task.status === "pending" && task.sessionId === null && options.verifyWebUnregistered) {

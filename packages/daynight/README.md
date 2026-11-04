@@ -139,6 +139,7 @@ daynight worker attach              # Connect to an existing Herdr task runtime
 daynight worker repo list [--json]
 daynight worker repo add [--project <project-id>]
 daynight worker repo remove [--project <project-id>]
+daynight worker resources list       # Inspect retained Herdr recordings and stop evidence
 daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
 daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
 daynight worker resume <task-id> --claim-id <previous-claim-id> --if-version <version> [--project <project-id>]
@@ -1796,17 +1797,24 @@ Unknown identity, replacement or stop outcomes retain responsibility and block
 new runs. A journal write failure permits only an unconfirmed best-effort stop;
 pane disappearance cannot prove success after restart.
 
-Herdr lifecycle registration advertises `observe=false`, `control=false` and
-`archive=false`. Terminal recording, browser control and archive finalization
-are not enabled. Consequently macOS Herdr terminal cleanup retains its worktree
-and separate archive responsibility even after confirmed stopping. A durable
-input arbiter revokes control before cleanup; it sends one bounded advisory
-prompt only from safe automation with no manual draft or unknown input. Other
-states skip the prompt and proceed with controlled stopping. No final ready
-archive is claimed. A terminal run can mark
-its local execution row done and release its slot after segment and ledger
-confirmation, while
-the retained worktree continues to block another claim for the same task.
+macOS Herdr records complete terminal samples independently of viewers and
+network connectivity. The combined Worker publishes its observation, control
+and archive capabilities through Session v2; a compatible page is still required
+to render terminal content and expose its controls. Samples are durable before
+publication as recorded. Identical screens retain a five-second checkpoint of
+their observed duration; interrupted intervals and recording limits remain
+visible in partial archives.
+
+A durable input arbiter revokes control before cleanup. It sends one bounded
+advisory prompt only from safe automation with no manual draft or unknown
+input; other states skip the prompt and proceed with controlled stopping.
+Confirmed stopping releases the execution slot while a separate queue freezes
+the original Session and uploads its fixed archive. Worktree deletion requires
+the matching durable `ready` or legitimate `unavailable` receipt. Failed source
+or upload responsibility retains the original worktree and blocks a new claim
+for that task; other tasks may run within the independent resource budgets.
+See [retained recordings](#retained-herdr-recordings) for inspection and explicit
+recovery or disposal.
 
 For Linux/Windows legacy Herdr and Web, when the original claim is absent from a
 successful complete inventory, the worker asks its agent to release attributable
@@ -1853,7 +1861,7 @@ Restart resumes the same claim's remaining resources without starting business
 execution. Previously confirmed cleanup responsibility can continue during later
 service-read failures.
 
-Failed claims retry independently after 1, 2, 4, 8, 16, 32 and then at most 60
+Native cleanup failures retry independently after 1, 2, 4, 8, 16, 32 and then at most 60
 seconds, when normal reconciliation next observes eligibility. Backoff does not
 spend execution recovery budget or release a capacity slot. Other eligible
 cleanup and healthy execution continue under the existing capacity limit. Errors
@@ -2067,10 +2075,68 @@ the supported behavior and verification boundary.
 
 ## Worker manual management
 
-Stop `daynight worker run` before retry, release or resume. Each command
-acquires the same instance lock and synchronously handles one specified claim;
-an occupied lock returns an instruction to stop the runner. Management does not
-write a durable intent or coordinate through a background request queue.
+Stop `daynight worker run` before retry, release, resume or resource management.
+Each command acquires the same instance lock; an occupied lock returns an
+instruction to stop the runner. Retry, release and resume synchronously handle
+one specified claim without a background request queue. Resource disposal
+persists its explicit decision so an interrupted deletion can resume against
+the original identity.
+
+### Retained Herdr recordings
+
+Inspect retained macOS Herdr resources before choosing a retry or disposal:
+
+```bash
+daynight worker resources list
+```
+
+The JSON result identifies the original Session, project/task/claim/worktree,
+stop evidence, source and worktree paths, source byte count, archive state,
+retry time and any disposal decision. Inspection never starts an Agent. A
+confirmed original stop releases execution capacity even if archival failed;
+`stop_unknown` still consumes capacity. The old worktree continues to reserve
+its task path until verified removal.
+
+New claims are blocked at 20 retained worktrees or 2 GiB of pending recording
+source, or when the worker filesystem has less than 1 GiB available. Each round
+advances at most one historical Herdr archive. Temporary upload failures use
+5-second to 5-minute exponential backoff; permissions and permanent corruption
+require explicit attention. Other running tasks continue. Ready local sources
+are retained and still consume actual disk space; there is no automatic source
+expiry or garbage collection.
+
+After restoring the original owner's access or resolving a transient cause,
+request another archive attempt with the identities from inspection:
+
+```bash
+daynight worker resources retry <task-id> --project <project-id> \
+  --claim-id <claim-id> --session-id <session-id> --worktree-id <worktree-id>
+```
+
+Archive retry preserves the original operation and source. It never resumes an
+Agent, switches archive owner or converts corrupt source into a partial or
+unavailable archive. Normal worktree cleanup requires a durable, matching
+`ready` or legitimate `unavailable` receipt.
+
+For an irrecoverable failure, explicitly choose `abandon` to stop retries while
+retaining files, or `delete` to remove that original worktree and recording
+source. Deletion discards local recording evidence. Both choices require the
+original execution to be confirmed stopped and its claim to be terminal:
+
+```bash
+daynight worker resources dispose <task-id> --project <project-id> \
+  --claim-id <claim-id> --session-id <session-id> --worktree-id <worktree-id> \
+  --operation-id <new-operation-uuid> --action abandon --confirm
+```
+
+Use `--action delete` only after reviewing the exact paths and consequences.
+The stable operation UUID identifies this explicit choice; reuse it with the
+same action after an interrupted result. Identity mismatches, active claims,
+unknown stop evidence and missing confirmation are refused. Disposal preserves
+the archive's historical failure and never manufactures a successful receipt.
+Worktree deletion retains the existing ownership and resource-use checks.
+
+### Active claim management
 
 Retry performs one attempt for an active claim still owned by this worker:
 
@@ -2106,7 +2172,7 @@ notify and stop agent → close workspace → submit remote change
 
 macOS Herdr release instead confirms the durable original stop without a
 cleanup prompt, submits the remote change, and retains the worktree until
-archive finalization is available. The ordering above applies to legacy Herdr;
+a matching finalization receipt permits deletion. The ordering above applies to legacy Herdr;
 Web also applies its own archive gate. The worktree is retained until remote
 confirmation. A refusal leaves it available
 for original execution recovery; success followed by local deletion failure is

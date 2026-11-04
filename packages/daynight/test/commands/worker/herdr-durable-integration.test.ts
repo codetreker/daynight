@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import * as inputSessionModule from "../../../src/commands/worker/herdr/input-session.js";
+import { openHerdrRecordingStore } from "../../../src/commands/worker/herdr/recording-store.js";
+import { SESSION_V2_LIMITS } from "../../../src/session/v2/values.js";
 import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-store.js";
 import { inspectHerdrInput } from "../../../src/commands/worker/herdr/input-readiness.js";
@@ -11,6 +14,7 @@ import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { Task } from "../../../src/api/types.js";
 import { cleanupOperation } from "../../../src/commands/cleanup-operation.js";
+import { createHerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import type { createWorkerHerdr, HerdrAgentObservation, HerdrExecutionContext, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
@@ -99,7 +103,7 @@ const fixture = (realInspector = false) => {
     register: async request => {
       registrations.push(structuredClone(request)); events.push(`register:${request.payload.mode}`);
       const connectionEpoch = request.payload.connectionEpoch === null ? "1" : String(BigInt(request.payload.connectionEpoch) + 1n);
-      remote = { status: "registered", protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: request.sessionId, claimId: request.claimId, executionGeneration: request.executionGeneration, agentControlMode: "herdr", contentKind: "terminal_recording", owner: structuredClone(request.payload.owner), binding: structuredClone(request.payload.binding), connectionEpoch, connected: true, capabilities: { observe: false, control: false, archive: false }, control: remote?.control ? { ...remote.control, state: "suspended", lease: null, connectionEpoch, availableActions: [] } : null, snapshot: null, ledger: remote?.ledger ?? { runs: [], finalizationId: null }, archive: { state: "pending", sha256: null, byteLength: null, completeness: null, errorCode: null, finalizationId: null }, recording: [] };
+      remote = { status: "registered", protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: request.sessionId, claimId: request.claimId, executionGeneration: request.executionGeneration, agentControlMode: "herdr", contentKind: "terminal_recording", owner: structuredClone(request.payload.owner), binding: structuredClone(request.payload.binding), connectionEpoch, connected: true, capabilities: request.payload.capabilities, control: remote?.control ? { ...remote.control, state: "suspended", lease: null, connectionEpoch, availableActions: [] } : null, snapshot: null, ledger: remote?.ledger ?? { runs: [], finalizationId: null }, archive: { state: "pending", sha256: null, byteLength: null, completeness: null, errorCode: null, finalizationId: null }, recording: remote?.recording ?? [] };
       return { ...request, type: "registration_ack", payload: { registrationId: request.payload.registrationId, connectionEpoch } };
     },
     ledger: async (request, epoch) => {
@@ -182,6 +186,12 @@ const fixture = (realInspector = false) => {
   const reopen = (injectSessionApi = true) => {
     if (facade) { facade.lifecycle!.close(); facades.delete(facade); }
     facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => task, processControl: native,
+      readRecording: async () => ({ width: 1, height: 1, rows: [[]] }), currentUserId: async () => ownerId,
+      archiveApi: { ...createHerdrArchiveApi(serverOrigin, "fixture-token"), state: async () => stateView(), recording: async (_expected, message) => {
+        const m = message as SessionV2Message;
+        if (m.type !== "recording_responsibility" || !remote) throw new Error("Unexpected recording fixture message");
+        remote.recording.push({ executionGeneration: m.executionGeneration, responsibility: m.payload, evidence: null }); return message;
+      } },
       inspectInput: async request => {
         if (realInspector) return inspectHerdrInput({ ...request, readSize: async () => ({ width: 100, height: 24 }), rpc: { request: async method => {
           const local = [...instances.values()].find(value => value.binding.terminalId === request.binding.terminalId)!;
@@ -308,7 +318,7 @@ describe("durable Herdr facade with real SQLite", () => {
     await vi.advanceTimersByTimeAsync(269_999); expect(signals[0]!.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1); await result;
     expect(signals[0]!.aborted).toBe(true); expect(failure).toMatchObject({ kind: "deadline" });
-    expect(f.read().runs[0]!.phase).toBe("stopped_confirmed"); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+    expect(f.read().runs[0]!.phase).toBe("stopped_confirmed"); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
   });
   it("commits process proof and input admission before the first prompt without requiring a native session", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare();
@@ -319,7 +329,7 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(record.segments).toHaveLength(1); expect(record.segments[0]!.endedAt).toBeNull();
     expect(f.events.indexOf("capture:agent")).toBeLessThan(f.events.indexOf("initial-input"));
     expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
-    expect(f.registrations[0]!.payload.capabilities).toEqual({ observe: false, control: false, archive: false });
+    expect(f.registrations[0]!.payload.capabilities).toEqual({ observe: true, control: true, archive: true });
   });
   it("keeps the Session across shutdown and resumes the native conversation in a new generation", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
@@ -579,12 +589,65 @@ describe("durable Herdr facade with real SQLite", () => {
     await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow("segment journal unavailable"); failure.mockRestore();
     const stoppedAt = f.read().runs[0]!.run.stoppedAt;
     expect(stoppedAt).not.toBeNull(); expect(f.read().segments[0]!.endedAt).toBeNull();
+    const record = f.read();
+    const source = openHerdrRecordingStore({ directory: path.join(f.paths.workerDirectory, "herdr-recordings", record.sessionId), owner: record.owner, sessionId: record.sessionId, claimId: record.claimId });
+    const recordedEnd = source.recoveryBoundary(record.segments[0]!.segmentId).endedAt;
+    expect(Date.parse(recordedEnd)).toBeLessThanOrEqual(Date.parse(stoppedAt!));
     f.reopen(); expect(f.facade.tasks.pendingStops()).toHaveLength(1);
     const successor = await f.prepare();
-    expect(f.read().segments[0]!.endedAt).toBe(stoppedAt);
+    expect(f.read().segments[0]!.endedAt).toBe(recordedEnd);
     expect(f.ledgers.some(message => message.payload.runs[0]?.stopProof !== null)).toBe(true);
     await f.start(successor);
-    expect(f.read().runs).toHaveLength(2); expect(f.read().segments[0]!.endedAt).toBe(stoppedAt);
+    expect(f.read().runs).toHaveLength(2); expect(f.read().segments[0]!.endedAt).toBe(recordedEnd);
   });
 
+});
+
+
+it("registers recording responsibility before initial input and keeps capture after connection loss", async () => {
+  const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+  expect(f.stateView().recording[0]!.responsibility?.recordingEnabled).toBe(true);
+  await vi.waitFor(() => expect(f.facade.lifecycle!.archive!.resources()[0]!.sourceBytes).not.toBe("0"));
+  expect(f.registrations[0]!.payload.capabilities).toEqual({ observe: true, control: true, archive: true });
+  await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+  expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+});
+
+
+it("retains the original active binding when recording segment allocation is exhausted", async () => {
+  const maximum = SESSION_V2_LIMITS.maxSegments;
+  Object.assign(SESSION_V2_LIMITS, { maxSegments: 1 });
+  try {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    const segmentId = f.read().segments[0]!.segmentId;
+    f.reopen();
+    await f.facade.tasks.observe(f.context, binding, operation());
+    expect(f.read().segments).toHaveLength(1);
+    expect(f.read().segments[0]!.segmentId).toBe(segmentId);
+    expect(f.read().segments[0]!.endedAt).toBeNull();
+    expect(f.events.filter(value => value === "stop")).toHaveLength(0);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+    const record = f.read();
+    const source = openHerdrRecordingStore({ directory: path.join(f.paths.workerDirectory, "herdr-recordings", record.sessionId), owner: record.owner, sessionId: record.sessionId, claimId: record.claimId }).snapshot();
+    expect(source.runs[0]!.captureError).toBe("recording_limit");
+    const launches = f.events.filter(value => value === "daemon-launch").length;
+    await expect(f.prepare()).rejects.toThrow(/recording.*budget/i);
+    expect(f.events.filter(value => value === "daemon-launch")).toHaveLength(launches);
+  } finally { Object.assign(SESSION_V2_LIMITS, { maxSegments: maximum }); }
+});
+
+
+it("publishes a stable recovered screen after its new segment ledger is confirmed", async () => {
+  const create = inputSessionModule.createHerdrInputSession, delivered = vi.fn(async () => {});
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => ({ ...create(options), publishSnapshot: delivered }));
+  const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+  f.reopen(); delivered.mockClear();
+  f.recoveryDelay(async stage => { if (stage === "state") await new Promise(resolve => setTimeout(resolve, 30)); });
+  await f.facade.tasks.observe(f.context, binding, operation());
+  await vi.waitFor(() => expect(delivered).toHaveBeenCalled());
+  const record = f.read();
+  expect(record.segments).toHaveLength(2);
+  expect(record.publishedLedgerHash).toBe(herdrLedgerHash(record));
+  expect(delivered.mock.calls.at(-1)).toMatchObject([record.sessionId, { segmentId: record.segments[1]!.segmentId, recorded: true }]);
 });

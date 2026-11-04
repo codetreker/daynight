@@ -248,3 +248,15 @@ describe("persistent Herdr lifecycle responsibility", () => {
     const inspect = new Database(f.file); expect(inspect.prepare("SELECT count(*) AS n FROM executions").get()).toEqual({ n: 1 }); inspect.close();
   });
 });
+
+
+it("enriches the original native identity on a closed capture segment without changing its observation boundary", () => {
+  const f = fixture(); let record = active(f);
+  record = f.store.update(record, draft => {
+    draft.runs[0]!.run.segmentIds.push(uuid(20));
+    draft.segments.push({ segmentId: uuid(20), segmentOrdinal: "1", executionGeneration: "1", binding: { ...draft.runs[0]!.run.binding }, startedAt: start, endedAt: finish, durationMs: "60000", gap: null });
+  });
+  const enriched = f.store.update(record, draft => { draft.runs[0]!.run.binding.nativeSessionId = uuid(99); draft.segments[0]!.binding.nativeSessionId = uuid(99); });
+  expect(enriched.segments[0]!.endedAt).toBe(finish);
+  expect(() => f.store.update(enriched, draft => { draft.segments[0]!.durationMs = "61000"; })).toThrow();
+});

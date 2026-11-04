@@ -8,7 +8,7 @@
 
 独占 daemon 是停止范围的一部分。Herdr 的普通 workspace 关闭会触发上游自行发现进程并发送信号，不能替代客户端对原进程实例的校验。受控停止先验证并冻结原运行，在确认资源范围后先停止独占 daemon，再停止原 shell、native agent 与已证明归属的后代，避免 daemon 收尾再次使用变化后的 PID。
 
-Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller ticket。注册能力始终为 `observe=false`、`control=false`、`archive=false`。运行 ledger 与采集段元数据是后续消费者的接口；当前没有终端内容采集、网页预览或最终录制归档，输入仲裁与桥接保持组合能力门禁，不能把注册成功解释为这些能力可用。
+Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller ticket。macOS Worker 组合持续录制、严格输入与归档消费者后声明 observe/control/archive 能力；源、checkpoint、最终回执及资源处置由[录制设计](herdr-recording.md)拥有。协议能力不替代原生与页面组合验收，也不将其他平台提升为同等支持。
 
 ## 身份与存储
 
@@ -47,9 +47,9 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 
 注册请求先落盘再发送。请求或响应未知时读取原 Session 状态核对，不自动重放或生成替代注册。服务端历史可以落后于本地停止或 native ID 补齐，但不能替换原 owner、binding、已确认停止记录或段前缀。准备好下一代但尚未发布 ledger 时，先按服务端仍注册的代次 reconnect，再提交新运行。
 
-每次实际运行启动或重启接入原运行都产生新的段；断点通过 `gap` 明确连接前后段。由于当前没有 recorder/checkpoint，重启不能声称覆盖停机期间的内容；未封闭旧段仅保留其已知起点，不推算连续录制时间。停止证明、封段和 ledger 确认分别是可恢复边界。恢复封段按该段所属运行的已确认停止时间收尾，不能把后续 generation 的停止时间套到旧段。
+实际运行启动或恢复采集时产生新段；断点通过 `gap` 明确连接前后段。重启只承认录制 journal 的最后 durable checkpoint，不能推算连续观察；正常停采使用单调时钟边界。停止证明、封段和 ledger 确认分别可恢复。nativeSessionId 的单向补齐可同步已关闭段，但不能改变其观察边界。
 
-终态 claim 的同代停止 ledger 使用原 `connectionEpoch` 收尾，不要求再注册 active claim。完整消息与 epoch 先写入 `ledgerRequest`，发送失败或重启遇到未确认请求时先读回，不再次 POST。只有服务端确认的相同内容才清除请求并更新 `publishedLedgerHash`。任务已删除且 GET 返回 404 时，可以用原 epoch 首次提交全部已确认停止的 ledger；若发送结果丢失且读回仍为 404，则保留 pending 请求和责任，不将缺席认作确认。没有归档消费者时不生成最终 ready。
+终态 claim 的同代停止 ledger 使用原 `connectionEpoch` 收尾，不要求再注册 active claim。完整消息与 epoch 先写入 `ledgerRequest`，发送失败或重启遇到未确认请求时先读回，不再次 POST。只有服务端确认的相同内容才清除请求并更新 `publishedLedgerHash`。任务已删除且 GET 返回 404 时，可以用原 epoch 首次提交全部已确认停止的 ledger；若发送结果丢失且读回仍为 404，则保留 pending 请求和责任，不将缺席认作确认。最终冻结及 ready/unavailable 回执由独立归档消费者确认。
 
 ## 停止 journal 与原进程证明
 
@@ -68,13 +68,13 @@ journal 无法落盘时只依据已有证明尝试受控停止，并报告结果
 
 ## 调度、退出与人工接入
 
-Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdown。停止、封段和 ledger 同步确认后可释放执行槽；保留的 worktree 仍阻止同 task 新 claim 覆盖。已排队恢复的 job 继续占槽，不能因旧代已停止而超配。自动领取在远端写入前检查同 task 旧资源；人工 resume 在申请新 claim 前拒绝尚未完成的 Herdr archive/worktree 责任，不能先授予一个无法执行的新 claim。
+Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdown。原执行可靠 stopped 且本地段已关闭后可释放执行槽，不等待网络确认；保留的 worktree 仍阻止同 task 新 claim 覆盖。已排队恢复的 job 继续占槽，不能因旧代已停止而超配。自动领取在远端写入前检查同 task 旧资源；人工 resume 在申请新 claim 前拒绝尚未完成的 Herdr archive/worktree 责任，不能先授予一个无法执行的新 claim。
 
 终态清理由共享 `cleanup_schedules` 保存原资源身份、首个期限和每 claim 重试策略，不能用 schedule 中的步骤标记替代 lifecycle 原身份、停止证明或服务端 ledger 确认。失败按 1、2、4、8、16、32 秒及最多 60 秒退避，到期后的正常对账才重试；不会消耗业务恢复预算，也不能清除尚未确认的停止责任。调度写失败保留原错误与 SQLite 错误，进程内继续有界退避，不能宣称本次调度已持久保存。
 
 共享清理操作的单次预算为 5 分钟，内部 RPC、HTTP 和原生停止继续受外层取消与期限约束；原生停止的信号升级间隔保持自身语义。Session HTTP 使用当前 `Operation.limits.requestMs`：普通操作为 30 秒，清理操作为 5 分钟，外层 `Operation.signal` 仍可提前取消。macOS 终态 cleanup 先持久撤销旧输入；仅此前安全 automation 且界面可用时，通过同一仲裁器发送一次有界 cleanup prompt。人工草稿或未知输入时跳过提示并受控停止，不以通知回执或 native idle 代替原进程停止证明。封段或 ledger 失败只补对应收尾，不重新停止已确认的原运行、不启动新业务执行。未确认的 ledger 请求仍只允许读回，退避到期不会赋予重发权限。Linux/Windows legacy Herdr 的建议性通知、原十分钟期限和 Git 删除规则由 [Worker 架构](daynight-worker.md#结束清理与退出)拥有。
 
-Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。当前未接入 Herdr archive finalization，因此终态停止、封段及同步确认后可以结束本机执行行并释放槽，但必须继续保留 worktree 和独立 archive 责任。
+Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止与本地封段后可以结束本机执行行并释放槽；独立归档队列继续保存源、冻结最终 ledger、核对不可变回执后才删除原 worktree。失败保留资源责任。
 
 `worker attach` 在 macOS 有 lifecycle journal 时只读校验当前 schema 并读取未停止的原运行；多个候选交互显示 task、claim 和 provider。连接前后核对原 daemon 以及 API/client 两个端点，再使用原实例目录打开 Herdr client。不恢复数据库、不迁移、不增加 epoch、不请求服务端放行，也不需要解除任务暂停。journal 不可读或没有候选时拒绝，不转接未知旧 daemon；没有 journal 的安装保留 legacy attach。
 
