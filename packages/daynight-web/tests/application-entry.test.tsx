@@ -70,6 +70,19 @@ describe("public and authenticated entry ownership", () => {
     expect(screen.getByRole("heading", { name: "Public product introduction" })).toBeVisible();
   });
 
+  it('retains the initial invitation in memory when session storage cannot be used', async () => {
+    history.replaceState(null, '', '/invitations#memory-only-invitation');
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+    const fetcher = vi.fn((url: string) => Promise.resolve(url === '/api/v1/invitations/inspect'
+      ? json({ projectId: '00000000-0000-4000-8000-000000000010', projectName: 'Invited project' }) : defaultResponse(url)));
+    vi.stubGlobal('fetch', fetcher);
+    mount();
+    await screen.findByRole('button', { name: 'Accept invitation and join' });
+    expect(fetcher).toHaveBeenCalledWith('/api/v1/invitations/inspect', expect.objectContaining({ body: JSON.stringify({ token: 'memory-only-invitation' }) }));
+    expect(location.hash).toBe('');
+  });
+
   it("preserves a direct attachment and selected tab through the independent login entry", async () => {
     const destination = "/projects/00000000-0000-4000-8000-000000000010/tasks/00000000-0000-4000-8000-000000000011/attachments/docs/guide.md?tab=overview";
     window.history.replaceState(null, "", destination);

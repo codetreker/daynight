@@ -10,7 +10,7 @@ Steps 是 Task 拥有的有序工作记录，跨 Session 和执行环境保留�
 
 ## 现有机制与复用点
 
-以下复用点的证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端及 CLI list/show/Add 部分描述当前实现；其余 CLI 操作、Agent 指令资源和 Web 部分描述尚待交付的目标机制。
+以下复用点的证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端及 CLI list/show/Add 部分描述当前实现；其余 CLI 操作、Agent 指令资源及 Web Steps 面板描述尚待交付的目标机制；应用导航准入已由独立路由所有者实现。
 
 | 证据 | 当前事实及设计含义 |
 |---|---|
@@ -211,13 +211,17 @@ unknown 冻结该次提交的表单和共同提交入口，按原身份读取完
 
 Steps workspace 按 Task 身份保存展开 ID、一个表单、草稿、预览及确认选择。操作 token 绑定提交回执，迟到结果不能关闭后来创建的表单。own-form 在 pending/unknown 冻结字段；无关父写入只锁提交。删除正在编辑的项时，同一确认层明确告知未保存修改会丢弃。
 
-离开草稿的决定接入统一的应用路由准入，位于 `AuthenticatedApp` 采用新 location 和 keyed Surface 卸载之前。`navigate`、`replaceRoute`、关系跳转和详情关闭先请求准入，确认后才修改历史或关闭；取消不写历史。相同 Task 的页签/附件历史保持挂载，不弹放弃确认。
+`app/navigation.ts` 的窗口级 `BrowserNavigation` 拥有已准入 location、历史条目和离开选择。`Application`、`AuthenticatedApp` 与 `App` 通过 `useBrowserLocation` 订阅该 location，不直接用原生事件卸载 Surface。`navigate`、`replaceRoute` 在写历史前准入；关系跳转与模态详情关闭通过 `requestAction` 在修改本地选择前准入。取消程序导航不写历史，确认只执行一次已选动作。
 
-应用导航层已编号的同文档历史项在现有 `history.state` 中保留命名空间和递增 entry index，保留其他 state 字段，启动时用 replaceState 标记当前项；不以新条目初始化。下述索引差值恢复保证仅覆盖具有有效应用索引的条目。Back/Forward 的 `popstate` 到达时，浏览器 URL 已改变，但路由所有者暂不采用不同 Task 的目标，不卸载旧 Surface。存在脏草稿时保存 from index/location 与最新目标，显示一次离开选择。确认放弃则采用已到达的目标，不再次 push；取消通过 `history.go(fromIndex - observedIndex)` 回到原条目，恢复 popstate 由专属 token 消费，不再次触发守卫或增加重复历史项。待决定期间的连续历史动作更新目标，取消恢复期间串行处理恢复事件，直到回到已提交条目；导航状态不从卸载 cleanup 推断。
+`TaskDraftBoundary` 将注册绑定到当前 `TaskCacheScope` 实例、Project 和 Task。后继草稿工作空间在保持挂载的位置调用 `useDirtyTaskDraft`，提供实时 `isDirty` 与 `discard` 回调；切换隐藏页签仍保留注册。独立页的相同 Task 页签/附件导航保持 Surface，不弹放弃确认；模态详情转入独立页会卸载原 Surface，仍需准入。注销只释放注册，不推断放弃。明确放弃调用回调后保留尚未卸载的注册，因此后续新草稿仍受保护；确认动作内部的同步路由调用共享本次准入。
 
-原生整文档离开使用 beforeunload，应用内程序导航全部经过上述准入。原生 fragment 生成或其他未纳入应用索引的历史项暂缓纳入草稿取消恢复保证：这些条目沿用浏览器原生导航，当前不保证取消离开后恢复原历史位置或保留跨 Task 离开时的未保存草稿，存在位置恢复失败或草稿丢失风险。索引差值算法只用于有效索引，不为缺失索引补造数值。后续完善应集中在同一路由/历史所有者的索引登记和恢复策略，无需改变 Steps 数据与 API。
+应用导航在 `history.state.__daynightNavigation` 保存窗口内的 segment 标识、entry index 和完整 URL，并保留其他 state 字段。启动仅用 `replaceState` 标记当前条目，不添加初始化条目。应用 push 的 index 在同一连续 segment 中按实际步长增加，replace 保留 index；URL 必须与 marker 匹配，避免把复制了 state 的原生 fragment 误认成有效编号项。从未编号位置发起新的应用写入时，仅为实际写入条目开启新 segment，旧 segment 不再参与索引差值恢复；不补标中间的原生历史项。
 
-守卫状态只属于当前浏览窗口和活动编辑作用域；不创建路由持久化或业务恢复服务。鉴权 retirement 立即清理私有内容并绕过草稿保留选择。当前验收覆盖程序跳转、已编号条目的一次及连续 Back/Forward、取消后的原历史位置、确认后只采用一次目标，以及同 Task 页签/附件往返。无索引历史项的上述恢复保证作为保留限制，暂不作为交付门槛。
+对于同一 segment 内有效编号的 Back/Forward，浏览器 URL 已改变时仍呈现已准入 location。脏草稿使导航所有者保留原条目并显示一个离开选择；连续遍历更新最新目标。确认直接采用已到达目标，不追加或重放历史。取消通过 `history.go(fromIndex - observedIndex)` 恢复原条目，恢复状态消费回程事件并阻止新的程序导航，直到完成恢复；不从卸载 cleanup 推断决定。
+
+整文档离开由 `beforeunload` 请求浏览器原生确认。原生 fragment、其他无有效 marker 的历史项及跨 segment 遍历沿用原生行为，不保证取消后恢复原历史位置或保留跨 Task 离开的草稿，存在位置恢复失败或草稿丢失风险。索引差值算法不为这些条目补造数值；后续扩展由同一路由/历史所有者承担，不改变 Steps 数据与 API。
+
+守卫仅属于当前窗口和活动编辑作用域，不形成业务恢复或路由持久化服务。身份 scope 的同步 abort、已确认项目撤权及父 Task 删除立即终结注册、清理私有草稿并撤销待定选择，不能被保留草稿阻止；暂时读取失败或权限重校验不触发此清理。确认层复用 `TaskConfirmation` 的取消初始焦点、焦点循环及独立 Escape 层，取消返回仍存在的触发器或回退焦点。离开选择出现时先关闭 Task 内的消息详情和附件删除原生对话框，避免浏览器 top layer 将应用确认层变成不可交互；取消导航不重新打开这些子层，也不丢失草稿。
 
 从 TaskDetailReading 提取共享 Task-root Markdown render/navigation callback，Steps 正文和预览均使用它及同一个 useAttachments controller。文件链接从 Task 附件根解析，沿用修饰键和既有 URL 策略，不新增附件清单或预览所有者。
 

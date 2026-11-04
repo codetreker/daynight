@@ -2,6 +2,10 @@ import { pause } from "./pause";
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  draftNavigation: {
+    title: '放弃未保存的修改？', question: '离开此任务并放弃未保存的修改吗？',
+    explanation: '未保存的草稿将会丢失。', discard: '放弃并离开', keep: '继续编辑', close: '取消离开',
+  },
   pause,
   discussion: {
     title: "讨论", empty: "还没有讨论", loading: "正在加载讨论", refresh: "刷新讨论",

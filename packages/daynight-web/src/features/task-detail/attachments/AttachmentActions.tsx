@@ -3,6 +3,7 @@ import { ApiError } from '../../../api/client';
 import { LanguageSelector } from '../../../i18n/LanguageSelector';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import { dialogFocusables } from '../focus';
+import { useDraftNavigationDecision } from '../TaskDraftNavigation';
 import '../../../styles/auth.css';
 
 export type AttachmentActionTarget = { readonly path: string; readonly trigger: HTMLButtonElement };
@@ -59,14 +60,22 @@ export const AttachmentActionMenu = ({ target, onDelete, onDismiss }: {
   </div>;
 };
 
-export const AttachmentDeleteDialog = ({ target, busy, error, fallback, onConfirm, onDismiss }: {
+type AttachmentDeleteProps = {
   readonly target: AttachmentActionTarget;
   readonly busy: boolean;
   readonly error: unknown;
   readonly fallback: RefObject<HTMLElement | null>;
   readonly onConfirm: () => void;
   readonly onDismiss: () => void;
-}) => {
+};
+
+export const AttachmentDeleteDialog = (props: AttachmentDeleteProps) => {
+  const decision = useDraftNavigationDecision();
+  useLayoutEffect(() => { if (decision !== null) props.onDismiss(); }, [decision, props.onDismiss]);
+  return decision === null ? <DeleteDialog {...props} /> : null;
+};
+
+const DeleteDialog = ({ target, busy, error, fallback, onConfirm, onDismiss }: AttachmentDeleteProps) => {
   const { messages } = useI18n();
   const m = messages.inspection.attachments;
   const id = useId();

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, parseLoginReturnPath, parseRoute, replaceRoute, taskDetailUrl } from "../src/app/router";
+import { browserNavigation } from '../src/app/navigation';
 
 const taskId = "b0000000-0000-0000-0000-000000000002";
 const projectId = "a0000000-0000-0000-0000-000000000001";
@@ -73,18 +74,18 @@ describe("Worker account routes", () => {
 describe("navigation", () => {
   it("replaces intermediary authentication entries without adding a history loop", () => {
     const listener = vi.fn();
-    window.addEventListener("popstate", listener);
+    const unsubscribe = browserNavigation().subscribe(listener);
     try {
       const length = window.history.length;
       replaceRoute("/login?returnPath=%2Fprojects");
       expect(window.history.length).toBe(length);
       expect(window.location.pathname).toBe("/login");
       expect(listener).toHaveBeenCalledOnce();
-    } finally { window.removeEventListener("popstate", listener); }
+    } finally { unsubscribe(); }
   });
   it("pushes a same-origin entry and notifies route subscribers", () => {
     const subscriber = vi.fn();
-    window.addEventListener("popstate", subscriber);
+    const unsubscribe = browserNavigation().subscribe(subscriber);
     try {
       const previousLength = window.history.length;
       navigate(`/projects/${projectId}`);
@@ -96,7 +97,7 @@ describe("navigation", () => {
       expect(window.location.pathname).toBe("/projects");
       expect(subscriber).toHaveBeenCalledTimes(2);
     } finally {
-      window.removeEventListener("popstate", subscriber);
+      unsubscribe();
     }
   });
 
