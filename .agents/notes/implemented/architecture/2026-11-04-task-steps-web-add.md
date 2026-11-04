@@ -17,6 +17,13 @@ preview uses the Task-root renderer. A separate request UUID binds each submissi
 to the form; a receipt for a discarded form cannot close a later one. Confirmed
 results select the actual item's local page and focus its row.
 
+Project cache generation replacement can temporarily remove the admitted Task
+detail even when this Task remains accessible. The reading workspace keeps its
+draft mounted but hidden during re-admission, while clearing confirmed attachment
+and Session content. Actual deletion or access and identity retirement still
+discard it. The detail surface owns the discard confirmation's modal focus and
+inerts the complete background; a suspended detail closes that portal.
+
 The [shared session owner](2026-11-04-task-steps-web-status.md) serializes the
 POST with Task and Step writes. It checks the complete 201 resource, Location,
 submitted fields, version, position and unchanged existing rows before accepting

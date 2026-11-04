@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { ApiError } from "../../../api/client";
 import type { StepStatus } from "../../../api/task-steps";
 import { useI18n } from "../../../i18n/LocaleProvider";
@@ -15,9 +15,12 @@ const PAGE_SIZE = 100;
 type AddDraft = { id: string; title: string; description: string; status: StepStatus; requestId: string | null; confirmed: boolean; uncertain: boolean };
 const invalidText = (value: string) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
 
-export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
+export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, confirmationOwner, confirmationFallback, onConfirmationChange, available = true }: {
   readonly projectId: string; readonly taskId: string; readonly active: boolean;
   readonly renderMarkdown: (text: string) => ReactNode;
+  readonly available?: boolean;
+  readonly confirmationOwner?: RefObject<HTMLElement | null>; readonly confirmationFallback?: RefObject<HTMLElement | null>;
+  readonly onConfirmationChange?: (open: boolean) => void;
 }) => {
   const { messages, format } = useI18n();
   const m = messages.inspection.steps;
@@ -35,7 +38,9 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
   const workspace = useRef<HTMLElement>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const titleInput = useRef<HTMLInputElement>(null);
-  useDirtyTaskDraft({ isDirty: () => draft !== null && (draft.title !== "" || draft.description !== "" || draft.status !== "todo" || draft.requestId !== null), discard: () => { setDraft(null); setDiscard(false); } });
+  useDirtyTaskDraft({ isDirty: () => draft !== null && (draft.title !== "" || draft.description !== "" || draft.status !== "todo" || draft.requestId !== null), discard: () => { setDraft(null); setDiscard(false); onConfirmationChange?.(false); } });
+  useEffect(() => () => { onConfirmationChange?.(false); }, [onConfirmationChange]);
+  useLayoutEffect(() => { if (!available) { setDiscard(false); onConfirmationChange?.(false); } }, [available, onConfirmationChange]);
   useLayoutEffect(() => sessions.subscribe(projectId, taskId, () => {
     const mutation = sessions.snapshot(projectId, taskId).mutation;
     if ((mutation.phase === "confirmed" && !mutation.reconciling && mutation.reconciliationError === null || mutation.phase === "unknown") && mutation.operation?.action === "stepAdd") {
@@ -53,11 +58,12 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
     if (navigationDecision !== null) {
       if (movingId !== null) interruptedMove.current = true;
       setMovingId(null);
+      setDiscard(false); onConfirmationChange?.(false);
     } else if (interruptedMove.current) {
       interruptedMove.current = false;
       if (draft !== null && active) titleInput.current?.focus();
     }
-  }, [navigationDecision, movingId, draft, active]);
+  }, [navigationDecision, movingId, draft, active, onConfirmationChange]);
   const resource = state.resource;
   const total = resource?.steps.length ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -86,8 +92,8 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
   const frozen = draft?.confirmed === true || ownAdd !== null && (ownAdd.phase === "pending" || ownAdd.phase === "unknown" || ownAdd.phase === "confirmed");
   const duplicateId = ownAdd?.phase === "refused" && ownAdd.error instanceof ApiError && ownAdd.error.code === "step_id_conflict";
   const dirty = draft !== null && (draft.title !== "" || draft.description !== "" || draft.status !== "todo" || draft.requestId !== null);
-  const closeDraft = () => { setDraft(null); setDiscard(false); setInvalidTitle(false); setInvalidDescription(false); setPreview(false); };
-  const cancelDraft = () => { if (dirty) setDiscard(true); else { closeDraft(); addButton.current?.focus(); } };
+  const closeDraft = () => { setDraft(null); setDiscard(false); onConfirmationChange?.(false); setInvalidTitle(false); setInvalidDescription(false); setPreview(false); };
+  const cancelDraft = () => { if (dirty) { setDiscard(true); onConfirmationChange?.(true); } else { closeDraft(); addButton.current?.focus(); } };
   useEffect(() => {
     if (draft === null || !draft.confirmed || resource === null || state.stale || state.error !== null) return;
     const index = resource.steps.findIndex((step) => step.id === draft.id);
@@ -243,7 +249,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
       </div>}
       <div className="step-add-actions"><button className="button" type="button" onClick={cancelDraft}>{m.cancel}</button><button className="button primary" type="submit" disabled={!state.canAdd || frozen || duplicateId} aria-busy={ownAdd?.phase === "pending" || ownAdd?.reconciling}>{ownAdd?.phase === "pending" && <span className="spinner" aria-hidden="true" />}{m.save}</button></div>
     </form>}
-    {discard && <TaskConfirmation title={m.discardTitle} question={m.discardQuestion} explanation={m.discardExplanation} taskTitle={draft?.title ?? ""} confirmLabel={m.discard} cancelLabel={m.keep} closeLabel={m.cancel} destructive owner={workspace} fallbackFocus={addButton} onCancel={() => setDiscard(false)} onConfirm={closeDraft} />}
+    {discard && available && navigationDecision === null && <TaskConfirmation title={m.discardTitle} question={m.discardQuestion} explanation={m.discardExplanation} taskTitle={draft?.title ?? ""} confirmLabel={m.discard} cancelLabel={m.keep} closeLabel={m.cancel} destructive owner={confirmationOwner ?? workspace} fallbackFocus={confirmationFallback ?? addButton} onCancel={() => { setDiscard(false); onConfirmationChange?.(false); }} onConfirm={closeDraft} />}
     {navigationDecision === null && moving !== null && resource !== null && <StepMoveDialog step={moving} steps={resource.steps} available={state.canMove} onCancel={() => { setMovingId(null); requestAnimationFrame(() => workspace.current?.querySelector<HTMLButtonElement>(`[data-step-id="${moving.id}"] .step-more`)?.focus()); }} onConfirm={(target, placement) => { setMovingId(null); submitMove(moving.id, placement === "before" ? { before: target } : { after: target }); }} />}
   </section>;
 };

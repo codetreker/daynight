@@ -220,6 +220,8 @@ Steps 组件保留按稳定 ID 的多项展开状态及当前页码；服务顺�
 
 Steps workspace 按 Task 身份保存一个新增表单、草稿、预览及放弃选择，使用共享 Task-root Markdown renderer。自身 pending/unknown 冻结原字段；无关父写入只锁提交。明确拒绝保留输入，冲突和 unknown 由共同所有者只读核对；确认回执收敛后按实际 ID 定位所在页并恢复行焦点。
 
+项目缓存 generation 替换时，详情等待重新准入可能暂时没有 Task 数据。阅读工作区保留并隐藏受作用域保护的新增草稿，确认层关闭；已确认资源和附件预览不在此期间展示或保留。详情重新准入后恢复草稿，身份或项目权限 retirement 和父 Task 删除仍立即销毁它。表单自身的放弃确认由详情 Surface 持有模态键盘所有权，确认打开时冻结整个详情背景。
+
 ### 已实现的应用导航准入
 
 `app/navigation.ts` 的窗口级 `BrowserNavigation` 拥有已准入 location、历史条目和离开选择。`Application`、`AuthenticatedApp` 与 `App` 通过 `useBrowserLocation` 订阅该 location，不直接用原生事件卸载 Surface。`navigate`、`replaceRoute` 在写历史前准入；关系跳转与模态详情关闭通过 `requestAction` 在修改本地选择前准入。取消程序导航不写历史，确认只执行一次已选动作。

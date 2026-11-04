@@ -3,6 +3,7 @@ import { parseApiJson } from '../../src/api/json';
 import { parseTaskSteps } from '../../src/api/task-steps';
 import { authenticatedAPI, fulfillAuthenticatedResponse } from './authentication';
 import { createTask, expect, test, updateTask } from './fixtures';
+import { selectTaskList } from './project-view';
 
 test.use({ preparationFamily: 'status' });
 const root = (page: Page): Locator => page.locator('.task-detail-page, .task-detail-dialog');
@@ -177,5 +178,25 @@ test('append steps with draft protection and recovery through the real service',
     await expect(root(page).getByRole('spinbutton', { name: '页码' })).toHaveValue('2');
     const afterMove = await api.get(path); expect(afterMove.status()).toBe(200);
     expect(parseTaskSteps(parseApiJson(await afterMove.text()), projectId, task.id).steps[0]?.id).toBe(first.id);
+    await form(page).getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: '放弃', exact: true }).click();
+    const modalTask = await createTask(api, projectId, { title: 'Modal draft keyboard' });
+    await page.locator('.task-detail-page-back').click();
+    await selectTaskList(page);
+    await page.getByRole('tab', { name: '独立任务', exact: true }).click();
+    await page.locator(`#standalone-task-${modalTask.id}`).click();
+    await root(page).getByRole('tab', { name: '步骤', exact: true }).click();
+    await add('弹窗草稿');
+    await form(page).getByRole('button', { name: '取消', exact: true }).click();
+    const discardDialog = page.getByRole('alertdialog');
+    await expect(discardDialog.getByRole('button', { name: '继续编辑' })).toBeFocused();
+    await expect(page.locator('.task-detail-dialog')).toHaveAttribute('inert', '');
+    await page.keyboard.press('Tab');
+    await expect(discardDialog.getByRole('button', { name: '放弃', exact: true })).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(discardDialog.getByRole('button', { name: '继续编辑' })).toBeFocused();
+    await discardDialog.getByRole('button', { name: '继续编辑' }).click();
+    await expect(form(page).getByRole('textbox', { name: '标题' })).toHaveValue('弹窗草稿');
+    await expect(page.locator('.task-detail-dialog')).not.toHaveAttribute('inert');
   } finally { releaseLate(); releaseMove(); }
 });
