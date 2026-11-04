@@ -153,7 +153,7 @@ func TestTaskAssigneesHTTPCatalogueAndBoundedResolution(t *testing.T) {
 		if state == "todo" {
 			decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Repeated reference", "assignedTo": id})), http.StatusCreated)
 		}
-		if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, id); err != nil {
+		if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, id); err != nil {
 			t.Fatal(err)
 		}
 		expected[id] = false
@@ -164,7 +164,7 @@ func TestTaskAssigneesHTTPCatalogueAndBoundedResolution(t *testing.T) {
 	if response := projectRequest(handler, http.MethodDelete, taskPath(deletedTask), jsonBody(t, api.TaskDeleteRequest{Version: deletedTask.Version})); response.Code != http.StatusNoContent {
 		t.Fatalf("delete fixture: %d %s", response.Code, response.Body)
 	}
-	if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, deletedOnly); err != nil {
+	if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, deletedOnly); err != nil {
 		t.Fatal(err)
 	}
 	unrelated := assignmentHTTPUser(t, database)
@@ -265,7 +265,7 @@ func TestTaskAssigneesHTTPAdmissionMethodsAndRemovedReader(t *testing.T) {
 	if readErr != nil || len(body) != 0 || response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("Daynight-User-ID") != handler.principal.UserID || response.Header.Get("Content-Type") != "application/json" {
 		t.Fatalf("HEAD assignees: %#v %s %v", response, body, readErr)
 	}
-	if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, readerID); err != nil {
+	if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, readerID); err != nil {
 		t.Fatal(err)
 	}
 	for _, suffix := range []string{"", assigneeHTTPQuery(readerID)} {
@@ -286,7 +286,7 @@ func TestTaskAssigneesHTTPMissingQualifiedUsersFailWithoutPartialData(t *testing
 			missing := assignmentHTTPMember(t, database, project.ID)
 			if retained {
 				decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Missing retained user", "assignedTo": missing})), http.StatusCreated)
-				if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, missing); err != nil {
+				if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, missing); err != nil {
 					t.Fatal(err)
 				}
 			}

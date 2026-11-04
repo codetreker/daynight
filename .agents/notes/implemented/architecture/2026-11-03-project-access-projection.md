@@ -13,8 +13,10 @@ response must not restore a prior account, project or authorization observation.
 
 GET project access and TaskSync expose the same required
 `{effectiveRole,directGrant}` projection. The nullable grant contains only its real
-project/user IDs, role, positive int64 version and timestamps. The current direct
-source produces its actual grant; failed admission remains an error. Computed and
+project/user IDs, role, positive int64 version and timestamps. A present direct
+source produces its actual grant; inherited-only access has a null grant. The
+[Personal ownership decision](2026-11-04-personal-project-ownership.md) activates
+real owner Team inheritance; failed admission remains an error. Computed and
 stored roles are read separately in one canonical statement. TaskSync retains its
 existing admission result inside the same read snapshot as project and task data,
 including empty deltas. Existing [grant transactions](2026-10-22-project-membership.md)

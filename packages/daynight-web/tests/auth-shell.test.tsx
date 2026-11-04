@@ -109,13 +109,13 @@ describe("sidebar integration with the authenticated workspace", () => {
     expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects?"))).toHaveLength(2);
   });
 
-  it("removes a project from navigation after the current member leaves it", async () => {
+  it("removes a project from navigation after its own direct grant is removed and access is lost", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}/members`);
     let removed = false;
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
       if (url === `/api/v1/projects/${projectId}/members/${userId}` && options?.method === "DELETE") { removed = true; return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(serverUserId) })); }
-      if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
-  if (url.endsWith("/members")) return Promise.resolve(json({ items: [participant(), participant(otherId, "admin", "Bob")] }));
+      if (url.endsWith("/access")) return !removed && serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
+      if (url.endsWith("/members")) return Promise.resolve(json({ items: [participant(), participant(otherId, "admin", "Bob")] }));
       if (url.endsWith("/invitations")) return Promise.resolve(json({ items: [] }));
       if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: removed ? [] : [project()], nextCursor: null }));
       return Promise.resolve(defaults(url));

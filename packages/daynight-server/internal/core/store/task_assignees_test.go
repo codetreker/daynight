@@ -20,7 +20,7 @@ func storeAssigneeUser(t *testing.T, database *Store, projectID string, number i
 	id := queryID(number)
 	mustQueryExec(t, database, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,$1::uuid::text,now(),now())`, id)
 	if member {
-		mustQueryExec(t, database, `INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'member')`, projectID, id)
+		mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, projectID, id)
 	}
 	return id
 }
@@ -84,7 +84,7 @@ func TestTaskAssigneeStoreCatalogueAndBoundedResolution(t *testing.T) {
 		mustQueryExec(t, database, `UPDATE tasks SET assigned_to=$2 WHERE id=$1`, queryID(seed.number), seed.userID)
 	}
 	mustQueryExec(t, database, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, queryID(14))
-	mustQueryExec(t, database, `DELETE FROM project_members WHERE project_id=$1 AND user_id=ANY($2::uuid[])`, project.ID, []string{former, deleted})
+	mustQueryExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=ANY($2::uuid[])`, project.ID, []string{former, deleted})
 	var before string
 	if err := database.Pool.QueryRow(context.Background(), `SELECT jsonb_agg(to_jsonb(t) ORDER BY id)::text FROM tasks t`).Scan(&before); err != nil {
 		t.Fatal(err)
@@ -93,8 +93,16 @@ func TestTaskAssigneeStoreCatalogueAndBoundedResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertStoreAssignees(t, catalogue, map[string]bool{current: true, named: true, former: false}, nil)
-	if catalogue.Items[0].Name != nil || catalogue.Items[0].AvatarURL != nil || catalogue.Items[1].Name == nil || *catalogue.Items[1].Name != name || catalogue.Items[1].AvatarURL == nil || *catalogue.Items[1].AvatarURL != avatar {
+	var ownerID string
+	if err := database.Pool.QueryRow(context.Background(), `SELECT personal_user_id::text FROM teams WHERE id=$1`, project.Ownership.TeamID).Scan(&ownerID); err != nil {
+		t.Fatal(err)
+	}
+	assertStoreAssignees(t, catalogue, map[string]bool{ownerID: true, current: true, named: true, former: false}, nil)
+	people := make(map[string]core.TaskAssignee, len(catalogue.Items))
+	for _, person := range catalogue.Items {
+		people[person.UserID] = person
+	}
+	if people[current].Name != nil || people[current].AvatarURL != nil || people[named].Name == nil || *people[named].Name != name || people[named].AvatarURL == nil || *people[named].AvatarURL != avatar {
 		t.Fatalf("nullable canonical profile facts changed: %#v", catalogue)
 	}
 	requested := []string{current, former, deleted, foreign, unrelated, queryID(107)}
@@ -188,7 +196,7 @@ func TestTaskAssigneeStoreRejectsMissingQualifiedProfiles(t *testing.T) {
 		if retained {
 			queryTask(t, database, project.ID, 11, core.TaskDone)
 			mustQueryExec(t, database, `UPDATE tasks SET assigned_to=$2 WHERE id=$1`, queryID(11), missing)
-			mustQueryExec(t, database, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, missing)
+			mustQueryExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, missing)
 		}
 		mustQueryExec(t, database, `DELETE FROM users WHERE id=$1`, missing)
 		resolved, err := storeAssigneeRead(t, database, project.ID, []string{queryID(101)})

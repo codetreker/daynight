@@ -70,7 +70,7 @@ func TestTaskSyncAssigneeVersionsTrackContentAndLiveQualification(t *testing.T) 
 	if _, err := database.CreateIdentitySession(ctx, user, core.Session{ID: uuid.NewString(), TokenHash: secretHash(randomSecret("dnst_")), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.Pool.Exec(ctx, `UPDATE project_members SET role='admin',version=version+1 WHERE project_id=$1 AND user_id=$2`, project.ID, member.UserID); err != nil {
+	if _, err := database.Pool.Exec(ctx, `UPDATE project_grants SET role='admin',version=version+1 WHERE project_id=$1 AND user_id=$2`, project.ID, member.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.Pool.Exec(ctx, `UPDATE users SET email='not-exposed@example.test' WHERE id=$1`, member.UserID); err != nil {
@@ -88,7 +88,7 @@ func TestTaskSyncAssigneeVersionsTrackContentAndLiveQualification(t *testing.T) 
 	if changed[member.UserID].Version == stable[member.UserID].Version || changed[admin.UserID] != stable[admin.UserID] || changed[former.UserID] != stable[former.UserID] {
 		t.Fatalf("profile change did not invalidate only its own content: %#v", changed)
 	}
-	if _, err := database.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, former.UserID); err != nil {
+	if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, former.UserID); err != nil {
 		t.Fatal(err)
 	}
 	_, lostAccess := read()
@@ -130,7 +130,7 @@ func TestTaskSyncAssigneeVersionsUseTheTaskSnapshot(t *testing.T) {
 		if _, err := database.Pool.Exec(ctx, `UPDATE users SET name='Fresh profile' WHERE id=$1`, member.UserID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := database.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=ANY($2::uuid[])`, project.ID, []string{member.UserID, unreferenced.UserID}); err != nil {
+		if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=ANY($2::uuid[])`, project.ID, []string{member.UserID, unreferenced.UserID}); err != nil {
 			t.Fatal(err)
 		}
 	}})

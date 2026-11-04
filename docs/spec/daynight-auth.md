@@ -14,8 +14,9 @@
 CLI 创建私有项目，创建者自动成为管理员；Web 表单复用现有 project 创建 API。
 
 覆盖现有 project、task、依赖图、属性和附件。成员使用业务读写及任务生命周期
-操作；网页元数据编辑不由登录功能增加，现有批准操作遵守[任务生命周期](daynight-server.md#状态与更新规则)。已有项目归属后续手工处理，本交付只建立必要数据结构，
-不自动补齐旧项目成员。所有未配置成员的项目按同一授权规则不可访问。
+操作；网页元数据编辑不由登录功能增加，任务操作遵守[任务生命周期](daynight-server.md#状态与更新规则)。
+每个项目具有真实 Team 归属，现有资源入口统一计算 owner Team 与独立 Project grant 的有效权限。
+Personal 初始化和存量归属迁移遵守下述原子性与数据完整性要求。
 
 可信 HTML 保持现有同源执行，复用主站会话、普通 iframe、相对资源和键盘交互。
 鉴权不能把独立预览域名、预览凭据或相关设施作为前提；该约束的选择依据记录在
@@ -27,8 +28,8 @@ CLI 创建私有项目，创建者自动成为管理员；Web 表单复用现有
 | AU2 | 稳定外部身份对应唯一的本地用户，邮箱/姓名/头像为可空资料，不用邮箱匹配身份。 |
 | AU3 | 登录事务绑定发起浏览器，原子校验和消费后才领取一次性身份。重放、过期、错误绑定与领取失败明确拒绝。 |
 | AU4 | Web 使用可注销/到期的主站会话；CLI 通过设备授权取得关联用户的默认永不过期、可撤销凭据，网页令牌管理器可修改到期时间。普通使用无需手工 PAT，自动化保留显式 PAT 配置；凭据明文只交付一次。 |
-| AU5 | 创建项目与添加创建者 admin 在同一事务提交。角色只有 admin/member，两者具有业务读写及任务 set-status 能力。 |
-| AU6 | 只有 admin 能管理成员、角色和邀请；每个新项目至少保留一名 admin，并发操作也必须保持。 |
+| AU5 | 创建项目、真实 Personal ownership 与创建者 direct admin 在同一事务提交。有效角色只有 admin/member，两者具有业务读写及任务 set-status 能力。 |
+| AU6 | 只有有效 admin 能管理独立授权、角色和邀请；Project 可以没有 direct admin，owner Team 的继承权限仍独立生效。 |
 | AU7 | 项目列表先按成员筛选再分页；详情、任务、图、属性、附件列表、下载及预览逐请求执行项目授权。 |
 | AU8 | 邀请有有效期、可撤销、单次使用；接受者先登录再明确确认，加入角色为 member。 |
 | AU9 | 移除成员后拒绝新准入请求；已获授权并开始的文件传输允许完成。角色不固化在会话或令牌中。 |
@@ -40,7 +41,9 @@ CLI 创建私有项目，创建者自动成为管理员；Web 表单复用现有
 
 配置一个 UniAuth 服务和已注册 App，使用该 App 允许的 Microsoft/Google/GitHub
 入口。完整 provider-qualified id 映射到本地 UUID，不同身份不按同邮箱自动合并。
-资料更新不改变本地用户和成员关系。登录页只能展示当前 UniAuth App 同时允许且
+资料更新不改变本地用户和成员关系。每个用户恰有一个 Personal Team，包含其真实 owner admin 行；
+规范用户建立、Personal 初始化与浏览器 session 原子提交。重复及并发登录复用相同归属，
+已有 Personal 关系损坏明确失败。登录页只能展示当前 UniAuth App 同时允许且
 已启用的 provider。前端通过 `GET /api/v1/auth/providers` 读取 `{providers:[ids]}`；
 读取失败显示可重试错误，空列表显示无可用登录方式，不能硬编码 provider 或以
 全局启用状态代替 App 范围。服务使用固定版本的 UniAuth SDK 实时读取当前 App
@@ -152,7 +155,8 @@ Web 只为 `/me` 使用浏览器的 no-cache 重验模式，由浏览器 HTTP �
 返回 `{items: ProjectParticipant[]}`。每项包含 `userId`、必填 `profile` 对象、
 `effectiveRole` 和必填可空 `directGrant`；profile 的 name/email/avatarUrl 三个字段必填且可为 null。
 缺少规范用户行是完整性错误，整个读取失败，不能静默删去该来源或伪装成空资料。
-当前直接授权数据返回每人的真实 grant；成员列表中的有效角色不等于可写授权记录。
+名册是当前 owner Team 成员与独立 Project grant 的去重并集；有效角色为两种来源在
+`none < member < admin` 下的最大值。只有继承权限时 directGrant 为 null；有效角色不等于可写授权记录。
 
 角色修改与移除读取 `directGrant.role/version`，不使用 effectiveRole 或合成版本。
 grant 版本是独立于 task.version 的不连续正 int64 JSON number；大于 `2^53` 仍须无损。
@@ -163,8 +167,14 @@ grant 版本是独立于 task.version 的不连续正 int64 JSON number；大于
 未确认的已发送写入保留结果未知与只读核对入口，不自动重放或重新启用原确认；后续读取只证明当前事实。
 
 过期修改返回 version_conflict；移除后重新加入获得新版本，旧观察仍冲突，
-无变化角色更新保留版本。当前最后一位直接 admin 不能删除或降级。
-旧项目内容、版本、时间、路径和依赖不改变，后续手工添加成员即可使用。
+无变化角色更新保留版本。有效 admin 可以删除或降级最后一位 direct admin；Team 关系与
+Project grant 独立，撤销一种来源不能撤销另一种来源。当前项目创建原子保存调用者 Personal
+归属、ownership 与 creator direct admin。
+
+既有项目按最早加入的现任 admin 的 Personal Team 回填；加入时间相同按 user UUID 稳定决定。
+全部既有用户，包括仅持 PAT 的用户，预先取得 Personal。零 admin 或坏引用使迁移整体失败，
+不能猜测 owner。迁移保留 grant、邀请、项目/任务内容、时间和版本，以及原 grant sequence 的
+实际高水位与 is_called；删除高版本后留下的 sequence 状态不能按存活 MAX 重置。
 
 邀请固定七天，属于项目，创建者离任不自动撤销。创建时一次显示可复制链接；列表
 只显示元数据和撤销入口。有效期至消费、到期或管理员撤销。接受者必须登录并明确
@@ -178,7 +188,8 @@ grant 版本是独立于 task.version 的不连续正 int64 JSON number；大于
 `{effectiveRole,directGrant}` 两个键必填，effectiveRole 为 admin 或 member。
 directGrant 为 null 或完整的 projectId、userId、role、version、createdAt、updatedAt；
 其版本是实际独立授权的正 int64 JSON number，时间为 UTC，不附带姓名、邮箱或头像。
-当前直接授权数据成功读取时返回实际 grant；未准入和缺失项目沿用 not_found，
+只有继承权限时返回 directGrant:null；独立授权存在时返回其真实 role/version，
+即使继承角色更高也不改写 grant。未准入和缺失项目沿用 not_found，
 真实查询或事务失败不能表现为 null grant 或默认角色。响应保留认证主体头和 no-store。
 
 Web 的项目、设置、成员、Task 弹层及独立 Task/附件页面使用同一份身份/项目绑定的
@@ -195,7 +206,11 @@ TaskSync 成功响应即使没有任务变化也发布本人角色；普通可�
 生命周期或存储核验失败提供错误与重试，不能授予默认权限。角色及 grant 不写入持久
 任务记录，也不能代替服务端每请求授权。
 
-成员名册、邀请列表和项目设置具有自己的资源读取状态。确认项目失权时，正在进行的
+成员名册、邀请列表和项目设置具有自己的资源读取状态。确认自删 grant 后先重验当前 access：只有权威 not_found 才按失权导航；仍有继承访问时保留项目页面。
+自降级或自删只改变 direct grant，确认文案不能断言一定失去管理或访问。核对网络、协议或服务失败
+保留错误与读取重试，不自动重放删除。
+
+确认项目失权时，正在进行的
 旧资源读取同步失效，迟到响应不能重新展示姓名、邮箱或设置；私有资源也不能在权限
 unavailable 时渲染。暂时的 access 错误与资源读取结果分别保留：权限恢复后必须能够
 展示已确认的资源，或明确重读缺失资源。资源尚未可用时，其错误与重试入口不能仅因
@@ -312,7 +327,7 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | 项目不存在或不是成员 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
 | 修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
-| 观察版本过期、最后 admin 条件不满足 | 409 version_conflict / last_admin |
+| 观察独立授权版本过期 | 409 version_conflict |
 | 生命周期前态不符或前置未完成 | 409 invalid_transition / dependency_unsatisfied |
 | 邀请已消费、到期或撤销 | 410 invitation_unavailable |
 | provider discovery 的 App 配置/凭据错误 | 503 identity_configuration |
@@ -335,8 +350,8 @@ App Secret、一次性 code 或邀请秘密。
 |---|---|
 | AU-V1 | 实际 SDK 和 UniAuth 协议完成登录；受控 provider 可重复验收与真实上游人工联调分别留证。 |
 | AU-V2 | 同邮箱不同身份、并发首次登录、callback 重放/过期/错误浏览器、取消及领取断连保持一次性语义。 |
-| AU-V3 | 两名用户和部分共享项目验证列表先筛选后分页、直接 ID、任务/图/属性/每种附件入口和零成员项目。 |
-| AU-V4 | member 可读写资源但不能管理成员；两个 admin 并发降级/删除仍保留一位，旧观察版本明确冲突。 |
+| AU-V3 | 两名用户和部分共享项目验证双来源最大角色、只有继承权限、列表先筛选后分页、直接 ID、任务/图/属性/每种附件入口；缺失归属或规范用户必须暴露完整性错误。 |
+| AU-V4 | member 可读写资源但不能管理授权；有效 admin 可撤销最后 direct admin，继承来源仍可管理；旧观察版本和删除重加 ABA 明确冲突，Team 关系不改写独立 grant。 |
 | AU-V5 | 邀请 GET/inspect 不消费；明确确认、过期、撤销、并发、已有成员和创建者离任符合规则。 |
 | AU-V6 | 注销、PAT 撤销/到期、成员移除覆盖 Web、安装 CLI 和文件资源；已准入传输边界有证据。 |
 | AU-V7 | 同源可执行 HTML、脚本/模块/相对资源、直接预览、HEAD、图片/PDF、二进制下载、Esc/Tab/焦点及窄屏保持；未认证资源访问拒绝。 |

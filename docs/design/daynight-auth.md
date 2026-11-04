@@ -73,9 +73,10 @@ CLI 退出接口仅允许当前 PAT 撤销自身，不提供其他令牌管理�
 `ProjectGrant` 表达实际存储的 project/user ID、角色、真实版本和加入/更新时间。
 `ProjectParticipant` 是当前名册投影：`{userId,profile,effectiveRole,directGrant}`，
 profile 是必填对象，name/email/avatarUrl 均必填且可为 null；不存在的 grant 明确为 null。
-当前查询保留原始 grant user ID，复用 canonical access relation 的有效角色，再 LEFT JOIN users；
-缺少或不匹配的规范用户行使整个读取成为完整性错误，不能用 INNER JOIN 隐藏来源。
-当前直接来源每人产生一项，包含真实 grant，不生成继承占位行。
+当前查询将 owner Team 成员与 Project grant 的原始 user ID 合并去重，复用 canonical
+access relation 的有效角色，再 LEFT JOIN users；缺少或不匹配的规范用户行使整个读取
+成为完整性错误，不能用 INNER JOIN 隐藏来源。只有继承权限的人返回真实 participant
+与 `directGrant:null`，不构造可写 grant 或合成版本。
 
 `ProjectMember` 仍是 grant 与 nullable 资料的内部直接关系投影，供现有授权目标检查、
 邀请及其他尚未改变的运行时调用使用；邀请 HTTP 结果保留其既有扁平 DTO。
@@ -90,19 +91,22 @@ profile 是必填对象，name/email/avatarUrl 均必填且可为 null；不存�
 消费该投影。Session relay 的共同项目准入也在原 raw transaction 中调用
 `store.ReadProjectAccess`；Session 的归属和持续重验由
 [Session 设计](task-session-protocol.md#relay-与恢复)拥有。
-当前准入与可见项目列表共用 Store 的直接授权关系，列表在 SQL
-cursor/LIMIT 前筛选。单主体查询在同一语句取得有效角色与实际 grant，不额外读取资料。
+当前准入与可见项目列表共用 Store 的双来源关系，以 `none < member < admin` 计算
+当前 owner Team role 与 direct grant role 的最大值，列表在 SQL cursor/LIMIT 前筛选。
+单主体查询在同一语句取得归属、有效角色与实际 grant，不额外读取资料。
+Team 成员变化只改变继承来源，Project grant 保持独立；两种角色不互相覆盖。
 
 Thread 写入通过同一存储所有者的 `store.LockProjectAuthorization` 取得强准入。
-调用方先持 Task 与 credential share 锁，再锁实际存在的 direct grant 至事务结束；
-有效角色和真实 grant 均来自等锁后的行，不取得 Project 行锁。该入口不读取人员资料，
+调用方先持 Task 与 credential share 锁，再依次锁真实 ownership、当前 owner Team member
+和 direct grant；只锁实际存在的来源行，并保持到事务结束。合并各来源实际锁定后的当前值，
+至少一个锁定来源须继续提供访问，不取得 Project 行锁。缺失 ownership 是完整性错误。该入口不读取人员资料，
 也不把长期 share 锁扩散到普通资源或 Session 准入。[Thread 设计](daynight-task-thread.md#专用写事务)
 拥有完整锁序、存在性分类和提交前凭据重验。
 
 `GET /api/v1/projects/{projectId}/access` 返回当前主体的
 `{effectiveRole,directGrant}`，两个键必填。grant 为 null 或完整的
-`{projectId,userId,role,version,createdAt,updatedAt}`；当前直接授权实现成功时返回
-实际非 null grant，缺失准入按原规则拒绝。版本是正 int64 JSON number，时间为 UTC。
+`{projectId,userId,role,version,createdAt,updatedAt}`；只有继承权限时 grant 为 null，
+缺失准入按原规则拒绝。版本是正 int64 JSON number，时间为 UTC。
 API 不返回完整名册或个人资料，客户端核对响应 principal 及存在的 grant 归属。
 TaskSync 顶层 `actorAccess` 使用相同 DTO 和同一读取快照，空 delta 也包含它。
 [当前准入投影决策](../../.agents/notes/implemented/architecture/2026-11-03-project-access-projection.md)
@@ -152,8 +156,10 @@ callback 在同一事务验证绑定/state/provider/期限并消费 pending；�
 
 合法 provider error 结束 pending；错误绑定不领取。网络断连、取消、协议错误或
 领取响应丢失都重新登录，不能重试可能已消费的 code。用户以完整 UniAuth id 唯一
-upsert，本地 UUID 不变；资料保留 null/false，不按邮箱合并。用户与 session 同事务
-提交。返回路径拒绝外站、协议相对 URL 和 auth 循环路径，包括独立 `/login` 及实际 callback；
+upsert，本地 UUID 不变；资料保留 null/false，不按邮箱合并。规范用户 UPSERT 后，
+`initializePersonalTeam` 在同一事务建立唯一 Personal Team 与真实 owner admin 成员行，
+随后写 session。重复及并发首次登录复用该 Team；已有 Personal 缺少 owner admin 属于
+完整性错误，不在 Authenticate 中补数据。返回路径拒绝外站、协议相对 URL 和 auth 循环路径，包括独立 `/login` 及实际 callback；
 无目标默认 `/projects`，不把已提供的非法目标替换成默认值。
 
 ### 主站 session 与 PAT
@@ -206,20 +212,38 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 | personal_access_tokens | ID、唯一 token_hash、user_id、name、created_at、nullable expires_at；null 永不过期，Web 创建或设备授权领取时生成，撤销删除。 |
 | device_authorizations | ID、设备秘密摘要、唯一短码、状态、到期、轮询时钟/间隔和批准账号；状态转换与领取以行锁保护。 |
 | device_authorization_limits | bucket_hash、attempts、expires_at；创建与短码查询在不同副本共享限制，到期窗口可清理。 |
-| project_members | `(project_id,user_id)` 唯一；role 为 admin/member；bigint version 来自独立 sequence。 |
+| teams | UUID；唯一 nullable personal_user_id；Personal 的 name 为 null，普通 Team 的 name 非 null；正 version 与时间。 |
+| team_members | `(team_id,user_id)` 唯一；admin/member；正 bigint version 来自独立 sequence；加入与更新时间。 |
+| project_ownership | project_id 唯一；真实 team_id、正 version 与 updated_at；每个 Project 恰一行。 |
+| project_grants | `(project_id,user_id)` 唯一；role 为 admin/member；bigint version 来自独立 sequence。 |
 | project_invitations | ID、project_id、唯一 token_hash、created_by、expires_at、consumed_by/at、revoked_at。 |
 
 使用既有迁移机制、唯一索引和角色 CHECK，不要求新增 foreign key；关联由业务事务验证。
 迁移 `018_device_authorization.sql` 建立设备授权和共享限流表，
 `019_optional_token_expiry.sql` 仅让 personal_access_tokens.expires_at 可空，保留既有令牌的
 ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessions.expires_at 保持必填。
-旧项目内容保持，不自动分配成员，空成员项目自然不可见，后续手工补齐。
 
-创建项目和首位 admin 原子提交。成员管理提交观察版本，锁项目后重查 admin/版本，
-真实角色变更与新加入从 project_member_versions sequence 取得新版本，观察值不要求
-连续或每次恰好加一；无变化保持版本。移除后重加入不复用旧版本，过期返回
-version_conflict。删除/降级最后 admin 返回 409 last_admin。
-两个 admin 并发不能都离任；成员变更不改 task.version。
+`032_personal_project_ownership.sql` 在一份编号迁移中建立真实归属并切换授权来源。
+迁移先验证既有用户、项目、grant 与邀请引用；任何 Project 没有现任 admin 或存在坏引用
+都使整份迁移失败并回滚。全部既有用户，包括仅持旧 PAT 的用户，获得唯一 Personal Team
+及真实 owner admin 行。每个 Project 归入最早加入的现任 admin 的 Personal Team，按
+`created_at,user_id` 稳定排序，不推断历史创建者或使用角色提升时间。
+
+迁移原地重命名 `project_members`、对应 sequence、约束及索引为 `project_grants`，保留
+全部行、时间、版本及 sequence 的实际 `last_value/is_called`。不按存活行的 `MAX(version)`
+重置 sequence；已经删除的高版本仍保护删除后重加的 ABA。SQL、必要 transform 与 ledger
+在原迁移事务内提交，任一失败均回滚；历史 migration checksum 保持。
+
+当前项目创建先锁定并验证调用者真实 Personal Team，再在同一事务插入 Project、
+ownership 与 creator direct admin grant。`core.Project.Ownership` 是真实内部聚合，
+Project 点读通过 LEFT JOIN 投影并校验必需归属；缺行是完整性错误，没有运行时旧数据回退。
+当前公开 Project 与 `/me` 合同保持，归属与完整来源的公开字段由其实际协议转换拥有。
+
+独立授权管理提交观察版本，锁项目后重查有效 admin 与 grant 版本。真实角色变更与新加入
+从 `project_grant_versions` sequence 取得新版本，观察值不要求连续或每次恰好加一；
+无变化保持版本。移除后重加入不复用旧版本，过期返回 version_conflict。有效 admin
+可以删除或降级最后一条 direct admin grant；owner Team 的继承权限独立计算。
+Team 成员变化不重写 Project grant，grant 变更不改 task.version。
 
 邀请七天有效、只授予 member、可撤销。邀请属于项目，创建者离任不自动作废。
 接受按项目→邀请顺序加锁，验证状态、插入成员后消费。已有成员返回当前成员状态而
@@ -263,7 +287,7 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | GET/POST .../projects/{id}/invitations、DELETE .../{inviteId} | admin，创建一次显示链接，删除撤销。 |
 | POST /api/v1/invitations/inspect、POST .../accept | 已登录用户，body 携带秘密；明确 accept 才入会。 |
 
-unauthenticated/forbidden/last_admin/invitation_unavailable 保留原 envelope/requestId。
+unauthenticated/forbidden/invitation_unavailable 保留原 envelope/requestId。
 授权修改/移除的 expectedUserId guard 在 Memberships.write 及其 Project 行锁之前执行，
 错主体返回 409 identity_mismatch；认证与独立请求日志不属于领域 SQL。
 该 fault 同时进入 HTTP 409 映射和日志已知类型集合，避免误变为 internal_error。
@@ -520,5 +544,7 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 
 ## 交付边界
 
-已有项目后续手工添加成员，成本是普通成员记录维护，无兼容分支。可信同源 HTML
-保持原权限模型，不引入预览安全系统。K1 和已准入传输语义保持。
+真实 Personal 归属、存量迁移、登录与项目 writer、双来源准入及 Thread 强 fence 共同成立。
+普通 Team 管理、邀请与转移，以及 ownership/完整来源的公开字段保持各自的协议和功能所有权；
+现有公开 access/participant 已用真实 nullable grant 表达继承访问，无占位来源或旧格式回退。
+可信同源 HTML 保持原权限模型，不引入预览安全系统。K1 和已准入传输语义保持。

@@ -15,7 +15,6 @@ const serverMessages: Readonly<Record<string, string>> = {
   unauthenticated: "Your session has expired. Please sign in again.",
   forbidden: "You do not have permission to perform this action.",
   version_conflict: "The resource changed. Refresh it before trying again.",
-  last_admin: "The project must retain at least one administrator.",
   invitation_unavailable: "This invitation is no longer available.",
   graph_limit_exceeded: "This project's task graph exceeds the supported size.",
 };

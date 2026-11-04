@@ -871,6 +871,11 @@ access 恢复必须呈现已保存资源或触发明确重读。资源仍缺失�
 Project、分页 Project 与图内 Project.settings 的版本通过专用 `project-json.ts` envelope 解码：
 复用鉴权与根版本读取的 `json-source.ts` 原始片段定位，只对已知 settings 子对象调用根版本解码，
 分别覆盖 root Project、items[] 和 graph.project；原生 JSON 先验证完整正文，未知嵌套对象保持原有语义。
+成员管理按真实 direct grant 的 role/version 编辑，不因其为最后一条 direct admin 而禁用。
+只有继承访问的 participant 没有可修改或删除的 grant。自删成功后复用当前 access owner 重验，
+只有权威 unavailable 才离开项目；继承权限仍存在时保留页面。网络、协议或服务错误保留读取重试，
+不推定已失权或重发原写入。
+
 同一原始片段机制仅在已声明的 access.directGrant 与 task-sync.actorAccess.directGrant
 路径无损解码授权版本；不递归改写未知嵌套对象或 task properties 的 version。
 保留通用 parseApiJson 的其他语义，不要求较新浏览器的 reviver source context。

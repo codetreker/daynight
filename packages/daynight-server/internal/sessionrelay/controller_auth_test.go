@@ -71,7 +71,7 @@ func TestControllerUpgradeAuthenticationRechecksGrantAuthority(t *testing.T) {
 			case "parent_revoked":
 				_, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID)
 			case "membership_removed":
-				_, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID)
+				_, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID)
 			case "claim_withdrawn":
 				_, err = service.NewTasks(f.s.DB).WithdrawWorker(ctx, f.p, f.project, f.task, service.WithdrawWorker{Version: 1, ClaimID: v.ClaimID})
 			case "storage_failure":

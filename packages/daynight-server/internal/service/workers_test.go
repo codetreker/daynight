@@ -107,7 +107,7 @@ func TestWorkerSnapshotsNormalizeClaimsAndFilterCurrentPermissions(t *testing.T)
 	if err != nil || len(detail.Worker.TaskSnapshot.Items) != 1 || detail.Worker.TaskSnapshot.Items[0].Status != core.TaskInProgress {
 		t.Fatalf("completion erased or rewrote historical observation: %+v, %v", detail, err)
 	}
-	if _, err := database.Pool.Exec(ctx, "DELETE FROM project_members WHERE project_id=$1 AND user_id=$2", project.ID, owner.UserID); err != nil {
+	if _, err := database.Pool.Exec(ctx, "DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2", project.ID, owner.UserID); err != nil {
 		t.Fatal(err)
 	}
 	detail, err = workers.Get(ctx, owner, descriptor.WorkerID)

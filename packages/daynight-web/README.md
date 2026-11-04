@@ -826,8 +826,13 @@ An identity-scoped projects provider supplies both the sidebar directory and
 project cards from one request owner. It requests 50 items per page, preserves
 server order, and follows `nextCursor` through Load more. Repeated IDs count once.
 Project navigation retains loaded pages. Refresh discards old pages and cursors;
-late responses cannot repopulate them. Creating a project or removing one's own
-membership refreshes the shared directory; a new authenticated identity starts
+late responses cannot repopulate them. Direct-grant controls remain available
+for the final direct administrator; inherited-only participants have no editable
+grant version. After confirmed self-removal, the panel revalidates current access
+and navigates away only after authoritative withdrawal. Inherited access retains
+the Project page; network, protocol or server failures keep a visible read retry
+and never repeat the write. Creating a project or confirmed loss of one's own
+access refreshes the shared directory; a new authenticated identity starts
 with a new directory. The [project navigation decision](../../.agents/notes/implemented/feature/2026-10-27-sidebar-project-navigation.md)
 records ownership and pagination choices.
 

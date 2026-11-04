@@ -130,7 +130,7 @@ func TestHistoryResourceReadsRemainBoundToTheCurrentClaim(t *testing.T) {
 	if _, _, _, err = f.s.BrowserPoll(ctx, f.p, f.project, f.task, v.SessionID, EventCursor(bad, "0")); err == nil {
 		t.Fatal("foreign cursor accepted")
 	}
-	if _, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
+	if _, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err = f.s.BrowserPoll(ctx, f.p, f.project, f.task, v.SessionID, cursor); err == nil {
@@ -175,15 +175,20 @@ func setup(t *testing.T) fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ownerID, ownerTeamID, personalTeamID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	hash := sha256.Sum256([]byte("fixture"))
 	for _, statement := range []struct {
 		sql  string
 		args []any
 	}{
 		{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,($1::uuid)::text,now(),now())`, []any{f.p.UserID}},
+		{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,($1::uuid)::text,now(),now())`, []any{ownerID}},
+		{`INSERT INTO teams(id,personal_user_id,name,version,created_at,updated_at) VALUES($1,$2,NULL,1,now(),now()),($3,$4,NULL,1,now(),now())`, []any{ownerTeamID, ownerID, personalTeamID, f.p.UserID}},
+		{`INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin'),($3,$4,'admin')`, []any{ownerTeamID, ownerID, personalTeamID, f.p.UserID}},
 		{`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'relay',now(),now()+interval '1 day')`, []any{f.p.CredentialID, f.p.UserID, hash[:]}},
 		{`INSERT INTO projects(id,name,repo_url) VALUES($1,'Relay','https://github.com/example/relay.git')`, []any{f.project}},
-		{`INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'admin')`, []any{f.project, f.p.UserID}},
+		{`INSERT INTO project_ownership(project_id,team_id,version,updated_at) VALUES($1,$2,1,now())`, []any{f.project, ownerTeamID}},
+		{`INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, []any{f.project, f.p.UserID}},
 		{`INSERT INTO tasks(id,project_id,title,status) VALUES($1,$2,'Relay','in_progress')`, []any{f.task, f.project}},
 		{`INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, []any{f.task, string(properties["worker"])}},
 	} {

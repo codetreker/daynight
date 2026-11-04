@@ -170,7 +170,7 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 		if _, err := database.Pool.Exec(ctx, "UPDATE projects SET task_cache_epoch=gen_random_uuid(), execution_warning_minutes=31 WHERE id=$1", project.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := database.Pool.Exec(ctx, `UPDATE project_members SET role='admin',version=9007199254740993,updated_at=statement_timestamp() WHERE project_id=$1 AND user_id=$2`, project.ID, reader.UserID); err != nil {
+		if _, err := database.Pool.Exec(ctx, `UPDATE project_grants SET role='admin',version=9007199254740993,updated_at=statement_timestamp() WHERE project_id=$1 AND user_id=$2`, project.ID, reader.UserID); err != nil {
 			t.Fatal(err)
 		}
 	}})
@@ -189,9 +189,9 @@ func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 		name, fragment           string
 		missing, limit, complete bool
 	}{
-		{"project", "FROM projects WHERE id =", false, false, false}, {"epoch", "SELECT task_cache_epoch::text", false, false, false},
+		{"project", "SELECT p.id::text, p.name, p.repo_url", false, false, false}, {"epoch", "SELECT task_cache_epoch::text", false, false, false},
 		{"count", "SELECT count(*) FROM tasks", false, false, false}, {"rows", "left(t.title, $2)", false, false, false}, {"properties", "SELECT task_id::text,name,value FROM task_properties", false, false, false}, {"people", "FROM candidate_ids candidate", false, false, false}, {"clock", "SELECT statement_timestamp()", false, false, false},
-		{"missing completion", "FROM project_members", true, false, true}, {"limit completion", "SELECT count(*) FROM tasks", false, true, true}, {"success completion", "SELECT statement_timestamp()", false, false, true},
+		{"missing completion", "FROM project_grants", true, false, true}, {"limit completion", "SELECT count(*) FROM tasks", false, true, true}, {"success completion", "SELECT statement_timestamp()", false, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tasks, database, project, url, principal := taskService(t)

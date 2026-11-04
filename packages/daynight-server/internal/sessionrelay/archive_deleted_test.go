@@ -109,9 +109,9 @@ func TestDeletedTaskArchiveRequiresCurrentOwnerCredentialAndMembership(t *testin
 				principal = listCredential(t, f, f.p.UserID, core.SessionCredential)
 			case "other member":
 				principal = listCredential(t, f, uuid.NewString(), core.PATCredential)
-				_, err = f.s.DB.Pool.Exec(ctx, `INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'admin')`, f.project, principal.UserID)
+				_, err = f.s.DB.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, f.project, principal.UserID)
 			case "removed member":
-				_, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, f.project, principal.UserID)
+				_, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, principal.UserID)
 			case "revoked":
 				_, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, principal.CredentialID)
 			case "expired":

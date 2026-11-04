@@ -145,8 +145,6 @@ func TestMembershipHTTPRolesVersionsAndCredentials(t *testing.T) {
 			assertProjectError(t, h.call(call.method, call.path, call.body, actor.cookie), actor.status, actor.code)
 		}
 	}
-	assertProjectError(t, h.call("PATCH", base+"/members/"+h.adminID, adminBody("member", h.adminID), h.admin), 409, "last_admin")
-	assertProjectError(t, h.call("DELETE", base+"/members/"+h.adminID, memberRemovalBody(t, adminVersion, h.adminID), h.admin), 409, "last_admin")
 	unchanged := decodeResponse[api.ProjectGrant](t, h.call("PATCH", memberPath, memberBody("member"), h.admin), 200)
 	if unchanged.Version != member.Version {
 		t.Fatal("no-op role change advanced the observed version")
@@ -169,7 +167,15 @@ func TestMembershipHTTPRolesVersionsAndCredentials(t *testing.T) {
 	if response := h.call("DELETE", base+"/members/"+h.adminID, memberRemovalBody(t, demoted.Version, h.memberID), h.member); response.Code != 204 {
 		t.Fatalf("remove member: %d %s", response.Code, response.Body)
 	}
-	assertProjectError(t, h.call("GET", base+"/members", "", h.admin), 404, "not_found")
+	inherited := decodeResponse[api.ProjectParticipantList](t, h.call("GET", base+"/members", "", h.admin), 200)
+	if len(inherited.Items) != 2 {
+		t.Fatalf("owner disappeared after direct grant removal: %#v", inherited)
+	}
+	for _, participant := range inherited.Items {
+		if participant.UserID == h.adminID && (participant.EffectiveRole != "admin" || participant.DirectGrant != nil) {
+			t.Fatalf("owner access does not reflect independent sources: %#v", participant)
+		}
+	}
 	assertProjectError(t, h.request("GET", base+"/members", "", []*http.Cookie{h.member}, []string{"Bearer invalid"}, ""), 401, "unauthenticated")
 	for _, origin := range []string{"", "null", "https://foreign.test"} {
 		assertProjectError(t, h.request("POST", base+"/invitations", `{}`, []*http.Cookie{h.member}, nil, origin), 403, "forbidden")
@@ -261,7 +267,7 @@ func TestMembershipHTTPDatabaseFailuresAreVisible(t *testing.T) {
 			t.Fatal("database failure disclosed internal details")
 		}
 	}
-	if _, err := h.database.Pool.Exec(context.Background(), `DROP TABLE project_members`); err != nil {
+	if _, err := h.database.Pool.Exec(context.Background(), `DROP TABLE project_grants`); err != nil {
 		t.Fatal(err)
 	}
 	for _, call := range []struct{ method, path, body string }{

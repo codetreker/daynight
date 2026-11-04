@@ -139,7 +139,6 @@ export const auth: AuthMessages = {
       invite: "Invite member", loading: "Loading project members…", memberNotice: "You can read and write project tasks and attachments. Project administrators manage members and invitations.",
       membersTitle: "Members", accessDescription: "All members can read and write project resources.", memberColumn: "Member", roleColumn: "Project role", actionColumn: "Actions",
       roleLabel: ({ name }) => `Project role for ${name}`, removeLabel: ({ name }) => `Remove ${name}`, remove: "Remove",
-      lastAdminTitle: "A project must retain at least one administrator", lastAdminNote: "A project must retain at least one administrator. The last administrator must promote another member before removing themselves or changing their role.",
       invitesTitle: "Active invitations", invitesDescription: "Each invitation can be used once and grants the member role. Its link is shown only when created.",
       invitesEmpty: "No active invitations. Create an invitation link to invite a team member.", newInvitation: "Invite a new member",
       revokeLabel: ({ id }) => `Revoke invitation ${id}`, adminDescription: "Read and write projects, tasks, and attachments, and manage project members and invitations.",
@@ -148,8 +147,8 @@ export const auth: AuthMessages = {
       saveRole: "Save role", removeConfirm: "Remove member", revokeConfirm: "Revoke invitation", createInvite: "Create invitation link",
       roleAdminBody: "Administrators can manage project members and invitations and retain full read and write access.",
       roleMemberBody: "Members retain read and write access to project resources. Administrators manage members and invitations.",
-      selfDemotionBody: " You will lose member management permissions after this change.", selfRemovalBody: "You will lose access to this project. An administrator must invite you to rejoin.",
-      otherRemovalBody: "This person's browser sessions and access tokens will lose access to this project.",
+      selfDemotionBody: " Your Team permissions remain unchanged.", selfRemovalBody: "Remove your direct project grant? Your Team permissions remain unchanged.",
+      otherRemovalBody: "This removes the person's direct project grant. Their Team permissions remain unchanged.",
       inviteBody: "Create a single-use invitation link for a collaborator. They will join as a member after signing in and confirming.",
       inviteTerms: "Expires in 7 days · Single use · Joining as: Member", revokeBody: "This invitation link will stop working immediately.",
       notice: {

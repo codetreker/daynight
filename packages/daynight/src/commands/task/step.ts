@@ -15,6 +15,11 @@ const fullId = (value: string, label: string, help: string): string => {
 };
 
 export const runTaskStepCommand = async (command: Command, context: CliContext, dependencies: TaskCommandDependencies): Promise<void> => {
+  if (command.command.name === "add") {
+    const { runTaskStepAddCommand } = await import("./step-add.js");
+    await runTaskStepAddCommand(command, context, dependencies);
+    return;
+  }
   const name = command.command.name as "list" | "show";
   let projectId: string | undefined, taskId: string | undefined, stepId: string | undefined;
   let phase: "prepare" | "request" | "render" | "output" = "prepare";

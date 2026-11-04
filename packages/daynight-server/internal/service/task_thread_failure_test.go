@@ -165,22 +165,29 @@ func TestThreadCancellationBeforeCommitRollsBackEveryWriteStage(t *testing.T) {
 	first := postThread(t, threads, principal, task, CreateThreadMessage{Body: "first"})
 	before := threadStoredState(t, database, task.ID)
 	for _, fragment := range []string{
-		"SELECT deleted_at FROM tasks", "SELECT expires_at FROM sessions", "FOR SHARE OF m", "SELECT name FROM users",
+		"SELECT deleted_at FROM tasks", "SELECT expires_at FROM sessions", "FOR SHARE OF o",
+		"SELECT role FROM team_members WHERE team_id=$1 AND user_id=$2 FOR SHARE",
+		"FROM project_grants WHERE project_id=$1 AND user_id=$2 FOR SHARE", "SELECT name FROM users",
 		"INSERT INTO task_threads", "SELECT last_created_at,last_message_id", "FROM task_thread_messages WHERE task_id=$1 AND message_id=$2",
 		"INSERT INTO task_thread_messages", "SELECT $1::timestamptz IS NULL", "UPDATE task_threads SET",
 	} {
 		for _, after := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/after=%t", fragment, after), func(t *testing.T) {
+			passed := t.Run(fmt.Sprintf("%s/after=%t", fragment, after), func(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
+				fired := false
+				cancelAtStage := func() { fired = true; cancel() }
 				action := taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, fragment) }}
 				if after {
-					action.end = cancel
+					action.end = cancelAtStage
 				} else {
-					action.start = cancel
+					action.start = cancelAtStage
 				}
 				traced := tracedThreads(t, databaseURL, action)
 				document, err := traced.Post(ctx, principal, project.ID, task.ID, CreateThreadMessage{Body: "rejected", ReplyTo: &first.Message.ID})
+				if !fired {
+					t.Fatal("intended cancellation stage did not run")
+				}
 				if err == nil || !errors.Is(err, context.Canceled) || document.JSON != nil {
 					t.Fatalf("cancellation lost or returned resource: %#v %v", document, err)
 				}
@@ -192,6 +199,9 @@ func TestThreadCancellationBeforeCommitRollsBackEveryWriteStage(t *testing.T) {
 					t.Fatal("canceled operation changed head/messages")
 				}
 			})
+			if !passed {
+				t.FailNow()
+			}
 		}
 	}
 	assertTaskUnchanged(t, tasks, principal, task)
@@ -202,7 +212,7 @@ func TestThreadReadCancellationAndServiceDeadlineAreBounded(t *testing.T) {
 	task := createTask(t, tasks, principal, project.ID, "Read cancellation")
 	threads := NewTaskThreads(database)
 	first := postThread(t, threads, principal, task, CreateThreadMessage{Body: "first"})
-	for _, fragment := range []string{"SELECT expires_at FROM sessions", "FROM project_members", "SELECT deleted_at FROM tasks", "FROM task_thread_messages WHERE task_id=$1 AND message_id=$2", "ORDER BY created_at", "EXISTS(SELECT 1 FROM task_thread_messages"} {
+	for _, fragment := range []string{"SELECT expires_at FROM sessions", "FROM project_grants", "SELECT deleted_at FROM tasks", "FROM task_thread_messages WHERE task_id=$1 AND message_id=$2", "ORDER BY created_at", "EXISTS(SELECT 1 FROM task_thread_messages"} {
 		t.Run(fragment, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -324,10 +334,11 @@ func TestThreadPreCommitFailureExposesOnlyAvailableCandidateAttribution(t *testi
 }
 
 func TestThreadReadSnapshotKeepsAuthorizationMessagesAndSidesConsistent(t *testing.T) {
-	tasks, database, project, databaseURL, principal := taskService(t)
+	tasks, database, project, databaseURL, owner := taskService(t)
+	principal := workerMember(t, database, project.ID)
 	other := workerMember(t, database, project.ID)
 	threads := NewTaskThreads(database)
-	task := createTask(t, tasks, principal, project.ID, "Snapshot consistency")
+	task := createTask(t, tasks, owner, project.ID, "Snapshot consistency")
 	first := postThread(t, threads, principal, task, CreateThreadMessage{Body: "in the authorized snapshot"})
 	interleaved := false
 	traced := tracedThreads(t, databaseURL, taskQueryAction{
@@ -341,7 +352,7 @@ func TestThreadReadSnapshotKeepsAuthorizationMessagesAndSidesConsistent(t *testi
 			if err := tasks.Delete(context.Background(), principal, project.ID, task.ID, DeleteTask{Version: task.Version}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID); err != nil {
+			if _, err := database.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID); err != nil {
 				t.Fatal(err)
 			}
 		},

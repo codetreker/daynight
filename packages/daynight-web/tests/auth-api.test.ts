@@ -290,7 +290,7 @@ describe("auth API failures", () => {
     expect(new ApiError("server", 500, "constructor", "request-1").message).toBe("Unable to load the requested data. Please try again.");
   });
 
-  it.each([[401, "unauthenticated"], [403, "forbidden"], [404, "not_found"], [409, "version_conflict"], [409, "last_admin"], [410, "invitation_unavailable"]] as const)("preserves %i/%s without retaining raw server messages or retrying writes", async (status, code) => {
+  it.each([[401, "unauthenticated"], [403, "forbidden"], [404, "not_found"], [409, "version_conflict"], [410, "invitation_unavailable"]] as const)("preserves %i/%s without retaining raw server messages or retrying writes", async (status, code) => {
     const fetcher = mock(refusal(status, code));
     const failure = await setMemberRole(projectId, userId, { version: 1n, role: "member", expectedUserId: userId }, signal(), vi.fn()).catch((error: unknown) => error);
     expect(failure).toMatchObject({ kind: "server", status, code, requestId: "auth-1" });

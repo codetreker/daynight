@@ -53,16 +53,19 @@ describe("native zsh completion", () => {
     expect(script).toContain("(--path)--path=[Attachment relative path (default\\: source basename)]:relative-path:->text_value");
   });
 
-  it("discovers only delivered Step reads and scoped resource options", () => {
+  it("discovers delivered Step reads and Add without future write verbs", () => {
     const step = taskDefinition.commands!.find(({ name }) => name === "step")!;
     const script = renderZshCompletion(step);
     expect(script).toContain("'list:Read every Step in its saved order'");
     expect(script).toContain("'show:Read one Task-local Step and its complete Markdown description'");
-    expect(script).toContain("--project=");
-    expect(script).toContain("--json[");
-    expect(script).not.toContain("--if-version");
-    expect(script).not.toContain("--title");
-    expect(script).not.toContain("'add:");
+    expect(script).toContain("'add:Add one independent Step and return the complete confirmed collection'");
+    const list = renderZshCompletion(step.commands!.find(({ name }) => name === "list")!);
+    expect(list).not.toContain("--if-version");
+    const add = renderZshCompletion(step.commands!.find(({ name }) => name === "add")!);
+    for (const option of ["--project=", "--title=", "--description=", "--status=", "--id=", "--before=", "--after=", "--if-version="]) expect(add).toContain(option);
+    expect(add).toContain("skipped");
+    expect(script).not.toContain("'set-status:");
+    expect(script).not.toContain("'delete:");
   });
 
   it("offers unified status command and three-state filtering without metadata status updates", () => {

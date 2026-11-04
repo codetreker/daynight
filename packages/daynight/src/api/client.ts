@@ -1,9 +1,9 @@
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
-import { canonicalStepId, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
+import { canonicalStepId, confirmAddedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
-import type { StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
-import { isNonemptyText } from "../platform/text.js";
+import type { AddTaskStepInput, AddTaskStepOptions, TaskStepsReadOptions, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
+import { isNonemptyText, isText } from "../platform/text.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
@@ -12,7 +12,7 @@ import type { Operation } from "./operation.js";
 import { canonicalId, parsePage, parseProject, parseProjectAccess, parseProjectParticipants, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
 import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
-type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string };
+type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
 
 export class ApiError extends Error {
@@ -25,10 +25,12 @@ export class ApiError extends Error {
   readonly status?: number;
   readonly code?: string;
   readonly requestId?: string;
+  readonly sentRequestId?: string;
+  readonly responseRequestId?: string;
   readonly details?: ErrorDetails;
   readonly outcomeUnconfirmed: boolean;
   readonly confirmedRefusal: boolean;
-  readonly confirmedMessageId?: string;
+  readonly confirmedMutationId?: string;
 
   constructor(context: Context, phase: ApiPhase, options: {
     readonly cause: unknown;
@@ -36,7 +38,8 @@ export class ApiError extends Error {
     readonly serverError?: ServerError;
     readonly outcomeUnconfirmed?: boolean;
     readonly confirmedRefusal?: boolean;
-    readonly confirmedMessageId?: string;
+    readonly confirmedMutationId?: string;
+    readonly responseRequestId?: string;
   }) {
     const target = [context.projectId === undefined ? "" : ` project=${context.projectId}`, context.taskId === undefined ? "" : ` task=${context.taskId}`, context.stepId === undefined ? "" : ` step=${context.stepId}`].join("");
     const server = options.serverError;
@@ -52,17 +55,20 @@ export class ApiError extends Error {
     if (context.projectId !== undefined) this.projectId = context.projectId;
     if (context.taskId !== undefined) this.taskId = context.taskId;
     if (context.stepId !== undefined) this.stepId = context.stepId;
+    if (context.sentRequestId !== undefined) this.sentRequestId = context.sentRequestId;
+    if (options.responseRequestId !== undefined) this.responseRequestId = options.responseRequestId;
     if (options.status !== undefined) this.status = options.status;
     if (server !== undefined) { this.code = server.code; this.requestId = server.requestId; this.serverMessage = server.message; }
     if (details !== undefined) this.details = details;
     this.outcomeUnconfirmed = options.outcomeUnconfirmed === true;
     this.confirmedRefusal = options.confirmedRefusal === true;
-    if (options.confirmedMessageId !== undefined) this.confirmedMessageId = options.confirmedMessageId;
+    if (options.confirmedMutationId !== undefined) this.confirmedMutationId = options.confirmedMutationId;
   }
 }
 
 export type ApiClient = {
-  listTaskSteps(projectId: string, taskId: string): Promise<StepsResource>;
+  listTaskSteps(projectId: string, taskId: string, options?: TaskStepsReadOptions): Promise<StepsResource>;
+  addTaskStep(projectId: string, taskId: string, input: AddTaskStepInput, options: AddTaskStepOptions): Promise<StepsResource>;
   getTaskStep(projectId: string, taskId: string, stepId: string): Promise<StepResource>;
   readTaskThread(projectId: string, taskId: string, query: ThreadReadQuery): Promise<ThreadPage>;
   postTaskThreadMessage(projectId: string, taskId: string, input: PostThreadMessageInput): Promise<ThreadMessage>;
@@ -121,14 +127,21 @@ export const createApiClient = (options: {
   if (serverToken !== undefined) validateTokenTransport(origin.origin);
   const operation = options.operation;
   const fetch = options.fetch ?? globalThis.fetch;
+  let stepsPrincipal = expectedUserId;
+  const bindStepsPrincipal = (principal: string): void => {
+    if (stepsPrincipal !== undefined && stepsPrincipal !== principal) throw new ProtocolError("The authenticated Steps response principal changed during the operation.");
+    stepsPrincipal = principal;
+  };
+  const validRequestId = (value: string): boolean => typeof value === "string" && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value);
 
-  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string };
+
+  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
-    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string }
+    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly onPrincipal?: (principal: string) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
-  type RequestBody = { readonly kind: "json"; readonly value: unknown } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
+  type RequestBody = { readonly kind: "json"; readonly value: unknown; readonly maxBytes?: number } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
   const exchange = async <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", mode: ResponseMode<T>, statuses: readonly number[], body?: RequestBody, mutable = false): Promise<T> => {
     let phase: ApiPhase = "prepare";
     let dispatched = false;
@@ -144,7 +157,9 @@ export const createApiClient = (options: {
     let requestDeadline = Infinity;
     let totalBudgetCapped = false;
     let serverError: ServerError | undefined;
-    let confirmedMessageId: string | undefined;
+    let confirmedMutationId: string | undefined;
+    let responseRequestId: string | undefined;
+    let terminalFailure: ApiError | undefined;
     const controller = new AbortController();
     const checkRequest = (): void => {
       operation.check();
@@ -157,7 +172,11 @@ export const createApiClient = (options: {
     try {
       operation.check();
       let payload: string | ReadableStream<Uint8Array> | undefined;
-      if (body?.kind === "json") payload = stringifyApiJson(body.value);
+      if (context.sentRequestId !== undefined && !validRequestId(context.sentRequestId)) throw new Error("Request ID must follow the supported 1-to-64-character request identity format.");
+      if (body?.kind === "json") {
+        payload = stringifyApiJson(body.value);
+        if (body.maxBytes !== undefined && Buffer.byteLength(payload, "utf8") > body.maxBytes) throw new OperationError("request_limit");
+      }
       else if (body?.kind === "bytes") {
         uploadReader = body.value.getReader();
         const source = uploadReader;
@@ -206,7 +225,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { "Daynight-Worker-Protocol": "2", Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }) },
+        headers: { "Daynight-Worker-Protocol": "2", Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),
@@ -215,6 +234,8 @@ export const createApiClient = (options: {
         });
       }), aborted]);
       status = response.status;
+      const observedRequestId = response.headers.get("X-Request-ID");
+      if (observedRequestId !== null && validRequestId(observedRequestId)) responseRequestId = observedRequestId;
       phase = "response";
       const success = statuses.includes(status);
       let principalId: string | undefined;
@@ -235,6 +256,7 @@ export const createApiClient = (options: {
         const principal = response.headers.get("Daynight-User-ID");
         if (principal === null || canonicalId(principal) === null || mode.kind === "json" && mode.requirePrincipal === true && canonicalId(principal) !== principal || expectedUserId !== undefined && canonicalId(principal) !== expectedUserId) throw new ProtocolError("The authenticated response principal does not match the expected user.");
         principalId = canonicalId(principal)!;
+        if (mode.kind === "json") mode.onPrincipal?.(principalId);
         phase = "response";
       }
       if (reader !== undefined) {
@@ -270,7 +292,7 @@ export const createApiClient = (options: {
       chunks.push(pendingText, decoder.decode());
       const responseContentType = response.headers.get("content-type");
       if (responseContentType === null || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(responseContentType)) throw new ProtocolError("Expected an application/json UTF-8 response.");
-      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), ...(principalId === undefined ? {} : { principalId }) };
+      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), locationHeader: response.headers.get("Location"), ...(principalId === undefined ? {} : { principalId }) };
       const source = chunks.join("");
       const value = mode.kind === "json" && mode.decodeJsonSource !== undefined ? mode.decodeJsonSource(source, responseContext) : parseApiJson(source);
       checkRequest();
@@ -278,11 +300,11 @@ export const createApiClient = (options: {
         if (status < 400 || status > 599) throw new ProtocolError("Unexpected HTTP status.");
         serverError = parseServerError(value);
         const confirmedRefusal = status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
-        throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: method !== "GET" && !confirmedRefusal });
+        throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: method !== "GET" && !confirmedRefusal, ...(responseRequestId === undefined ? {} : { responseRequestId }) });
       }
       if (mode.kind !== "json") throw new ProtocolError("Unexpected response mode.");
       const result = mode.parse(value, responseContext);
-      if (mode.confirmMutation !== undefined) confirmedMessageId = mode.confirmMutation(result);
+      if (mode.confirmMutation !== undefined) confirmedMutationId = mode.confirmMutation(result);
       else checkRequest();
       if (uploadReader !== undefined && !uploadDone) {
         await Promise.race([uploadReader.cancel(), aborted]);
@@ -306,22 +328,35 @@ export const createApiClient = (options: {
           if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
         }
       }
-      if (cause instanceof ApiError && failure === cause) throw cause;
-      throw new ApiError(context, phase, {
+      terminalFailure = cause instanceof ApiError && failure === cause ? cause : new ApiError(context, phase, {
         cause: failure,
         ...(status === undefined ? {} : { status }),
         ...(serverError === undefined ? {} : { serverError }),
+        ...(responseRequestId === undefined ? {} : { responseRequestId }),
         confirmedRefusal: cause instanceof ApiError && cause.confirmedRefusal,
         outcomeUnconfirmed: cause instanceof ApiError ? cause.outcomeUnconfirmed : method !== "GET" && dispatched,
-        ...(confirmedMessageId === undefined ? {} : { confirmedMessageId, outcomeUnconfirmed: false }),
+        ...(confirmedMutationId === undefined ? {} : { confirmedMutationId, outcomeUnconfirmed: false }),
       });
+      throw terminalFailure;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       removeAbort();
       removeOperationAbort();
-      try { reader?.releaseLock(); uploadReader?.releaseLock(); }
-      catch (cause) {
-        throw new ApiError(context, phase, { cause, ...(confirmedMessageId === undefined ? {} : { confirmedMessageId }), outcomeUnconfirmed: confirmedMessageId === undefined && method !== "GET" && dispatched });
+      const releaseFailures: unknown[] = [];
+      for (const stream of [reader, uploadReader]) {
+        try { stream?.releaseLock(); } catch (cause) { releaseFailures.push(cause); }
+      }
+      if (releaseFailures.length !== 0) {
+        const cause = new AggregateError(terminalFailure === undefined ? releaseFailures : [terminalFailure, ...releaseFailures], "HTTP request completion and stream release failed.", terminalFailure === undefined ? undefined : { cause: terminalFailure });
+        throw new ApiError(context, terminalFailure?.phase ?? phase, {
+          cause,
+          ...(status === undefined ? {} : { status }),
+          ...(serverError === undefined ? {} : { serverError }),
+          ...(responseRequestId === undefined ? {} : { responseRequestId }),
+          confirmedRefusal: terminalFailure?.confirmedRefusal === true,
+          outcomeUnconfirmed: terminalFailure === undefined ? confirmedMutationId === undefined && method !== "GET" && dispatched : terminalFailure.outcomeUnconfirmed,
+          ...(confirmedMutationId === undefined ? {} : { confirmedMutationId, outcomeUnconfirmed: false }),
+        });
       }
     }
   };
@@ -426,10 +461,10 @@ export const createApiClient = (options: {
   };
 
   return {
-    listTaskSteps: (projectId, taskId) => {
+    listTaskSteps: (projectId, taskId, options) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      return exchange({ operation: "task.step.list", projectId: project, taskId: task }, resourcePath("projects", project, "tasks", task, "steps"), "GET", {
-        kind: "json", requirePrincipal: true, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
+      return exchange({ operation: "task.step.list", projectId: project, taskId: task, ...(options === undefined ? {} : { sentRequestId: options.requestId }) }, resourcePath("projects", project, "tasks", task, "steps"), "GET", {
+        kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
         parse: (value) => parseStepsResource(value, project, task),
       }, [200], undefined, true);
     },
@@ -437,9 +472,45 @@ export const createApiClient = (options: {
       const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
       if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
       return exchange({ operation: "task.step.show", projectId: project, taskId: task, stepId: step }, resourcePath("projects", project, "tasks", task, "steps", step), "GET", {
-        kind: "json", requirePrincipal: true, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
+        kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
         parse: (value) => parseStepResource(value, project, task, step),
       }, [200], undefined, true);
+    },
+    addTaskStep: async (projectId, taskId, input, options) => {
+      const context: Context = { operation: "task.step.add", sentRequestId: options.requestId };
+      try {
+        const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(input.id);
+        if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
+        const target = { ...context, projectId: project, taskId: task, stepId: step };
+        try {
+          taskVersion(input.version);
+          if (!isNonemptyText(input.title)) throw new Error("Step title must be nonempty Unicode text without NUL.");
+          if (input.description !== undefined && !isText(input.description)) throw new Error("Step description must be Unicode text without NUL.");
+          if (input.status !== undefined && !["todo", "in_progress", "done", "skipped"].includes(input.status)) throw new Error("Step status must be todo, in_progress, done or skipped.");
+          if (input.before !== undefined && input.after !== undefined) throw new Error("before and after are mutually exclusive.");
+          const anchor = (value: string): string => { const id = canonicalStepId(value); if (id === null) throw new Error("Step anchor must contain exactly eight hexadecimal characters."); return id; };
+          const normalized: AddTaskStepInput = { version: input.version, id: step, title: input.title,
+            ...(input.description === undefined ? {} : { description: input.description }), ...(input.status === undefined ? {} : { status: input.status }),
+            ...(input.before === undefined ? {} : { before: anchor(input.before) }), ...(input.after === undefined ? {} : { after: anchor(input.after) }) };
+          const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
+          if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
+          const pathname = resourcePath("projects", project, "tasks", task, "steps");
+          return await exchange(target, pathname, "POST", {
+            kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
+            parse: (value, response) => {
+              if (response.locationHeader !== `/api/v1${pathname}/${step}`) throw new ProtocolError("Step Location does not match the submitted identity.");
+              return parseStepsResource(value, project, task);
+            },
+            confirmMutation: (result) => confirmAddedTaskStep(result, normalized, previous),
+          }, [201], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
+        } catch (cause) {
+          if (cause instanceof ApiError) throw cause;
+          throw new ApiError(target, "prepare", { cause });
+        }
+      } catch (cause) {
+        if (cause instanceof ApiError) throw cause;
+        throw new ApiError(context, "prepare", { cause });
+      }
     },
     readTaskThread: (projectId, taskId, query) => {
       const project = resourceId(projectId), task = resourceId(taskId);

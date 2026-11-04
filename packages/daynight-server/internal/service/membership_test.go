@@ -122,7 +122,7 @@ func TestPrivateProjectsAtomicCreationAndMemberFilteredPagination(t *testing.T) 
 	if err != nil || empty.Items == nil || len(empty.Items) != 0 || empty.NextCursor != nil {
 		t.Fatalf("empty access: %#v %v", empty, err)
 	}
-	if _, err := f.database.Pool.Exec(ctx, `CREATE FUNCTION reject_initial_admin() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected admin insertion failure'; END $$; CREATE TRIGGER reject_initial_admin BEFORE INSERT ON project_members FOR EACH ROW EXECUTE FUNCTION reject_initial_admin()`); err != nil {
+	if _, err := f.database.Pool.Exec(ctx, `CREATE FUNCTION reject_initial_admin() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected admin insertion failure'; END $$; CREATE TRIGGER reject_initial_admin BEFORE INSERT ON project_grants FOR EACH ROW EXECUTE FUNCTION reject_initial_admin()`); err != nil {
 		t.Fatal(err)
 	}
 	_, err = f.projects.Create(ctx, alice, CreateProject{Name: "Must roll back", RepoURL: "host:repo"})
@@ -183,21 +183,26 @@ func TestMembershipRoleAuthorizationAndObservedVersions(t *testing.T) {
 	_, err = f.memberships.CreateInvitation(ctx, member, p.ID)
 	requireFault(t, err, "not_found")
 	ownerMember := f.member(t, owner, p.ID)
-	_, err = f.memberships.SetRole(ctx, owner, p.ID, owner.UserID, SetProjectMemberRole{Version: ownerMember.Grant.Version, Role: core.ProjectMemberRole, ExpectedUserID: owner.UserID})
-	requireFault(t, err, "last_admin")
-	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, owner.UserID, RemoveProjectMember{Version: ownerMember.Grant.Version, ExpectedUserID: owner.UserID}), "last_admin")
-	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, RemoveProjectMember{Version: rejoined.Grant.Version, ExpectedUserID: owner.UserID}), "not_found")
-	_, err = f.memberships.List(ctx, owner, uuid.NewString())
-	requireFault(t, err, "not_found")
-	legacy, err := f.database.CreateProject(ctx, uuid.NewString(), "Legacy", "host:repo")
+	demoted, err := f.memberships.SetRole(ctx, owner, p.ID, owner.UserID, SetProjectMemberRole{Version: ownerMember.Grant.Version, Role: core.ProjectMemberRole, ExpectedUserID: owner.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := f.memberships.Remove(ctx, owner, p.ID, owner.UserID, RemoveProjectMember{Version: demoted.Version, ExpectedUserID: owner.UserID}); err != nil {
+		t.Fatal(err)
+	}
+	people, err := f.memberships.List(ctx, owner, p.ID)
+	if err != nil || len(people) != 1 || people[0].UserID != owner.UserID || people[0].EffectiveRole != core.ProjectAdmin || people[0].DirectGrant != nil {
+		t.Fatalf("inherited owner after final direct removal: %#v %v", people, err)
+	}
+	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, RemoveProjectMember{Version: rejoined.Grant.Version, ExpectedUserID: owner.UserID}), "not_found")
+	_, err = f.memberships.List(ctx, owner, uuid.NewString())
+	requireFault(t, err, "not_found")
+	legacy := f.project(t, outsider, "Other private project")
 	_, err = f.memberships.List(ctx, owner, legacy.ID)
 	requireFault(t, err, "not_found")
 }
 
-func TestMembershipConcurrentLastAdministratorChanges(t *testing.T) {
+func TestMembershipConcurrentDirectAdministratorChanges(t *testing.T) {
 	for _, remove := range []bool{false, true} {
 		t.Run(fmt.Sprint("remove=", remove), func(t *testing.T) {
 			f := newMembershipFixture(t)
@@ -224,10 +229,14 @@ func TestMembershipConcurrentLastAdministratorChanges(t *testing.T) {
 					_, err := f.memberships.SetRole(ctx, b, p.ID, b.UserID, SetProjectMemberRole{Version: bm.Version, Role: core.ProjectMemberRole, ExpectedUserID: b.UserID})
 					return core.Task{}, err
 				})
-			assertOneTaskWinner(t, results, "last_admin")
+			for _, result := range results {
+				if result.err != nil {
+					t.Fatalf("independent direct grants: %v", result.err)
+				}
+			}
 			var admins int
-			if err := f.database.Pool.QueryRow(context.Background(), `SELECT count(*) FROM project_members WHERE project_id=$1 AND role='admin'`, p.ID).Scan(&admins); err != nil || admins != 1 {
-				t.Fatalf("admin invariant: %d %v", admins, err)
+			if err := f.database.Pool.QueryRow(context.Background(), `SELECT count(*) FROM project_grants WHERE project_id=$1 AND role='admin'`, p.ID).Scan(&admins); err != nil || admins != 0 {
+				t.Fatalf("direct admins remain: %d %v", admins, err)
 			}
 		})
 	}
@@ -334,7 +343,7 @@ func TestInvitationConcurrentAcceptanceAndAtomicRollback(t *testing.T) {
 		})
 	assertOneTaskWinner(t, results, "invitation_unavailable")
 	var newMembers int
-	if err := f.database.Pool.QueryRow(context.Background(), `SELECT count(*) FROM project_members WHERE project_id=$1 AND role='member'`, p.ID).Scan(&newMembers); err != nil || newMembers != 1 {
+	if err := f.database.Pool.QueryRow(context.Background(), `SELECT count(*) FROM project_grants WHERE project_id=$1 AND role='member'`, p.ID).Scan(&newMembers); err != nil || newMembers != 1 {
 		t.Fatalf("concurrent admission: %d %v", newMembers, err)
 	}
 	newcomer := f.user(t)
@@ -464,5 +473,52 @@ func TestMembershipPATAndOperationalFailurePropagation(t *testing.T) {
 	}
 	for _, call := range calls {
 		requireIdentityOperationalError(t, call())
+	}
+}
+
+func TestMembershipInheritedOwnerAcceptsIndependentGrantAndRejectsLargeStaleVersion(t *testing.T) {
+	f := newMembershipFixture(t)
+	owner, admin := f.user(t), f.user(t)
+	project := f.project(t, owner, "Independent grants")
+	ctx := context.Background()
+	joined := f.join(t, owner, admin, project.ID)
+	if _, err := f.memberships.SetRole(ctx, owner, project.ID, admin.UserID, SetProjectMemberRole{Version: joined.Grant.Version, Role: core.ProjectAdmin, ExpectedUserID: owner.UserID}); err != nil {
+		t.Fatal(err)
+	}
+	const high int64 = 9007199254741999
+	if _, err := f.database.Pool.Exec(ctx, `UPDATE project_grants SET version=$3 WHERE project_id=$1 AND user_id=$2;`, project.ID, owner.UserID, high); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.database.Pool.Exec(ctx, `SELECT setval('project_grant_versions',$1,true)`, high); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.memberships.Remove(ctx, admin, project.ID, owner.UserID, RemoveProjectMember{Version: high, ExpectedUserID: admin.UserID}); err != nil {
+		t.Fatal(err)
+	}
+	invitation := f.invite(t, admin, project.ID)
+	inspection, err := f.memberships.InspectInvitation(ctx, owner, invitation.Secret)
+	if err != nil || inspection.Member != nil {
+		t.Fatalf("inherited access treated as direct grant: %#v %v", inspection, err)
+	}
+	replacement, err := f.memberships.AcceptInvitation(ctx, owner, invitation.Secret)
+	if err != nil || replacement.Grant.Version <= high || replacement.Grant.Role != core.ProjectMemberRole {
+		t.Fatalf("independent replacement grant: %#v %v", replacement, err)
+	}
+	_, err = f.memberships.SetRole(ctx, admin, project.ID, owner.UserID, SetProjectMemberRole{Version: high, Role: core.ProjectAdmin, ExpectedUserID: admin.UserID})
+	requireFault(t, err, "version_conflict")
+	requireFault(t, f.memberships.Remove(ctx, admin, project.ID, owner.UserID, RemoveProjectMember{Version: high, ExpectedUserID: admin.UserID}), "version_conflict")
+	if got := f.member(t, owner, project.ID); !reflect.DeepEqual(got, replacement) {
+		t.Fatalf("stale large version changed new grant: %#v", got)
+	}
+	_, err = f.memberships.AcceptInvitation(ctx, admin, invitation.Secret)
+	requireFault(t, err, "invitation_unavailable")
+	people, err := f.memberships.List(ctx, owner, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, person := range people {
+		if person.UserID == owner.UserID && (person.EffectiveRole != core.ProjectAdmin || person.DirectGrant == nil || person.DirectGrant.Role != core.ProjectMemberRole) {
+			t.Fatalf("inherited maximum overwrote grant: %#v", person)
+		}
 	}
 }

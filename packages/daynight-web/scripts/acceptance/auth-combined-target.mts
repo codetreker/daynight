@@ -208,7 +208,7 @@ export const createAuthCombinedTarget = (target: CombinedTarget, run: CombinedCo
           requireValue(Number.isSafeInteger(files.temporaryFiles) && Number.isSafeInteger(files.temporaryBytes));
         }
         const path = `convert_from(decode('${Buffer.from(input.path).toString('hex')}','hex'),'UTF8')`;
-        const database = await sql(`SELECT json_build_object('metadataRows',(SELECT count(*) FROM task_attachments WHERE project_id='${input.projectId}' AND task_id='${input.taskId}' AND path=${path}),'memberRows',(SELECT count(*) FROM project_members WHERE project_id='${input.projectId}' AND user_id='${input.userId}'),'memberVersion',(SELECT version::text FROM project_members WHERE project_id='${input.projectId}' AND user_id='${input.userId}'))`) as DatabaseObservation;
+        const database = await sql(`SELECT json_build_object('metadataRows',(SELECT count(*) FROM task_attachments WHERE project_id='${input.projectId}' AND task_id='${input.taskId}' AND path=${path}),'memberRows',(SELECT count(*) FROM project_grants WHERE project_id='${input.projectId}' AND user_id='${input.userId}'),'memberVersion',(SELECT version::text FROM project_grants WHERE project_id='${input.projectId}' AND user_id='${input.userId}'))`) as DatabaseObservation;
         requireValue((database.metadataRows === 0 || database.metadataRows === 1) && (database.memberRows === 0 || database.memberRows === 1)
           && (database.memberRows === 0 ? database.memberVersion === null : typeof database.memberVersion === 'string'
             && /^[1-9]\d*$/.test(database.memberVersion) && BigInt(database.memberVersion) <= 9223372036854775807n));

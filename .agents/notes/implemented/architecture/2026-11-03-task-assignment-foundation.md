@@ -29,8 +29,10 @@ retain their ordinary mutation rules.
 New target eligibility consumes ProjectAccess in that project transaction.
 The canonical projectAccessRelation in store/project_access.go also owns the
 access candidates and hasProjectAccess calculation for both people-read modes.
-It currently represents real direct authorization only, with one effective role
-per project/user and raw identities retained independently of profile presence.
+It represents the maximum of owner Team and direct-grant roles, with one
+effective role per project/user and raw identities retained independently of
+profile presence. The [Personal ownership decision](2026-11-04-personal-project-ownership.md)
+activates these real sources without changing assignment or execution identity.
 
 Migration 028 adds the column and project/assignment/keyset index. Historical
 and soft-deleted tasks receive NULL without rewriting versions, business times,

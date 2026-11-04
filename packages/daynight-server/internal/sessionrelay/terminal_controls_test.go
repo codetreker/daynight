@@ -1112,7 +1112,7 @@ func terminalOtherActor(t *testing.T, f *terminalControlFixture) core.Principal 
 	}{
 		{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, []any{p.UserID, p.UserID}},
 		{`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'terminal actor',now(),now()+interval '1 day')`, []any{p.CredentialID, p.UserID, hash[:]}},
-		{`INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'admin')`, []any{f.project, p.UserID}},
+		{`INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, []any{f.project, p.UserID}},
 	}
 	for _, q := range statements {
 		if _, err := f.s.DB.Pool.Exec(context.Background(), q.sql, q.args...); err != nil {
@@ -1135,7 +1135,7 @@ func TestTerminalRevokedActorIsRejectedBeforeForwardingAndAcknowledgement(t *tes
 			if afterPoll {
 				offers = f.poll(t, "1")
 			}
-			if _, err := f.s.DB.Pool.Exec(context.Background(), `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
+			if _, err := f.s.DB.Pool.Exec(context.Background(), `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
 				t.Fatal(err)
 			}
 			if !afterPoll {
@@ -1322,7 +1322,7 @@ func TestTerminalRejectsMalformedAndUnavailableControlWithoutLedgerWrite(t *test
 		t.Fatal("wrong browser accepted")
 	}
 	actor := terminalOtherActor(t, f)
-	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
+	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.s.SubmitTerminal(ctx, actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err == nil {
@@ -1428,7 +1428,7 @@ func TestTerminalActiveLeaseCredentialRevocationSuspendsAndInvalidatesInput(t *t
 			sql := `DELETE FROM personal_access_tokens WHERE id=$1`
 			args := []any{actor.CredentialID}
 			if revoke == "role" {
-				sql = `UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2`
+				sql = `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`
 				args = []any{f.project, actor.UserID}
 			}
 			if _, err := f.s.DB.Pool.Exec(context.Background(), sql, args...); err != nil {

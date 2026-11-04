@@ -14,8 +14,8 @@ also remain stale after a member is removed and later joins again.
 The membership foundation implements the project policy in the adopted
 [authentication architecture](../../../../docs/design/daynight-auth.md).
 Admin and member share existing resource read/write authority; admins manage
-membership and project invitations. Existing production resource entry points
-remain unchanged until coordinated activation. Callable membership handlers use
+membership and project invitations. The original foundation retained production resource entry points until
+coordinated activation. Callable membership handlers use
 the existing authentication module rather than a second identity mechanism.
 
 Stored `ProjectGrant` records own project/user IDs, role, the real observation
@@ -31,7 +31,9 @@ Read admission returns `ProjectAccess` within the existing read snapshot. This
 computed projection has project/user IDs, the current role and an optional actual
 direct grant. It has no independent writable version or storage timestamps; the
 embedded grant retains its own facts. Point admission and accessible-project filtering
-use the same canonical direct-authorization source. Resource services, new task
+use the same canonical dual-source relation. The [Personal ownership decision](2026-11-04-personal-project-ownership.md)
+activates the maximum of owner Team role and direct grant role without copying
+Team membership into grants. Resource services, new task
 assignment targets and Worker non-owner administrator checks consume access.
 Task-assignee catalogues and bounded resolution use that source's raw identities
 for access qualification while retaining their separate profile-integrity and
@@ -53,23 +55,25 @@ owns these resource-specific rules. Missing access maps to the existing refusal;
 other canonical query errors retain their causes.
 
 Thread consumes `LockProjectAuthorization` from the same canonical storage
-owner. This strong primitive locks the actual positive direct grant through
-commit and returns access and grant facts from that locked row after any wait.
+owner. This strong primitive locks real ownership, then existing owner Team member
+and direct grant rows through commit, and merges their current facts after waits.
 The caller acquires Task and credential share locks first; no Project row lock
-or profile read is introduced. Ordinary point reads and Session admission retain
-their existing nonlocking behavior. The [Thread decision](2026-11-03-task-thread-storage.md)
+or profile read is introduced. Inherited-only admission has no direct grant.
+Ordinary point reads and Session admission retain their existing nonlocking
+behavior. The [Thread decision](2026-11-03-task-thread-storage.md)
 owns its stronger lock lifetime, transaction outcome and cancellation rules.
 
 Role and removal inputs bind the reviewed `expectedUserId` to the authenticated
 principal before domain SQL. A mismatch is an explicit 409; no project lookup or
 authorization write starts. Admitted writes use the existing project row lock
-before checking actor access, the target grant's observed version and
-administrator count. The same project lock orders
-grant mutations and invitation acceptance. Accessible project SQL filters before
+before checking actor access and the target grant's observed version. The same
+project lock orders grant mutations and invitation acceptance. Accessible project SQL filters before
 cursor and LIMIT; it never filters an already fetched page. Private project
-creation and its first admin grant commit together. This separation preserves
-the current direct-only policy, physical tables and sequence, invitation
-responses and last-administrator protection.
+creation commits real Personal ownership and its first direct admin grant
+together. The original foundation kept direct-only policy and last-administrator
+protection while consumers were prepared; the Personal ownership decision
+replaces those policies and renames the original table and sequence in place.
+Invitation responses retain their current contract.
 
 Member observation versions come from one PostgreSQL bigint sequence on insertion
 and real role changes. They are opaque, positive and noncontiguous; a no-op keeps
@@ -91,7 +95,9 @@ was reviewed separately. The [activation decision](2026-10-22-authentication-act
 now makes ordinary Create/List principal-aware, removes those aliases and mounts
 `NewMembershipRoutes(...).RegisterRoutes` in the mandatory composition. The
 [identity foundation](2026-10-22-identity-credentials.md) supplies session/PAT
-principals. Existing projects receive no automatic membership.
+principals. The original foundation did not assign existing projects
+automatically; the Personal ownership migration now assigns every valid Project using its earliest-
+joined current administrator and fails rather than guessing for zero-admin data.
 
 ## Alternatives
 
@@ -111,9 +117,10 @@ roster and role-write DTOs while preserving current invitation consumers.
 could change between the check and mutation. Checking inside the existing project
 transaction preserves one authorization decision and the business write.
 
-**Lock only the member being modified.** Two admins could each observe another
-admin and both leave. The existing project row serializes their checks without
-introducing another project lock mechanism.
+**Lock only the member being modified.** In the original direct-only policy,
+two admins could each observe another admin and both leave. The Project lock
+serialized that check. It still serializes current grant and invitation writes,
+while real ownership now permits the final direct admin to leave.
 
 **Reset each membership version on insert.** A removed and rejoined member could
 again match an earlier observed version. A database sequence preserves the
@@ -125,10 +132,11 @@ policy gives the project explicit expiry, one-time consumption and revocation.
 
 ## Consequences
 
-The schema adds two tables and a membership version sequence without foreign
-keys. Explicit service transactions own association and policy checks. Empty
-membership on existing projects naturally denies access through authorized
-queries; manual assignment remains separate.
+The foundation added two tables and a membership version sequence without
+foreign keys. Explicit service transactions continue to own association and
+policy checks. The Personal ownership decision supersedes its initial empty-
+legacy-project behavior and physical member naming while preserving grant
+observations and invitation identity.
 
 Independent PostgreSQL and authenticated-handler validation preceded mounting,
 preserving that original sequencing rationale. Production composition, CLI and

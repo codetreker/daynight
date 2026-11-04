@@ -31,9 +31,9 @@ func (s *Snapshot) Project(ctx context.Context, id string) (core.Project, error)
 
 func (s *Snapshot) Projects(ctx context.Context, page Page) (ProjectPage, error) {
 	afterTime, afterID := pageValues(page)
-	rows, err := s.tx.Query(ctx, `SELECT `+projectProjection+` FROM projects
-		WHERE ($1::timestamptz IS NULL OR (created_at, id) > ($1, $2::uuid))
-		ORDER BY created_at, id LIMIT $3`, afterTime, afterID, page.Limit+1)
+	rows, err := s.tx.Query(ctx, `SELECT `+projectProjection+` FROM `+projectRelation+`
+		WHERE ($1::timestamptz IS NULL OR (p.created_at, p.id) > ($1, $2::uuid))
+		ORDER BY p.created_at, p.id LIMIT $3`, afterTime, afterID, page.Limit+1)
 	if err != nil {
 		return ProjectPage{}, queryError("list projects", err)
 	}
