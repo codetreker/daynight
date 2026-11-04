@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore, type RefObject } from 'react';
 import { sessionFenceKey } from '../../../../daynight/src/session/protocol';
 import type { TaskSessionClient } from './client';
 import { useSessionDisplayPreference } from './useSessionDisplayPreference';
@@ -10,7 +10,7 @@ import { sessionRespondGate } from './state';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 import '../../styles/task-session.css';
 
-export function SessionView({ client, userId, active, current, reading }: { readonly client: TaskSessionClient; readonly userId: string; readonly active: boolean; readonly current: boolean; readonly reading?: SessionTimelineReading }) {
+export function SessionView({ client, userId, active, current, reading, fullscreenBoundary }: { readonly client: TaskSessionClient; readonly userId: string; readonly active: boolean; readonly current: boolean; readonly reading?: SessionTimelineReading; readonly fullscreenBoundary?: RefObject<HTMLElement | null> }) {
   const view = useSyncExternalStore(client.subscribe, client.snapshot);
   const m = useSessionMessages();
   const [checkError, setCheckError] = useState<string | null>(null);
@@ -18,7 +18,7 @@ export function SessionView({ client, userId, active, current, reading }: { read
   const display = useSessionDisplayPreference(s && view.status !== 'unavailable' ? { userId, sessionId: s.sessionId } : null);
   const [displayOpen, setDisplayOpen] = useState(false);
   useEffect(() => { setDisplayOpen(false); }, [active, userId, s?.sessionId]);
-  const fullscreen = useSessionFullscreen({ client, userId, active, identity: s?.sessionId ?? null });
+  const fullscreen = useSessionFullscreen({ client, userId, active, identity: s?.sessionId ?? null, ...(fullscreenBoundary ? { fullscreenBoundary } : {}) });
   const connected = current && view.connected;
   const available = s !== null && view.status !== 'unavailable';
   // Provider acceptance completes input delivery, but controls still need confirmation.
@@ -28,7 +28,7 @@ export function SessionView({ client, userId, active, current, reading }: { read
   const runtimeReady = connected && s?.synchronized && s.connectionState === 'connected';
   const activityLabel = readOnly ? sessionNativeLabels.archived : !connected || s?.connectionState === 'disconnected' ? sessionNativeLabels.disconnected : !s?.synchronized || s.connectionState === 'synchronizing' ? sessionNativeLabels.synchronizing : sessionNativeLabels[s.activity];
   const fullscreenLabel = fullscreen.fullscreen ? m.exitFullscreen : m.enterFullscreen;
-  return <section className={`task-agent-session${fullscreen.fullscreen ? ' session-fullscreen' : ''}`} aria-label={m.title} ref={fullscreen.sectionRef} tabIndex={-1} onKeyDown={fullscreen.onKeyDown}>
+  return <section className={`task-agent-session${fullscreen.fullscreen && !fullscreenBoundary ? ' session-fullscreen' : ''}`} aria-label={m.title} ref={fullscreen.sectionRef} tabIndex={-1} onKeyDown={fullscreen.onKeyDown}>
     <header className="session-header"><div><strong>{available ? s.identity.provider === 'claude' ? 'Claude Code' : s.identity.provider === 'copilot' ? 'GitHub Copilot' : 'Codex' : m.title}</strong>{available && <span className={`session-status ${runtimeReady ? 'online' : 'offline'}`} role="status" lang="en">{activityLabel}</span>}</div><div className="session-header-actions">
       {available && <SessionDisplayMenu mode={display.mode} issue={display.issue} onModeChange={display.setMode} onRetrySave={display.retrySave} open={active && displayOpen} onOpenChange={setDisplayOpen} />}
       <button className="button session-fullscreen-toggle" type="button" ref={fullscreen.buttonRef} aria-label={fullscreenLabel} title={fullscreenLabel} aria-pressed={fullscreen.fullscreen} onClick={fullscreen.toggle}>

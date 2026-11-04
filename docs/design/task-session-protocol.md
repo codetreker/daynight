@@ -317,6 +317,8 @@ read、invalid、write issue 只在打开的菜单内按当前语言映射说明
 
 `useSessionFullscreen` 持有视图内临时状态，绑定 client、已认证 userId 和已知实际 Session 身份；`active=false`、身份替换或卸载释放所有权。同一 client 和账号首次取得 Session 身份时补齐绑定并保留全屏，后续已知身份替换才退出；已知身份的快照暂时缺失不构成身份变更。状态不进入 client 的 effect 依赖、执行 fence、Composer key、URL 或任何存储，也不触发读取或业务操作。`SessionTimeline` 实例和 `useTimelineScroll` 的 viewport/content 观察器持续存在，按尺寸变化恢复文字锚点及跟随意图；全屏不另存原始 scrollTop，也不调用返回最新。暂停阅读时，布局重排保留仍可定位的原文字 offset，不因宽屏把更早文字排入同一行而重新采集锚点；用户阅读动作或锚点失效才更新该位置。
 
+`SessionView` 可接收包含原 section 的 `fullscreenBoundary` ref，供[助手详情布局](bot-management-web.md#详情与全屏边界)将标题、会话和详情纳入同一全屏根。该模式将注册、隔离、焦点和视口样式应用于既有祖先，键盘在 document 冒泡阶段处理，允许内层抽屉先消费按键。缺省根仍为下述 Session section；不移动或重挂会话。
+
 `SessionFullscreenContext` 允许共享视图向 `TaskDetailSurface` 登记 owner、原 section 和退出操作。登记期间 Surface 使用独立 Session 全屏样式占满 viewport，隐藏任务 chrome、Tabs 和通知；原 `DetailFullscreen.active` 不变。取消登记按 owner 核对，旧视图清理不能撤销新视图的登记。Surface 禁止自身 Escape/Tab 与 Session 的键盘边界竞争。Test 入口直接使用共享视图的 viewport 样式，不需要任务容器或另一份 Session。既有 section、portal、key 和 DOM 层级不变；任务容器同时展开并取消入场 transform，避免固定定位被祖先 containing block 或裁剪边界限制。首次进入 Session 全屏后，同一 Surface 挂载周期不再重播入场 transform 动画，防止退出时的动画几何污染阅读位置。
 
 全屏 hook 沿 Session 到 body 的祖先链将旁支设为 `inert`，记录并恢复原值，且覆盖全屏期间新增的背景节点；不能使包含 Session 的共同祖先 inert。背景隔离和 `useBodyScrollLock` 均有所有权计数，退出仅释放当前视图的计数，不提前解除外层 modal 的背景锁。Tab 在 Session 内按实际可聚焦控件循环，无可用控件时聚焦 section；外部焦点被限制回会话。内层菜单先在自己的冒泡处理器消费 Escape，Session 再消费尚未处理的 Escape 并退出，外层任务不处理同一次按键。显式退出使用 `preventScroll` 恢复仍连接且未隐藏或 inert 的入口；失效身份清理不将焦点抢回旧视图。
