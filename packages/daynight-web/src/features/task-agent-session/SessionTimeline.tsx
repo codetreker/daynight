@@ -20,11 +20,12 @@ export type SessionTimelineReadingHandle = Pick<ReturnType<typeof useTimelineScr
 // SessionTimeline adds the actual session fence and history epoch.
 export type SessionTimelineReading = { readonly scope: string; readonly ref: Ref<SessionTimelineReadingHandle> };
 
-export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder, loadingOlder, onLoadOlder, onLoadResource, historyError = null, displayMode = 'standard', historyReady = false, historyComplete = false, historyRevision = 0, connectionGeneration = 0, reading }: {
+export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder, loadingOlder, onLoadOlder, onLoadResource, historyError = null, suppressEmpty = false, displayMode = 'standard', historyReady = false, historyComplete = false, historyRevision = 0, connectionGeneration = 0, reading }: {
   readonly state: SessionState; readonly active: boolean; readonly canRespond: boolean;
   readonly onRespond: (interaction: SessionInteraction, response: InteractionResponse) => Promise<void>;
   readonly hasOlder: boolean; readonly loadingOlder: boolean; readonly onLoadOlder: () => Promise<void>;
   readonly onLoadResource: (resourceId: string, signal: AbortSignal) => Promise<Blob>; readonly historyError?: string | null;
+  readonly suppressEmpty?: boolean;
   readonly displayMode?: SessionDisplayMode;
   readonly reading?: SessionTimelineReading;
   /** Confirmed complete history, independent of live pagination admission and errors. */
@@ -56,7 +57,7 @@ export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder
       <div ref={scroll.content} className="session-timeline-content">
         {loadingOlder ? <div className="session-history-loading" role="status" aria-live="polite">{m.loadingOlder}</div> : null}
         {history.error ? <div role="alert" className="session-error session-history-error"><span>{history.error}</span>{hasOlder ? <button type="button" className="inline-link" disabled={!active || !historyReady || loadingOlder} onClick={history.retry}>{m.retryHistory}</button> : null}</div> : null}
-        {entries.length === 0 ? <p className="session-empty">{displayMode === 'conversation' ? m.conversationEmpty : m.empty}</p> : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} resources={state.resources} active={active} canRespond={entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} /></article>)}
+        {entries.length === 0 ? (suppressEmpty ? null : <p className="session-empty">{displayMode === 'conversation' ? m.conversationEmpty : m.empty}</p>) : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} resources={state.resources} active={active} canRespond={entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} /></article>)}
       </div>
     </div>
     {scroll.showLatest ? <button className="button session-latest" onClick={history.latest}>{m.latest} ↓</button> : null}
