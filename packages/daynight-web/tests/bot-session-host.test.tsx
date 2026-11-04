@@ -209,8 +209,10 @@ it.each([false, true])('honors Latest before replacing a pending Timeline with i
   expect(f.pane.retained.bookmark).toBeNull();
 });
 
-it.each([{ historyEpoch: 'new-history' }, { executionGeneration: '2' }])('rejects a pending bookmark after the archive identity changes: %o', async change => {
-  const f = await coldArchiveFixture(); await f.archive(change);
+it.each(['historyEpoch', 'executionGeneration'] as const)('rejects a pending bookmark after the archive identity changes: %s', async field => {
+  const f = await coldArchiveFixture();
+  const change = field === 'historyEpoch' ? { historyEpoch: 'new-history' } : { executionGeneration: String(BigInt(f.bot.snapshot().executionGeneration) + 1n) };
+  await f.archive(change);
   expect(f.pane.reading.current?.captureBookmark()).toMatchObject({ following: true, anchor: null });
   expect(f.pane.retained.bookmark).toBeNull();
 });

@@ -1,4 +1,5 @@
 import { parseSessionArchive, parseSessionArchiveStatus, verifySessionArchiveResources, SESSION_ARCHIVE_MAX_BYTES, type SessionArchive, type SessionArchiveStatus } from '../../../daynight/src/session/archive';
+import { STARTUP_REPORT_HEADER } from '../../../daynight/src/session/startup';
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
 export { listTestSessions, parseTestSessionList, type TestSessionSummary, type TestSessionList } from './test-sessions';
 import { parseBrowserMessage, parseCommandResponse, parseRegistrationResponse, parseCurrentSessionResponse, parseOperationResponse, parseTimelinePage, RELAY_LIMITS,
@@ -25,7 +26,7 @@ export type SessionApi = {
 };
 export function createSessionApi(projectId: string, taskId: string, userId: string, onPrincipalMismatch: () => void): SessionApi {
   const root = `/api/v1/projects/${requestId(projectId)}/tasks/${requestId(taskId)}/sessions`;
-  return createBoundSessionApi(`${root}/current`, (id) => `${root}/${requestId(id)}`, userId, onPrincipalMismatch, parseCurrentSessionResponse);
+  return createBoundSessionApi(`${root}/current`, (id) => `${root}/${requestId(id)}`, userId, onPrincipalMismatch, parseCurrentSessionResponse, { [STARTUP_REPORT_HEADER]: '1' });
 }
 export function createTestSessionApi(sessionId: string, userId: string, onPrincipalMismatch: () => void): SessionApi {
   return createIndependentSessionApi(sessionId, userId, onPrincipalMismatch);
@@ -46,7 +47,7 @@ function createIndependentSessionApi(sessionId: string, userId: string, onPrinci
     return { status: 'registered', session };
   });
 }
-function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => string, userId: string, onPrincipalMismatch: () => void, parseCurrent: (value: unknown) => CurrentSessionResponse): SessionApi {
+function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => string, userId: string, onPrincipalMismatch: () => void, parseCurrent: (value: unknown) => CurrentSessionResponse, currentHeaders: Readonly<Record<string, string>> = {}): SessionApi {
   async function get<T>(url: string, signal: AbortSignal, parse: (value: unknown) => T, init: RequestInit = {}, expectedStatus = 200): Promise<T> {
     const response = await request(url, signal, { ...init, headers: { Accept: 'application/json', ...init.headers } });
     assertResponsePrincipal(response, userId, onPrincipalMismatch);
@@ -67,7 +68,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
       signal.throwIfAborted();
       return archive;
     },
-    current: (signal) => get(currentUrl, signal, parseCurrent),
+    current: (signal) => get(currentUrl, signal, parseCurrent, { headers: currentHeaders }),
     timeline: (id, direction, cursor, signal) => {
       const params = new URLSearchParams({ direction, limit: '100' });
       if (cursor !== null) params.set('cursor', cursor);
