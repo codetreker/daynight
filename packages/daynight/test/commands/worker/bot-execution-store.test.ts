@@ -25,7 +25,7 @@ const fixture = () => {
   const open = () => { const store = openBotExecutionStore(file, { onMigration: () => {} }); handles.push(store); return store; };
   return { home, file, bots, record, open, store: open() };
 };
-const snapshot = (record: BotRecord): ControllerSnapshot => ({ executionId: record.intent!.executionId, testExecutionId: record.intent!.executionId, sessionId: record.intent!.sessionId!, executionGeneration: record.intent!.executionGeneration, controllerInstanceId: record.intent!.registration.controllerInstanceId, lifecycle: "ready", nativeSessionId: id(20), initialInputState: "not_required", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: false, respond: false }, controllerProcess: proof, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null });
+const snapshot = (record: BotRecord): ControllerSnapshot => ({ executionId: record.intent!.executionId, testExecutionId: record.intent!.executionId, sessionId: record.intent!.sessionId!, executionGeneration: record.intent!.executionGeneration, controllerInstanceId: record.intent!.controllerInstanceId, lifecycle: "ready", nativeSessionId: id(20), initialInputState: "not_required", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: false, respond: false }, controllerProcess: proof, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null });
 afterEach(() => { vi.restoreAllMocks(); for (const handle of handles.splice(0)) handle.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("Bot execution evidence", () => {
@@ -124,7 +124,7 @@ describe("Bot execution evidence", () => {
     const f = fixture(); f.store.prepare(f.record); const db = new Database(f.file); handles.push(db);
     db.prepare("UPDATE bot_executions SET record=json_set(record, '$.launchSubmission', 'lost')").run();
     expect(() => f.store.get(f.record)).toThrow(/submission/i);
-    db.pragma("user_version=10"); expect(() => f.store.get(f.record)).toThrow(/unsupported-version/); db.pragma("user_version=9");
+    db.pragma("user_version=11"); expect(() => f.store.get(f.record)).toThrow(/unsupported-version/); db.pragma("user_version=10");
   });
   it("migrates version 8 without rewriting inventory and rolls back a failed migration", () => {
     mkdirSync(root, { recursive: true }); const home = mkdtempSync(path.join(root, "migration-")); dirs.push(home);
@@ -136,7 +136,108 @@ describe("Bot execution evidence", () => {
     expect(() => openBotExecutionStore(file, { onMigration: () => {} })).toThrow(/migration/);
     expect(db.pragma("user_version", { simple: true })).toBe(8); expect(db.prepare("SELECT * FROM sqlite_schema ORDER BY name").all()).toEqual(schema); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
     vi.restoreAllMocks(); const store = openBotExecutionStore(file, { onMigration: () => {} }); handles.push(store);
-    expect(db.pragma("user_version", { simple: true })).toBe(9); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
+    expect(db.pragma("user_version", { simple: true })).toBe(10); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
     expect(db.prepare("SELECT * FROM projects").get()).toMatchObject({ project_id: id(4), local_path: home });
   });
+});
+
+const stopped = (record: BotRecord): ControllerSnapshot => ({ ...snapshot(record), lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: "2026-11-05T00:00:00Z" });
+const submitted = (f: ReturnType<typeof fixture>, record = f.record): void => {
+  f.store.prepare(record);
+  f.store.update(record, { launchSubmission: "acknowledged", controllerProcess: proof, snapshot: snapshot(record), aliasDirectory: path.join(f.home, `aliases-${record.intent!.executionGeneration}`) });
+};
+
+describe("Bot recovery storage", () => {
+  it("atomically replaces a stopped generation while preserving registration, role and original conversation", () => {
+    const f = fixture(); submitted(f);
+    const next = f.store.beginRecovery(f.record, stopped(f.record), f.home);
+    expect(next.intent).toMatchObject({ registration: f.record.intent!.registration, executionId: f.record.intent!.executionId, sessionId: f.record.intent!.sessionId, nativeSessionId: id(20), executionGeneration: "2", initialOperationId: f.record.intent!.initialOperationId, journalPath: f.record.intent!.journalPath, credentialFile: f.record.intent!.credentialFile });
+    expect(next.intent!.controllerInstanceId).not.toBe(f.record.intent!.controllerInstanceId);
+    expect(next.intent!.launchId).not.toBe(f.record.intent!.launchId);
+    expect(f.open().get(next)).toMatchObject({ launchId: next.intent!.launchId, executionGeneration: "2", launchSubmission: "not-submitted", snapshot: null, controllerProcess: null, recoveryCount: 1, restartAfterShutdown: false, recoveryBlocked: null, previous: { launchId: f.record.intent!.launchId, generation: "1", instanceId: f.record.intent!.controllerInstanceId, recordId: next.intent!.launchId }, retainedLaunchIds: [f.record.intent!.launchId], retainedAliasDirectories: [path.join(f.home, "aliases-1")] });
+    expect(() => f.store.beginRecovery(f.record, stopped(f.record), f.home)).toThrow(/current durable launch intent/);
+  });
+  it("retains abnormal counts through four normal restarts and refuses exhausted failure laundering", () => {
+    const f = fixture(); submitted(f);
+    let record = f.store.beginRecovery(f.record, stopped(f.record), f.home);
+    for (let n = 0; n < 4; n++) {
+      submitted(f, record); f.store.markShutdown(record, true);
+      record = f.store.beginRecovery(record, stopped(record), f.home);
+      expect(f.store.get(record)?.recoveryCount).toBe(1);
+    }
+    submitted(f, record); record = f.store.beginRecovery(record, stopped(record), f.home);
+    submitted(f, record); record = f.store.beginRecovery(record, stopped(record), f.home);
+    expect(f.store.get(record)?.recoveryCount).toBe(3);
+    submitted(f, record); f.store.update(record, { snapshot: { ...snapshot(record), lifecycle: "failed", error: "native failed" } });
+    f.store.markShutdown(record, true);
+    expect(f.store.get(record)?.restartAfterShutdown).toBe(false);
+    expect(() => f.store.beginRecovery(record, stopped(record), f.home)).toThrow(/budget/);
+    expect(f.store.get(record)?.recoveryCount).toBe(3);
+  });
+  it("permits an orderly restart at the limit without erasing a previously blocked failure", () => {
+    const f = fixture(); submitted(f);
+    let record = f.record;
+    for (let n = 0; n < 3; n++) { record = f.store.beginRecovery(record, stopped(record), f.home); submitted(f, record); }
+    f.store.markShutdown(record, true);
+    record = f.store.beginRecovery(record, stopped(record), f.home);
+    expect(f.store.get(record)?.recoveryCount).toBe(3);
+    submitted(f, record); f.store.blockRecovery(record, "authorization revoked"); f.store.markShutdown(record, true);
+    expect(f.store.get(record)).toMatchObject({ restartAfterShutdown: false, recoveryBlocked: "authorization revoked", recoveryCount: 3 });
+    expect(() => f.store.beginRecovery(record, stopped(record), f.home)).toThrow(/authorization revoked/);
+  });
+  it("rejects incomplete or conflicting stop evidence and arbitrary recovery patches", () => {
+    const f = fixture(); submitted(f);
+    for (const patch of [{ nativeStopped: false }, { stoppedAt: null }, { controllerProcess: null }, { nativeSessionId: null }, { nativeSessionId: id(99) }, { executionGeneration: "2" }, { controllerInstanceId: id(99) }, { sessionId: id(99) }, { lifecycle: "ready" }, { controllerProcess: { ...proof, commandHash: "b".repeat(64) } }]) {
+      expect(() => f.store.beginRecovery(f.record, { ...stopped(f.record), ...patch } as ControllerSnapshot, f.home)).toThrow();
+      expect(f.bots.get(owner, id(3))!.intent!.executionGeneration).toBe("1");
+    }
+    for (const patch of [{ recoveryCount: 0 }, { restartAfterShutdown: true }, { recoveryBlocked: null }, { previous: null }, { retainedLaunchIds: [] }, { retainedAliasDirectories: [] }]) expect(() => f.store.update(f.record, patch as BotExecutionPatch)).toThrow(/fields/);
+  });
+  it("rolls back both intent and execution when the replacement evidence write fails", () => {
+    const f = fixture(); submitted(f); const before = f.store.get(f.record);
+    const prepare = Database.prototype.prepare;
+    vi.spyOn(Database.prototype, "prepare").mockImplementation(function(this: Database.Database, sql: string) {
+      const statement = prepare.call(this, sql);
+      if (!sql.includes("INSERT INTO bot_executions")) return statement;
+      return new Proxy(statement, { get(target, key) { if (key === "run") return (...args: unknown[]) => { Reflect.apply(target.run, target, args); throw new Error("replacement rejected"); }; const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value; } });
+    });
+    expect(() => f.store.beginRecovery(f.record, stopped(f.record), f.home)).toThrow(/replacement rejected/);
+    vi.restoreAllMocks();
+    expect(f.bots.get(owner, id(3))).toEqual(f.record); expect(f.store.get(f.record)).toEqual(before);
+  });
+});
+
+
+it("migrates existing format 9 intents and execution evidence atomically without replacing ownership", () => {
+  const f = fixture(); submitted(f);
+  const original = structuredClone(f.record) as BotRecord;
+  const legacyIntent = original.intent! as unknown as Record<string, unknown>;
+  delete legacyIntent.controllerInstanceId;
+  const execution = structuredClone(f.store.get(f.record)!) as unknown as Record<string, unknown>;
+  for (const field of ["recoveryCount", "restartAfterShutdown", "recoveryBlocked", "previous", "retainedLaunchIds", "retainedAliasDirectories"]) delete execution[field];
+  const file = path.join(f.home, "legacy.sqlite"), db = new Database(file); handles.push(db);
+  for (const name of ["005-baseline.sql", "006-cleanup-schedules.sql", "007-resource-cleanup-intent.sql", "008-bot-inventory.sql", "009-bot-executions.sql"]) db.exec(readFileSync(new URL(`../../../src/commands/worker/sqlite/${name}`, import.meta.url), "utf8"));
+  db.pragma("user_version=9");
+  const keys = [owner.serverOrigin, owner.ownerUserId, owner.workerId, id(3)];
+  db.prepare("INSERT INTO bots VALUES (?,?,?,?,?)").run(...keys, JSON.stringify(original));
+  db.prepare("INSERT INTO bot_executions VALUES (?,?,?,?,?)").run(...keys, JSON.stringify(execution));
+  const before = db.prepare("SELECT record FROM bots").get(), beforeExecution = db.prepare("SELECT record FROM bot_executions").get();
+  const exec = Database.prototype.exec;
+  vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) { const result = exec.call(this, sql); if (sql.includes("UPDATE bot_executions")) throw new Error("recovery migration interrupted"); return result; });
+  expect(() => openBotExecutionStore(file, { onMigration: () => {} })).toThrow(/migration/);
+  expect(db.pragma("user_version", { simple: true })).toBe(9);
+  expect(db.prepare("SELECT record FROM bots").get()).toEqual(before);
+  expect(db.prepare("SELECT record FROM bot_executions").get()).toEqual(beforeExecution);
+  vi.restoreAllMocks();
+  const bots = openBotStore(file, { onMigration: () => {} }), store = openBotExecutionStore(file, { onMigration: () => {} }); handles.push(bots, store);
+  const record = bots.get(owner, id(3))!;
+  expect(record).toEqual(f.record);
+  expect(store.get(record)).toEqual(f.store.get(f.record));
+  expect(db.pragma("user_version", { simple: true })).toBe(10);
+});
+
+it("refuses recovery into a different private execution home", () => {
+  const f = fixture(); submitted(f);
+  expect(() => f.store.beginRecovery(f.record, stopped(f.record), path.join(f.home, "replacement"))).toThrow(/home/);
+  expect(f.bots.get(owner, id(3))).toEqual(f.record);
 });

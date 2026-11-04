@@ -358,8 +358,10 @@ flowchart TD
 | `project transfer` | 确定 Project 与 `/me`，读取目标预览，确认后提交 `POST /api/v1/projects/{id}/transfer` |
 | `team list` | `GET /api/v1/me`，再读取全部 `GET /api/v1/teams` 页 |
 | `team show`、`team default show` | `GET /api/v1/me`，再按选定 ID 读取 `GET /api/v1/teams/{id}` |
+| `team default set <uuid\|personal>` | `GET /api/v1/me` 与指定 Team；验证成员资格并确认后更新本地配置，不提交远程 mutation |
 | `team create` | `GET /api/v1/me`，确认后 `POST /api/v1/teams`，提交原始名称与 `expectedUserId` |
 | `team rename`、`team delete` | `GET /api/v1/me` 和目标 Team，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}`，提交名称、精确 version 和 `expectedUserId` |
+| `team invitation create`、`list`、`revoke` | 解析当前用户和目标 Team，分别 POST、GET `/api/v1/teams/{id}/invitations` 或 DELETE 其指定邀请；写入确认并携带 `expectedUserId` |
 | `team member list` | `GET /api/v1/me`，再读取所选 Team 的完整 `GET /api/v1/teams/{id}/members` 目录 |
 | `team member set-role`、`team member remove`、`team leave` | `GET /api/v1/me` 与目标成员快照，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}/members/{userId}`，提交真实成员版本与 `expectedUserId` |
 | `team projects` | `GET /api/v1/me`，再读取全部 `GET /api/v1/projects?teamId=...` 页 |
@@ -397,6 +399,19 @@ Team 读取先以 `/me` 确定真实用户和 Personal Team，并核对响应主
 失效配置显示成可用；`team list` 不解析默认，显式目标也不受其影响。该读取路径不写
 配置，既有全范围 Project 发现继续使用原列表方法。
 
+`default set` 使用发起请求时的规范 origin 和 token 快照，以 `/me` 主体定位当前
+`teamDefaults` pair，保留其存在性和原值作为写入前置条件，不解析或验证旧目标。
+显式目标或真实 Personal ID 经 Team 详情与主体、成员关系校验后，确认提示展示名称、ID
+和角色。网络与确认结束后才取得配置排他锁；锁内重读 YAML，比较 origin、token 和当前
+pair，仅更新该 pair。其他账号或服务的配置不参与当前选择，token 轮换后同一账号仍
+使用原选择。取消、身份不匹配或前置条件变化均不写入。
+
+专属 writer 复用配置文件的 regular-file 检查、原子替换与含 token 文件的 0600 模式；
+YAML AST 保留注释及未知字段。ownership 校验在写前对比目标路径之外的解码值，拒绝
+共享 alias 导致其他设置变化；创建缺失的祖先映射时只忽略该路径空祖先的差异。本地
+替换或清理失败可能发生在写入后，writer 重读精确 pair 报告当前事实，不自动重放或
+把读取结果当作操作成功凭据。
+
 Team 生命周期写入复用当前用户和目标解析，确认阶段不持配置锁。普通确认展示操作及
 目标；删除将名称编码为 JSON string literal，让换行、控制符、反斜线和空白可见，
 再将输入解码并精确比较原文。非 TTY 且无 `--confirm` 时不写入；显式布尔确认只
@@ -407,6 +422,10 @@ typed mutation API 绑定 `/me` 主体并校验响应主体、资源与删除回
 消费回执，不追加读取判断提交。拒绝、取消和未知提交保留各自结果；网络中断、取消
 等待、无效成功响应或未知提交不能证明回滚，也不能自动重发。后续读取只描述当前事实。
 
+邀请管理只输出经过验证的同服务一次性链接，列表只接受并渲染元数据；撤销消费有限
+回执，`changed:false` 是确认的未变更结果，但不能区分已撤销、已消费或不存在。创建响应可能含秘密，因此解析和错误
+诊断在暴露原因链之前隔离不可信响应内容；链接不写配置或长期缓存。服务端继续负责
+权限和 Personal Team 拒绝，客户端验证响应主体与请求目标。
 成员目录解析验证每项 Team、用户身份、角色、精确关系版本、时间及 nullable 资料，完整
 验证后才输出。成员变更使用该关系的版本而非 Team 元数据或 Project grant 版本；`leave`
 以当前用户为目标。typed mutation API 验证响应主体及目标，消费服务返回的成员关系或

@@ -29,6 +29,36 @@ const install = (extra?: (url: string, init?: RequestInit) => Response | Promise
 beforeEach(() => { focused = true; vi.spyOn(document, "hasFocus").mockImplementation(() => focused); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible"); });
 
 describe("Team workspace navigation", () => {
+  it.each(["/shared-projects", `/projects/${projectId}/tasks/00000000-0000-4000-8000-000000000006`])("preserves another tab's newer Team after a delayed self exit on %s", async (route) => {
+    window.history.replaceState(null, "", `/teams/${a}/members`);
+    const receipt = Promise.withResolvers<Response>();
+    const fetcher = install((url, init) => {
+      if (url === `/api/v1/teams/${a}`) return json({ ...team(a, "Alpha"), membership: { ...team(a, "Alpha").membership, role: "member" } });
+      if (url === `/api/v1/teams/${a}/members`) return json({ items: [{ ...team(a, "Alpha").membership, role: "member", profile: { name: "Alice", email: null, avatarUrl: null } }] });
+      if (url === `/api/v1/teams/${a}/members/${userId}` && init?.method === "DELETE") return receipt.promise;
+      if (url.startsWith(`/api/v1/projects/${projectId}`)) return json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404);
+      return undefined;
+    });
+    render(<AuthenticatedApp />); await screen.findByRole("button", { name: "Leave Team" });
+    await waitFor(() => expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(a));
+    fireEvent.click(screen.getByRole("button", { name: "Leave Team" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Leave Team" }));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1));
+    act(() => navigate(route));
+    if (route === "/shared-projects") await screen.findByRole("heading", { name: "Projects shared with me" });
+    else await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith(`/api/v1/projects/${projectId}`))).toBe(true));
+    expect(screen.getByRole("dialog", { hidden: true })).toBeInTheDocument();
+    localStorage.setItem(`daynight.selectedTeam:${userId}`, b);
+    await act(async () => receipt.resolve(json({ teamId: a, userId, removed: true, actorRole: null })));
+    await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).toBeNull());
+    expect(window.location.pathname).toBe(route);
+    if (route === "/shared-projects") {
+      expect(screen.getByRole("heading", { name: "Projects shared with me" })).toBeInTheDocument();
+      expect(screen.getByText(/You left the Team/)).toBeInTheDocument();
+    }
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(b);
+    act(() => navigate("/projects")); await screen.findByRole("heading", { name: "Beta" });
+  });
   it("uses Personal initially, offers paginated Team links and preserves native navigation", async () => {
     const fetcher = install(); render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "Personal" });

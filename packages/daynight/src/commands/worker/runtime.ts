@@ -38,6 +38,7 @@ import { createWorkerRemote } from "./remote.js";
 import { createWorkerReporter } from "./reporter.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
+import { shutdownWorkerExecutions } from "./shutdown.js";
 import { createWorkerGitManager } from "./worktrees.js";
 
 const hasHerdrJournal = async (paths: WorkerPaths, platform: TaskPlatform): Promise<boolean> => {
@@ -243,10 +244,12 @@ export const runWorker = async (options: {
     if (coordinator !== undefined) {
       try {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });
-        if (!await coordinator.shutdown()) throw new Error("Some task resources could not be confirmed stopped and closed; the private Herdr instance was retained.");
-        const operation = createOperation({ limits: { totalMs: 30_000 } });
-        try { if (herdr !== undefined && herdr.lifecycle === undefined) await herdr.stopInstance(operation); }
-        finally { operation.dispose(); }
+        await shutdownWorkerExecutions({ tasks: async () => {
+          if (!await coordinator!.shutdown()) throw new Error("Some task resources could not be confirmed stopped and closed; the private Herdr instance was retained.");
+          const operation = createOperation({ limits: { totalMs: 30_000 } });
+          try { if (herdr !== undefined && herdr.lifecycle === undefined) await herdr.stopInstance(operation); }
+          finally { operation.dispose(); }
+        } });
       } catch (error) { failures.push(error); }
     }
     try { await git?.dispose(); } catch (error) { failures.push(error); }

@@ -167,12 +167,16 @@ daynight team show [--team <uuid|personal>] [--json]
 daynight team create <name> [--confirm] [--json]
 daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team invitation create [--team <uuid|personal>] [--confirm] [--json]
+daynight team invitation list [--team <uuid|personal>] [--json]
+daynight team invitation revoke <invite-id> [--team <uuid|personal>] [--confirm] [--json]
 daynight team member list [--team <uuid|personal>] [--json]
 daynight team member set-role <user-id> <member|admin> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team member remove <user-id> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team leave [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
+daynight team default set <uuid|personal> [--confirm] [--json]
 daynight invitation inspect [--stdin] [--json]
 daynight invitation accept [--stdin] [--confirm] [--json]
 daynight bot list [--json]
@@ -420,7 +424,7 @@ records startup-file ownership and installation limits.
 ## Configuration setup
 
 The shared configuration file is `~/.daynight/config.yml`. The complete
-[`config.example.yml`](config.example.yml) covers service access, review and worker
+[`config.example.yml`](config.example.yml) covers service access, Team defaults, review and worker
 settings with their defaults and optional overrides. It is included at the root
 of the npm package. For an npm global installation, locate it with:
 
@@ -598,13 +602,20 @@ the configured `teamDefaults` entry for the normalized service origin and curren
 account, or the account's Personal Team when that entry is absent. `team default
 show` verifies and displays the resolved target. An invalid or inaccessible
 configured target fails explicitly; `team list` and an explicit `--team` remain
-available. These commands do not change configuration or remote resources.
+available. These read commands do not change configuration or remote resources.
 Lists finish and validate every page before producing output. Use `--json` for
 complete resources. Project discovery and `project list` still use all accessible
 projects, independently of this default.
 
-An externally provisioned default uses canonical UUIDs and the normalized
-service origin as keys:
+`team default set <uuid|personal>` validates the target and current membership,
+then saves it for the current service and account. It does not depend on the old
+default, so it can repair an invalid or inaccessible selection. `personal` saves
+the account's actual Personal Team UUID. Without `--confirm`, an interactive
+confirmation shows the target and role; non-interactive calls fail before writing.
+Cancellation or an identity mismatch leaves the configuration unchanged. The
+command does not alter remote preferences or repository bindings.
+
+The saved map uses canonical UUIDs and the normalized service origin as keys:
 
 ```yaml
 teamDefaults:
@@ -612,8 +623,15 @@ teamDefaults:
     80be22c3-96d8-4ed1-bcd3-b820f2508c62: b95baeff-1522-4d99-a9b4-dfcb58392eca
 ```
 
-`team default show --json` returns `configured` (the saved ID or `null`) and
-the verified `team` resource.
+`team default show --json` and `team default set --json` return `configured`
+(the saved ID, or `null` for an absent entry on show) and the verified `team`
+resource. A token rotation for the same account retains its selection; other
+accounts and services have independent entries. The write preserves comments,
+unknown fields and other entries. It refuses to overwrite a changed credential
+or current entry, or to change unrelated settings through YAML aliases. Resolve
+the conflict or separate the aliases before retrying. When a local replacement
+result is uncertain, the command reads the current entry and does not replay the
+write automatically.
 
 `team create` creates an ordinary Team, `team rename` changes its name, and
 `team delete` removes an empty ordinary Team. Names preserve their original
@@ -634,6 +652,14 @@ Reading current facts does not recover a lost receipt. A later output or cleanup
 failure retains a confirmed receipt. Use `--json` for the confirmed resource or
 deletion receipt.
 
+`team invitation create` creates a single-use link for an ordinary Team. The
+link is disclosed once on stdout; save it securely before sharing it. Listing
+invitations returns metadata only and cannot recover the link. `revoke` disables
+an invitation; an unchanged receipt can also mean it was already revoked,
+consumed, or absent. Create
+and revoke require confirmation or `--confirm`, and use the explicit or default
+Team context. Personal Teams cannot have invitations. An unknown create result
+does not cause a replacement invitation to be created automatically.
 `team member list` reads the selected Team's complete member directory, including
 nullable profile fields, roles and membership versions. `team member set-role`
 changes an existing member's role; `team member remove` removes one, and `team

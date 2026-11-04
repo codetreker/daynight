@@ -6,7 +6,8 @@ export type ConfigurationOwnership = {
   section?: string;
   fields: readonly string[];
   retainedSequence?: RetainedSequenceOwnership;
-};
+  path?: never;
+} | { path: readonly [string, ...string[]]; section?: never; fields?: never; retainedSequence?: never };
 
 const mapping = (value: unknown, field: string): Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError(`${field} must be a mapping.`);
@@ -20,8 +21,25 @@ const sectionMapping = (value: Record<string, unknown>, section: string | undefi
   section === undefined ? value : Object.hasOwn(value, section) ? mapping(value[section], section) : {};
 
 const unownedConfiguration = (value: Record<string, unknown>, ownership: ConfigurationOwnership): unknown => {
+  if (ownership.path !== undefined) return withoutPath(value, ownership.path);
   const section = outsideFields(sectionMapping(value, ownership.section), ownership.fields);
   return ownership.section === undefined ? section : { root: outsideFields(value, [ownership.section]), section };
+};
+
+// Remove only the owned leaf. Empty ancestors are equivalent to absent ancestors
+// when adding that leaf, but every sibling remains part of the comparison.
+const withoutPath = (value: Record<string, unknown>, path: readonly string[]): Record<string, unknown> => {
+  const [key, ...rest] = path;
+  if (key === undefined || !Object.hasOwn(value, key)) return value;
+  const result = { ...value };
+  if (rest.length === 0) delete result[key];
+  else {
+    const child = mapping(value[key], key);
+    const remaining = withoutPath(child, rest);
+    if (Object.keys(remaining).length === 0) delete result[key];
+    else result[key] = remaining;
+  }
+  return result;
 };
 
 const retainedEntries = (
@@ -48,7 +66,7 @@ export const verifyConfigurationUpdate = (
     throw new Error("Configuration uses shared YAML aliases that would change unrelated settings. Separate the edited settings from those aliases, then run the command again.");
   };
   if (!isDeepStrictEqual(unownedConfiguration(before, ownership), unownedConfiguration(after, ownership))) fail();
-  if (ownership.retainedSequence !== undefined) {
+  if (ownership.path === undefined && ownership.retainedSequence !== undefined) {
     const afterEntries = retainedEntries(after, ownership, ownership.retainedSequence);
     for (const [identity, entry] of retainedEntries(before, ownership, ownership.retainedSequence)) {
       if (afterEntries.has(identity) && !isDeepStrictEqual(entry, afterEntries.get(identity))) fail();
