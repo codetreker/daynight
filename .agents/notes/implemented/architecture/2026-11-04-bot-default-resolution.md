@@ -38,7 +38,9 @@ fence and synchronization before recording ready and invoking the helper.
 
 The [specification](../../../../docs/spec/assistant.md) and
 [design](../../../../docs/design/assistant.md) own the public fields and transaction
-contract. No public client request can assert successful startup or save preferences.
+contract. The [Session report path](2026-11-04-bot-session-admission.md) verifies
+current live synchronization before committing readiness and preferences; a public
+client cannot establish success merely by asserting it.
 
 ## Alternatives
 
@@ -62,8 +64,9 @@ All registered owner Workers remain visible in defaults observations so an old
 explicit selection can explain its failure. The response and resolution work grow
 with that user's Worker inventory; this is separate from task-list pagination.
 
-Native startup, filesystem preflight, Session binding and success reports remain
-separate lifecycle work. The callback's durable readiness check is not independent
-proof of a live native session. Those consumers must use the existing transaction
-and verification contract; a client boolean or spawn receipt cannot replace it.
+Native startup and filesystem preflight remain execution responsibilities.
+[Session binding and reports](2026-11-04-bot-session-admission.md) use the existing
+transaction contract and verify current live synchronization before calling the
+preference helper. The helper's durable readiness check is not independent proof
+of a live native session; a client boolean or spawn receipt cannot replace it.
 The full assistant entry remains disabled until its hosting and UI are composed.

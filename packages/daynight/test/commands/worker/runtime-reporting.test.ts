@@ -117,7 +117,7 @@ describe("worker runtime reporting integration", () => {
     await eventually(() => expect(report).toHaveBeenCalledOnce());
     expect(report.mock.calls[0]![0]).toBe(uuid(4));
     expect(report.mock.calls[0]![1].taskInventory).toBeNull();
-    expect(mocks.telemetry).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ paths: f.paths, homeDirectory: f.homeDirectory, version: "9.8.7", workingDirectory: f.workingDirectory }));
+    expect(mocks.telemetry).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ paths: f.paths, homeDirectory: f.homeDirectory, version: "9.8.7", workingDirectory: f.workingDirectory, workerId: uuid(4), serverOrigin: "https://daynight.example" }));
     await vi.advanceTimersByTimeAsync(30_000);
     expect(report).toHaveBeenCalledTimes(2);
     expect(mocks.coordinator).not.toHaveBeenCalled();

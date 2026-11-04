@@ -16,7 +16,8 @@ const mocks = vi.hoisted(() => ({ ordinary: vi.fn(), assistant: vi.fn(), cpus: v
 const environment = { PATH: "/fixture/bin" };
 vi.mock("node:os", () => ({ type: () => "Fixture", release: () => "1", version: () => "1", arch: () => "arm64", cpus: mocks.cpus, totalmem: () => 1024, freemem: () => 256 }));
 vi.mock("node:fs/promises", () => ({ realpath: async (value: string) => value, stat: async () => ({ isDirectory: () => true }), access: async () => {}, statfs: async () => ({ blocks: 100n, bavail: 25n, bsize: 4096n }) }));
-vi.mock("../../../src/commands/worker/herdr/instance.js", () => ({ createHerdrNativeEnvironment: mocks.nativeEnvironment, createHerdrVersionObserver: () => ({ observe: async () => "1.0.0" }) }));
+vi.mock("../../../src/commands/worker/herdr/instance.js", () => ({ createHerdrNativeEnvironment: mocks.nativeEnvironment }));
+vi.mock("../../../src/commands/worker/herdr/runtime-version.js", () => ({ createHerdrRuntimeVersionObserver: () => ({ observe: async () => "1.0.0" }), HerdrVersionUnavailableError: class extends Error {} }));
 vi.mock("../../../src/commands/controller/providers/copilot-runtime.js", () => ({ copilotExecutable: () => "/fixture/bundled/copilot" }));
 vi.mock("../../../src/commands/worker/herdr/command.js", async original => ({ ...await original<object>(), runHerdrCommand: mocks.ordinary, spawnHerdrProcess: () => { throw new Error("Native spawning is forbidden in this fixture."); } }));
 
@@ -33,7 +34,7 @@ const output = async (command: HerdrCommand): Promise<HerdrCommandResult> => ({ 
   ? command.file.endsWith("codex") ? "codex-cli 0.1.0" : command.file.endsWith("claude") ? "2.1.247 (Claude Code)" : "GitHub Copilot CLI 1.0.83"
   : command.file.endsWith("codex") ? "app-server --stdio" : command.file.endsWith("claude") ? "--input-format --output-format --include-partial-messages" : "--no-auto-update" });
 const collector = (overrides: Partial<Parameters<typeof createAssistantHostCollector>[0]> = {}) => createWorkerTelemetryCollector({
-  paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "fixture", name: "Fixture" }, platform: "linux",
+  paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "fixture", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example",
   assistantHost: createAssistantHostCollector({ workingDirectory: cwd, configuration: { agent: "copilot", model: null, args: [], agentControlMode: "herdr", recoveryLimit: 3 }, environment,
     resolveExecutable: provider => provider === "codex" ? provider : `/fixture/bundled/${provider}`, runCommand: mocks.assistant, ...overrides }),
 });
