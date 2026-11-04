@@ -217,6 +217,9 @@ export type AuthMessages = {
       readonly invite: string;
       readonly loading: string;
       readonly memberNotice: string;
+      readonly grantUnknown: string;
+      readonly grantObserved: string;
+      readonly readCurrentMembers: string;
       readonly membersTitle: string;
       readonly accessDescription: string;
       readonly memberColumn: string;
@@ -250,7 +253,7 @@ export type AuthMessages = {
       readonly inviteBody: string;
       readonly inviteTerms: string;
       readonly revokeBody: string;
-      readonly notice: Readonly<Record<"permissionReloaded" | "conflictReloaded" | "permissionChecked", string>>;
+      readonly notice: Readonly<Record<"permissionReloaded" | "conflictReloaded" | "permissionChecked" | "identityChanged", string>>;
     };
     readonly settings: {
       readonly eyebrow: string;

@@ -147,7 +147,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(access, core.ProjectAccess{ProjectID: project.ID, UserID: member.UserID, Role: core.ProjectMemberRole, DirectGrant: &invited.Grant}) {
 			t.Fatalf("invited access: %+v %v", access, err)
 		}
-		members, err := snapshot.ProjectMembers(ctx, project.ID)
+		members, err := snapshot.ProjectParticipants(ctx, project.ID)
 		if err != nil {
 			return err
 		}
@@ -273,7 +273,7 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 					case "accessible":
 						_, err = snapshot.AccessibleProjects(ctx, admin, Page{Limit: 1})
 					case "members":
-						_, err = snapshot.ProjectMembers(ctx, project.ID)
+						_, err = snapshot.ProjectParticipants(ctx, project.ID)
 					case "inspect":
 						_, err = snapshot.Invitation(ctx, invite.TokenHash)
 					case "list-invites":
@@ -319,5 +319,57 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 	s.Close()
 	if _, err := s.CreatePrivateProject(context.Background(), admin, uuid.NewString(), "Closed", "https://example.com/closed"); err == nil {
 		t.Fatal("closed pool accepted")
+	}
+}
+
+func TestProjectParticipantsKeepGrantFactsAndRequireCanonicalProfiles(t *testing.T) {
+	s, admin, member, project := membershipFixture(t)
+	ctx := context.Background()
+	var direct core.ProjectMember
+	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+		var err error
+		direct, err = tx.AddInvitedMember(ctx, member.UserID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	name, email, avatar := "  Participant  ", "participant@example.test", "https://example.test/avatar"
+	if _, err := s.Pool.Exec(ctx, `UPDATE users SET name=$2,email=$3,avatar_url=$4 WHERE id=$1`, admin.UserID, name, email, avatar); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		people, err := snapshot.ProjectParticipants(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+		if len(people) != 2 || people[0].UserID != admin.UserID || people[1].UserID != member.UserID {
+			t.Fatalf("deduplicated ordered participants: %#v", people)
+		}
+		if !reflect.DeepEqual(people[0].Profile, core.ProjectParticipantProfile{Name: &name, Email: &email, AvatarURL: &avatar}) || people[0].EffectiveRole != core.ProjectAdmin {
+			t.Fatalf("canonical profile: %#v", people[0])
+		}
+		if !reflect.DeepEqual(people[1], core.ProjectParticipant{UserID: member.UserID, Profile: core.ProjectParticipantProfile{}, EffectiveRole: core.ProjectMemberRole, DirectGrant: &direct.Grant}) {
+			t.Fatalf("nullable profile and exact grant: %#v", people[1])
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, member.UserID); err != nil {
+		t.Fatal(err)
+	}
+	var integrity *Error
+	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		people, err := snapshot.ProjectParticipants(ctx, project.ID)
+		if people != nil {
+			t.Fatalf("integrity failure returned a partial roster: %#v", people)
+		}
+		if !errors.As(err, &integrity) {
+			t.Fatalf("integrity failure lost its store error: %v", err)
+		}
+		return err
+	})
+	if integrity == nil || !errors.Is(err, integrity) || !strings.Contains(integrity.Cause.Error(), "profile is missing or inconsistent") {
+		t.Fatalf("missing canonical user did not fail: %v", err)
 	}
 }

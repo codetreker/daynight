@@ -47,8 +47,15 @@ and update times. The current direct source returns the actual grant; failed
 admission remains an error. It returns no member profiles, accepts no query
 parameters, supports GET/HEAD and preserves the principal response header and
 no-store policy. Resource admission and accessible-project filtering use
-the canonical direct-authorization source; the existing member response joins
-grant facts with nullable profile fields without changing its public JSON.
+the canonical direct-authorization source. GET project members returns
+`{items: ProjectParticipant[]}` with `userId`, a required `profile` object
+(nullable `name`, `email`, `avatarUrl`), `effectiveRole` and nullable `directGrant`.
+Raw grant candidates survive the canonical-user LEFT JOIN; missing user rows
+fail the whole roster instead of disappearing. Current direct data produces real
+grants. Legacy role PATCH requires `expectedUserId`, stored role and the exact
+grant version, and returns `ProjectGrant`; DELETE requires the actor and version
+and retains 204. The actor guard precedes domain SQL and reports 409
+`identity_mismatch`. Invitation result DTOs retain their existing contract.
 Worker administrator checks consume access, while claim ownership and acquisition
 assignment requirements retain their separate rules.
 The project settings API provides a versioned execution-warning threshold that

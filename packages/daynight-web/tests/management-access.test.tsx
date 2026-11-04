@@ -17,8 +17,8 @@ const user = { id: TEST_VIEWER_ID, name: 'Alice', email: 'alice@example.test', e
 const oldEmail = 'PRIVATE_OLD_ROSTER@example.test';
 const freshEmail = 'CURRENT_ROSTER@example.test';
 const roster = (email = oldEmail) => ({ items: [
-  { projectId, userId: TEST_VIEWER_ID, name: user.name, email: user.email, avatarUrl: null, role: 'member', version: 1n, createdAt: stamp, updatedAt: stamp },
-  { projectId, userId: otherId, name: 'Collaborator', email, avatarUrl: null, role: 'admin', version: 2n, createdAt: stamp, updatedAt: stamp },
+  { userId: TEST_VIEWER_ID, profile: { name: user.name, email: user.email, avatarUrl: null }, effectiveRole: 'member', directGrant: { projectId, userId: TEST_VIEWER_ID, role: 'member', version: 1n, createdAt: stamp, updatedAt: stamp } },
+  { userId: otherId, profile: { name: 'Collaborator', email, avatarUrl: null }, effectiveRole: 'admin', directGrant: { projectId, userId: otherId, role: 'admin', version: 2n, createdAt: stamp, updatedAt: stamp } },
 ] });
 const project = { id: projectId, name: 'Saved project', repoUrl: 'https://example.test/repo', createdAt: stamp, updatedAt: stamp, settings: { version: 3n, executionWarningMinutes: 60 } };
 const json = (body: unknown, status = 200) => wireResponse(body, { status, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });

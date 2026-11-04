@@ -963,8 +963,11 @@ database and persistence behavior.
 Task details share claim display and force withdrawal across the dialog,
 standalone page and fullscreen. Active claims show the user, machine, agent and
 phase; released claims are labeled, while completed history is not a current
-claim. Project membership supplies user names/accounts; a former member remains
-identified by its real user ID, and membership-read errors remain visible. The
+claim. Project participant profiles supply nullable names and email addresses,
+independently of the current-access owner that authorizes controls. The profile
+reader retains loading, request errors and retry; a former participant remains
+identified by its real user ID. A missing canonical profile is a roster error,
+not a fabricated former participant or an empty profile. The
 claimed heading has a bounded, focusable scroll region so full names, accounts,
 machine names and member errors remain readable without consuming the tabs and
 reading panels. This applies to dialog and standalone entries in normal and

@@ -1,13 +1,13 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { listMembers } from '../../api/auth';
-import type { ProjectMember } from '../../api/auth-types';
+import type { ProjectParticipant } from '../../api/auth-types';
 import { isAbortError } from '../../api/client';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 
 type Membership = {
   readonly projectId: string;
   readonly status: 'loading' | 'ready' | 'error';
-  readonly members: readonly ProjectMember[];
+  readonly members: readonly ProjectParticipant[];
   readonly error: unknown;
   readonly retry: () => void;
 };

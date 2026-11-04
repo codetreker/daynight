@@ -14,17 +14,32 @@ type ProjectMember struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-type ProjectMemberList struct {
-	Items []ProjectMember `json:"items"`
+type ProjectParticipantProfile struct {
+	Name      *string `json:"name"`
+	Email     *string `json:"email"`
+	AvatarURL *string `json:"avatarUrl"`
+}
+
+type ProjectParticipant struct {
+	UserID        string                    `json:"userId"`
+	Profile       ProjectParticipantProfile `json:"profile"`
+	EffectiveRole string                    `json:"effectiveRole"`
+	DirectGrant   *ProjectGrant             `json:"directGrant"`
+}
+
+type ProjectParticipantList struct {
+	Items []ProjectParticipant `json:"items"`
 }
 
 type SetProjectMemberRoleRequest struct {
-	Version int64  `json:"version"`
-	Role    string `json:"role"`
+	Version        int64  `json:"version"`
+	Role           string `json:"role"`
+	ExpectedUserID string `json:"expectedUserId"`
 }
 
 type RemoveProjectMemberRequest struct {
-	Version int64 `json:"version"`
+	Version        int64  `json:"version"`
+	ExpectedUserID string `json:"expectedUserId"`
 }
 
 type ProjectInvitation struct {

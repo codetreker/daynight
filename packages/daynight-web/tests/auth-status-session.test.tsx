@@ -75,8 +75,7 @@ beforeEach(() => {
   vi.mocked(getProjectAccess).mockReset().mockImplementation(async (projectId) => directAccessFixture(projectId, currentUser.id));
   vi.mocked(getAuthConfig).mockReset().mockResolvedValue({ providers: ['github'] });
   vi.mocked(logout).mockReset().mockResolvedValue(undefined);
-  vi.mocked(listMembers).mockReset().mockImplementation(async (projectId) => [{ projectId, userId: currentUser.id, role: 'member', version: 1n,
-    name: currentUser.name, email: currentUser.email, avatarUrl: null, createdAt: stamp, updatedAt: stamp }]);
+  vi.mocked(listMembers).mockReset().mockImplementation(async (projectId) => [{ userId: currentUser.id, profile: { name: currentUser.name, email: currentUser.email, avatarUrl: null }, effectiveRole: 'member', directGrant: { projectId, userId: currentUser.id, role: 'member', version: 1n, createdAt: stamp, updatedAt: stamp } }]);
   graphRequest.mockReset().mockImplementation(async (projectId) => graph(projectId));
   vi.mocked(getTask).mockReset().mockImplementation(async (projectId, _taskId, _signal, admission) => { expect(admission.userId).toBe(currentUser.id); return serverDetail(projectId); });
   vi.mocked(setTaskStatus).mockReset();

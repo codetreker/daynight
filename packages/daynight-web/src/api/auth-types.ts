@@ -50,6 +50,12 @@ export type ProjectPeople = {
 export type ProjectPeopleQuery =
   | { readonly kind: "catalogue" }
   | { readonly kind: "resolve"; readonly userIds: readonly string[] };
+export type ProjectParticipant = {
+  readonly userId: string;
+  readonly profile: { readonly name: string | null; readonly email: string | null; readonly avatarUrl: string | null };
+  readonly effectiveRole: ProjectRole;
+  readonly directGrant: ProjectGrant | null;
+};
 export type ProjectMember = {
   readonly projectId: string;
   readonly userId: string;

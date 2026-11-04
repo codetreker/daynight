@@ -74,16 +74,15 @@ export type ProjectAccess = {
   readonly directGrant: ProjectGrant | null;
 };
 
-export type ProjectMember = {
-  readonly projectId: string;
+export type ProjectParticipant = {
   readonly userId: string;
-  readonly email: string | null;
-  readonly name: string | null;
-  readonly avatarUrl: string | null;
-  readonly role: "admin" | "member";
-  readonly version: bigint;
-  readonly createdAt: string;
-  readonly updatedAt: string;
+  readonly profile: {
+    readonly name: string | null;
+    readonly email: string | null;
+    readonly avatarUrl: string | null;
+  };
+  readonly effectiveRole: "admin" | "member";
+  readonly directGrant: ProjectGrant | null;
 };
 
 export type PullRequestProperty = {

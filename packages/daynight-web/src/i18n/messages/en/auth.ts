@@ -133,6 +133,9 @@ export const auth: AuthMessages = {
     },
     members: {
       eyebrow: "PROJECT SETTINGS", title: "Project members", subtitle: ({ projectName }) => `${projectName} · Manage collaborators and invitations`,
+      grantUnknown: "The service did not confirm the member change. Read current members before reviewing another change.",
+      grantObserved: "Current members have been read. The original write result remains unconfirmed; review the current grant before another change.",
+      readCurrentMembers: "Read current members",
       invite: "Invite member", loading: "Loading project members…", memberNotice: "You can read and write project tasks and attachments. Project administrators manage members and invitations.",
       membersTitle: "Members", accessDescription: "All members can read and write project resources.", memberColumn: "Member", roleColumn: "Project role", actionColumn: "Actions",
       roleLabel: ({ name }) => `Project role for ${name}`, removeLabel: ({ name }) => `Remove ${name}`, remove: "Remove",
@@ -150,6 +153,7 @@ export const auth: AuthMessages = {
       inviteBody: "Create a single-use invitation link for a collaborator. They will join as a member after signing in and confirming.",
       inviteTerms: "Expires in 7 days · Single use · Joining as: Member", revokeBody: "This invitation link will stop working immediately.",
       notice: {
+        identityChanged: "The signed-in account changed. Confirm your account before managing members.",
         permissionReloaded: "Project permissions have changed. The latest permissions have been loaded.",
         conflictReloaded: "Member details have changed. The latest permissions have been loaded. Review them before trying again.",
         permissionChecked: "Project permissions have changed. Your access has been checked again.",

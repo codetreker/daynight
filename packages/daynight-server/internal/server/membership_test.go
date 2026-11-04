@@ -91,6 +91,16 @@ func invitationBody(token string) string {
 	return string(encoded)
 }
 
+func memberRoleBody(t *testing.T, version int64, role, expectedUserID string) string {
+	t.Helper()
+	return jsonBody(t, api.SetProjectMemberRoleRequest{Version: version, Role: role, ExpectedUserID: expectedUserID})
+}
+
+func memberRemovalBody(t *testing.T, version int64, expectedUserID string) string {
+	t.Helper()
+	return jsonBody(t, api.RemoveProjectMemberRequest{Version: version, ExpectedUserID: expectedUserID})
+}
+
 func TestMembershipHTTPRolesVersionsAndCredentials(t *testing.T) {
 	h := membershipTestHarness(t)
 	base := "/api/v1/projects/" + h.project.ID
@@ -107,7 +117,7 @@ func TestMembershipHTTPRolesVersionsAndCredentials(t *testing.T) {
 		t.Fatalf("new member response: %+v", member)
 	}
 	listResponse := h.call("GET", base+"/members", "", h.member)
-	list := decodeResponse[api.ProjectMemberList](t, listResponse, 200)
+	list := decodeResponse[api.ProjectParticipantList](t, listResponse, 200)
 	if len(list.Items) != 2 || listResponse.Header().Get("Cache-Control") != "no-store" || strings.Contains(listResponse.Body.String(), "github:") || strings.Contains(listResponse.Body.String(), "uniAuth") {
 		t.Fatalf("member list: %s", listResponse.Body)
 	}
@@ -115,41 +125,48 @@ func TestMembershipHTTPRolesVersionsAndCredentials(t *testing.T) {
 	var adminVersion int64
 	for _, item := range list.Items {
 		if item.UserID == h.adminID {
-			adminVersion = item.Version
+			adminVersion = item.DirectGrant.Version
 		}
 	}
-	memberBody := func(role string) string { return fmt.Sprintf(`{"version":%d,"role":%q}`, member.Version, role) }
-	adminBody := func(role string) string { return fmt.Sprintf(`{"version":%d,"role":%q}`, adminVersion, role) }
-	for _, call := range []struct{ method, path, body string }{
-		{"GET", base + "/invitations", ""}, {"POST", base + "/invitations", `{}`},
-		{"PATCH", memberPath, `{"version":1,"role":"admin"}`}, {"DELETE", memberPath, `{"version":1}`},
-		{"DELETE", base + "/invitations/00000000-0000-0000-0000-000000000000", ""},
-	} {
-		assertProjectError(t, h.call(call.method, call.path, call.body, h.member), 403, "forbidden")
-		assertProjectError(t, h.call(call.method, call.path, call.body, h.outsider), 404, "not_found")
+	memberBody := func(role string) string { return memberRoleBody(t, member.Version, role, h.adminID) }
+	adminBody := func(role, expectedUserID string) string { return memberRoleBody(t, adminVersion, role, expectedUserID) }
+	outsider := decodeResponse[api.User](t, h.call("GET", "/api/v1/me", "", h.outsider), 200)
+	for _, actor := range []struct {
+		cookie *http.Cookie
+		userID string
+		status int
+		code   string
+	}{{h.member, h.memberID, 403, "forbidden"}, {h.outsider, outsider.ID, 404, "not_found"}} {
+		for _, call := range []struct{ method, path, body string }{
+			{"GET", base + "/invitations", ""}, {"POST", base + "/invitations", `{}`},
+			{"PATCH", memberPath, memberRoleBody(t, 1, "admin", actor.userID)}, {"DELETE", memberPath, memberRemovalBody(t, 1, actor.userID)},
+			{"DELETE", base + "/invitations/00000000-0000-0000-0000-000000000000", ""},
+		} {
+			assertProjectError(t, h.call(call.method, call.path, call.body, actor.cookie), actor.status, actor.code)
+		}
 	}
-	assertProjectError(t, h.call("PATCH", base+"/members/"+h.adminID, adminBody("member"), h.admin), 409, "last_admin")
-	assertProjectError(t, h.call("DELETE", base+"/members/"+h.adminID, fmt.Sprintf(`{"version":%d}`, adminVersion), h.admin), 409, "last_admin")
-	unchanged := decodeResponse[api.ProjectMember](t, h.call("PATCH", memberPath, memberBody("member"), h.admin), 200)
+	assertProjectError(t, h.call("PATCH", base+"/members/"+h.adminID, adminBody("member", h.adminID), h.admin), 409, "last_admin")
+	assertProjectError(t, h.call("DELETE", base+"/members/"+h.adminID, memberRemovalBody(t, adminVersion, h.adminID), h.admin), 409, "last_admin")
+	unchanged := decodeResponse[api.ProjectGrant](t, h.call("PATCH", memberPath, memberBody("member"), h.admin), 200)
 	if unchanged.Version != member.Version {
 		t.Fatal("no-op role change advanced the observed version")
 	}
-	promoted := decodeResponse[api.ProjectMember](t, h.call("PATCH", memberPath, memberBody("admin"), h.admin), 200)
+	promoted := decodeResponse[api.ProjectGrant](t, h.call("PATCH", memberPath, memberBody("admin"), h.admin), 200)
 	if promoted.Version <= member.Version || promoted.Role != "admin" {
 		t.Fatalf("promotion: %+v", promoted)
 	}
 	assertProjectError(t, h.call("PATCH", memberPath, memberBody("member"), h.admin), 409, "version_conflict")
-	assertProjectError(t, h.call("DELETE", memberPath, fmt.Sprintf(`{"version":%d}`, member.Version), h.admin), 409, "version_conflict")
+	assertProjectError(t, h.call("DELETE", memberPath, memberRemovalBody(t, member.Version, h.adminID), h.admin), 409, "version_conflict")
 	pat := decodeResponse[api.CreatedPersonalAccessToken](t, h.call("POST", "/api/v1/me/tokens", `{"name":"project administrator","expiresAt":null}`, h.member), 201)
 	if response := h.request("GET", base+"/members", "", nil, []string{"Bearer " + pat.Token}, ""); response.Code != 200 {
 		t.Fatalf("PAT membership access: %d %s", response.Code, response.Body)
 	}
-	demotion := h.request("PATCH", base+"/members/"+h.adminID, adminBody("member"), nil, []string{"Bearer " + pat.Token}, "https://foreign.test")
+	demotion := h.request("PATCH", base+"/members/"+h.adminID, adminBody("member", h.memberID), nil, []string{"Bearer " + pat.Token}, "https://foreign.test")
 	if demotion.Code != 200 {
 		t.Fatalf("PAT project administration: %d %s", demotion.Code, demotion.Body)
 	}
-	demoted := decodeResponse[api.ProjectMember](t, demotion, 200)
-	if response := h.call("DELETE", base+"/members/"+h.adminID, fmt.Sprintf(`{"version":%d}`, demoted.Version), h.member); response.Code != 204 {
+	demoted := decodeResponse[api.ProjectGrant](t, demotion, 200)
+	if response := h.call("DELETE", base+"/members/"+h.adminID, memberRemovalBody(t, demoted.Version, h.memberID), h.member); response.Code != 204 {
 		t.Fatalf("remove member: %d %s", response.Code, response.Body)
 	}
 	assertProjectError(t, h.call("GET", base+"/members", "", h.admin), 404, "not_found")
@@ -249,8 +266,8 @@ func TestMembershipHTTPDatabaseFailuresAreVisible(t *testing.T) {
 	}
 	for _, call := range []struct{ method, path, body string }{
 		{"GET", base + "/members", ""},
-		{"PATCH", base + "/members/" + h.adminID, `{"version":1,"role":"admin"}`},
-		{"DELETE", base + "/members/" + h.adminID, `{"version":1}`},
+		{"PATCH", base + "/members/" + h.adminID, memberRoleBody(t, 1, "admin", h.adminID)},
+		{"DELETE", base + "/members/" + h.adminID, memberRemovalBody(t, 1, h.adminID)},
 	} {
 		assertProjectError(t, h.call(call.method, call.path, call.body, h.admin), 500, "internal_error")
 	}
@@ -303,8 +320,8 @@ func TestMembershipHTTPStrictInputAndErrorMapping(t *testing.T) {
 	response = httptest.NewRecorder()
 	h.handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 403, "forbidden")
-	assertProjectError(t, h.call("DELETE", base+"/members/00000000-0000-0000-0000-000000000000", `{"version":1}`, h.admin), 404, "not_found")
-	assertProjectError(t, h.call("PATCH", base+"/members/00000000-0000-0000-0000-000000000000", `{"version":1,"role":"member"}`, h.admin), 404, "not_found")
+	assertProjectError(t, h.call("DELETE", base+"/members/00000000-0000-0000-0000-000000000000", memberRemovalBody(t, 1, h.adminID), h.admin), 404, "not_found")
+	assertProjectError(t, h.call("PATCH", base+"/members/00000000-0000-0000-0000-000000000000", memberRoleBody(t, 1, "member", h.adminID), h.admin), 404, "not_found")
 	if got := h.call("DELETE", base+"/invitations/00000000-0000-0000-0000-000000000000", "", h.admin); got.Code != 204 {
 		t.Fatal("revocation must be idempotent")
 	}

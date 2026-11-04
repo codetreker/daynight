@@ -92,5 +92,6 @@ for self-role checks. Profile errors remain observable without authorizing or
 suppressing an otherwise valid claim operation. Freshness failures disable
 role-dependent submission until revalidation, while every server request still
 authorizes independently. The access endpoint, sync codec and actual CLI/Web
-consumers change together; member JSON and direct-grant transaction policies stay
-with their existing owners.
+consumers change together. The [participant projection](2026-11-04-project-participant-projection.md)
+owns the current roster and grant-write wire values; direct-grant transaction
+policies remain with the membership owner.

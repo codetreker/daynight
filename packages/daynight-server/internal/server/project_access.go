@@ -8,11 +8,16 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
+func projectGrantResponse(grant core.ProjectGrant) api.ProjectGrant {
+	return api.ProjectGrant{ProjectID: grant.ProjectID, UserID: grant.UserID, Role: string(grant.Role),
+		Version: grant.Version, CreatedAt: grant.CreatedAt.UTC(), UpdatedAt: grant.UpdatedAt.UTC()}
+}
+
 func projectAccessResponse(access core.ProjectAccess) api.ProjectAccess {
 	var direct *api.ProjectGrant
 	if grant := access.DirectGrant; grant != nil {
-		direct = &api.ProjectGrant{ProjectID: grant.ProjectID, UserID: grant.UserID, Role: string(grant.Role),
-			Version: grant.Version, CreatedAt: grant.CreatedAt.UTC(), UpdatedAt: grant.UpdatedAt.UTC()}
+		response := projectGrantResponse(*grant)
+		direct = &response
 	}
 	return api.ProjectAccess{EffectiveRole: string(access.Role), DirectGrant: direct}
 }
