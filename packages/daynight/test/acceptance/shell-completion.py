@@ -631,7 +631,7 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
             ("empty project create prefix", "daynight project create ", ["--repo"]),
             ("empty team prefix", "daynight team ", ["create", "rename", "delete", "list", "show", "projects", "default"]),
             ("short command empty team prefix", "dn team ", ["create", "rename", "delete", "list", "show", "projects", "default"]),
-            ("empty team default prefix", "daynight team default ", ["show"]),
+            ("empty team default prefix", "daynight team default ", ["show", "set"]),
             ("empty team delete options", "daynight team delete ", ["--team", "--if-version", "--confirm", "--json"]),
             ("empty team show options", "daynight team show ", ["--team", "--json"]),
             ("empty team projects options", "daynight team projects ", ["--team", "--json"]),

@@ -356,6 +356,7 @@ flowchart TD
 | `project show <id>` | `GET /api/v1/projects/{id}` |
 | `team list` | `GET /api/v1/me`，再读取全部 `GET /api/v1/teams` 页 |
 | `team show`、`team default show` | `GET /api/v1/me`，再按选定 ID 读取 `GET /api/v1/teams/{id}` |
+| `team default set <uuid\|personal>` | `GET /api/v1/me` 与指定 Team；验证成员资格并确认后更新本地配置，不提交远程 mutation |
 | `team create` | `GET /api/v1/me`，确认后 `POST /api/v1/teams`，提交原始名称与 `expectedUserId` |
 | `team rename`、`team delete` | `GET /api/v1/me` 和目标 Team，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}`，提交名称、精确 version 和 `expectedUserId` |
 | `team projects` | `GET /api/v1/me`，再读取全部 `GET /api/v1/projects?teamId=...` 页 |
@@ -391,6 +392,19 @@ Team 读取先以 `/me` 确定真实用户和 Personal Team，并核对响应主
 循环及超额，完整验证后统一渲染。`default show` 对已配置目标执行详情读取，避免把
 失效配置显示成可用；`team list` 不解析默认，显式目标也不受其影响。该读取路径不写
 配置，既有全范围 Project 发现继续使用原列表方法。
+
+`default set` 使用发起请求时的规范 origin 和 token 快照，以 `/me` 主体定位当前
+`teamDefaults` pair，保留其存在性和原值作为写入前置条件，不解析或验证旧目标。
+显式目标或真实 Personal ID 经 Team 详情与主体、成员关系校验后，确认提示展示名称、ID
+和角色。网络与确认结束后才取得配置排他锁；锁内重读 YAML，比较 origin、token 和当前
+pair，仅更新该 pair。其他账号或服务的配置不参与当前选择，token 轮换后同一账号仍
+使用原选择。取消、身份不匹配或前置条件变化均不写入。
+
+专属 writer 复用配置文件的 regular-file 检查、原子替换与含 token 文件的 0600 模式；
+YAML AST 保留注释及未知字段。ownership 校验在写前对比目标路径之外的解码值，拒绝
+共享 alias 导致其他设置变化；创建缺失的祖先映射时只忽略该路径空祖先的差异。本地
+替换或清理失败可能发生在写入后，writer 重读精确 pair 报告当前事实，不自动重放或
+把读取结果当作操作成功凭据。
 
 Team 生命周期写入复用当前用户和目标解析，确认阶段不持配置锁。普通确认展示操作及
 目标；删除将名称编码为 JSON string literal，让换行、控制符、反斜线和空白可见，

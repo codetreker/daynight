@@ -15,8 +15,9 @@ export const teamDefinition: CommandDefinition = {
     { name: "list", description: "List Teams joined by the current user", options: [json, help], details: "Read every page before printing the complete result." },
     { name: "show", description: "Show a Team and the current membership", options: [team, json, help], details: "Use --team when specified, otherwise the configured default or Personal Team." },
     { name: "projects", description: "List projects owned by a Team", options: [team, json, help], details: "Read every page before printing the complete result. Use --team when specified, otherwise the configured default or Personal Team." },
-    { name: "default", description: "Read the current account's default Team", commands: [
+    { name: "default", description: "Manage the current account's default Team", commands: [
       { name: "show", description: "Show and validate the default Team", options: [json, help], details: "An unconfigured default resolves to the current account's Personal Team." },
+      { name: "set", description: "Set the default Team", arguments: [{ name: "team", description: "Team UUID or personal" }], options: [confirm, json, help], details: "Verifies membership before saving the default for this server and account. Without --confirm, an interactive confirmation is required." },
     ], options: [help] },
   ], options: [help], details: "Run daynight team <command> --help for command usage.",
 };
