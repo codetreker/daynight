@@ -44,7 +44,7 @@ it("runs both packed launchers through Steps reads, help and safe read failures"
   const discoveryRepoUrl = "https://git.example/private-project-URL/Steps.git";
   const lastMatchingId = "ffffffff-6666-4666-8666-666666666666";
   const project = (id: string, name: string, repoUrl = discoveryRepoUrl): Project => ({
-    id, name, repoUrl, settings: { version: 1n, executionWarningMinutes: 60 },
+    id, name, repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n },
     createdAt: "2026-11-03T10:11:12.123456Z", updatedAt: "2026-11-03T10:11:12.123456Z",
   });
   const matchingProjects = [project(projectId, "private-name-one\u001b[31m\u202e"), project(otherId, "private-name-two"), project(lastMatchingId, "private-name-three")];

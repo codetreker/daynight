@@ -23,7 +23,7 @@ SDK 提供 App-aware provider discovery；发现失败与用户会话失效分�
 [语言设计](daynight-web-i18n.md)拥有已实现的类型化目录、Intl 格式化器、首屏解析、常驻 Provider、共享选择器和全部现有第一方组件的双语呈现；[双语需求](../spec/daynight-web-i18n.md)拥有完整覆盖与验收。语言偏好使用独立的 origin-local 键，不改变本文的项目浏览记录、API、图或附件生命周期。
 
 [执行计时架构](daynight-task-timing.md)的起止字段与数据库 `observedAt` 已进入严格 API 读取器。
-`useTaskGraph` 从 task-sync 获取最新服务端样本，保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。[缓存架构](daynight-task-sync.md)拥有已实现的 IndexedDB schema 4 摘要、完整属性同步、原子增量应用和身份生命周期；详情已在同一 scope 下按需持久化，以摘要业务版本和恢复需要驱动 GET。
+`useTaskGraph` 从 task-sync 获取最新服务端样本，保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。[缓存架构](daynight-task-sync.md)拥有已实现的 IndexedDB schema 5 摘要、完整属性同步、原子增量应用和身份生命周期；详情已在同一 scope 下按需持久化，以摘要业务版本和恢复需要驱动 GET。
 [外部依赖架构](daynight-external-dependencies.md)的存储及严格读取准备也已实现：
 GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去重及完整依赖的子集，
 摘要自身内容比较和详情描述符纳入该集合。buildGraphIndex 用普通依赖构造弱连通分量，
@@ -868,18 +868,20 @@ access 恢复必须呈现已保存资源或触发明确重读。资源仍缺失�
 该读取先废弃更早的读取代际，防止创建前的列表覆盖已确认邀请，也不把局部追加当成完整目录。
 此读取失效不取消已发送写入，也不把未知结果视为未提交。
 
-Project、分页 Project 与图内 Project.settings 的版本通过专用 `project-json.ts` envelope 解码：
-复用鉴权与根版本读取的 `json-source.ts` 原始片段定位，只对已知 settings 子对象调用根版本解码，
-分别覆盖 root Project、items[] 和 graph.project；原生 JSON 先验证完整正文，未知嵌套对象保持原有语义。
-成员管理按真实 direct grant 的 role/version 编辑，不因其为最后一条 direct admin 而禁用。
-只有继承访问的 participant 没有可修改或删除的 grant。自删成功后复用当前 access owner 重验，
-只有权威 unavailable 才离开项目；继承权限仍存在时保留页面。网络、协议或服务错误保留读取重试，
-不推定已失权或重发原写入。
+Project、分页 Project 与图内 Project 的 settings.version 和 ownership.version 通过
+`project-json.ts` envelope 无损解码；root Project、items[]、graph.project 与 task-sync.project
+保持相同内在形状。GET Project 的 access、members.actorAccess 和 task-sync.actorAccess
+也解码其 ownership 与 directGrant 版本。各解码器复用 json-source.ts 的原始片段定位，
+先验证完整 JSON，只处理声明的资源子树；未知嵌套对象和 task properties 保持原有语义，
+不要求浏览器提供 reviver source context。超过 `2^53` 的资源版本保持 bigint，写入时编码为
+JSON 数字；缺失或错误 settings/ownership 不补默认值。
 
-同一原始片段机制仅在已声明的 access.directGrant 与 task-sync.actorAccess.directGrant
-路径无损解码授权版本；不递归改写未知嵌套对象或 task properties 的 version。
-保留通用 parseApiJson 的其他语义，不要求较新浏览器的 reviver source context。
-超过 `2^53` 的 settings.version 保持 bigint，保存编码为 JSON 数字；缺失或错误 settings 不补默认值。
+成员管理按真实 direct grant 的 role/version 编辑，不因其为最后一条 direct admin 而禁用。
+只有继承访问的 participant 没有可修改或删除的 grant。members 的 items 与 actorAccess
+由同一快照返回；MembersPanel 通过既有 access owner 的请求观察次序和身份/project 屏障
+发布本人来源，不用独立请求的旧角色与新名册混合展示。claim-owner 资料读取继续只承担展示。
+自删成功后复用当前 access owner 重验，只有权威 unavailable 才离开项目；继承权限仍存在时
+保留页面。网络、协议或服务错误保留读取重试，不推定已失权或重发原写入。
 
 ## 完整项目图的本地投影
 

@@ -40,17 +40,23 @@ adds NewMemberships/NewMembershipRoutes, transaction-scoped access checks, priva
 project creation, filtered project lists, administrator changes and invitations.
 Stored `ProjectGrant` facts and their real observation versions are distinct from
 computed `ProjectAccess`. The authenticated
-`GET /api/v1/projects/{projectId}/access` returns exactly
-`{effectiveRole,directGrant}`. Both keys are required; a present grant contains
-only its project/user IDs, stored role, int64 JSON-number version and UTC creation
-and update times. Inherited-only admission has a null grant; failed admission
-remains an error. It returns no member profiles, accepts no query
-parameters, supports GET/HEAD and preserves the principal response header and
-no-store policy. Resource admission and accessible-project filtering use
+`GET /api/v1/projects/{projectId}/access` returns required projectId, ownerTeam,
+ownership, effectiveRole, teamRole, directGrant and canTransfer. TeamRef has an
+id, personal/ordinary kind and a nullable raw name; Personal names are null.
+Ownership contains the real teamId and positive int64 JSON-number version.
+A present grant contains its project/user IDs, stored role, exact version and
+UTC creation/update times. teamRole is null/member/admin; canTransfer is true
+only for an owner Team admin. Inherited-only admission has a null grant; failed
+admission remains an error. The endpoint returns no member profiles, accepts no
+query parameters, supports GET/HEAD and preserves the principal response header
+and no-store policy. Resource admission and accessible-project filtering use
 the canonical relation that computes the maximum of owner Team and direct-grant
 roles under `none < member < admin`. GET project members returns
-`{items: ProjectParticipant[]}` with `userId`, a required `profile` object
-(nullable `name`, `email`, `avatarUrl`), `effectiveRole` and nullable `directGrant`.
+`{items: ProjectParticipant[], actorAccess: ProjectAccess}` from one snapshot.
+Each participant has userId, a required profile object (nullable name, email and
+avatarUrl), effectiveRole, nullable inheritedFrom:{team:TeamRef,role} and nullable
+directGrant. The Web publishes actorAccess through its existing identity,
+project and observation fences before using the roster for management.
 Raw owner-Team and grant candidates survive the canonical-user LEFT JOIN;
 missing user rows fail the whole roster instead of disappearing. Inherited-only
 participants have a null grant, while any direct grant retains its own real
@@ -87,8 +93,8 @@ assignedTo and the complete current properties object, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and batched property rows share one
 repeatable-read snapshot. Every snapshot and delta, including an empty delta,
 also returns required top-level `actorAccess` using the access endpoint's DTO.
-The existing admission result supplies it in the same snapshot; its nested grant
-version remains an exact int64 JSON number. Browser consumers publish access only
+The existing admission result supplies it in the same snapshot; its nested ownership and grant
+versions remain exact int64 JSON numbers. Browser consumers publish access only
 to the current identity/project memory owner, outside persistent Project and Task
 records. Missing keys propagate removal through whole-summary
 replacement; ordinary property changes preserve the epoch. Invalid stored
@@ -753,7 +759,10 @@ grant. Canonical login UPSERT, Personal initialization and session creation shar
 one transaction; repeat and concurrent login reuse the unique Team and validate
 its owner admin. Authentication does not repair broken Personal state. Internal
 Project reads require real ownership and report integrity errors for a missing
-row; the public Project/account DTOs retain their existing fields. Lists contain
+row. Public Project DTOs add required ownership:{teamId,version} across create,
+GET, list, graph and sync. GET additionally returns fresh access from the same
+read snapshot. GET /me adds a required personalTeam:TeamRef read from the real
+validated Personal relationship. Lists contain
 only projects admitted by the same current dual-source relation.
 Names preserve accepted text and must be nonempty UTF-8 without NUL. Repository addresses accept HTTPS, SSH URL and SCP
 syntax, including SSH aliases and `@` inside repository paths. HTTPS userinfo,

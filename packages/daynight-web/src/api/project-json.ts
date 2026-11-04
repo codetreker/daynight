@@ -10,6 +10,8 @@ const projectSource = (text: string): unknown => {
   if (object(parsed) && Object.hasOwn(parsed, "settings")) {
     parsed.settings = parseApiJson(jsonObjectSources(text).get("settings")!);
   }
+  if (object(parsed) && Object.hasOwn(parsed, "ownership")) parsed.ownership = parseApiJson(jsonObjectSources(text).get("ownership")!);
+  if (object(parsed) && Object.hasOwn(parsed, "access")) parsed.access = projectAccessSource(jsonObjectSources(text).get("access")!);
   return parsed;
 };
 

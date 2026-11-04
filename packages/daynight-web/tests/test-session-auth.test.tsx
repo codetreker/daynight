@@ -31,13 +31,13 @@ it('renders the shared session after authentication and removes it on sign-out',
   }
   vi.stubGlobal('WebSocket', Socket);
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    if (url === '/api/v1/me') return json({ id: owner, name: 'Owner', email: 'owner@example.com', emailVerified: true, avatarUrl: null });
+    if (url === '/api/v1/me') return json({ personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: owner, name: 'Owner', email: 'owner@example.com', emailVerified: true, avatarUrl: null });
     if (url === `/api/v1/test-sessions/${sessionId}`) return json({ session: snapshot });
     if (url.includes('/timeline?')) return json({ sessionId, historyEpoch: snapshot.historyEpoch, items: [{ kind: 'assistant_message', entryId: '00000012-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Private test conversation' }] }], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
     if (url.endsWith('/commands')) throw new Error('lost acknowledgement');
     if (url === '/api/v1/auth/logout') return new Response(null, { status: 204 });
     if (url === '/api/v1/auth/providers') return json({ providers: ['github'] });
-    if (url === '/api/v1/projects?limit=50') return json({ items: [{ id: '00000020-1111-4111-8111-111111111111', name: 'Session test project', repoUrl: 'https://github.com/example/session-test', settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-28T01:00:00Z', updatedAt: '2026-10-28T01:00:00Z' }], nextCursor: null });
+    if (url === '/api/v1/projects?limit=50') return json({ items: [{ ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: '00000020-1111-4111-8111-111111111111', name: 'Session test project', repoUrl: 'https://github.com/example/session-test', settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-28T01:00:00Z', updatedAt: '2026-10-28T01:00:00Z' }], nextCursor: null });
     throw new Error(`Unexpected request ${url}`);
   }));
   render(<AuthenticatedApp />);
@@ -86,7 +86,7 @@ function focusSession() {
   vi.stubGlobal('WebSocket', Socket);
   let meCalls = 0, principal = owner;
   const identityCheck = Promise.withResolvers<Response>();
-  const user = (id: string, name: string) => ({ id, name, email: `${name}@example.com`, emailVerified: true, avatarUrl: null });
+  const user = (id: string, name: string) => ({ personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id, name, email: `${name}@example.com`, emailVerified: true, avatarUrl: null });
   const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': principal } });
   const fetcher = vi.fn(async (url: string) => {
     if (url === '/api/v1/me') return ++meCalls === 1 ? response(user(owner, 'Owner')) : identityCheck.promise;

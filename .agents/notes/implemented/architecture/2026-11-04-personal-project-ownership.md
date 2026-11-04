@@ -16,8 +16,8 @@ removes an owner's direct grant.
 Every user has one Personal Team with a real owner admin member. Every Project
 has one real `project_ownership` row. The internal Project aggregate includes its
 Team ID, ownership version and update time; a missing required ownership row is
-an integrity failure. Existing public Project and account DTOs retain their
-current fields. The [auth design](../../../../docs/design/daynight-auth.md) owns
+an integrity failure. Public Project and account DTOs expose these real relationships under the
+[public ownership decision](2026-11-04-public-project-ownership.md). The [auth design](../../../../docs/design/daynight-auth.md) owns
 storage, login, writer and migration details.
 
 Migration 032 creates `teams`, `team_members` and `project_ownership` and renames

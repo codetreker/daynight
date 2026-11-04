@@ -37,7 +37,8 @@ func resourceMethodNotAllowed(logger *slog.Logger, allowed string) Authenticated
 func projectResponse(project core.Project) api.Project {
 	return api.Project{ID: project.ID, Name: project.Name, RepoURL: project.RepoURL,
 		CreatedAt: project.CreatedAt.UTC(), UpdatedAt: project.UpdatedAt.UTC(),
-		Settings: api.ProjectSettings{Version: project.Settings.Version, ExecutionWarningMinutes: project.Settings.ExecutionWarningMinutes}}
+		Settings:  api.ProjectSettings{Version: project.Settings.Version, ExecutionWarningMinutes: project.Settings.ExecutionWarningMinutes},
+		Ownership: ownershipResponse(project.Ownership)}
 }
 
 func (h *projectHandler) create(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -98,11 +99,11 @@ func (h *projectHandler) get(w http.ResponseWriter, request *http.Request, princ
 		return
 	}
 	logger = logger.With("project_id", id)
-	project, err := h.projects.Get(request.Context(), principal, id)
+	project, access, err := h.projects.GetWithAccess(request.Context(), principal, id)
 	if err != nil {
 		writeError(w, request, logger, "project", "get", err)
 		return
 	}
 	logger.InfoContext(request.Context(), "project read", "type", "resource", "component", "project", "phase", "get", "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, projectResponse(project))
+	writeJSON(w, request, logger, http.StatusOK, api.ProjectDocument{Project: projectResponse(project), Access: projectAccessResponse(access)})
 }

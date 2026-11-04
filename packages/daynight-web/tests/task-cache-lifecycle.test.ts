@@ -6,7 +6,7 @@ const projectId = "20000000-0000-0000-0000-000000000001";
 const userFence = "30000000-0000-0000-0000-000000000001";
 const cacheGeneration = "40000000-0000-0000-0000-000000000001";
 const time = "2026-10-20T12:00:00.123456789Z";
-const project = { id: projectId, name: "Project", repoUrl: "https://example.test/repo", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "https://example.test/repo", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const invalidated = { userId, projectId, userFence, cacheGeneration, state: "invalidated", invalidatedBy: "corrupt", epoch: null, project: null, maxUpdatedAt: null, taskCount: 0, edgeCount: 0 };
 const active = { ...invalidated, state: "active", invalidatedBy: null, epoch: cacheGeneration, project, maxUpdatedAt: time, taskCount: 1 };
 

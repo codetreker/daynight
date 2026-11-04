@@ -114,9 +114,12 @@ func TestPersonalIntegrityFailuresAreNotRepairedByLoginOrProjectCreation(t *test
 			if _, err := s.CreatePrivateProject(ctx, principal, uuid.NewString(), "Invalid", "host:repo"); err == nil || errors.Is(err, core.ErrNotFound) {
 				t.Fatalf("project creation hid invalid Personal ownership: %v", err)
 			}
-			after, err := s.IdentityUser(ctx, user.ID)
-			if err != nil || after.Name != nil {
-				t.Fatalf("failed login committed user UPSERT: %#v %v", after, err)
+			if _, err := s.IdentityUser(ctx, user.ID); err == nil || errors.Is(err, core.ErrNotFound) {
+				t.Fatalf("account read hid invalid Personal ownership: %v", err)
+			}
+			var name *string
+			if err := s.Pool.QueryRow(ctx, `SELECT name FROM users WHERE id=$1`, user.ID).Scan(&name); err != nil || name != nil {
+				t.Fatalf("failed login committed user UPSERT: %v %v", name, err)
 			}
 			var projects int
 			if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM projects`).Scan(&projects); err != nil || projects != 0 {

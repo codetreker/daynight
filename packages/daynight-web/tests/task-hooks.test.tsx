@@ -40,7 +40,7 @@ const time = "2026-10-20T12:00:00.123456Z";
 const node: GraphTask = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, id: taskId, titlePreview: "任务一", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
 const detail: TaskDetail = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, id: taskId, projectId, title: "任务一", description: "完整描述", properties: { pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
 const graph = (id = projectId): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
-  project: { settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: "https://github.com/example/repo", createdAt: time, updatedAt: time },
+  project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: "https://github.com/example/repo", createdAt: time, updatedAt: time },
   tasks: [node], summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
 });
 const deferred = <T,>() => {

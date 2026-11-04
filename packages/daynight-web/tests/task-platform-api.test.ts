@@ -12,7 +12,7 @@ const time = '2026-10-24T00:00:00Z';
 const task = { assignedTo: null, id: taskId, projectId, title: 'Platform work', description: '', properties: { pullRequests: [] }, status: 'todo',
   version: 9007199254740993n, allowAgents: false, requiredPlatform: null, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
 const graph = (requiredPlatform: unknown) => ({ observedAt: time,
-  project: { id: projectId, name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
+  project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
   summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
   tasks: [{ ...task, titlePreview: task.title, titleTruncated: false, requiredPlatform }],
 });

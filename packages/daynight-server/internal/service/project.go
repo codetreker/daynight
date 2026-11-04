@@ -55,23 +55,30 @@ func (s *Projects) Create(ctx context.Context, principal core.Principal, input C
 }
 
 func (s *Projects) Get(ctx context.Context, principal core.Principal, id string) (core.Project, error) {
+	project, _, err := s.GetWithAccess(ctx, principal, id)
+	return project, err
+}
+
+func (s *Projects) GetWithAccess(ctx context.Context, principal core.Principal, id string) (core.Project, core.ProjectAccess, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.Project{}, err
+		return core.Project{}, core.ProjectAccess{}, err
 	}
 	id, err := CanonicalID(id)
 	if err != nil {
-		return core.Project{}, err
+		return core.Project{}, core.ProjectAccess{}, err
 	}
 	var project core.Project
+	var access core.ProjectAccess
 	var refusal *Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := RequireProjectRead(ctx, snapshot, principal, id); err != nil {
+		var err error
+		access, err = RequireProjectRead(ctx, snapshot, principal, id)
+		if err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
 			return err
 		}
-		var err error
 		project, err = snapshot.Project(ctx, id)
 		if errors.Is(err, core.ErrNotFound) {
 			refusal = &Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
@@ -80,12 +87,12 @@ func (s *Projects) Get(ctx context.Context, principal core.Principal, id string)
 		return err
 	})
 	if err != nil {
-		return core.Project{}, fmt.Errorf("get project: %w", err)
+		return core.Project{}, core.ProjectAccess{}, fmt.Errorf("get project: %w", err)
 	}
 	if refusal != nil {
-		return core.Project{}, refusal
+		return core.Project{}, core.ProjectAccess{}, refusal
 	}
-	return project, nil
+	return project, access, nil
 }
 
 func (s *Projects) List(ctx context.Context, principal core.Principal, request PageRequest) (ProjectPage, error) {

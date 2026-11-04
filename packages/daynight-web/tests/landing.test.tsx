@@ -6,7 +6,7 @@ import { blockedBy, demoTasks, taskIds, taskState } from "../src/features/landin
 import { en } from "../src/i18n/messages/en";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 
-const user = { id: "00000000-0000-4000-8000-000000000001", name: "Reader", email: "reader@example.com", emailVerified: true, avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: "00000000-0000-4000-8000-000000000001", name: "Reader", email: "reader@example.com", emailVerified: true, avatarUrl: null };
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 const failure = (status: number) => json({ error: { code: status === 401 ? "unauthenticated" : "internal_error", message: "Private diagnostics", requestId: "landing-check" } }, status);
 const deferred = <T,>() => {

@@ -15,7 +15,7 @@ const observedAt = '2026-10-29T11:00:00Z';
 const reportedAt = '2026-10-29T10:59:40Z';
 let focused = true;
 let principal = owner;
-const user = (id = owner) => ({ id, name: id === owner ? 'Alice' : 'Bob', email: id === owner ? 'alice@example.com' : 'bob@example.com', emailVerified: true, avatarUrl: null });
+const user = (id = owner) => ({ personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id, name: id === owner ? 'Alice' : 'Bob', email: id === owner ? 'alice@example.com' : 'bob@example.com', emailVerified: true, avatarUrl: null });
 const json = (body: unknown, status = 200, viewer = principal) => new Response(JSON.stringify(body), { status, headers: viewerHeaders(viewer, { 'Content-Type': 'application/json' }) });
 const summary = (workerId = firstWorker, name = 'Alice worker') => ({ workerId, machine: { id: workerId, name }, platform: 'linux', lastReportedAt: reportedAt, taskObservationState: 'unavailable', taskObservedAt: null, activeTaskCount: null });
 const list = (name = 'Alice worker', viewer = principal) => json({ observedAt, items: [summary(firstWorker, name)], nextCursor: null }, 200, viewer);

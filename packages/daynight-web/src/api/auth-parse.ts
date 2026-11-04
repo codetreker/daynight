@@ -1,7 +1,8 @@
 import { array, boolean, id, malformed, nonemptyString, record, string, timestamp } from "./parse";
+import { parseTeamRef, parseProjectOwnership } from "./team-parse";
 import { parseApiJson } from "./json";
 import { jsonContainerSources, jsonObjectSources } from "./json-source";
-import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectParticipant, ProjectRole, ProjectAccess, ProjectGrant, User } from "./auth-types";
+import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectParticipant, ProjectParticipants, ProjectRole, ProjectAccess, ProjectGrant, User } from "./auth-types";
 
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null => value === null ? null : parse(value);
 const unique = <T>(items: T[], key: (item: T) => string): T[] => {
@@ -36,8 +37,11 @@ export const decodeAuthJson = async (response: Response): Promise<unknown> => {
 
 export const parseUser = (value: unknown): User => {
   const data = record(value);
+  if (Object.keys(data).some((key) => !["id", "email", "emailVerified", "name", "avatarUrl", "personalTeam"].includes(key))) return malformed();
+  const personalTeam = parseTeamRef(data.personalTeam);
+  if (personalTeam.kind !== "personal") return malformed();
   return {
-    id: id(data.id), email: nullable(data.email, string), emailVerified: nullable(data.emailVerified, boolean),
+    personalTeam, id: id(data.id), email: nullable(data.email, string), emailVerified: nullable(data.emailVerified, boolean),
     name: nullable(data.name, string), avatarUrl: nullable(data.avatarUrl, string),
   };
 };
@@ -64,17 +68,29 @@ export const parseMember = (value: unknown, projectId?: string, userId?: string)
   if ((projectId !== undefined && member.projectId !== projectId) || (userId !== undefined && member.userId !== userId)) return malformed();
   return member;
 };
-export const parseMembers = (value: unknown, projectId: string): ProjectParticipant[] => {
+export const parseMembers = (value: unknown, projectId: string, actorUserId?: string): ProjectParticipants => {
   const page = record(value);
-  if (Object.keys(page).some((key) => key !== "items")) return malformed();
-  return unique(array(page.items, (value): ProjectParticipant => {
+  if (Object.keys(page).some((key) => key !== "items" && key !== "actorAccess")) return malformed();
+  const actorAccess = parseProjectAccess(page.actorAccess, projectId, actorUserId);
+  const items = unique(array(page.items, (value): ProjectParticipant => {
     const data = record(value);
-    if (Object.keys(data).some((key) => !["userId", "profile", "effectiveRole", "directGrant"].includes(key))) return malformed();
+    if (Object.keys(data).some((key) => !["userId", "profile", "effectiveRole", "directGrant", "inheritedFrom"].includes(key))) return malformed();
     const userId = id(data.userId), profile = record(data.profile);
     if (Object.keys(profile).some((key) => !["name", "email", "avatarUrl"].includes(key))) return malformed();
+    let inheritedFrom: ProjectParticipant["inheritedFrom"] = null;
+    if (data.inheritedFrom !== null) {
+      const inherited = record(data.inheritedFrom);
+      if (Object.keys(inherited).some((key) => key !== "team" && key !== "role")) return malformed();
+      inheritedFrom = { team: parseTeamRef(inherited.team), role: parseRole(inherited.role) };
+      if (inheritedFrom.team.id !== actorAccess.ownership.teamId || inheritedFrom.team.kind !== actorAccess.ownerTeam.kind || inheritedFrom.team.name !== actorAccess.ownerTeam.name) return malformed();
+    }
+    const directGrant = data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId);
+    const effectiveRole = parseRole(data.effectiveRole);
+    if (!matchesEffectiveRole(effectiveRole, inheritedFrom?.role ?? null, directGrant?.role ?? null)) return malformed();
     return { userId, profile: { name: nullable(profile.name, string), email: nullable(profile.email, string), avatarUrl: nullable(profile.avatarUrl, string) },
-      effectiveRole: parseRole(data.effectiveRole), directGrant: data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId) };
+      effectiveRole, directGrant, inheritedFrom };
   }), (item) => item.userId);
+  return { items, actorAccess };
 };
 
 export const parseInvitation = (value: unknown, projectId?: string): ProjectInvitation => {
@@ -131,15 +147,27 @@ export const parseProjectGrant = (value: unknown, projectId: string, userId?: st
   return grant;
 };
 
+const matchesEffectiveRole = (effective: ProjectRole, team: ProjectRole | null, direct: ProjectRole | null): boolean =>
+  (team === "admin" || direct === "admin" ? "admin" : team === "member" || direct === "member" ? "member" : null) === effective;
+
 export const parseProjectAccess = (value: unknown, projectId: string, userId?: string): ProjectAccess => {
   const data = record(value);
-  return { effectiveRole: parseRole(data.effectiveRole), directGrant: data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId) };
+  if (Object.keys(data).some((key) => !["projectId", "ownerTeam", "ownership", "effectiveRole", "teamRole", "directGrant", "canTransfer"].includes(key))) return malformed();
+  const access: ProjectAccess = {
+    projectId: id(data.projectId), ownerTeam: parseTeamRef(data.ownerTeam), ownership: parseProjectOwnership(data.ownership),
+    effectiveRole: parseRole(data.effectiveRole), teamRole: data.teamRole === null ? null : parseRole(data.teamRole),
+    directGrant: data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId), canTransfer: boolean(data.canTransfer),
+  };
+  if (access.projectId !== projectId || access.ownerTeam.id !== access.ownership.teamId || access.canTransfer !== (access.teamRole === "admin") ||
+    !matchesEffectiveRole(access.effectiveRole, access.teamRole, access.directGrant?.role ?? null)) return malformed();
+  return access;
 };
 
 export const projectAccessSource = (text: string): unknown => {
   const parsed = parseApiJson(text);
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return parsed;
   const data = parsed as Record<string, unknown>;
+  if (Object.hasOwn(data, 'ownership')) data.ownership = parseApiJson(jsonObjectSources(text).get('ownership')!);
   if (Object.hasOwn(data, 'directGrant')) data.directGrant = parseApiJson(jsonObjectSources(text).get('directGrant')!);
   return parsed;
 };
@@ -150,6 +178,7 @@ export const decodeMembersJson = async (response: Response): Promise<unknown> =>
   const parsed: unknown = JSON.parse(text);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return parsed;
   const data = parsed as Record<string, unknown>;
+  if (Object.hasOwn(data, "actorAccess")) data.actorAccess = projectAccessSource(jsonObjectSources(text).get("actorAccess")!);
   if (Array.isArray(data.items)) data.items = jsonContainerSources(jsonObjectSources(text).get("items")!).map(projectAccessSource);
   return parsed;
 };

@@ -178,7 +178,9 @@ Git、取消或期限错误均按实际原因失败，不得把查询失败视�
 显式的连字符 UUID，接受大小写输入并使用规范 ID 查询。列表及详情可在 Git 仓库之外
 执行，不查询当前工作目录；命令组及操作帮助遵守 PT1 的依赖隔离。
 
-Project 创建、详情、分页条目及图中的 Project 必须包含 `settings.version` 与 `settings.executionWarningMinutes`。
+Project 创建、详情、分页条目及图中的 Project 必须包含 `ownership:{teamId,version}`、
+`settings.version` 与 `settings.executionWarningMinutes`。ownership 引用真实 Team，归属版本是
+完整正 int64，CLI JSON 保留它；缺失归属不能用 null、version 0 或旧形状补齐。
 前者为完整正 int64，后者为 `1..2147483647` 的整数分钟，初始分别为 `1` 和 `60`。
 缺失或不合法字段是协议错误，不能由 CLI 补默认值；JSON 必须无损保留超过 `2^53` 的嵌套版本。
 可读 Project 输出保留既有字段，当前没有新增设置修改命令，设置通过 Web 或既有服务 API 修改。

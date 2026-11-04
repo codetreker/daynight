@@ -47,16 +47,24 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
   const callbacks = useRef({ onUnavailable, onMembershipChange });
   callbacks.current = { onUnavailable, onMembershipChange };
 
-  const load = async (lifetime: AbortSignal) => {
+  const load = async (lifetime: AbortSignal): Promise<boolean | undefined> => {
     readController.current?.abort();
     const read = new AbortController(); readController.current = read;
     const signal = AbortSignal.any([lifetime, read.signal, access.session.scope.signal]);
     const request = ++generation.current;
     setLoading(true); setError(null); setUnavailable(false);
     try {
-      const [result] = await Promise.all([listMembers(projectId, signal, { userId: access.session.scope.userId, onPrincipalMismatch: access.session.scope.principalMismatch }), access.session.revalidate()]);
+      await access.session.revalidate();
+      if (signal.aborted || request !== generation.current) return;
+      const observation = access.session.beginObservation();
+      const result = await listMembers(projectId, signal, { userId: access.session.scope.userId, onPrincipalMismatch: access.session.scope.principalMismatch });
+      await access.session.scope.ready(signal);
       if (signal.aborted || request !== generation.current || access.session.snapshot().status === 'unavailable') return;
-      setMembers(result);
+      if (!access.session.publishSync(observation, result.actorAccess)) {
+        if (!access.session.scope.isInvalidated) return load(lifetime);
+        return;
+      }
+      setMembers(result.items);
       const admitted = access.session.snapshot();
       if (admitted.status === 'ready' && !admitted.refreshing && admitted.access!.effectiveRole === 'admin') {
         try {
@@ -67,7 +75,7 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
           setMembers(null); setInvitations(null);
           await access.session.revalidate();
           if (signal.aborted || request !== generation.current || access.session.snapshot().status === 'unavailable') return;
-          setMembers(result);
+          setMembers(result.items);
           callbacks.current.onMembershipChange?.();
           setNotice('permissionReloaded');
         }
