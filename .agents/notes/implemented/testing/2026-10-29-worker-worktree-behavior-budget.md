@@ -27,6 +27,9 @@ behavior budget independently of bootstrap cost.
 The [discovery cases](../../../../packages/daynight/test/commands/worker/worktrees.test.ts)
 own separate nested fixture-preparation hooks. Each hook creates only its
 case's private repository, managed worktrees and supporting registrations.
+Private repositories are copied from file-owned immutable starting repositories
+under the [Worker fixture seed decision](2026-11-04-worker-git-fixture-seeds.md);
+managed worktree creation and discovery remain case-owned native operations.
 The marker hook also captures the original ownership marker. The claim-resource
 hook creates an unrelated locked worktree; an independent empty-repository case
 retains the absence-of-resources assertion without preparing managed worktrees.
@@ -62,8 +65,8 @@ regression condition.
 
 The tests execute real Git and retain every original assertion; slow setup
 fails as setup rather than being mistaken for slow discovery. The separate
-empty-state case adds one private repository bootstrap instead of sharing
-mutable state across tests. The claim-resource callback again uses the standard
+empty-state case owns one private repository copied from its format's seed;
+mutable state remains independent across tests. The claim-resource callback again uses the standard
 five-second deadline after preparation moves to its existing hook deadline.
 Production worktree behavior, platform selection, individual Git deadlines
 and operation deadlines remain unchanged.

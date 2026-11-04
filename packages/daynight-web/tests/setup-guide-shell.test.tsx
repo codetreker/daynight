@@ -6,7 +6,7 @@ import { renderWithLocale } from "./helpers/renderWithLocale";
 import { viewerHeaders } from "./helpers/taskSync";
 
 const userId = "00000000-0000-4000-8000-000000000001";
-const user = { id: userId, name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: userId, name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: viewerHeaders(userId, { "Content-Type": "application/json" }) });
 
 beforeEach(() => {

@@ -1,3 +1,5 @@
+import { directAccessFixture } from "../helpers/taskSync";
+import { stringifyWireJson } from "../helpers/wireJson";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,10 +18,10 @@ const projectId = "00000000-0000-4000-8000-000000000002";
 const tokenId = "00000000-0000-4000-8000-000000000003";
 const memberId = "00000000-0000-4000-8000-000000000004";
 const timestamp = "2026-10-22T12:34:56Z";
-const user = { id: userId, name: "Raw 用户", email: "raw@example.com", emailVerified: true, avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: userId, name: "Raw 用户", email: "raw@example.com", emailVerified: true, avatarUrl: null };
 const member = (id = userId, role = "admin") => ({ projectId, userId: id, name: id === userId ? user.name : "协作者 Raw", email: `${id}@example.com`, avatarUrl: null, role, version: 12, createdAt: timestamp, updatedAt: timestamp });
-const participant = (id = userId, role = "admin") => { const { name, email, avatarUrl, ...directGrant } = member(id, role); return { userId: id, profile: { name, email, avatarUrl }, effectiveRole: role, directGrant }; };
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
+const participant = (id = userId, role = "admin") => { const { name, email, avatarUrl, ...directGrant } = member(id, role); return { inheritedFrom: null, userId: id, profile: { name, email, avatarUrl }, effectiveRole: role, directGrant }; };
+const json = (body: unknown, status = 200) => new Response(stringifyWireJson(body), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
 const failure = (status: number, code: string) => json({ error: { code, message: "Untrusted server detail", requestId: "auth-locale-request" } }, status);
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -33,9 +35,9 @@ const defaults = (url: string): Response => {
   if (url === "/api/v1/me/tokens") return json({ items: [] });
   if (url === `/api/v1/projects/${projectId}/access`) {
     const { email: _email, name: _name, avatarUrl: _avatarUrl, ...directGrant } = member();
-    return json({ effectiveRole: directGrant.role, directGrant });
+    return json({ ...directAccessFixture(projectId, userId), effectiveRole: directGrant.role, directGrant });
   }
-  if (url === `/api/v1/projects/${projectId}/members`) return json({ items: [participant(), participant(memberId, "member")] });
+  if (url === `/api/v1/projects/${projectId}/members`) return json({ actorAccess: { ...directAccessFixture(projectId, userId), effectiveRole: "admin", directGrant: participant().directGrant }, items: [participant(), participant(memberId, "member")] });
   if (url === `/api/v1/projects/${projectId}/invitations`) return json({ items: [] });
   throw new Error(`Unexpected test request: ${url}`);
 };
@@ -258,6 +260,24 @@ describe("authentication language changes", () => {
     expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
   });
 
+  it.each(["direct", "inherited"] as const)("shows the %s invitation relationship in both languages", async (kind) => {
+    window.history.replaceState(null, "", "/invitations#relationship-secret");
+    const direct = directAccessFixture(projectId, userId, "admin");
+    const inherited = { ...direct, directGrant: null, teamRole: "admin", canTransfer: true };
+    const access = kind === "direct" ? direct : inherited;
+    const fetcher = install((url) => url === "/api/v1/invitations/inspect" ? json({ projectId, projectName: "Project", directGrant: access.directGrant, access }) : defaults(url));
+    const interaction = userEvent.setup();
+    renderWithLocale(<AuthenticatedApp />, { locale: "en" });
+    await screen.findByText(kind === "direct" ? en.auth.invitation.preserveDirect : en.auth.invitation.inheritedAdmin);
+    if (kind === "direct") expect(screen.getByText(`${en.auth.invitation.currentDirectRole}: ${en.auth.roles.admin}`)).toBeVisible();
+    else expect(screen.getByText(en.auth.invitation.memberRole)).toBeVisible();
+    await interaction.selectOptions(language(), "zh-CN");
+    expect(screen.getByText(kind === "direct" ? zhCN.auth.invitation.preserveDirect : zhCN.auth.invitation.inheritedAdmin)).toBeVisible();
+    if (kind === "direct") expect(screen.getByText(`${zhCN.auth.invitation.currentDirectRole}: ${zhCN.auth.roles.admin}`)).toBeVisible();
+    else expect(screen.getByText(zhCN.auth.invitation.memberRole)).toBeVisible();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
+  });
+
   it("keeps invitation inspection pending across a language change without accepting or losing the fragment secret", async () => {
     window.history.replaceState(null, "", "/invitations#raw-invitation-secret");
     const pending = deferred<Response>();
@@ -273,7 +293,7 @@ describe("authentication language changes", () => {
     expect(window.sessionStorage.getItem(invitationStorageKey)).toBe("raw-invitation-secret");
     expect(document.title).toBe(zhCN.auth.shell.documentTitle.invitations);
     expect(fetcher).toHaveBeenCalledTimes(requests);
-    await act(async () => pending.resolve(json({ projectId, projectName: "项目 Raw" })));
+    await act(async () => pending.resolve(json({ projectId, projectName: "项目 Raw", directGrant: null, access: null })));
     expect(screen.getByRole("heading", { name: zhCN.auth.invitation.invited })).toBeVisible();
     expect(screen.getByRole("heading", { name: "项目 Raw" })).toBeVisible();
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/invitations/accept")).toHaveLength(0);

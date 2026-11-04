@@ -24,8 +24,8 @@ it('keeps the profile-free grant version exact in GET access and task-sync witho
 });
 
 it('accepts distinct effective and direct roles and the required nullable direct grant', () => {
-  expect(parseProjectAccess({ ...access, effectiveRole: 'admin' }, projectId, TEST_VIEWER_ID).directGrant!.role).toBe('member');
-  expect(parseProjectAccess({ effectiveRole: 'member', directGrant: null }, projectId, TEST_VIEWER_ID).directGrant).toBeNull();
+  expect(parseProjectAccess({ ...access, effectiveRole: 'admin', teamRole: 'admin', canTransfer: true }, projectId, TEST_VIEWER_ID).directGrant!.role).toBe('member');
+  expect(parseProjectAccess({ ...access, teamRole: 'member', directGrant: null }, projectId, TEST_VIEWER_ID).directGrant).toBeNull();
   for (const value of [{ effectiveRole: 'member' }, { ...access, effectiveRole: 'owner' }, { ...access, directGrant: { ...access.directGrant, projectId: otherId } }, { ...access, directGrant: { ...access.directGrant, userId: otherId } }]) {
     expect(() => parseProjectAccess(value, projectId, TEST_VIEWER_ID)).toThrow();
   }

@@ -27,6 +27,34 @@ A candidate page or a single task cannot replace complete relationship verificat
 Lists group tasks into in-progress, ready todo, blocked todo, and, when explicitly included, done.
 These groups are not relevance rankings. See command help for filter syntax.
 
+## Task Steps
+
+Steps are an independent ordered Task resource. Read the complete collection with
+`task step list <task-id> --json` or one record with `task step show <task-id>
+<step-id> --json`; ordinary Task show/list/ready/graph and task-sync do not embed
+the complete collection. A valid empty collection is `[]`; a failed or invalid
+read is an error. Collection JSON includes projectId, taskId, the exact parent
+Task version and ordered steps. Use the complete eight-hex Step ID within its
+Task, not a prefix or display number. Input is case-insensitive, output lowercase,
+and leading zeros remain significant; different Tasks may share an ID.
+
+Use `task step add` to append or insert before/after an anchor, `update` to change
+title or description, `set-status` to set a status, `move` with exactly one of
+`--before`, `--after`, `--first` or `--last`, and `delete` to remove a record.
+Update requires at least one field; an empty description explicitly clears it.
+Deletion has no public restore or edit history. See each command's `--help` for
+syntax and [write safety](write-safety.md#task-step-writes) for version and
+unknown-outcome handling. Successful writes return the confirmed complete collection.
+
+Step statuses are `todo`, `in_progress`, `done` and `skipped`; any transition is
+allowed, including the same state and multiple in-progress Steps. Order, status
+and business review result are distinct. Step `done` means the work ended, not
+that review passed or the Task is complete. Steps do not affect Task readiness,
+Worker acquisition or Task completion; Task state does not automatically change
+Steps. Project rules determine appropriate use, without a system-imposed stage
+sequence. Step writes preserve Task execution ownership and grant no execution
+or delivery permission.
+
 ## Discussion threads
 
 Use `task thread read <task-id>` for one bounded page of durable discussion,

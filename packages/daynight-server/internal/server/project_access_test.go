@@ -19,7 +19,7 @@ import (
 func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
 	h := membershipTestHarness(t)
 	_, token := h.invitation(t)
-	decodeResponse[api.ProjectMember](t, h.call(http.MethodPost, "/api/v1/invitations/accept", invitationBody(token), h.member), http.StatusOK)
+	decodeResponse[api.ProjectInvitationAcceptance](t, h.call(http.MethodPost, "/api/v1/invitations/accept", invitationAcceptBody(token, h.memberID), h.member), http.StatusOK)
 	if _, err := h.database.Pool.Exec(context.Background(), `UPDATE project_grants SET version=9007199254740993 WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.adminID); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
 			t.Fatalf("access cache/identity: %#v", response.Header())
 		}
 		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 2 || fields["effectiveRole"] == nil || fields["directGrant"] == nil {
+		if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 7 || fields["effectiveRole"] == nil || fields["directGrant"] == nil {
 			t.Fatalf("access envelope: %s %v", response.Body, err)
 		}
 		var direct map[string]json.RawMessage
@@ -109,4 +109,52 @@ func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
 	if strings.Contains(h.logs.String(), "private-body-secret") || strings.Contains(h.logs.String(), "unknown=secret") {
 		t.Fatal("access diagnostics exposed request contents")
 	}
+}
+
+func TestOwnershipProjectionExactVersionsAcrossCurrentReaders(t *testing.T) {
+	h := membershipTestHarness(t)
+	mux := http.NewServeMux()
+	h.auth.RegisterRoutes(mux)
+	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
+	projectRoutes(mux, service.NewProjects(h.database), h.auth, logger)
+	taskRoutes(mux, service.NewTasks(h.database), h.auth, logger)
+	taskSyncRoutes(mux, service.NewTaskSync(h.database, time.Second), h.auth, logger, time.Second)
+	NewMembershipRoutes(service.NewMemberships(h.database), h.auth, logger).RegisterRoutes(mux)
+	h.handler = RequestLogging(logger, mux)
+	ctx := context.Background()
+	if _, err := h.database.Pool.Exec(ctx, `UPDATE project_ownership SET version=9007199254740993 WHERE project_id=$1`, h.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	me := decodeResponse[api.User](t, h.call("GET", "/api/v1/me", "", h.admin), 200)
+	if me.PersonalTeam.ID != h.project.Ownership.TeamID || me.PersonalTeam.Kind != "personal" || me.PersonalTeam.Name != nil {
+		t.Fatalf("Personal reference: %#v", me)
+	}
+	base := "/api/v1/projects/" + h.project.ID
+	response := h.call("GET", base, "", h.admin)
+	document := decodeResponse[api.ProjectDocument](t, response, 200)
+	if document.Ownership.TeamID != me.PersonalTeam.ID || document.Ownership.Version != 9007199254740993 || document.Access.Ownership != document.Ownership || document.Access.OwnerTeam != me.PersonalTeam || document.Access.TeamRole == nil || *document.Access.TeamRole != "admin" || !document.Access.CanTransfer || !strings.Contains(response.Body.String(), `"version":9007199254740993`) {
+		t.Fatalf("Project ownership/access: %s", response.Body)
+	}
+	page := decodeResponse[api.ProjectPage](t, h.call("GET", "/api/v1/projects", "", h.admin), 200)
+	snapshot := decodeResponse[api.TaskSync](t, h.call("GET", base+"/task-sync", "", h.admin), 200)
+	delta := decodeResponse[api.TaskSync](t, h.call("GET", base+"/task-sync?epoch="+snapshot.Epoch, "", h.admin), 200)
+	people := decodeResponse[api.ProjectParticipantList](t, h.call("GET", base+"/members", "", h.admin), 200)
+	if len(page.Items) != 1 || page.Items[0] != document.Project || snapshot.Project != document.Project || delta.Project != document.Project || !reflect.DeepEqual(snapshot.ActorAccess, document.Access) || !reflect.DeepEqual(people.ActorAccess, document.Access) || len(people.Items) != 1 || people.Items[0].InheritedFrom == nil || people.Items[0].InheritedFrom.Team != me.PersonalTeam || people.Items[0].InheritedFrom.Role != "admin" {
+		t.Fatalf("current-reader divergence: %#v %#v %#v %#v", page, snapshot, delta, people)
+	}
+	created := decodeResponse[api.Task](t, h.call("POST", base+"/tasks", `{"title":"Ownership graph"}`, h.admin), 201)
+	graph := decodeResponse[api.TaskGraph](t, h.call("GET", graphPath(h.project.ID, created.ID), "", h.admin), 200)
+	if graph.Project != document.Project {
+		t.Fatalf("graph ownership: %#v", graph.Project)
+	}
+	for _, intrinsic := range []any{page.Items[0], snapshot.Project, graph.Project} {
+		data, err := json.Marshal(intrinsic)
+		if err != nil || strings.Contains(string(data), `"access"`) || strings.Contains(string(data), `"effectiveRole"`) || strings.Contains(string(data), `"ownerTeam"`) {
+			t.Fatalf("actor facts entered intrinsic Project: %s %v", data, err)
+		}
+	}
+	if _, err := h.database.Pool.Exec(ctx, `DELETE FROM teams WHERE id=$1`, me.PersonalTeam.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertProjectError(t, h.call("GET", "/api/v1/me", "", h.admin), 500, "internal_error")
 }

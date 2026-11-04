@@ -58,6 +58,16 @@ collector 对完整 Herdr 观察使用现有有界等待，每次异步步骤后
 
 命令 runner 用 `HerdrCommandCleanupError` 显式标记无法确认进程树及流关闭。collector 对出现该标记的工具在本进程内永久禁止替代探测，后续返回 unavailable；reporter 保存原错误用于退出并继续其余部分心跳。一般 AggregateError 不触发此屏障。
 
+## 助手托管预检接入
+
+`worker/bots/host-capabilities.ts` 拥有独立的助手预检采集器，`telemetry.ts` 通过可选采集器接入同一次报告。默认 runtime 不传入该采集器，因此现有 Worker 不会在完整托管链路组合前发布 `assistantHost`。缺字段的消费者行为与[快照协议](../spec/daynight-worker-snapshots.md#助手托管预检)一致；此接入点不是用户配置开关。
+
+预检读取 Worker 启动时的真实绝对目录与全局执行配置，不选择项目或创建目录。全局 Provider 保留自己的 model/args，其它 Provider 使用 null/[]，避免切换后继承错误的模型或参数。全部配置按 Web 适配器参数解析器检查，任务的 Herdr/Web 模式不改变 Bot 的 Web 规则。不支持的配置只返回闭合错误码并清空参数，不将原始错误或敏感参数带入 wire。
+
+可执行来源与 Web 运行适配器一致：Codex 使用原生 PATH，Copilot 使用其随包平台可执行文件，Claude 使用 SDK 的随包平台可执行文件。只运行版本和启动参数帮助探测，不启动原生 Session、不发用户消息，也不读取认证文件来声称账户可用。目录存在、工具存在和参数可识别仍不能保证未来的认证、模型访问或真实启动成功；启动者必须再次验证并等待原生同步事实。
+
+助手预检在报告 Operation 内拥有独立的五秒预算和严格进程清理责任。遥测采集先保存助手成功或失败的结果，等待普通采集和全部原生命令结束后，再传播取消或失败并保留所有清理错误；`reporter.stop()` 因而不会在其它探测尚未完成清理时成功返回。无法确认清理的工具不再启动替代探测；报告仅包含有限 reason，私有 issue 通过现有 reporter 诊断和退出错误链传递。预检来源 observedAt 不随新的普通机器报告刷新，消费端以服务器时间独立检查 120 秒年龄上限。
+
 ## 失败与可观察性
 
 reporter 按字段或 report 子系统保存故障签名和重复次数；故障变化时输出 worker_report_failed，恢复时输出 worker_report_recovered。诊断重新构造错误类别与 cause 结构，不传递原错误消息或命令输出。该状态只去重，不承担重试或恢复职责。

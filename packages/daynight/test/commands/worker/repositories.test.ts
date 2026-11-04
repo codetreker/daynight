@@ -14,7 +14,7 @@ const token = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
 const connection = `serverUrl: https://service.example\nserverToken: ${token}\n`;
 const project = (number = 1, repoUrl = "https://github.com/owner/repository.git"): Project => ({
   id: uuid(number), name: `Project ${number}`, repoUrl,
-  settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z",
+  settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z",
 });
 const directories: string[] = [];
 afterEach(async () => {

@@ -1,3 +1,4 @@
+import { authCombinedChecks as requiredChecks } from './inventory.mts';
 import type { ProjectParticipant } from "../../src/api/auth-types";
 import { selectTaskList } from '../../tests/e2e/project-view.ts';
 import { attachmentFileButton, attachmentFileActions } from '../../tests/e2e/attachment-tree.ts';
@@ -36,9 +37,6 @@ export type AuthCombinedOptions = {
   readLogs(run: CombinedCommand): Promise<string>;
 };
 
-const requiredChecks = ['partial-sharing', 'normal-member-writes', 'bilingual-token', 'same-data-cli-browser',
-  'restart-original-state', 'logout-independent-pat', 'pat-revocation', 'socket-disconnect',
-  'admitted-member-removal', 'expired-pat', 'secret-scan'] as const;
 class CombinedFailure extends Error {}
 let launchingBrowser = false;
 export const launchAuthCombinedBrowser = async <T,>(temporaryRoot: string, launch: () => Promise<T>): Promise<T> => {
@@ -469,7 +467,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const privateProject = await request<Project>(bob, origin, 'POST', '/api/v1/projects', 201, { name: `Combined private ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}` });
     sameIds(await projectIds(alice, origin), [...a0, shared.id], 'Alice private-project pagination differs.');
     sameIds(await projectIds(bob, origin), [...b0, privateProject.id], 'Bob private-project pagination differs.');
-    const invite = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, {});
+    const invite = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, { expectedUserId: aliceUser.id });
     const inviteToken = new URL(invite.link).hash.slice(1); secrets.add(inviteToken);
     const alicePage = await aliceContext.newPage(), bobPage = await bobContext.newPage();
     for (const page of [alicePage, bobPage]) { page.setDefaultTimeout(15_000); page.setDefaultNavigationTimeout(30_000); }
@@ -488,7 +486,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const reading = `# Fullscreen reading\n\n${'Browser and installed CLI share this long reading task.\n\n'.repeat(120)}`;
     const task = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${shared.id}/tasks`, 201, { title: 'Combined member task', description: reading });
     const privateTask = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${privateProject.id}/tasks`, 201, { title: 'Private authority control' });
-    await request(bob, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 403, {});
+    await request(bob, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 403, { expectedUserId: bobUser.id });
     await request(bob, origin, 'PATCH', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 403, { version: bobMember.directGrant.version, role: 'admin', expectedUserId: bobUser.id });
     await record('normal-member-writes', { taskId: task.id, privateTaskId: privateTask.id, memberVersion: bobMember.directGrant.version.toString(), administratorDenial: 403 });
     const originalToken = await bilingualToken(bobPage, bobContext, origin, secrets, signal);
@@ -545,7 +543,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await screenshots(bobPage, 'shared-preview-chinese');
     const fullscreen = await fullscreenPreview(bobPage, bobContext, origin, shared.id, task);
     await record('same-data-cli-browser', { projectId: shared.id, taskId: task.id, taskVersion: snapshot.version.toString(), path: 'shared/data.bin', bytes: binary.length, sha256: hash(binary), propertiesRetained: true, moduleAndRelativeFetch: true, fullscreen });
-    const pending = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, {});
+    const pending = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, { expectedUserId: aliceUser.id });
     const pendingToken = new URL(pending.link).hash.slice(1); secrets.add(pendingToken);
     const memberSnapshot = encode(await request(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200));
     receipt.restart = await options.restartTarget(run, signal); await save();

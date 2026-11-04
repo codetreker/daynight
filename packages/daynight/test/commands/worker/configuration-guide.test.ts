@@ -16,7 +16,7 @@ const firstId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const secondId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const date = "2026-10-27T00:00:00Z";
 const project = (id: string, name: string, repoUrl: string): Project => ({
-  id, name, repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: date, updatedAt: date,
+  id, name, repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: date, updatedAt: date,
 });
 const projects = [project(firstId, "First Project", "https://github.com/example/first.git"), project(secondId, "Second Project", "https://github.com/example/second.git")];
 const directories: string[] = [];

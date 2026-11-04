@@ -28,6 +28,12 @@ type PageRequest struct {
 	Cursor *string
 }
 
+type ProjectListRequest struct {
+	Page   PageRequest
+	TeamID *string
+	Shared bool
+}
+
 type ProjectPage struct {
 	Items      []core.Project
 	NextCursor *string
@@ -55,23 +61,30 @@ func (s *Projects) Create(ctx context.Context, principal core.Principal, input C
 }
 
 func (s *Projects) Get(ctx context.Context, principal core.Principal, id string) (core.Project, error) {
+	project, _, err := s.GetWithAccess(ctx, principal, id)
+	return project, err
+}
+
+func (s *Projects) GetWithAccess(ctx context.Context, principal core.Principal, id string) (core.Project, core.ProjectAccess, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.Project{}, err
+		return core.Project{}, core.ProjectAccess{}, err
 	}
 	id, err := CanonicalID(id)
 	if err != nil {
-		return core.Project{}, err
+		return core.Project{}, core.ProjectAccess{}, err
 	}
 	var project core.Project
+	var access core.ProjectAccess
 	var refusal *Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := RequireProjectRead(ctx, snapshot, principal, id); err != nil {
+		var err error
+		access, err = RequireProjectRead(ctx, snapshot, principal, id)
+		if err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
 			return err
 		}
-		var err error
 		project, err = snapshot.Project(ctx, id)
 		if errors.Is(err, core.ErrNotFound) {
 			refusal = &Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
@@ -80,35 +93,62 @@ func (s *Projects) Get(ctx context.Context, principal core.Principal, id string)
 		return err
 	})
 	if err != nil {
-		return core.Project{}, fmt.Errorf("get project: %w", err)
+		return core.Project{}, core.ProjectAccess{}, fmt.Errorf("get project: %w", err)
 	}
 	if refusal != nil {
-		return core.Project{}, refusal
+		return core.Project{}, core.ProjectAccess{}, refusal
 	}
-	return project, nil
+	return project, access, nil
 }
 
 func (s *Projects) List(ctx context.Context, principal core.Principal, request PageRequest) (ProjectPage, error) {
+	return s.ListScoped(ctx, principal, ProjectListRequest{Page: request})
+}
+
+func (s *Projects) ListScoped(ctx context.Context, principal core.Principal, request ProjectListRequest) (ProjectPage, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return ProjectPage{}, err
 	}
-	page, err := projectListPage(request)
+	userID, _ := CanonicalID(principal.UserID)
+	principal.UserID = userID
+	scope := store.ProjectScope{Kind: store.ProjectScopeAll}
+	if request.TeamID != nil {
+		if request.Shared {
+			return ProjectPage{}, invalidInput("teamId and shared are mutually exclusive.")
+		}
+		teamID, err := CanonicalID(*request.TeamID)
+		if err != nil {
+			return ProjectPage{}, err
+		}
+		scope = store.ProjectScope{Kind: store.ProjectScopeTeam, TeamID: teamID}
+	} else if request.Shared {
+		scope.Kind = store.ProjectScopeShared
+	}
+	page, err := projectListPage(request.Page, userID, scope)
 	if err != nil {
 		return ProjectPage{}, err
 	}
 	var result store.ProjectPage
+	var refusal error
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		var err error
-		result, err = snapshot.AccessibleProjects(ctx, principal, page)
+		result, err = snapshot.ScopedProjects(ctx, principal, scope, page)
+		if errors.Is(err, core.ErrNotFound) {
+			refusal = &Fault{Code: "not_found", Message: "Team was not found.", Cause: err}
+			return nil
+		}
 		return err
 	})
 	if err != nil {
 		return ProjectPage{}, fmt.Errorf("list projects: %w", err)
 	}
+	if refusal != nil {
+		return ProjectPage{}, refusal
+	}
 	response := ProjectPage{Items: result.Items}
 	if result.HasMore {
 		last := result.Items[len(result.Items)-1]
-		cursor, err := encodeProjectCursor(last)
+		cursor, err := encodeProjectCursor(last, userID, scope)
 		if err != nil {
 			return ProjectPage{}, fmt.Errorf("encode project cursor: %w", err)
 		}

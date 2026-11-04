@@ -1,6 +1,6 @@
 # Worker 运行快照上报
 
-本文定义 `daynight worker run` 作为运行快照生产者的行为。[整体需求](daynight-worker.md)拥有执行与资源生命周期，[快照接口](daynight-worker-snapshots.md)拥有报告格式及服务端时间规则，[采集与调度设计](../design/daynight-worker-reporting.md)拥有客户端机制。
+本文定义 `daynight worker run` 作为运行快照生产者的行为。[整体需求](daynight-worker.md)拥有执行与资源生命周期，[快照接口](daynight-worker-snapshots.md)拥有报告格式及服务端时间规则，[采集与调度设计](../design/daynight-worker-reporting.md)拥有客户端机制。[云端配置协议](daynight-worker-configuration.md)定义显式报告扩展，机器采集、任务引用和本页默认快照回执口径保持。
 
 ## 身份、范围与时机
 

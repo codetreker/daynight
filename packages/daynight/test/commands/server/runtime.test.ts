@@ -12,7 +12,7 @@ import type { ServerSession } from "../../../src/commands/server/runtime.js";
 
 const projectId = "11111111-1111-1111-1111-111111111111";
 const time = "2026-10-20T01:02:03.123456789Z";
-const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
 let directory: string;
 const cleanups: (() => void | Promise<void>)[] = [];
 beforeAll(async () => {

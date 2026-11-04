@@ -167,14 +167,14 @@ func TestProjectSettingsHTTPAuthenticationAndProjectRoles(t *testing.T) {
 	origin := map[string]string{"Origin": integration.server.URL}
 	_, data := identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Project settings authorization","repoUrl":"https://example.com/settings"}`, origin, http.StatusCreated)
 	project := identityDecode[api.Project](t, data)
-	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", `{}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", invitationActorBody(adminUser.ID), origin, http.StatusCreated)
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
 	link, err := url.Parse(invitation.Link)
 	if err != nil || link.Fragment == "" {
 		t.Fatal("project invitation omitted its acceptance token")
 	}
-	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, http.StatusOK)
-	if joined := identityDecode[api.ProjectMember](t, data); joined.UserID != memberUser.ID || joined.Role != "member" {
+	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, memberUser.ID), origin, http.StatusOK)
+	if joined := identityDecode[api.ProjectInvitationAcceptance](t, data); joined.DirectGrant.UserID != memberUser.ID || joined.DirectGrant.Role != "member" {
 		t.Fatalf("ordinary project member fixture: %+v", joined)
 	}
 	request := func(browser *http.Client, method, path, body string, headers map[string]string, status int, code string) []byte {

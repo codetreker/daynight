@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { runCi, runCiCommand } from './ci.mts';
+import { parseCiArguments, runCi, runCiCommand } from './ci.mts';
+import type { AcceptanceOptions } from './acceptance/runner.mts';
 import { isGroupStopped, processIdentity, requireGroupStopped } from './acceptance/identity.mts';
 import { commandBytes, terminateGroup, type CommandOptions } from './acceptance/process.mts';
 
@@ -13,9 +14,10 @@ const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const operations = () => {
   const calls: { file: string; args: readonly string[]; options: CommandOptions }[] = [];
   const accepted: AbortController[] = [];
-  return { calls, accepted, command: async (file: string, args: readonly string[], options: CommandOptions) => {
+  const acceptanceOptions: (AcceptanceOptions | undefined)[] = [];
+  return { calls, accepted, acceptanceOptions, command: async (file: string, args: readonly string[], options: CommandOptions) => {
     calls.push({ file, args, options }); return '';
-  }, acceptance: async (controller: AbortController) => { accepted.push(controller); } };
+  }, acceptance: async (controller: AbortController, options?: AcceptanceOptions) => { accepted.push(controller); acceptanceOptions.push(options); } };
 };
 
 test('quality mode keeps full checks and deadlines with four coverage workers', async () => {
@@ -56,6 +58,26 @@ test('browser mode installs its browser with the original bound before ordinary 
   assert.deepEqual(observed.calls[1]!.args, ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/playwright.config.ts']);
   assert.equal(observed.calls[1]!.options.timeoutMs, 180_000);
   assert.deepEqual(observed.accepted, [controller]);
+});
+
+test('CI shard arguments are bounded and only shard 2 owns navigation checks', async () => {
+  assert.deepEqual(parseCiArguments(['quality']), { mode: 'quality' });
+  assert.deepEqual(parseCiArguments(['browser']), { mode: 'browser' });
+  for (const current of [1, 2] as const) {
+    const shard = { current, total: 2 } as const;
+    assert.deepEqual(parseCiArguments(['browser', `--shard=${current}/2`]), { mode: 'browser', shard });
+    const observed = operations();
+    const controller = new AbortController();
+    await runCi('browser', controller, observed, shard);
+    assert.equal(observed.calls.length, current === 1 ? 1 : 2);
+    assert.deepEqual(observed.acceptanceOptions, [{ shard }]);
+    assert.deepEqual(observed.accepted, [controller]);
+  }
+  for (const args of [[], ['quality', '--shard=1/2'], ['browser', '--shard=3/2'], ['browser', '--shard=1/3'],
+    ['browser', '--skip-auth'], ['browser', '--shard=1/2', '--shard=2/2']]) assert.throws(() => parseCiArguments(args), /Usage|Invalid functional shard/);
+  const observed = operations();
+  await assert.rejects(runCi('quality', new AbortController(), observed, { current: 1, total: 2 }), /Usage/);
+  assert.deepEqual(observed.calls, []);
 });
 
 test('invalid CI modes start no command or acceptance', async () => {
@@ -174,10 +196,10 @@ test('CI import is inert and its entrypoint rejects missing or unknown modes bef
     assert.equal(imported.exitCode, 0, imported.stderr.toString());
     const listeners = JSON.parse(imported.stdout.toString()) as { before: number[]; after: number[] };
     assert.deepEqual(listeners.after, listeners.before);
-    for (const args of [[], ['unknown'], ['quality', 'extra']]) {
+    for (const args of [[], ['unknown'], ['quality', 'extra'], ['quality', '--shard=1/2'], ['browser', '--shard=3/2'], ['browser', '--skip-auth']]) {
       const result = await commandBytes(process.execPath, [fileURLToPath(module), ...args], { cwd, env, timeoutMs: 5_000 });
       assert.equal(result.exitCode, 1);
-      assert.match(result.stderr.toString(), /Usage:.*<quality\|browser>/);
+      assert.match(result.stderr.toString(), args.includes('--shard=3/2') ? /Invalid functional shard/ : /Usage:.*<quality\|browser>/);
     }
     assert.equal(await readFile(log, 'utf8'), '');
   });
@@ -261,7 +283,15 @@ test('Web quality and browser jobs retain independent guards and both feed the r
   assert.match(quality, /scripts\/ci\.mts quality/);
   assert.match(quality, /daynight-web-coverage/);
   assert.doesNotMatch(quality, /web:acceptance|setup-go|attachments\.mts/);
-  assert.match(browser, /scripts\/ci\.mts browser/);
+  assert.match(browser, /scripts\/ci\.mts browser --shard=\$\{\{ matrix\.shard \}\}\/2/);
+  assert.match(browser, /fail-fast: false/);
+  assert.match(browser, /shard: \[1, 2\]/);
+  assert.match(browser, /name: daynight-web-acceptance-\$\{\{ matrix\.shard \}\}/);
+  assert.match(browser, /name: daynight-web-summary-\$\{\{ matrix\.shard \}\}/);
+  assert.match(browser, /path: packages\/daynight-web\/\.tmp\/acceptance\/\*\/evidence\.json/);
+  for (const step of ['Verify isolated deployment lifecycle', 'Verify attachment persistence and paired backup restoration']) {
+    assert.ok(browser.includes('- name: ' + step + '\n        if: ${{ matrix.shard == 2 }}'));
+  }
   assert.match(browser, /acceptance\.mts --cleanup/);
   assert.match(browser, /tests\/attachments\.mts/);
   assert.doesNotMatch(browser, /daynight-web-coverage/);
@@ -270,4 +300,8 @@ test('Web quality and browser jobs retain independent guards and both feed the r
   assert.ok(needed.includes('verify-web-quality'));
   assert.ok(needed.includes('verify-web'));
   assert.match(aggregate, /all\(\.\[\]; \. == "success" or \. == "skipped"\)/);
+  assert.match(aggregate, /name: daynight-web-summary-1/);
+  assert.match(aggregate, /name: daynight-web-summary-2/);
+  assert.doesNotMatch(aggregate, /pnpm|npm install|merge-multiple|pattern:/);
+  assert.match(aggregate, /report\.mts --shards \.tmp\/web-shards\/1\/\*\/evidence\.json \.tmp\/web-shards\/2\/\*\/evidence\.json/);
 });

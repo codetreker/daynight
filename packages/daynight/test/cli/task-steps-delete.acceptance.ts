@@ -1,3 +1,4 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -8,7 +9,7 @@ import crossSpawn from "cross-spawn";
 import { expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 import type { StepsResource, TaskStep, TaskStepStatus } from "../../src/api/types.js";
-import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
+import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const projectId = "aaaaaaaa-1111-4111-8111-111111111111", taskId = "bbbbbbbb-2222-4222-8222-222222222222", userId = "cccccccc-3333-4333-8333-333333333333";
@@ -21,7 +22,7 @@ type RequestRecord = { readonly method: string; readonly path: string; readonly 
 type Mode = "normal" | "lost" | "bad-success" | "pre-read-failed" | "deleted-parent" | "exhausted" | "unauthenticated";
 
 it("runs both packed launchers through JSON Delete, complete receipts, refusals and factual unknown observations", async () => {
-  const installed = await createInstalledCli(); const { receipt } = installed;
+  const installed = await createAcceptanceCli(); const { receipt } = installed;
   const fixture = path.join(receipt.root, ".tmp", "Step Delete launcher 中文");
   const home = path.join(fixture, "home"), state = path.join(fixture, "configuration"), temporary = path.join(fixture, "temporary");
   const config = path.join(state, "config.yml");
@@ -155,7 +156,7 @@ it("runs both packed launchers through JSON Delete, complete receipts, refusals 
   try { server.closeAllConnections(); if (server.listening) await new Promise<void>((resolve, fail) => server.close((cause) => cause === undefined ? resolve() : fail(cause))); } catch (cause) { cleanup.push(cause); }
   try { await installed.cleanup(); } catch (cause) { cleanup.push(cause); }
   let removed = false; try { await lstat(receipt.root); } catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") removed = true; else cleanup.push(cause); }
-  await writeFile(path.join(workspace, ".tmp/t10-packed-delete-evidence.json"), `${JSON.stringify({ schemaVersion: 1, success: failure === undefined && cleanup.length === 0 && removed, artifact: { packageVersion: receipt.packageVersion, tarballSha256: receipt.tarballSha256, entrySha256: receipt.entrySha256, source: receipt.source }, transport: "literal daynight and sibling dn launchers via crossSpawn", fixture: "small controlled Node HTTP package-consumer fixture; real Go/PostgreSQL interop is separate", scenarios, requests: requests.map(({ method, path: pathname, requestId }) => ({ method, path: pathname, requestId })), cleanup: { installationRemoved: removed, childrenExited: children.size === 0, serverClosed: !server.listening, errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(path.join(workspace, ".tmp/t10-packed-delete-evidence.json"), `${JSON.stringify({ schemaVersion: 1, success: failure === undefined && cleanup.length === 0 && removed, artifact: { packageVersion: receipt.packageVersion, tarballSha256: receipt.tarballSha256, entrySha256: receipt.entrySha256, source: receipt.source }, transport: "literal daynight and sibling dn launchers via crossSpawn", fixture: "small controlled Node HTTP package-consumer fixture; real Go/PostgreSQL interop is separate", scenarios, requests: requests.map(({ method, path: pathname, requestId }) => ({ method, path: pathname, requestId })), cleanup: { runtimeRemoved: removed, childrenExited: children.size === 0, serverClosed: !server.listening, errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
   if (cleanup.length !== 0) throw new AggregateError(failure === undefined ? cleanup : [failure, ...cleanup], "Packed Step Delete acceptance or cleanup failed.");
   if (failure !== undefined) throw failure;
   expect(removed).toBe(true);

@@ -1,5 +1,5 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
@@ -40,9 +40,32 @@ const projectSettings = (value: unknown): Project["settings"] => {
   return { version: resourceVersion(data.version), executionWarningMinutes };
 };
 
+const parseTeamRef = (value: unknown): TeamRef => {
+  const data = fields(value, ["id", "kind", "name"]);
+  const team: TeamRef = { id: id(data.id), kind: data.kind === "personal" || data.kind === "ordinary" ? data.kind : malformed(), name: data.name === null ? null : text(data.name, true) };
+  if ((team.kind === "personal") !== (team.name === null)) return malformed();
+  return team;
+};
+export const parseTeam = (value: unknown, userId: string, teamId?: string): Team => {
+  const data = fields(value, ["id", "kind", "name", "version", "createdAt", "updatedAt", "membership"]);
+  const ref = parseTeamRef({ id: data.id, kind: data.kind, name: data.name });
+  const member = fields(data.membership, ["teamId", "userId", "role", "version", "createdAt", "updatedAt"]);
+  const membership: Team["membership"] = {
+    teamId: id(member.teamId), userId: id(member.userId),
+    role: member.role === "member" || member.role === "admin" ? member.role : malformed(),
+    version: resourceVersion(member.version), createdAt: timestamp(member.createdAt), updatedAt: timestamp(member.updatedAt),
+  };
+  if (membership.teamId !== ref.id || membership.userId !== userId || teamId !== undefined && ref.id !== teamId || ref.kind === "personal" && membership.role !== "admin") return malformed();
+  return { ...ref, version: resourceVersion(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt), membership };
+};
+const parseOwnership = (value: unknown): ProjectOwnership => {
+  const data = fields(value, ["teamId", "version"]);
+  return { teamId: id(data.teamId), version: resourceVersion(data.version) };
+};
+
 export const parseProject = (value: unknown, expectedId?: string): Project => {
   const data = record(value);
-  const parsed = { id: id(data.id), name: text(data.name, true), repoUrl: text(data.repoUrl, true), settings: projectSettings(data.settings), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
+  const parsed = { id: id(data.id), name: text(data.name, true), repoUrl: text(data.repoUrl, true), settings: projectSettings(data.settings), ownership: parseOwnership(data.ownership), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
   if (expectedId !== undefined && parsed.id !== expectedId) return malformed();
   return parsed;
 };
@@ -62,9 +85,11 @@ export const parseWorkerReportReceipt = (value: unknown): WorkerReportReceipt =>
   return parsed;
 };
 export const parseUser = (value: unknown): User => {
-  const data = fields(value, ["id", "email", "emailVerified", "name", "avatarUrl"]);
+  const data = fields(value, ["id", "email", "emailVerified", "name", "avatarUrl", "personalTeam"]);
+  const personalTeam = parseTeamRef(data.personalTeam);
+  if (personalTeam.kind !== "personal") return malformed();
   return {
-    id: id(data.id), email: data.email === null ? null : text(data.email),
+    personalTeam, id: id(data.id), email: data.email === null ? null : text(data.email),
     emailVerified: data.emailVerified === null ? null : bool(data.emailVerified),
     name: data.name === null ? null : text(data.name), avatarUrl: data.avatarUrl === null ? null : text(data.avatarUrl),
   };
@@ -80,28 +105,37 @@ const parseProjectGrant = (value: unknown, projectId: string, userId?: string): 
   if (parsed.projectId !== projectId || userId !== undefined && parsed.userId !== userId) return malformed();
   return parsed;
 };
-export const parseProjectAccess = (value: unknown, projectId: string, userId?: string): ProjectAccess => {
-  const data = fields(value, ["effectiveRole", "directGrant"]);
-  return {
-    effectiveRole: projectRole(data.effectiveRole),
-    directGrant: data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId),
-  };
+const effectiveRole = (teamRole: ProjectAccess["teamRole"], directGrant: ProjectGrant | null): ProjectAccess["effectiveRole"] => {
+  if (teamRole === "admin" || directGrant?.role === "admin") return "admin";
+  if (teamRole === "member" || directGrant?.role === "member") return "member";
+  return malformed();
 };
-export const parseProjectParticipants = (value: unknown, projectId: string): readonly ProjectParticipant[] => {
-  const data = fields(value, ["items"]);
+export const parseProjectAccess = (value: unknown, projectId: string, userId?: string): ProjectAccess => {
+  const data = fields(value, ["projectId", "ownerTeam", "ownership", "effectiveRole", "teamRole", "directGrant", "canTransfer"]);
+  const access: ProjectAccess = {
+    projectId: id(data.projectId), ownerTeam: parseTeamRef(data.ownerTeam), ownership: parseOwnership(data.ownership),
+    effectiveRole: projectRole(data.effectiveRole), teamRole: data.teamRole === null ? null : projectRole(data.teamRole),
+    directGrant: data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId), canTransfer: bool(data.canTransfer),
+  };
+  if (access.projectId !== projectId || access.ownerTeam.id !== access.ownership.teamId || access.canTransfer !== (access.teamRole === "admin") || access.effectiveRole !== effectiveRole(access.teamRole, access.directGrant)) return malformed();
+  return access;
+};
+export const parseProjectParticipants = (value: unknown, projectId: string, actorUserId?: string): readonly ProjectParticipant[] => {
+  const data = fields(value, ["items", "actorAccess"]);
+  const actorAccess = parseProjectAccess(data.actorAccess, projectId, actorUserId);
   const participants = array(data.items, (value): ProjectParticipant => {
-    const participant = fields(value, ["userId", "profile", "effectiveRole", "directGrant"]);
+    const participant = fields(value, ["userId", "profile", "effectiveRole", "inheritedFrom", "directGrant"]);
     const userId = id(participant.userId);
     const profile = fields(participant.profile, ["name", "email", "avatarUrl"]);
+    const inherited = participant.inheritedFrom === null ? null : fields(participant.inheritedFrom, ["team", "role"]);
+    const inheritedFrom = inherited === null ? null : { team: parseTeamRef(inherited.team), role: projectRole(inherited.role) };
+    const directGrant = participant.directGrant === null ? null : parseProjectGrant(participant.directGrant, projectId, userId);
+    const role = projectRole(participant.effectiveRole);
+    if (inheritedFrom !== null && (inheritedFrom.team.id !== actorAccess.ownerTeam.id || inheritedFrom.team.kind !== actorAccess.ownerTeam.kind || inheritedFrom.team.name !== actorAccess.ownerTeam.name)) return malformed();
+    if (role !== effectiveRole(inheritedFrom?.role ?? null, directGrant)) return malformed();
     return {
-      userId,
-      profile: {
-        name: profile.name === null ? null : text(profile.name),
-        email: profile.email === null ? null : text(profile.email),
-        avatarUrl: profile.avatarUrl === null ? null : text(profile.avatarUrl),
-      },
-      effectiveRole: projectRole(participant.effectiveRole),
-      directGrant: participant.directGrant === null ? null : parseProjectGrant(participant.directGrant, projectId, userId),
+      userId, profile: { name: profile.name === null ? null : text(profile.name), email: profile.email === null ? null : text(profile.email), avatarUrl: profile.avatarUrl === null ? null : text(profile.avatarUrl) },
+      effectiveRole: role, inheritedFrom, directGrant,
     };
   });
   if (new Set(participants.map(({ userId }) => userId)).size !== participants.length) return malformed();

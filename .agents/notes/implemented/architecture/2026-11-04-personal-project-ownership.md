@@ -16,8 +16,8 @@ removes an owner's direct grant.
 Every user has one Personal Team with a real owner admin member. Every Project
 has one real `project_ownership` row. The internal Project aggregate includes its
 Team ID, ownership version and update time; a missing required ownership row is
-an integrity failure. Existing public Project and account DTOs retain their
-current fields. The [auth design](../../../../docs/design/daynight-auth.md) owns
+an integrity failure. Public Project and account DTOs expose these real relationships under the
+[public ownership decision](2026-11-04-public-project-ownership.md). The [auth design](../../../../docs/design/daynight-auth.md) owns
 storage, login, writer and migration details.
 
 Migration 032 creates `teams`, `team_members` and `project_ownership` and renames
@@ -114,7 +114,10 @@ cannot serve the new schema. A failed uncommitted migration rolls back; recovery
 after commit requires a forward repair or a paired database/file backup restored
 while writers remain stopped.
 
-Ordinary Team CRUD, Team invitations, transfer, new CLI commands and Team pages
-remain separate capabilities. Public ownership/source expansion must update its
-actual strict consumers and derived cache format together. These additions must
-retain independent grant facts and the established nonreversing lock order.
+The [Team lifecycle decision](2026-11-04-team-lifecycle.md) owns ordinary Team
+creation, member-scoped reads, versioned rename and empty deletion. Team
+invitations, new CLI commands and Team pages remain separate capabilities. The
+[transfer decision](2026-11-04-project-transfer.md) owns the ownership writer and
+its interaction with Thread admission. Public ownership/source changes must update their actual strict
+consumers and derived cache format together. These capabilities retain
+independent grant facts and the established nonreversing lock order.

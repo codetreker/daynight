@@ -108,6 +108,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       skillDirectories = discovery.paths.map(entry => entry.path);
     } catch (error) { skillDiscoveryError = error instanceof Error ? error.message : "Copilot skill discovery is unavailable."; }
     const config: SessionConfig = { ...(skillDirectories ? { skillDirectories } : {}), sessionId: nativeId, workingDirectory: cwd, streaming: true, includeSubAgentStreamingEvents: true,
+      ...(options.instructions !== undefined ? { systemMessage: { mode: "append" as const, content: options.instructions } } : {}),
       ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && args.effort ? { reasoningEffort: args.effort as "low" | "medium" | "high" | "xhigh" } : {}),
       onEvent, onPermissionRequest: () => interactions.onPermissionRequest(), onUserInputRequest: request => interactions.bindQuestion(request),
       onElicitationRequest: request => interactions.bindElicitation(request), onExitPlanModeRequest: request => interactions.bindPlan(request) };

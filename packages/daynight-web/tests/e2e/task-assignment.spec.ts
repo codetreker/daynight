@@ -28,10 +28,10 @@ test('task-assignment', scenario, async ({ page, api, playwright, allowBrowserWr
     const project = controlProject;
     const aliceProfile = await (await api.get('/api/v1/me')).json() as { id: string; name: string };
     const bobProfile = await (await bob.get('/api/v1/me')).json() as { id: string; name: string };
-    const invitationResponse = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: {} });
+    const invitationResponse = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: { expectedUserId: aliceProfile.id } });
     expect(invitationResponse.status()).toBe(201);
     const invitation = await invitationResponse.json() as { link: string };
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitation.link).hash.slice(1) } })).status()).toBe(200);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitation.link).hash.slice(1), expectedUserId: bobProfile.id } })).status()).toBe(200);
     let task = await createTask(api, project.id, { title: 'Assignment preserves the complete task', description: 'The transaction changes ownership and disables automatic execution.' });
     const permission = await api.patch(taskPath(project.id, task.id), { data: { version: task.version, allowAgents: true } });
     expect(permission.status()).toBe(200); task = await permission.json() as Task;
@@ -111,7 +111,7 @@ test('task-assignment', scenario, async ({ page, api, playwright, allowBrowserWr
       expect(reenabledResponse.status()).toBe(200);
       const reenabled = await reenabledResponse.json() as Task;
       expect(reenabled).toEqual({ ...reconciled, allowAgents: true, version: reconciled.version + 1, updatedAt: reenabled.updatedAt });
-      await expect(detail(page).getByRole('switch', { name: '自动执行' })).toBeChecked();
+      await expect(detail(page).getByRole('switch', { name: '自动执行' })).toBeChecked({ timeout: 20_000 });
       await expect(assignee(page)).toHaveAccessibleName(`负责人：${aliceProfile.name}`);
       expect(writes).toHaveLength(3);
       await choose(page, '未分配');

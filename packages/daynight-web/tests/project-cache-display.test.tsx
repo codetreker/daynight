@@ -222,7 +222,7 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
   await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null, error: offline }));
 
   const automatic = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(automatic.promise);
-  const poll = intervals.mock.calls.find(([, delay]) => delay === 5_000)![0] as () => void;
+  const poll = intervals.mock.calls.find(([, delay]) => delay === 15_000)![0] as () => void;
   act(() => { poll(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(3));
   expect(view.result.current.snapshot).toBeNull();

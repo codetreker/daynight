@@ -1,3 +1,5 @@
+import { directAccessFixture } from "./helpers/taskSync";
+import { stringifyWireJson } from "./helpers/wireJson";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole } from "../src/api/auth";
 import { ApiError, checkAttachmentPreview, invalidateAuthRequests, listProjects, pauseAuthRequests, request, subscribeUnauthorized } from "../src/api/client";
@@ -8,13 +10,13 @@ const tokenId = "30000000-0000-0000-0000-00000000000c";
 const inviteId = "40000000-0000-0000-0000-00000000000d";
 const otherId = "50000000-0000-0000-0000-00000000000e";
 const time = "2026-10-22T12:34:56.123456789Z";
-const user = { id: userId, email: null, emailVerified: false, name: "Member", avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: userId, email: null, emailVerified: false, name: "Member", avatarUrl: null };
 const pat = { id: tokenId, name: "Developer machine", createdAt: time, expiresAt: time };
 const member = { projectId, userId, email: null, name: "Member", avatarUrl: null, role: "admin", version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time };
 const { email: memberEmail, name: memberName, avatarUrl: memberAvatar, ...grant } = member;
-const participant = { userId, profile: { email: memberEmail, name: memberName, avatarUrl: memberAvatar }, effectiveRole: member.role, directGrant: grant };
+const participant = { inheritedFrom: null, userId, profile: { email: memberEmail, name: memberName, avatarUrl: memberAvatar }, effectiveRole: member.role, directGrant: grant };
 const invitation = { id: inviteId, projectId, createdBy: userId, createdAt: time, expiresAt: time, consumedBy: null, consumedAt: null, revokedAt: null };
-const project = { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "New project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
+const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "New project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
 const signal = () => new AbortController().signal;
 const rawJson = JSON as unknown as { rawJSON: (text: string) => unknown };
 const response = (value: unknown, status = 200): Response => new Response(JSON.stringify(value, (_key, item: unknown) => typeof item === "bigint" ? rawJson.rawJSON(item.toString()) : item), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
@@ -25,6 +27,13 @@ const mock = (value: Response) => {
   return fetcher;
 };
 afterEach(() => { vi.unstubAllGlobals(); invalidateAuthRequests(); });
+
+describe("current-user HTTP cache", () => {
+  it("rejects a raw 304 instead of treating absent browser cache content as a profile", async () => {
+    mock(new Response(null, { status: 304 }));
+    await expect(me(signal())).rejects.toMatchObject({ kind: "protocol", status: 304 });
+  });
+});
 
 describe("identity revalidation request pause", () => {
   it("dispatches ordinary requests synchronously when identity is already confirmed", async () => {
@@ -132,7 +141,7 @@ describe("session and personal credentials API", () => {
     const abortSignal = signal();
     expect(await me(abortSignal)).toEqual(user);
     expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/v1/me", {
-      signal: abortSignal, cache: "no-store", credentials: "same-origin", redirect: "error", headers: { Accept: "application/json" },
+      signal: abortSignal, cache: "no-cache", credentials: "same-origin", redirect: "error", headers: { Accept: "application/json" },
     });
     fetcher.mockResolvedValue(response({ providers: ["github", "microsoft"] }));
     expect(await getAuthConfig(abortSignal)).toEqual({ providers: ["github", "microsoft"] });
@@ -201,8 +210,8 @@ describe("private project and membership API", () => {
 
   it("preserves full int64 member observations in responses and PATCH/DELETE numeric bodies", async () => {
     const maximum = 9_223_372_036_854_775_807n;
-    const fetcher = mock(response({ items: [participant] }));
-    expect(await listMembers(projectId.toUpperCase(), signal())).toEqual([participant]);
+    const fetcher = mock(response({ actorAccess: directAccessFixture(projectId, userId), items: [participant] }));
+    expect((await listMembers(projectId.toUpperCase(), signal())).items).toEqual([participant]);
     expect(fetcher.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/members`);
     fetcher.mockResolvedValue(response({ ...grant, role: "member", version: maximum }));
     expect(await setMemberRole(projectId, userId.toUpperCase(), { version: member.version, role: "member", expectedUserId: userId }, signal(), vi.fn())).toEqual({ ...grant, role: "member", version: maximum });
@@ -213,19 +222,19 @@ describe("private project and membership API", () => {
   });
 
   it.each(["9007199254740993", "9223372036854775807"])("parses the original numeric member version lexeme %s", async (version) => {
-    const text = JSON.stringify({ items: [{ ...participant, directGrant: { ...grant, version: 1 } }] }).replace('"version":1', `"version":${version}`);
+    const text = stringifyWireJson({ actorAccess: directAccessFixture(projectId, userId), items: [{ ...participant, directGrant: { ...grant, version: 999 } }] }).replace('"version":999', `"version":${version}`);
     mock(new Response(text, { headers: { "Content-Type": "application/json" } }));
-    expect((await listMembers(projectId, signal()))[0]?.directGrant?.version).toBe(BigInt(version));
+    expect((await listMembers(projectId, signal())).items[0]?.directGrant?.version).toBe(BigInt(version));
   });
 
   it.each(["0", "-1", "1.5", "1e3", "9223372036854775808", '"9007199254740993"'])("rejects invalid membership numeric representations %s", async (version) => {
-    const text = JSON.stringify({ items: [{ ...participant, directGrant: { ...grant, version: 1 } }] }).replace('"version":1', `"version":${version}`);
+    const text = stringifyWireJson({ actorAccess: directAccessFixture(projectId, userId), items: [{ ...participant, directGrant: { ...grant, version: 999 } }] }).replace('"version":999', `"version":${version}`);
     mock(new Response(text, { headers: { "Content-Type": "application/json" } }));
     await expect(listMembers(projectId, signal())).rejects.toMatchObject({ kind: "protocol", status: 200 });
   });
 
   it("binds membership responses to both requested IDs", async () => {
-    const fetcher = mock(response({ items: [{ ...participant, directGrant: { ...grant, projectId: otherId } }] }));
+    const fetcher = mock(response({ actorAccess: directAccessFixture(projectId, userId), items: [{ ...participant, directGrant: { ...grant, projectId: otherId } }] }));
     await expect(listMembers(projectId, signal())).rejects.toMatchObject({ kind: "protocol" });
     fetcher.mockResolvedValue(response({ ...grant, userId: otherId }));
     await expect(setMemberRole(projectId, userId, { version: 1n, role: "admin", expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
@@ -241,38 +250,56 @@ describe("private project and membership API", () => {
 });
 
 describe("invitation API", () => {
-  it("lists invitations and returns only the current origin's one-time link from creation", async () => {
+  const mismatch = vi.fn();
+  const admission = { userId, onPrincipalMismatch: mismatch };
+  const access = { ...directAccessFixture(projectId, userId, "admin"), directGrant: grant };
+  it("binds creation and revocation to the current identity and returns the one-time link", async () => {
     const fetcher = mock(response({ items: [invitation] }));
-    expect(await listInvitations(projectId.toUpperCase(), signal())).toEqual([invitation]);
+    expect(await listInvitations(projectId.toUpperCase(), signal(), admission)).toEqual([invitation]);
     const created = { ...invitation, link: `${window.location.origin}/invitations#opaque-invitation` };
     fetcher.mockResolvedValue(response(created, 201));
-    expect(await createInvitation(projectId, signal())).toEqual(created);
-    expect(fetcher.mock.calls[1]).toEqual([`/api/v1/projects/${projectId}/invitations`, expect.objectContaining({ method: "POST", body: "{}" })]);
-    fetcher.mockResolvedValue(new Response(null, { status: 204 }));
-    await revokeInvitation(projectId, inviteId.toUpperCase(), signal());
-    expect(fetcher.mock.calls[2]).toEqual([`/api/v1/projects/${projectId}/invitations/${inviteId}`, expect.objectContaining({ method: "DELETE" })]);
+    expect(await createInvitation(projectId, userId, signal(), mismatch)).toEqual(created);
+    expect(fetcher.mock.calls[1]).toEqual([`/api/v1/projects/${projectId}/invitations`, expect.objectContaining({ method: "POST", body: JSON.stringify({ expectedUserId: userId }) })]);
+    fetcher.mockResolvedValue(new Response(null, { status: 204, headers: { "Daynight-User-ID": userId } }));
+    await revokeInvitation(projectId, inviteId.toUpperCase(), userId, signal(), mismatch);
+    expect(fetcher.mock.calls[2]).toEqual([`/api/v1/projects/${projectId}/invitations/${inviteId}`, expect.objectContaining({ method: "DELETE", body: JSON.stringify({ expectedUserId: userId }) })]);
   });
 
-  it("sends invitation secrets only in JSON bodies and explicitly separates inspection from acceptance", async () => {
+  it("keeps secrets in bodies and verifies direct grant and effective access without rounding", async () => {
     const secret = "invitation-only-in-body";
-    const fetcher = mock(response({ projectId, projectName: project.name }));
-    expect(await inspectInvitation(secret, signal())).toEqual({ projectId, projectName: project.name });
+    const empty = { projectId, projectName: project.name, directGrant: null, access: null };
+    const fetcher = mock(response(empty));
+    expect(await inspectInvitation(secret, userId, signal(), mismatch)).toEqual(empty);
     expect(fetcher.mock.calls[0]).toEqual(["/api/v1/invitations/inspect", expect.objectContaining({ method: "POST", body: JSON.stringify({ token: secret }) })]);
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    fetcher.mockResolvedValue(response({ projectId, projectName: project.name, member }));
-    expect((await inspectInvitation(secret, signal())).member).toEqual(member);
-    fetcher.mockResolvedValue(response(member));
-    expect(await acceptInvitation(secret, signal())).toEqual(member);
-    expect(fetcher.mock.calls[2]).toEqual(["/api/v1/invitations/accept", expect.objectContaining({ method: "POST", body: JSON.stringify({ token: secret }) })]);
+    fetcher.mockResolvedValue(response({ ...empty, directGrant: grant, access }));
+    expect((await inspectInvitation(secret, userId, signal(), mismatch)).directGrant).toEqual(grant);
+    const accepted = { projectId, directGrant: grant, access, joined: true, consumed: true };
+    fetcher.mockResolvedValue(response(accepted));
+    expect(await acceptInvitation(secret, projectId, userId, signal(), mismatch)).toEqual(accepted);
+    expect(fetcher.mock.calls[2]).toEqual(["/api/v1/invitations/accept", expect.objectContaining({ method: "POST", body: JSON.stringify({ token: secret, expectedUserId: userId }) })]);
     for (const [url] of fetcher.mock.calls) expect(url).not.toContain(secret);
   });
 
+  it("rejects wrong principals and malformed acceptance results without replay or secret causes", async () => {
+    const secret = "secret-in-error";
+    const fetcher = mock(new Response(JSON.stringify({ projectId }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": otherId } }));
+    await expect(acceptInvitation(secret, projectId, userId, signal(), mismatch)).rejects.toMatchObject({ code: "principal_mismatch" });
+    expect(mismatch).toHaveBeenCalled();
+    fetcher.mockResolvedValue(response({ projectId, directGrant: { ...grant, userId: otherId }, access, joined: true, consumed: true }));
+    await expect(acceptInvitation(secret, projectId, userId, signal(), mismatch)).rejects.toMatchObject({ kind: "protocol" });
+    fetcher.mockRejectedValue(new Error(secret));
+    for (const call of [() => inspectInvitation(secret, userId, signal(), mismatch), () => acceptInvitation(secret, projectId, userId, signal(), mismatch)]) {
+      const failure = await call().catch((error: unknown) => error);
+      expect(failure).not.toHaveProperty("cause");
+      expect(String(failure)).not.toContain(secret);
+    }
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  });
+
   it.each(["", "secret\nvalue", "secret value", "secret\0value", "secret\ud800value"])("rejects malformed invitation secrets without exposing them %#", (secret) => {
-    const fetcher = vi.fn();
-    vi.stubGlobal("fetch", fetcher);
-    for (const call of [inspectInvitation, acceptInvitation]) {
-      try { call(secret, signal()); expect.unreachable(); }
-      catch (error) { expect(error).toBeInstanceOf(ApiError); if (secret !== "") expect(String(error)).not.toContain(secret); }
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    for (const call of [() => inspectInvitation(secret, userId, signal(), mismatch), () => acceptInvitation(secret, projectId, userId, signal(), mismatch)]) {
+      try { call(); expect.unreachable(); } catch (error) { expect(error).toBeInstanceOf(ApiError); if (secret !== "") expect(String(error)).not.toContain(secret); }
     }
     expect(fetcher).not.toHaveBeenCalled();
   });

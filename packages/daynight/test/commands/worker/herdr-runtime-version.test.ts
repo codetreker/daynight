@@ -86,6 +86,24 @@ describe("read-only durable Herdr runtime versions", () => {
     expect(JSON.stringify(sample.telemetry)).not.toContain(record.runs[0]!.instanceDirectory);
   });
 
+  it("keeps optional assistant observations alongside the owned durable daemon version", async () => {
+    const f = fixture(), record = f.add(), original = readFileSync(f.journal);
+    mocks.peer.mockResolvedValue(record.runs[0]!.daemon);
+    mocks.rpc.mockResolvedValue({ type: "pong", version: "0.9.5" });
+    const assistantHost = { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: f.home, defaultProvider: "codex" as const,
+      providers: (["codex", "claude", "copilot"] as const).map(provider => ({ provider, available: false, reason: "unavailable" as const, model: null, args: [] })) };
+    const assistant = { collect: vi.fn(async (parent: Operation) => { parent.check(); return { assistantHost, issues: [] }; }) };
+    const parent = operation();
+    const sample = await createWorkerTelemetryCollector({ ...f.options, homeDirectory: f.home, version: "0.41.0", workingDirectory: f.home,
+      machine: { id: "fixture", name: "Fixture" }, assistantHost: assistant }).collect(parent);
+    expect(sample.telemetry.versions.herdr).toMatchObject({ state: "ok", value: "0.9.5" });
+    expect(sample.telemetry.assistantHost).toEqual(assistantHost);
+    expect(assistant.collect).toHaveBeenCalledExactlyOnceWith(parent);
+    expect(mocks.rpc.mock.calls.map(call => call[0])).toEqual([endpoint(record)]);
+    expect(readFileSync(f.journal)).toEqual(original);
+    expect(mocks.execution).not.toHaveBeenCalled();
+  });
+
   it("reports no live run without consulting a retained shared daemon", async () => {
     const f = fixture(), store = openHerdrLifecycleStore(f.journal, { onMigration: () => {} }); store.close();
     mocks.rpc.mockResolvedValue({ type: "pong", version: "0.1.0" });

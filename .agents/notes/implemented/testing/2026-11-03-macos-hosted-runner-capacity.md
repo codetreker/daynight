@@ -43,18 +43,22 @@ its bootstrap to a version with engine-specific identity verification. Workspace
 installation retains `--frozen-lockfile`; application dependencies and the
 workspace lockfile retain their existing versions and integrity records.
 
-The [private installation fixture](../../../../packages/daynight/test/fixtures/installed-cli.ts)
-uses PNPM's supported `--config.prefer-symlinked-executables=true` setting.
-Its POSIX executable links avoid the repeated
+At adoption, the [private installation fixture](../../../../packages/daynight/test/fixtures/installed-cli.ts)
+used PNPM's supported `--config.prefer-symlinked-executables=true` setting.
+Its POSIX executable links avoided the repeated
 [whole-file shim inspection](https://github.com/pnpm/pnpm/blob/fe4a0c232384289de82be3d502896ca7e070050c/pnpm11/bins/cmd-shim/src/index.ts#L236-L252).
-PNPM retains its existing Windows linking semantics. These consumers still
-perform real pack/install with the full package manifest and dependencies,
-private directories and source/hash receipts. The independent installed e2e
-suite retains default PNPM shim coverage; real npm global updates remain
-unchanged. No installed tree or mutable scenario state is shared.
+PNPM retained its existing Windows linking semantics. Each consumer performed
+real pack/install with the full package manifest, private directories and
+source/hash receipts, while the independent e2e suite retained default shim
+coverage. The [shared preparation decision](2026-11-04-shared-installed-cli-preparation.md)
+replaces that repeated-preparation premise for Vitest acceptance: one canonical
+default-shim installation serves private runtime state and isolated writable
+package views. Standalone callers retain owned preparation and the supported
+linking preference; real npm global updates remain unchanged.
 
-Project/task's pack/install/receipt preparation and self-update's three packed
+Project/task's private runtime/view preparation and self-update's three packed
 versions plus initial npm global installation belong to case-owned setup hooks.
+The shared Vitest installation has its own global setup and teardown owner.
 Their callbacks retain the ordered business, failure, state-transition and
 identity assertions. Preparation, callbacks and teardown have explicit local
 owners. Teardown aborts pending work and waits for preparation and behavior to
@@ -102,10 +106,13 @@ The macOS 26 selection preserved the OS coverage at adoption.
 and does not remove repeated installation work. The chosen partition preserves
 the existing numeric limits, while the full job must still fit its own bound.
 
-**Share installed trees or introduce a seed protocol.** Installed suites mutate
-their own resources and update state. Shared mutable installations would break
-isolation; a new cache/provenance protocol is unnecessary for the existing
-case-owned setup and supported package-manager linking preference.
+**Share installed trees or introduce a seed protocol.** At adoption, installed
+suites mutated their own resources and update state. Sharing their mutable
+installations would have broken isolation, while case-owned setup and supported
+package-manager linking already addressed the observed bootstrap and callback
+problems. The later [shared preparation decision](2026-11-04-shared-installed-cli-preparation.md)
+separates immutable installation ownership from private runtime and package
+mutation, addressing repeated work without sharing mutable package files.
 
 ## Consequences
 

@@ -104,7 +104,7 @@ describe("worker repository preparation lifecycle", () => {
     const snapshot = await readWorkerRepositorySnapshot(f.paths);
     await changeWorkerRepositories({ paths: f.paths, homeDirectory: f.homeDirectory, snapshot,
       projects: [{ id: uuid(1), name: "Existing Project", repoUrl: f.repository.remote,
-        settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z" }], addProjectIds: [uuid(1)],
+        settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z" }], addProjectIds: [uuid(1)],
     });
     const controller = new AbortController();
     mocks.coordinator.mockReturnValue(coordinator(async () => { controller.abort(new Error("Original binding restarted.")); }));

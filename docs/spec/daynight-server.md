@@ -20,7 +20,7 @@
 [架构](../design/daynight-task-attachments.md)拥有附件机制。
 
 [鉴权需求](daynight-auth.md)定义已接入主站的 UniAuth 登录、Daynight 会话、个人
-访问令牌、CLI 设备授权和项目成员授权；[架构](../design/daynight-auth.md)拥有机制。全部 project、task、
+访问令牌、CLI 设备授权、Team 生命周期和项目成员授权；[架构](../design/daynight-auth.md)拥有机制。全部 Team、project、task、
 图和附件业务请求必须通过认证。项目准入统一计算当前 owner Team role 与独立 direct grant role
 的最大值；没有任何有效来源时不可访问。真实 Personal 归属、初始化和存量迁移由
 [鉴权要求](daynight-auth.md)拥有。[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
@@ -169,8 +169,16 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 
 ## HTTP API
 
+Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确版本和写入结果由
+[鉴权需求](daynight-auth.md#team-生命周期)拥有；下表保留服务的完整资源入口索引。
+
 | 方法 | 路径 | 结果 |
 |---|---|---|
+| `POST` | `/api/v1/teams` | 创建普通 Team 与创建者 admin，返回 `201`、Team 和 Location |
+| `GET` | `/api/v1/teams` | 按本人成员资格返回 Team 分页 |
+| `GET` | `/api/v1/teams/{teamId}` | 返回 Team 与本人真实成员关系，不可见时 `404` |
+| `PATCH` | `/api/v1/teams/{teamId}` | 当前 admin 按元数据 version 保存原文名称，返回 `200` 和 Team |
+| `DELETE` | `/api/v1/teams/{teamId}` | 当前 admin 核对 version/name，原子删除空普通 Team，返回 `200` 和有限回执 |
 | `POST` | `/api/v1/projects` | 创建 project，返回 `201` 和资源 |
 | `GET` | `/api/v1/projects` | 返回 project 分页列表 |
 | `GET` | `/api/v1/projects/{projectId}` | 返回 project，缺失时 `404` |
@@ -198,6 +206,8 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 | `POST` | `/api/v1/me/workers/{workerId}/report` | 保存账号自己的最新运行快照，返回服务端 observation 与 lastReportedAt |
 | `GET` | `/api/v1/me/workers` | 返回最近 72 小时的账号级 Worker 摘要及稳定分页 cursor |
 | `GET` | `/api/v1/me/workers/{workerId}` | 返回近期 Worker telemetry 与按当前权限过滤的任务观测 |
+| `GET, HEAD` | `/api/v1/me/workers/{workerId}/configuration` | 读取账号拥有的云端目标与逐项应用观测，不受近期窗口限制 |
+| `PUT` | `/api/v1/me/workers/{workerId}/configuration` | 精确目标版本保存完整配置，返回当前配置资源 |
 
 HTTP 创建请求使用 `Content-Type: application/json`，可附带 UTF-8 charset。请求体
 最多 1 MiB，必须是单个 JSON 对象；拒绝无效 UTF-8、重复 key、字段名大小写不符、
@@ -265,10 +275,12 @@ Task 更新示例：
 
 列表使用 `limit`、`cursor`。`limit` 默认 `50`，允许 `1..100`；按
 `createdAt ASC, id ASC` 稳定排序，返回 `items` 和 `nextCursor`，末页后者为 `null`。
+Project 列表默认返回当前主体全部可访问项目；单值 `teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥；非成员或不存在的 Team 返回 404，读取失败不能视为空列表。资格筛选先于排序和分页，不返回总数。Project cursor 使用独立 kind 与版本 2，绑定规范主体及 all/team/shared 范围和 Team ID；旧 cursor 和不匹配范围被拒绝。cursor 不需要防篡改，也不授予访问权。
+
 Task 列表支持单个三状态 status、ready/allowAgents 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false，兼容匹配包含 null 或同值要求；省略不筛选。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/released/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
 
 仅以 workerId 筛选并成功读完该 runner 全部项目和分页，才得到用于资源对账的完整自有 claim 清单。额外显式条件得到的是子集，不能据其缺席清理其他执行；读取失败或部分页不能视为空清单。
-Task 列表 cursor 使用版本2，必需 scope 包含解析后的 all/unassigned/user:UUID 选择；项目列表和账号级 `/api/v1/me/workers` 保持版本1。me 与同一 UUID 的 scope 相同，其他账号的 me 不得续用；旧版本1 Task cursor 拒绝并从第一页重读。Cursor 还绑定列表类型、所属 project 和其他规范化筛选；指定 workerId 时绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
+Task 列表 cursor 使用版本2，必需 scope 包含解析后的 all/unassigned/user:UUID 选择；账号级 `/api/v1/me/workers` 保持版本1。me 与同一 UUID 的 scope 相同，其他账号的 me 不得续用；旧版本1 Task cursor 拒绝并从第一页重读。Cursor 还绑定列表类型、所属 project 和其他规范化筛选；指定 workerId 时绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
 输入错误拒绝；`limit` 的默认值仅用于未提供该参数。
 单次响应中的 task、依赖和派生字段保持一致；多次翻页不承诺跨请求快照。
 
@@ -276,7 +288,7 @@ Task 列表 cursor 使用版本2，必需 scope 包含解析后的 all/unassigne
 
 ### 账号级 Worker 快照
 
-Worker 资源归属来自认证 principal，报告不能提供 userId 或权威任务状态。完整结构、Probe 分支、null/空/旧清单、72 小时窗口及任务计数由[快照协议](daynight-worker-snapshots.md)拥有。GET 不续活，详情超窗、未知与他人资源统一为 404。离线和移出近期列表不改变任务执行；读取时的当前项目权限同时约束历史标题、任务行和计数。
+Worker 资源归属来自认证 principal，报告不能提供 userId 或权威任务状态。完整结构、Probe 分支、null/空/旧清单、72 小时窗口及任务计数由[快照协议](daynight-worker-snapshots.md)拥有。GET 不续活，详情超窗、未知与他人资源统一为 404。离线和移出近期列表不改变任务执行；读取时的当前项目权限同时约束历史标题、任务行和计数。[云端配置接口](daynight-worker-configuration.md)独立管理目标与应用观测，通过显式报告协议交换。配置读取/保存不续活，也不以 active claim 为接入条件。
 
 ### 时间窗口任务摘要
 
@@ -346,18 +358,22 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | `400` | `invalid_input` | 格式、字段、分页参数、依赖引用、自身或重复依赖不合法，以及读取到非法存储属性值 |
 | `401` | `unauthenticated` | 会话或个人访问令牌缺失、失效或已撤销 |
 | `403` | `forbidden` | 普通成员执行管理员操作，或 Cookie 会话写请求来源不符合要求 |
-| `404` | `not_found` | 路径资源缺失、当前用户不是项目成员或 task 不属于指定 project |
+| `404` | `not_found` | 路径资源缺失、当前用户不是对应 Team/项目成员或 task 不属于指定 project |
 | `405` | `method_not_allowed` | 已知路径使用不支持的方法，并返回 `Allow` |
-| `409` | `version_conflict` | 任务元数据、生命周期、Steps 或项目设置的期望版本过期 |
+| `409` | `version_conflict` | 任务元数据、生命周期、Steps、Team 元数据或项目设置的期望版本过期；删除 Team 的名称原文不匹配 |
+| `409` | `identity_mismatch` | Team 管理输入的 expectedUserId 与实际 principal 不符，领域行和版本零变化 |
+| `409` | `personal_team_immutable` | 变更 Personal Team |
+| `409` | `team_not_empty` | 删除仍有 Project ownership 引用的 Team |
 | `409` | `step_id_conflict` | 同一 Task 内添加的 Step ID 已存在；版本检查先于身份与锚点检查 |
 | `409` | `steps_limit_exceeded` | Steps 真实变化候选超过完整编码容量，返回 encodedBytes/maxEncodedBytes |
-| `409` | `version_exhausted` | Steps 真实变化所需的父 Task 版本已达最大正 int64；同值 no-op 仍有效 |
+| `409` | `version_exhausted` | Steps 父 Task 或 Team 真实改名所需版本已达最大正 int64；同值 no-op 仍有效 |
 | `409` | `invalid_transition` | in_progress 中禁止实际切换 allowAgents/requiredPlatform/assignedTo，或删除目标仍有 active worker 归属 |
 | `409` | `dependency_cycle` | 候选依赖图成环 |
 | `409` | `dependency_unsatisfied` | 进入 active/done 或元数据候选违反前置完成规则、done 重开存在 active/done 直接后继，或严格删除存在未删除引用者 |
 | `409` | `graph_limit_exceeded` | 任务链查询的返回集合或 task-sync 的全项目集合超过节点或依赖上限，返回精确数量和支持上限 |
 | `410` | `task_deleted` | 授权成员访问已软删除任务；不表示项目访问撤回 |
-| `500` | `internal_error` | 内部或持久化操作失败，响应不泄露数据库连接信息或 SQL |
+| `500` | `internal_error` | 内部、持久化或事务清理操作失败，响应不泄露数据库连接信息或 SQL |
+| `503` | `write_outcome_unknown` | 无法确认 Team 管理 COMMIT 结果，不自动重放写入 |
 
 ## 运行与范围
 
@@ -405,7 +421,7 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | V11 | 自动执行许可覆盖旧行迁移/新行默认、所有 task/graph 资源的布尔字段、创建拒绝与 PATCH 省略/false/null/类型语义、双值筛选与 cursor、精确版本同值与旧值、in_progress 拒绝、同版本状态/许可竞争及时间/PR/依赖保全 |
 | V12 | 平台要求覆盖迁移保全、默认null、创建/PATCH省略/设置/清除/非法值、必填nullable资源、四种要求×三查询平台并组合ready/许可、分页前筛选/cursor、精确版本no-op/运行锁/状态竞争及全部字段保全；自动worker事务与实际记录按worker验收 |
 | V13 | assignedTo 覆盖历史及软删除行NULL、三套同快照响应的必填nullable键、创建/PATCH三态与规范化、实际变更原子关闭许可、等值/陈旧值/运行锁、访问变化、全部写入保留、真实竞态及回滚；具体契约由负责人需求拥有 |
-| V14 | 负责人多页原生筛选和解析后scope、Task cursor2与其他列表版本1、项目人员两种模式的资格/隐私/nullable/完整覆盖、原始引用缺失资料的500、真实快照并发/取消及查询计划样本 |
+| V14 | 负责人多页原生筛选和解析后scope、Task cursor2、项目 cursor2 与账号 Worker cursor1、项目人员两种模式的资格/隐私/nullable/完整覆盖、原始引用缺失资料的500、真实快照并发/取消及查询计划样本 |
 
 实际进程与安装 CLI 验收通过固定的真实 UniAuth gateway 夹具取得浏览器会话与 PAT，
 再执行 V1–V12 业务场景。受控外部 provider 响应与真实上游登录具有不同证据

@@ -7,7 +7,7 @@ import { renderWithLocale } from "./helpers/renderWithLocale";
 
 vi.mock("../src/features/landing/LandingPage", () => ({ LandingPage: () => <main><h1>Public product introduction</h1></main> }));
 
-const user = { id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...(status === 401 ? {} : { "Daynight-User-ID": user.id }) } });
 const anonymous = () => json({ error: { code: "unauthenticated", message: "Sign in", requestId: "entry-login" } }, 401);
 const mount = (navigateToLogin = vi.fn()) => renderWithLocale(<Application navigateToLogin={navigateToLogin} />, { locale: "en" });
@@ -75,7 +75,7 @@ describe("public and authenticated entry ownership", () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
     const fetcher = vi.fn((url: string) => Promise.resolve(url === '/api/v1/invitations/inspect'
-      ? json({ projectId: '00000000-0000-4000-8000-000000000010', projectName: 'Invited project' }) : defaultResponse(url)));
+      ? json({ projectId: '00000000-0000-4000-8000-000000000010', projectName: 'Invited project', directGrant: null, access: null }) : defaultResponse(url)));
     vi.stubGlobal('fetch', fetcher);
     mount();
     await screen.findByRole('button', { name: 'Accept invitation and join' });
@@ -152,7 +152,7 @@ describe("public and authenticated entry ownership", () => {
     window.history.replaceState(null, "", destination + (flow === "invitation" ? "#pending-invitation" : ""));
     const fetcher = vi.fn((url: string) => Promise.resolve(
       url === "/api/v1/auth/logout" ? new Response(null, { status: 204 })
-        : url === "/api/v1/invitations/inspect" ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project" })
+        : url === "/api/v1/invitations/inspect" ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project", directGrant: null, access: null })
           : url === "/api/v1/auth/device/inspect" ? json({ userCode: "BCDFG-HJKLM", expiresAt: new Date(Date.now() + 600_000).toISOString(), status: "pending" })
             : defaultResponse(url)
     ));
