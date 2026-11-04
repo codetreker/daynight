@@ -1397,8 +1397,10 @@ pane's retained reference is not saved as a newly observed session ID. A live
 agent keeps its current connection.
 
 Startup, recovery and continuation prompts require autonomous decisions within
-the task scope and existing authorization. When human intervention is necessary,
-the managed agent sets its own task's `paused` property to true with an observed
+the task scope and existing authorization. Human intervention requires specific
+information, a decision, authorization or an action that the agent cannot supply
+within that scope and authority. Before waiting for that intervention, the
+managed agent sets its own task's `paused` property to true with an observed
 exact version and confirms the same assignment and pause before waiting. It
 reports the issue and retains session context; the user chooses how to respond.
 After verifying resolution, the original assignment and permission to resume,
@@ -1406,10 +1408,13 @@ it clears the pause and confirms false or absence before continuing. Independent
 user restrictions still apply. The [managed workflow](src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction)
 owns readback, failure and conflict handling.
 
-Ordinary review and CI waits remain ongoing execution: the agent waits, checks
-results and continues delivery without ending its turn or setting a pause just
-because a poll times out. Fixed native full access and folder trust apply to
-every fresh/resumed process; task delivery remains within its business authorization.
+Pending PR review, required reviewer approval and CI remain ongoing execution,
+including reviews performed by a person. Pending results and polling timeouts
+do not justify setting `properties.paused=true`, requesting user intervention
+or ending the turn. The agent monitors results and continues delivery while
+honoring independent user pauses, restrictions and revocations. Fixed native
+full access and folder trust apply to every fresh/resumed process; task delivery
+remains within its business authorization.
 
 For a still-owned active claim, each patrol observes the live agent. An
 interactive-ready agent that is not launching and has no first input pending
