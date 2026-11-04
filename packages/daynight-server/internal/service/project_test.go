@@ -196,7 +196,7 @@ func TestProjectPagination(t *testing.T) {
 			if page.NextCursor == nil {
 				t.Fatal("missing next cursor")
 			}
-			position, err := projectListPage(PageRequest{Limit: 2, Cursor: page.NextCursor})
+			position, err := projectListPage(PageRequest{Limit: 2, Cursor: page.NextCursor}, principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
 			if err != nil || !position.After.CreatedAt.Equal(timestamp) || position.After.ID != page.Items[1].ID {
 				t.Fatalf("cursor must encode exact last position: %#v, %v", position, err)
 			}
@@ -246,23 +246,36 @@ func TestProjectListRejectsInvalidRequests(t *testing.T) {
 		_, err := NewProjects(nil).List(context.Background(), principal, PageRequest{Limit: limit})
 		requireFault(t, err, "invalid_input")
 	}
-	valid := listCursor{Version: 1, Kind: "projects", CreatedAt: time.Now().UTC(), ID: "f47ac10b-58cc-11cf-a447-001122334455"}
-	status, ready := "todo", false
+	scope := store.ProjectScope{Kind: store.ProjectScopeAll}
+	valid := projectCursor{Version: 2, Kind: "scoped-projects", UserID: principal.UserID, Scope: scope.Kind, CreatedAt: time.Now().UTC(), ID: "f47ac10b-58cc-11cf-a447-001122334455"}
+	encode := func(value projectCursor) string {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.RawURLEncoding.EncodeToString(data)
+	}
+	validEncoded := encode(valid)
+	if _, err := projectListPage(PageRequest{Limit: 50, Cursor: &validEncoded}, principal.UserID, scope); err != nil {
+		t.Fatal(err)
+	}
 	var invalid []string
-	for _, mutate := range []func(*listCursor){
-		func(c *listCursor) { c.Version = 2 },
-		func(c *listCursor) { c.Kind = "tasks" },
-		func(c *listCursor) { c.ProjectID = "00000000-0000-0000-0000-000000000001" },
-		func(c *listCursor) { c.Status = &status },
-		func(c *listCursor) { c.Ready = &ready },
-		func(c *listCursor) { c.CreatedAt = time.Time{} },
-		func(c *listCursor) { c.ID = "bad-id" },
-		func(c *listCursor) { c.ID = strings.ToUpper(c.ID) },
+	for _, mutate := range []func(*projectCursor){
+		func(c *projectCursor) { c.Version = 1 },
+		func(c *projectCursor) { c.Kind = "projects" },
+		func(c *projectCursor) { c.UserID = uuid.NewString() },
+		func(c *projectCursor) { c.Scope = store.ProjectScopeShared },
+		func(c *projectCursor) { c.TeamID = uuid.NewString() },
+		func(c *projectCursor) { c.CreatedAt = time.Time{} },
+		func(c *projectCursor) { c.ID = "bad-id" },
+		func(c *projectCursor) { c.ID = strings.ToUpper(c.ID) },
 	} {
 		cursor := valid
 		mutate(&cursor)
-		invalid = append(invalid, cursorJSON(t, cursor))
+		invalid = append(invalid, encode(cursor))
 	}
+	invalid = append(invalid, cursorJSON(t, listCursor{Version: 1, Kind: "projects", CreatedAt: valid.CreatedAt, ID: valid.ID}))
+
 	for _, raw := range []string{"", "null", "{", "{}", "[]", `{"unknown":1}`, `{"createdAt":"bad-time"}`, `{} {}`, `{} false`, `{} trailing`} {
 		invalid = append(invalid, base64.RawURLEncoding.EncodeToString([]byte(raw)))
 	}

@@ -42,7 +42,9 @@ worker or other inferred identity.
 
 Task filtering uses native UUID equality or IS NULL before pagination. Its
 resolved all/unassigned/user selection participates in task cursor version 2;
-project and account-Worker cursors retain version 1. Resolving me before cursor
+project and account-Worker cursors retained version 1 at that point. The
+[project scope decision](2026-11-04-project-scope-pagination.md) later advances
+the project cursor. Resolving me before cursor
 validation makes it equivalent to the corresponding concrete UUID while keeping
 another principal's self-filter out of that scope. Filters are explicit inputs,
 originally independent of execution eligibility. That initial separation kept
