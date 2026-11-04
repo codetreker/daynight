@@ -441,12 +441,16 @@ export class TaskDetailSessions {
       return false;
     }
     if (lifecycleChanged || restored) {
+      // Revoke the old delete confirmation before the replacement history can admit reads.
+      const retractedDelete = lifecycleChanged && entry.state.mutation.operation?.action === "stepDelete" && entry.state.mutation.phase === "confirmed";
       this.cancelRead(projectId, taskId);
+      if (retractedDelete) { entry.steps.parentRequested = null; entry.steps.parentRetry = null; }
       entry.liveVersion = null; entry.committedVersion = null; entry.pending = null; entry.mismatch = null; entry.deletedGeneration = null;
       const deniedError = cacheGeneration === null ? entry.state.error : null;
       this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: deniedError === null ? "loading" : "error", refreshing: false,
         requiresFreshRead: true, graphMismatch: false, error: deniedError,
-        mutation: restored ? idleMutation() : { ...entry.state.mutation, reconciling: false, reconciliationError: cacheGeneration === null ? entry.state.mutation.reconciliationError : null } });
+        mutation: restored ? idleMutation() : { ...entry.state.mutation, phase: retractedDelete ? "unknown" : entry.state.mutation.phase,
+          reconciling: retractedDelete && cacheGeneration !== null, reconciliationError: cacheGeneration === null ? entry.state.mutation.reconciliationError : null } });
     }
     const changed = lifecycleChanged || restored || entry.observedVersion !== version;
     entry.observedGeneration = cacheGeneration;
