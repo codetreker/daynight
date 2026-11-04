@@ -1,6 +1,6 @@
 # Task 负责人设计
 
-状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 负责人命令、Web 负责人写入/展示/筛选和 schema 4 缓存，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
+状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 负责人命令、Web 负责人写入/展示/筛选和负责人字段缓存，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
 
 ## 数据所有权
 
@@ -86,7 +86,7 @@ TaskDetailSession 继续唯一拥有所有 Task mutation，assignedTo action 复
 
 HTTP200确认后才能抬高已提交版本下限；响应读取失败或未知结果沿既有GET核对队列，不重放PATCH。更高版本完整当前值可替代原意图，旧历史/旧owner不能发布结果。确认、摘要同步与详情持久化继续属于现有ticket/generation边界。
 
-Web所有Task/detail/summary/graph解析和比较纳入assignedTo。schema4复用既有升级事务，1/2/3直接清除projects/summaries/details、清水位并轮换user fence；新字段消费者与此重建同时交付，不把缺字段解释为null。mutable profile不进入IDB或Task version。
+Web所有Task/detail/summary/graph解析和比较纳入assignedTo。负责人最初通过schema 4进入缓存。当前格式与升级范围由[缓存设计](daynight-task-sync.md)拥有，继续在同一升级事务中清除projects/summaries/details、清水位并轮换user fence；字段消费者与所需重建共同生效，不把缺字段解释为null。mutable profile不进入IDB或Task version。
 
 ## Web 人员与界面所有者
 
@@ -108,4 +108,4 @@ ProjectPage从完整index导出匹配ID，再在显示集合和分页前相交�
 
 查询验证过滤先于分页、完整 scope、旧任务游标拒绝和其他列表版本不变、worker inventory 组合、自动候选本人筛选与 claim 事务负责人校验。目录验证两种模式的原始引用完整性、隐私、精确覆盖、100/101 边界、真实快照并发及所有失败路径。至少 10000 任务和 100 人员的生产查询 EXPLAIN ANALYZE BUFFERS 与响应样本通过显式本地 `bash scripts/stress.sh`（在服务模块内）运行，并绑定被测代码；常规 Go CI 排除该压力样本，保留真实 PostgreSQL 的过滤、游标、权限及失败路径验证和严格覆盖率门槛。数量样本不改变 Web 图规模限制，也不是生产容量上限。
 
-Web验证覆盖字段/schema4升级、mutation同值/确认下限/材料保持、people需求/receipt/派发和负向撤权fence、完整链筛选、菜单焦点及双语窄屏。生产功能场景task-assignment与task-assignment-layout分别拥有真实写入/未知结果核对，以及身份/布局/完整图显示的验证；完整inventory由Web验收所有者定义。
+Web验证覆盖负责人字段与当前缓存格式升级、mutation同值/确认下限/材料保持、people需求/receipt/派发和负向撤权fence、完整链筛选、菜单焦点及双语窄屏。生产功能场景task-assignment与task-assignment-layout分别拥有真实写入/未知结果核对，以及身份/布局/完整图显示的验证；完整inventory由Web验收所有者定义。

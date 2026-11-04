@@ -2,7 +2,7 @@
 
 状态：服务端窗口摘要及完整属性、配置、身份响应头和 epoch，以及浏览器 IndexedDB schema 5、原子合并、本地图投影和按需详情缓存已实现。摘要业务版本驱动详情更新，成功同步的时钟 receipt 不单独触发未变化详情 GET。
 
-[架构](../design/daynight-task-sync.md)拥有协议、缓存与恢复机制。任务生命周期、依赖性质、附件及计时沿用各自现有合同。摘要与浏览器 Task、详情、图投影都包含[负责人契约](daynight-task-assignment.md)的必填 nullable assignedTo，字段消费与 schema 4 重建共同交付。
+[架构](../design/daynight-task-sync.md)拥有协议、缓存与恢复机制。任务生命周期、依赖性质、附件及计时沿用各自现有合同。摘要与浏览器 Task、详情、图投影都包含[负责人契约](daynight-task-assignment.md)的必填 nullable assignedTo，该字段在 schema 4 引入时与重建共同交付，当前格式及旧版本升级范围见 R6。
 
 ## 已确认范围
 
