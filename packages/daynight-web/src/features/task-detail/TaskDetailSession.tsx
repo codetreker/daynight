@@ -446,7 +446,7 @@ export class TaskDetailSessions {
       const deniedError = cacheGeneration === null ? entry.state.error : null;
       this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: deniedError === null ? "loading" : "error", refreshing: false,
         requiresFreshRead: true, graphMismatch: false, error: deniedError,
-        mutation: restored ? idleMutation() : { ...entry.state.mutation, reconciling: false, reconciliationError: null } });
+        mutation: restored ? idleMutation() : { ...entry.state.mutation, reconciling: false, reconciliationError: cacheGeneration === null ? entry.state.mutation.reconciliationError : null } });
     }
     const changed = lifecycleChanged || restored || entry.observedVersion !== version;
     entry.observedGeneration = cacheGeneration;
