@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 const native = vi.hoisted(() => ({ spawn: vi.fn(), observe: vi.fn(), capture: vi.fn() }));
@@ -68,8 +68,13 @@ test("retains uncertainty when the controller exits before authenticated initial
 
 test("log preparation failure retains an unsubmitted launch without manufacturing an unknown native start", async () => {
   const { store, task, ticket, launcher } = await fixture();
-  await mkdir(path.join(controllerExecutionDirectory(ticket.cwd, ticket.executionId), "controller.log"));
-  await expect(launcher.launch(task, ticket, new AbortController().signal)).rejects.toThrow();
+  const directory = controllerExecutionDirectory(ticket.cwd, ticket.executionId);
+  const launch = { ...ticket, credentialFile: path.join(ticket.cwd, "credential.json") };
+  // A file in the parent path makes log creation fail on every supported OS.
+  await rm(directory, { recursive: true });
+  await writeFile(directory, "not a directory");
+  await expect(launcher.launch(task, launch, new AbortController().signal)).rejects.toThrow();
+  expect(await readFile(launch.credentialFile, "utf8")).toContain('"token":"controller-token"');
   expect(store.getTask(task)?.webExecution?.launchSubmission).toBe("not-submitted");
   expect(store.getTask(task)?.webExecution?.startupReport).toBeUndefined();
   expect(native.spawn).not.toHaveBeenCalled();

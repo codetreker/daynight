@@ -14,6 +14,7 @@ import { controllerExecutionDirectory } from "../../../src/commands/controller/l
 import { readControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { parseControllerMessage, RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
 import { SESSION_PROTOCOL, type SessionSnapshot } from "../../../src/session/protocol.js";
 import snapshotFixture from "../../session/fixtures/snapshot.json" with { type: "json" };
@@ -21,10 +22,21 @@ import snapshotFixture from "../../session/fixtures/snapshot.json" with { type: 
 // The subprocess uses the production Controller, native adapter, journal, IPC and
 // relay. Only the Codex executable and the remote service are controlled fixtures.
 const cleanups: (() => Promise<void>)[] = [];
+// Only fixed fixture processes are diagnosed here; no real service or provider
+// credentials are part of these errors.
+const diagnostic = (stage: string, elapsedMs: number, failure: unknown): void => {
+  const describe = (value: unknown, depth = 0): unknown => {
+    if (!(value instanceof Error) || depth > 4) return undefined;
+    const fields = value as Error & { code?: unknown; signal?: unknown; killed?: unknown; stdout?: unknown; stderr?: unknown };
+    return { name: fields.name, message: fields.message, code: fields.code, signal: fields.signal, killed: fields.killed,
+      stdout: fields.stdout, stderr: fields.stderr, cause: describe(fields.cause, depth + 1) };
+  };
+  console.error(JSON.stringify({ fixture: "bot-process-integration", stage, elapsedMs, error: describe(failure) }));
+};
 afterEach(async () => {
   const errors: unknown[] = [];
   for (const cleanup of cleanups.splice(0).reverse()) try { await cleanup(); } catch (error) { errors.push(error); }
-  vi.unstubAllEnvs();
+  vi.restoreAllMocks(); vi.unstubAllEnvs();
   if (errors.length) throw new AggregateError(errors, "Bot integration resources did not close safely.");
 });
 
@@ -101,10 +113,25 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   cleanups.push(async () => {
     let stopped = true;
     try {
-      const record = current(), execution = record.intent === null ? null : executions.get(record), saved = journal();
+      const record = current(), execution = record.intent === null ? null : executions.get(record);
       if (execution !== null && execution.launchSubmission !== "not-submitted") {
-        const proof = saved?.controllerProcess ?? execution.controllerProcess, native = saved?.nativeProcesses ?? [];
+        // The parent can lose its spawn observation before the child writes its
+        // ownership. Retain the original child's journal, including its Windows
+        // Job Object, rather than freezing that earlier empty snapshot.
+        const evidenceStarted = Date.now();
+        let saved = journal();
+        try {
+          saved = await vi.waitFor(() => {
+            const latest = journal();
+            if (latest?.controllerProcess == null) throw new Error("Original fixture process proof is not durable yet.");
+            return latest;
+          }, { timeout: 10_000, interval: 100 });
+        } catch (error) { diagnostic("cleanup-await-original-proof", Date.now() - evidenceStarted, error); }
+        const proof = saved?.controllerProcess ?? execution.controllerProcess;
         try { const ticket = await botProcess.readTicket(record); await requestController(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { timeoutMs: 12_000 }); } catch { /* Process proof below owns cleanup completion. */ }
+        // Shutdown joins startup, which can publish native proofs after the
+        // first snapshot. Preserve both observations before checking cleanup.
+        const native = [...(saved?.nativeProcesses ?? []), ...(journal()?.nativeProcesses ?? [])];
         if (proof !== null) {
           // A cooperative stop can finish between process/group probes. Observe
           // that completion before escalating the exact retained process group.
@@ -132,10 +159,25 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   return { home, cwd, current, store, executions, process: botProcess, create, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
 };
 
-test("launches the real Controller and Codex adapter with no user turn, then observes the same writer after browser disconnect", async () => {
-  const f = await fixture(), signal = AbortSignal.timeout(30_000);
-  await f.process.advance(f.current(), signal);
+const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, signal: AbortSignal) => {
+  const started = Date.now();
+  try { await f.process.advance(f.current(), signal); }
+  catch (error) {
+    const record = f.current(), execution = record.intent === null ? null : f.executions.get(record);
+    if (execution?.launchSubmission !== "unknown" || execution.startup?.state === "failed") throw error;
+    diagnostic("launch-observation-unknown", Date.now() - started, error);
+  }
+  const originalTicket = await f.process.readTicket(f.current());
+  // An unknown spawn observation is reconciled through the original ticket;
+  // only an authenticated ready writer establishes launch success.
   await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", activity: "idle", nativeSessionId: f.nativeId, initialInputState: "not_required" }), { timeout: 20_000, interval: 100 });
+  expect(await f.process.readTicket(f.current())).toEqual(originalTicket);
+};
+
+test.each([false, true])("launches one real Controller with no user turn after unknown parent observation=%s, then observes the same writer after browser disconnect", async interruptedObservation => {
+  const f = await fixture(), signal = AbortSignal.timeout(30_000);
+  if (interruptedObservation) vi.spyOn(processProof, "captureProcessProof").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
+  await launchAndObserveReady(f, signal);
   const ticket = await f.process.readTicket(f.current());
   expect(ticket).toMatchObject({ initialInput: "none", initialPrompt: "", cwd: f.cwd, instructions: f.current().intent!.roleConfiguration!.instructions });
   expect(ticket).not.toHaveProperty("claimId"); expect(existsSync(path.join(f.cwd, ".git"))).toBe(false);
@@ -173,3 +215,12 @@ test("rejects unsupported Provider arguments before registration or native proce
   await expect(f.process.advance(f.current(), AbortSignal.timeout(5000))).rejects.toThrow(/Unsupported/);
   expect(f.register).not.toHaveBeenCalled(); expect(await f.launches()).toEqual([]); expect(f.current().intent).toBeNull();
 }, 20_000);
+
+test("recovers cleanup evidence from the original journal when the parent process observation fails first", async () => {
+  const f = await fixture();
+  vi.spyOn(processProof, "captureProcessProof").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
+  await expect(f.process.advance(f.current(), AbortSignal.timeout(30_000))).rejects.toThrow("Fixture parent observation interrupted");
+  expect(f.executions.get(f.current())!.controllerProcess).toBeNull();
+  // afterEach must wait for the child's durable evidence instead of retaining
+  // the empty snapshot taken before its process ownership was captured.
+}, 60_000);
