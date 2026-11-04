@@ -21,7 +21,8 @@ type Result = { readonly code: number | null; readonly stdout: string; readonly 
 type RequestRecord = { readonly method: string; readonly path: string; readonly requestId: string | undefined; readonly body: unknown };
 
 it("runs both packed launchers through Move positions, exact budgets, no-ops and one factual unknown observation", async () => {
-  const installed = await createInstalledCli(); const { receipt } = installed;
+  const deadline = Date.now() + 170_000;
+  const installed = await createInstalledCli({ signal: AbortSignal.timeout(170_000) }); const { receipt } = installed;
   const fixture = path.join(receipt.root, ".tmp", "Step Move launcher 中文");
   const home = path.join(fixture, "home"), state = path.join(fixture, "configuration"), temporary = path.join(fixture, "temporary");
   const config = path.join(state, "config.yml");
@@ -69,6 +70,7 @@ it("runs both packed launchers through Move positions, exact budgets, no-ops and
     });
   });
   const invoke = async (launcher: string, args: readonly string[], expected = 0): Promise<Result> => {
+    const remaining = deadline - Date.now(); if (remaining <= 0) throw new Error("Packed Step Move exceeded its execution deadline.");
     const child = crossSpawn(launcher, [...args], { cwd: outside, env: environment, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "", launchFailure: unknown;
     child.stdout!.setEncoding("utf8").on("data", (value: string) => { stdout += value; }); child.stderr!.setEncoding("utf8").on("data", (value: string) => { stderr += value; });
@@ -76,8 +78,8 @@ it("runs both packed launchers through Move positions, exact budgets, no-ops and
     const closed = new Promise<number | null>((resolve) => child.once("close", (code) => { children.delete(child); resolve(code); })); children.set(child, closed);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const code = await Promise.race([closed, new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), 20_000); })]);
-      if (code === "timeout") { await terminateInstalledProcess(child, closed); throw new Error("Packed Step Move exceeded twenty seconds."); }
+      const code = await Promise.race([closed, new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), Math.min(20_000, remaining)); })]);
+      if (code === "timeout") { await terminateInstalledProcess(child, closed); throw new Error("Packed Step Move exceeded its invocation deadline."); }
       if (launchFailure !== undefined) throw launchFailure;
       expect(code, stderr).toBe(expected); if (expected !== 0) expect(stdout).toBe(""); else expect(stderr).toBe("");
       return { code, stdout, stderr };
@@ -98,20 +100,30 @@ it("runs both packed launchers through Move positions, exact budgets, no-ops and
     const alias = path.join(path.dirname(receipt.launcherPath), process.platform === "win32" ? "dn.cmd" : "dn"); await readFile(alias);
     const launchers = [receipt.launcherPath, alias];
     await writeFile(config, "serverUrl: [\n");
+    const checks: (() => Promise<void>)[] = [];
     for (const launcher of launchers) {
-      const help = (await invoke(launcher, ["task", "step", "move", "--help"])).stdout;
-      for (const option of ["--before", "--after", "--first", "--last", "--if-version", "--project", "--json"]) expect(help).toContain(option);
+      checks.push(async () => {
+        const help = (await invoke(launcher, ["task", "step", "move", "--help"])).stdout;
+        for (const option of ["--before", "--after", "--first", "--last", "--if-version", "--project", "--json"]) expect(help).toContain(option);
+      });
       for (const extra of [[], ["--first", "--last"], ["--before=abcdef01", "--after=12345678"], ["--before=00000000"], ["--after=00000000"], ["--before=prefix"]]) {
-        await invoke(launcher, ["task", "step", "move", taskId, "00000000", ...extra], 2);
+        checks.push(async () => { await invoke(launcher, ["task", "step", "move", taskId, "00000000", ...extra], 2); });
       }
-      await invoke(launcher, ["task", "step", "move", taskId, "prefix", "--first"], 2);
-      for (const shell of ["bash", "zsh"]) {
+      checks.push(async () => { await invoke(launcher, ["task", "step", "move", taskId, "prefix", "--first"], 2); });
+      for (const shell of ["bash", "zsh"]) checks.push(async () => {
         const completion = (await invoke(launcher, ["completion", shell])).stdout;
         for (const token of ["move", "--before", "--after", "--first", "--last"]) expect(completion).toContain(token);
-      }
-      const usage = (await invoke(launcher, ["--skill"])).stdout;
-      expect(usage).toContain("daynight task step move <task-id> <step-id>");
-      for (const option of ["--before", "--after", "--first", "--last"]) expect(usage).toContain(option);
+      });
+      checks.push(async () => {
+        const usage = (await invoke(launcher, ["--skill"])).stdout;
+        expect(usage).toContain("daynight task step move <task-id> <step-id>");
+        for (const option of ["--before", "--after", "--first", "--last"]) expect(usage).toContain(option);
+      });
+    }
+    for (let at = 0; at < checks.length; at += 4) {
+      const results = await Promise.allSettled(checks.slice(at, at + 4).map((check) => check()));
+      const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason as unknown] : []);
+      if (failures.length !== 0) throw new AggregateError(failures, "Packed Move pre-configuration checks failed.");
     }
     expect(requests).toEqual([]); expect(await readFile(config, "utf8")).toBe("serverUrl: [\n");
     scenarios.push("both-aliases-help-usage-invalid-placement-and-self-anchor-before-config", "installed-bash-zsh-completion-and-skill-usage");
