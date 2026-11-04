@@ -1,3 +1,4 @@
+import path from "node:path";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -57,7 +58,7 @@ describe("worker terminal attachment", () => {
   it("attaches to the recorded isolated runtime even when automatic input is blocked", async () => {
     durableRecords(record());
     const pending = attachWorker({ homeDirectory: "/worker" }); await spawned();
-    expect(mocks.instance).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ isolatedRun: true, paths: expect.objectContaining({ herdrDirectory: "/worker/h/r/one", logsDirectory: "/worker/h/r/one/logs" }) }));
+    expect(mocks.instance).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ isolatedRun: true, paths: expect.objectContaining({ herdrDirectory: "/worker/h/r/one", logsDirectory: path.join("/worker/h/r/one", "logs") }) }));
     expect(mocks.records).toHaveBeenCalledOnce(); expect(mocks.select).not.toHaveBeenCalled();
     expect(mocks.peer).toHaveBeenCalledWith("/run/api.sock"); expect(mocks.peer).toHaveBeenCalledWith("/run/client.sock");
     expect(mocks.observe).toHaveBeenCalledWith(proof);
