@@ -229,6 +229,18 @@ composer 的表单保留提交、快捷键和设置面板的所有权；内部�
 
 阅读与草稿决策的替代方案和限制见[Session 阅读与草稿决策](../../.agents/notes/implemented/bug-fix/2026-10-28-session-reading-and-draft-ownership.md)。
 
+### 可导出的阅读书签
+
+`useTimelineScroll` 的可选第六参数为 `{historyEpoch, historyComplete}`，返回 `captureBookmark()`、`restoreBookmark(bookmark)` 与 `getRestoreStatus()`。省略该参数时不导出书签，原跟随、显示过滤和分页调用保持原语义。`TimelineReadingBookmark` 只含 `identity`、`historyEpoch`、`following` 和可空 `anchor`；anchor 保存条目 key、相对 viewport 顶部的 CSS px、可选文本 offset/最多 32 字符的 quote/相对顶部，以及最多一个前邻和一个后邻 key。导出复制这些字段，不保留 DOM、Range、完整条目或资源，也不复制内部原始 key 数组。文字位置沿用已捕获的 offset，导出时不因宽度变化重新选取更早的同一行文字。
+
+`SessionTimeline` 的可选 `reading={scope, ref}` 将这些方法暴露给同页容器。调用方的 `scope` 必须包含已认证账号及视图归属；组件将它与实际 `sessionFenceKey(snapshot)` 合成 identity，并独立使用 snapshot.historyEpoch。没有真实 snapshot 时不能导出。组件把已就绪、无更早页、未加载且无历史错误同时成立视为 `historyComplete`；尚未同步或加载失败不证明历史边界。书签只在完全相同的 identity 和 historyEpoch 下接受，拒绝不改变当前阅读位置或跟随意图。组件卸载前由容器捕获，重新挂载并取得对应 ref 后恢复；容器不应在每次渲染重放已经应用的书签。
+
+恢复返回 `restored`、`pending` 或 `rejected`；`getRestoreStatus()` 读取当前状态，尚未请求恢复或明确返回最新后为 `idle`。`pending` 同时覆盖 inactive/零高度、无可见行和目标尚未加载，调用方结合当前 active、历史就绪与原始条目判断是否需要加载历史。恢复方法和 getter 是当前实例的控制句柄，调用方在新的提交后读取当前 ref。目标不在原始条目中且历史边界未知时，保留原书签，普通分页的 pause/capture 和滚动事件不能把它覆盖成尾页位置。新页或布局到达后自动再次定位；网络读取、进度判定、错误及重试仍归 Session 容器，hook 不调用网络，也不把缺少锚点解释为加载完成。
+
+锚点已在原始数据中但被模式过滤时，按当前原始顺序找最近可见前项，无前项则找后项，定位替代项顶部。只有确认历史边界且原 key 仍不存在时，才尝试书签保存的前邻、后邻，再退到当前第一可见项顶部；这是一种有界降级，不承诺删除大量相邻行后仍能还原原始完整顺序。无可见项继续保留书签与暂停意图。文字 quote 失效时沿用条目相对位置；冷恢复后若条目因折叠等原因缩短，原负偏移已使整个条目处于 viewport 上方，则退到该条目顶部，避免把阅读位置转移到后续消息。following 书签按新布局跟尾。该接口不新增跨页面数据库，也不管理 pane 淘汰、连接或草稿；其消费者须按账号、删除与撤权清理自己保存的书签。
+
+书签导出与原始顺序保留的取舍见[显示过滤与阅读位置决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-reading.md)。
+
 ### Session 显示偏好模块
 
 `task-agent-session/display-preference.ts` 的 `createSessionDisplayPreferenceStore(getStorage?)` 创建页面级共享缓存，`get(binding)` 返回具有 `getSnapshot`、`subscribe`、`setMode` 和 `retrySave` 的独立偏好。`useSessionDisplayPreference(binding, preferences?)` 默认使用同一页面缓存，返回 `{ mode, issue, setMode, retrySave }`，由共享 `SessionView` 消费。第二个参数用于注入独立 store；调用方应保持该 store 实例稳定。

@@ -32,6 +32,20 @@ its original order as well as row and text position. A surviving row uses its
 text anchor; a filtered row resolves to the nearest visible predecessor, or
 successor when no predecessor exists, at the row top. No visible rows leaves
 the reading intent paused. Inactive views defer geometry work until activation.
+The hook also exports an optional detached reading bookmark for unmount/remount.
+It copies ownership identity, history epoch, following intent, one entry/text
+anchor and at most two neighbor keys. It never exports the captured full key
+order. A cold restore waits when the target is absent from an incomplete tail;
+pagination capture cannot replace that target. After an authoritative history
+boundary, absent rows fall back to the saved preceding neighbor, succeeding
+neighbor, or first visible row. Filtered rows still use the current complete
+order. Empty displays and inactive geometry retain the pending bookmark. When a cold
+restore loses its text quote and the saved offset would hide the whole shortened
+entry above the viewport, it uses the entry top rather than a later message.
+SessionTimeline combines the caller's authenticated ownership scope with the
+actual session fence, and checks historyEpoch separately. The container owns
+bookmark lifetime and historical loading; the hook owns geometry and intent.
+
 The [Session design](../../../../docs/design/task-session-protocol.md) owns the
 complete rendering, pagination and scroll interfaces.
 
@@ -52,6 +66,17 @@ result while the independent manual pagination control preserved access in the
 original delivery. Pagination now follows the separately owned automatic
 history policy.
 
+**Export the complete captured order.** This would preserve every removed row's
+chronological neighbors across unmount, but each retained bookmark would keep
+an array proportional to loaded history. Two neighbor keys bound retained data;
+if both disappear, the documented first-visible-row fallback sacrifices exact
+chronology without switching to following.
+
+**Treat a missing tail anchor as deleted.** This would allow immediate placement
+but discard valid positions outside the loaded tail. Restore stays pending until
+the caller loads the target or confirms the history boundary. Network progress
+and retry remain with the existing Session owner.
+
 ## Consequences
 
 Mode changes preserve retained message and interaction nodes, pending responses
@@ -60,7 +85,7 @@ existing timeline data and ordinary resource-loading rules, without dispatching
 provider operations. Filtering itself needs no preference store, client or
 protocol change.
 
-The hook retains one captured key order in addition to the current lists. Its
+While mounted, the hook retains one captured key order in addition to the current lists. Detached bookmarks retain only a constant number of keys and a bounded text quote; no database or cross-page retention is introduced. Its
 display argument is optional so other timeline consumers preserve their API.
 DOM geometry remains a browser acceptance concern: simulated unit geometry
 checks selection rules but cannot prove native text wrapping or scroll events.
