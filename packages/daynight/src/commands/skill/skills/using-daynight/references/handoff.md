@@ -5,17 +5,17 @@ See [authorization and scope](authorization.md) for boundaries; handoff does not
 
 ## Content and responsibility review
 
-Read the project and complete task, preserving the exact version, assignedTo, status, permission, platform, dependencies, and worker records.
-Read actually required sources under the [task content standard](task-content.md), checking definitions, stage requirements, producer and consumer contracts, and the [Goal architecture index](goal.md#register-the-delivery-breakdown).
-
-Verify that each selected task is assigned to the current authenticated Daynight account, using the account-bound task list:
+Read only the explicitly selected task, preserving the exact version, assignedTo, status, permission, platform, dependencies, and worker records:
 
 ```bash
-daynight task list --project <project-id> --all --assigned-to me --json
+daynight task show <task-id> --project <project-id> --json
 ```
 
-Require a successful complete list containing the selected task ID and the same non-null assignedTo as the full task being reviewed. Compare its exact version with the reviewed task; reread and reassess changes before proceeding. Do not add readiness, permission or platform filters to this ownership check.
-An absent task, null or different assignment, or an unreadable result prevents a passing handoff. Report the actual assignment or verification error without assigning the task yourself, guessing identity from a worker record, or enabling permission.
+If it is done, report that it is complete and needs no handoff, then return without an ownership check or further task discovery.
+Read actually required sources under the [task content standard](task-content.md), checking definitions, stage requirements, producer and consumer contracts, and the [Goal architecture index](goal.md#register-the-delivery-breakdown).
+
+Compare the selected task's non-null assignedTo with the current authenticated account's local user UUID, independently confirmed during [setup](setup.md) or in the current session. A display name, email, the task's own assignedTo or a worker record cannot establish that identity.
+Do not enumerate project or account task collections to check ownership. A null or different assignment, unknown account UUID, or unreadable task prevents a passing handoff; report the actual assignment or verification error without assigning the task yourself or enabling permission. Recheck the selected task and reassess changes before the exact-version update.
 CLI creation defaults to the authenticated account; existing tasks and other clients may still create unassigned or other-user tasks.
 
 For todo tasks with permission false, organize confirmed content within existing authorization; missing decisions prevent approval, and material changes require user confirmation.

@@ -374,38 +374,64 @@ bash scripts/check.sh
 docker rm --force --volumes daynight-server-tests
 ```
 
-The check first runs the shared root `pnpm web:build`, then builds the executable,
-runs `go vet`, prepares the pinned real-UniAuth integration fixture, and expires project-local Go test
-results so database changes cannot be hidden by cached coverage, and executes race-enabled package
-tests through `go-cov` pinned to commit
+The complete check runs the shared root `pnpm web:build`, prepares the pinned
+real-UniAuth integration fixture, and runs coverage and E2E validation in
+sequence. Use `bash scripts/check.sh --coverage` or `bash scripts/check.sh --e2e`
+to run either responsibility independently. Each mode prepares its required Web,
+UniAuth and installed CLI inputs after the caller supplies the isolated
+`DAYNIGHT_TEST_DATABASE_URL`.
+
+Coverage mode builds the executable, runs `go vet`, expires project-local Go test
+results so database changes cannot be hidden by cached coverage, and runs
+race-enabled package tests through `go-cov` pinned to commit
 `d6caf2759e330b48d69a543695e37002a48feb1d`. The checked-in `.go-cov.toml`
 requires at least 85% coverage per production package and 80% per function,
-with critical blocks enforced and no production exclusions. The Node
-orchestrator passes `--skip-result-packages cmd/e2e_tests` because this test-only
-package has no product statements and the pinned tool otherwise treats its
-`[no statements]` result as 0%. Only that package's result-summary row is omitted;
-its tests still run and failures still fail the gate. Production-package
-thresholds, critical checks and the raw coverage profile remain intact. A
-separate exact calculation over that profile requires overall statement coverage
-**strictly greater than 90%**. Exactly 90% fails. The check also tests that
-calculation's boundary and malformed-profile behavior.
+with critical blocks enforced and no production exclusions. The Node orchestrator
+passes the full import path of `cmd/e2e_tests` to `--exclude-packages`, removing
+that test-only package from coverage execution. Because the tool uses substring
+matching, `go list ./...` must confirm that the full-path match selects exactly
+that package; extended or nested matches fail. The orchestrator also recursively
+rejects non-test Go source in that directory, preventing this exception from
+hiding production statements. All production packages and their raw coverage profile
+remain in the gate. A separate exact calculation over that profile requires
+overall statement coverage **strictly greater than 90%**. Exactly 90% fails. The
+check also tests that calculation's boundary and malformed-profile behavior.
+Coverage mode retains the authentication package's installed-CLI assertions and
+normally issued PAT producer, followed by the two deadline probes and installed
+fixture cleanup. It writes `.tmp/project-task-service-evidence.json` at the
+repository root and `.tmp/coverage.out` in this module.
 
-`scripts/env.sh` places downloaded tools, dependencies, caches, binaries, and
-temporary outputs under this module's `.tmp/`. Both Go-consuming CI jobs restore
-module and compiler caches using `go.sum`; `go clean -testcache` still invalidates
-server test results before validation so database and coverage observations run
-again. Both local validation and CI use
-`scripts/check.sh` and the same coverage configuration. Ordinary Go discovery
-excludes stress-tagged files. With an isolated test database configured, run
-`bash scripts/stress.sh` explicitly for the 10,000-task/100-person query sample,
-full-scale Session-v2 archives and repeated concurrent overwrite workload. It
-uses race detection and selects only `TestStress*` in the three owning packages.
-The script and raw tagged test entrypoints refuse a nonempty `CI` environment.
-CI retains compact archive boundary checks and a deterministic two-writer
-publication test. The query sample remains source-bound local evidence, rather
-than a production capacity limit. The tests cover real
-database connection/query cancellation, HTTP cancellation, graceful and forced
-drain, listener/pool reuse, process configuration/exit status, and log redaction.
+E2E mode runs `go test -race -count=1 -timeout=10m ./cmd/e2e_tests`. Its own packed
+and installed CLI belongs to that run; the package freshly builds a race-enabled
+server and retains every process, concurrency, error-path and cleanup assertion.
+It writes this module's `.tmp/acceptance-evidence.json` and the repository-root
+`.tmp/project-task-e2e-evidence.json`, which records command results, installed
+artifact identity and installed-fixture removal. Deadline probes and their PAT
+handoff remain in coverage mode. Each orchestration receipt also records the
+source revision, tree, dirty state and actual package list.
+
+`scripts/env.sh` places downloaded tools, dependencies, caches, binaries and
+temporary outputs under this module's `.tmp/`. The Go coverage, Go E2E and Web
+browser CI jobs restore module and compiler caches using `go.sum`. Coverage
+expires test results; E2E's `-count=1` also requires a fresh run. The two server
+jobs run independently on separate runners with separate PostgreSQL services,
+using the same server selector and a 20-minute bound each. The final `checks`
+job waits for both. The `daynight-server-acceptance` artifact contains coverage
+and deadline evidence; `daynight-server-e2e-acceptance` contains process/scenario
+and E2E installation evidence. Both upload existing diagnostics after validation
+failure as well as success.
+
+Ordinary Go discovery excludes stress-tagged files. With an isolated test
+database configured, run `bash scripts/stress.sh` explicitly for the
+10,000-task/100-person query sample, full-scale Session-v2 archives and repeated
+concurrent overwrite workload. It uses race detection and selects only
+`TestStress*` in the three owning packages. The script and raw tagged test
+entrypoints refuse a nonempty `CI` environment. CI retains compact archive
+boundary checks and a deterministic two-writer publication test. The query sample
+remains source-bound local evidence, rather than a production capacity limit.
+The tests cover real database connection/query cancellation, HTTP cancellation,
+graceful and forced drain, listener/pool reuse, process configuration/exit status
+and log redaction.
 
 Authentication integration prepares the exact UniAuth gateway source at
 `0978963813fcefd9d553f6cb9bcc319084c764b3` with
@@ -1335,12 +1361,12 @@ The test-only [`cmd/e2e_tests/`](cmd/e2e_tests/) package owns the actual-process
 scenarios, installed CLI project/task and attachment workflows,
 [installed lifecycle migration/race scenarios](cmd/e2e_tests/acceptance_lifecycle_cli_test.go)
 and [offline attachment migration](cmd/e2e_tests/migrate_attachment_acceptance_test.go).
-The full check runs this package through the existing `go-cov` invocation;
-`go test ./...` also discovers it. After sourcing `scripts/env.sh` and preparing
-PostgreSQL, the UniAuth fixture and `DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT`, select
-only this suite with `go test -race -timeout 10m ./cmd/e2e_tests` from this module.
-The full check prepares UniAuth and the installed CLI after the caller supplies
-`DAYNIGHT_TEST_DATABASE_URL`. The normal real-UniAuth fixture supplies
+The full check runs this package in its E2E phase, independently of production
+coverage; `go test ./...` also discovers it. Run `bash scripts/check.sh --e2e`
+for only this suite, including Web, UniAuth and installed CLI preparation. With
+`scripts/env.sh` sourced and PostgreSQL, the UniAuth fixture and
+`DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT` already prepared, its direct entrypoint is
+`go test -race -count=1 -timeout=10m ./cmd/e2e_tests`. The normal real-UniAuth fixture supplies
 sessions/PATs and explicit membership;
 installed commands use private origin-matched PAT configuration. Authentication
 and authorization remain on the production resource path. The E2E package's
@@ -1349,7 +1375,7 @@ children against isolated real PostgreSQL schemas, and checks HTTP workflows, re
 mutations, PR string/NUL/order/duplicate persistence, partial-write rollback,
 cancellation, graceful/forced SIGTERM,
 migration failures and simultaneous startup. This signal acceptance runs in the
-Ubuntu Go CI job. Independent scenario subtests run with at most four concurrent
+Ubuntu Go E2E CI job. Independent scenario subtests run with at most four concurrent
 slots within their sequential top-level test; each retains its own schema,
 processes, database barriers and cleanup. This keeps other top-level tests'
 process-wide environment changes outside the parallel scenario lifetime.
@@ -1362,7 +1388,9 @@ receipt initialization. Its integration tests still require PostgreSQL and the
 UniAuth fixture. With `scripts/env.sh` sourced and those inputs prepared, run
 `go test -race -timeout 10m ./cmd/daynight-server` without an installed CLI receipt.
 The [E2E package decision](../../.agents/notes/implemented/testing/2026-11-03-server-e2e-package.md)
-owns this separation; the
+owns this package separation, and the
+[CI split decision](../../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)
+owns independent coverage/E2E execution; the
 [CI efficiency decision](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
 records the validation-cost trade-offs.
 
