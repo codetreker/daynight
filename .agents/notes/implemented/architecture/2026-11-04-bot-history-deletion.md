@@ -22,7 +22,9 @@ A bound Worker submits an exact execution stop receipt and its private-cleanup
 result. The relay validates the original identity; process verification remains
 the Worker's responsibility. A canonical receipt digest survives Session deletion
 so completed retries cannot replace the original proof. Worker completion commits
-before server cleanup, which can fail and retry independently.
+before server cleanup, which can fail and retry independently. Repeating the
+same failed state and code preserves its version; changed failure information
+or completion advances the recorded result.
 
 Server cleanup enumerates actual Bot associations, removes each restricted
 Session archive namespace, explicitly removes all SQL children and the Session,

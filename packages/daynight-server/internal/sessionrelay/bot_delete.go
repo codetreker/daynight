@@ -148,6 +148,10 @@ func (s *Service) CompleteBotDeletion(ctx context.Context, p core.Principal, wor
 			out = bot
 			return nil
 		}
+		if input.Result.State == "failed" && jsonEqual(encode(input.Result), encode(bot.Deletion.WorkerCleanup)) {
+			out = bot
+			return nil
+		}
 		if input.Result.State == "completed" {
 			if bot.SessionID == nil {
 				if input.Stop != nil {

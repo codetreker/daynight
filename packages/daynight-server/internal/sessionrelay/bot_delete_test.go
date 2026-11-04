@@ -205,6 +205,16 @@ func TestBotDeletionReceiptRejectsUnprovenOrStaleExecution(t *testing.T) {
 	if err != nil || failed.Deletion.WorkerCleanup.State != "failed" || failed.Deletion.ServerCleanup.State != "pending" {
 		t.Fatalf("failed stop: %+v %v", failed, err)
 	}
+	replayed, err := f.s.CompleteBotDeletion(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, receipt)
+	if err != nil || replayed.Version != failed.Version || !replayed.UpdatedAt.Equal(failed.UpdatedAt) {
+		t.Fatalf("identical failed receipt changed its result: %+v %v", replayed, err)
+	}
+	changedCode := "private_cleanup_failed"
+	receipt.Result.Code = &changedCode
+	changed, err := f.s.CompleteBotDeletion(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, receipt)
+	if err != nil || changed.Version != failed.Version+1 || changed.Deletion.WorkerCleanup.Code == nil || *changed.Deletion.WorkerCleanup.Code != changedCode {
+		t.Fatalf("changed failure did not advance: %+v %v", changed, err)
+	}
 	receipt.Stop = &good
 	receipt.Result = core.BotCleanupResult{State: "completed"}
 	files, err := local.New(t.TempDir())
