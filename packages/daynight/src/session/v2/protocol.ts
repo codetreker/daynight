@@ -105,6 +105,25 @@ const parsePayload = <K extends keyof SessionV2Payloads>(kind: K, value: unknown
         if ((mode === "register") !== (connectionEpoch === null) || (capabilities.control && !capabilities.observe)) return fail();
         return { registrationId: uuidValue(o.registrationId), mode, owner: parseSessionV2Owner(o.owner), binding: parseTerminalBinding(o.binding), connectionEpoch, capabilities };
       }
+      case "automation_recovery_prepare": {
+        const o = exact(value, ["recoveryId", "connectionEpoch", "controlEpoch", "closingControlEpoch", "stopOperationId", "binding", "initialAssignment"]);
+        const binding = parseTerminalBinding(o.binding), controlEpoch = seq(o.controlEpoch), closingControlEpoch = seq(o.closingControlEpoch);
+        if (binding.nativeSessionId === null || BigInt(closingControlEpoch) <= BigInt(controlEpoch)) return fail();
+        return { recoveryId: uuidValue(o.recoveryId), connectionEpoch: seq(o.connectionEpoch), controlEpoch, closingControlEpoch, stopOperationId: uuidValue(o.stopOperationId), binding, initialAssignment: literal(o.initialAssignment, "transport_completed") };
+      }
+      case "automation_recovery": {
+        const o = exact(value, ["recoveryId", "connectionEpoch", "controlEpoch", "previousGeneration", "stopOperationId", "binding"]);
+        const previousGeneration = seq(o.previousGeneration), binding = parseTerminalBinding(o.binding);
+        if (binding.nativeSessionId === null || BigInt(previousGeneration) + 1n !== BigInt(base.executionGeneration)) return fail();
+        return { recoveryId: uuidValue(o.recoveryId), connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), previousGeneration, stopOperationId: uuidValue(o.stopOperationId), binding };
+      }
+      case "automation_recovery_state": {
+        const o = exact(value, ["recoveryId", "prepareDigest", "sourceGeneration", "sourceConnectionEpoch", "sourceControlEpoch", "closingControlEpoch", "stopOperationId", "nativeSessionId", "consumed"]);
+        const sourceConnectionEpoch = seq(o.sourceConnectionEpoch), sourceGeneration = seq(o.sourceGeneration), sourceControlEpoch = seq(o.sourceControlEpoch), closingControlEpoch = seq(o.closingControlEpoch);
+        const consumed = nullable(o.consumed, raw => { const c = exact(raw, ["executionGeneration", "connectionEpoch", "controlEpoch", "requestDigest"]); return { executionGeneration: seq(c.executionGeneration), connectionEpoch: seq(c.connectionEpoch), controlEpoch: seq(c.controlEpoch), requestDigest: hash(c.requestDigest) }; });
+        if (BigInt(closingControlEpoch) <= BigInt(sourceControlEpoch) || (consumed ? BigInt(consumed.executionGeneration) !== BigInt(sourceGeneration) + 1n || consumed.executionGeneration !== base.executionGeneration || BigInt(consumed.connectionEpoch) <= BigInt(sourceConnectionEpoch) || BigInt(consumed.controlEpoch) <= BigInt(closingControlEpoch) : sourceGeneration !== base.executionGeneration)) return fail();
+        return { recoveryId: uuidValue(o.recoveryId), prepareDigest: hash(o.prepareDigest), sourceGeneration, sourceConnectionEpoch, sourceControlEpoch, closingControlEpoch, stopOperationId: uuidValue(o.stopOperationId), nativeSessionId: nativeText(o.nativeSessionId), consumed };
+      }
       case "registration_ack": { const o = exact(value, ["registrationId", "connectionEpoch"]); return { registrationId: uuidValue(o.registrationId), connectionEpoch: seq(o.connectionEpoch) }; }
       case "snapshot": { const o = exact(value, ["connectionEpoch", "segmentId", "segmentOrdinal", "binding", "frame", "recorded"]); return { connectionEpoch: seq(o.connectionEpoch), segmentId: uuidValue(o.segmentId), segmentOrdinal: seq(o.segmentOrdinal), binding: parseTerminalBinding(o.binding), frame: parseTerminalFrame(o.frame), recorded: bool(o.recorded) }; }
       case "control_state": {
@@ -170,7 +189,7 @@ export const parseSessionV2Message = (value: unknown): SessionV2Message => {
   const o = exact(value, ["protocol", "schemaVersion", "projectionVersion", "type", "sessionId", "claimId", "executionGeneration", "agentControlMode", "contentKind", "payload"]);
   if (o.protocol !== SESSION_V2_PROTOCOL || o.schemaVersion !== 2 || o.projectionVersion !== 1) return fail("unsupported_protocol");
   const base: SessionV2Envelope = { protocol: SESSION_V2_PROTOCOL, schemaVersion: 2, projectionVersion: 1, sessionId: uuidValue(o.sessionId), claimId: uuidValue(o.claimId), executionGeneration: seq(o.executionGeneration) };
-  const kind = choice(o.type, ["registration", "registration_ack", "snapshot", "control_state", "control_request", "control_dispatch", "control_ack", "recording_responsibility", "recording_evidence", "operation", "operation_result", "generation_ledger", "finalization", "archive_status", "receipt", "native_snapshot"]);
+  const kind = choice(o.type, ["registration", "registration_ack", "automation_recovery_prepare", "automation_recovery", "automation_recovery_state", "snapshot", "control_state", "control_request", "control_dispatch", "control_ack", "recording_responsibility", "recording_evidence", "operation", "operation_result", "generation_ledger", "finalization", "archive_status", "receipt", "native_snapshot"]);
   if (kind === "native_snapshot") {
     if (o.agentControlMode !== "web" || o.contentKind !== "native_timeline") return fail("unsupported_content_kind");
     return { ...base, agentControlMode: "web", contentKind: "native_timeline", type: kind, payload: parsePayload(kind, o.payload, base) };
