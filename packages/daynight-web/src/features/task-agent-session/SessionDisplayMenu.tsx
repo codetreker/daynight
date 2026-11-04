@@ -28,10 +28,16 @@ export function SessionDisplayMenu({ mode, issue, onModeChange, onRetrySave, ope
   useLayoutEffect(() => {
     if (!open) return;
     const element = menu.current!;
+    const owner = trigger.current!.closest('.task-agent-session');
     const position = () => {
       const anchor = trigger.current!.getBoundingClientRect();
+      const ownerBox = owner?.getBoundingClientRect();
+      const left = Math.max(0, ownerBox?.left ?? 0);
+      const right = Math.min(window.innerWidth, ownerBox?.right ?? window.innerWidth);
+      // Top-layer placement avoids clipping, but the menu still belongs to this Session's width.
+      element.style.maxWidth = `${Math.max(0, right - left - 16)}px`;
       const box = element.getBoundingClientRect();
-      element.style.left = `${Math.max(8, Math.min(anchor.right - box.width, window.innerWidth - box.width - 8))}px`;
+      element.style.left = `${Math.max(left + 8, Math.min(anchor.right - box.width, right - box.width - 8))}px`;
       element.style.top = `${anchor.bottom + box.height + 8 <= window.innerHeight ? anchor.bottom + 4 : Math.max(8, anchor.top - box.height - 4)}px`;
     };
     const toggled = (event: ToggleEvent) => { if (event.newState === 'closed') latest.current.onOpenChange(false); };
@@ -43,6 +49,7 @@ export function SessionDisplayMenu({ mode, issue, onModeChange, onRetrySave, ope
     position();
     const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(position);
     resize?.observe(element);
+    if (owner !== null) resize?.observe(owner);
     window.addEventListener('resize', position);
     document.addEventListener('scroll', position, true);
     return () => {

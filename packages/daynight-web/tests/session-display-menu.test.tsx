@@ -109,4 +109,18 @@ describe('Session display menu', () => {
     fireEvent(window, new Event('resize')); expect(menu.style.left).toBe('8px');
     rect.mockRestore();
   });
+  it.each([260, 200])('keeps the popover inside its %ipx Session owner on a wide viewport', width => {
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const box = (left: number, width: number) => ({ left, right: left + width, top: 100, bottom: 140, width, height: 40, x: left, y: 100, toJSON() {} });
+      if (this.classList.contains('task-agent-session')) return box(510, width);
+      if (this.getAttribute('role') === 'menu') return box(Number.parseFloat(this.style.left) || 0, Math.min(240, Number.parseFloat(this.style.maxWidth) || 240));
+      return box(590, 70);
+    });
+    render(<section className="task-agent-session"><Menu /></section>); open();
+    const menu = screen.getByRole('menu');
+    expect(menu.getBoundingClientRect().left).toBeGreaterThanOrEqual(518);
+    expect(menu.getBoundingClientRect().right).toBeLessThanOrEqual(510 + width - 8);
+    expect(Number.parseFloat(menu.style.maxWidth)).toBe(width - 16);
+    rect.mockRestore();
+  });
 });

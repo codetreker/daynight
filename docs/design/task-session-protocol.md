@@ -239,7 +239,7 @@ composer 的表单保留提交、快捷键和设置面板的所有权；内部�
 
 `SessionDisplayMenu` 位于顶部刷新按钮旁，接收当前 mode、issue、选择和保存重试操作。菜单仅提供两个 `menuitemradio`：Standard/标准、Conversation/对话；`aria-checked` 由共享 store 的当前值决定。打开状态独立于 client 和 timeline identity；切换偏好只更新可见列表，不参与 client effect 依赖、Composer 的执行 key 或条目 key。
 
-菜单在顶层浮层中定位，依据触发器及 viewport 限制位置和尺寸，避免被 Session 容器裁剪；标题区按实际容器宽度换行。键盘可进入选项并导航，Escape 阻止向外传播、关闭菜单并恢复触发器焦点；外部 pointer 或焦点离开关闭。Display 打开时协调 Chatbox 快捷键提示的可见状态与 Escape 监听，防止提示抢先消费关闭菜单的按键。保存重试后的焦点保留在仍存在的控件上，不落到已移除的重试按钮。
+菜单在顶层浮层中定位，按触发器定位，并以 Session 容器与 viewport 的水平交集约束宽度和横向位置；纵向位置受 viewport 限制。浮层不被容器裁剪，也不向窄 Session 两侧越界；监听容器尺寸变化，标题区按实际容器宽度换行。键盘可进入选项并导航，Escape 阻止向外传播、关闭菜单并恢复触发器焦点；外部 pointer 或焦点离开关闭。Display 打开时协调 Chatbox 快捷键提示的可见状态与 Escape 监听，防止提示抢先消费关闭菜单的按键。保存重试后的焦点保留在仍存在的控件上，不落到已移除的重试按钮。
 
 read、invalid、write issue 只在打开的菜单内按当前语言映射说明和重试。选择失败后 mode 保留，菜单仍能展示未保存状态；重试调用同一偏好的 `retrySave`，成功去掉错误而不改写模式。正常状态不增加说明行。菜单文案使用 `useSessionMessages` 的本地化目录，不读取原生操作的固定英语标签子集；语言切换保持 client、输入、操作和偏好身份。入口、菜单与提示层的选择理由见[显示菜单集成决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-integration.md)。
 
