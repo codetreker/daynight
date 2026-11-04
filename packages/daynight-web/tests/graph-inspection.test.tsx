@@ -60,9 +60,11 @@ describe('graph-local prerequisite inspection', () => {
     fireEvent.click(body(view.container, 'D'));
     expect(card(view.container, 'D')).toHaveAttribute('data-inspection', 'selected');
     expect(card(view.container, 'D')).toHaveClass('task-node-todo');
+    expect(card(view.container, 'D')).toHaveAttribute('data-task-status', 'todo');
     for (const id of ['A', 'B', 'C']) {
       expect(card(view.container, id)).toHaveAttribute('data-inspection', 'prerequisite');
       expect(card(view.container, id)).toHaveClass('task-node-done');
+      expect(card(view.container, id)).toHaveAttribute('data-task-status', 'done');
     }
     expect(card(view.container, 'B')).toHaveClass('task-node-external');
     expect(card(view.container, 'C')).toHaveClass('task-node-external');
@@ -71,6 +73,7 @@ describe('graph-local prerequisite inspection', () => {
     fireEvent.click(body(view.container, 'C'));
     expect(states()).toEqual([['A->D', 'unrelated'], ['B->C', 'highlighted'], ['C->D', 'unrelated']]);
     expect(card(view.container, 'A')).toHaveAttribute('data-inspection', 'unrelated');
+    expect(card(view.container, 'A')).toHaveAttribute('data-task-status', 'done');
     expect(card(view.container, 'B')).toHaveAttribute('data-inspection', 'prerequisite');
     fireEvent.click(body(view.container, 'C'));
     expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(4);

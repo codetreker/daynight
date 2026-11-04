@@ -30,6 +30,7 @@ export function useTimelineScroll(identity: string, active: boolean, revision: u
   const update = () => {
     const box = viewport.current;
     if (!box || !active || box.clientHeight === 0) return;
+    let recapture = anchor.current === null;
     if (following.current) { box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight); intent.current?.(true, null); }
     else if (anchor.current) {
       let saved = anchor.current;
@@ -51,13 +52,16 @@ export function useTimelineScroll(identity: string, active: boolean, revision: u
       const entry = Array.from(box.querySelectorAll<HTMLElement>('[data-entry-key]')).find(entry => entry.dataset.entryKey === saved.key);
       if (entry) {
         const textTop = saved.text && readingTextTop(entry, saved.text);
+        recapture = textTop === undefined;
         const adjustment = (textTop ?? entry.getBoundingClientRect().top) - box.getBoundingClientRect().top - (textTop !== undefined ? saved.text!.top : saved.top);
         if (Math.abs(adjustment) > 1) box.scrollTop += adjustment;
       }
     }
     expectedTop.current = box.scrollTop; lastTop.current = box.scrollTop;
     setShowLatest(!following.current && box.scrollHeight - box.clientHeight - box.scrollTop > 64);
-    capture();
+    // Layout may move an earlier character onto the anchored line. Recapturing
+    // that line would replace the reading offset and drift on the return resize.
+    if (recapture) capture();
   };
   const updateRef = useRef(update); updateRef.current = update;
   const identityRef = useRef(identity);
