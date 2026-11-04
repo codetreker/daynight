@@ -106,7 +106,7 @@ func TestWorkerSnapshotNormalizesTaskReferencesWithoutChangingTasks(t *testing.T
 	userID, workerID := queryID(1), queryID(2)
 	project := queryProject(t, database, 10)
 	otherProject := queryProject(t, database, 11)
-	mustQueryExec(t, database, `INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, userID)
+	mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, userID)
 	valid := setSnapshotTaskClaim(t, database, project.ID, 20, userID, workerID)
 	otherUser := setSnapshotTaskClaim(t, database, project.ID, 21, queryID(3), workerID)
 	otherWorker := setSnapshotTaskClaim(t, database, project.ID, 22, userID, queryID(4))
@@ -156,7 +156,7 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	userID, workerID := queryID(1), queryID(2)
 	project, revoked := queryProject(t, database, 10), queryProject(t, database, 11)
 	for id, role := range map[string]string{project.ID: "admin", revoked.ID: "member"} {
-		mustQueryExec(t, database, `INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,$3)`, id, userID, role)
+		mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,$3)`, id, userID, role)
 	}
 	active := setSnapshotTaskClaim(t, database, project.ID, 20, userID, workerID)
 	removed := setSnapshotTaskClaim(t, database, project.ID, 21, userID, workerID)
@@ -183,7 +183,7 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	mustQueryExec(t, database, `DELETE FROM task_properties WHERE task_id=$1 AND name='worker'`, active.TaskID)
 	putTaskPropertyFixture(t, database, active.TaskID, "pullRequests", []byte(`[]`))
 	mustQueryExec(t, database, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, removed.TaskID)
-	mustQueryExec(t, database, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, revoked.ID, userID)
+	mustQueryExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, revoked.ID, userID)
 	read := readWorkerSnapshot(t, database, userID, workerID, stamp.Add(time.Hour))
 	if len(read.TaskSnapshot.Items) != 1 || read.TaskSnapshot.Items[0].TaskID != active.TaskID || read.TaskSnapshot.Items[0].Status != core.TaskInProgress || read.TaskSnapshot.Items[0].Title != "Task" || read.TaskSnapshot.Items[0].Phase != core.WorkerExecuting {
 		t.Fatalf("current permission filtering changed saved state or leaked rows: %#v", read.TaskSnapshot)
@@ -208,7 +208,7 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustQueryExec(t, database, `INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'member')`, revoked.ID, userID)
+	mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, revoked.ID, userID)
 	restored := readWorkerSnapshot(t, database, userID, workerID, stamp.Add(time.Hour))
 	if len(restored.TaskSnapshot.Items) != 2 || !reflect.DeepEqual(restored.TaskSnapshot.Items[1], worker.TaskSnapshot.Items[2]) {
 		t.Fatalf("regrant did not restore the historical observation: %#v", restored.TaskSnapshot)
@@ -353,7 +353,7 @@ func TestWorkerSnapshotErrorsRollbackAndPreserveCauses(t *testing.T) {
 		t.Fatalf("canceled transaction: %v", err)
 	}
 	project := queryProject(t, database, 10)
-	mustQueryExec(t, database, `INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, worker.UserID)
+	mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, worker.UserID)
 	reference := setSnapshotTaskClaim(t, database, project.ID, 20, worker.UserID, worker.WorkerID)
 	putTaskPropertyFixture(t, database, reference.TaskID, "worker", []byte(`not JSON`))
 	err = database.WriteWorker(ctx, func(tx *WorkerTx) error {

@@ -43,16 +43,18 @@ computed `ProjectAccess`. The authenticated
 `GET /api/v1/projects/{projectId}/access` returns exactly
 `{effectiveRole,directGrant}`. Both keys are required; a present grant contains
 only its project/user IDs, stored role, int64 JSON-number version and UTC creation
-and update times. The current direct source returns the actual grant; failed
-admission remains an error. It returns no member profiles, accepts no query
+and update times. Inherited-only admission has a null grant; failed admission
+remains an error. It returns no member profiles, accepts no query
 parameters, supports GET/HEAD and preserves the principal response header and
 no-store policy. Resource admission and accessible-project filtering use
-the canonical direct-authorization source. GET project members returns
+the canonical relation that computes the maximum of owner Team and direct-grant
+roles under `none < member < admin`. GET project members returns
 `{items: ProjectParticipant[]}` with `userId`, a required `profile` object
 (nullable `name`, `email`, `avatarUrl`), `effectiveRole` and nullable `directGrant`.
-Raw grant candidates survive the canonical-user LEFT JOIN; missing user rows
-fail the whole roster instead of disappearing. Current direct data produces real
-grants. Legacy role PATCH requires `expectedUserId`, stored role and the exact
+Raw owner-Team and grant candidates survive the canonical-user LEFT JOIN;
+missing user rows fail the whole roster instead of disappearing. Inherited-only
+participants have a null grant, while any direct grant retains its own real
+role, version and timestamps. Legacy role PATCH requires `expectedUserId`, stored role and the exact
 grant version, and returns `ProjectGrant`; DELETE requires the actor and version
 and retains 204. The actor guard precedes domain SQL and reports 409
 `identity_mismatch`. Invitation result DTOs retain their existing contract.
@@ -66,8 +68,10 @@ the public introduction at `/`, the zero-API guide at `/setup`, and the existing
 `AuthenticatedApp` lifecycle for `/login`, `/projects` and private pages.
 `daynight login` uses Daynight device authorization to obtain
 a nonexpiring `Daynight CLI (<hostname>)` Bearer credential named for the initiating machine. Explicit PAT configuration remains
-available for automation. Existing projects are assigned members
-manually and remain inaccessible while they have no members. Trusted executable
+available for automation. Every user has one Personal Team with a real owner
+admin. Every Project has a real ownership row; existing projects migrate to the
+Personal Team of the earliest-joined current administrator. A missing current
+admin or invalid reference stops migration. Trusted executable
 HTML retains its application origin, relative resources and keyboard behavior.
 The [activation decision](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 owns composition and credential-private validation; current delivery results
@@ -214,6 +218,23 @@ root assembles services without opening another pool or file root. The runtime
 owns HTTP shutdown, storage closure and pool closure. Startup applies the embedded migrations before accepting requests.
 One pinned connection holds a session advisory lock across version checks and all
 migration transactions; unknown versions, gaps and checksum mismatches stop startup.
+
+Migration `032_personal_project_ownership.sql` creates the Personal Team/member
+and Project ownership records and renames the existing member table, sequence,
+constraints and index to grant names in place. Grant rows, timestamps, versions,
+and sequence `last_value/is_called` survive, including allocated versions whose
+rows were deleted. All existing users, including PAT-only users, receive Personal
+Teams. Zero-admin projects and invalid references fail the whole transaction;
+SQL, transform and migration-ledger failures roll back together. The
+[auth architecture](../../docs/design/daynight-auth.md#数据与并发) owns the exact
+backfill and integrity rules.
+
+Stop old application and direct writers and retain a paired database/file backup
+before this schema transition. The migrator lock coordinates migrators, not old
+writers. Start the matching application after migration; old binaries do not
+understand the renamed grants or inherited authority. After a committed migration,
+recovery requires forward repair or restoration of the paired backup while
+writers remain stopped, with its corresponding loss of later writes.
 
 ## Local Docker deployment
 
@@ -711,7 +732,7 @@ Reports use closed Probe states, explicit unknown inventory and a full task
 reference array. A known empty array is distinct from inventory that has never
 been synchronized. Task titles, status and phase come from current owned claims.
 Reports and reads use the store's canonical project access relation for the
-authenticated user, currently backed by direct grants. Subsequent reads preserve
+authenticated user, merging owner Team membership and direct grants. Subsequent reads preserve
 saved observations while applying current access and undeleted-task filtering
 to both rows and counts. Completion or reassignment
 does not erase an otherwise visible historical observation. Liveness and recent
@@ -726,8 +747,14 @@ visibility do not control claims or task state.
 | `GET` | `/api/v1/projects/{projectId}` | `200`, project |
 | `PATCH` | `/api/v1/projects/{projectId}/settings` | `200`, full project with saved settings |
 
-Creation accepts `name` and `repoUrl` and atomically makes its caller the first
-project administrator. Lists contain only the caller's member projects.
+Creation accepts `name` and `repoUrl`, locks and validates the caller's real
+Personal Team, then atomically writes Project, ownership and creator direct admin
+grant. Canonical login UPSERT, Personal initialization and session creation share
+one transaction; repeat and concurrent login reuse the unique Team and validate
+its owner admin. Authentication does not repair broken Personal state. Internal
+Project reads require real ownership and report integrity errors for a missing
+row; the public Project/account DTOs retain their existing fields. Lists contain
+only projects admitted by the same current dual-source relation.
 Names preserve accepted text and must be nonempty UTF-8 without NUL. Repository addresses accept HTTPS, SSH URL and SCP
 syntax, including SSH aliases and `@` inside repository paths. HTTPS userinfo,
 SSH passwords, controls, query and fragment are refused. Credential-like
@@ -1127,10 +1154,12 @@ while the Controller is offline, and after completion. Deleted tasks retain
 messages but refuse access through their task resource.
 
 Writes use canonical `store.LockProjectAuthorization` with Task share,
-credential share, actual direct-grant share and head update locks in that order.
-The positive grant remains locked through commit; admission returns current
-locked-row role and real grant facts after any wait. It acquires no Project row
-lock or profile projection. The final credential-expiry check follows all waits
+credential share, real ownership share, owner-Team-member share, direct-grant
+share and head update locks in that order. Only existing source rows are locked;
+admission merges current source facts after waits and keeps ownership and sources
+stable through commit. At least one real source must still admit the writer.
+A missing ownership row is an integrity error. It acquires no Project row lock
+or profile projection. The final credential-expiry check follows all waits
 and encoding. Ordinary resource and Session admission keep their existing
 nonlocking access reads.
 

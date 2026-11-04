@@ -345,7 +345,7 @@ func TestTerminalWorkerAndBrowserWebSockets(t *testing.T) {
 		t.Fatal(update)
 	}
 	// Revoking membership closes the existing browser subscription.
-	_, err = f.app.relay.service.DB.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, reg.Owner.ProjectID, reg.Owner.OwnerUserID)
+	_, err = f.app.relay.service.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, reg.Owner.ProjectID, reg.Owner.OwnerUserID)
 	if err != nil {
 		t.Fatal(err)
 	}

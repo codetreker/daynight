@@ -87,8 +87,10 @@ ordinary session authority, relative resources and existing keyboard bridge.
 The [architecture decision](2026-10-22-auth-architecture.md) and
 [attachment decision](../../archived/architecture/2026-10-21-task-attachment-storage-design.md) retain the
 explicit exclusion of preview domains, scoped preview credentials and gateway
-infrastructure. Existing projects remain unassigned until manual membership
-maintenance; no legacy data branch is added.
+infrastructure. Existing projects originally remained unassigned until manual
+membership maintenance. The [Personal ownership decision](2026-11-04-personal-project-ownership.md)
+now migrates valid projects to the earliest-joined current admin's Personal Team
+and rejects zero-admin data; no legacy runtime data branch is added.
 
 ### Real protocol fixtures and private runtime state
 
@@ -188,7 +190,7 @@ continue to apply.
 Deployment now requires real App configuration and every fixture must acquire
 credentials through the protocol. Current-source validation must cover missing
 config, wrong origins, credential and membership revocation, direct resources,
-provider failures, last-admin/invitation concurrency and complete native/container
+provider failures, grant-version/invitation concurrency and complete native/container
 journeys. The [combined authentication decision](../testing/2026-10-23-authentication-combined-acceptance.md)
 composes normal browser and installed-CLI authority across service restart,
 revocation during admitted IO and actual socket loss. It also owns real UniAuth

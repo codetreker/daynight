@@ -18,7 +18,7 @@ func scanMember(row pgx.Row) (core.ProjectMember, error) {
 }
 
 func readDirectProjectMember(ctx context.Context, tx pgx.Tx, userID string, projectID string) (core.ProjectMember, error) {
-	member, err := scanMember(tx.QueryRow(ctx, `SELECT `+memberProjection+` FROM project_members m
+	member, err := scanMember(tx.QueryRow(ctx, `SELECT `+memberProjection+` FROM project_grants m
         JOIN users u ON u.id=m.user_id JOIN projects p ON p.id=m.project_id
         WHERE m.project_id=$1 AND m.user_id=$2`, projectID, userID))
 	return member, authQueryError("read project member", err)
@@ -44,23 +44,32 @@ func (s *Store) CreatePrivateProject(ctx context.Context, principal core.Princip
 		if err := tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 FOR KEY SHARE`, principal.UserID).Scan(&userID); err != nil {
 			return err
 		}
-		project, err = scanProject(tx.QueryRow(ctx, `INSERT INTO projects (id,name,repo_url) VALUES ($1,$2,$3)
-            RETURNING `+projectProjection, id, name, repoURL))
+		teamID, err := personalTeam(ctx, tx, userID, " FOR UPDATE")
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO project_members (project_id,user_id,role) VALUES ($1,$2,'admin')`, id, principal.UserID)
+		_, err = tx.Exec(ctx, `INSERT INTO projects (id,name,repo_url) VALUES ($1,$2,$3)`, id, name, repoURL)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO project_ownership (project_id,team_id) VALUES ($1,$2)`, id, teamID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO project_grants (project_id,user_id,role) VALUES ($1,$2,'admin')`, id, principal.UserID); err != nil {
+			return err
+		}
+		project, err = readProject(ctx, tx, id)
 		return err
 	})
 	return project, authQueryError("create private project", err)
 }
 
 func (s *Snapshot) ProjectParticipants(ctx context.Context, projectID string) ([]core.ProjectParticipant, error) {
-	rows, err := s.tx.Query(ctx, `SELECT m.user_id::text,u.id::text,u.name,u.email,u.avatar_url,a.role,
-        m.project_id::text,m.role,m.version,m.created_at,m.updated_at FROM project_members m
-        JOIN (`+projectAccessRelation+`) a ON a.project_id=m.project_id AND a.user_id=m.user_id
-        LEFT JOIN users u ON u.id=m.user_id
-        WHERE m.project_id=$1 ORDER BY m.created_at,m.user_id`, projectID)
+	rows, err := s.tx.Query(ctx, `SELECT a.user_id::text,u.id::text,u.name,u.email,u.avatar_url,a.role,
+        g.project_id::text,g.user_id::text,g.role,g.version,g.created_at,g.updated_at FROM (`+projectAccessRelation+`) a
+        LEFT JOIN project_grants g ON g.project_id=a.project_id AND g.user_id=a.user_id
+        LEFT JOIN users u ON u.id=a.user_id
+        WHERE a.project_id=$1 ORDER BY a.joined_at,a.user_id`, projectID)
 	if err != nil {
 		return nil, queryError("list project participants", err)
 	}
@@ -69,29 +78,22 @@ func (s *Snapshot) ProjectParticipants(ctx context.Context, projectID string) ([
 	for rows.Next() {
 		var participant core.ProjectParticipant
 		var profileID *string
-		var grant core.ProjectGrant
-		if err := rows.Scan(&participant.UserID, &profileID, &participant.Profile.Name, &participant.Profile.Email, &participant.Profile.AvatarURL,
-			&participant.EffectiveRole, &grant.ProjectID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt); err != nil {
+		var grant nullableProjectGrant
+		destinations := []any{&participant.UserID, &profileID, &participant.Profile.Name, &participant.Profile.Email, &participant.Profile.AvatarURL, &participant.EffectiveRole}
+		if err := rows.Scan(append(destinations, grant.destinations()...)...); err != nil {
 			return nil, queryError("list project participants", err)
 		}
 		if profileID == nil || *profileID != participant.UserID {
 			return nil, queryError("list project participants", fmt.Errorf("project participant profile is missing or inconsistent"))
 		}
-		grant.UserID = participant.UserID
-		participant.DirectGrant = &grant
+		participant.DirectGrant = grant.value()
 		participants = append(participants, participant)
 	}
 	return participants, authQueryError("list project participants", rows.Err())
 }
 
-func (tx *ProjectTx) AdminCount(ctx context.Context) (int64, error) {
-	var count int64
-	err := tx.tx.QueryRow(ctx, `SELECT count(*) FROM project_members WHERE project_id=$1 AND role='admin'`, tx.projectID).Scan(&count)
-	return count, authQueryError("count project admins", err)
-}
-
 func (tx *ProjectTx) SetMemberRole(ctx context.Context, userID string, role core.ProjectRole) (core.ProjectMember, error) {
-	if _, err := tx.tx.Exec(ctx, `UPDATE project_members SET role=$3,version=nextval('project_member_versions'),
+	if _, err := tx.tx.Exec(ctx, `UPDATE project_grants SET role=$3,version=nextval('project_grant_versions'),
         updated_at=statement_timestamp() WHERE project_id=$1 AND user_id=$2`, tx.projectID, userID, role); err != nil {
 		return core.ProjectMember{}, queryError("update member role", err)
 	}
@@ -99,12 +101,12 @@ func (tx *ProjectTx) SetMemberRole(ctx context.Context, userID string, role core
 }
 
 func (tx *ProjectTx) RemoveMember(ctx context.Context, userID string) error {
-	_, err := tx.tx.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, tx.projectID, userID)
+	_, err := tx.tx.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, tx.projectID, userID)
 	return authQueryError("remove project member", err)
 }
 
 func (tx *ProjectTx) AddInvitedMember(ctx context.Context, userID string) (core.ProjectMember, error) {
-	_, err := tx.tx.Exec(ctx, `INSERT INTO project_members (project_id,user_id,role) SELECT $1,id,'member' FROM users WHERE id=$2`, tx.projectID, userID)
+	_, err := tx.tx.Exec(ctx, `INSERT INTO project_grants (project_id,user_id,role) SELECT $1,id,'member' FROM users WHERE id=$2`, tx.projectID, userID)
 	if err != nil {
 		return core.ProjectMember{}, queryError("add invited member", err)
 	}

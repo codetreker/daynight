@@ -188,11 +188,11 @@ func TestTaskTransactionCompletionFailureDominatesDomainFault(t *testing.T) {
 			_, err := s.Create(ctx, principal, project.ID, CreateTask{Title: "Rejected", DependsOn: []string{missing}})
 			return err
 		}},
-		{"missing project read", "FROM project_members", func(ctx context.Context, s *Tasks) error {
+		{"missing project read", "FROM project_grants", func(ctx context.Context, s *Tasks) error {
 			_, err := s.Get(ctx, principal, missing, target.ID)
 			return err
 		}},
-		{"missing project list", "FROM project_members", func(ctx context.Context, s *Tasks) error {
+		{"missing project list", "FROM project_grants", func(ctx context.Context, s *Tasks) error {
 			_, err := s.List(ctx, principal, missing, TaskListRequest{PageRequest: PageRequest{Limit: 10}})
 			return err
 		}},
@@ -247,7 +247,7 @@ func TestTaskSnapshotKeepsProjectAndDerivedTaskStateConsistent(t *testing.T) {
 	predecessor := createTask(t, tasks, principal, project.ID, "Predecessor")
 	target := createTask(t, tasks, principal, project.ID, "Target", predecessor.ID)
 	traced := tracedTasks(t, databaseURL, taskQueryAction{
-		match: func(sql string) bool { return strings.Contains(sql, "FROM project_members") },
+		match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") },
 		end: func() {
 			if err := database.WriteProject(context.Background(), project.ID, func(tx *store.ProjectTx) error {
 				_, err := tx.UpdateTask(context.Background(), predecessor.ID, store.TaskWrite{Title: predecessor.Title, Status: core.TaskDone})

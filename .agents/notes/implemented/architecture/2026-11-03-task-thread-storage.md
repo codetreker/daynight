@@ -21,10 +21,12 @@ identity. The ordinary (task_id,created_at,message_id) index serves paging.
 A dedicated ReadCommitted Thread transaction shares the parent-task and
 credential locks, then obtains canonical strong project admission through
 `store.LockProjectAuthorization` in `project_access.go`. That primitive shares
-the actual positive direct-grant row through commit and returns `ProjectAccess`
-with its real `DirectGrant`. Role and grant facts come from the locked row after
-any wait, without a profile projection. The transaction then exclusively locks a
-lazy task-local head. It never acquires a Project row lock after the Task lock,
+real ownership, then the existing owner Team member and direct grant rows through
+commit. It returns `ProjectAccess` by merging current source facts after waits,
+with its real nullable `DirectGrant` and without a profile projection. The
+[Personal ownership decision](2026-11-04-personal-project-ownership.md) extends
+the original direct-grant fence to these real sources. The transaction then
+exclusively locks a lazy task-local head. It never acquires a Project row lock after the Task lock,
 because ordinary project writes acquire Project before Task. It snapshots the
 author's nullable name and any verified claim/worker/provider attribution. The
 final database-clock expiry check follows all waits and encoding. Rejected
@@ -72,7 +74,8 @@ Thread a second owner of project permission policy and couples admission to a
 joined profile response. The canonical access owner provides the strong query
 while Thread retains its transaction, credential and task ordering. Reading an
 independent access alias while locking a separate grant alias could retain a
-pre-wait role; the strong query derives access from the actual locked grant.
+pre-wait role; the strong primitive derives access from current locked sources
+after waits.
 
 **Order only by random UUID within the current millisecond.** A later UUID can
 sort before an incremental anchor and disappear from subsequent afterId reads.
@@ -86,8 +89,9 @@ Messages survive execution changes and name changes without increasing a
 previously admitted resource's encoded size. The task-local head serializes
 appenders; readers need no head lock. Thread retains its credential revalidation
 and consumes canonical strong admission, while ordinary Task transactions retain
-their existing admission rules. Strong admission uses actual direct grants; it
-adds no ownership rows or placeholder authorization sources. Discussion neither
+their existing admission rules. Strong admission uses real ownership and actual source rows; it does not
+construct placeholder authorization sources. Ordinary Task and Session admission
+do not acquire its long-lived source locks. Discussion neither
 changes Task versions nor enters task-sync.
 
 Clock stalls or rollback produce explicit failures rather than partial history.

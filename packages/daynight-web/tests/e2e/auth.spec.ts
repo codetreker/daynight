@@ -499,11 +499,12 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     const invite = await invitation(request, project.id);
     expect((await bob.post('/api/v1/invitations/accept', { data: { token: invite.token } })).status()).toBe(200);
     const target = `/api/v1/projects/${project.id}/members/${bobUser.id}`;
-    allowBrowserWrites([{ method: 'PATCH', url: `${baseURL}${target}`, count: 2 }]);
+    allowBrowserWrites([{ method: 'PATCH', url: `${baseURL}${target}`, count: 2 },
+      { method: 'DELETE', url: `${baseURL}/api/v1/projects/${project.id}/members/${alice.id}`, count: 1 }]);
     await page.goto(`/projects/${project.id}/members`);
     const bobRole = page.getByRole('combobox', { name: `${bobUser.name} 的项目角色`, exact: true });
     await expect(bobRole).toHaveValue('member');
-    await expect(page.getByRole('combobox', { name: `${alice.name} 的项目角色`, exact: true })).toBeDisabled();
+    await expect(page.getByRole('combobox', { name: `${alice.name} 的项目角色`, exact: true })).toBeEnabled();
     const observed = (await memberList(request, project.id)).find((member) => member.userId === bobUser.id)!;
     expect((await request.patch(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: observed.directGrant!.version, role: 'admin', expectedUserId: alice.id }) })).status()).toBe(200);
     await bobRole.selectOption('admin');
@@ -521,8 +522,19 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     const memberFile = attachmentDownloadUrl(project.id, collaborative.id, 'member.txt');
     expect((await bob.put(memberFile, { headers: { 'Content-Type': 'text/plain' }, data: 'Member attachment write' })).status()).toBe(201);
     expect((await bob.get(memberFile)).status()).toBe(200);
-    const administrator = (await memberList(request, project.id)).find((member) => member.userId === alice.id)!;
-    expect((await request.delete(`/api/v1/projects/${project.id}/members/${alice.id}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: administrator.directGrant!.version, expectedUserId: alice.id }) })).status()).toBe(409);
+    await page.getByRole('button', { name: `移除 ${alice.name}`, exact: true }).click();
+    const removeSelf = page.getByRole('dialog').getByRole('button', { name: '移除成员', exact: true });
+    await expect(removeSelf).toBeEnabled();
+    await removeSelf.click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '邀请成员', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: `移除 ${alice.name}`, exact: true })).toHaveCount(0);
+    const inherited = (await memberList(request, project.id)).find((member) => member.userId === alice.id)!;
+    expect(inherited.effectiveRole).toBe('admin');
+    expect(inherited.directGrant).toBeNull();
+    expect((await request.get(`/api/v1/projects/${project.id}/access`)).status()).toBe(200);
+    await page.reload();
+    await expect(page.getByRole('button', { name: '邀请成员', exact: true })).toBeVisible();
     await browserAuthentication(context, baseURL, 'bob');
     await page.reload();
     await expect(page.getByRole('heading', { name: '项目成员', exact: true })).toBeVisible();

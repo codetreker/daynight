@@ -228,8 +228,6 @@ export type AuthMessages = {
       readonly roleLabel: (args: { readonly name: string }) => string;
       readonly removeLabel: (args: { readonly name: string }) => string;
       readonly remove: string;
-      readonly lastAdminTitle: string;
-      readonly lastAdminNote: string;
       readonly invitesTitle: string;
       readonly invitesDescription: string;
       readonly invitesEmpty: string;

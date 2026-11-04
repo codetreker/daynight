@@ -21,7 +21,7 @@ func addMember(t *testing.T, f fixture, role string) core.Principal {
 	for _, q := range []struct {
 		sql  string
 		args []any
-	}{{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,($1::uuid)::text,now(),now())`, []any{p.UserID}}, {`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'member',now(),now()+interval '1 day')`, []any{p.CredentialID, p.UserID, hash[:]}}, {`INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,$3)`, []any{f.project, p.UserID, role}}} {
+	}{{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,($1::uuid)::text,now(),now())`, []any{p.UserID}}, {`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'member',now(),now()+interval '1 day')`, []any{p.CredentialID, p.UserID, hash[:]}}, {`INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,$3)`, []any{f.project, p.UserID, role}}} {
 		if _, err := f.s.DB.Pool.Exec(ctx, q.sql, q.args...); err != nil {
 			t.Fatal(err)
 		}
@@ -51,7 +51,7 @@ func TestReadOnlyMembersAndRevokedActorsCannotDispatch(t *testing.T) {
 	if _, err = f.s.Poll(ctx, v.ControllerFence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.s.DB.Pool.Exec(ctx, `UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, admin.UserID); err != nil {
+	if _, err = f.s.DB.Pool.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, admin.UserID); err != nil {
 		t.Fatal(err)
 	}
 	assertRejectedBegin(t, f, v, command.OperationID)

@@ -315,7 +315,7 @@ func TestControlReaderProjectionAndRevokedWriterAtDispatch(t *testing.T) {
 	if _, err := f.s.Poll(ctx, v.ControllerFence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, admin.UserID); err != nil {
+	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE project_grants SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, admin.UserID); err != nil {
 		t.Fatal(err)
 	}
 	assertRejectedBegin(t, f, v, c.OperationID)

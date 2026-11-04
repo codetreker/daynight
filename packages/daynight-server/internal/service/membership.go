@@ -190,20 +190,6 @@ func validateMemberMutation(userID string, version int64) (string, error) {
 	return id, nil
 }
 
-func preserveProjectAdmin(ctx context.Context, tx *store.ProjectTx, member core.ProjectMember) error {
-	if member.Grant.Role != core.ProjectAdmin {
-		return nil
-	}
-	count, err := tx.AdminCount(ctx)
-	if err != nil {
-		return err
-	}
-	if count == 1 {
-		return &Fault{Code: "last_admin", Message: "A project must retain at least one administrator."}
-	}
-	return nil
-}
-
 type SetProjectMemberRole struct {
 	Version        int64
 	Role           core.ProjectRole
@@ -253,9 +239,6 @@ func (s *Memberships) SetRole(ctx context.Context, principal core.Principal, pro
 			result = member.Grant
 			return nil
 		}
-		if err := preserveProjectAdmin(ctx, tx, member); err != nil {
-			return err
-		}
 		member, err = tx.SetMemberRole(ctx, id, input.Role)
 		result = member.Grant
 		return err
@@ -275,11 +258,7 @@ func (s *Memberships) Remove(ctx context.Context, principal core.Principal, proj
 		return err
 	}
 	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) error {
-		member, err := memberMutationTarget(ctx, tx, id, input.Version)
-		if err != nil {
-			return err
-		}
-		if err := preserveProjectAdmin(ctx, tx, member); err != nil {
+		if _, err := memberMutationTarget(ctx, tx, id, input.Version); err != nil {
 			return err
 		}
 		return tx.RemoveMember(ctx, id)

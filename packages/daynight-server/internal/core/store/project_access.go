@@ -2,45 +2,124 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/jackc/pgx/v5"
 )
 
-// projectAccessRelation returns one effective role per project/user and retains
-// raw user IDs so profile consumers can detect missing users.
-const projectAccessRelation = `SELECT project_id,user_id,role FROM project_members`
+// projectAccessRelation keeps raw source user IDs so profile consumers detect
+// missing users, and combines roles before any caller applies pagination.
+const projectAccessRelation = `SELECT project_id,user_id,
+    CASE WHEN bool_or(role='admin') THEN 'admin' ELSE 'member' END AS role,
+    min(created_at) AS joined_at
+    FROM (
+        SELECT project_id,user_id,role,created_at FROM project_grants
+        UNION ALL
+        SELECT o.project_id,m.user_id,m.role,m.created_at FROM project_ownership o
+        JOIN team_members m ON m.team_id=o.team_id
+    ) sources GROUP BY project_id,user_id`
 
-// ReadProjectAccess evaluates access in the caller's transaction without acquiring row locks.
+type nullableProjectGrant struct {
+	projectID, userID    *string
+	role                 *core.ProjectRole
+	version              *int64
+	createdAt, updatedAt *time.Time
+}
+
+func (grant *nullableProjectGrant) destinations() []any {
+	return []any{&grant.projectID, &grant.userID, &grant.role, &grant.version, &grant.createdAt, &grant.updatedAt}
+}
+
+func (grant nullableProjectGrant) value() *core.ProjectGrant {
+	if grant.projectID == nil {
+		return nil
+	}
+	return &core.ProjectGrant{ProjectID: *grant.projectID, UserID: *grant.userID, Role: *grant.role,
+		Version: *grant.version, CreatedAt: *grant.createdAt, UpdatedAt: *grant.updatedAt}
+}
+
+// ReadProjectAccess evaluates both sources in one statement without row locks.
 func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string) (core.ProjectAccess, error) {
-	var access core.ProjectAccess
-	var grant core.ProjectGrant
-	err := tx.QueryRow(ctx, `SELECT a.project_id::text,a.user_id::text,a.role,
-        g.project_id::text,g.user_id::text,g.role,g.version,g.created_at,g.updated_at FROM (`+projectAccessRelation+`) a
-        JOIN users u ON u.id=a.user_id JOIN projects p ON p.id=a.project_id
-        JOIN project_members g ON g.project_id=a.project_id AND g.user_id=a.user_id
-        WHERE a.project_id=$1 AND a.user_id=$2`, projectID, userID).Scan(&access.ProjectID, &access.UserID, &access.Role,
-		&grant.ProjectID, &grant.UserID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt)
+	var id string
+	var ownershipID, teamID, ownerTeamID, accessUserID, profileID *string
+	var role *core.ProjectRole
+	var grant nullableProjectGrant
+	destinations := []any{&id, &ownershipID, &teamID, &ownerTeamID, &accessUserID, &profileID, &role}
+	err := tx.QueryRow(ctx, `SELECT p.id::text,o.project_id::text,o.team_id::text,t.id::text,a.user_id::text,u.id::text,a.role,
+        g.project_id::text,g.user_id::text,g.role,g.version,g.created_at,g.updated_at
+        FROM projects p LEFT JOIN project_ownership o ON o.project_id=p.id
+        LEFT JOIN teams t ON t.id=o.team_id
+        LEFT JOIN (`+projectAccessRelation+`) a ON a.project_id=p.id AND a.user_id=$2
+        LEFT JOIN users u ON u.id=a.user_id
+        LEFT JOIN project_grants g ON g.project_id=p.id AND g.user_id=$2
+        WHERE p.id=$1`, projectID, userID).Scan(append(destinations, grant.destinations()...)...)
 	if err != nil {
 		return core.ProjectAccess{}, authQueryError("read project access", err)
 	}
-	access.DirectGrant = &grant
-	return access, nil
+	if ownershipID == nil || teamID == nil || ownerTeamID == nil {
+		return core.ProjectAccess{}, queryError("read project access", fmt.Errorf("project ownership or owner Team is missing"))
+	}
+	if accessUserID == nil {
+		return core.ProjectAccess{}, authQueryError("read project access", pgx.ErrNoRows)
+	}
+	if profileID == nil || *profileID != *accessUserID {
+		return core.ProjectAccess{}, queryError("read project access", fmt.Errorf("project access profile is missing or inconsistent"))
+	}
+	return core.ProjectAccess{ProjectID: id, UserID: *accessUserID, Role: *role, DirectGrant: grant.value()}, nil
 }
 
-// LockProjectAuthorization retains the actual positive grant through commit.
-// Callers acquire Task and credential share locks first; this query must never
-// lock Project because ordinary project writes acquire Project before Task.
+// LockProjectAuthorization stabilizes ownership and each real source until commit.
+// Task and credential locks precede it. Project is never locked here because
+// ordinary writes acquire Project before Task. Source locks use a fixed order.
 func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID string) (core.ProjectAccess, error) {
-	var grant core.ProjectGrant
-	err := tx.QueryRow(ctx, `SELECT m.project_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at
-        FROM project_members m JOIN users u ON u.id=m.user_id JOIN projects p ON p.id=m.project_id
-        WHERE m.project_id=$1 AND m.user_id=$2 FOR SHARE OF m`, projectID, userID).Scan(
-		&grant.ProjectID, &grant.UserID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt)
+	var teamID string
+	var ownerTeamID *string
+	err := tx.QueryRow(ctx, `SELECT o.team_id::text,t.id::text FROM project_ownership o
+        LEFT JOIN teams t ON t.id=o.team_id WHERE o.project_id=$1 FOR SHARE OF o`, projectID).Scan(&teamID, &ownerTeamID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1)`, projectID).Scan(&exists); err != nil {
+			return core.ProjectAccess{}, queryError("read project presence", err)
+		}
+		if exists {
+			return core.ProjectAccess{}, queryError("lock project authorization", fmt.Errorf("project ownership or owner Team is missing"))
+		}
+	}
 	if err != nil {
 		return core.ProjectAccess{}, queryError("lock project authorization", err)
 	}
-	return core.ProjectAccess{ProjectID: grant.ProjectID, UserID: grant.UserID, Role: grant.Role, DirectGrant: &grant}, nil
+	if ownerTeamID == nil {
+		return core.ProjectAccess{}, queryError("lock project authorization", fmt.Errorf("project owner Team is missing"))
+	}
+	var teamRole *core.ProjectRole
+	var lockedTeamRole core.ProjectRole
+	err = tx.QueryRow(ctx, `SELECT role FROM team_members WHERE team_id=$1 AND user_id=$2 FOR SHARE`, teamID, userID).Scan(&lockedTeamRole)
+	if err == nil {
+		teamRole = &lockedTeamRole
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return core.ProjectAccess{}, queryError("lock project team authorization", err)
+	}
+	var grant core.ProjectGrant
+	err = tx.QueryRow(ctx, `SELECT project_id::text,user_id::text,role,version,created_at,updated_at
+        FROM project_grants WHERE project_id=$1 AND user_id=$2 FOR SHARE`, projectID, userID).Scan(
+		&grant.ProjectID, &grant.UserID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt)
+	var directGrant *core.ProjectGrant
+	if err == nil {
+		directGrant = &grant
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return core.ProjectAccess{}, queryError("lock project direct authorization", err)
+	}
+	if teamRole == nil && directGrant == nil {
+		return core.ProjectAccess{}, queryError("lock project authorization", pgx.ErrNoRows)
+	}
+	role := core.ProjectMemberRole
+	if teamRole != nil && *teamRole == core.ProjectAdmin || directGrant != nil && directGrant.Role == core.ProjectAdmin {
+		role = core.ProjectAdmin
+	}
+	return core.ProjectAccess{ProjectID: projectID, UserID: userID, Role: role, DirectGrant: directGrant}, nil
 }
 
 func (tx *ThreadTx) LockProjectAuthorization(ctx context.Context, principal core.Principal, projectID string) (core.ProjectAccess, error) {
@@ -57,7 +136,7 @@ func (tx *ProjectTx) ProjectAccess(ctx context.Context, principal core.Principal
 
 func (s *Snapshot) AccessibleProjects(ctx context.Context, principal core.Principal, page Page) (ProjectPage, error) {
 	afterTime, afterID := pageValues(page)
-	rows, err := s.tx.Query(ctx, `SELECT `+projectProjection+` FROM projects p
+	rows, err := s.tx.Query(ctx, `SELECT `+projectProjection+` FROM `+projectRelation+`
         WHERE EXISTS (SELECT 1 FROM (`+projectAccessRelation+`) a WHERE a.project_id=p.id AND a.user_id=$1)
         AND ($2::timestamptz IS NULL OR (p.created_at,p.id)>($2,$3::uuid))
         ORDER BY p.created_at,p.id LIMIT $4`, principal.UserID, afterTime, afterID, page.Limit+1)

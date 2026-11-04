@@ -19,14 +19,14 @@ created_at 与 head 时间为 timestamptz(3)，INSERT 使用 `date_trunc('millis
 `Store.WriteThread` 使用 ReadCommitted，局部 ThreadTx 仅为本任务串行化：
 
 1. 按 project/task 锁父 Task `FOR SHARE`，保留 missing/deleted 信息。
-2. 锁当前 credential `FOR SHARE`，再通过 `ThreadTx.LockProjectAuthorization` 调用 canonical `store.LockProjectAuthorization`，锁实际提供准入的 direct grant `FOR SHARE`。验证认证身份与访问权后才分类任务存在性。
+2. 锁当前 credential `FOR SHARE`，再通过 `ThreadTx.LockProjectAuthorization` 调用 canonical `store.LockProjectAuthorization`，依次锁真实 ownership、当前 owner Team member 和 direct grant `FOR SHARE`。验证认证身份与访问权后才分类任务存在性。
 3. 查询作者名称；仅提供 claimId 时读取当前 worker，复用 activeWorker 校验，另验 worker.UserID 与 principal 一致。
 4. 先独立执行 lazy head INSERT ON CONFLICT DO NOTHING，再独立 SELECT FOR UPDATE。不能合成 CTE，否则 ReadCommitted 并发首写可看不到冲突赢家。
 5. 校验同任务 reply，INSERT 省略 message_id，以 RETURNING 获取一次生成的 UUID 和实际数据库毫秒时间。
 6. 准备前进位置，分别编码默认/详细资源并校验 64 KiB，最后用数据库实际时钟检查 credential expiry，再更新 head。
 7. 只有 commit 确认后向调用方暴露资源。
 
-锁顺序为 Task share → credential share → 实际 grant share → head update，不取得 Project 行锁。普通删除已持 Project 锁并等待 Task 时，反向 Project 锁会导致死锁。强准入从实际锁定的 grant 行构造 `ProjectAccess` 和其中的真实 `DirectGrant`，不读取人员资料，也不使用其他查询别名在等待前读到的角色；授权变更先提交时，等锁后的结果必须反映当前角色、真实版本或已撤销的准入。Task 变更需 Task 排他锁，grant 撤销与 credential 删除/修改需其排他锁，均不能跨越写入授权点。共享锁持有至事务结束；它不能阻止自然过期，所以等待和编码之后仍须重验 expiry。
+锁顺序为 Task share → credential share → ownership share → owner Team member share → direct grant share → head update，不取得 Project 行锁。普通删除已持 Project 锁并等待 Task 时，反向 Project 锁会导致死锁。ownership 是真实归属数据行，缺失时报告完整性错误；只锁实际存在的 Team member 与 grant，不制造来源或 gap lock。强准入从每个来源实际锁定后的当前值合并，至少一条实际锁定来源仍须提供访问；真实 DirectGrant 保留自己的角色与版本，只有继承访问时为 null。查询不读取人员资料，不采用等待前别名中的角色，也不追加非锁定查询让并发新来源成为唯一准入依据。ownership share 阻止并发归属变化越过这次读取，来源 share 阻止撤销跨过提交。普通 Task 与 Session 准入不借用这些长期 share 锁。Task 变更需 Task 排他锁，来源撤销与 credential 删除/修改需各自排他锁；共享锁持有至事务结束。锁不能阻止自然过期，所以等待和编码之后仍须重验 expiry。
 
 没有 claimId 的普通发言不解析无关 worker 属性。Thread 不写 Task、task_properties、依赖、epoch 或 task-sync 的任何字段。
 

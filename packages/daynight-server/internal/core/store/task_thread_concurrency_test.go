@@ -236,7 +236,7 @@ func TestThreadCredentialAndGrantLocksBlockRevocation(t *testing.T) {
 					completed <- err
 					return
 				}
-				_, err := revoker.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID)
+				_, err := revoker.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID)
 				completed <- err
 			}()
 			waitThreadBackendLock(t, database, revoker.Conn().PgConn().PID())
@@ -253,7 +253,13 @@ func TestThreadCredentialAndGrantLocksBlockRevocation(t *testing.T) {
 func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 	for _, mutation := range []string{"role", "delete"} {
 		t.Run(mutation, func(t *testing.T) {
-			database, principal, _, project := membershipFixture(t)
+			database, _, principal, project := membershipFixture(t)
+			if err := database.WriteProject(context.Background(), project.ID, func(tx *ProjectTx) error {
+				_, err := tx.AddInvitedMember(context.Background(), principal.UserID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			task := queryTask(t, database, project.ID, 10, core.TaskTodo)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -264,10 +270,10 @@ func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 			defer writer.Rollback(context.Background())
 			var version int64
 			if mutation == "role" {
-				err = writer.QueryRow(ctx, `UPDATE project_members SET role='member',version=nextval('project_member_versions')
+				err = writer.QueryRow(ctx, `UPDATE project_grants SET role='member',version=nextval('project_grant_versions')
  WHERE project_id=$1 AND user_id=$2 RETURNING version`, project.ID, principal.UserID).Scan(&version)
 			} else {
-				_, err = writer.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID)
+				_, err = writer.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -310,7 +316,13 @@ func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 }
 
 func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T) {
-	database, principal, _, project := membershipFixture(t)
+	database, _, principal, project := membershipFixture(t)
+	if err := database.WriteProject(context.Background(), project.ID, func(tx *ProjectTx) error {
+		_, err := tx.AddInvitedMember(context.Background(), principal.UserID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
 	first := appendStoredThread(t, database, task.ID, principal.UserID, "original")
 	ctx := context.Background()
@@ -323,7 +335,7 @@ func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T)
 		}
 		appendStoredThread(t, database, task.ID, principal.UserID, "outside snapshot")
 		mustQueryExec(t, database, `UPDATE tasks SET deleted_at=clock_timestamp() WHERE id=$1`, task.ID)
-		mustQueryExec(t, database, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID)
+		mustQueryExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID)
 		presence, err := snapshot.TaskPresence(ctx, project.ID, task.ID)
 		if err != nil || !presence.Found || presence.DeletedAt != nil {
 			t.Fatalf("snapshot presence changed: %#v %v", presence, err)
