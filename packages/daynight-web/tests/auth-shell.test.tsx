@@ -622,7 +622,7 @@ describe("authenticated application shell", () => {
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问令牌" })); });
-    expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).getByRole("status")).toHaveTextContent("正在加载项目");
+    expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).getByText("正在加载项目")).toHaveAttribute("role", "status");
     expect(within(screen.getByRole("region", { name: "个人访问令牌" })).getByRole("status")).toHaveTextContent("正在加载访问令牌…");
     expect(document.body).not.toHaveClass("auth-session-checking");
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
