@@ -56,8 +56,9 @@ reopen resumes the same startup intent, while conflicting configurations and
 bindings fail visibly. One Bot write is atomic; a later write failure may leave
 earlier observations committed, and the next reconciliation reads that state.
 
-Actual registration, process startup, grant renewal, recovery and deletion
-execution remain responsibilities of the Controller integration. Keeping the
+The [Controller execution layer](2026-11-05-worker-bot-runtime.md) supplies
+registration, process startup and grant renewal. Recovery and deletion execution
+remain responsibilities of lifecycle integration. Keeping the
 fixed identity and role record separate from current observations lets that
 integration retry without replacing native sessions. No assistantHost capability
 is advertised until the complete integration is available. These records do not
