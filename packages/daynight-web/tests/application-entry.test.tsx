@@ -130,7 +130,7 @@ describe("public and authenticated entry ownership", () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url === "/api/v1/me" ? anonymous() : defaultResponse(url))));
     const login = vi.fn(); mount(login);
     fireEvent.click(await screen.findByRole("button", { name: "Sign in with GitHub" }));
-    expect(screen.getByText("Sign in through UniAuth to review your project invitation.")).toBeVisible();
+    expect(screen.getByText("Sign in through UniAuth to review your invitation.")).toBeVisible();
     expect(screen.getByText(/Sign-in was not completed/)).toBeVisible();
     expect(window.sessionStorage.getItem(invitationStorageKey)).not.toBeNull();
     expect(window.location.search).not.toContain("authError");
