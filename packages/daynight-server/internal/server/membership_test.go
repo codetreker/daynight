@@ -332,8 +332,14 @@ func TestInvitationUnknownTransactionOutcomeIsExplicitAndSafe(t *testing.T) {
 	err := &store.TransactionError{Phase: "commit", Cause: cause, Outcome: store.TransactionUnknown, CommitAttempted: true}
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest("POST", "/", nil)
-	invitationWriteError(response, request, logger, "accept_invitation", err)
+	request.Header.Set("X-Request-ID", "project-test")
+	RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		invitationWriteError(w, r, logger, "accept_invitation", err)
+	})).ServeHTTP(response, request)
 	assertProjectError(t, response, 503, "write_outcome_unknown")
+	if response.Header().Get("X-Request-ID") != "project-test" || !strings.Contains(response.Body.String(), `"requestId":"project-test"`) {
+		t.Fatal("unknown write lost its request correlation")
+	}
 	if !errors.Is(err, cause) || strings.Contains(response.Body.String(), cause.Error()) || strings.Contains(logs.String(), cause.Error()) {
 		t.Fatal("unknown write disclosed or lost its underlying cause")
 	}
