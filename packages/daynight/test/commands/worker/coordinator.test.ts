@@ -693,7 +693,7 @@ describe("minimal worker resource reconciliation", () => {
   });
 
   it.each(["workspace", "pending stop"])("reports a failed %s stop and still stops a healthy sibling", async (kind) => {
-    const f = await fixture(2); await f.coordinator.tick();
+    const f = await fixture(2); await f.coordinator.tick(); await f.coordinator.tick();
     await eventually(() => expect(f.remote.update).toHaveBeenCalledTimes(2));
     const rows = f.store.listTasks(); const failed = rows[0]!; const healthy = rows[1]!;
     const workspace = f.resources.get(failed.claimId)!;
@@ -1026,14 +1026,71 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.events.some(event => event.kind === "shutdown-error")).toBe(false);
   });
 
-  it("claims one task per repository turn while preserving each ready order", async () => {
+  it("leaves spare capacity for later rounds and closes the candidate stream after each grant", async () => {
+    const f = await fixture(3);
+    const closed = vi.fn();
+    const nextCandidate = vi.fn();
+    vi.mocked(f.remote.candidates).mockImplementation(async function* () {
+      try {
+        for (const candidate of f.candidates) {
+          if ([...f.grants.values()].some(granted => granted.id === candidate.id)) continue;
+          nextCandidate(candidate.id);
+          yield candidate;
+        }
+      } finally { closed(); }
+    });
+    await f.coordinator.tick();
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    expect(nextCandidate).toHaveBeenCalledExactlyOnceWith(uuid(100));
+    expect(closed).toHaveBeenCalledOnce();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    expect(f.store.listTasks()).toHaveLength(1);
+    await f.coordinator.tick();
+    expect(f.remote.claim).toHaveBeenCalledTimes(2);
+    expect(nextCandidate.mock.calls).toEqual([[uuid(100)], [uuid(101)]]);
+    expect(closed).toHaveBeenCalledTimes(2);
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
+  });
+
+  it("skips an exhausted repository before claiming one task from the next repository", async () => {
+    const f = await fixture(3);
+    const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    f.candidates.splice(0, f.candidates.length, task(second.projectId, uuid(200)), task(second.projectId, uuid(201)));
+    await f.coordinator.tick();
+    expect(vi.mocked(f.remote.candidates).mock.calls.map(([projectId]) => projectId)).toEqual([f.project.projectId, second.projectId]);
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    expect(vi.mocked(f.remote.claim).mock.calls[0]![0].id).toBe(uuid(200));
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+  });
+
+  it("ends acquisition after a granted claim remains pending behind old same-task resources", async () => {
+    const f = await fixture(3);
+    const { owner } = addOrphan(f, f.candidates[0]!.id);
+    vi.mocked(f.git.removeWorktree).mockRejectedValue(new Error("Original worktree remains"));
+    await f.coordinator.tick();
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    const granted = [...f.grants.values()][0]!;
+    expect(f.store.getTask({ projectId: granted.projectId, taskId: granted.id, claimId: readWorkerClaim(granted.properties)!.claimId })?.status).toBe("pending");
+    expect(f.tasks.start).not.toHaveBeenCalled();
+    await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
+    expect(f.worktrees.has(owner.claimId)).toBe(true);
+    await f.coordinator.shutdown();
+  });
+
+  it("claims one new task per round across repositories while preserving rotation and ready order", async () => {
     const f = await fixture(3);
     const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
     f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
     f.candidates.push(task(second.projectId, uuid(200)), task(second.projectId, uuid(201)));
+    const expected = [uuid(100), uuid(200), uuid(101)];
+    for (let round = 0; round < expected.length; round++) {
+      await f.coordinator.tick();
+      expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual(expected.slice(0, round + 1));
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(round + 1));
+    }
     await f.coordinator.tick();
-    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([uuid(100), uuid(200), uuid(101)]);
-    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(3));
+    expect(f.remote.claim).toHaveBeenCalledTimes(3);
   });
 
   it("round-robins pending work per free slot instead of draining the first project", async () => {
@@ -1057,6 +1114,9 @@ describe("minimal worker resource reconciliation", () => {
     const wait = new Promise<void>((resolve) => { release = resolve; });
     const start = f.tasks.start.getMockImplementation()!;
     f.tasks.start.mockImplementation(async (context, binding, input) => { if (context.projectId === f.project.projectId) await wait; return start(context, binding, input); });
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    expect(f.remote.claim).toHaveBeenCalledOnce();
     await f.coordinator.tick();
     await eventually(() => expect([...f.resources.values()].find((resource) => resource.owner.projectId === second.projectId)?.panes[0]?.nativeSession).toMatchObject({ agent: "codex" }));
     expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.projectId)).toEqual([f.project.projectId, second.projectId]);
@@ -1516,7 +1576,7 @@ describe("terminal cleanup retry scheduling", () => {
   });
 
   it("lets healthy cleanup and new work advance while one claim retries, then stops without retrying deletion", async () => {
-    const f = await fixture(3); await f.coordinator.tick();
+    const f = await fixture(3); await f.coordinator.tick(); await f.coordinator.tick();
     await eventually(() => expect(f.store.listTasks().filter(t => t.sessionId !== null)).toHaveLength(2));
     const owners = [...f.worktrees.values()].map(item => item.owner);
     const broken = owners[0]!; const healthy = owners[1]!;
@@ -1539,7 +1599,7 @@ describe("terminal cleanup retry scheduling", () => {
   });
 
   it("isolates conflicting cleanup ownership from healthy active work", async () => {
-    const f = await fixture(2); await f.coordinator.tick();
+    const f = await fixture(2); await f.coordinator.tick(); await f.coordinator.tick();
     await eventually(() => expect(f.store.listTasks().filter(t => t.sessionId !== null)).toHaveLength(2));
     const [broken, healthy] = [...f.worktrees.values()].map(item => item.owner);
     f.grants.delete(broken!.claimId); f.resources.delete(broken!.claimId); f.candidates.splice(0);
