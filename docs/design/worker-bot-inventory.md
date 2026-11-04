@@ -20,4 +20,4 @@
 
 `worker run` 不再隐式选择仓库，从同一配置快照读取服务和 Worker 设置。认证、实例锁、报告、原 Task 对账和关闭流程继续执行；空仓库只意味着不从配置选择新的任务项目。全新库存无配置仓库、旧项目映射或原 Herdr 责任时，全局默认模式不触发 Herdr 启动；保留的项目映射仍可触发旧资源发现，不能用空配置跳过孤儿资源与收尾责任。
 
-Bot 库存不进入 Task coordinator、Task 遥测库存、maxConcurrent 或终态清理预算。Controller 执行层负责在有效账号与环境下调用 prepare、冻结角色及原身份注册，随后接入独立发现节拍与授权维护。本模块不调用 register/grant/spawn，不广告 `assistantHost`，也不把库存观察当作 ready 或停止证据。删除记录不包含递归删除普通 cwd、共享 native home 或任务 worktree 的行为。
+Bot 库存不进入 Task coordinator、Task 遥测库存、maxConcurrent 或终态清理预算。[Controller 执行层](worker-bot-runtime.md)在有效账号与环境下调用 prepare、冻结角色及原身份注册，并提供独立发现节拍与授权维护。本模块不调用 register/grant/spawn，不广告 `assistantHost`，也不把库存观察当作 ready 或停止证据。删除记录不包含递归删除普通 cwd、共享 native home 或任务 worktree 的行为。
