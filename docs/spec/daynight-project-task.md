@@ -191,6 +191,9 @@ Project 创建、详情、分页条目及图中的 Project 必须包含 `ownersh
 ```bash
 daynight team list [--json]
 daynight team show [--team <uuid|personal>] [--json]
+daynight team create <name> [--confirm] [--json]
+daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
 ```
@@ -208,6 +211,28 @@ Team 与项目列表完整读取并验证全部页面后才输出；重复 ID、
 必须属于所选 Team。`--json` 保留完整资源与精确版本；`default show` 返回 `configured`
 （配置 ID 或 `null`）和已验证的 `team`。可读文本遵守终端转义规则。
 帮助及参数校验先于配置与网络读取。
+
+## Team 生命周期
+
+`team create` 创建普通 Team，创建者成为 admin；`rename` 修改普通 Team 原始名称，
+`delete` 删除没有项目的普通 Team。名称保留原始文字与空白，允许重复，必须是合法
+Unicode、不能包含 NUL 或全为 Unicode `White_Space`。Personal Team 不可改名或删除，
+非 admin、非空 Team 和版本冲突由服务明确拒绝。改名和删除使用显式 Team 或上述默认
+上下文，读取当前目标；`--if-version` 接受完整正 int64，与读取版本不符时在本地
+拒绝提交，不自动替换指定版本。
+
+三个写命令的 `--confirm` 是无值布尔开关；重复或 `--confirm=false` 是参数错误。
+没有该开关时，非交互终端在写入前拒绝；交互时显示操作对象，创建和改名接受 `y`
+或 `yes` 确认（不区分大小写），删除要求输入展示的 JSON string literal，解码后
+与原名称逐字匹配，不 trim。取消、
+否定或名称不符不提交。`--confirm` 跳过人工确认，删除仍提交读取到的真实名称与
+精确版本；确认不代替服务端的身份、权限、名称和版本检查。提示与网络等待期间不持
+配置锁，旧 Task 命令的确认行为不变。
+
+写入携带当前真实用户 ID，并验证响应主体、目标和回执；成功直接使用已确认回执。
+冲突须重新读取并重新确认，未知结果不得自动重放。读取当前事实不能证明丢失的
+回执，未知结果须以非零退出报告，并在可用时提供安全请求标识。`--json` 输出已确认的
+资源或删除回执。回执已确认后，即使本地输出或清理失败也保留该确认事实。
 
 ## PT7. Task 命令与更新语义
 
