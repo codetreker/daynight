@@ -18,6 +18,14 @@
 
 独立会话使用 `initialInput: "none"` 和 `initialPrompt: ""` 时，角色文本仍可存在。初始输入状态为 `not_required`，IPC `submit_initial` 必须拒绝；只有真正的用户请求才能进入发送路径。已有 Task 与无角色 Test 的输入规则保持不变。
 
+## Codex 原生角色
+
+Codex 在 `thread/start` 与 `thread/resume` 中将冻结原文传入 `developerInstructions`。省略 `instructions` 时不得发送该字段，也不得用空字符串覆盖原生配置。角色不能通过 `turn/start`、`turn/steer` 或隐藏用户输入发送；恢复使用同一 native session ID，并保留既有历史。
+
+该字段提供独立于基础提示的 developer 指令，不设置 `baseInstructions`。其原生语义是覆盖该层已有的 developer 配置，不承诺与用户原有 `developer_instructions` 拼接。角色传递不得改变 native PATH、CLI alias 环境、模型、effort 或权限选择；新建沿用原参数规则，恢复不以启动参数重置已有设置。
+
+原生端拒绝角色时，启动必须失败并向调用方传播原错误，关闭本次拥有的原生子进程和传输资源。不得删除角色后重试、降级为用户消息或报告无角色的启动成功。
+
 ## Copilot 原生追加
 
 Copilot 新建和精确恢复均将提供的 `instructions` 原文配置为 `systemMessage: { mode: "append", content: instructions }`，保留原生基础提示。没有角色时完全省略 `systemMessage`，不构造空角色或替换提示。角色配置本身不发送用户消息，也不产生初始化 turn。
@@ -26,9 +34,9 @@ Copilot 新建和精确恢复均将提供的 `instructions` 原文配置为 `sys
 
 ## 实现边界与验证
 
-该契约提供 ticket 校验、持久化和 Controller 到 Provider 的共享传递，以及上述 Copilot 追加映射。其它 Provider 的原生追加、Bot 角色模板、首次角色冻结与 Worker 托管分别由相应消费者实现；共享字段可读或单个适配器可用不表示这些入口已启用。独立 CLI 当前没有角色创建参数。
+该契约提供 ticket 校验、持久化、Controller 到 Provider 的共享传递、Codex 原生字段映射和 Copilot 追加映射。其它 Provider 适配、Bot 角色模板、首次角色冻结与 Worker 托管分别由相应消费者负责；字段可读或单个适配器可用不表示这些入口已启用，也不证明完整真实原生角色行为。独立 CLI 当前没有角色创建参数。
 
-验证须覆盖旧 Task/Test 字段与 hash 不变、非法输入及准确 UTF-8 边界、同 launchId 的角色改写拒绝、持久 ticket 经停止代际恢复后的原文传递、未知操作不重放，以及三个 Provider 的新建/恢复 options。适配器模拟结果仅证明共享传递，真实 Provider 行为需独立运行证据。
+验证须覆盖旧 Task/Test 字段与 hash 不变、非法输入及准确 UTF-8 边界、同 launchId 的角色改写拒绝、持久 ticket 经停止代际恢复后的原文传递、未知操作不重放，以及三个 Provider 的新建/恢复 options。Codex stdio 夹具还须验证 start/resume 原文、缺省字段、基础提示不覆盖、初始化无用户 turn、首个真实输入与设置保持，以及原生拒绝后的原错误和资源关闭。共享层模拟与 stdio 夹具仅证明各自传递和失败处理，真实 Provider 行为需独立运行证据。
 
 Copilot 适配验证还须覆盖 create/resume 的原文追加、无角色字段缺失、无初始化发送、模型/effort 与审批保持、打开拒绝及身份错误后的子进程回收。真实 SDK/CLI 的新建与恢复验收使用隔离目录，分别记录原生配置接受、native ID、消息历史与停止结果；不把模拟结果或配置接受表述为完整 Bot 或模型行为验收。
 

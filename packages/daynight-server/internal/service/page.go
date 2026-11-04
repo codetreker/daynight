@@ -40,10 +40,6 @@ type listScope struct {
 	AssignedTo         core.TaskAssignmentFilter
 }
 
-func projectListPage(request PageRequest) (store.Page, error) {
-	return listPage(request, listScope{Kind: "projects"})
-}
-
 func listPage(request PageRequest, scope listScope) (store.Page, error) {
 	if request.Limit < 1 || request.Limit > 100 {
 		return store.Page{}, invalidInput("Limit must be between 1 and 100.")
@@ -87,10 +83,6 @@ func listPage(request PageRequest, scope listScope) (store.Page, error) {
 	}
 	page.After = &store.Position{CreatedAt: cursor.CreatedAt, ID: id}
 	return page, nil
-}
-
-func encodeProjectCursor(project core.Project) (string, error) {
-	return encodeListCursor(listScope{Kind: "projects"}, project.CreatedAt, project.ID)
 }
 
 func encodeListCursor(scope listScope, createdAt time.Time, id string) (string, error) {

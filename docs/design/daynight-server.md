@@ -352,7 +352,7 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 
 ## 列表与读取一致性
 
-项目列表在数据库中先按调用者成员关系过滤，再执行分页；项目、task 与完整图的
+项目列表在数据库中先按调用者的 owner Team 成员关系与 direct grant 过滤，再执行分页；项目、task 与完整图的
 读取在同一 `ReadSnapshot` 内检查成员关系并读取资源。HTTP 入口每次重新验证
 会话或 PAT，数据库成员检查遵循所属快照或项目写锁的时点；凭据验证不属于业务
 事务中的再次校验。附件在文件 I/O 前完成快照授权，随后按已准入操作完成，详见
@@ -365,7 +365,9 @@ task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform`、`a
 
 普通列表保留 SQL limit；指定 workerId 时，store 按原 keyset 顺序读取候选及其唯一 worker 属性，在 Go 中解码并匹配归属，收集到 page limit+1 个匹配项或结束。最终分页和 lookahead 在归属筛选后计算，cursor 来自最后返回的匹配项。选中任务再批量加载全部属性，保持一致快照；不通过 SQL JSON 转换 PR 文本，也不引入独立 claim 权威表。
 
-Task cursor 版本2绑定解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。项目和账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本2。
+项目列表默认返回全部可访问项目；`teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥，非成员或不存在的 Team 返回 404，数据库失败仍为错误；资格、Team 和主体条件均先于 LIMIT。列表不返回总数。项目 cursor 使用独立 kind 和版本 2，绑定规范主体及 all/team/shared 范围和 Team ID，旧版本或跨范围续页被拒绝。游标不提供防篡改保护，也不作为授权凭据；每次请求独立检查访问权限。
+
+Task cursor 版本2绑定解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本2。
 
 cursor 编码最后一项的位置、资源类型、project 路径范围及规范化筛选条件。解码时
 校验格式和范围，拒绝旧版本1任务 cursor、将 project 列表 cursor 用于 task 列表，或在修改筛选后复用。
