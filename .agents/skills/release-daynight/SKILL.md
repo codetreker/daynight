@@ -5,9 +5,11 @@ description: Select and bump packages/daynight's version, deliver its release PR
 
 # Release Daynight
 
-Release `@codetreker/daynight` from this repository. Follow the session's actual
-authorization for PRs, merging and publication; this skill grants none. Ordinary
-change PRs leave the package version unchanged. Use one release task and worktree
+Release `@codetreker/daynight` from this repository. An explicit request to execute
+this workflow covers its version PR, protected merge and publication unless the
+session narrows that scope. Discussion and review requests remain read-only; the
+skill itself grants no authorization. Ordinary change PRs leave the package
+version unchanged. Use one release task and worktree
 under the [repository instructions](../../../AGENTS.md).
 
 Read the [publication guide](../../../docs/development.md#npm-publication) for

@@ -166,9 +166,6 @@ PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
 documentation and repository metadata. A selected CLI runs every native platform,
 the runtime compatibility matrix and the dedicated Linux shell completion job.
-On PRs, the Linux job also enforces package version increases before ordinary
-validation. It compares the PR's complete source changes with
-its merge base and its package version with the event's target-branch revision.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
@@ -209,10 +206,10 @@ captured targets, disposable review artifacts, shared refs, and isolation betwee
 PR worktrees. Independent Git suites run in separate Vitest workers. Each suite
 copies its immutable bare-origin seed into private test directories; refs,
 SQLite databases, clones and worktrees remain separate for every case. Sparse
-suites prepare their shared source graph before copying, and version-gate tests
-reuse only immutable default-base objects; scenario observations and mutations
-remain private. Source snapshots are prepared through batched native Git imports,
-while real clone/fetch/worktree operations remain the test subjects. Tests within
+suites prepare their shared source graph before copying; scenario observations
+and mutations remain private. Source snapshots are prepared through batched
+native Git imports, while real clone/fetch/worktree operations remain the test
+subjects. Tests within
 a file stay sequential so environment changes and cleanup have one owner.
 The [Git test decision](../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)
 records the isolation rules, and the
@@ -517,6 +514,8 @@ records the workload split and retained correctness guarantees.
 ## Package versions
 
 Ordinary change PRs keep `packages/daynight/package.json` version unchanged.
+PR and main CI validate affected code without comparing versions between Git
+revisions.
 Version selection and complete CLI publication belong to the repository's
 [release-daynight skill](../.agents/skills/release-daynight/SKILL.md). It analyzes
 CLI changes since the public npm `latest` source, selects patch or minor unless
@@ -529,7 +528,9 @@ Publication accepts stable `x.y.z` versions. A new release must advance public
 npm `latest`; existing npm versions and release tags are immutable. The
 [publication procedure](#npm-publication) describes the workflow's admission,
 validation, and existing-version skips. A successful skip alone does not prove
-that the requested source was published.
+that the requested source was published. The
+[version policy decision](../.agents/notes/implemented/simplification/2026-11-04-release-time-versioning.md)
+records why version selection belongs to release preparation.
 
 ## npm publication
 
@@ -722,13 +723,13 @@ records the concurrency and aggregation policy.
 Documentation-only PRs run routing tests and this final gate
 without installing application dependencies or running application tests. Every
 `main` push retains full application validation. npm publication runs its own
-CLI validation at the frozen release commit. Package-version enforcement belongs
-to PR validation. The
+CLI validation at the frozen release commit. Version checks apply at publication
+as described under [package versions](#package-versions). The
 [selection decision](../.agents/notes/archived/process/2026-10-21-module-scoped-pr-ci.md)
 records the routing alternatives and maintenance costs; the
 [CI simplification decision](../.agents/notes/archived/simplification/2026-10-21-ci-gate-simplification.md)
-records the version-check timing and final job-result gate choices. The
-[cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
+records the earlier PR version-check timing and the retained final job-result
+gate choices. The [cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
 preserves the earlier rationale for stopping aggregation during cancellation.
 
 To validate the routing rules locally without application dependencies, run:
