@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { Task } from "../../../src/api/types.js";
+import { cleanupOperation } from "../../../src/commands/cleanup-operation.js";
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import type { createWorkerHerdr, HerdrAgentObservation, HerdrExecutionContext, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
@@ -23,7 +24,7 @@ const root = fileURLToPath(new URL("../../../../../.tmp/herdr-durable-integratio
 const directories: string[] = [], facades = new Set<WorkerHerdrAdapter>(), readers = new Set<HerdrLifecycleStore>(), operations: Operation[] = [];
 const operation = (): Operation => { const result = createOperation({ limits: { totalMs: 3000 } }); operations.push(result); return result; };
 afterEach(() => {
-  vi.restoreAllMocks(); operations.splice(0).forEach(value => value.dispose());
+  vi.restoreAllMocks(); vi.useRealTimers(); operations.splice(0).forEach(value => value.dispose());
   for (const facade of facades) facade.lifecycle!.close(); facades.clear();
   for (const reader of readers) reader.close(); readers.clear();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
@@ -124,9 +125,9 @@ const fixture = () => {
       },
     };
   };
-  const reopen = () => {
+  const reopen = (injectSessionApi = true) => {
     if (facade) { facade.lifecycle!.close(); facades.delete(facade); }
-    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => task, processControl: native, sessionApi: api, createAdapter }); facades.add(facade); return facade;
+    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => task, processControl: native, ...(injectSessionApi ? { sessionApi: api } : {}), createAdapter }); facades.add(facade); return facade;
   };
   mkdirSync(paths.workerDirectory, { recursive: true });
   const initialStore = openHerdrLifecycleStore(path.join(paths.workerDirectory, "herdr-executions.sqlite"), { onMigration: () => {} }); initialStore.close();
@@ -138,6 +139,21 @@ const fixture = () => {
 };
 
 describe("durable Herdr facade with real SQLite", () => {
+  it("uses the cleanup operation's five-minute budget for the stop ledger HTTP read", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    vi.useFakeTimers(); const signals: AbortSignal[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => new Promise((_resolve, reject) => {
+      signals.push(init!.signal!); init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+    }));
+    f.reopen(false); let failure: unknown;
+    const result = cleanupOperation(op => f.facade.lifecycle!.stop(f.context, "terminal", op)).catch(error => { failure = error; });
+    await vi.advanceTimersByTimeAsync(0); expect(signals).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(30_000); expect(signals[0]!.aborted).toBe(false); expect(failure).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(269_999); expect(signals[0]!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1); await result;
+    expect(signals[0]!.aborted).toBe(true); expect(failure).toMatchObject({ kind: "deadline" });
+    expect(f.read().runs[0]!.phase).toBe("stopped_confirmed"); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+  });
   it("commits process proof and input admission before the first prompt without requiring a native session", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare();
     expect(f.read().runs[0]!.run.binding.nativeSessionId).toBeNull();

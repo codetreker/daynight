@@ -67,7 +67,7 @@ export const parseHerdrSessionState = (value: unknown, expected: HerdrSessionSta
 export const createHerdrSessionApi = (serverOrigin: string, serverToken: string, options: { fetch?: typeof fetch; timeoutMs?: number; maxResponseBytes?: number } = {}) => {
   const targetOrigin = origin(serverOrigin);
   if (!serverToken || /[\r\n]/.test(serverToken)) return reject("A valid Worker credential is required for Herdr Session registration.");
-  const timeoutMs = integer(options.timeoutMs ?? 30_000, 1, 120_000), maxResponseBytes = integer(options.maxResponseBytes ?? 4 * 1024 * 1024, 1, 8 * 1024 * 1024);
+  const timeoutMs = integer(options.timeoutMs ?? 30_000, 1, 300_000), maxResponseBytes = integer(options.maxResponseBytes ?? 4 * 1024 * 1024, 1, 8 * 1024 * 1024);
   const send = options.fetch ?? fetch;
   const request = async (target: string, body: unknown, signal?: AbortSignal, epoch?: string): Promise<unknown> => {
     const controller = new AbortController();

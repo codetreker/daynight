@@ -54,7 +54,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   mkdirSync(options.paths.workerDirectory, { recursive: true, mode: 0o700 });
   const store = openHerdrLifecycleStore(path.join(options.paths.workerDirectory, "herdr-executions.sqlite"));
   const native = options.processControl ?? createMacProcessControl();
-  const api = options.sessionApi ?? createHerdrSessionApi(options.serverOrigin, options.serverToken);
+  const apiFor = (operation: Operation) => options.sessionApi ?? createHerdrSessionApi(options.serverOrigin, options.serverToken, { timeoutMs: operation.limits.requestMs });
   const createAdapter = options.createAdapter ?? createWorkerHerdr;
   const adapters = new Map<string, ReturnType<typeof createWorkerHerdr>>();
   const connected = new Set<string>();
@@ -106,13 +106,13 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   const connect = async (owner: Identity, operation: Operation): Promise<void> => {
     const record = need(owner);
     if (connected.has(record.sessionId) && record.registrationRequest === null) return;
-    await connectHerdrSession(store, owner, api, operation.signal);
+    await connectHerdrSession(store, owner, apiFor(operation), operation.signal);
     connected.add(record.sessionId);
   };
   const publish = async (owner: Identity, operation: Operation): Promise<void> => {
     const record = need(owner);
     if (current(record).phase !== "stopped_confirmed" || record.connectionEpoch === null) await connect(owner, operation);
-    await publishHerdrLedger(store, owner, api, operation.signal);
+    await publishHerdrLedger(store, owner, apiFor(operation), operation.signal);
   };
   const verifyRuntime = async (record: HerdrLifecycleRecord): Promise<void> => {
     const run = current(record);
@@ -244,7 +244,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       await verifyClaim(context, operation, false);
       let record = need(context);
       if (record.runs.length === 0) {
-        const state = await api.current({ owner: record.owner, claimId: record.claimId }, operation.signal);
+        const state = await apiFor(operation).current({ owner: record.owner, claimId: record.claimId }, operation.signal);
         if (state.status !== "not_registered") throw new Error("An existing Session has no matching local runtime; replacement startup is prohibited.");
       }
       if (record.runs.length > 0 && (current(record).phase === "active" || current(record).phase === "prepared")) {

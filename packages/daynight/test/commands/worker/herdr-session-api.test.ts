@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHerdrSessionApi } from "../../../src/commands/worker/herdr/session-api.js";
 import type { SessionV2Message, SessionV2Run } from "../../../src/session/v2/types.js";
 
@@ -20,9 +20,34 @@ const run = (message: Registration): SessionV2Run => ({ executionGeneration: "1"
 const ack = (message: Registration): SessionV2Message => ({ ...message, type: "registration_ack", payload: { registrationId: message.payload.registrationId, connectionEpoch: "1" } });
 const state = (message: Registration) => ({ status: "registered", protocol: message.protocol, schemaVersion: 2, projectionVersion: 1, sessionId: message.sessionId, claimId: message.claimId, executionGeneration: "1", agentControlMode: "herdr", contentKind: "terminal_recording", owner: message.payload.owner, binding: message.payload.binding, connectionEpoch: "1", connected: false, capabilities: message.payload.capabilities, control: null, snapshot: null, ledger: { runs: [run(message)], finalizationId: null }, archive: { state: "pending", sha256: null, byteLength: null, completeness: null, errorCode: null, finalizationId: null }, recording: [] });
 const send = (response: ServerResponse, body: unknown) => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(body)); };
-afterEach(async () => { await Promise.all([...servers].map(server => new Promise<void>((resolve, reject) => { server.closeAllConnections(); server.close(error => error ? reject(error) : resolve()); }))); servers.clear(); });
+afterEach(async () => { vi.useRealTimers(); await Promise.all([...servers].map(server => new Promise<void>((resolve, reject) => { server.closeAllConnections(); server.close(error => error ? reject(error) : resolve()); }))); servers.clear(); });
 
 describe("Herdr Session v2 client", () => {
+  it("keeps cleanup HTTP pending past the ordinary timeout and aborts at five minutes", async () => {
+    vi.useFakeTimers();
+    const pendingFetch: typeof fetch = async (_url, init) => new Promise((_resolve, reject) => {
+      init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+    });
+    let ordinaryError: unknown, cleanupError: unknown;
+    const ordinary = createHerdrSessionApi("https://daynight.example", "token", { fetch: pendingFetch }).verifySupport().catch(error => { ordinaryError = error; });
+    const cleanup = createHerdrSessionApi("https://daynight.example", "token", { fetch: pendingFetch, timeoutMs: 300_000 }).verifySupport().catch(error => { cleanupError = error; });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(ordinaryError).toBeInstanceOf(Error); expect(cleanupError).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(269_999); expect(cleanupError).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1); await Promise.all([ordinary, cleanup]);
+    expect(cleanupError).toBeInstanceOf(Error); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("lets the enclosing operation cancel cleanup HTTP before its request deadline", async () => {
+    vi.useFakeTimers(); const controller = new AbortController();
+    const pendingFetch: typeof fetch = async (_url, init) => new Promise((_resolve, reject) => {
+      init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+    });
+    const result = createHerdrSessionApi("https://daynight.example", "token", { fetch: pendingFetch, timeoutMs: 300_000 }).verifySupport(controller.signal).catch(error => error as unknown);
+    await vi.advanceTimersByTimeAsync(45_000); const cancelled = new Error("Operation cancelled"); controller.abort(cancelled);
+    expect(await result).toBe(cancelled); expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("uses the Worker credential and explicit protocol, preserving the original registration", async () => {
     let captured: { url?: string; headers: IncomingMessage["headers"]; body: unknown } | undefined;
     const origin = await listen((req, res) => { const chunks: Buffer[] = []; req.on("data", chunk => chunks.push(Buffer.from(chunk))); req.on("end", () => { const body = JSON.parse(Buffer.concat(chunks).toString()) as Registration; captured = { ...(req.url === undefined ? {} : { url: req.url }), headers: req.headers, body }; send(res, ack(body)); }); });
