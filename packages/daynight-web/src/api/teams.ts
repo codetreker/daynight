@@ -1,4 +1,4 @@
-import { assertResponsePrincipal, json, request, requestId } from "./client";
+import { ApiError, assertResponsePrincipal, json, request, requestId } from "./client";
 import { parseApiJson, isTaskVersion } from "./json";
 import { jsonContainerSources, jsonObjectSources } from "./json-source";
 import { parseTeamRef } from "./team-parse";
@@ -36,6 +36,7 @@ const parseTeam = (value: unknown, userId: string): Team => {
 const teamRead = async <T>(url: string, userId: string, signal: AbortSignal, onMismatch: () => void, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown>): Promise<T> => {
   const response = await request(url, signal, { headers: { Accept: "application/json" } });
   assertResponsePrincipal(response, userId, onMismatch);
+  if (response.ok && response.status !== 200) throw new ApiError("protocol", response.status);
   return json(response, signal, parse, decode);
 };
 export const getTeam = (teamId: string, userId: string, signal: AbortSignal, onMismatch: () => void): Promise<Team> => teamRead(`/api/v1/teams/${requestId(teamId)}`, userId, signal, onMismatch, (value) => {

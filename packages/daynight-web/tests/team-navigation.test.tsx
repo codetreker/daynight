@@ -104,7 +104,7 @@ describe("Team workspace navigation", () => {
     render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Personal" });
     const selector = document.querySelector<HTMLDetailsElement>("details.team-selector")!; fireEvent.click(selector.querySelector("summary")!);
     const alert = await within(selector).findByRole("alert"); expect(alert).toHaveTextContent("rq-team"); expect(alert).not.toHaveTextContent("private");
-    expect(within(selector).getByRole("link", { name: "Personal" })).toHaveAttribute("href", "/projects");
+    expect(within(selector).getByRole("link", { name: "Personal" })).toHaveAttribute("href", `/teams/${personal}`);
     fireEvent.click(within(selector).getByRole("button", { name: "Retry" })); await within(selector).findByRole("link", { name: "Beta" });
   });
   it("shows a usable Team control when the narrow sidebar is collapsed", async () => {
@@ -114,4 +114,118 @@ describe("Team workspace navigation", () => {
     expect(control.textContent).toBe("P"); fireEvent.click(control);
     expect(screen.getByRole("dialog", { name: "Workspace navigation" })).toBeInTheDocument();
   });
+  it("restores a remembered Team by exact ID even when it is absent from the first picker page", async () => {
+    localStorage.setItem(`daynight.selectedTeam:${userId}`, b);
+    const fetcher = install((url) => url.startsWith("/api/v1/teams?") ? json({ items: [team(a, "Alpha")], nextCursor: "next" }) : undefined);
+    render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "Beta" });
+    expect(fetcher.mock.calls.some(([url]) => url === `/api/v1/teams/${b}`)).toBe(true);
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(b);
+  });
+  it("clears a confirmed missing Team, but preserves a failed read for retry", async () => {
+    localStorage.setItem(`daynight.selectedTeam:${userId}`, a);
+    let reads = 0;
+    install((url) => url === `/api/v1/teams/${a}` ? ++reads === 1 ? json({ error: { code: "internal_error", message: "error", requestId: "rq" } }, 500) : json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404) : undefined);
+    render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "Unable to load Teams" });
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(a);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("heading", { name: "Personal" });
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBeNull();
+  });
+  it("reports storage read and write failures and retries without losing the current selection", async () => {
+    let failRead = true, failWrite = true;
+    const read = Storage.prototype.getItem, write = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) { if (key === `daynight.selectedTeam:${userId}` && failRead) throw new Error("denied"); return read.call(this, key); });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) { if (key === `daynight.selectedTeam:${userId}` && failWrite) throw new Error("denied"); return write.call(this, key, value); });
+    install(); render(<AuthenticatedApp />);
+    await screen.findByText(/Unable to read or clear the saved Team/);
+    failRead = false; fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("heading", { name: "Personal" });
+    act(() => navigate(`/teams/${a}`)); await screen.findByRole("heading", { name: "Alpha" });
+    await screen.findByText(/Unable to save the Team selection/);
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBeNull();
+    failWrite = false; fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(a));
+  });
+
+  it("does not clear a saved Team for an unverified 404 response", async () => {
+    localStorage.setItem(`daynight.selectedTeam:${userId}`, a);
+    install((url) => url === `/api/v1/teams/${a}` ? new Response("broken", { status: 404 }) : undefined);
+    render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "Unable to load Teams" });
+    expect(screen.getByText("Unable to read this data. Try again.")).toBeInTheDocument();
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(a);
+  });
+  it("does not erase a newer selection when a remembered Team returns 404 late", async () => {
+    localStorage.setItem(`daynight.selectedTeam:${userId}`, a);
+    const old = Promise.withResolvers<Response>();
+    install((url) => url === `/api/v1/teams/${a}` ? old.promise : undefined);
+    render(<AuthenticatedApp />);
+    await waitFor(() => expect(screen.getByText("Loading Teams", { selector: "section" })).toBeInTheDocument());
+    localStorage.setItem(`daynight.selectedTeam:${userId}`, b);
+    await act(async () => old.resolve(json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404)));
+    await screen.findByRole("heading", { name: "Beta" });
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(b);
+  });
+
+  it("returns to Personal when a remembered selected Team is revoked on focus", async () => {
+    let missing = false;
+    install((url) => url === `/api/v1/teams/${a}` && missing ? json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404) : undefined);
+    render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Personal" });
+    act(() => navigate(`/teams/${a}`)); await screen.findByRole("heading", { name: "Alpha" });
+    await waitFor(() => expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(a));
+    missing = true; focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await screen.findByRole("heading", { name: "Personal" });
+    expect(window.location.pathname).toBe("/projects");
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBeNull();
+  });
+  it("revalidates an unsaved selection on return to the default entry", async () => {
+    const write = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) { if (key === `daynight.selectedTeam:${userId}`) throw new Error("denied"); return write.call(this, key, value); });
+    let reads = 0;
+    install((url) => url === `/api/v1/teams/${a}` ? ++reads === 1 ? json(team(a, "Alpha")) : json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404) : undefined);
+    render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Personal" });
+    act(() => navigate(`/teams/${a}`)); await screen.findByRole("heading", { name: "Alpha" });
+    act(() => navigate("/projects")); await screen.findByRole("heading", { name: "Personal" });
+    expect(reads).toBe(2);
+    expect(screen.getByText(/Unable to save the Team selection/)).toBeInTheDocument();
+  });
+
+  it("does not overwrite a newer tab selection when a focus revalidation succeeds late", async () => {
+    const late = Promise.withResolvers<Response>(); let reads = 0;
+    install((url) => url === `/api/v1/teams/${a}` && ++reads === 2 ? late.promise : undefined);
+    render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Personal" });
+    act(() => navigate(`/teams/${a}`)); await screen.findByRole("heading", { name: "Alpha" });
+    await waitFor(() => expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(a));
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBe(2));
+    localStorage.setItem(`daynight.selectedTeam:${userId}`, b);
+    await act(async () => late.resolve(json(team(a, "Alpha"))));
+    await screen.findByRole("heading", { name: "Alpha" });
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(b);
+  });
+
+  it("does not install a late remembered Team after the account changes", async () => {
+    const bob = "00000000-0000-4000-8000-000000000006", bobPersonal = "00000000-0000-4000-8000-000000000007";
+    const late = Promise.withResolvers<Response>(); let current = userId;
+    const reply = (body: unknown, principal: string) => new Response(stringifyWireJson(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": principal } });
+    localStorage.setItem(`daynight.selectedTeam:${userId}`, a);
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url === "/api/v1/me") return Promise.resolve(reply(current === userId ? person : { ...person, id: bob, name: "Bob", personalTeam: { id: bobPersonal, kind: "personal", name: null } }, current));
+      if (url === `/api/v1/teams/${a}`) return late.promise;
+      if (url.startsWith("/api/v1/teams?")) return Promise.resolve(reply({ items: [], nextCursor: null }, current));
+      if (url.startsWith("/api/v1/projects?")) return Promise.resolve(reply({ items: [], nextCursor: null }, current));
+      throw new Error(`Unexpected request ${url}`);
+    }));
+    render(<AuthenticatedApp />);
+    await waitFor(() => expect(screen.getByText("Loading Teams", { selector: "section" })).toBeInTheDocument());
+    current = bob; focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await screen.findByRole("heading", { name: "Personal" });
+    await act(async () => late.resolve(json(team(a, "Old account"))));
+    expect(screen.queryByText("Old account")).toBeNull();
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(a);
+    expect(localStorage.getItem(`daynight.selectedTeam:${bob}`)).toBeNull();
+  });
+
 });

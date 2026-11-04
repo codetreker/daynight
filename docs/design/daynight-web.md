@@ -136,7 +136,9 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 ### Team 与共享项目列表
 
-- `/projects` 默认使用真实 Personal Team；`/teams/{teamId}` 读取指定 Team，`/shared-projects` 使用共享范围。Team 选择仅在当前认证工作空间内保存，不持久化；明确项目与任务链接保持原地址。
+- `/projects` 是默认 Team 入口；`/teams/{teamId}` 读取指定 Team，`/shared-projects` 使用共享范围。没有记忆时默认使用 `/me.personalTeam`，明确项目与任务链接保持原地址。
+- Team 偏好按当前站点与账号独立保存：`localStorage` 的 `daynight.selectedTeam:<userId>` 只含已确认的 Team UUID，不保存名称、角色或成员资料。默认入口恢复记忆时以精确 `GET /teams/{id}` 验证；只有可信 404 清除该账号的记忆并回 Personal，分页 Team 目录的缺项不代表失权。网络、5xx、取消或存储读取失败保留记忆并提供重试；写入失败保留当前内存选择，提示未保存并提供重试。共享范围不写 Team ID，CLI 默认配置独立。
+- Team 偏好与读取依附认证身份生命周期；身份切换、取消及后续选择阻止旧请求安装结果或覆盖另一账号的键。明确 Project 与 Task 链接不通过默认 Team 重写。[浏览器 Team 偏好决策](../../.agents/notes/implemented/feature/2026-11-04-browser-team-preference.md)记录恢复和失效处理的取舍。
 - 卡片显示项目名称、仓库地址、创建日期和“查看任务”。长名称、地址允许换行，仓库地址按普通文本展示。
 - Workspace 的认证身份内只挂载一个项目目录 Provider；侧栏与项目卡片共享目录、刷新及“加载更多”，切换项目保留已加载页；共享范围活动时不将其条目呈现为 Team 子项。
 - 复用 `GET /api/v1/projects` 的 `teamId` 或 `shared=true` 范围和游标，服务端先过滤再分页，按 ID 去重并保留服务端顺序。切换范围清空旧游标和显示，取消旧请求并拒绝晚到结果。创建对话框捕获打开时的 Team ID；成功及移除自身成员后刷新共享目录。

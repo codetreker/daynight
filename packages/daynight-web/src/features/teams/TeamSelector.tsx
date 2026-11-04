@@ -23,7 +23,7 @@ export const TeamSelector = ({ personalId, selectedId, expanded, onExpand, onNav
     <div className="team-options" aria-label={m.switchTeam}>
       {teams.list.status === "loading" && <p role="status">{m.loading}</p>}
       {teams.list.status === "error" && <p role="alert">{m.failed} {detail(teams.list.error)} <button type="button" onClick={teams.refreshList}>{m.retry}</button></p>}
-      <a href="/projects" onClick={follow} aria-current={personalId === selectedId ? "true" : undefined}>{m.personal}</a>
+      <a href={`/teams/${personalId}`} onClick={follow} aria-current={personalId === selectedId ? "true" : undefined}>{m.personal}</a>
       {teams.list.items.filter((team) => team.id !== personalId).map((team) => <a key={team.id} href={team.id === personalId ? "/projects" : `/teams/${team.id}`} onClick={follow} aria-current={team.id === selectedId ? "true" : undefined}>{team.kind === "personal" ? m.personal : team.name}</a>)}
       {teams.list.status === "ready" && teams.list.cursor !== null && <div>{teams.list.moreError !== null && <p role="alert">{m.moreFailed} {detail(teams.list.moreError)}</p>}<button type="button" disabled={teams.list.more} onClick={teams.loadMore}>{teams.list.more ? m.loading : teams.list.moreError !== null ? m.retry : m.more}</button></div>}
     </div>
