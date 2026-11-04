@@ -16,6 +16,7 @@ JSON 列表字段见[描述省略决策](../../.agents/notes/implemented/simplif
 CLI 同步保留 `startedAt`、`completedAt`、`observedAt` 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
 服务端[负责人设计](daynight-task-assignment.md)拥有原生 assignedTo、任务筛选和项目内人员读取。CLI 的 Task/graph 严格解析、普通元数据设置/清空、list 筛选及当前ID输出已实现，复用同一字段契约，不增加人名或头像请求。
+[Steps 资源要求](../spec/daynight-task-steps.md#cli-读取)扩展独立的 task step list/show 读取；它不将完整 Steps 加入普通 Task 投影。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、通用 CLI 属性命令与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 使用通用 JSON map，键缺失不补值，worker 的公开写入限制由服务端定义拥有。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
 
@@ -48,6 +49,7 @@ CLI 默认使用 `https://daynight.cc`，显式 `login/logout` 管理通过设�
 | [`config/document.ts`](../../packages/daynight/src/config/document.ts)、[`config/files.ts`](../../packages/daynight/src/config/files.ts) | 共享严格 YAML、已知值投影、独立锁、写入归属校验和原子配置保存 |
 | [`commands/review/config.ts`](../../packages/daynight/src/commands/review/config.ts) | review 字段投影与 GitHub 专用 remote 身份规则 |
 | [`api/index.ts`](../../packages/daynight/src/api/index.ts) | 命令级操作、服务 DTO、完整分页、有界 ready 选择、精确 JSON 与 HTTP 错误 |
+| [`api/task-steps.ts`](../../packages/daynight/src/api/task-steps.ts) | 独立 Steps/Step 严格解析、Task 内短 ID、完整四状态字段及读取 scope |
 | [`commands/server/runtime.ts`](../../packages/daynight/src/commands/server/runtime.ts) | 配置读取、共享操作、信号取消和完整结果输出 |
 | [`commands/project/command.ts`](../../packages/daynight/src/commands/project/command.ts)、[`rendering.ts`](../../packages/daynight/src/commands/project/rendering.ts) | Project 参数、API 组合及完整资源渲染 |
 | [`platform/text.ts`](../../packages/daynight/src/platform/text.ts)、[`platform/terminal.ts`](../../packages/daynight/src/platform/terminal.ts) | 与服务一致的文本验证及终端显示转义 |
@@ -77,7 +79,7 @@ src/
   commands/
     server/                # 共享配置、操作与信号生命周期
     project/               # 参数、帮助、project 操作及渲染
-    task/                  # task 与附件的参数、帮助、操作及渲染
+    task/                  # task、Step 读取与附件的参数、帮助、操作及渲染
     review/                # review 配置投影和既有行为
     update/                # 既有 npm 安装生命周期
     completion/            # 既有 Bash 和 zsh 原生补全
@@ -89,6 +91,10 @@ Project 的定义由 [`definition.ts`](../../packages/daynight/src/commands/proj
 [补全设计](daynight-completion.md)拥有。命令组先解析参数和帮助，校验名称及详情
 UUID，再惰性加载共享 server runtime 和业务渲染。Task 的 definition、command 和
 rendering 分别拥有语法、API/仓库关联组合及可读/JSON 输出，属性 dispatch 组合相同 server session 和版本化属性资源。
+Step 分派先于普通 Task 分支；`step.ts` 只组合 list/show 的共享项目解析和 typed GET，
+`step-rendering.ts` 单独拥有完整 Steps/Step 资源的文本与 JSON 输出，
+`step-diagnostics.ts` 拥有安全公开诊断并保留内部 cause。四状态 Step 类型
+不复用 TaskStatus。帮助与本地 ID 参数校验完成后才加载配置、Git 或 HTTP。
 `project create` 将名称声明为一个必填位置参数，`--repo` 声明为可选 text 选项。该定义声明
 `allowOptionsTerminator`，使 `--` 后的词按位置参数处理，因而前导 `-` 的名称也能
 原样提交。语法层按共享定义检查位置参数的最小/最大数量、allowEmpty 和固定候选；optional 参数只能组成连续的末尾后缀。properties 的 task ID 可选性由 --schema 模式决定，set-property 的 value 明确允许空字符串。名称的 Unicode 文本语义由 Project 命令在业务加载之前校验；通用属性值不套用此规则。
@@ -288,6 +294,12 @@ flowchart TD
   J -- 失败或关联变化 --> F
 ```
 
+`repository/context.ts` 只在完整匹配结果为零或多项时产生纯
+`repository/discovery-error.ts` 的 `ProjectDiscoveryError`。它保留 missing/ambiguous
+类别和按原顺序复制、冻结的全部规范 project ID，不携带项目名称、repo URL、
+工作目录或凭据。类型校验 ID 的规范性、唯一性及非唯一匹配数量，公开 message
+仍表达不存在或列出匹配 ID 与 `--project <id>` 提示。
+
 列表先全量成功再判定；任何 repoUrl 无法按服务契约解析都作为响应错误，不能跳过
 以免制造“唯一匹配”。详情验证发现 404 或 repo 已变化时，不递归重新发现：本次
 发现已经用尽，报告目标变化并失败。有效缓存不再扫描完整列表，因此后来添加同 repo
@@ -341,6 +353,8 @@ flowchart TD
 | `task list` | `GET /api/v1/projects/{projectId}/tasks`，保留相同筛选遍历 cursor |
 | `task ready [--limit <N>] [--allow-agents true\|false] [--compatible-platform <platform>]` | 单次 `GET /api/v1/projects/{projectId}/tasks?ready=true&limit=N`，可带 allowAgents、compatiblePlatform，不提交 cursor |
 | `task show <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}` |
+| `task step list <id>` | 一次 `GET /api/v1/projects/{projectId}/tasks/{id}/steps`，完整有序资源，无 query 或分页 |
+| `task step show <id> <step-id>` | 一次 `GET /api/v1/projects/{projectId}/tasks/{id}/steps/{stepId}`，按 Task 内规范短 ID 读取 |
 | `task update <id>` | 可选先 GET task，再 PATCH 同一路径，只写元数据 |
 | `task set-status <id> <status> [--claim-id <claim-id>]` | 可选先 GET task，再 PUT 同一 task 的 `/status`；普通 body 为 version/status，显式 done claim 完成为 version/status/claimId |
 | `task delete <id> [--remove-depends]` | 可选先 GET task，再 DELETE 同一路径提交精确 version；可选开关明确发送 removeDepends=true 解除全部传入引用，默认严格删除；成功 `204`，保留任务与附件 |
@@ -355,6 +369,15 @@ flowchart TD
 或重建。每页验证后累积结果，末页才渲染；重复 cursor 或不前进的循环响应作为
 协议错误终止，不能无限请求。多页读取继承服务不提供跨请求快照的边界，CLI 不
 宣称列表是同一时间点的完整快照。
+
+Steps typed GET 复用 `exchange` 的认证、no-store、取消、期限与响应预算。显式 project
+直接访问所选路径，不增加项目发现、父 Task GET 或子项 404 后的隐藏核验。
+`api/task-steps.ts` 校验资源与每项的完整字段集、请求作用域、正 bigint 版本、规范
+小写短 ID 与集合唯一性、四状态、有效原值文本及 UTC 微秒时间字符串；JSON 源文本
+的重复 key 在投影前拒绝。时间保留原字符串，不经 Date 重写；数组不排序或删项。
+当前资源解析失败、字段或 scope 不匹配均为协议错误，不返回空态或部分结果。
+Steps 正文的有效单响应上限是配置预算与 64 MiB 资源上限的较小值，边界采用包含式
+检查；exchange 继续累计操作字节，更严格配置和共享默认期限/预算均保持。
 
 `task list` 的状态选择和展示顺序属于命令层。默认从完整结果中排除 `done`；
 `--all` 保留所有状态，`--status` 使用既有单状态查询，两者互斥并在任何 I/O 前
@@ -502,6 +525,21 @@ terminalText。创建和更新分别以 `Task created.`、`Task updated.` 表明
 同时展示，保留既有状态、ready、依赖、阻塞和创建/更新时间，不能把预览称为完整标题。
 新增起止字段和图时钟由 JSON 保留，不为可读渲染器增加标签。所有字段
 使用终端转义且不补齐等宽列，空间随资源内容总长度线性增长。
+
+Step 文本由 `step-rendering.ts` 输出 Task、精确父版本与总数，以及按保存顺序的
+展示编号、完整短 ID、状态和完整标题；show 另含完整说明、创建/更新时间及项目作用域。
+说明沿用 terminalText 的可见控制转义并额外转义 bidi 控制符，不使用 Thread 的
+分页窗口或截断预算。
+Step JSON 返回完整集合或单项 envelope，保留所有字段、原值字符串、精确 bigint
+数值和服务数组顺序。完整解析、scope 校验和渲染完成后才一次输出，错误遵守
+共享 stderr、0/1/2 退出码和 401 登录指导，不递归打印任意内部 cause 或增加重试。
+省略 project 时，Step 诊断识别 `ProjectDiscoveryError` 的可信类别与 ID 事实，
+包括 cause 或 AggregateError 包装中的该类型，分别输出不存在结果或全部候选 ID
+及显式 `--project <id>` 恢复提示。普通错误即使具有相似 message 也不取得公开权限；
+未选定单一项目时不把候选 ID 填入当前 project 上下文。原始 cause 保留，任意
+配置、Git stderr、地址、项目名称或清理错误消息不进入该公开文本。
+已完整渲染的结果经 stdoutBytes 输出；输出阶段错误可能留下部分正文，仍以非零
+退出和 stderr 暴露，不能被解释为完整成功。
 
 查询 `--json` 是脚本和模型调用 CLI 的稳定接口：show 为完整资源对象，project list
 为所有匹配资源的完整字段数组，task list 为所有匹配 task 仅省略 `description`

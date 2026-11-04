@@ -1,6 +1,6 @@
 # Task Steps 架构设计
 
-状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除已实现；CLI 与 Web 的 Steps 交互尚未交付。本文描述已实现的服务端机制与已确认的客户端目标架构。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。
+状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除，以及 CLI list/show 读取已实现；CLI 写入、Agent 指令资源与 Web 的 Steps 交互保留已确认的目标架构。本文区分已实现机制与客户端目标。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。
 
 ## 目标与边界
 
@@ -10,7 +10,7 @@ Steps 是 Task 拥有的有序工作记录，跨 Session 和执行环境保留�
 
 ## 现有机制与复用点
 
-以下证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端部分描述当前实现，CLI、指令资源和 Web 部分描述尚待交付的目标机制。
+以下复用点的证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端及 CLI list/show 读取部分描述当前实现；其余 CLI 操作、Agent 指令资源和 Web 部分描述尚待交付的目标机制。
 
 | 证据 | 当前事实及设计含义 |
 |---|---|
@@ -45,7 +45,7 @@ flowchart LR
 | `internal/core/store/task_steps.go` | 父任务头锁定、快照读取、步骤差异写入、只更新父版本和时间。 |
 | `internal/service/task_steps*.go` 与 `task_write_admission.go` | 项目准入、版本、操作顺序、容量、事务结果和用例错误。 |
 | `api/task_steps.go`、`internal/server/task_steps*.go` | 严格输入 DTO、路由、HTTP 方法与公共结果；输出复用中性 codec 的资源类型。 |
-| CLI `api/task-steps.ts`、`commands/task/step.ts`、`step-rendering.ts` | 类型解析、七个命令、请求与文本/JSON 输出。 |
+| CLI `api/task-steps.ts`、`commands/task/step.ts`、`step-rendering.ts`、`step-diagnostics.ts` | 已交付 list/show 的类型解析、请求、文本/JSON 输出与安全诊断；其余五个写命令保留目标职责。 |
 | Web `api/task-steps.ts`、Task 详情会话与 Steps 面板 | 独立资源读取、共享提交生命周期、草稿、呈现和附件导航。 |
 
 `internal/tasksteps` 只依赖 `core` 和标准库。service、API 与 server 可依赖它；store 依赖 core 领域类型。公开 DTO 与容量编码在中性模块只有一个定义，避免 service 反向依赖 HTTP handler 或维护第二套字节估计。
@@ -168,7 +168,11 @@ Steps 错误分类先检查事务/cleanup 的内部故障，再映射纯业务 F
 
 ## CLI 与指令资源
 
-`task step` 在通用 task handler 前分派，七个子命令使用独立 step handler 和 renderer。定义树同时生成帮助与 Bash/zsh 补全；四种 Step 状态不扩展 Task 状态枚举。
+`task step` 在通用 task handler 前分派，已交付 list/show 使用独立 step handler、renderer 与安全诊断。定义树同时生成仅含这两个读取命令的帮助与 Bash/zsh 补全；四种 Step 状态不扩展 Task 状态枚举。
+
+`listTaskSteps` 与 `getTaskStep` 复用 `runServerCommand`、`exchange`、精确 bigint JSON codec 和现有取消/预算。显式 project 各直接发一次对应资源 GET，省略时才发现项目，不预读父 Task。独立 parser 校验完整字段、作用域、唯一规范 ID、四状态和 UTC 微秒时间字符串，保留数组顺序与原值；完整校验、渲染后才输出。文本使用控制字符和 bidi 控制符的可见转义，JSON 保留完整资源与精确版本；安全诊断输出公开服务错误及可信的项目发现不存在/歧义事实，后者保留规范候选 ID 和显式 `--project` 指导；任意内部 cause 仅在错误链中保留，失败不伪造空集合。独立 CLI usage 手册同步这一读取能力。
+
+其余五个写命令及 canonical skill 的 Step 指令指导保持以下目标机制，完整七命令的职责不变。
 
 typed API 复用 `runServerCommand`、`exchange`、精确 bigint JSON codec 和现有取消/预算。显式 project/version 直接发一次写请求；默认先读 Steps 取得版本再写。项目发现只在未提供 project 时执行，不能为显式路径增加隐藏 GET。
 
@@ -230,7 +234,7 @@ Steps workspace 按 Task 身份保存展开 ID、一个表单、草稿、预览�
 
 单项字段写入可以局部持久化，但每次完整响应和容量检查仍为 O(n + B)，其中 B 为编码字节量；排序对受影响行是 O(n) 上界。最大合法集合的解码、候选和编码缓冲会占用显著请求内存，不能宣称整体操作 O(1)。
 
-CLI 显式 project/version 为一次业务写；默认版本为一次 GET 加一次写。响应最多 64 MiB，共享 transport 的单响应 128 MiB/操作总量 256 MiB 保持。Web Steps 写后还需父详情/同步准入，代价在交互上以 busy/freshness 表达，不以旧数据冒充当前基线。
+已交付 CLI list/show 各读取一次完整资源。Steps 正文的有效单响应上限取配置预算与 64 MiB 资源上限的较小值，恰好达到上限允许；共享 transport 的单响应 128 MiB/操作总量 256 MiB 默认值与更严格的配置限制保持。CLI 写入目标中，显式 project/version 为一次业务写，默认版本为一次 GET 加一次写。Web Steps 写后还需父详情/同步准入，代价在交互上以 busy/freshness 表达，不以旧数据冒充当前基线。
 
 本功能没有新增 MCP/模型工具定义，工具 schema/token 预算不适用。命令调用和输出预算由上述具体资源形状拥有；本文未给出吞吐、耗时或 token 节省基准，不作相应收益结论。
 
@@ -304,6 +308,6 @@ jq -c --arg rid "$STEP_REQUEST_ID" \
 
 ## 架构基线摘要
 
-服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；客户端目标通过现有 Web 会话的资源化扩展消费该资源。各层保持项目流程、Worker 和 Session 边界。
+服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；CLI list/show 已通过独立 typed 读取消费该资源。CLI 写入与指令资源保留相同契约，Web 目标通过现有会话的资源化扩展接入。各层保持项目流程、Worker 和 Session 边界。
 
 大集合按 100 行本地分页，只约束 DOM 挂载。集合完整性、顺序及服务端操作保持相同契约；Task 附件中的交互原型提供 Web 的具体视觉与跨页交互输入。本架构及其交付边界约束后续实现。

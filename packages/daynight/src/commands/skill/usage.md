@@ -1,6 +1,6 @@
 ---
 name: daynight
-description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads and attachments with version-safe writes and explicit write outcomes.
+description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads, attachments and ordered Step reads with version-safe writes and explicit write outcomes.
 ---
 
 # Daynight Project and Task Usage
@@ -23,7 +23,9 @@ an explicit repository works outside Git. A unique equivalent repository returns
 its existing project; multiple matches require choosing the intended project ID.
 Task commands normally resolve the current origin to its project. Add
 `--project <project-id>` to a task operation to select one explicitly, including
-outside Git. Project and task IDs are complete UUIDs.
+outside Git. Project and task IDs are complete UUIDs. A Step ID is exactly eight hexadecimal
+characters; input is case-insensitive and output is lowercase, with leading
+zeros preserved.
 
 ## Create and Query Tasks
 
@@ -54,6 +56,40 @@ filters. `me` uses the successful response identity, including on empty pages,
 and does not issue another identity request. `ready` has no assignee option; use
 `task list --ready --assigned-to me` instead. Readiness, human responsibility and
 automatic permission are separate.
+
+## Read Task Steps
+
+```bash
+daynight task step list <task-id>
+daynight task step list <task-id> --json --project <project-id>
+daynight task step show <task-id> <step-id>
+daynight task step show <task-id> <step-id> --json --project <project-id>
+```
+
+Steps are Task-owned ordered records with a title, Markdown description,
+`todo`/`in_progress`/`done`/`skipped` status and creation/update times. Their parent
+Task version is the collection version. Ordinary task show/list/graph output does
+not include the full collection. This CLI provides Step list and show reads.
+
+List preserves saved order and prints the parent Task version, total count and
+one-based display number, full short ID, status and complete title for each
+record. An empty collection reports zero Steps. Show prints every target field,
+including the complete description and times. Readable fields use visible
+terminal-control and bidi-control escapes; JSON preserves raw strings and exact int64 numbers.
+List JSON is the complete projectId/taskId/version/steps resource; show JSON is
+the complete projectId/taskId/version/step resource. Neither is a bare array.
+
+Use the complete eight-hex Step ID, never a UUID, prefix or display number.
+Explicit `--project` works outside Git and issues the selected GET without a
+hidden project or parent read; omitted project selection uses normal repository
+discovery. Help runs before configuration, Git or network access. Reads validate
+all required fields, scope, IDs, collection uniqueness, status, text and UTC
+microsecond timestamps. Invalid responses and read failures are errors, never
+empty collections. The complete result is validated before stdout is written;
+successful `--json` contains one JSON value followed by LF. Output failure may
+leave partial stdout and still exits as a failure. Success exits 0, argument errors
+2 and operation failures 1. Errors use stderr; a 401 directs you to
+`daynight login` without automatic login or request replay.
 
 ## Version-Safe Writes
 

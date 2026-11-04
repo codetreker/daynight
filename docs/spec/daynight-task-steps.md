@@ -1,6 +1,6 @@
 # Task Steps 资源契约
 
-状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新、独立状态设置、位置移动及记录删除已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
+状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新、独立状态设置、位置移动、记录删除及 CLI list/show 读取已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
 
 ## 所有权与模型
 
@@ -55,6 +55,21 @@ Steps 是父 Task 拥有的有序记录，保留独立名称、Markdown 说明�
 ```
 
 单项结果具有相同 `projectId`、`taskId` 和 `version`，以 `step` 字段返回一个完整记录。空集合必须为 `steps: []`，不能为 `null`、缺失或读取失败的替代结果。Task 的 show/list/ready/graph/task-sync 不内嵌完整 Steps。
+
+## CLI 读取
+
+```text
+daynight task step list <task-id> [--json] [--project <project-id>]
+daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
+```
+
+`daynight` 与 `dn` 使用相同入口。Task 与 Project 为完整 UUID；Step 是恰好 8 位十六进制 ID，输入大小写统一为小写，不接受完整 UUID、短前缀或展示编号。显式 `--project` 可在 Git 仓库外直接读取指定资源，不增加隐藏的项目 GET；省略时复用当前仓库的项目发现：完整发现后无匹配报告 `Project does not exist`，多匹配列出全部规范项目 ID 并提示显式 `--project <id>`；两者均终止读取，不把未选定的候选当作当前项目。诊断保留这些预期恢复结果，同时隐藏任意配置、Git、网络或清理原因文本。组与操作帮助先于配置、Git 和网络执行；参数错误使用退出码 `2`，读取或协议失败使用 `1`，成功使用 `0`。
+
+`list` 读取一次完整集合并保留服务数组顺序，可读输出包含父 Task 版本、总数，以及每项的展示编号、完整 ID、四状态和完整标题；空集合明确显示零项。`show` 读取 Task 内指定 Step，完整显示标题、说明、状态、创建/更新时间及父作用域与版本，不截断说明。可读字段将终端控制字符和 bidi 控制符转义为可见文本，JSON 保留原字符串、字段和精确 int64 数值；`list --json` 输出完整 `StepsResource`，`show --json` 输出完整 `StepResource`，不是裸数组或正文片段。
+
+读取结果拒绝未知或重复字段，必须具有完整的必填字段、正确的 Project/Task/Step 作用域、正 int64 父版本、唯一且已规范为小写的短 ID、合法状态、原值文本与 UTC 微秒时间字符串；不能将坏响应修成合法资源、跳过条目、重排集合或将失败显示为空集合。成功时 JSON stdout 仅包含一个完整值并以换行结束；错误写 stderr，`401` 提示 `daynight login`，不自动登录或重放。读取继承共享取消、期限与响应字节预算，单次 Steps 响应正文另受 64 MiB 资源上限约束；有效上限取配置的单响应预算与该资源上限的较小值，恰好达到上限允许，更严格的配置限制继续生效，共享默认预算不变。在完整校验与渲染成功前不输出部分资源；输出本身失败可能留下部分 stdout，必须同时非零退出并报告错误。
+
+帮助、Bash/zsh 补全及独立 CLI 手册仅列出 `list` 与 `show` 读取能力。完整项目选择、错误和输出约定由[客户端要求](daynight-project-task.md)拥有，命令实现与验证入口由[CLI 说明](../../packages/daynight/README.md#task-steps)拥有。
 
 ## 写入输入与添加结果
 
@@ -175,5 +190,8 @@ Task 元数据与 Steps 共享 `Task.version`。成功的真实 Steps 变化只�
 | ST-D2 | 删除仅推进一次父版本/时间，压紧后续位置并保留其他 Step 的身份、内容、全部时间和相对顺序，以及父业务、附件、PR、Session 和 Worker 归属。 |
 | ST-D3 | 当前缺失目标先于版本耗尽，陈旧版本先于目标缺失；同版本删除及其他 Task/Steps 写入最多一次实际变化，删除和压紧或父 touch 后失败均经真实事务确认回滚。 |
 | ST-D4 | 删除释放 Task 内 ID，后续 POST 相同 ID 生成新记录；丢响应只读核对当前事实，不进行重放或推断历史归因。完整剩余候选在写前通过同一 codec，最大资源删除的实际 HTTP 验证独立于日常 CI。 |
+| ST-L1 | 安装后的 CLI 连接真实服务，完整读取非空、空集合和单项说明，保留保存顺序、规范短 ID、原值文本、全部字段与大于 2^53 的精确版本。 |
+| ST-L2 | 显式 project 在仓库外直接读取，帮助先于配置/Git/网络；坏字段、scope、重复或非规范 ID、读取失败和未支持入口明确非零退出，不伪造空态或部分成功。 |
+| ST-L3 | 可读安全转义、单个完整 JSON stdout、0/1/2 退出码、401 登录指导、共享取消/预算及仅 list/show 的帮助、补全和独立手册与安装产物一致。 |
 
 [服务验证说明](../../packages/daynight-server/README.md#task-steps-api)拥有测试与独立压力验证命令；实际产物及运行结果随对应源码和 PR 保存。

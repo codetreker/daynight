@@ -53,6 +53,18 @@ describe("native zsh completion", () => {
     expect(script).toContain("(--path)--path=[Attachment relative path (default\\: source basename)]:relative-path:->text_value");
   });
 
+  it("discovers only delivered Step reads and scoped resource options", () => {
+    const step = taskDefinition.commands!.find(({ name }) => name === "step")!;
+    const script = renderZshCompletion(step);
+    expect(script).toContain("'list:Read every Step in its saved order'");
+    expect(script).toContain("'show:Read one Task-local Step and its complete Markdown description'");
+    expect(script).toContain("--project=");
+    expect(script).toContain("--json[");
+    expect(script).not.toContain("--if-version");
+    expect(script).not.toContain("--title");
+    expect(script).not.toContain("'add:");
+  });
+
   it("offers unified status command and three-state filtering without metadata status updates", () => {
     const script = renderZshCompletion(commandTree);
     expect(script).toContain("compdef _daynight 'daynight' 'dn'\n");
