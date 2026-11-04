@@ -139,6 +139,7 @@ test('edit step content with draft protection and recovery through the real serv
     await edit(target); await title().fill('Unknown draft'); mode = 'lost'; await save();
     await expect(title()).toBeDisabled();
     await expect(form(page).getByRole('alert')).toBeVisible();
+    await expect(form(page).getByRole('button', { name: '读取当前步骤' })).toBeEnabled();
     readsBlocked = false;
     await form(page).getByRole('button', { name: '读取当前步骤' }).click();
     await expect(form(page).getByRole('alert')).toBeVisible();
