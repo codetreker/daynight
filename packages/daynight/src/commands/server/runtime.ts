@@ -18,6 +18,7 @@ export type ConfirmedMutationOutput = {
   readonly kind: "confirmed-mutation";
   readonly output: string;
   readonly failureText: (phase: "output" | "cleanup") => string;
+  readonly containsSecret?: boolean;
 };
 export type ServerCommand = (session: ServerSession) => Promise<string | void | ConfirmedMutationOutput>;
 
@@ -26,6 +27,32 @@ export type ServerCommandOptions = {
   readonly platform?: NodeJS.Platform;
   readonly operationLimits?: Partial<OperationLimits>;
   readonly fetch?: typeof globalThis.fetch;
+};
+
+// Output and cleanup failures may quote the bytes they were asked to write.
+// Retain the shape and broad class of the error chain without retaining text
+// supplied by an output stream or another cleanup participant.
+export const protectSecretDiagnostic = (failure: unknown): Error => {
+  const seen = new Set<object>();
+  const safe = (value: unknown, depth: number): Error => {
+    if (depth >= 16 || typeof value !== "object" || value === null || seen.has(value)) return new Error("Sensitive failure details withheld.");
+    seen.add(value);
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(value, "cause");
+      const cause = descriptor !== undefined && "value" in descriptor ? safe(descriptor.value, depth + 1) : undefined;
+      const options = cause === undefined ? undefined : { cause };
+      const message = "Sensitive failure details withheld.";
+      if (value instanceof AggregateError) {
+        const errors = Object.getOwnPropertyDescriptor(value, "errors");
+        const children = errors !== undefined && "value" in errors && Array.isArray(errors.value) ? errors.value.map((item: unknown) => safe(item, depth + 1)) : [];
+        return new AggregateError(children, message, options);
+      }
+      if (value instanceof TypeError) return new TypeError(message, options);
+      if (value instanceof RangeError) return new RangeError(message, options);
+      return new Error(message, options);
+    } catch { return new Error("Sensitive failure details withheld."); }
+  };
+  return safe(failure, 0);
 };
 
 export const runServerCommand = async (
@@ -41,7 +68,7 @@ export const runServerCommand = async (
   let failed = false;
   let failure: unknown;
   let confirmed: ConfirmedMutationOutput | undefined;
-  const confirmedFailure = (phase: "output" | "cleanup", cause: unknown): PublicDiagnosticError => new PublicDiagnosticError(confirmed!.failureText(phase), 1, { cause });
+  const confirmedFailure = (phase: "output" | "cleanup", cause: unknown): PublicDiagnosticError => new PublicDiagnosticError(confirmed!.failureText(phase), 1, { cause: confirmed!.containsSecret === true ? protectSecretDiagnostic(cause) : cause });
   try {
     for (const signal of signals) {
       const cancel = (): void => cancellation.abort(new Error(`Received ${signal}.`));
