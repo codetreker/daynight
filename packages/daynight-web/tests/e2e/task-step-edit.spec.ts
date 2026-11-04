@@ -139,10 +139,12 @@ test('edit step content with draft protection and recovery through the real serv
     await edit(target); await title().fill('Unknown draft'); mode = 'lost'; await save();
     await expect(title()).toBeDisabled();
     await expect(form(page).getByRole('alert')).toBeVisible();
+    await expect(form(page).getByText('无法核对当前步骤，暂时不能修改。')).toBeVisible();
     await expect(form(page).getByRole('button', { name: '读取当前步骤' })).toBeEnabled();
     readsBlocked = false;
     await form(page).getByRole('button', { name: '读取当前步骤' }).click();
-    await expect(form(page).getByRole('alert')).toBeVisible();
+    await expect(form(page).getByText(/已读取步骤；先前请求的结果仍未知/)).toBeVisible();
+    await expect(form(page)).toContainText('Unknown draft');
     expect((await read()).steps[0]?.title).toBe('Unknown draft'); expect(writes).toHaveLength(5);
     await form(page).getByRole('button', { name: '取消', exact: true }).click();
     await page.getByRole('alertdialog').getByRole('button', { name: '放弃', exact: true }).click();
