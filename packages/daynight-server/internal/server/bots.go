@@ -222,7 +222,7 @@ func botResponse(bot core.Bot) api.Bot {
 	}
 	result.BotDefinition = &api.BotDefinition{OwnerUserID: bot.OwnerUserID, Name: bot.Name, CreationOrder: bot.CreationOrder,
 		RequestedOverrides: api.BotOverrides(bot.RequestedOverrides), ResolvedConfiguration: api.BotConfiguration(bot.ResolvedConfiguration),
-		SessionID: bot.SessionID, StartupResult: api.BotResult(bot.StartupResult), CreatedAt: bot.CreatedAt.UTC(), UpdatedAt: bot.UpdatedAt.UTC()}
+		SessionID: bot.SessionID, TestExecutionID: bot.TestExecutionID, StartupResult: api.BotResult(bot.StartupResult), CreatedAt: bot.CreatedAt.UTC(), UpdatedAt: bot.UpdatedAt.UTC()}
 	if bot.RoleConfiguration != nil {
 		role := api.BotRoleConfiguration(*bot.RoleConfiguration)
 		result.RoleConfiguration = &role

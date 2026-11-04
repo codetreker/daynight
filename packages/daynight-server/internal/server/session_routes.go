@@ -54,6 +54,7 @@ func newSessionRoutes(s *sessionrelay.Service, auth *Authentication, logger *slo
 func (h *sessionRoutes) register(mux *http.ServeMux) {
 	h.registerTerminalRoutes(mux)
 	h.registerTestRoutes(mux)
+	h.registerBotRuntimeRoutes(mux)
 	h.registerArchiveRoutes(mux)
 	mux.HandleFunc("GET /api/v1/session-capabilities", h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
 		if _, err := queryValues(r); err != nil {
@@ -104,7 +105,7 @@ func (h *sessionRoutes) register(mux *http.ServeMux) {
 }
 func (h *sessionRoutes) parameters(next AuthenticatedHandler) AuthenticatedHandler {
 	return func(w http.ResponseWriter, r *http.Request, p core.Principal) {
-		for _, name := range []string{"projectId", "taskId", "sessionId", "operationId", "resourceId", "evidenceId"} {
+		for _, name := range []string{"projectId", "taskId", "sessionId", "operationId", "resourceId", "evidenceId", "workerId", "botId"} {
 			if raw := r.PathValue(name); raw != "" {
 				id, err := service.CanonicalID(raw)
 				if err != nil {
