@@ -247,6 +247,8 @@ test('step resources retire after actual membership revocation', { annotation: {
     expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitation.link).hash.slice(1) } })).status()).toBe(200);
     await browserAuthentication(context, baseURL, 'bob');
     const bobPage = await context.newPage();
+    const now = new Date('2030-01-01T00:00:00Z');
+    await bobPage.clock.install({ time: now }); await bobPage.clock.pauseAt(now);
     const writes: string[] = [];
     const errors: string[] = [];
     bobPage.on('request', request => { if (!['GET', 'HEAD'].includes(request.method())) writes.push(`${request.method()} ${new URL(request.url()).pathname}`); });
