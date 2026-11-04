@@ -12,7 +12,7 @@ import { createHerdrInputSession } from "../../../src/commands/worker/herdr/inpu
 type Message<K extends SessionV2Message["type"]> = Extract<SessionV2Message, { type: K }>;
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); });
-const setup = async () => {
+const setup = async (configure?: (registration: Message<"registration">, record: HerdrLifecycleRecord) => void) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 }); await once(server, "listening");
   cleanup.push(async () => { for (const socket of server.clients) socket.terminate(); await new Promise<void>(resolve => server.close(() => resolve())); });
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Expected TCP.");
@@ -23,11 +23,14 @@ const setup = async () => {
   const record: HerdrLifecycleRecord = { owner: registration.payload.owner, claimId: registration.claimId, cwd: "/isolated", sessionId: registration.sessionId, registrationId: registration.payload.registrationId, connectionEpoch: null, registrationRequest: registration, ledgerRequest: null, publishedLedgerHash: null, controlEpoch: "0", initialAssignment: "pending", initialPrompt: "assignment", automationBlocked: false, preparation: null, version: 1,
     runs: [{ run: { executionGeneration: "1", owner: registration.payload.owner, binding: registration.payload.binding, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [segmentId] }, phase: "active", instanceDirectory: "/isolated/herdr", daemon: null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null }],
     segments: [{ segmentId, segmentOrdinal: "1", executionGeneration: "1", binding: registration.payload.binding, startedAt: "2026-11-04T00:00:00.000Z", endedAt: null, durationMs: null, gap: null }] };
-  let controlState: SessionV2Payloads["control_state"] = { connectionEpoch: "1", controlEpoch: "1", state: "automation", lease: null, initialAssignment: "transport_completed", availableActions: ["acquire_control"], unavailableReason: null };
-  let remote: HerdrSessionState = { status: "registered", protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: registration.sessionId, claimId: registration.claimId, executionGeneration: "1", agentControlMode: "herdr", contentKind: "terminal_recording", owner: registration.payload.owner, binding: registration.payload.binding, connectionEpoch: "1", connected: true, capabilities: registration.payload.capabilities, control: null, snapshot: null, ledger: { runs: record.runs.map(row => row.run), finalizationId: null }, archive: { state: "pending", sha256: null, byteLength: null, completeness: null, errorCode: null, finalizationId: null }, recording: [] };
+  configure?.(registration, record);
+  const connectionEpoch = String(BigInt(registration.payload.connectionEpoch ?? "0") + 1n);
+  let controlState: SessionV2Payloads["control_state"] = { connectionEpoch, controlEpoch: "1", state: "automation", lease: null, initialAssignment: "transport_completed", availableActions: ["acquire_control"], unavailableReason: null };
+  let remote: HerdrSessionState = { status: "registered", protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: registration.sessionId, claimId: registration.claimId, executionGeneration: registration.executionGeneration, agentControlMode: "herdr", contentKind: "terminal_recording", owner: registration.payload.owner, binding: registration.payload.binding, connectionEpoch, connected: true, capabilities: registration.payload.capabilities, control: null, snapshot: null, ledger: { runs: record.runs.map(row => row.run), finalizationId: null }, archive: { state: "pending", sha256: null, byteLength: null, completeness: null, errorCode: null, finalizationId: null }, recording: [] };
   let suspended = 0, inputCalls = 0, stateFailure = false, suspendFailure = false;
   const errors: Error[] = [];
-  const api = { state: async () => { if (stateFailure) throw new Error("offline"); return remote; } } as Pick<HerdrSessionApi, "state">;
+  let stateWait: Promise<void> | null = null;
+  const api = { state: async () => { if (stateFailure) throw new Error("offline"); const snapshot = remote; await stateWait; return snapshot; } } as Pick<HerdrSessionApi, "state">;
   let handleControl: Parameters<typeof createHerdrInputSession>[0]["control"] = async () => { throw new Error("Unexpected control."); };
   const session = createHerdrInputSession({ serverToken: "isolated", getRecord: () => record, state: () => controlState, suspend: () => { if (suspendFailure) throw new Error("Input journal unavailable"); suspended++; controlState = { ...controlState, state: "suspended", lease: null, controlEpoch: String(BigInt(controlState.controlEpoch) + 1n) }; }, onError: (_owner, error) => { errors.push(error); }, api: () => api,
     control: (...args) => handleControl(...args), input: async (_owner, message) => { inputCalls++; return { operationId: message.payload.operationId, state: "transport_completed", errorCode: null }; } });
@@ -36,10 +39,10 @@ const setup = async () => {
   const [socket] = await connected as [WebSocket]; const incoming: SessionV2Message[] = [];
   socket.on("message", bytes => { incoming.push(JSON.parse(bytes.toString()) as SessionV2Message); });
   await vi.waitFor(() => expect(incoming).toHaveLength(1));
-  const ack = { ...registration, type: "registration_ack", payload: { registrationId: registration.payload.registrationId, connectionEpoch: "1" } };
+  const ack = { ...registration, type: "registration_ack", payload: { registrationId: registration.payload.registrationId, connectionEpoch } };
   socket.send(JSON.stringify(ack)); await pending;
-  const activate = () => { record.connectionEpoch = "1"; record.registrationRequest = null; session.activate(record.sessionId); };
-  return { session, socket, incoming, record, registration, activate, errors, failSuspend: () => { suspendFailure = true; }, getLocal: () => controlState, setControl: (handler: typeof handleControl) => { handleControl = handler; }, count: () => ({ suspended, inputCalls }), failState: () => { stateFailure = true; }, setRemote: (value: Partial<HerdrSessionState>) => { remote = { ...remote, ...value }; }, setLocal: (value: Partial<SessionV2Payloads["control_state"]>) => { controlState = { ...controlState, ...value }; } };
+  const activate = () => { record.connectionEpoch = connectionEpoch; record.registrationRequest = null; session.activate(record.sessionId); };
+  return { session, socket, incoming, record, registration, activate, errors, waitState: (wait: Promise<void>) => { stateWait = wait; }, failSuspend: () => { suspendFailure = true; }, getLocal: () => controlState, setControl: (handler: typeof handleControl) => { handleControl = handler; }, count: () => ({ suspended, inputCalls }), failState: () => { stateFailure = true; }, setRemote: (value: Partial<HerdrSessionState>) => { remote = { ...remote, ...value }; }, setLocal: (value: Partial<SessionV2Payloads["control_state"]>) => { controlState = { ...controlState, ...value }; } };
 };
 
 test("only activates the bridge after lifecycle registration commits", async () => {
@@ -129,4 +132,127 @@ test("a pending durable handback acknowledgement is not replaced by an old servi
   await f.session.poll(f.record.sessionId);
   expect(f.count().suspended).toBe(0);
   expect(f.incoming.filter(message => message.type === "control_state")).toHaveLength(0);
+});
+
+const recoveryPrepare = (f: Awaited<ReturnType<typeof setup>>) => ({ ...f.registration, type: "automation_recovery_prepare" as const, payload: { recoveryId: "00000000-0000-4000-8000-000000000030", connectionEpoch: "1", controlEpoch: "1", closingControlEpoch: "2", stopOperationId: "00000000-0000-4000-8000-000000000031", binding: { ...f.registration.payload.binding, nativeSessionId: "00000000-0000-4000-8000-000000000032" }, initialAssignment: "transport_completed" as const } });
+
+test("holds periodic reconciliation during one persisted recovery decision", async () => {
+  const f = await setup(); f.activate();
+  f.record.runs[0]!.run.binding.nativeSessionId = "00000000-0000-4000-8000-000000000032";
+  f.setRemote({ control: { ...f.getLocal(), state: "closing", availableActions: [] } });
+  const release = f.session.holdRecovery(f.record.sessionId, recoveryPrepare(f));
+  await f.session.poll(f.record.sessionId);
+  expect(f.count().suspended).toBe(0); expect(f.session.connected(f.record.sessionId)).toBe(true);
+  expect(() => f.session.holdRecovery(f.record.sessionId, recoveryPrepare(f))).toThrow();
+  release(); await f.session.poll(f.record.sessionId);
+  expect(f.count().suspended).toBe(1); expect(f.session.connected(f.record.sessionId)).toBe(false);
+});
+
+test("a recovery hold never masks original connection loss", async () => {
+  const f = await setup(); f.activate();
+  f.record.runs[0]!.run.binding.nativeSessionId = "00000000-0000-4000-8000-000000000032";
+  const release = f.session.holdRecovery(f.record.sessionId, recoveryPrepare(f));
+  f.socket.terminate(); await vi.waitFor(() => expect(f.count().suspended).toBe(1));
+  expect(f.session.connected(f.record.sessionId)).toBe(false); release();
+});
+
+test("rejects a recovery hold from another stop identity or execution fence", async () => {
+  const f = await setup(); f.activate();
+  f.record.runs[0]!.run.binding.nativeSessionId = "00000000-0000-4000-8000-000000000032";
+  const request = recoveryPrepare(f);
+  expect(() => f.session.holdRecovery(f.record.sessionId, { ...request, claimId: "00000000-0000-4000-8000-000000000099" })).toThrow();
+  expect(() => f.session.holdRecovery(f.record.sessionId, { ...request, executionGeneration: "2" })).toThrow();
+  expect(f.count().suspended).toBe(0);
+});
+
+test("discards a state read that overlaps an entire recovery hold", async () => {
+  const f = await setup(); f.activate();
+  f.record.runs[0]!.run.binding.nativeSessionId = "00000000-0000-4000-8000-000000000032";
+  f.setRemote({ control: { ...f.getLocal(), state: "suspended" } });
+  let resolve!: () => void; f.waitState(new Promise<void>(done => { resolve = done; }));
+  const oldPoll = f.session.poll(f.record.sessionId);
+  const release = f.session.holdRecovery(f.record.sessionId, recoveryPrepare(f));
+  f.setRemote({ control: f.getLocal() }); release(); resolve(); await oldPoll;
+  expect(f.count().suspended).toBe(0);
+  expect(f.incoming.filter(message => message.type === "control_state")).toHaveLength(0);
+});
+
+test("a new native input offer closes a recovery-held channel without dispatching", async () => {
+  const f = await setup(); f.activate();
+  f.record.runs[0]!.run.binding.nativeSessionId = "00000000-0000-4000-8000-000000000032";
+  f.session.holdRecovery(f.record.sessionId, recoveryPrepare(f));
+  f.socket.send(JSON.stringify(operationFixture));
+  await vi.waitFor(() => expect(f.count().suspended).toBe(1));
+  expect(f.count().inputCalls).toBe(0); expect(f.session.connected(f.record.sessionId)).toBe(false);
+});
+
+test("an unconfirmed recovery hold expires and closes input without releasing automation", async () => {
+  const f = await setup(); f.activate();
+  f.record.runs[0]!.run.binding.nativeSessionId = "00000000-0000-4000-8000-000000000032";
+  vi.useFakeTimers();
+  try {
+    f.session.holdRecovery(f.record.sessionId, recoveryPrepare(f));
+    await vi.advanceTimersByTimeAsync(24_999); expect(f.count().suspended).toBe(0);
+    await vi.advanceTimersByTimeAsync(1); expect(f.count().suspended).toBe(1);
+    expect(f.session.connected(f.record.sessionId)).toBe(false);
+  } finally { vi.useRealTimers(); }
+});
+
+test("holds an adjacent successor only for the exact original shutdown proof", async () => {
+  const nativeSessionId = "00000000-0000-4000-8000-000000000032", stopOperationId = "00000000-0000-4000-8000-000000000031";
+  const f = await setup((registration, record) => {
+    const current = record.runs[0]!; current.run.binding.nativeSessionId = nativeSessionId;
+    const source = structuredClone(current); source.phase = "stopped_confirmed"; source.stopReason = "shutdown"; source.stopOperationId = stopOperationId;
+    source.run.stoppedAt = "2026-11-04T00:00:01.000Z";
+    source.run.stopProof = { recordId: stopOperationId, executionGeneration: "1", binding: source.run.binding, bootId: "boot", stoppedAt: source.run.stoppedAt, method: "instances_exited", terminalStopped: true, processes: [{ role: "shell", pid: 1, birthToken: "shell", bootId: "boot" }, { role: "agent", pid: 2, birthToken: "agent", bootId: "boot" }] };
+    registration.executionGeneration = "2"; registration.payload.mode = "reconnect"; registration.payload.connectionEpoch = "1"; record.connectionEpoch = "1";
+    current.run.executionGeneration = "2"; current.run.binding.instanceId = "new-daemon"; current.run.binding.terminalId = "new-terminal";
+    record.segments[0]!.executionGeneration = "2"; record.runs.unshift(source);
+  });
+  f.activate();
+  const prepare = { ...recoveryPrepare(f), executionGeneration: "1", payload: { ...recoveryPrepare(f).payload, binding: f.record.runs[0]!.run.binding } };
+  const release = f.session.holdRecovery(f.record.sessionId, prepare); release();
+  f.record.runs[0]!.run.stopProof!.recordId = "00000000-0000-4000-8000-000000000099";
+  expect(() => f.session.holdRecovery(f.record.sessionId, prepare)).toThrow();
+});
+
+test("holds a durable closing state before the shutdown intent is available", async () => {
+  const f = await setup(); f.activate();
+  expect(() => f.session.holdShutdown(f.record.sessionId)).toThrow();
+  f.setLocal({ state: "closing", controlEpoch: "2", availableActions: [] });
+  expect(f.record.runs[0]!.stopOperationId).toBeNull();
+  const release = f.session.holdShutdown(f.record.sessionId);
+  await f.session.poll(f.record.sessionId);
+  expect(f.incoming.filter(message => message.type === "control_state")).toHaveLength(0);
+  expect(f.session.connected(f.record.sessionId)).toBe(true); release();
+});
+
+test("discards a closing-state poll crossing an entire shutdown hold", async () => {
+  const f = await setup(); f.activate(); f.setLocal({ state: "closing", controlEpoch: "2", availableActions: [] });
+  let resolve!: () => void; f.waitState(new Promise<void>(done => { resolve = done; }));
+  const oldPoll = f.session.poll(f.record.sessionId);
+  const release = f.session.holdShutdown(f.record.sessionId); release(); resolve(); await oldPoll;
+  expect(f.incoming.filter(message => message.type === "control_state")).toHaveLength(0);
+  expect(f.session.connected(f.record.sessionId)).toBe(true);
+});
+
+test.each(["close", "disconnect", "offer"] as const)("a shutdown hold preserves %s safety", async source => {
+  const f = await setup(); f.activate(); f.setLocal({ state: "closing", controlEpoch: "2", availableActions: [] });
+  const release = f.session.holdShutdown(f.record.sessionId);
+  if (source === "close") f.session.close(f.record.sessionId);
+  else if (source === "disconnect") f.socket.terminate();
+  else f.socket.send(JSON.stringify(operationFixture));
+  await vi.waitFor(() => expect(f.count().suspended).toBe(1));
+  expect(f.session.connected(f.record.sessionId)).toBe(false); expect(f.count().inputCalls).toBe(0);
+  release(); release(); expect(f.count().suspended).toBe(1);
+});
+
+test("a shutdown hold has a bounded confirmation window", async () => {
+  const f = await setup(); f.activate(); f.setLocal({ state: "closing", controlEpoch: "2", availableActions: [] });
+  vi.useFakeTimers();
+  try {
+    f.session.holdShutdown(f.record.sessionId);
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(f.count().suspended).toBe(1); expect(f.session.connected(f.record.sessionId)).toBe(false);
+  } finally { vi.useRealTimers(); }
 });

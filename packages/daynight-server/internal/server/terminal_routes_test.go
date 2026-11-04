@@ -202,6 +202,42 @@ func (f terminalHTTPFixture) messageRequest(t *testing.T, kind string, payload v
 	f.h.ServeHTTP(w, r)
 	return terminalMessage(t, w)
 }
+
+func TestTerminalHTTPAutomationRecoveryHasAnIndependentReadbackContract(t *testing.T) {
+	f := terminalHTTPSetup(t)
+	ctx := context.Background()
+	reg := f.message.Payload.(v2.Registration)
+	native := "original-native"
+	reg.Binding.NativeSessionID = &native
+	reg.Capabilities = v2.Capabilities{}
+	f.message.Payload = reg
+	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
+	f.messageRequest(t, "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}}})
+	f.messageRequest(t, "control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}})
+	if err := f.app.relay.service.BindTerminalConnection(ctx, f.h.principal, reg.Owner.ProjectID, reg.Owner.TaskID, f.message.SessionID, f.message.Envelope, "1"); err != nil {
+		t.Fatal(err)
+	}
+	prepare := v2.AutomationRecoveryPrepare{RecoveryID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", ClosingControlEpoch: "2", StopOperationID: uuid.NewString(), Binding: reg.Binding, InitialAssignment: "transport_completed"}
+	ack := f.messageRequest(t, "automation_recovery_prepare", prepare)
+	path := f.base + "/" + f.message.SessionID + "/automation-recovery/" + prepare.RecoveryID
+	read := terminalMessage(t, terminalRequest(f.h, http.MethodGet, path, "", v2.Protocol))
+	if jsonBody(t, read) != jsonBody(t, ack) {
+		t.Fatal("readback changed original preparation")
+	}
+	for _, probe := range []struct {
+		method, path, protocol string
+		status                 int
+	}{{"GET", path + "?unexpected=1", v2.Protocol, 400}, {"HEAD", path, v2.Protocol, 405}, {"GET", f.base + "/" + f.message.SessionID + "/automation-recovery/" + uuid.NewString(), v2.Protocol, 404}} {
+		w := terminalRequest(f.h, probe.method, probe.path, "", probe.protocol)
+		if w.Code != probe.status {
+			t.Fatal(probe, w.Code, w.Body.String())
+		}
+	}
+	state := terminalRequest(f.h, "GET", f.base+"/"+f.message.SessionID+"/state", "", v2.Protocol)
+	if state.Code != 200 || strings.Contains(state.Body.String(), "prepareDigest") {
+		t.Fatal("ordinary strict state shape changed", state.Code, state.Body.String())
+	}
+}
 func TestTerminalHTTPRegistrationLedgerAndClosedUnavailable(t *testing.T) {
 	f := terminalHTTPSetup(t)
 	m := f.message

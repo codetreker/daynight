@@ -604,6 +604,7 @@ func (s *Service) SubmitTerminal(ctx context.Context, p core.Principal, project,
 		if cancelBody, e = s.storeTerminalBody(r, operationID, raw, deadline); e != nil {
 			return e
 		}
+		invalidateAutomationRecoveries(r)
 		result := terminalResult(operationID, "queued", "")
 		r.OperationSeq++
 		if c.Input != nil {

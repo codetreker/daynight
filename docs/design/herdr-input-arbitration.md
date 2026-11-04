@@ -22,6 +22,8 @@ Session 注册继续声明 `observe=false`、`control=false`、`archive=false`�
 
 每次批次在原生写入前提交 `dispatching`；写入调用前同步标记可能已写。写前取消且确定没有调用原生 Input 才能 `rejected`。写后错误、断线、超时或崩溃恢复均为 `unknown`，不自动重发。正常 `Detach` 回执仅对应 `transport_completed`，不证明 provider 接收、turn 启动或业务完成。已经写出的输入无法撤回。
 
+生命周期与输入 journal 分别提交结果。若输入 receipt 已持久为 transport_completed、生命周期仍因提交间崩溃保留 unknown，恢复按 Session/claim、原运行/段/完整绑定、连接代次顺序及初始正文摘要核验该 receipt 后使用其已完成事实；不改写生命周期的历史 unknown。输入 journal 自身结果未知、缺失或归属不符仍禁止恢复。
+
 首次 assignment 有跨运行不变的身份和正文摘要。一次确定未写的失败保留其 rejected receipt；只有 pending 且自动准入再次有效时才生成新的持久尝试 ID。未知尝试不会轮转 ID，也不因 idle、重启或释放 lease 重发。其他操作重复 ID 仅返回原结果；同 ID 异正文拒绝。
 
 旧生命周期存在但输入 journal 缺失时按 `unconfirmed` 接入，不推断可继续自动输入。生命周期中的原始首次结果继续保留；人工选择 `delivered_continue` 单独记录 actor、operation 和时间，不修改 unknown 操作结果。现有 v2 `control_state.initialAssignment=transport_completed` 在这项处置后投影为可继续的进度；它不是对原 unknown 操作的 provider ACK。
@@ -48,7 +50,11 @@ API layout 或观察帧不能证明实际 PTY 尺寸。Worker 从原 pane 的 `p
 
 cleanup 首先同步提交 closing、提升控制代次并撤销 lease，再中止旧批次。尚未写出的输入取消；已经写出的只能保留原结果或 unknown。只有此前处于 automation、无人工草稿风险/未知输入、没有在途批次且原生界面可用时，才通过同一仲裁器发送一次 cleanup prompt。其他情况跳过提示并继续原实例受控停止；外部临时资源可能因此无法由 agent 及时收尾。
 
-正常 shutdown 的干净自动状态与人工 suspended 状态分别持久保留。已确认停止、相同已知 native conversation、有效原 claim 才允许下一代运行；只有原来安全的自动状态能恢复自动输入，manual/unknown 不会借 shutdown 交还。终态资源仍受生命周期停止证明与归档门禁约束，不能因输入通道关闭而删 worktree。
+正常 shutdown 的干净自动状态与人工 suspended 状态分别持久保留。输入 journal 保存每次原始 prepare 和消费请求，不覆盖旧请求。Worker 先同步持久 closing 并中止输入，在旧通道关闭前发布最后已确认的干净 automation 状态、读取服务端确认，再以原 control/connection epoch 和 stopOperationId 请求 `automation_recovery_prepare`。服务端同事务冻结旧控制为 closing 并保存单次许可；没有原在线控制、初始完成结果、无 lease/未决操作和当前授权就拒绝。
+
+停止证明登记后，下一代必须仍为相邻代次和同一已知 native conversation。Worker 重新核对原进程、readiness 与 claim，持久保存 `automation_recovery` 请求；服务端核验旧许可、对应 stopProof 和当前连接后一次性恢复 automation。Worker 读取匹配回执与当前服务状态，持久同步 controlEpoch，才允许 continuation。shutdown 准备和恢复期间的通道 hold 只暂停状态轮询；断线、过期、新派发和身份变化仍禁入。许可准备使用独立、最多 10 秒的总预算，保留原停止操作的剩余时间；许可服务不可用不消耗全部原生停止时限。
+
+prepare 或消费响应丢失只读原 recoveryId 的回执；没有已确认结果就不重发、不发送 continuation。旧消费回执只描述当时的 connection/control epoch，不能授权后来的重连。普通断线、manual/unknown、终态 cleanup、缺许可或旧服务不支持新消息均保持 suspended，不能凭 native idle、停止证明或本地 automationBeforeClosing 解除。缺失恢复许可不阻止原运行受控停止。终态资源仍受生命周期停止证明与归档门禁约束，不能因输入通道关闭而删 worktree。
 
 ## 验证边界
 

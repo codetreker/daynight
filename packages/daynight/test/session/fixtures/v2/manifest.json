@@ -724,6 +724,46 @@
       "file": "invalid-control-ack-unsettled.json",
       "type": "message",
       "valid": false
+    },
+    {
+      "file": "valid-recovery-prepare.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recovery-consume.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recovery-prepared.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recovery-consumed.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-recovery-native.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-no-epoch-advance.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-unknown.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-skipped-generation.json",
+      "type": "message",
+      "valid": false
     }
   ]
 }

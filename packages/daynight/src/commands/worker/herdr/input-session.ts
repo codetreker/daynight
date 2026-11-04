@@ -11,6 +11,8 @@ type Entry = {
   registration: Message<"registration">; owner: HerdrExecutionOwner; epoch: string;
   bridge: HerdrInputBridge; active: boolean; closed: boolean; polling: boolean;
   activation: Promise<void>; activate(): void; rejectActivation(error: Error): void;
+  recoveryHold: { timer: NodeJS.Timeout } | null;
+  reconciliationVersion: number;
   activationTimer: NodeJS.Timeout; controls: Map<string, { timer: NodeJS.Timeout; result: SessionV2Payloads["operation_result"] | null }>;
 };
 export type HerdrInputSessionOptions = {
@@ -43,6 +45,7 @@ export const createHerdrInputSession = (options: HerdrInputSessionOptions) => {
     if (entry.closed) return;
     entry.closed = true; entry.active = false;
     clearTimeout(entry.activationTimer); entry.rejectActivation(error);
+    if (entry.recoveryHold !== null) { clearTimeout(entry.recoveryHold.timer); entry.recoveryHold = null; }
     for (const pending of entry.controls.values()) clearTimeout(pending.timer);
     entry.controls.clear();
     // The caller preserves suspension even when registration precedes creation
@@ -61,19 +64,32 @@ export const createHerdrInputSession = (options: HerdrInputSessionOptions) => {
     assertTerminalBinding(entry.registration.payload.binding, current.run.binding);
     return record;
   };
+  const requireHold = (sessionId: string): { entry: Entry; record: HerdrLifecycleRecord } => {
+    const entry = entries.get(sessionId);
+    if (!entry || !entry.active || entry.closed || !entry.bridge.connected() || entry.recoveryHold !== null || entry.controls.size > 0) throw new Error("The original input channel cannot hold a shutdown or recovery decision.");
+    const record = requireRecord(entry);
+    if (record.connectionEpoch !== entry.epoch || record.registrationRequest !== null) throw new Error("The hold belongs to another original connection.");
+    return { entry, record };
+  };
+  const holdReconciliation = (entry: Entry): (() => void) => {
+    const hold = { timer: setTimeout(() => stop(entry, new Error("The original shutdown or recovery decision remains unconfirmed.")), 25_000) };
+    hold.timer.unref(); entry.recoveryHold = hold; entry.reconciliationVersion++;
+    return () => { if (entry.recoveryHold === hold) { clearTimeout(hold.timer); entry.recoveryHold = null; } };
+  };
   const pollEntry = async (entry: Entry): Promise<void> => {
-    if (entry.closed || !entry.active || entry.polling) return;
+    if (entry.closed || !entry.active || entry.polling || entry.recoveryHold !== null) return;
     entry.polling = true;
     try {
       const before = requireRecord(entry);
       if (!hasActiveSegment(before)) return;
       if (before.connectionEpoch !== entry.epoch || before.registrationRequest !== null) throw new Error("The input channel registration is no longer current.");
-      const stateAtRead = options.state(entry.owner), controlsAtRead = entry.controls.size;
+      const stateAtRead = options.state(entry.owner), controlsAtRead = entry.controls.size, reconciliationAtRead = entry.reconciliationVersion;
       const remote = await options.api(entry.owner).state({ owner: before.owner, sessionId: before.sessionId, claimId: before.claimId }, AbortSignal.timeout(10_000));
       if (entry.closed) return;
       const current = requireRecord(entry);
       if (remote.sessionId !== current.sessionId || remote.claimId !== current.claimId || !same(remote.owner, current.owner) || remote.executionGeneration !== entry.registration.executionGeneration || remote.connectionEpoch !== entry.epoch || !remote.connected) throw new Error("The service revoked or replaced the original input channel.");
       assertTerminalBinding(remote.binding, current.runs.at(-1)!.run.binding);
+      if (entry.recoveryHold !== null || reconciliationAtRead !== entry.reconciliationVersion) return;
       let local = options.state(entry.owner);
       // A lease grant exists locally before its correlated durable ACK reaches
       // the service. Neither a stale read nor a heartbeat can replace that ACK.
@@ -115,6 +131,7 @@ export const createHerdrInputSession = (options: HerdrInputSessionOptions) => {
         onMessage: async (message, dispatchSignal) => {
           await activation; dispatchSignal.throwIfAborted();
           if (entry.closed) throw new Error("The original input channel is closed.");
+          if (entry.recoveryHold !== null) throw new Error("Input cannot be dispatched during an original shutdown or recovery decision.");
           const fresh = requireRecord(entry);
           if (!hasActiveSegment(fresh) || fresh.connectionEpoch !== entry.epoch || fresh.registrationRequest !== null) throw new Error("The original input run is not ready.");
           if (message.type === "control_dispatch") {
@@ -137,7 +154,7 @@ export const createHerdrInputSession = (options: HerdrInputSessionOptions) => {
         },
       });
       const activationTimer = setTimeout(() => stop(entry, new Error("The input registration ACK was not committed by its owner.")), 10_000); activationTimer.unref();
-      entry = { registration, owner, epoch: String(BigInt(registration.payload.connectionEpoch ?? "0") + 1n), bridge, activation, activationTimer, activate: resolveActivation, rejectActivation, active: false, closed: false, polling: false, controls: new Map() };
+      entry = { registration, owner, epoch: String(BigInt(registration.payload.connectionEpoch ?? "0") + 1n), bridge, activation, activationTimer, activate: resolveActivation, rejectActivation, active: false, closed: false, polling: false, controls: new Map(), recoveryHold: null, reconciliationVersion: 0 };
       entries.set(registration.sessionId, entry);
       const abort = () => stop(entry, new Error("The input registration was cancelled; its result requires reconciliation."));
       signal?.addEventListener("abort", abort, { once: true });
@@ -151,6 +168,42 @@ export const createHerdrInputSession = (options: HerdrInputSessionOptions) => {
       const record = requireRecord(entry);
       if (record.registrationRequest !== null || record.connectionEpoch !== entry.epoch) throw new Error("The lifecycle owner has not committed the input registration ACK.");
       entry.active = true; clearTimeout(entry.activationTimer); entry.activate();
+    },
+    /** Prevents heartbeat publication between durable input closing and stop-intent preparation.
+     * The caller must acquire this synchronously after closing admission, before any await.
+     */
+    holdShutdown: (sessionId: string): (() => void) => {
+      const { entry } = requireHold(sessionId), local = options.state(entry.owner);
+      if (local.state !== "closing" || local.lease !== null || local.connectionEpoch !== entry.epoch) throw new Error("Shutdown reconciliation can be held only after durable input closing.");
+      return holdReconciliation(entry);
+    },
+    /** Holds only reconciliation while the caller resolves a persisted recovery intent.
+     * It grants no input authority; disconnects and new dispatches still close the channel.
+     */
+    holdRecovery: (sessionId: string, raw: Message<"automation_recovery_prepare" | "automation_recovery">): (() => void) => {
+      const { entry, record } = requireHold(sessionId);
+      const message = parseSessionV2Message(raw);
+      if (message.type !== "automation_recovery_prepare" && message.type !== "automation_recovery") throw new Error("A recovery hold requires the persisted original intent.");
+      const current = record.runs.at(-1)!;
+      if (message.sessionId !== record.sessionId || message.claimId !== record.claimId) throw new Error("The recovery hold belongs to another original execution.");
+      const sourceGeneration = message.type === "automation_recovery_prepare" ? message.executionGeneration : message.payload.previousGeneration;
+      const source = record.runs.find(run => run.run.executionGeneration === sourceGeneration);
+      if (!source) throw new Error("The recovery hold has no original run.");
+      if (message.type === "automation_recovery_prepare" && message.executionGeneration === current.run.executionGeneration) {
+        if (message.payload.connectionEpoch !== entry.epoch || source.stopOperationId !== null && source.stopOperationId !== message.payload.stopOperationId) throw new Error("The shutdown hold differs from the original stop intent.");
+        assertTerminalBinding(message.payload.binding, current.run.binding);
+      } else {
+        const proof = source.run.stopProof;
+        if (BigInt(sourceGeneration) + 1n !== BigInt(current.run.executionGeneration) || source.phase !== "stopped_confirmed" || source.stopReason !== "shutdown" || proof === null || proof.recordId !== message.payload.stopOperationId || proof.binding.nativeSessionId !== message.payload.binding.nativeSessionId || proof.binding.nativeSessionId !== current.run.binding.nativeSessionId) throw new Error("The recovery hold lacks the original stopped conversation proof.");
+        if (message.type === "automation_recovery_prepare") {
+          if (BigInt(message.payload.connectionEpoch) >= BigInt(entry.epoch)) throw new Error("The recovery preparation does not precede the current connection.");
+          assertTerminalBinding(message.payload.binding, proof.binding);
+        } else {
+          if (message.executionGeneration !== current.run.executionGeneration || message.payload.connectionEpoch !== entry.epoch) throw new Error("The recovery consume intent has a different current fence.");
+          assertTerminalBinding(message.payload.binding, current.run.binding);
+        }
+      }
+      return holdReconciliation(entry);
     },
     connected: (sessionId: string): boolean => { const entry = entries.get(sessionId); return entry !== undefined && entry.active && !entry.closed && entry.bridge.connected(); },
     poll,

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { canonicalId } from "../../../api/parse.js";
@@ -7,7 +7,7 @@ import { readWorkerClaim, readTaskPaused } from "../../../api/task-properties.js
 import { createOperation, type Operation } from "../../../api/operation.js";
 import type { Task } from "../../../api/types.js";
 import { canonicalSessionJson, SessionV2Error, SESSION_V2_PROTOCOL } from "../../../session/v2/values.js";
-import type { SessionV2Message, TerminalBinding } from "../../../session/v2/types.js";
+import type { SessionV2Message, SessionV2Payloads, TerminalBinding } from "../../../session/v2/types.js";
 import { createWorkerHerdr, HerdrAgentActionError } from "../herdr.js";
 import type { WorkerHerdrAdapter } from "../herdr.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrExecutionOwner, HerdrTaskBinding } from "./agents.js";
@@ -18,7 +18,7 @@ import { createMacProcessControl } from "./native-macos.js";
 import { createHerdrSessionApi } from "./session-api.js";
 import { resolveHerdrInstancePaths } from "./instance.js";
 
-import { openHerdrInputStore } from "./input-store.js";
+import { herdrInputEnvelope, openHerdrInputStore } from "./input-store.js";
 import { createHerdrInputArbiter, type HerdrInputArbiter } from "./input-arbiter.js";
 import type { HerdrInputTarget } from "./input-types.js";
 import { inspectHerdrInput } from "./input-readiness.js";
@@ -160,6 +160,28 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     const fresh = inputTarget(record);
     return canonicalSessionJson({ ...target, binding: { ...target.binding, nativeSessionId: fresh.binding.nativeSessionId } }) === canonicalSessionJson(fresh) && (target.binding.nativeSessionId === null || target.binding.nativeSessionId === fresh.binding.nativeSessionId);
   };
+  const recoveryInitialAssignment = (record: HerdrLifecycleRecord): HerdrLifecycleRecord["initialAssignment"] => {
+    const input = inputStore.get(record.sessionId);
+    const matchesHistory = (target: HerdrInputTarget): boolean => {
+      const run = record.runs.find(value => value.run.executionGeneration === target.executionGeneration)?.run;
+      const segment = record.segments.find(value => value.segmentId === target.segmentId);
+      if (target.sessionId !== record.sessionId || target.claimId !== record.claimId || record.connectionEpoch === null || BigInt(target.connectionEpoch) > BigInt(record.connectionEpoch) || !run || !segment || segment.executionGeneration !== target.executionGeneration || !run.segmentIds.includes(target.segmentId)) return false;
+      const binding = { ...target.binding, nativeSessionId: run.binding.nativeSessionId };
+      // Native identity may first become visible after this segment ended.
+      return canonicalSessionJson(binding) === canonicalSessionJson(run.binding) && canonicalSessionJson(binding) === canonicalSessionJson({ ...segment.binding, nativeSessionId: run.binding.nativeSessionId }) && [target.binding.nativeSessionId, segment.binding.nativeSessionId].every(value => value === null || value === run.binding.nativeSessionId);
+    };
+    if (!input || input.unknownInput || input.target.executionGeneration !== current(record).run.executionGeneration || !matchesHistory(input.target)) return "unconfirmed";
+    if (input.initialDisposition !== null) {
+      const decision = input.operations.find(value => value.operationId === input.initialDisposition!.operationId);
+      return decision?.source === "control" && decision.result.state === "transport_completed" && decision.controlAck !== null && matchesHistory(decision.target) ? "transport_completed" : "unconfirmed";
+    }
+    const receipt = input.operations.find(value => value.operationId === input.initialAttemptOperationId);
+    if (record.initialPrompt === null || input.initialOutcome !== "transport_completed" || receipt?.source !== "initial" || receipt.result.state !== "transport_completed" || !matchesHistory(receipt.target) || BigInt(receipt.target.connectionEpoch) > BigInt(input.target.connectionEpoch)) return "unconfirmed";
+    const digest = createHash("sha256").update(canonicalSessionJson({ operationId: input.initialOperationId, source: "initial", text: record.initialPrompt })).digest("hex");
+    // The input receipt commits before the lifecycle projection. Keep an already
+    // recovered unknown projection immutable and use its original durable receipt.
+    return input.initialDigest === digest && receipt.digest === digest ? "transport_completed" : "unconfirmed";
+  };
   const inspect = async (record: HerdrLifecycleRecord, purpose: "automatic" | "manual" | "resume" | "cleanup", operation: Operation) => {
     const local = adapter(record), context = contextFor(record), binding = bindingFor(current(record));
     return (options.inspectInput ?? inspectHerdrInput)({ binding, provider: record.owner.provider, purpose, operation,
@@ -285,17 +307,82 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     });
     await publish(owner, operation);
   };
+  const prepareShutdownRecovery = async (owner: Identity, prior: SessionV2Payloads["control_state"] | null, operation: Operation): Promise<void> => {
+    const record = need(owner), run = current(record), input = inputStore.get(record.sessionId);
+    if (!input || run.stopReason !== "shutdown" || !run.stopOperationId || input.state !== "closing" || !input.automationBeforeClosing || input.draftRisk || input.unknownInput || input.operations.some(value => ["queued", "dispatching"].includes(value.result.state)) || recoveryInitialAssignment(record) !== "transport_completed" || run.run.binding.nativeSessionId === null) return;
+    const api = apiFor(operation), expected = { owner: record.owner, sessionId: record.sessionId, claimId: record.claimId };
+    const existing = input.recoveries.find(value => value.prepare.executionGeneration === run.run.executionGeneration);
+    if (existing) {
+      // A persisted intent may have crossed the service boundary. Observation is
+      // the only recovery operation; shutdown never repeats its POST.
+      await api.readRecovery(expected, existing.prepare.payload.recoveryId, operation.signal); return;
+    }
+    if (!prior || prior.state !== "automation" || prior.initialAssignment !== "transport_completed" || prior.lease !== null || prior.connectionEpoch !== record.connectionEpoch || !options.sessionApi && !inputSession.connected(record.sessionId)) return;
+    const publication = { ...herdrInputEnvelope(input.target), type: "control_state" as const, payload: prior };
+    try { await api.publishControl(expected, publication, operation.signal); }
+    catch { /* Read back the original publication before any further decision. */ }
+    const remote = await api.state(expected, operation.signal);
+    if (!remote.connected || remote.executionGeneration !== run.run.executionGeneration || remote.connectionEpoch !== record.connectionEpoch || canonicalSessionJson(remote.control) !== canonicalSessionJson(prior)) return;
+    const prepare: Extract<SessionV2Message, { type: "automation_recovery_prepare" }> = { ...herdrInputEnvelope(input.target), type: "automation_recovery_prepare", payload: {
+      recoveryId: randomUUID(), connectionEpoch: input.target.connectionEpoch, controlEpoch: prior.controlEpoch, closingControlEpoch: input.controlEpoch,
+      stopOperationId: run.stopOperationId, binding: { ...run.run.binding }, initialAssignment: "transport_completed",
+    } };
+    inputStore.update(inputStore.get(record.sessionId)!, draft => { draft.recoveries.push({ prepare, request: null }); });
+    try { await api.prepareRecovery(expected, prepare, operation.signal); }
+    catch { await api.readRecovery(expected, prepare.payload.recoveryId, operation.signal); }
+  };
+  const resumeShutdownRecovery = async (owner: Identity, operation: Operation): Promise<void> => {
+    const record = need(owner), run = current(record), input = inputStore.get(record.sessionId);
+    if (!input || run.run.executionGeneration === "1") return;
+    const priorRun = record.runs.at(-2), entry = input.recoveries.find(value => value.prepare.executionGeneration === priorRun?.run.executionGeneration);
+    if (!entry || priorRun?.stopReason !== "shutdown" || priorRun.phase !== "stopped_confirmed" || priorRun.run.stopProof?.recordId !== entry.prepare.payload.stopOperationId || priorRun.run.binding.nativeSessionId !== run.run.binding.nativeSessionId || run.run.binding.nativeSessionId !== entry.prepare.payload.binding.nativeSessionId || input.state !== "automation" || input.unknownInput || input.draftRisk || recoveryInitialAssignment(record) !== "transport_completed") {
+      getInput(owner).suspend(); return;
+    }
+    const release = options.sessionApi ? () => {} : inputSession.holdRecovery(record.sessionId, entry.prepare);
+    const api = apiFor(operation), expected = { owner: record.owner, sessionId: record.sessionId, claimId: record.claimId };
+    try {
+      await verifyClaim(owner, operation, false); await verifyRuntime(record); await inspect(record, "resume", operation);
+      let receipt = await api.readRecovery(expected, entry.prepare.payload.recoveryId, operation.signal);
+      const digest = createHash("sha256").update(canonicalSessionJson(entry.prepare)).digest("hex");
+      if (receipt.payload.prepareDigest !== digest || receipt.payload.stopOperationId !== priorRun.stopOperationId || receipt.payload.nativeSessionId !== run.run.binding.nativeSessionId) throw new Error("The service recovery receipt differs from the original shutdown intent.");
+      let request = entry.request;
+      if (request === null) {
+        if (receipt.payload.consumed !== null) throw new Error("The service consumed an unrecorded recovery request.");
+        const remote = await api.state(expected, operation.signal), fresh = inputStore.get(record.sessionId)!;
+        if (!remote.connected || remote.executionGeneration !== run.run.executionGeneration || remote.connectionEpoch !== record.connectionEpoch || !remote.control || !["suspended", "closing"].includes(remote.control.state) || remote.control.lease !== null) throw new Error("The original recovery connection is unavailable.");
+        const controlEpoch = String((BigInt(fresh.controlEpoch) > BigInt(remote.control.controlEpoch) ? BigInt(fresh.controlEpoch) : BigInt(remote.control.controlEpoch)) + 1n);
+        request = { ...herdrInputEnvelope(fresh.target), type: "automation_recovery", payload: { recoveryId: entry.prepare.payload.recoveryId, connectionEpoch: fresh.target.connectionEpoch, controlEpoch, previousGeneration: priorRun.run.executionGeneration, stopOperationId: priorRun.stopOperationId!, binding: { ...run.run.binding } } };
+        const persisted = request;
+        inputStore.update(fresh, draft => { draft.recoveries.find(value => value.prepare.payload.recoveryId === persisted.payload.recoveryId)!.request = persisted; });
+        try { receipt = await api.recoverAutomation(expected, request, operation.signal); }
+        catch { receipt = await api.readRecovery(expected, request.payload.recoveryId, operation.signal); }
+      }
+      const consumed = receipt.payload.consumed;
+      if (!consumed || consumed.requestDigest !== createHash("sha256").update(canonicalSessionJson(request)).digest("hex") || consumed.executionGeneration !== run.run.executionGeneration || consumed.connectionEpoch !== record.connectionEpoch || consumed.controlEpoch !== request.payload.controlEpoch) throw new Error("The original automation recovery remains unconfirmed.");
+      const remote = await api.state(expected, operation.signal), fresh = inputStore.get(record.sessionId)!;
+      if (!remote.connected || remote.executionGeneration !== run.run.executionGeneration || remote.connectionEpoch !== record.connectionEpoch || remote.control?.state !== "automation" || remote.control.controlEpoch !== consumed.controlEpoch || remote.control.lease !== null || fresh.state !== "automation" || fresh.unknownInput || fresh.draftRisk) throw new Error("The service revoked the original automation recovery.");
+      inputStore.update(fresh, draft => { draft.controlEpoch = consumed.controlEpoch; });
+    } catch (error) { getInput(owner).suspend(); throw error; }
+    finally { release(); }
+  };
   const stop = async (owner: Identity, reason: "shutdown" | "terminal", operation: Operation): Promise<void> => {
     const before = need(owner);
     let input = arbiters.get(before.sessionId);
     let inputJournalError: unknown;
+    let priorControl: SessionV2Payloads["control_state"] | null = null;
+    let releaseShutdown = () => {};
     try {
       if (!input && before.runs.at(-1)?.phase === "active" && before.segments.at(-1)?.endedAt === null) input = getInput(owner);
+      priorControl = input?.state() ?? null;
       input?.beginClosing();
+      if (!options.sessionApi && inputSession.connected(before.sessionId)) releaseShutdown = inputSession.holdShutdown(before.sessionId);
     } catch (error) { inputJournalError = error; }
-    try { inputSession.close(before.sessionId); } catch (error) { inputJournalError ??= error; }
-    bridgeRegistrations.delete(before.sessionId);
-    await serialize(owner, async () => {
+    const closeInput = () => {
+      try { inputSession.close(before.sessionId); } catch (error) { inputJournalError ??= error; }
+      finally { releaseShutdown(); }
+      bridgeRegistrations.delete(before.sessionId);
+    };
+    try { await serialize(owner, async () => {
     let record = need(owner);
     if (record.runs.length === 0 && record.preparation === null) return;
     let run = current(record);
@@ -311,6 +398,19 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         throw new Error("Herdr stop journal could not commit; emergency stop remains unconfirmed and resources must be retained.", { cause: journalError });
       }
       run = current(record);
+      if (!inputJournalError) {
+        let recovery: Operation | undefined;
+        try {
+          // Recovery permission is optional for stopping. Bound the whole HTTP
+          // exchange and reserve the parent's remaining time for original processes.
+          const totalMs = Math.max(1, Math.min(10_000, Math.floor(operation.remainingMs() / 2)));
+          recovery = createOperation({ signal: operation.signal, limits: { totalMs, requestMs: totalMs } });
+          await prepareShutdownRecovery(owner, priorControl, recovery);
+        }
+        catch { /* Missing recovery permission cannot prevent original native stopping. */ }
+        finally { recovery?.dispose(); }
+      }
+      closeInput();
       if (run.daemon === null) { update(owner, draft => { current(draft).phase = "stop_unknown"; current(draft).error = "Original daemon identity is missing."; }); throw new Error("Herdr stop_unknown: original daemon identity is missing."); }
       try { update(owner, draft => { current(draft).phase = "close_requested"; }); }
       catch (journalError) {
@@ -331,7 +431,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     // Segment closure is a separate recoverable boundary after the stop proof commits.
     await finishStop(owner, operation);
     if (reason === "terminal" && input && !inputJournalError) input.close();
-    });
+    }); } finally { closeInput(); }
     if (inputJournalError) throw new Error("The input closing journal could not commit; native stopping was attempted but input evidence remains unavailable.", { cause: inputJournalError });
   };
   const attachRun = async (owner: Identity, operation: Operation): Promise<void> => {
@@ -382,7 +482,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       }
       if (record.runs.length > 0) await connect(context, operation);
       if (record.runs.length > 0 && (!inputStore.get(record.sessionId) || inputStore.get(record.sessionId)!.unknownInput)) throw new Error("The original input journal is missing or unknown; automatic runtime recovery requires explicit resolution.");
-      if (record.runs.length > 0) assertHerdrRecovery({ phase: current(record).phase, nativeSessionId: current(record).run.binding.nativeSessionId, initialAssignment: inputStore.get(record.sessionId)?.initialDisposition ? "transport_completed" : record.initialAssignment });
+      if (record.runs.length > 0) assertHerdrRecovery({ phase: current(record).phase, nativeSessionId: current(record).run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) });
       if (record.preparation !== null) throw new Error("A previous Herdr preparation is unconfirmed; no replacement daemon may start.");
       const instanceId = randomUUID(), instanceDirectory = herdrRunDirectory(options.paths.herdrDirectory, instanceId);
       // Validate the native socket budget before persisting a preparation that could launch.
@@ -444,6 +544,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       await publish(context, operation);
       if (!options.sessionApi) { connected.delete(record.sessionId); await connect(context, operation); }
       getInput(context, true);
+      await resumeShutdownRecovery(context, operation);
       if (!options.sessionApi) await inputSession.poll(record.sessionId);
       attachedRuns.add(`${record.sessionId}/${run.run.executionGeneration}`);
       if (observed.status === "blocked") throw new HerdrAgentActionError("The native agent requires operator action before input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
@@ -474,7 +575,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         if (previous !== null) { need(context); return; }
         store.create({ owner: { projectId: context.projectId, taskId: context.taskId, workerId: options.workerId, worktreeId: context.worktreeId, ownerUserId, serverOrigin: options.serverOrigin, provider: context.agent }, claimId: context.claimId, cwd: context.cwd });
       },
-      assertCanAdvance: context => { const record = store.get(context); if (!record) throw new Error("The original Herdr launch provenance is missing."); if (record.preparation !== null) throw new Error("The original Herdr preparation remains unconfirmed."); if (record.runs.length === 0) return; const run = current(record); if (run.phase === "active" || run.phase === "prepared") return; assertHerdrRecovery({ phase: run.phase, nativeSessionId: run.run.binding.nativeSessionId, initialAssignment: inputStore.get(record.sessionId)?.initialDisposition ? "transport_completed" : record.initialAssignment }); },
+      assertCanAdvance: context => { const record = need(context); if (record.preparation !== null) throw new Error("The original Herdr preparation remains unconfirmed."); if (record.runs.length === 0) return; const run = current(record); if (run.phase === "active" || run.phase === "prepared") return; assertHerdrRecovery({ phase: run.phase, nativeSessionId: run.run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) }); },
       responsibilities: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin).map(identity),
       hasPreparedRun: owner => { const record = store.get(owner); return record !== null && record.preparation === null && record.runs.at(-1)?.phase === "prepared"; },
       isStopped: owner => { const record = store.get(owner); return record !== null && record.preparation === null && record.ledgerRequest === null && (record.runs.length === 0 || current(record).phase === "stopped_confirmed" && record.publishedLedgerHash === herdrLedgerHash(record)) && record.segments.every(segment => segment.endedAt !== null); },

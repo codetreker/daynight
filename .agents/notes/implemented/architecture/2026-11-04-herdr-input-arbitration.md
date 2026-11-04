@@ -20,6 +20,19 @@ initial assignment identity survives separately from definitely-unsent retry
 attempts. Unknown initial delivery can only be resolved through a separately
 recorded human decision, never by rewriting the original transport outcome.
 
+The input journal's identity-checked final receipt owns transport completion even
+if the lifecycle projection missed its later commit. Recovery validates the
+original Session, claim, run, segment, binding, epoch order and assignment digest;
+it does not rewrite a genuinely unknown receipt or its historical projection.
+
+Clean shutdown requires a service-acknowledged, single-use automation recovery
+permission before the old channel closes. The service freezes old control and
+binds permission to its stop operation and native conversation. Only the exact
+next generation with that stop proof and current authorization may consume it.
+Persisted preparation and consumption requests are observed after uncertain
+responses, never replayed. The original consumed receipt grants no rights on a
+later connection. This is distinct from human handback and the UI capability gate.
+
 Closing is a synchronous persisted transition that precedes cancellation and
 native stopping. It does not wait for a browser to release its lease. Automatic
 cleanup is conditional on the preceding automation state and input safety;
@@ -53,6 +66,11 @@ handback carry the responsibility that idle cannot establish.
 **Infer PTY dimensions from a pane rectangle.** Borders, headers and scrollbar
 gutters alter actual dimensions. Native read-only TTY queries preserve the
 current geometry without inventing a layout-to-PTY guarantee.
+
+**Infer automation permission from the next generation or native stop proof.**
+Those records establish run identity and stopping, but do not distinguish a clean
+shutdown from a lost connection, manual draft or unknown input. An explicit
+online preparation lets the service persist this distinction before disconnect.
 
 ## Consequences
 
