@@ -61,7 +61,7 @@ export const auth: AuthMessages = {
     milestones: ["Set goals", "Connect work", "Deliver results"],
     welcome: "WELCOME TO DAYNIGHT", title: "Sign in to your workspace",
     subtitle: "Sign in through UniAuth to access your projects and tasks.",
-    inviteSubtitle: "Sign in through UniAuth to review your project invitation.",
+    inviteSubtitle: "Sign in through UniAuth to review your invitation.",
     deviceSubtitle: "Sign in to review the authorization code shown by Daynight CLI.",
     providersLoading: "Loading sign-in methods…", providersError: "Sign-in methods could not be loaded. Please try again.",
     providersEmpty: "No sign-in methods are available. Contact the deployment administrator.",

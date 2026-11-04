@@ -37,7 +37,7 @@ export const auth: AuthMessages = {
     returnHome: "了解 Daynight",
     heroTitleFirst: "让任务有序推进，", heroTitleSecond: "让协作持续发生。", heroDetail: "在项目中整理任务、连接依赖、共享成果。与团队一起，把计划推进到完成。",
     heroCaption: "专注于你的项目，与团队共同前进。", milestones: ["明确目标", "连接工作", "交付成果"], welcome: "欢迎使用 DAYNIGHT", title: "登录你的工作空间",
-    subtitle: "通过 UniAuth 登录，访问你的项目与任务。", inviteSubtitle: "通过 UniAuth 登录后，继续确认项目邀请。", deviceSubtitle: "登录后确认 Daynight CLI 显示的授权码。",
+    subtitle: "通过 UniAuth 登录，访问你的项目与任务。", inviteSubtitle: "通过 UniAuth 登录后，继续确认邀请。", deviceSubtitle: "登录后确认 Daynight CLI 显示的授权码。",
     providersLoading: "正在读取登录方式…", providersError: "暂时无法读取登录方式，请重试。", providersEmpty: "当前没有可用的登录方式。请联系部署管理员。",
     providerButton: ({ provider }) => `使用 ${provider} 登录`, redirecting: "正在前往 UniAuth…", redirectStatus: "正在安全跳转，请稍候。",
     noteFirst: "登录后可以创建私有项目，或接受团队的项目邀请。", noteSecond: "你的身份由 UniAuth 验证。",
