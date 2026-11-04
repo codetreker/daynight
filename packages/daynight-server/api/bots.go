@@ -60,3 +60,22 @@ type BotPage struct {
 	Items      []Bot   `json:"items"`
 	NextCursor *string `json:"nextCursor"`
 }
+
+// BotDefaults describes current choices without reserving a Worker or starting a Bot.
+type BotDefaults struct {
+	ObservedAt    time.Time           `json:"observedAt"`
+	WorkerID      *string             `json:"workerId"`
+	Configuration *BotConfiguration   `json:"configuration"`
+	Reason        *string             `json:"reason"`
+	Workers       []BotWorkerDefaults `json:"workers"`
+}
+
+type BotWorkerDefaults struct {
+	WorkerID      string                    `json:"workerId"`
+	Machine       WorkerMachine             `json:"machine"`
+	Platform      string                    `json:"platform"`
+	State         string                    `json:"state"`
+	Reason        *string                   `json:"reason"`
+	Configuration *BotConfiguration         `json:"configuration"`
+	Providers     []WorkerAssistantProvider `json:"providers"`
+}
