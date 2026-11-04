@@ -65,6 +65,11 @@ export const createWorkerHerdr = (options: {
 };
 
 export type WorkerHerdrLifecycle = {
+  neverStarted?: {
+    candidates(): HerdrExecutionOwner[];
+    retired(): { owner: HerdrExecutionOwner; cwd: string; agent: import("./types.js").ExecutionConfiguration["agent"] }[];
+    retire(owner: HerdrExecutionOwner, operation: Operation, verifyWorktreeAbsent: (cwd: string) => Promise<void>): Promise<void>;
+  };
   archive?: import("./herdr/resource-types.js").HerdrArchiveResources;
   registerClaim(context: HerdrExecutionContext, ownerUserId: string): void;
   assertCanAdvance(context: HerdrExecutionContext): void;

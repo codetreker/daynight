@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, lstatSync, readdirSync } from "node:fs";
+import { ApiError } from "../../../api/client.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { canonicalId } from "../../../api/parse.js";
 import { readWorkerClaim, readTaskPaused } from "../../../api/task-properties.js";
@@ -11,7 +12,7 @@ import type { SessionV2Message, SessionV2Payloads, TerminalBinding } from "../..
 import { createWorkerHerdr, HerdrAgentActionError } from "../herdr.js";
 import type { WorkerHerdrAdapter } from "../herdr.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrExecutionOwner, HerdrPromptReceipt, HerdrTaskBinding } from "./agents.js";
-import { openHerdrLifecycleStore, herdrLedgerHash } from "./lifecycle-store.js";
+import { openHerdrLifecycleStore, herdrLedgerHash, isHerdrNeverStarted } from "./lifecycle-store.js";
 import { connectHerdrSession, publishHerdrLedger } from "./session-connection.js";
 import type { HerdrLifecycleRecord, HerdrLocalRun, HerdrRunPhase } from "./lifecycle-types.js";
 import { createMacProcessControl } from "./native-macos.js";
@@ -100,6 +101,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   const locks = new Map<string, Promise<void>>();
   const legacy = createAdapter(options);
   const need = (owner: Identity): HerdrLifecycleRecord => {
+    if (store.retired(owner)) throw new Error("The original never-started claim is retired; execution cannot resume.");
     const record = store.get(owner);
     if (!record || record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || record.owner.worktreeId !== owner.worktreeId) throw new Error("The original Herdr execution evidence is missing or belongs to another owner; resources are retained.");
     return record;
@@ -324,7 +326,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     } catch (error) { recordingFailed(record, error); return; }
     if (commitBoundary && recovered.length) update(owner, draft => { for (const value of recovered) { const segment = draft.segments.find(s => s.segmentId === value.segmentId)!; segment.endedAt = value.boundary.endedAt; segment.durationMs = value.boundary.durationMs; } });
   };
-  const resources = createHerdrRecordingResources({ directory: recordingRoot, archive, list: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin),
+  const resources = createHerdrRecordingResources({ directory: recordingRoot, archive, list: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && !store.retired(identity(record))),
     get: need, source: record => { if (recordingFailures.has(record.sessionId)) throw recordingFailures.get(record.sessionId); return recording.source(record).snapshot(); },
     publishStopped: async (record, operation) => { await finishStop(identity(record), operation); }, readTask: options.readTask,
     currentUserId: options.currentUserId ?? (async () => { throw new Error("The original resource owner cannot be authenticated."); }),
@@ -555,7 +557,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     attachedRuns.add(runKey);
     await publish(owner, operation);
   };
-  for (const record of store.list()) { store.recover(record); if (inputStore.get(record.sessionId)) inputStore.recover(record.sessionId); }
+  for (const record of store.list()) { if (store.retired(identity(record))) continue; store.recover(record); if (inputStore.get(record.sessionId)) inputStore.recover(record.sessionId); }
   const tasks: ReturnType<typeof createWorkerHerdr>["tasks"] = {
     ...legacy.tasks,
     pendingStops: () => {
@@ -685,6 +687,42 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       suspend: owner => { getInput(owner).suspend(); },
     },
     lifecycle: {
+      neverStarted: {
+        candidates: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId && !store.retired(identity(record)) && isHerdrNeverStarted(record)).map(identity),
+        retired: () => store.listRetired().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId).map(record => ({ owner: identity(record), cwd: record.cwd, agent: record.owner.provider })),
+        retire: (owner, operation, verifyWorktreeAbsent) => serialize(owner, async () => {
+          const record = need(owner);
+          if (!isHerdrNeverStarted(record)) throw new Error("The original claim has execution evidence; never-started retirement is prohibited.");
+          if (!options.currentUserId || await options.currentUserId(operation.signal) !== record.owner.ownerUserId) throw new Error("Never-started retirement requires the original authenticated owner.");
+          try {
+            const task = await options.readTask(owner.projectId, owner.taskId, operation.signal), claim = readWorkerClaim(task.properties);
+            if (task.projectId !== owner.projectId || task.id !== owner.taskId || !claim) throw new Error("The original task observation cannot prove claim termination.");
+            // An authorized successor claim also proves that the original claim lost ownership.
+            if (claim.claimId === record.claimId && (claim.state === "active" || claim.workerId !== record.owner.workerId || claim.worktreeId !== record.owner.worktreeId
+              || claim.userId !== record.owner.ownerUserId || claim.agent !== record.owner.provider || claim.agentControlMode !== "herdr"
+              || claim.nativeSessionId !== null || claim.herdr !== null)) throw new Error("The original never-started claim is not authoritatively terminal with matching ownership.");
+          } catch (error) {
+            if (!(error instanceof ApiError) || error.phase !== "response" || error.status !== 410 || error.code !== "task_deleted"
+              || error.projectId !== owner.projectId || error.taskId !== owner.taskId || error.outcomeUnconfirmed) throw error;
+          }
+          const assertAbsent = (target: string): void => {
+            try { lstatSync(target); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+            throw new Error("The never-started claim still has filesystem resources; retirement is prohibited.");
+          };
+          const verifyLocal = (): void => {
+            operation.check();
+            if (canonicalSessionJson(need(owner)) !== canonicalSessionJson(record)) throw new Error("The original lifecycle changed during never-started retirement.");
+            if (inputStore.get(record.sessionId) !== null) throw new Error("The original claim has input evidence; retirement is prohibited.");
+            assertAbsent(record.cwd); assertAbsent(path.join(recordingRoot, record.sessionId));
+            if (readdirSync(path.join(options.paths.workerDirectory, "herdr-archives")).some(name => name.startsWith(`${record.sessionId}.`))) throw new Error("The original claim has archive evidence; retirement is prohibited.");
+          };
+          verifyLocal();
+          await verifyWorktreeAbsent(record.cwd);
+          // Git inspection may await subprocesses; fence every local observation again before the atomic decision.
+          verifyLocal();
+          store.retireNeverStarted(record);
+        }),
+      },
       registerClaim: (context, ownerUserId) => {
         const previous = store.get(context);
         if (previous !== null) { need(context); return; }

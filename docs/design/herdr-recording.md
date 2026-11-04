@@ -36,6 +36,8 @@ metadata 准入使用与最终包相同的 canonical JSON 计算 owner、运行�
 
 保留资源最多 20 个 worktree、待归档源共 2 GiB；实际可用磁盘低于 1 GiB 阻止新 claim。ready 源仍影响实际磁盘可用量。同 task 的旧 worktree 仍预留原路径，不能被新 claim 覆盖。stop_unknown 保留执行槽；已运行的其他任务不因资源门槛被停止。
 
+claim 登记先于 worktree 准备，因此已终态的登记可能从未创建任何资源。这类责任使用独立持久退休记录收敛：核验原 owner 的当前认证与原 claim 的权威终态，在原 claim 串行区间确认没有在途执行、准备、运行、采集段、注册或输入责任，并同时核对实际工作目录、Git 注册、录制源与归档源均不存在。空 `preparation` 和空 `runs` 本身不足以证明未创建 worktree；准备中断留下的目录或 Git 注册、读取错误及未知终态都继续保留责任。退休提交核对原生命周期版本，重启后幂等结束同一 claim 的本机任务与清理计划；退休记录禁止再次启动该 claim，并从保留资源与待停止集合中排除。本机任务和清理计划已收敛后，不再用历史路径阻止项目映射变更；收敛尚未完成时继续核验原路径并阻止新准入。此路径不删除文件，不生成 native stop proof、录制内容或 ready/unavailable receipt，也不触碰同 task 后继 claim 的资源。
+
 正常 worktree 删除要求先持久保存 ready/unavailable receipt，再复用原 Git 身份、占用检查和安全删除机制；中断后只继续该删除，不改变历史归档。持久删除记录还承担本地调度收敛责任：核对原 owner、worktree、停止证明与回执或已完成的显式 delete 后，幂等结束对应本机任务并删除其清理计划，再移除内存中的收尾占位。SQLite 写失败保留删除记录，重启继续收敛；不能仅因资源不再列入保留集合就丢弃该责任，也不能影响同 task 的其他 claim。保留资源、待停止记录、容量和旧 claim 屏障必须一致采用已验证的持久删除决策；显式 delete 完成后，尚未同步的 stopped ledger 不能重新占槽或阻挡后继 claim。该决策不修改 ledger hash，不伪造服务端确认；未完成删除或无法验证原身份及停止证明时继续保留责任。人工 `worker resources` 入口列出原 claim/Session、停止证据、源与工作区、归档状态和处置结果。命令格式由 [CLI 手册](../../packages/daynight/README.md)拥有。
 
 显式处置要求匹配原 project/task/claim/session/worktree、已确认停止、当前原 owner 身份与终态 claim，以及操作 ID、动作和确认。abandon 停止重试并保留资源；delete 先持久处置意图，核对源目录 inode 身份，复用安全 Git 删除并删除所选源。原 owner PAT 的身份校验不能代替 claim 终态证明：任务读取的 `404/not_found` 可能隐藏已撤销的项目访问权限，必须拒绝处置；只有已核验的终态任务或明确且结果已确认的 `410/task_deleted` 才能作为远端结束证据。未知停止、错身份、仍可恢复的 active claim 和未确认请求均拒绝。处置记录与归档真相分开，不能伪造 ready 或 unavailable；不提供自动过期删除。

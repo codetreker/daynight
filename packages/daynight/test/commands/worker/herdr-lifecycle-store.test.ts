@@ -235,9 +235,9 @@ describe("persistent Herdr lifecycle responsibility", () => {
 
   it("refuses corrupted persisted evidence and future schemas without resetting responsibility", () => {
     const f = fixture(); active(f); close(f.store);
-    const db = new Database(f.file); db.pragma("user_version = 2"); db.close();
+    const db = new Database(f.file); db.pragma("user_version = 3"); db.close();
     expect(() => open(f.file)).toThrow();
-    const inspect = new Database(f.file); expect(inspect.prepare("SELECT count(*) AS n FROM executions").get()).toEqual({ n: 1 }); inspect.pragma("user_version = 1"); inspect.prepare("UPDATE executions SET data = ?").run('{"broken":true}'); inspect.close();
+    const inspect = new Database(f.file); expect(inspect.prepare("SELECT count(*) AS n FROM executions").get()).toEqual({ n: 1 }); inspect.pragma("user_version = 2"); inspect.prepare("UPDATE executions SET data = ?").run('{"broken":true}'); inspect.close();
     expect(() => open(f.file).list()).toThrow();
   });
 
@@ -259,4 +259,25 @@ it("enriches the original native identity on a closed capture segment without ch
   const enriched = f.store.update(record, draft => { draft.runs[0]!.run.binding.nativeSessionId = uuid(99); draft.segments[0]!.binding.nativeSessionId = uuid(99); });
   expect(enriched.segments[0]!.endedAt).toBe(finish);
   expect(() => f.store.update(enriched, draft => { draft.segments[0]!.durationMs = "61000"; })).toThrow();
+});
+
+it("upgrades original lifecycle rows and freezes never-started retirements without inventing run evidence", () => {
+  const f = fixture(), original = f.record; close(f.store);
+  const old = new Database(f.file); old.exec("DROP TABLE never_started_retirements"); old.pragma("user_version = 1"); old.close();
+  const upgraded = open(f.file);
+  expect(upgraded.get(identity)).toEqual(original); expect(upgraded.listRetired()).toEqual([]);
+  upgraded.retireNeverStarted(original); expect(upgraded.get(identity)).toEqual(original);
+  expect(upgraded.listRetired()).toEqual([original]);
+  expect(() => upgraded.update(original, draft => { draft.preparation = { instanceId: "later", instanceDirectory: f.directory, phase: "prepared", daemon: null }; })).toThrow(/retired/);
+  expect(() => upgraded.create({ owner, claimId: identity.claimId, cwd: f.directory })).toThrow(/retired/);
+  close(upgraded); const restarted = open(f.file); expect(restarted.retired(identity)).toEqual(original);
+  const corrupt = new Database(f.file); corrupt.prepare("UPDATE never_started_retirements SET version = version + 1").run(); corrupt.close();
+  expect(() => restarted.listRetired()).toThrow(/inconsistent/);
+});
+it("does not retire stale or started lifecycle evidence", () => {
+  const f = fixture(), stale = f.record;
+  f.store.update(stale, draft => { draft.preparation = { instanceId: "original", instanceDirectory: f.directory, phase: "launch_requested", daemon: null }; });
+  expect(() => f.store.retireNeverStarted(stale)).toThrow(/changed/);
+  expect(() => f.store.retireNeverStarted(f.store.get(identity)!)).toThrow(/changed/);
+  expect(f.store.listRetired()).toEqual([]);
 });

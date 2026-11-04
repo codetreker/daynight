@@ -61,6 +61,18 @@ decision, so an unacknowledged stopped ledger cannot restore execution capacity
 usage or block a successor claim after completed explicit deletion. The ledger
 hash remains unchanged; local resource deletion is not a remote acknowledgement.
 
+Claims registered before worktree preparation have a separate durable retirement
+decision when the original owner is authenticated, the original claim is terminal,
+and neither execution intent nor actual resources exist. Claim serialization and
+a lifecycle version check bind that decision to the inspected record. Filesystem
+absence and Git registration absence are both required: preparation can create a
+worktree before the first native lifecycle entry. Retirement survives restart,
+prevents relaunch, and reconciles only the original local task and cleanup schedule.
+After that local reconciliation finishes, the historical path does not constrain
+later project remapping. Incomplete SQLite bookkeeping still blocks admission.
+Retirement does not delete resources or manufacture native stop evidence or an
+archive receipt; unknown observations retain responsibility.
+
 The [recording design](../../../../docs/design/herdr-recording.md) owns mechanisms
 and limits. This extends [durable lifecycle ownership](2026-11-04-herdr-worker-lifecycle.md)
 and [input arbitration](2026-11-04-herdr-input-arbitration.md); their original
@@ -89,6 +101,11 @@ event could remove one future crash window, but would not repair an existing
 journal prefix ending in gap_end. Deriving recovery coverage from every committed
 event preserves that prefix without changing the stored format or weakening
 archive interval validation.
+
+**Ignoring records with no runs.** Registration precedes worktree preparation,
+so a process can fail after Git creates the worktree but before native preparation
+is journaled. Filtering empty records would discard real ownership. Explicit
+retirement instead requires affirmative original-claim and resource-absence checks.
 
 ## Consequences
 

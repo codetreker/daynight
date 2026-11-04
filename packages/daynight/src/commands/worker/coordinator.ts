@@ -477,11 +477,52 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }).finally(() => { if (archiveJob === job) archiveJob = null; });
     archiveJob = job;
   };
+  const reconcileNeverStarted = (): void => {
+    for (const retired of lifecycle()?.neverStarted?.retired() ?? []) {
+      const { owner, cwd, agent } = retired, identity = key(owner);
+      if (jobs.has(identity)) throw new Error("A retired claim still has an in-flight execution job.");
+      const task = options.store.getTask(owner), schedule = options.store.getCleanupSchedule(owner);
+      if (task !== null && (task.agent !== agent || task.agentControlMode === "web" || task.sessionId !== null)
+        || schedule !== null && schedule.worktreeId !== owner.worktreeId) throw new Error("Never-started retirement conflicts with the original local ownership.");
+      if (task !== null && task.status !== "done" || schedule !== null) {
+        const project = projectFor(owner);
+        if (path.join(project.localPath, ".worktrees", "daynight", owner.taskId) !== cwd) throw new Error("Never-started retirement has no matching original project path.");
+      }
+      // A failure aborts this tick before admission. Restart retries only these original SQLite rows,
+      // never filesystem paths that a successor may now own.
+      if (task !== null && task.status !== "done") options.store.completeTask(owner);
+      if (schedule !== null) options.store.deleteCleanupSchedule(owner);
+      ending.delete(identity); cleanupRetries.delete(identity);
+      if (task !== null) execution.forget(task);
+    }
+  };
+  const retireNeverStarted = async (inventory: ReadonlyMap<string, Task>): Promise<void> => {
+    const retirement = lifecycle()?.neverStarted;
+    if (!retirement) return;
+    for (const owner of retirement.candidates()) {
+      if (inventory.has(key(owner)) || jobs.has(key(owner))) continue;
+      try {
+        await serialize(owner, async () => {
+          const project = projectFor(owner);
+          await cleanupOperation(operation => retirement.retire(owner, operation, async cwd => {
+            if (cwd !== path.join(project.localPath, ".worktrees", "daynight", owner.taskId)) throw new Error("Never-started retirement has no matching original project path.");
+            if (await options.git.findWorktree(project, owner, operation) !== null) throw new Error("The original Git worktree still exists; never-started retirement is prohibited.");
+          }), normalSignal);
+        });
+      } catch (error) {
+        if (isWorkerCancellation(error, normalSignal)) throw error;
+        options.emit({ kind: "cleanup-error", message: `Never-started retirement for ${key(owner)} remains unconfirmed; original ownership is retained.`, error });
+      }
+      reconcileNeverStarted();
+    }
+  };
   const reconcile = async (): Promise<void> => {
+    reconcileNeverStarted();
     reconcileDeletedArchives();
     launchCleanups();
     await options.remote.currentUserId(normalSignal);
     const inventory = await ownInventory(normalSignal);
+    await retireNeverStarted(inventory);
     advanceArchive(inventory);
     options.onInventory?.({ observedAt: new Date(now()).toISOString(), claims: [...inventory.values()].map(task => ({ projectId: task.projectId, taskId: task.id, claimId: readWorkerClaim(task.properties)!.claimId })) });
     // Ownership loss is authoritative even when the following resource observations fail.
@@ -595,6 +636,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
   };
   const assertCanAcquire = (target: Pick<ClaimIdentity, "projectId" | "taskId">): void => {
+    reconcileNeverStarted();
     const retained = responsibilities();
     assertHerdrResourceBudget(lifecycle()?.archive?.resources() ?? [], options.availableDiskBytes?.() ?? 1073741824n);
     if (retained.some(owner => owner.projectId === target.projectId && owner.taskId === target.taskId)) throw new Error("The original Herdr worktree remains reserved until archive finalization; a new claim cannot be acquired.");
