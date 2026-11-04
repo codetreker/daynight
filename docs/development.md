@@ -657,14 +657,26 @@ must keep the selector's ownership rules aligned with the actual imports.
 
 For a modified CLI `package.json`, detection reads the committed merge-base and
 PR head blobs, parses both JSON objects and compares them after removing only
-the top-level `version` field. Version, formatting and object-key-order changes
-select CLI checks without selecting server jobs. Any other semantic difference,
-including dependency versions, scripts, package contents or nested `version`
-fields, retains server selection; array order remains significant. Additions,
-deletions and file-type changes select server jobs conservatively. Invalid
-modified manifests and Git read failures fail detection. The checkout contents
-and changes made only on the target branch do not determine this comparison.
-Root manifests, the lockfile and workspace inputs keep all-module selection.
+the top-level `version` field. Equality omits server jobs. Any other semantic
+difference, including dependency versions, scripts, package contents or nested
+`version` fields, retains server selection; array order remains significant.
+Additions, deletions and file-type changes select server jobs conservatively.
+Invalid modified manifests and Git read failures fail detection. The checkout
+contents and changes made only on the target branch do not determine this
+comparison. Root manifests, the lockfile and workspace inputs keep all-module
+selection.
+
+When the complete PR diff contains exactly one modified path, that path is the
+CLI manifest, its regular-file mode is unchanged, its version string changes,
+and all other parsed fields remain equal, detection selects no application
+jobs. The existing routing checks and final gate still run. Formatting-only
+changes, executable-bit changes and any additional changed path retain ordinary
+path selection, including excluded documentation paths alongside a version
+change. This distinction keeps the exception tied to a complete version-only
+PR rather than an individual file. Version validity, packaging and installed
+artifact validation remain in the existing publication workflow. The
+[version-only PR decision](../.agents/notes/implemented/testing/2026-11-04-version-only-pr-ci.md)
+records the rationale and retained publication responsibilities.
 
 The exact build/configuration and acceptance-script inputs in
 [the selector](../.github/scripts/ci-modules.mts) select CLI and both server jobs.
@@ -756,8 +768,9 @@ records the concurrency and aggregation policy.
 Documentation-only PRs run routing tests and this final gate
 without installing application dependencies or running application tests. Every
 `main` push retains full application validation. npm publication runs its own
-CLI validation at the frozen release commit. Version checks apply at publication
-as described under [package versions](#package-versions). The
+CLI validation at the frozen release commit. Version-only PRs skip application
+checks; publication retains its version and artifact validation as described
+under [package versions](#package-versions). The
 [selection decision](../.agents/notes/archived/process/2026-10-21-module-scoped-pr-ci.md)
 records the routing alternatives and maintenance costs; the
 [CI simplification decision](../.agents/notes/archived/simplification/2026-10-21-ci-gate-simplification.md)

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
@@ -213,8 +213,62 @@ const cliManifest = {
   metadata: { version: "1.0.0" },
 };
 
+test("a strictly version-only manifest PR skips application checks", async (t) => {
+  const repo = repository(t);
+  repo.write(cliManifestPath, JSON.stringify(cliManifest));
+  const base = repo.commit();
+  repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1" }, null, 2));
+  const head = repo.commit();
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), none);
+});
+
+for (const [path, expected] of [
+  ["docs/development.md", { ...none, cli: true }],
+  ["packages/daynight/README.md", { ...none, cli: true }],
+  ["packages/daynight/src/commands/worker/runtime.ts", { ...none, cli: true }],
+  ["packages/daynight/src/main.ts", { ...none, cli: true, server: true }],
+  ["packages/daynight-web/src/App.vue", { ...none, cli: true, server: true, web: true }],
+  ["pnpm-lock.yaml", all],
+  [".github/workflows/checks.yml", all],
+] as const) {
+  test(`version plus ${path} retains ordinary module checks`, async (t) => {
+    const repo = repository(t);
+    repo.write(cliManifestPath, JSON.stringify(cliManifest));
+    const base = repo.commit();
+    repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1" }));
+    repo.write(path);
+    const head = repo.commit();
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), expected);
+  });
+}
+
+for (const change of ["delete", "rename"] as const) {
+  test(`version plus documentation ${change} retains ordinary CLI checks`, async (t) => {
+    const repo = repository(t);
+    repo.write(cliManifestPath, JSON.stringify(cliManifest));
+    repo.write("docs/original.md");
+    const base = repo.commit();
+    repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1" }));
+    if (change === "delete") rmSync(join(repo.cwd, "docs/original.md"));
+    else renameSync(join(repo.cwd, "docs/original.md"), join(repo.cwd, "docs/renamed.md"));
+    const head = repo.commit();
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true });
+  });
+}
+
+for (const versionChange of [false, true]) {
+  test(`manifest executable-mode changes retain server checks with version change ${versionChange}`, async (t) => {
+    const repo = repository(t);
+    repo.write(cliManifestPath, JSON.stringify(cliManifest));
+    const base = repo.commit();
+    if (versionChange) repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1" }));
+    chmodSync(join(repo.cwd, cliManifestPath), 0o755);
+    const head = repo.commit();
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
+  });
+}
+
 for (const [label, updated] of [
-  ["version-only", { ...cliManifest, version: "1.0.1" }],
   ["format-only", cliManifest],
   ["key-order-only", Object.fromEntries(Object.entries(cliManifest).reverse())],
 ] as const) {
@@ -276,7 +330,7 @@ test("version-only manifest refinement preserves server selection from other cha
   assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
 });
 
-test("manifest comparison uses merge base and PR head rather than the target or checked-out tree", async (t) => {
+test("version-only skipping uses merge base and PR head rather than the target or checked-out tree", async (t) => {
   const repo = repository(t);
   repo.write(cliManifestPath, JSON.stringify(cliManifest));
   repo.commit();
@@ -287,7 +341,7 @@ test("manifest comparison uses merge base and PR head rather than the target or 
   repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, dependencies: { dependency: "2.0.0" } }));
   const base = repo.commit();
   repo.write(cliManifestPath, "invalid uncommitted JSON");
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), none);
 });
 
 for (const change of ["add", "delete", "type"] as const) {

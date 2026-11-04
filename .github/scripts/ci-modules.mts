@@ -92,14 +92,14 @@ const pullRequestDiff = async (cwd: string, base: string | undefined, head: stri
 export const pullRequestPaths = async (cwd: string, base: string | undefined, head: string | undefined): Promise<string[]> =>
   (await pullRequestDiff(cwd, base, head)).changes.map(({ path }) => path);
 
-const manifestRuntimeInputs = (source: string): Record<string, unknown> => {
+const parseManifest = (source: string): { version: string; inputs: Record<string, unknown> } => {
   const manifest: unknown = JSON.parse(source);
   if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest) ||
     !("version" in manifest) || typeof manifest.version !== "string") {
     throw new Error("CLI package manifest must be a JSON object with a string version.");
   }
   const { version, ...inputs } = manifest;
-  return inputs;
+  return { version, inputs };
 };
 
 export const detectModules = async ({ event, base, head, cwd }: { event: string | undefined; base?: string | undefined; head?: string | undefined; cwd?: string }): Promise<ModuleSelection> => {
@@ -110,11 +110,21 @@ export const detectModules = async ({ event, base, head, cwd }: { event: string 
   const manifestChange = diff.changes.find(({ path }) => path === cliManifestPath);
   let cliManifestRequiresServer = true;
   if (manifestChange?.status === "M") {
-    const [before, after] = await Promise.all([
+    const [beforeSource, afterSource, beforeMode, afterMode] = await Promise.all([
       git(cwd, ["show", `${diff.comparisonBase}:${cliManifestPath}`]),
       git(cwd, ["show", `${diff.head}:${cliManifestPath}`]),
+      git(cwd, ["ls-tree", "--format=%(objectmode)", diff.comparisonBase, "--", cliManifestPath]),
+      git(cwd, ["ls-tree", "--format=%(objectmode)", diff.head, "--", cliManifestPath]),
     ]);
-    cliManifestRequiresServer = !isDeepStrictEqual(manifestRuntimeInputs(before), manifestRuntimeInputs(after));
+    const regularFile = (mode: string) => mode.trim() === "100644" || mode.trim() === "100755";
+    if (regularFile(beforeMode) && regularFile(afterMode)) {
+      const before = parseManifest(beforeSource);
+      const after = parseManifest(afterSource);
+      cliManifestRequiresServer = beforeMode !== afterMode || !isDeepStrictEqual(before.inputs, after.inputs);
+      if (diff.changes.length === 1 && !cliManifestRequiresServer && before.version !== after.version) {
+        return { cli: false, server: false, web: false };
+      }
+    }
   }
   return selectModules(diff.changes.map(({ path }) => path), cliManifestRequiresServer);
 };

@@ -24,9 +24,12 @@ The initial split conservatively treated all CLI source and packaging inputs as
 shared server dependencies because both jobs build and install the CLI. The
 [server input-selection decision](2026-11-04-server-ci-input-selection.md)
 partially supersedes that routing choice: lazy command implementations and
-resources outside server acceptance, and CLI manifest version-only changes,
-retain CLI validation without selecting the server jobs. Both jobs keep one
-server selector covering their actual CLI, preparation and embedded Web inputs.
+resources outside server acceptance, and CLI manifest changes limited to version
+or JSON representation, omit server jobs. Independent command changes retain
+complete CLI validation; the later
+[version-only PR decision](2026-11-04-version-only-pr-ci.md) skips application
+checks for strict whole-PR version changes. Both server jobs keep one
+selector covering their actual CLI, preparation and embedded Web inputs.
 Documentation exclusions and unaffected-module skipping retain their existing
 semantics.
 

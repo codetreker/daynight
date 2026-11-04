@@ -28,11 +28,14 @@ inputs retain their server consumers.
 
 Modified CLI manifests are compared as parsed JSON objects from the PR's
 merge-base and explicit head, with only top-level `version` removed. Equality
-keeps CLI validation while omitting server jobs. Formatting and object key order
-do not affect equality; other fields, nested versions and array order do.
-Manifest additions, deletions and file-type changes select server jobs.
-Malformed modified manifests and Git read failures fail detection. Root
-manifests, lockfile and workspace inputs keep all-module selection.
+omits server jobs. Formatting and object key order do not affect equality;
+other fields, nested versions and array order do. Manifest additions, deletions
+and file-type changes select server jobs. Malformed modified manifests and Git
+read failures fail detection. Root manifests, lockfile and workspace inputs keep
+all-module selection. This decision originally retained the complete CLI suite
+for equality; the [version-only PR decision](2026-11-04-version-only-pr-ci.md)
+partially supersedes that choice by skipping application checks for a strict
+whole-PR version-only diff. Other manifest changes retain ordinary CLI selection.
 
 This decision partially supersedes the broad CLI routing adopted for the
 [independent coverage and E2E jobs](2026-11-04-server-e2e-ci-jobs.md). The jobs
@@ -65,10 +68,10 @@ reconsider coverage and credential production together.
 
 ## Consequences
 
-Independent command and release-only changes retain complete CLI checks while
-avoiding unrelated Go coverage and E2E. Real server acceptance dependencies,
-unknown CLI source, deletions, renames and unclassified inputs keep conservative
-selection. Main pushes still select every module, and the final gate still
+Independent command changes retain complete CLI checks while avoiding unrelated
+Go coverage and E2E. A strict version-only PR skips application checks as owned
+by the later decision. Real server acceptance dependencies, unknown CLI source,
+deletions, renames and unclassified inputs keep conservative selection. Main pushes still select every module, and the final gate still
 rejects failed or cancelled selected jobs.
 
 The explicit command exclusions depend on implementation modules remaining lazy
