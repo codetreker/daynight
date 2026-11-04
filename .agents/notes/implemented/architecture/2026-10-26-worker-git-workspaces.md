@@ -34,7 +34,10 @@ not permission to create a replacement checkout. Ordinary preparation and
 verification also check the actual task worktree origin against its original
 repoUrl, including worktree-specific configuration.
 
-Creation exclusively reserves the empty leaf directory, captures its device/inode
+Preparation first removes any checked empty unregistered reservation left before
+Git add using nonrecursive rmdir; nonempty directories and another claim's valid
+registration remain protected. Creation exclusively reserves the empty leaf
+directory, captures its device/inode
 and uses Git's native `worktree add --lock --reason` to persist a
 `daynight-worker:` JSON owner marker in the linked administrative registration.
 The marker contains project/task/claim/worktree identity plus fingerprints
@@ -44,12 +47,14 @@ service-origin coordinate under the retained state root's single-service rule.
 The [migration removal decision](../simplification/2026-10-28-remove-worker-workspace-migration.md)
 keeps this manager limited to current-format resource operations. Those fingerprints corroborate
 ownership; they do not prove an immutable directory incarnation. Every present
-leaf must retain its exact regular `.git` pointer to the validated administrative
-registration, including during terminal cleanup. Inspection also checks the
+nonempty leaf must retain its exact regular `.git` pointer to the validated
+administrative registration during terminal cleanup. An empty leaf can be
+removed nonrecursively under the [resource-state decision](2026-11-04-worker-resource-state.md). Inspection also checks the
 marker and administrative backpointer; a foreign marker, symlink, ambiguous
-registration or missing/mismatched pointer blocks destructive operations.
+registration or missing/mismatched pointer blocks recursive content removal.
 Matching Git creation can be discovered directly from static registration; an
-unmarked pre-add reservation remains a visible conflict.
+unmarked nonempty pre-add reservation remains a visible conflict. Empty
+reservations can be removed by terminal cleanup without adopting their contents.
 
 Branch validation invokes Git's `symbolic-ref --quiet HEAD` with the validated
 linked administrative directory explicitly selected by `--git-dir`. Git owns the
@@ -69,12 +74,15 @@ Branch and task history remain; done/release/withdrawal share this terminal rule
 The [force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) removes
 transfer while retaining the same inventory-driven terminal resource cleanup.
 
-An interruption between final pointer unlink and leaf removal leaves a present
-but ambiguous directory. Even an empty leaf with matching inode is refused and
-local responsibility remains active with an error. An operator must inspect and
-resolve that path; once it is absent, cleanup can finish the registration. No
-new sidecar marker, schema field or ownership ledger is introduced to automate
-this narrow ambiguous window.
+The original deletion rule retained even an empty leaf after final pointer unlink
+because device/inode reuse could not prove the directory incarnation. The
+[resource-state decision](2026-11-04-worker-resource-state.md) supersedes that
+retention rule: checked nonrecursive rmdir clears an empty residue without
+authorizing deletion of unknown contents. A missing leaf already satisfies the
+directory target, while its owned registration remains an independent resource.
+Nonempty pointerless paths still require visible resolution. Git discovery
+enumerates recognized registrations; unrelated plain task directories do not
+invalidate the complete registered-resource inventory.
 
 The existing Git runner accepts per-call environment and deadline overrides;
 ordinary repository discovery keeps its defaults. Worker setup clears inherited
@@ -114,8 +122,9 @@ fingerprint joined native registration to the physical leaf. A local
 delete/recreate probe reproduced equal device, inode, birthtimeNs and ctimeNs,
 so adding timestamps still could not establish that a present pointerless path
 was the original directory. Retaining the exact pointer until the last removal
-step preserves a concrete registration link; missing-pointer ambiguity stays
-visible rather than granting destructive authority.
+step preserves a concrete registration link for recursive content deletion.
+Empty-directory removal uses no incarnation inference; missing-pointer nonempty
+content retains the original refusal.
 
 **Read administrative HEAD as a loose symbolic-ref file.** That assumes Git's
 refs storage layout and rejects valid reftable worktrees, whose administrative
@@ -126,17 +135,16 @@ validated administration, including after the leaf is gone.
 ## Consequences
 
 The manager preserves primary files, unrelated branches and dirty task results
-on ordinary recovery. A missing original or unmarked interrupted reservation
+on ordinary recovery. A missing original or unmarked nonempty reservation
 requires visible intervention; automatically adopting it would erase the proof
-boundary. The final pointer-unlink window intentionally requires operator
-inspection when a leaf remains; missing `.git` cannot be treated as ordinary
-partial cleanup. Terminal ownership exits intentionally remove uncommitted leaf
+boundary. Terminal cleanup can settle absent resources and empty residues from
+current observations while retaining nonempty unknown paths. Terminal ownership exits intentionally remove uncommitted leaf
 files, so the agent must complete required delivery before its final done or an
 explicit management action.
 
 Git operations return resource facts, not ownership eligibility. The coordinator
 still obtains complete current claim inventory, supplies stop/closure proof,
-serializes each execution and retains call-local stop and cleanup observations. Failed deletion
+serializes each execution and obtains fresh stop and cleanup observations. Failed deletion
 must retain local responsibility. These primitives do not establish the foreground
 scheduler, native Herdr execution, service management-protocol revisions or
 cross-platform whole-Goal acceptance.

@@ -3,7 +3,6 @@ import { canonicalId } from "../../../api/parse.js";
 import { normalizeServerUrl } from "../../../config/server.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration } from "../types.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, ExecutionSummary } from "./web-types.js";
-import { backendResourcesClosed } from "./web-types.js";
 
 const integer = (value: unknown, name: string, minimum = 0): number => {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) throw new Error(`${name} must be a safe integer of at least ${minimum}.`);
@@ -52,10 +51,6 @@ const parseWorktree = (value: unknown): WorktreeBinding => {
   const data = record(value, ["repositoryPath", "commonDirectory", "worktreePath", "branch"], "Worktree binding");
   return { repositoryPath: absolutePath(data.repositoryPath, "Repository path"), commonDirectory: absolutePath(data.commonDirectory, "Git common directory"), worktreePath: absolutePath(data.worktreePath, "Worktree path"), branch: text(data.branch, "Worktree branch") };
 };
-const parseCleanupBaseline = (value: unknown): NonNullable<CleanupState["baseline"]> => {
-  const data = record(value, ["stateChangeSeq", "completionSeq"], "Cleanup completion baseline");
-  return { stateChangeSeq: integer(data.stateChangeSeq, "Cleanup state-change sequence"), completionSeq: integer(data.completionSeq, "Cleanup completion sequence") };
-};
 const parseExecutionSummary = (value: unknown): ExecutionSummary => { if (value !== null) throw new Error("Web execution summaries are derived from fresh remote inventory."); return value as never; };
 const parseWebExecution = (value: unknown): WebExecutionState => {
   const data = record(value, ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "sessionId", "executionGeneration", "initialOperationId", "initialPrompt", "launchSubmission", "controllerProcess", "nativeProcesses", "cleanupOperationId", "ticketPath", ...["summary", "initialInputState", "activity", "nativeHome", "restartAfterShutdown"].filter(key => typeof value === "object" && value !== null && Object.hasOwn(value,key))], "Web execution");
@@ -75,17 +70,9 @@ const parseWebExecution = (value: unknown): WebExecutionState => {
   return data as WebExecutionState;
 };
 const parseCleanup = (value: unknown): CleanupState => {
-  const web = typeof value === "object" && value !== null && "mode" in value && value.mode === "web";
-  const data = record(value, ["kind", "startedAt", "deadline", "input", "baseline", "result", "error", "agentStopped", "workspaceClosed", "worktreeDeleted", ...(web ? ["mode", "backendResourcesClosed"] : [])], "Cleanup state");
-  if (web && data.workspaceClosed !== null) throw new Error("Web cleanup cannot carry a Herdr workspace closure.");
-  const result: CleanupState = { kind: oneOf(data.kind, ["terminal", "shutdown"], "Cleanup kind"), startedAt: integer(data.startedAt, "Cleanup start"), deadline: integer(data.deadline, "Cleanup deadline"),
-    input: oneOf(data.input, ["not-submitted", "unknown", "submitted", "rejected", "unavailable"], "Cleanup input state"),
-    baseline: nullable(data.baseline, parseCleanupBaseline),
-    result: nullable(data.result, (entry) => oneOf(entry, ["completed", "timed-out", "failed", "unavailable"], "Cleanup result")), error: nullable(data.error, (entry) => text(entry, "Cleanup error")),
-    agentStopped: bool(data.agentStopped, "Agent stopped"), workspaceClosed: web && data.workspaceClosed === null ? null : bool(data.workspaceClosed, "Workspace closed"), ...(web ? { mode: "web" as const, backendResourcesClosed: bool(data.backendResourcesClosed, "Backend resources closed") } : {}), worktreeDeleted: bool(data.worktreeDeleted, "Worktree deleted") };
+  const data = record(value, ["kind", "startedAt", "deadline"], "Cleanup intent");
+  const result: CleanupState = { kind: oneOf(data.kind, ["terminal", "shutdown"], "Cleanup kind"), startedAt: integer(data.startedAt, "Cleanup start"), deadline: integer(data.deadline, "Cleanup deadline") };
   if (result.deadline < result.startedAt || result.deadline - result.startedAt > 600_000) throw new Error("Cleanup deadline must be within ten minutes of its original start.");
-  if ((backendResourcesClosed(result) && !result.agentStopped) || (result.worktreeDeleted && !backendResourcesClosed(result))) throw new Error("Cleanup progress is out of order.");
-  if (result.baseline !== null && result.input !== "submitted") throw new Error("A cleanup completion baseline requires confirmed input submission.");
   return result;
 };
 

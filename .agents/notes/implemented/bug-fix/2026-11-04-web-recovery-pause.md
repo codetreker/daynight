@@ -101,7 +101,10 @@ The local pause and remote summary are not one transaction. The remote task can
 remain stale while the service is unreachable, but subsequent successful
 inventory reads reconcile it. Terminal cleanup retains its independent
 [persistent retry schedule](2026-11-04-worker-cleanup-retry.md), original deadline
-and notification state for both backends. Its backoff does not consume execution
+and retry policy for both backends. The
+[resource-state decision](../architecture/2026-11-04-worker-resource-state.md)
+removes notification and completion flags while retaining authoritative resource
+checks. Its backoff does not consume execution
 recovery budget, and a recovery pause cannot release that cleanup responsibility.
 This decision changes no cleanup scheduling, fairness policy or Herdr business
 recovery behavior. Controlled store/backend checks establish these boundaries;

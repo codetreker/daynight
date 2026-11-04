@@ -22,14 +22,14 @@
 | Owner | SQL 主链目录 | 当前文件 |
 |---|---|---|
 | Review | `commands/review/sqlite/` | `001-baseline.sql`、`002-publications.sql` |
-| Worker 主索引与清理调度 | `commands/worker/sqlite/` | `005-baseline.sql`、`006-cleanup-schedules.sql` |
-| Web 执行状态 | `commands/worker/backends/sqlite/` | `001-baseline.sql` |
+| Worker 主索引与清理调度 | `commands/worker/sqlite/` | `005-baseline.sql`、`006-cleanup-schedules.sql`、`007-resource-cleanup-intent.sql` |
+| Web 执行状态 | `commands/worker/backends/sqlite/` | `001-baseline.sql`、`002-resource-observations.sql` |
 | Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql`、`006-pending-content.sql` |
 | Native resume lease | `commands/controller/sqlite/resume-lease/` | `001-baseline.sql` |
 
 文件名遵守 `NNN-description.sql`：数字前缀至少三位，同一目录使用相同宽度的补零；版本数值为 1–2147483647；后缀是以小写 ASCII 字母开头、由小写字母或数字组成且可用单个 `-` 分段的名称，扩展名必须为小写 `.sql`。首版本可以大于 1，之后必须连续。顶层 SQL 候选中的非法名称、非普通文件、重复版本、宽度不一致、空 SQL 链和中间缺号都在用户库打开前失败；例如大写 `.SQL` 和名称以 `.sql` 结尾的目录会进入候选检查并被拒绝，而 `README.txt`、`.DS_Store` 及普通非 SQL 目录不进入主链。
 
-五个基线与七个升级文件共十二份 SQL 资源；Worker 历史来源参考和条件接入资源已由统一版本 0 重置取代。SQL 文件不写 BEGIN/COMMIT 或 PRAGMA，事务、user_version、JSON 和 owner 逻辑仍由 TypeScript 边界控制。
+五个基线及各自连续编号的升级 SQL 资源；Worker 历史来源参考和条件接入资源已由统一版本 0 重置取代。SQL 文件不写 BEGIN/COMMIT 或 PRAGMA，事务、user_version、JSON 和 owner 逻辑仍由 TypeScript 边界控制。
 
 `sqliteSchemaSnapshots` 在格式模块初始化时，把同一组按文件名发现的基线和升级 SQL 依次执行到短生命周期的内存 SQLite 中，按步骤缓存 SQLite 自己生成的 sqlite_schema 元数据，然后确认关闭连接。实际用户数据库尚未打开；后续来源检查只使用已缓存的本库参考，不为每次访问重新建参考库。这个过程不复制用户记录、不读取原生历史、不生成持久标记，也不维护另一套预期 DDL 或用 SQL parser 重建结构。
 
@@ -45,15 +45,15 @@ SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](.
 
 | 库 | 基线及迁移 |
 |---|---|
-| Worker | 七列 tasks 为基线 5；版本 6 增加独立 cleanup_schedules 并保留原行；非零旧详细库 1–4 拒绝 |
+| Worker | 七列 tasks 为基线 5；版本 6 增加独立 cleanup_schedules；版本 7 删除 notified/submitted，保留项目、任务、清理身份、期限与重试策略；非零旧详细库 1–4 拒绝 |
 | Review | 基线 1，原 1→2 增加 publication 并保留历史发布语义；当前仍为 2 |
-| Web 执行状态 | 基线及当前版本 1 |
+| Web 执行状态 | 基线 1；版本 2 移除 cleanup 的重复操作回执及资源完成标记，保留意图、期限和操作身份 |
 | Controller journal | 基线 1，依次保留 ACK/projection、operation acknowledged、projection gap、source floor/resource 的 1→5 转换，以及正文导出到文件和内容索引的 5→6 转换 |
 | Native resume lease | 基线及当前版本 1；任何保留 lease 阻止重置或迁移 |
 
 新库和版本 0 重置使用同一基线及后续步骤，避免另一套最新 DDL 漂移。版本 0 丢弃旧 schema 和数据；已有空版本 0 文件也通过这一路径初始化。文件创建许可 `allowCreate` 只作用于缺失文件，`inspectSqlite` 和 `upgradeSqlite` 没有空库许可参数。非零版本范围为正的 32 位有符号整数，负数、缺步、逆序、未知和较新版本均拒绝并保留原库。非零来源结构检查由本库维护，参考元数据来自上述实际 SQL 链，覆盖迁移需要的表、列、主键、必要索引、约束和 STRICT 属性，只接受有限的已交付布局。
 
-已知非零迁移保留业务记录及原有转换语义。Web 当前版本 1 的 CRUD 继续使用既有 JSON parser 和缺省处理，不增加更严格的验证或重写历史字符串；未来收紧字段需要新增版本转换。Journal 的非零升级保留原有 JSON 字符串、序列、ACK、原生身份和 BLOB，不把原类型断言当成已经增加全面运行时校验。
+已知非零迁移保留业务记录及原有转换语义。Web 版本 1→2 在 SQL 中移除重复的 cleanup 操作回执和资源完成字段，当前 parser 读取迁移后的清理意图，不在运行时代码兼容旧字段。其他 Web 字段保留原有解析语义；未来收紧字段仍需新增版本转换。Journal 的非零升级保留原有 JSON 字符串、序列、ACK、原生身份和 BLOB，不把原类型断言当成已经增加全面运行时校验。
 
 ## 事务与业务启动
 

@@ -29,23 +29,18 @@ const projectKey = (value: ProjectIdentity): ProjectIdentity => ({ projectId: id
 const claimKey = (value: ClaimIdentity): ClaimIdentity => ({ ...projectKey(value), taskId: id(value.taskId, "Task ID"), claimId: id(value.claimId, "Claim ID") });
 const projectColumns = "project_id AS projectId, repo_url AS repoUrl, local_path AS localPath";
 const taskColumns = "project_id AS projectId, task_id AS taskId, claim_id AS claimId, status, agent, session_id AS sessionId, agent_control_mode AS agentControlMode";
-const cleanupColumns = "project_id AS projectId, task_id AS taskId, claim_id AS claimId, worktree_id AS worktreeId, deadline, notified, submitted, failures, next_attempt_at AS nextAttemptAt, stage, last_error AS lastError";
+const cleanupColumns = "project_id AS projectId, task_id AS taskId, claim_id AS claimId, worktree_id AS worktreeId, deadline, failures, next_attempt_at AS nextAttemptAt, stage, last_error AS lastError";
 const nonnegativeInteger = (value: number, name: string): number => {
   if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a nonnegative safe integer.`);
   return value;
 };
 const asCleanupState = (value: CleanupSchedule): CleanupSchedule => {
-  if (typeof value.notified !== "boolean" || typeof value.submitted !== "boolean") throw new TypeError("Cleanup notification and submission flags must be booleans.");
-  if (value.submitted && !value.notified) throw new TypeError("Cleanup submission requires a recorded notification attempt.");
-  return { deadline: nonnegativeInteger(value.deadline, "Cleanup deadline"), notified: value.notified, submitted: value.submitted,
-    failures: nonnegativeInteger(value.failures, "Cleanup failures"), nextAttemptAt: nonnegativeInteger(value.nextAttemptAt, "Cleanup next attempt"),
+  return { deadline: nonnegativeInteger(value.deadline, "Cleanup deadline"), failures: nonnegativeInteger(value.failures, "Cleanup failures"), nextAttemptAt: nonnegativeInteger(value.nextAttemptAt, "Cleanup next attempt"),
     stage: text(value.stage, "Cleanup stage"), lastError: value.lastError === null ? null : text(value.lastError, "Cleanup scheduling error") };
 };
-type CleanupRow = Omit<CleanupScheduleRecord, "notified" | "submitted"> & { notified: number; submitted: number };
-const asCleanupRecord = (row: CleanupRow): CleanupScheduleRecord => {
-  if (![0, 1].includes(row.notified) || ![0, 1].includes(row.submitted)) throw new TypeError("Cleanup notification and submission flags must be zero or one.");
-  return { ...claimKey(row), worktreeId: id(row.worktreeId, "Worktree ID"), ...asCleanupState({ ...row, notified: row.notified === 1, submitted: row.submitted === 1 }) };
-};
+const asCleanupRecord = (row: CleanupScheduleRecord): CleanupScheduleRecord => ({
+  ...claimKey(row), worktreeId: id(row.worktreeId, "Worktree ID"), ...asCleanupState(row),
+});
 const asProject = (row: WorkerProject): WorkerProject => ({ ...projectKey(row), repoUrl: text(row.repoUrl, "Repository URL"), localPath: absolutePath(row.localPath, "Project local path") });
 const asTask = (row: LocalTask): LocalTask => {
   if (row.status !== "pending" && row.status !== "active" && row.status !== "done") throw new TypeError("Worker task status must be pending, active or done.");
@@ -83,7 +78,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     return row === undefined ? null : asTask(row);
   });
   const getCleanupSchedule = (identity: ClaimIdentity): CleanupScheduleRecord | null => read(() => {
-    const row = db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).get(claimKey(identity)) as CleanupRow | undefined;
+    const row = db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).get(claimKey(identity)) as CleanupScheduleRecord | undefined;
     return row === undefined ? null : asCleanupRecord(row);
   });
   const needTask = (identity: ClaimIdentity): LocalTask => {
@@ -108,7 +103,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       return getProject(project)!;
     }),
     getCleanupSchedule,
-    listCleanupSchedules: (): CleanupScheduleRecord[] => read(() => (db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules ORDER BY project_id, task_id, claim_id`).all() as CleanupRow[]).map(asCleanupRecord)),
+    listCleanupSchedules: (): CleanupScheduleRecord[] => read(() => (db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules ORDER BY project_id, task_id, claim_id`).all() as CleanupScheduleRecord[]).map(asCleanupRecord)),
     saveCleanupSchedule: (owner: ResourceOwner, state: CleanupSchedule): CleanupScheduleRecord => atomic(() => {
       const record = { ...claimKey(owner), worktreeId: id(owner.worktreeId, "Worktree ID"), ...asCleanupState(state) };
       if (getProject(record) === null) throw new Error("The project repository binding must be registered before cleanup.");
@@ -116,14 +111,11 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       if (previous !== null) {
         if (previous.worktreeId !== record.worktreeId) throw new Error("The cleanup claim is already bound to a different worktree.");
         if (previous.deadline !== record.deadline) throw new Error("The original cleanup deadline cannot change.");
-        if (previous.notified && !record.notified) throw new Error("The cleanup notification attempt cannot be reset.");
-        if (previous.submitted && !record.submitted) throw new Error("The cleanup submission cannot be reset.");
       }
-      db.prepare(`INSERT INTO cleanup_schedules(project_id, task_id, claim_id, worktree_id, deadline, notified, submitted, failures, next_attempt_at, stage, last_error)
-        VALUES (@projectId, @taskId, @claimId, @worktreeId, @deadline, @notified, @submitted, @failures, @nextAttemptAt, @stage, @lastError)
-        ON CONFLICT(project_id, task_id, claim_id) DO UPDATE SET notified = excluded.notified, submitted = excluded.submitted,
-          failures = excluded.failures, next_attempt_at = excluded.next_attempt_at, stage = excluded.stage, last_error = excluded.last_error`)
-        .run({ ...record, notified: Number(record.notified), submitted: Number(record.submitted) });
+      db.prepare(`INSERT INTO cleanup_schedules(project_id, task_id, claim_id, worktree_id, deadline, failures, next_attempt_at, stage, last_error)
+        VALUES (@projectId, @taskId, @claimId, @worktreeId, @deadline, @failures, @nextAttemptAt, @stage, @lastError)
+        ON CONFLICT(project_id, task_id, claim_id) DO UPDATE SET failures = excluded.failures, next_attempt_at = excluded.next_attempt_at, stage = excluded.stage, last_error = excluded.last_error`)
+        .run(record);
       return getCleanupSchedule(record)!;
     }),
     deleteCleanupSchedule: (identity: ClaimIdentity): void => atomic(() => {

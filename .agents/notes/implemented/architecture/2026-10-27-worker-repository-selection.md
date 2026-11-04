@@ -56,8 +56,10 @@ before the first complete claim inventory, including with an empty database.
 The [simplification decision](../simplification/2026-10-27-worker-claim-records.md)
 removed the original promise that cleanup jobs continue while a restarted
 process waits for Project selection. The [cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md)
-preserves the original terminal deadline and notification state, but starts no
-cleanup side effects during Project selection. Current-process cleanup jobs
+preserves the original terminal deadline and retry policy, but starts no cleanup
+side effects during Project selection. The
+[resource-state decision](2026-11-04-worker-resource-state.md) removes notification
+progress storage while preserving this preparation boundary. Current-process cleanup jobs
 remain separate from normal reconciliation.
 
 After preparation, service credentials and worker settings are validated from

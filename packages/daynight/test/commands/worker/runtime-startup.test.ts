@@ -229,16 +229,16 @@ it("retains a committed Worker upgrade when Web state fails and resumes after it
   await mkdir(f.paths.workerDirectory, { recursive: true });
   const webFile = path.join(f.paths.workerDirectory, "web-executions.sqlite");
   const invalid = new Database(webFile);
-  invalid.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original'); PRAGMA user_version=2");
+  invalid.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original'); PRAGMA user_version=3");
   invalid.close();
   await expect(runWorker(f)).rejects.toThrow("unsupported-version");
   expect(mocks.coordinator).not.toHaveBeenCalled();
   const worker = new Database(f.paths.databaseFile);
-  expect(worker.pragma("user_version", { simple: true })).toBe(6);
+  expect(worker.pragma("user_version", { simple: true })).toBe(7);
   expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 });
   worker.close();
   const web = new Database(webFile);
-  expect(web.pragma("user_version", { simple: true })).toBe(2);
+  expect(web.pragma("user_version", { simple: true })).toBe(3);
   expect(web.prepare("SELECT value FROM retained").get()).toEqual({ value: "original" });
   web.exec("DROP TABLE retained; CREATE TABLE executions (identity TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL CHECK(json_valid(data))) STRICT; PRAGMA user_version=1");
   web.close();
@@ -247,10 +247,10 @@ it("retains a committed Worker upgrade when Web state fails and resumes after it
   await runWorker({ ...f, signal: controller.signal });
   expect(mocks.coordinator).toHaveBeenCalledOnce();
   const upgradedWeb = new Database(webFile);
-  expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(1);
+  expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(2);
   upgradedWeb.close();
   const unchangedWorker = new Database(f.paths.databaseFile);
-  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(6);
+  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(7);
   unchangedWorker.close();
 });
 
@@ -266,7 +266,7 @@ it("rebuilds unknown zero-version Web state before starting its coordinator", as
   await runWorker({ ...f, signal: controller.signal });
   expect(mocks.coordinator).toHaveBeenCalledOnce();
   const web = new Database(webFile);
-  expect(web.pragma("user_version", { simple: true })).toBe(1);
+  expect(web.pragma("user_version", { simple: true })).toBe(2);
   expect(web.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all()).toEqual([{ name: "executions" }]);
   expect(web.prepare("SELECT * FROM executions").all()).toEqual([]);
   web.close();

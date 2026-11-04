@@ -19,8 +19,10 @@ Its current independent format sequence is owned by the
 [SQLite migration decision](2026-10-30-cli-sqlite-migrations.md). Identity,
 instance exclusion and static resource ownership retain their original owners.
 The [cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md) restores
-only terminal notification/deadline continuity and retry scheduling beside that
-index; it does not restore the retired detailed execution record below.
+only terminal deadline continuity and retry scheduling beside that index. The
+[resource-state decision](2026-11-04-worker-resource-state.md) removes its
+notification ledger and reads current resources for cleanup completion. Neither
+decision restores the retired detailed execution record below.
 The following records the original detailed storage decision and why its stronger
 restart guarantees were adopted; its numbered schemas describe that retired
 model rather than the current minimal index.

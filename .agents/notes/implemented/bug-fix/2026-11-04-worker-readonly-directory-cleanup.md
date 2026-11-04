@@ -49,11 +49,13 @@ and immediate callbacks remain real, preserving the proof that an admitted
 mutation settles before rejection and no later mutation starts. The operation
 is disposed before the clocks and spies are restored.
 
-For repeated cleanup of a completed Web record, the coordinator requires full
-stop, backend closure, and deletion evidence, then rechecks the original claim's
-physical Git resources through `findWorktree`. Only an absent worktree permits
-the remaining responsibility to settle. A present, replaced, or unreadable
-resource remains an error; the completed record is not mutated again.
+The original completed-Web fix reused stored stop/closure/deletion evidence and
+rechecked Git absence to settle an overlapping snapshot. The
+[resource-state decision](../architecture/2026-11-04-worker-resource-state.md)
+supersedes that reuse: repeated cleanup obtains fresh Controller, OS, endpoint
+and Git observations even for a done record. Remaining attributable resources
+are reconciled toward absence; replaced or unreadable resources remain visible
+errors. The done record cannot stand in for resource state.
 
 ## Alternatives
 
@@ -95,8 +97,9 @@ The existing stopped-agent and closed-workspace prerequisites remain necessary.
 Path-based unlink/rmdir cannot atomically exclude an external process that
 replaces ancestors after the final identity check. This is not a filesystem
 sandbox against hostile concurrent writers. Descriptor chmod cannot be redirected
-to a replacement path. Failures after the final `.git` unlink can still leave an
-ambiguous empty leaf, which is deliberately retained rather than guessed away.
+to a replacement path. Failures after the final `.git` unlink can leave an empty
+leaf. The resource-state decision removes that residue with checked nonrecursive
+rmdir while preserving the original refusal to delete unknown nonempty contents.
 
 Archive success, stopped-process proof, worktree removal, slot release, and
 shutdown behavior retain their separate responsibilities. This fix changes
