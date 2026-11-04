@@ -470,8 +470,9 @@ and records cleanup failures.
 
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. It runs thirty-two native functional workflows, then the same
-container workflows and complete container cleanup. The explicit local
+parallel. After shared CLI preparation, it overlaps thirty-two native functional
+workflows with the same container workflows, then requires complete target and
+shared CLI cleanup. The explicit local
 `pnpm web:acceptance:stress` command adds the fixed native capacity cases after
 those phases. Both modes require Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and
 Playwright Chromium. The
@@ -710,13 +711,21 @@ group stopped after settlement, preserving both command and cleanup failures.
 
 The core has no quality/browser preparation callbacks or readiness-admission
 observer. Local acceptance uses its existing installed browser. Native and
-container preparation still overlap; native functional checks and browser cleanup
-precede the container browser permission release. The permission wait remains
-900 seconds. Ordinary CI completes after both functional targets, combined
-authentication, full container cleanup and browser recovery. Explicit local
+container preparation overlap. Once native preparation has installed the shared
+CLI, an atomic source/run-bound permission releases the container functional
+browser alongside the native functional browser. Each target retains one worker,
+zero retries and its complete inventory. The permission wait remains 900 seconds.
+Each browser phase uses a separate private profile root outside uploaded
+artifacts. Run-wide CLI recovery waits until both targets have drained, preserving
+active commands and credentials in the other target. Combined CLI commands
+receive cancellation and retain individual process-group checks.
+Ordinary CI completes after both functional targets, combined authentication,
+full container cleanup, browser recovery and shared CLI recovery. Explicit local
 stress acceptance adds native capacity only after those phases finish.
 Independent quality checks run on their own runner and do not add empty core
-phases or split functional browser scenarios.
+phases or split functional browser scenarios. The
+[functional target decision](../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
+records the isolation and scheduling constraints.
 The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
 records the responsibility and budget boundaries without claiming a measured
 CPU/I/O cause or guaranteed hosted speedup.

@@ -10,7 +10,7 @@ export type ContainerPermissionIdentity = {
 };
 export type ContainerPermission = ContainerPermissionIdentity & {
   schemaVersion: 1;
-  phase: 'native-functional-cleaned';
+  phase: 'native-prepared';
 };
 export type ContainerPermissionWaitOptions = { signal: AbortSignal; timeoutMs: number };
 
@@ -37,7 +37,7 @@ const requireDirectory = (directory: string): void => {
 export const writeContainerPermission = async (directory: string, identity: ContainerPermissionIdentity): Promise<void> => {
   requireDirectory(directory);
   requireIdentity(identity);
-  const receipt: ContainerPermission = { schemaVersion: 1, phase: 'native-functional-cleaned', ...identity };
+  const receipt: ContainerPermission = { schemaVersion: 1, phase: 'native-prepared', ...identity };
   await mkdir(directory, { recursive: true });
   const temporary = join(directory, `.container-permission-${randomUUID()}.next`);
   try {
@@ -74,7 +74,7 @@ export const waitForContainerPermission = async (directory: string, identity: Co
     signal.throwIfAborted();
     if (performance.now() >= deadline) throw new Error('Container browser permission timed out.');
     const receipt: unknown = JSON.parse(contents);
-    if (!exactKeys(receipt, receiptKeys) || receipt.schemaVersion !== 1 || receipt.phase !== 'native-functional-cleaned') {
+    if (!exactKeys(receipt, receiptKeys) || receipt.schemaVersion !== 1 || receipt.phase !== 'native-prepared') {
       throw new Error('Invalid container browser permission receipt.');
     }
     if (identityKeys.some((key) => receipt[key] !== identity[key as keyof ContainerPermissionIdentity])) {
