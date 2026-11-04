@@ -13,7 +13,7 @@ export const useTaskSteps = (projectId: string, taskId: string, active: boolean)
   useEffect(() => { if (active) sessions.loadSteps(projectId, taskId); }, [sessions, projectId, taskId, active]);
   const retry = useCallback(() => { if (active) sessions.loadSteps(projectId, taskId, true); }, [sessions, projectId, taskId, active]);
   const setStatus = useCallback((stepId: string, status: StepStatus, version: bigint) => { sessions.setStepStatus(projectId, taskId, stepId, status, version); }, [sessions, projectId, taskId]);
-  const add = useCallback((stepId: string, title: string, description: string, status: StepStatus, version: bigint) => sessions.addStep(projectId, taskId, stepId, title, description, status, version), [sessions, projectId, taskId]);
+  const add = useCallback((stepId: string, title: string, description: string, status: StepStatus, version: bigint, placement?: { readonly before: string } | { readonly after: string }) => sessions.addStep(projectId, taskId, stepId, title, description, status, version, placement), [sessions, projectId, taskId]);
   const edit = useCallback((stepId: string, title: string, description: string, version: bigint) => sessions.editStep(projectId, taskId, stepId, title, description, version), [sessions, projectId, taskId]);
   const remove = useCallback((stepId: string, version: bigint) => sessions.deleteStep(projectId, taskId, stepId, version), [sessions, projectId, taskId]);
   const move = useCallback((stepId: string, placement: StepPlacement, version: bigint) => { sessions.moveStep(projectId, taskId, stepId, placement, version); }, [sessions, projectId, taskId]);

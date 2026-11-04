@@ -10,15 +10,17 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 )
 
 type botsHandler struct {
 	bots   *service.Bots
+	relay  *sessionrelay.Service
 	logger *slog.Logger
 }
 
-func botsRoutes(mux *http.ServeMux, bots *service.Bots, auth *Authentication, logger *slog.Logger) {
-	h := &botsHandler{bots: bots, logger: logger}
+func botsRoutes(mux *http.ServeMux, bots *service.Bots, relay *sessionrelay.Service, auth *Authentication, logger *slog.Logger) {
+	h := &botsHandler{bots: bots, relay: relay, logger: logger}
 	const base = "/api/v1/me/bots"
 	mux.HandleFunc("GET "+base, auth.Require(h.list))
 	mux.HandleFunc("POST "+base, auth.Require(h.create))
@@ -201,7 +203,7 @@ func (h *botsHandler) remove(w http.ResponseWriter, request *http.Request, princ
 			var input service.DeleteBot
 			input, err = botDeleteInput(fields)
 			if err == nil {
-				bot, err = h.bots.Delete(request.Context(), principal, id, input)
+				bot, err = h.relay.DeleteBot(request.Context(), principal, id, input)
 			}
 		}
 	}

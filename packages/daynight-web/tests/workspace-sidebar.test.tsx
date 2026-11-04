@@ -23,7 +23,7 @@ const Harness = ({ collapsed = false, routeKey = "/", identityChecking = false, 
   const workspace = useRef<HTMLDivElement>(null);
   useBodyScrollLock(anotherLock);
   return <ProjectsProvider>
-    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId="00000000-0000-4000-8000-000000000701" workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} activeProjectId={null} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={onNavigate} />
+    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} teamMembersActive={routeKey === "/members"} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId="00000000-0000-4000-8000-000000000701" workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} activeProjectId={null} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={onNavigate} />
     <div ref={workspace} data-testid="workspace" inert={initiallyInert}><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
   </ProjectsProvider>;
 };
@@ -60,6 +60,13 @@ describe("workspace sidebar", () => {
     expect(projects).not.toHaveAttribute("aria-current");
     expect(workers.parentElement).toBe(projects.parentElement);
     expect(workers.closest(".sidebar-projects")).toBeNull();
+  });
+
+  it("provides a native Team members link and marks the active page", () => {
+    render(<Harness collapsed routeKey="/members" />);
+    const link = screen.getByRole("link", { name: "Team members" });
+    expect(link).toHaveAttribute("href", "/teams/00000000-0000-4000-8000-000000000701/members");
+    expect(link).toHaveAttribute("aria-current", "page");
   });
 
   it("retains native modified Worker navigation and closes the mobile drawer for ordinary navigation", () => {
