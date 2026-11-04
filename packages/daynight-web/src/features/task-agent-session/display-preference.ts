@@ -35,7 +35,7 @@ function readPreference(key: string, getStorage: () => SessionDisplayPreferenceS
   let saved: string | null;
   try { saved = getStorage().getItem(key); }
   catch { return Object.freeze({ mode: DEFAULT_SESSION_DISPLAY_MODE, issue: issues.read }); }
-  if (saved === null) return defaultSnapshot;
+  if (saved === null) return Object.freeze({ ...defaultSnapshot });
   try {
     const mode: unknown = JSON.parse(saved);
     if (mode === 'standard' || mode === 'conversation') return Object.freeze({ mode, issue: null });

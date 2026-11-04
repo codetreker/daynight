@@ -137,6 +137,9 @@ describe('Session display preference persistence', () => {
     preferences.get({ userId: 'a"', sessionId: '[b]' }).setMode('standard');
     expect([...values.keys()]).toEqual([key, 'daynight.web.session.display.v1:["a:b","c"]', 'daynight.web.session.display.v1:["a\\\"","[b]"]']);
     expect(preferences.get({ ...binding })).toBe(preferences.get(binding));
+    const otherAccount = preferences.get({ ...binding, userId: 'account-b' });
+    const otherSession = preferences.get({ ...binding, sessionId: 'session-b' });
+    expect(otherAccount.getSnapshot()).not.toBe(otherSession.getSnapshot());
   });
 
   it('uses an inert null binding without even accessing storage', () => {
