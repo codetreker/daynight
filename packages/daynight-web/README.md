@@ -599,6 +599,39 @@ index. Overview positioning can clear a filter that hides its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
+## Steps reading
+
+Task details always expose Steps after Overview, in both the dialog and standalone
+page. `tab=steps` preserves the tab through direct access, reload and browser
+history, including details without a Session. Reading shows the ordered title,
+four-state status and task-local ID; multiple expanded rows render Task-root
+Markdown and timestamps through the same attachment controller as Overview.
+
+`TaskDetailSessions` owns a separate lazy Steps resource in memory. Summary,
+parent-detail and confirmed mutation versions invalidate it; identity, cache
+generation and version admission fence late responses. An ahead resource waits
+for summary admission and requests parent/project refresh, while stale responses
+are reread against the highest verified floor, including pending parent details.
+Refresh and reader release retain that scalar floor within the same cache
+generation. Confirmed parent deletion fences in-flight reads and asynchronous
+admission so late responses cannot restore a deleted detail. First-read errors, valid emptiness and
+retained-content errors remain distinct and retryable. A Steps 404 checks the
+parent before retiring access; 403 remains a refusal, and parent 410 uses the
+existing deleted-task presentation. Retirement and the last active reader's
+unsubscribe release complete collections, including pending admission. Steps never
+enter the TaskDetail LRU or IndexedDB.
+
+The list mounts at most 100 rows per page, with global numbering, previous/next
+buttons and a numeric page input. Paging makes no API requests; expansion remains
+bound to IDs across pages, same-task tabs and refresh reordering. Both languages
+and the 320px layout retain reading and recovery controls. Web writing controls
+are not exposed. At heights up to 500px, a single scrollable tab row reserves
+reading space; the tab owner reveals its target after focus, selection styling
+and locale updates. At heights up to 600px, pagination scrolls with the list so
+its controls cannot cover the remaining reading area. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
+and [design](../../docs/design/daynight-task-steps.md#web-资源与单一写入所有者)
+own the complete read lifecycle and the remaining write architecture.
+
 ## Session display
 
 Task, Test and readable archived Sessions share the Display menu beside Refresh.
@@ -615,7 +648,7 @@ owns identity binding, menu behavior and preference integration.
 
 ## Task discussions
 
-Task details always provide Overview, Attachments and Discussion tabs, followed
+Task details always provide Overview, Steps, Attachments and Discussion tabs, followed
 by Session when native execution content is available. Discussion works before
 execution starts, after completion and while an execution environment is offline.
 It reads and posts directly to the task Thread resource; ordinary browser posts
@@ -1572,9 +1605,12 @@ main pushes run the full suite. The Web result enables two parallel jobs,
 and other results fail the gate. Shared workflow changes retain the existing
 all-module selection rule.
 
-`node packages/daynight-web/scripts/ci.mts quality` runs `test:harness` and the complete
-`test:coverage` command serially. Each retains a separate 180-second deadline,
-so harness duration cannot consume the coverage command's budget. Only the
+`node packages/daynight-web/scripts/ci.mts quality` runs `test:harness`, complete
+Vitest/V8 collection and `scripts/coverage.mts` serially. Harness has a 180-second deadline and collection has a 300-second deadline;
+final source-inventory and strict coverage
+verification has its own 60-second deadline. Completed tests cannot consume the
+final checker's budget. The [stage budget decision](../../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)
+owns that separation. Only the
 Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=4`, retaining
 its `forks` pool, per-file isolation, full product manifest and strict statement
 gate. The [worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
