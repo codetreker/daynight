@@ -31,6 +31,9 @@ The [SQLite format migration decision](../architecture/2026-10-30-cli-sqlite-mig
 versions the index independently. The [cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md)
 partially supersedes this note's process-local cleanup choice with a separate
 claim/worktree-bound schedule; business execution recovery remains process-local.
+The [resource-state decision](../architecture/2026-11-04-worker-resource-state.md)
+removes that schedule's notification progress flags and requires authoritative
+resource observations for every cleanup completion.
 
 The service supplies complete current own-claim inventory. Git and the private
 Herdr instance supply actual resources. Startup resolves configured Projects and
@@ -100,6 +103,14 @@ startup and new acquisition. Project-local pending order is stable, and new
 candidates retain server ready order. This keeps spare capacity from being
 consumed by one busy Project's entire batch.
 
+An ended index row without a global resource match enters the same serialized
+cleanup jobs as known owners. The target initially carries claim identity only;
+a full owner is recovered from authoritative resources when present. Otherwise,
+execution absence and the empty unregistered task reservation are checked without
+fabricating a worktree ID. Identity-only failures use process-local backoff and
+are rediscovered from the unfinished index after restart. A recognized same-task
+resource for another claim is not deleted to settle the absent old claim.
+
 Known-target cleanup and shutdown observe the target's Herdr execution and
 validate only the target Git worktree when deleting. Sibling or unrelated Git
 registration problems remain diagnostics, without preventing healthy agents
@@ -112,8 +123,10 @@ counting an old business turn as the requested cleanup. The
 that criterion: successful notification followed by a fresh idle observation
 allows stopping, without requiring counters or interactive readiness. Notification
 failures and unknown results retain the bounded deadline and visible error.
-Business input observations remain process-local. Terminal-cleanup notification
-state and its first deadline survive restart under the cleanup retry decision.
+Business input observations remain process-local. The first terminal-cleanup
+deadline and retry policy survive restart. The resource-state decision removes
+notification progress storage; an interrupted Herdr cleanup call may notify the
+still-live original agent again, while actual resource absence determines completion.
 This criterion applies to normal terminal cleanup. The
 [direct shutdown decision](../bug-fix/2026-10-28-worker-direct-shutdown.md)
 owns worker process exit: cancel and join all jobs, including terminal cleanup,
@@ -127,8 +140,9 @@ uses the current applicable model/args for the recorded agent type. The original
 choice also made cleanup progress process-local to avoid a second resource-state
 model. Repeated failures showed that restarting its deadline and notification
 could repeat an irreversible input without changing the cleanup obstruction.
-The cleanup retry decision preserves the first cleanup deadline, notification
-state and retry eligibility independently of actual resource observations.
+The cleanup retry decision introduced first-deadline, notification and retry
+continuity. The resource-state decision retains only the deadline and retry policy
+and replaces notification progress with advisory per-call input and live observations.
 Business recovery counts still reset with the process. Logs diagnose operations
 and never supply a recovery ledger.
 
@@ -169,9 +183,9 @@ a process must be resumed. Two explicit columns provide that index.
 retain stronger cross-restart timing, configuration and uncertainty guarantees.
 They also require numerous parsers and transition conditions at every caller.
 The simplification rebuilt actions from current facts and accepted narrower
-restart semantics. The cleanup retry decision restores only the timing and
-notification guarantee needed for terminal cleanup, without restoring the
-retired execution model.
+restart semantics. The cleanup retry decision restored terminal scheduling continuity without the
+retired execution model. The resource-state decision removes its notification
+ledger while retaining the fixed deadline and independent retry policy.
 
 **Reuse a restored inactive pane directly.** Its retained native reference does
 not establish that the restored shell has the task's native environment. Fresh
@@ -197,7 +211,7 @@ versions and errors. A failed or partial read is not an empty resource set.
 Old claim resources still block the same task's new execution and retain
 capacity until actual cleanup completes.
 
-Restart preserves the terminal-cleanup deadline and notification state, but not
+Restart preserves the terminal-cleanup responsibility, deadline and retry policy, but not
 the accumulated business recovery budget, old model/args or an interrupted
 management decision. A NULL native ID
 starts a fresh conversation with an `info` event; if a prior conversation existed,
@@ -207,7 +221,8 @@ old executions and rebuilding local state.
 
 The [SQLite format migration decision](../architecture/2026-10-30-cli-sqlite-migrations.md)
 provides the version 5 index baseline; the cleanup retry decision adds the
-version 6 schedule while preserving the original index rows. Version 0 discards its schema and rows, then
+version 6 schedule while preserving the original index rows. The resource-state
+decision adds version 7 to remove notification progress fields. Version 0 discards its schema and rows, then
 rebuilds through the baseline and numbered upgrades after admission.
 Retired detailed nonzero versions 1–4 still have no conversion or automatic
 deletion: an operator stops the old worker and removes that SQLite before

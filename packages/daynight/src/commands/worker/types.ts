@@ -19,8 +19,6 @@ export type ExecutionConfiguration = {
 export type ResourceOwner = ClaimIdentity & { worktreeId: string };
 export type CleanupSchedule = {
   deadline: number;
-  notified: boolean;
-  submitted: boolean;
   failures: number;
   nextAttemptAt: number;
   stage: string;

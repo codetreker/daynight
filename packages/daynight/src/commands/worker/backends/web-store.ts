@@ -4,7 +4,6 @@ import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration, WorkerProject, ResourceOwner } from "../types.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState } from "./web-types.js";
-import { backendResourcesClosed, taskAgentControlMode } from "./web-types.js";
 import { webRecordInteger as integer, webRecordChoice as oneOf, webRecordText as text, webRecordId as id, parseWebWorktreeV1 as parseWorktree, parseWebExecutionV1 as parseWebExecution, parseWebCleanupV1 as parseCleanup, webClaimKey as key, parseWebTaskV1 as validate } from "./web-record.js";
 import { webExecutionStoreFormat } from "./web-store-format.js";
 
@@ -56,7 +55,7 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
     clearShutdown: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => {
       const cleanup = task.cleanup;
       if (cleanup === null) return task;
-      if (cleanup.kind !== "shutdown" || !cleanup.agentStopped || !backendResourcesClosed(cleanup)) throw new Error("The original cleanup has not completed.");
+      if (cleanup.kind !== "shutdown") throw new Error("Terminal cleanup cannot resume ordinary execution.");
       return { ...task, cleanup: null, webExecution: task.webExecution === null ? null : { ...task.webExecution, restartAfterShutdown: true } };
     }),
     beginRecovery: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, (task) => {
@@ -92,7 +91,7 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
     }),
     completeTask: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => {
       const cleanup = needCleanup(task);
-      if (cleanup.kind !== "terminal" || !cleanup.agentStopped || !backendResourcesClosed(cleanup) || !cleanup.worktreeDeleted) throw new Error("Web completion requires original resources to be stopped and removed.");
+      if (cleanup.kind !== "terminal") throw new Error("Web completion requires terminal cleanup intent.");
       return { ...task, status: "done" };
     }),
     initializeWebExecution: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => {
@@ -126,11 +125,6 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
       // A failed preparation retains the allocated launch intent; another explicit allowance cannot allocate it again.
       return { ...task, recovery: { count: integer(task.recovery.count + 1, "Recovery count"), pauseReason: null, retryAuthorized: true }, webExecution: { ...execution, restartAfterShutdown: false, activity: "initializing" } };
     }),
-    confirmBackendResourcesClosed: (identity: ClaimIdentity, proof: { controllerStopped: true; endpointClosed: true }, now: number): LocalTask => change(identity, now, task => {
-      const cleanup = needCleanup(task);
-      if (cleanup.mode !== "web" || !cleanup.agentStopped || proof.controllerStopped !== true || proof.endpointClosed !== true) throw new Error("Web resource closure requires stopped original controller and endpoint.");
-      return { ...task, cleanup: { ...cleanup, backendResourcesClosed: true } };
-    }),
     bindWorktree: (identity: ClaimIdentity, binding: WorktreeBinding, now: number): LocalTask => change(identity, now, (task) => {
       if (task.status !== "active") throw new Error("Resource creation requires an active execution.");
       const value = parseWorktree(binding);
@@ -143,36 +137,9 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
       const existing = task.cleanup;
       if (existing !== null) return { ...task, cleanup: { ...existing, kind: existing.kind === "terminal" ? "terminal" : input.kind } };
       if (task.control !== null && input.kind !== "terminal") throw new Error("A source control intent requires terminal cleanup.");
-      return { ...task, status: "active", cleanup: parseCleanup({ kind: input.kind, startedAt: now, deadline: input.deadline, input: "not-submitted", baseline: null, result: null, error: null, agentStopped: false, workspaceClosed: taskAgentControlMode(task) === "web" ? null : false, ...(taskAgentControlMode(task) === "web" ? { mode: "web" as const, backendResourcesClosed: false } : {}), worktreeDeleted: false }) };
+      return { ...task, status: "active", cleanup: parseCleanup({ kind: input.kind, startedAt: now, deadline: input.deadline }) };
     }),
-    markCleanupInputSubmitting: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, (task) => {
-      const cleanup = needCleanup(task);
-      if (cleanup.input !== "not-submitted" || cleanup.agentStopped || cleanup.result !== null) throw new Error("Cleanup input cannot be submitted again or after cleanup completion or agent stop.");
-      if (now >= cleanup.deadline) throw new Error("The original cleanup deadline has elapsed; no new input may be submitted.");
-      return { ...task, cleanup: { ...cleanup, input: "unknown" } };
-    }),
-    recordCleanupInputOutcome: (identity: ClaimIdentity, input: "submitted" | "rejected" | "unavailable", now: number): LocalTask => change(identity, now, (task) => {
-      const cleanup = needCleanup(task);
-      oneOf(input, ["submitted", "rejected", "unavailable"], "Cleanup input outcome");
-      if (cleanup.input !== "unknown" && !(cleanup.input === "not-submitted" && input === "unavailable") && cleanup.input !== input) throw new Error("The cleanup input outcome conflicts with the original submission.");
-      return { ...task, cleanup: { ...cleanup, input } };
-    }),
-    recordCleanupResult: (identity: ClaimIdentity, result: NonNullable<CleanupState["result"]>, error: string | null, now: number): LocalTask => change(identity, now, (task) => {
-      const cleanup = needCleanup(task);
-      oneOf(result, ["completed", "timed-out", "failed", "unavailable"], "Cleanup result");
-      if (cleanup.result !== null && cleanup.result !== result) throw new Error("The original cleanup result cannot be replaced.");
-      if (result === "timed-out" && now < cleanup.deadline) throw new Error("The original cleanup deadline has not elapsed.");
-      return { ...task, cleanup: { ...cleanup, result, error: error === null ? null : text(error, "Cleanup error") } };
-    }),
-    confirmAgentStopped: (identity: ClaimIdentity, proof: { agentStopped: true }, now: number): LocalTask => change(identity, now, (task) => {
-      if (proof.agentStopped !== true) throw new Error("The caller must confirm the original agent has stopped.");
-      return { ...task, cleanup: { ...needCleanup(task), agentStopped: true } };
-    }),
-    confirmWorktreeDeleted: (identity: ClaimIdentity, proof: { worktreeDeleted: true }, now: number): LocalTask => change(identity, now, (task) => {
-      const cleanup = needCleanup(task);
-      if (cleanup.kind !== "terminal" || !backendResourcesClosed(cleanup) || proof.worktreeDeleted !== true) throw new Error("Worktree deletion requires confirmed workspace closure and terminal cleanup.");
-      return { ...task, cleanup: { ...cleanup, worktreeDeleted: true } };
-    }),
+
   };
 };
 export type WebExecutionStore = ReturnType<typeof openWebExecutionStore>;

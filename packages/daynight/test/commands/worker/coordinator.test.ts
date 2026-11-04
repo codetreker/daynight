@@ -1,5 +1,11 @@
+import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
+import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import type { LocalTask as WebTask } from "../../../src/commands/worker/backends/web-types.js";
+import type { WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
+import type { requestController } from "../../../src/commands/controller/local-client.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TimerOptions } from "node:timers";
@@ -80,7 +86,7 @@ const fixture = async (maxConcurrent = 1) => {
   };
   const observe = (context: ResourceOwner, binding: HerdrTaskBinding): HerdrAgentObservation => ({ ...resources.get(context.claimId)!.panes[0]!, name: "managed", binding });
   const git = {
-    prepareRepository: vi.fn(), dispose: vi.fn(),
+    prepareRepository: vi.fn(), dispose: vi.fn(), removeEmptyReservation: vi.fn(async () => {}),
     prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); worktrees.set(owner.claimId, { owner, binding }); return binding; }),
     verifyWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { const found = worktrees.get(owner.claimId); if (found === undefined) throw new Error("Original worktree missing"); return found.binding; }),
     findWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => worktrees.get(owner.claimId)?.binding ?? null),
@@ -141,6 +147,17 @@ const fixture = async (maxConcurrent = 1) => {
     return store;
   };
   return { root, get store() { return store; }, reopenStore, project, candidates, grants, grant, resources, worktrees, git, herdr, tasks, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind, blockStartupInput: () => { blockedStartupInput = true; } };
+};
+
+const stoppedWebExecution = async (f: Awaited<ReturnType<typeof fixture>>, store: WebExecutionStore, task: WebTask) => {
+  const execution = task.webExecution!;
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId!, provider: task.configuration!.agent, cwd: f.project.localPath, nativeHome: path.join(f.root, "native"), configuration: task.configuration!, initialOperationId: execution.initialOperationId, initialPrompt: "managed", resumeNativeSessionId: null, credentialFile: path.join(f.root, "grant.json"), ipcEndpoint: path.join(f.root, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  task = store.updateWebExecution(task, { ticketPath: await writeLaunchTicket(f.root, ticket) }, 6);
+  const snapshot: lifecycle.ControllerSnapshot = { executionId: execution.executionId, claimId: task.claimId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, lifecycle: "stopped", nativeSessionId: null, initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "birth", commandHash: "a".repeat(64) }, nativeProcesses: [], nativeStopped: true, stoppedAt: new Date().toISOString(), error: null };
+  vi.spyOn(lifecycle, "readControllerSnapshot").mockReturnValue(snapshot);
+  vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
+  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  return { task, request: vi.fn<typeof requestController>().mockRejectedValue(new Error("Original controller is stopped.")) };
 };
 
 const addOrphan = (f: Awaited<ReturnType<typeof fixture>>, taskId = uuid(900)) => {
@@ -753,18 +770,22 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.tasks.start).toHaveBeenCalledOnce();
   });
 
-  it("preserves cleanup deadline and notification across a new driver", async () => {
+  it("preserves the original cleanup deadline and reobserves resources after an interrupted driver", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!; const owner = f.worktrees.get(row.claimId)!.owner;
     f.tasks.submitPrompt.mockImplementation(async (context, binding) => ({ submission: "submitted", observation: { ...f.resources.get(context.claimId)!.panes[0]!, name: "managed", binding } }));
     const deps = { store: f.store, git: f.git, herdr: f.herdr, platform: "linux" as const, serverOrigin: origin, workerId, buildPrompt: f.options.buildPrompt, emit: f.options.emit, now: f.options.now };
-    const first = createCleanupDriver(deps);
-    expect(await first.advance({ task: row, project: f.project, owner }, await f.tasks.listResources(), true)).toBe(false);
+    const cancellation = new AbortController();
+    polling.onSchedule = () => cancellation.abort(new Error("Worker interrupted while observing cleanup."));
+    await expect(createCleanupDriver(deps).advance({ task: row, project: f.project, owner }, true, cancellation.signal)).rejects.toThrow();
+    expect(f.store.getCleanupSchedule(owner)?.deadline).toBe(601_000);
+    polling.onSchedule = undefined;
     f.clock(602_000);
-    const restarted = createCleanupDriver(deps);
-    expect(await restarted.advance({ task: row, project: f.project, owner }, await f.tasks.listResources(), true)).toBe(true);
+    await createCleanupDriver(deps).advance({ task: row, project: f.project, owner }, true);
     expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
     expect(f.tasks.stopAndClose).toHaveBeenCalledOnce();
+    expect(f.resources.has(owner.claimId)).toBe(false);
+    expect(f.worktrees.has(owner.claimId)).toBe(false);
   });
 
   it("cleans actual resources left behind a historical done row", async () => {
@@ -777,6 +798,47 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.git.removeWorktree).toHaveBeenCalledOnce();
   });
 
+
+  it.each(["pending", "active"] as const)("cleans an ended %s claim's empty reservation from actual filesystem state before releasing capacity", async status => {
+    const f = await fixture();
+    const local = f.store.registerPending({ projectId: f.project.projectId, taskId: uuid(700), claimId: uuid(701), agent: "codex" });
+    if (status === "active") f.store.activateTask(local);
+    const reservation = path.join(f.project.localPath, ".worktrees", "daynight", local.taskId), obstruction = path.join(reservation, "remaining");
+    await mkdir(reservation, { recursive: true }); await writeFile(obstruction, "retained resource");
+    vi.mocked(f.git.removeEmptyReservation).mockImplementation(async (project, taskId) => {
+      expect(project).toEqual(f.project); expect(taskId).toBe(local.taskId);
+      await rmdir(reservation);
+    });
+    await f.coordinator.tick();
+    await eventually(() => expect(f.events.filter(event => event.kind === "cleanup-error")).toHaveLength(1));
+    expect(f.store.getTask(local)?.status).toBe(status);
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    await f.coordinator.tick();
+    expect(f.git.removeEmptyReservation).toHaveBeenCalledOnce();
+    expect(f.events.some(event => event.kind === "cleanup-capacity-blocked")).toBe(true);
+    await rm(obstruction); f.clock(2000);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.store.getTask(local)?.status).toBe("done"));
+    await expect(access(reservation)).rejects.toMatchObject({ code: "ENOENT" });
+    await f.coordinator.tick(); await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("releases an old identity-only claim after observing the same task's recognized replacement worktree", async () => {
+    const f = await fixture();
+    const old = f.store.registerPending({ projectId: f.project.projectId, taskId: uuid(700), claimId: uuid(701), agent: "codex" });
+    f.store.activateTask(old);
+    const replacement = { projectId: old.projectId, taskId: old.taskId, claimId: uuid(702), worktreeId: uuid(703) };
+    f.grant(task(old.projectId, old.taskId), { claimId: replacement.claimId, worktreeId: replacement.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
+    f.worktrees.set(replacement.claimId, { owner: replacement, binding: f.bind(replacement) });
+    await f.coordinator.tick();
+    await eventually(() => expect(f.store.getTask(old)?.status).toBe("done"));
+    expect(f.worktrees.has(replacement.claimId)).toBe(true);
+    expect(f.git.removeEmptyReservation).not.toHaveBeenCalled();
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    expect(f.tasks.start.mock.calls[0]![0].claimId).toBe(replacement.claimId);
+  });
 
   it("preserves a rowless Git marker without proof that this worker owns it", async () => {
     const f = await fixture(); f.candidates.splice(0);
@@ -863,21 +925,23 @@ describe("minimal worker resource reconciliation", () => {
     f.tasks.submitPrompt.mockImplementation(async (context, binding) => ({ submission: "submitted", observation: { ...f.resources.get(context.claimId)!.panes[0]!, name: "managed", binding } }));
     const driver = createCleanupDriver({ store: f.store, git: f.git, herdr: f.herdr, platform: "linux", serverOrigin: origin, workerId, buildPrompt: f.options.buildPrompt, emit: f.options.emit, now: f.options.now });
     const input = { task: row, project: f.project, owner };
-    expect(await driver.advance(input, await f.tasks.listResources(), true)).toBe(false); f.clock(602_000);
+    f.store.saveCleanupSchedule(owner, { deadline: 601_000, failures: 0, nextAttemptAt: 1000, stage: "observation", lastError: null });
+    f.clock(602_000);
     const pending: { context: ResourceOwner & { cwd: string }; binding: HerdrTaskBinding }[] = [];
     f.tasks.pendingStops.mockImplementation(() => [...pending]);
     f.tasks.stopAndClose.mockImplementationOnce(async (context) => {
       pending.push({ context: { ...context, cwd: path.join(f.project.localPath, ".worktrees", "daynight", row.taskId) }, binding: [...f.resources.values()][0]!.panes[0]!.binding });
       f.resources.clear(); throw new Error("process still live");
     });
-    await expect(driver.advance(input, await f.tasks.listResources(), true)).rejects.toThrow("process still live");
+    f.tasks.stopAndClose.mockRejectedValueOnce(new Error("process still live"));
+    await expect(driver.advance(input, true)).rejects.toThrow("process still live");
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
     f.tasks.stopAndClose.mockRejectedValueOnce(new Error("process still live"));
-    await expect(driver.advance(input, [], true)).rejects.toThrow("process still live");
+    await expect(driver.advance(input, true)).rejects.toThrow("process still live");
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
     f.tasks.stopAndClose.mockImplementationOnce(async () => { pending.splice(0); });
-    expect(await driver.advance(input, [], true)).toBe(true);
-    expect(f.tasks.stopAndClose).toHaveBeenCalledTimes(3); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+    await driver.advance(input, true);
+    expect(f.tasks.stopAndClose).toHaveBeenCalledTimes(4); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
   });
 
 
@@ -1106,7 +1170,8 @@ describe("minimal worker resource reconciliation", () => {
     f.tasks.stopAndClose.mockImplementation(async () => { await wait; pending.splice(0); });
     try {
       await f.coordinator.tick();
-      await eventually(() => expect(f.events.some((event) => event.kind === "cleanup-error")).toBe(true));
+      await eventually(() => expect(pending).toHaveLength(1));
+      expect(f.resources.has(owner.claimId)).toBe(false);
       await f.coordinator.tick();
       expect(f.store.getTask(owner)).toEqual({ projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId, status: "pending", agent: "codex", agentControlMode: "herdr" as const, sessionId: uuid(903) });
       expect(f.remote.claim).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
@@ -1228,7 +1293,8 @@ it("missing Web execution evidence never permits replacing or deleting an existi
     expect(cleanup).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
     expect(f.store.getTask(row)?.status).toBe("active");
     f.grants.clear();
-    await expect(coordinator.tick()).rejects.toBe(refusal);
+    await coordinator.tick();
+    await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
     expect(f.store.getTask(row)?.status).toBe("active");
     expect(await coordinator.shutdown()).toBe(false);
   } finally { webStore.close(); }
@@ -1247,10 +1313,11 @@ it.each(["archive", "worktree removal"])("releases a deleted Web task's last wor
   record = webStore.bindWorktree(record, await f.git.prepareWorktree(f.project, owner, {} as Operation), 2);
   record = webStore.initializeWebExecution(record, 3);
   record = webStore.updateWebExecution(record, { sessionId: uuid(812), initialPrompt: "managed", launchSubmission: "acknowledged" }, 4);
-  record = webStore.beginCleanup(record, { kind: "terminal", deadline: 100 }, 5);
-  record = webStore.recordCleanupResult(record, "completed", null, 6);
-  record = webStore.confirmAgentStopped(record, { agentStopped: true }, 7);
-  webStore.confirmBackendResourcesClosed(record, { controllerStopped: true, endpointClosed: true }, 8);
+  const stopped = await stoppedWebExecution(f, webStore, record);
+  record = webStore.beginCleanup(stopped.task, { kind: "terminal", deadline: 100 }, 7);
+
+
+
   // Deleted tasks disappear from the remote inventory, while local cleanup remains durable.
   f.grants.clear(); f.candidates.shift();
   let cleanupAvailable = false;
@@ -1262,14 +1329,14 @@ it.each(["archive", "worktree removal"])("releases a deleted Web task's last wor
     await allowRemoval.promise;
     return removeWorktree(...args);
   });
-  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000, archive });
+  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000, archive, request: stopped.request });
   const advance = async (input: import("../../../src/commands/worker/backends/web-types.js").LocalTask) => webStore.initializeWebExecution(input, 1000);
   const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, webBackend: { ...backend, advance }, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
   try {
     await coordinator.tick();
     await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
     expect(f.store.getTask(owner)?.status).toBe("active");
-    expect(webStore.getTask(owner)?.cleanup?.worktreeDeleted).toBe(false);
+    expect(f.worktrees.has(owner.claimId)).toBe(true);
     expect(f.worktrees.has(owner.claimId)).toBe(true);
     expect(f.remote.claim).not.toHaveBeenCalled();
     cleanupAvailable = true;
@@ -1293,11 +1360,10 @@ it.each(["archive", "worktree removal"])("releases a deleted Web task's last wor
     expect(f.remote.claim).toHaveBeenCalledOnce();
     expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
     expect(f.events.filter(event => event.kind === "cleanup-error")).toHaveLength(1);
-    // A completed record cannot authorize ignoring a reappearing physical worktree.
+    // A completed record still reconciles the original claim against physical resources.
     f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
-    await expect(coordinator.completeSource(owner)).rejects.toThrow("still has a worktree");
-    expect(f.worktrees.has(owner.claimId)).toBe(true);
-    f.worktrees.delete(owner.claimId);
+    await coordinator.completeSource(owner);
+    expect(f.worktrees.has(owner.claimId)).toBe(false);
     await coordinator.completeSource(owner);
     await coordinator.shutdown();
   } finally { allowRemoval.resolve(); webStore.close(); }
@@ -1384,14 +1450,14 @@ it("keeps an authorized Web retry waiting until a healthy observation after conf
     }
     return record;
   });
-  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance, cleanup: vi.fn() } });
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance, cleanup: vi.fn(async input => ({ task: input, complete: true })) } });
   try {
     await coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
     const row = f.store.listTasks()[0]!;
     webStore.pauseRecovery(row, "Recovery exhausted.", 6);
     webStore.beginCleanup(row, { kind: "shutdown", deadline: 9 }, 7);
-    webStore.confirmAgentStopped(row, { agentStopped: true }, 8);
-    webStore.confirmBackendResourcesClosed(row, { controllerStopped: true, endpointClosed: true }, 9);
+
+
     await coordinator.advanceRetry(row);
     expect(webStore.getTask(row)?.cleanup).toBeNull();
     expect(webStore.getTask(row)?.recovery).toMatchObject({ count: 1, retryAuthorized: true });
@@ -1634,7 +1700,7 @@ describe("terminal cleanup retry scheduling", () => {
     f.store.registerPending({ ...old, agent: "codex", agentControlMode: "herdr" });
     if (status === "done") f.store.completeTask(old);
     else f.store.activateTask(old);
-    const schedule = f.store.saveCleanupSchedule(old, { deadline: 600_000, notified: true, submitted: true, failures: 1, nextAttemptAt: retry === "deferred" ? 2000 : 1000, stage: "observation", lastError: "The previous cleanup attempt failed." });
+    const schedule = f.store.saveCleanupSchedule(old, { deadline: 600_000, failures: 1, nextAttemptAt: retry === "deferred" ? 2000 : 1000, stage: "observation", lastError: "The previous cleanup attempt failed." });
     f.reopenStore();
     expect(f.store.getTask(old)?.status).toBe(status);
     expect(f.store.getCleanupSchedule(old)).toEqual(schedule);
@@ -1716,7 +1782,7 @@ it.each([
       expect(f.store.getTask(owner)?.status).toBe("done");
       expect(f.store.getCleanupSchedule(owner)).toBeNull();
     });
-    expect(webStore.getTask(owner)).toMatchObject({ status: "done", cleanup: { deadline: expectedDeadline, agentStopped: true, backendResourcesClosed: true, worktreeDeleted: true } });
+    expect(webStore.getTask(owner)).toMatchObject({ status: "done", cleanup: { deadline: expectedDeadline } });
     expect(f.git.removeWorktree).toHaveBeenCalledOnce();
     expect(advance).not.toHaveBeenCalled();
     expect(launcher.launch).not.toHaveBeenCalled();
@@ -1725,7 +1791,7 @@ it.each([
   } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
-it("reuses completed Web stop proof when shutdown follows an interrupted schedule removal", async () => {
+it("observes completed Web resources when shutdown follows an interrupted schedule removal", async () => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
   const f = await fixture(); const webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
@@ -1734,11 +1800,11 @@ it("reuses completed Web stop proof when shutdown follows an interrupted schedul
   f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
   let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
   record = webStore.beginCleanup(record, { kind: "terminal", deadline: 100 }, 2);
-  record = webStore.confirmAgentStopped(record, { agentStopped: true }, 3);
-  record = webStore.confirmBackendResourcesClosed(record, { controllerStopped: true, endpointClosed: true }, 4);
-  record = webStore.confirmWorktreeDeleted(record, { worktreeDeleted: true }, 5);
+
+
+
   webStore.completeTask(record, 6); f.store.completeTask(owner);
-  f.store.saveCleanupSchedule(owner, { deadline: 100, notified: false, submitted: false, failures: 0, nextAttemptAt: 1, stage: "observation", lastError: null });
+  f.store.saveCleanupSchedule(owner, { deadline: 100, failures: 0, nextAttemptAt: 1, stage: "observation", lastError: null });
   const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000 });
   const coordinator = createWorkerCoordinator({ ...f.options, repositories: [], globalConfiguration: configuration, webStore, webBackend: backend });
   try {

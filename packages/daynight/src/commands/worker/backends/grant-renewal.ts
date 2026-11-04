@@ -16,7 +16,7 @@ export const maintainWorkerControllerGrants = async (options: {
     const renewals = await Promise.allSettled(options.store.listUnfinishedTasks().map(async task => {
       if (options.signal.aborted) return;
       const execution = task.webExecution;
-      if (task.serverOrigin !== options.serverOrigin || !execution?.ticketPath || execution.launchSubmission === "not-submitted" || task.cleanup?.agentStopped) return;
+      if (task.serverOrigin !== options.serverOrigin || !execution?.ticketPath || execution.launchSubmission === "not-submitted") return;
       try {
         const ticket = await readTicket(options.homeDirectory, execution.launchId);
         if (ticket.executionId !== execution.executionId || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId || ticket.claimId !== task.claimId) throw new Error("Controller credential renewal has conflicting execution evidence.");

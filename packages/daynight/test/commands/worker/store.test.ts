@@ -46,7 +46,7 @@ describe("minimal worker SQLite schema", () => {
     expect((database.pragma("table_info(tasks)") as { name: string }[]).map(({ name }) => name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
     expect((database.pragma("table_list") as { name: string; strict: number }[]).filter(({ name }) => name === "projects" || name === "tasks").every(({ strict }) => strict === 1)).toBe(true);
     expect(database.pragma("journal_mode", { simple: true })).toBe("wal");
-    expect(database.pragma("user_version", { simple: true })).toBe(6);
+    expect(database.pragma("user_version", { simple: true })).toBe(7);
     expect(pragma).toHaveBeenCalledWith("synchronous = FULL");
     expect(database.pragma("foreign_key_list(projects)")).toEqual([]);
     expect(database.pragma("foreign_key_list(tasks)")).toEqual([]);
@@ -260,11 +260,11 @@ it("rebuilds the unversioned six-column index and discards every project and cla
   const { file, db } = legacyFixture();
   const events: unknown[] = [];
   const rebuilt = openWorkerStore(file, { onMigration: event => { events.push(event); } }); stores.add(rebuilt);
-  expect(db.pragma("user_version", { simple: true })).toBe(6);
+  expect(db.pragma("user_version", { simple: true })).toBe(7);
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
   expect((db.pragma("table_info(tasks)") as { name: string }[]).map(row => row.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 6 }, { kind: "completed", fromVersion: 0, toVersion: 6 }]);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 7 }, { kind: "completed", fromVersion: 0, toVersion: 7 }]);
   close(rebuilt);
   events.length = 0;
   const reopened = openWorkerStore(file, { onMigration: event => { events.push(event); } }); stores.add(reopened);
@@ -295,7 +295,7 @@ it("rebuilds the current seven-column layout when its stored version is zero", (
   const rebuilt = open(file);
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
-  expect(db.pragma("user_version", { simple: true })).toBe(6);
+  expect(db.pragma("user_version", { simple: true })).toBe(7);
 });
 
 it("rebuilds an unknown unversioned schema containing duplicate identities and invalid payloads", () => {
@@ -306,24 +306,24 @@ it("rebuilds an unknown unversioned schema containing duplicate identities and i
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
   expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
-  expect(db.pragma("user_version", { simple: true })).toBe(6);
+  expect(db.pragma("user_version", { simple: true })).toBe(7);
 });
 
 it("rejects newer formats and altered constraints without mutating their records", () => {
   const { file, store, register } = fixture(); register(); close(store);
   const db = connect(file), before = db.prepare("SELECT * FROM tasks").all();
-  db.pragma("user_version = 7");
+  db.pragma("user_version = 8");
   expect(() => open(file)).toThrow("unsupported-version");
   expect(db.prepare("SELECT * FROM tasks").all()).toEqual(before);
-  expect(db.pragma("user_version", { simple: true })).toBe(7);
-  db.pragma("user_version = 6");
+  expect(db.pragma("user_version", { simple: true })).toBe(8);
+  db.pragma("user_version = 7");
   db.exec("DROP INDEX tasks_one_active_per_task; CREATE UNIQUE INDEX tasks_one_active_per_task ON tasks(project_id, task_id) WHERE status = 'pending'");
   expect(() => open(file)).toThrow("invalid-format");
   expect(db.prepare("SELECT * FROM tasks").all()).toEqual(before);
 });
 
 it("fences an open worker connection before writing a subsequently changed format", () => {
-  const { file, store, register } = fixture(); register(); const db = connect(file); db.pragma("user_version = 7");
+  const { file, store, register } = fixture(); register(); const db = connect(file); db.pragma("user_version = 8");
   expect(() => store.activateTask(claim)).toThrow("unsupported-version");
   expect(() => store.getTask(claim)).toThrow("unsupported-version");
   expect(db.prepare("SELECT status FROM tasks").get()).toEqual({ status: "pending" });
@@ -332,9 +332,9 @@ it("fences an open worker connection before writing a subsequently changed forma
 
 describe("worker cleanup schedules", () => {
   const owner = { ...claim, worktreeId: uuid(70) };
-  const schedule = { deadline: 600_000, notified: true, submitted: false, failures: 2, nextAttemptAt: 12_000, stage: "worktree", lastError: "EACCES: denied" };
+  const schedule = { deadline: 600_000, failures: 2, nextAttemptAt: 12_000, stage: "worktree", lastError: "EACCES: denied" };
 
-  it("retains independent retry and notification state across reopen without changing task rows", () => {
+  it("retains independent resource retry policy across reopen without changing task rows", () => {
     const f = fixture(); f.register();
     const original = f.store.getTask(claim);
     expect(f.store.saveCleanupSchedule(owner, schedule)).toEqual({ ...owner, ...schedule });
@@ -350,15 +350,13 @@ describe("worker cleanup schedules", () => {
     expect(recovered.getCleanupSchedule(second)).toMatchObject({ failures: 0, nextAttemptAt: 0 });
   });
 
-  it("rejects changed ownership, deadline and replayable notification state atomically", () => {
+  it("rejects changed resource ownership and deadline atomically", () => {
     const f = fixture(); f.register(); f.store.saveCleanupSchedule(owner, schedule);
     const concurrent = open(f.file);
     expect(() => concurrent.saveCleanupSchedule({ ...owner, worktreeId: uuid(73) }, schedule)).toThrow("worktree");
     expect(() => concurrent.saveCleanupSchedule(owner, { ...schedule, deadline: schedule.deadline + 1 })).toThrow("deadline");
-    expect(() => concurrent.saveCleanupSchedule(owner, { ...schedule, notified: false })).toThrow("notification");
-    f.store.saveCleanupSchedule(owner, { ...schedule, submitted: true });
-    expect(() => concurrent.saveCleanupSchedule(owner, schedule)).toThrow("submission");
-    expect(f.store.getCleanupSchedule(owner)).toEqual({ ...owner, ...schedule, submitted: true });
+    f.store.saveCleanupSchedule(owner, { ...schedule, failures: 3 });
+    expect(f.store.getCleanupSchedule(owner)).toEqual({ ...owner, ...schedule, failures: 3 });
   });
 
   it("validates identities and schedule fields without writing malformed records", () => {
@@ -370,7 +368,6 @@ describe("worker cleanup schedules", () => {
       }
     }
     expect(() => f.store.saveCleanupSchedule(owner, { ...schedule, stage: " " })).toThrow("nonempty");
-    expect(() => f.store.saveCleanupSchedule(owner, { ...schedule, notified: false, submitted: true })).toThrow("notification");
     expect(f.store.listCleanupSchedules()).toEqual([]);
   });
 
@@ -386,10 +383,26 @@ describe("worker cleanup schedules", () => {
     const f = fixture(); f.register(); f.store.saveCleanupSchedule(owner, schedule);
     const db = connect(f.file);
     expect(() => db.exec("UPDATE cleanup_schedules SET failures = -1")).toThrow("CHECK constraint failed");
-    expect(() => db.exec("UPDATE cleanup_schedules SET notified = 2")).toThrow("CHECK constraint failed");
+    expect(() => db.exec("UPDATE cleanup_schedules SET next_attempt_at = -1")).toThrow("CHECK constraint failed");
     expect(() => db.exec("UPDATE cleanup_schedules SET deadline = 9007199254740992")).toThrow("CHECK constraint failed");
     db.exec("UPDATE cleanup_schedules SET worktree_id = 'invalid'");
     expect(() => f.store.getCleanupSchedule(owner)).toThrow("UUID");
+  });
+
+  it("migrates version six by discarding operation flags and preserving resource identity and retry policy", () => {
+    const f = fixture(); close(f.store); rmSync(f.file);
+    const db = connect(f.file);
+    for (const filename of ["005-baseline.sql", "006-cleanup-schedules.sql"]) db.exec(readFileSync(new URL(`../../../src/commands/worker/sqlite/${filename}`, import.meta.url), "utf8"));
+    db.pragma("user_version = 6");
+    db.prepare("INSERT INTO projects VALUES (?, ?, ?)").run(f.project.projectId, f.project.repoUrl, f.project.localPath);
+    db.prepare("INSERT INTO tasks VALUES (?, ?, ?, 'active', 'codex', ?, 'herdr')").run(claim.projectId, claim.taskId, claim.claimId, uuid(75));
+    db.prepare("INSERT INTO cleanup_schedules VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?)").run(owner.projectId, owner.taskId, owner.claimId, owner.worktreeId, schedule.deadline, schedule.failures, schedule.nextAttemptAt, schedule.stage, schedule.lastError);
+    const recovered = open(f.file);
+    expect(recovered.getCleanupSchedule(owner)).toEqual({ ...owner, ...schedule });
+    expect(recovered.getTask(claim)).toMatchObject({ status: "active", sessionId: uuid(75) });
+    expect((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).map(column => column.name)).not.toContain("submitted");
+    expect((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).map(column => column.name)).not.toContain("notified");
+    expect(db.pragma("user_version", { simple: true })).toBe(7);
   });
 
   it("upgrades version five while retaining every original claim and project", () => {
@@ -404,6 +417,6 @@ describe("worker cleanup schedules", () => {
     expect(recovered.getTask(claim)).toMatchObject({ ...claim, status: "active", sessionId: uuid(75) });
     expect(recovered.listCleanupSchedules()).toEqual([]);
     recovered.saveCleanupSchedule(owner, schedule);
-    expect(db.pragma("user_version", { simple: true })).toBe(6);
+    expect(db.pragma("user_version", { simple: true })).toBe(7);
   });
 });

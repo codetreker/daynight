@@ -21,11 +21,15 @@ Controller cleanup-response waiting and final process-stop proof use the same
 five-minute upper bound. Signal escalation
 intervals remain independent of that final deadline.
 
-The agent retains its original persisted ten-minute cleanup turn. Notification and
-Controller cleanup-response waits are capped by the remaining turn time, and
-polling does not renew that deadline. Shutdown continues to stop resources
-directly without an agent cleanup turn, archive upload or worktree deletion.
-Ordinary execution retains its existing operation budgets.
+The original ten-minute advisory deadline remains separate from each operation
+budget. Notification and Controller cleanup-response waits are capped by its
+remaining time; polling does not renew it. The
+[resource-state decision](../architecture/2026-11-04-worker-resource-state.md)
+owns authoritative resource observations and removes Worker-owned cleanup
+progress. These limits govern live observations and mutations; elapsed time or a
+saved operation result cannot prove resource absence. Shutdown continues to stop
+resources directly without an agent cleanup turn, archive upload or worktree
+deletion. Ordinary execution retains its existing operation budgets.
 
 The [worker design](../../../../docs/design/daynight-worker.md#结束清理与退出)
 owns the cleanup sequence. The
