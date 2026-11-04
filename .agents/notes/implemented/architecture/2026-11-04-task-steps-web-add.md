@@ -11,8 +11,10 @@ the confirmed item to be located without mounting every row.
 
 ## Decision
 
-The Steps workspace retains one local form with a preselected task-local ID and
-registers its dirty state with the existing navigation boundary. Its Markdown
+The Steps workspace retains one local form and registers its dirty state with
+the existing navigation boundary. An append selects its task-local ID before
+submission; an edit binds to the existing Step ID and retains its draft separately
+from the confirmed collection. Its Markdown
 preview uses the Task-root renderer. A separate request UUID binds each submission
 to the form; a receipt for a discarded form cannot close a later one. Confirmed
 results select the actual item's local page and focus its row.
@@ -32,6 +34,17 @@ writes only lock submission. Unknown results retain their original identity and
 use read-only reconciliation without attributing the current collection to the
 request or automatically replaying it. Retirement clears the private draft.
 
+Content editing uses the same owner to submit title and description together;
+status stays independent. The complete PATCH receipt must preserve order and
+non-target records and match the submitted fields and changed or no-op version.
+A conflict keeps the draft separate from the new baseline, and a missing target
+does not retire an accessible parent. The draft retains the target's creation
+time and stops submission when the target disappears or the same ID has a
+different creation time. The editor maps displayed textarea changes to the raw
+text so untouched CR and CRLF survive browser newline normalization. Request
+identity prevents a late receipt from closing a later form, while page and tab
+changes preserve the draft and expanded Step identity.
+
 ## Alternatives
 
 **Give the form a separate writer.** This would split the shared version gate
@@ -42,5 +55,5 @@ identity, retirement and uncertain-result handling.
 
 The draft survives pagination and same-task tab changes without entering the
 detail cache. An uncertain outcome requires the user to inspect current facts
-before deciding; reconciliation cannot establish the historical cause. This
-slice appends only; relative insertion and editing remain separate capabilities.
+before deciding; reconciliation cannot establish the historical cause. Relative
+insertion remains a separate capability.

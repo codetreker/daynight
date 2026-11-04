@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { TaskStep } from "../../../api/task-steps";
 import { useI18n } from "../../../i18n/LocaleProvider";
 
-export type MoveAction = "up" | "down" | "first" | "last" | "relative";
+export type MoveAction = "edit" | "up" | "down" | "first" | "last" | "relative";
 
 export const StepMoveMenu = ({ step, index, total, available, busy, onSelect }: {
   readonly step: TaskStep; readonly index: number; readonly total: number;
@@ -23,6 +23,7 @@ export const StepMoveMenu = ({ step, index, total, available, busy, onSelect }: 
     { action: "first", label: m.moveFirst, disabled: index === 0 },
     { action: "last", label: m.moveLast, disabled: index === total - 1 },
     { action: "relative", label: m.moveRelative, disabled: total < 2 },
+    { action: "edit", label: m.editStep, disabled: false },
   ];
   const enabled = actions.map((item, i) => item.disabled ? -1 : i).filter((i) => i >= 0);
   const close = (restore: boolean) => { setOpen(false); if (restore) trigger.current?.focus(); };

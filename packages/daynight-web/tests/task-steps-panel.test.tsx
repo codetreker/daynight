@@ -5,7 +5,7 @@ import type { StepsResource, TaskStep } from "../src/api/task-steps";
 import { TaskStepsPanel } from "../src/features/task-detail/steps/TaskStepsPanel";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 
-const read = vi.hoisted(() => ({ resource: null as StepsResource | null, status: "loading", error: null as unknown, refreshing: false, stale: true, retry: vi.fn(), canSetStatus: true, canAdd: true, canMove: true, move: vi.fn(), setStatus: vi.fn(), add: vi.fn(), reconcile: vi.fn(), mutation: { operation: null as null | { action: string; stepId: string; requestId?: string }, phase: "idle", error: null as unknown, reconciling: false, reconciliationError: null as unknown } }));
+const read = vi.hoisted(() => ({ resource: null as StepsResource | null, status: "loading", error: null as unknown, refreshing: false, stale: true, retry: vi.fn(), canSetStatus: true, canAdd: true, canMove: true, move: vi.fn(), setStatus: vi.fn(), add: vi.fn(), edit: vi.fn(), reconcile: vi.fn(), mutation: { operation: null as null | { action: string; stepId: string; requestId?: string }, phase: "idle", error: null as unknown, reconciling: false, reconciliationError: null as unknown } }));
 vi.mock("../src/features/task-detail/useTaskSteps", () => ({ useTaskSteps: () => read }));
 const listeners = vi.hoisted(() => new Set<() => void>());
 vi.mock("../src/features/task-detail/TaskDetailSession", () => ({ useTaskDetailSessions: () => ({
@@ -22,7 +22,7 @@ const time = "2026-11-03T12:34:56.123456Z";
 const steps: TaskStep[] = Array.from({ length: 241 }, (_, index) => ({ id: index.toString(16).padStart(8, "0"), title: `Round ${index + 1}`, description: index === 1 ? "" : `Result ${index + 1}`, status: (["todo", "in_progress", "done", "skipped"] as const)[index % 4]!, createdAt: time, updatedAt: time }));
 const resource = (items: readonly TaskStep[] = steps): StepsResource => ({ projectId, taskId, version: 3n, steps: items });
 const panel = (active = true) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} renderMarkdown={(text) => <div data-testid="markdown">{text}</div>} />;
-beforeEach(() => { navigationDraft.current = null; navigationDecision.current = null; Object.assign(read, { resource: resource(steps.slice(0, 4)), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn(), canSetStatus: true, canAdd: true, canMove: true, move: vi.fn(), setStatus: vi.fn(), add: vi.fn().mockReturnValue("request-add"), reconcile: vi.fn(), mutation: { operation: null, phase: "idle", error: null, reconciling: false, reconciliationError: null, reconciledFrom: undefined } }); });
+beforeEach(() => { navigationDraft.current = null; navigationDecision.current = null; Object.assign(read, { resource: resource(steps.slice(0, 4)), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn(), canSetStatus: true, canAdd: true, canMove: true, move: vi.fn(), setStatus: vi.fn(), add: vi.fn().mockReturnValue("request-add"), edit: vi.fn().mockReturnValue("request-edit"), reconcile: vi.fn(), mutation: { operation: null, phase: "idle", error: null, reconciling: false, reconciliationError: null, reconciledFrom: undefined } }); });
 
 describe("Step status", () => {
   it("offers four keyboard-accessible choices and retains the confirmed state until a response", () => {
@@ -540,5 +540,95 @@ describe("Step position", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("move outcome is unknown");
     fireEvent.click(screen.getByRole("button", { name: "Read current steps" }));
     expect(read.reconcile).toHaveBeenCalledOnce(); expect(read.move).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("editing a Step", () => {
+  const row = (id: string) => within(document.querySelector(`[data-step-id="${id}"]`)!);
+  const open = (id: string) => { fireEvent.click(document.querySelector(`[data-step-id="${id}"] .step-disclosure`)!); fireEvent.click(row(id).getByRole("button", { name: "Edit step" })); };
+  const form = () => within(document.querySelector(".step-edit-form")!);
+  it("keeps a single ID-bound draft across pages and requires a decision before switching", () => {
+    read.resource = resource(steps.slice(0, 101));
+    renderWithLocale(panel(), { locale: "en" });
+    open("00000000");
+    fireEvent.change(form().getByRole("textbox", { name: "Title" }), { target: { value: "Draft" } });
+    fireEvent.click(document.querySelector('[data-step-id="00000001"] .step-disclosure')!);
+    fireEvent.click(row("00000001").getByRole("button", { name: "Edit step" }));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("Draft");
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(form().getByRole("textbox", { name: "Title" })).toHaveValue("Draft");
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(document.querySelector(".step-edit-form")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Return to editing step" }));
+    expect(form().getByRole("textbox", { name: "Title" })).toHaveValue("Draft");
+    expect(navigationDraft.current?.isDirty()).toBe(true);
+    fireEvent.click(row("00000001").getByRole("button", { name: "Edit step" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Discard$/ }));
+    expect(form().getByRole("textbox", { name: "Title" })).toHaveValue("Round 2");
+  });
+  it("preserves untouched CR and CRLF while editing displayed text", () => {
+    read.resource = resource([{ ...steps[0]!, title: "First\r\nSecond", description: "One\rTwo\r\nThree" }]);
+    renderWithLocale(panel(), { locale: "en" }); open("00000000");
+    fireEvent.change(form().getByRole("textbox", { name: "Title" }), { target: { value: "First\nSecond!" } });
+    fireEvent.change(form().getByRole("textbox", { name: "Description (Markdown, optional)" }), { target: { value: "One\nTwo\nThree!" } });
+    fireEvent.click(form().getByRole("button", { name: "Save" }));
+    expect(read.edit).toHaveBeenCalledWith("00000000", "First\r\nSecond!", "One\rTwo\r\nThree!", 3n);
+  });
+  it("uses the edited selection to preserve adjacent distinct line endings", () => {
+    read.resource = resource([{ ...steps[0]!, title: "A\r\n\rB", description: "X\r\n\rY" }]);
+    renderWithLocale(panel(), { locale: "en" }); open("00000000");
+    const title = form().getByRole("textbox", { name: "Title" }) as HTMLTextAreaElement;
+    title.setSelectionRange(1, 2); fireEvent(title, new InputEvent("beforeinput", { bubbles: true, inputType: "deleteContentBackward" }));
+    fireEvent.change(title, { target: { value: "A\nB" } });
+    const description = form().getByRole("textbox", { name: "Description (Markdown, optional)" }) as HTMLTextAreaElement;
+    description.setSelectionRange(1, 2); fireEvent(description, new InputEvent("beforeinput", { bubbles: true, inputType: "insertText", data: "!" }));
+    fireEvent.change(description, { target: { value: "X!\nY" } });
+    fireEvent.click(form().getByRole("button", { name: "Save" }));
+    expect(read.edit).toHaveBeenCalledWith("00000000", "A\rB", "X!\rY", 3n);
+  });
+  it("restores exact line endings on undo and redo", () => {
+    read.resource = resource([{ ...steps[0]!, title: "A\r\n\rB" }]);
+    renderWithLocale(panel(), { locale: "en" }); open("00000000");
+    const title = form().getByRole("textbox", { name: "Title" }) as HTMLTextAreaElement;
+    title.setSelectionRange(1, 2); fireEvent(title, new InputEvent("beforeinput", { bubbles: true, inputType: "deleteContentBackward" }));
+    fireEvent.change(title, { target: { value: "A\nB" } });
+    fireEvent(title, new InputEvent("beforeinput", { bubbles: true, inputType: "historyUndo" }));
+    fireEvent.change(title, { target: { value: "A\n\nB" } });
+    fireEvent.click(form().getByRole("button", { name: "Save" }));
+    expect(read.edit).toHaveBeenLastCalledWith("00000000", "A\r\n\rB", steps[0]!.description, 3n);
+  });
+  it("does not apply an old draft to a replacement with the same ID", () => {
+    const view = renderWithLocale(panel(), { locale: "en" }); open("00000000");
+    fireEvent.change(form().getByRole("textbox", { name: "Title" }), { target: { value: "Old draft" } });
+    read.resource = resource([{ ...steps[0]!, title: "Replacement", createdAt: "2026-11-04T12:34:56Z" }, ...steps.slice(1, 4)]);
+    view.rerender(panel());
+    expect(form().getByRole("textbox", { name: "Title" })).toHaveValue("Old draft");
+    expect(form().getByRole("button", { name: "Save" })).toBeDisabled();
+    read.resource = resource(steps.slice(0, 4)); view.rerender(panel());
+    expect(form().getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(read.edit).not.toHaveBeenCalled();
+  });
+  it("sends both raw fields, retains a conflict baseline and freezes unknown submissions", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    open("00000000");
+    fireEvent.change(form().getByRole("textbox", { name: "Title" }), { target: { value: " Revised " } });
+    fireEvent.change(form().getByRole("textbox", { name: "Description (Markdown, optional)" }), { target: { value: "" } });
+    fireEvent.click(form().getByRole("button", { name: "Save" }));
+    expect(read.edit).toHaveBeenCalledWith("00000000", " Revised ", "", 3n);
+    read.mutation = { operation: { action: "stepEdit", stepId: "00000000", requestId: "request-edit" }, phase: "unknown", error: new ApiError("network"), reconciling: false, reconciliationError: null };
+    publish(); view.rerender(panel());
+    expect(form().getByRole("textbox", { name: "Title" })).toBeDisabled();
+    fireEvent.click(form().getByRole("button", { name: "Read current steps" }));
+    expect(read.reconcile).toHaveBeenCalledOnce(); expect(read.edit).toHaveBeenCalledOnce();
+    read.resource = { ...resource(steps.slice(0, 4)), version: 4n, steps: [{ ...steps[0]!, title: "Other baseline", description: "Current" }, ...steps.slice(1, 4)] };
+    read.mutation = { ...read.mutation, phase: "reconciled" }; Object.assign(read.mutation, { reconciledFrom: "unknown" }); view.rerender(panel());
+    expect(form().getByRole("textbox", { name: "Title" })).toHaveValue(" Revised ");
+    expect(form().getByText("Other baseline")).toBeVisible();
+    expect(form().getByRole("button", { name: "Save" })).toBeEnabled();
+    read.resource = resource(steps.slice(1, 4)); view.rerender(panel());
+    expect(form().getByText(/no longer available/)).toBeVisible();
+    expect(form().getByRole("textbox", { name: "Title" })).toHaveValue(" Revised ");
+    expect(form().getByRole("button", { name: "Save" })).toBeDisabled();
   });
 });
