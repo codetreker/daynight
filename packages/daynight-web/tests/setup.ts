@@ -1,4 +1,5 @@
 import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
+import { browserNavigation } from '../src/app/navigation';
 import * as matchers from "@testing-library/jest-dom/matchers";
 import type { TestingLibraryMatchers } from "@testing-library/jest-dom/matchers";
 import { cleanup } from "@testing-library/react";
@@ -93,4 +94,5 @@ afterEach(async () => {
   vi.useRealTimers();
   window.localStorage.clear();
   window.history.replaceState(null, "", "/projects");
+  browserNavigation().dispose();
 });
