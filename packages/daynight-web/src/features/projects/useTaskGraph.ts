@@ -1,3 +1,4 @@
+import { useProjectAccessSession } from "./ProjectAccess";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, getTaskSync, isAbortError } from "../../api/client";
 import type { TaskGraph } from "../../api/types";
@@ -34,6 +35,7 @@ const initialState = (projectId: string, scope: TaskCacheScope): GraphState => (
 
 export const useTaskGraph = (projectId: string) => {
   const scope = useTaskCacheScope();
+  const access = useProjectAccessSession(projectId);
   const [state, setState] = useState<GraphState>(() => initialState(projectId, scope));
   const generation = useRef(0);
   const active = useRef<AbortController | null>(null);
@@ -77,6 +79,7 @@ export const useTaskGraph = (projectId: string) => {
         }
       }
       const query = ticket.epoch === null ? {} : ticket.maxUpdatedAt === null ? { epoch: ticket.epoch } : { epoch: ticket.epoch, since: ticket.maxUpdatedAt };
+      const accessTicket = access?.beginObservation();
       const response = await getTaskSync(projectId, query, scope.userId, signal, scope.principalMismatch);
       // The monotonic anchor belongs to this response and cannot come from disk or another tab.
       const receivedMonotonic = performance.now();
@@ -88,6 +91,7 @@ export const useTaskGraph = (projectId: string) => {
         changed: result.changedTaskIds.length, duplicate: response.tasks.length - result.changedTaskIds.length,
         cache_hit: ticket.epoch !== null, apply_ms: performance.now() - applyStarted });
       if (signal.aborted || revision !== generation.current) return;
+      if (accessTicket !== undefined) access?.publishSync(accessTicket, response.actorAccess);
       liveAccess.current = true;
       receipt.current = { observedAt: response.observedAt, receivedMonotonic, receivedAt, revision };
       publish(result.project);
@@ -107,7 +111,7 @@ export const useTaskGraph = (projectId: string) => {
         return { projectId, scope, snapshot, status: snapshot === null ? "error" : "ready", refreshing: false, error };
       });
     } finally { if (revision === generation.current) active.current = null; }
-  }, [projectId, scope, publish]);
+  }, [projectId, scope, publish, access]);
 
   useEffect(() => {
     liveAccess.current = false; receipt.current = null;

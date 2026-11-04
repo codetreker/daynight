@@ -43,13 +43,14 @@ func (s *TaskSync) Get(ctx context.Context, principal core.Principal, projectID 
 	var result core.TaskSync
 	var refusal *Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
+		var err error
+		result.ActorAccess, err = RequireProjectRead(ctx, snapshot, principal, projectID)
+		if err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
 			return err
 		}
-		var err error
 		result.Project, err = snapshot.Project(ctx, projectID)
 		if errors.Is(err, core.ErrNotFound) {
 			refusal = &Fault{Code: "not_found", Message: "Project was not found.", Cause: err}

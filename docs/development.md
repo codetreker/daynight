@@ -66,7 +66,18 @@ that normal chain. The package's existing `files: ["dist"]` rule publishes these
 [SQLite design](design/cli-sqlite-migrations.md#sql-资源与参考结构) owns SQL loading,
 reference metadata and execution ordering.
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
-ownership, with build and version-policy tests in `test/tooling/`.
+ownership, with build and version-policy tests in `test/tooling/`. Large binary
+payload assertions use `Buffer.equals` to check every byte and the total length.
+Controller IPC admission tests keep real sockets, assert the production timeout
+and its cancellation, and accelerate the incomplete socket's native expiry;
+virtual time separately exercises the authenticated response wait. The
+[test timing decision](../.agents/notes/implemented/testing/2026-11-04-cli-test-time-and-bytes.md)
+explains the distinction between Node socket timers and global fake timers.
+Controller and Worker lifecycle fixtures record production poll requests while
+using short native promise-timer ticks for their controlled resource states.
+Their tests retain exact cadence, deadline clipping and cancellation assertions;
+the [coordinator polling decision](../.agents/notes/implemented/testing/2026-11-04-coordinator-test-polling.md)
+owns that test boundary.
 The pnpm dependency store is local to `.tmp/pnpm-store`. Native skill terminal
 acceptance uses the development-only `node-pty` dependency, including Windows
 ConPTY. The workspace build policy permits only the pinned node-pty hook and
@@ -132,11 +143,13 @@ matrix; its result belongs to the tested revision. The
 [completion design](../docs/design/daynight-completion.md) owns its coverage and
 loading guarantees.
 
-GitHub Actions runs type checking, build, and tests on native Linux, macOS 26
-Intel x64, and Windows runners. The macOS job uses the standard
-`macos-26-intel` label; the
-[runner decision](../.agents/notes/implemented/testing/2026-11-03-macos-hosted-runner-capacity.md)
-records the hosted capacity failure and architecture covered by this lane.
+Native development and validation support Linux, Windows and Apple Silicon
+(ARM64) macOS. Intel macOS is unsupported. GitHub Actions runs type checking,
+build and tests on native Linux, macOS 26 ARM64 and Windows runners. The macOS
+job uses the standard `macos-26` label and verifies Darwin ARM64 before validation;
+the [platform decision](../.agents/notes/implemented/testing/2026-11-04-macos-arm64-support.md)
+records the support boundary and runner selection. Hosted capacity failures
+require diagnosis within this ARM64 runner policy.
 Each native job resolves the latest available Node.js 24 patch.
 A separate runtime matrix builds the package with Node.js 24 and checks the packed
 artifact with Node.js `22.14.0`, the latest `22` and `24` releases, and current

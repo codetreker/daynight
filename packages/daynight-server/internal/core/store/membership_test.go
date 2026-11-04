@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -56,7 +57,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 			t.Fatalf("first admin: %+v", original)
 		}
 		access, err := snapshot.ProjectAccess(ctx, admin, project.ID)
-		if err != nil || access != (core.ProjectAccess{ProjectID: project.ID, UserID: admin.UserID, Role: core.ProjectAdmin}) {
+		if err != nil || !reflect.DeepEqual(access, core.ProjectAccess{ProjectID: project.ID, UserID: admin.UserID, Role: core.ProjectAdmin, DirectGrant: &original.Grant}) {
 			t.Fatalf("admin access: %+v %v", access, err)
 		}
 		page, err := snapshot.AccessibleProjects(ctx, admin, Page{Limit: 1})
@@ -91,7 +92,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 			t.Fatal("snapshot mismatch")
 		}
 		access, err := tx.ProjectAccess(ctx, admin)
-		if err != nil || access != (core.ProjectAccess{ProjectID: project.ID, UserID: admin.UserID, Role: core.ProjectAdmin}) {
+		if err != nil || !reflect.DeepEqual(access, core.ProjectAccess{ProjectID: project.ID, UserID: admin.UserID, Role: core.ProjectAdmin, DirectGrant: &current.Grant}) {
 			t.Fatalf("write admission: %+v %v", access, err)
 		}
 		count, err := tx.AdminCount(ctx)
@@ -143,7 +144,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 	}
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		access, err := snapshot.ProjectAccess(ctx, member, project.ID)
-		if err != nil || access != (core.ProjectAccess{ProjectID: project.ID, UserID: member.UserID, Role: core.ProjectMemberRole}) {
+		if err != nil || !reflect.DeepEqual(access, core.ProjectAccess{ProjectID: project.ID, UserID: member.UserID, Role: core.ProjectMemberRole, DirectGrant: &invited.Grant}) {
 			t.Fatalf("invited access: %+v %v", access, err)
 		}
 		members, err := snapshot.ProjectMembers(ctx, project.ID)

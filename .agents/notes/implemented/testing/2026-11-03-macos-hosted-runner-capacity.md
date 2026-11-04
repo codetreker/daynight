@@ -25,9 +25,12 @@ that work can be expensive for bundled native or JavaScript executables.
 
 ## Decision
 
-The [checks workflow](../../../../.github/workflows/checks.yml) selects the
-standard `macos-26-intel` runner for its macOS lane. This preserves macOS 26 and
-the complete native and installed CLI suites while selecting the Intel pool.
+At adoption, the [checks workflow](../../../../.github/workflows/checks.yml)
+selected the standard `macos-26-intel` runner for its macOS lane. This preserved
+macOS 26 and the complete native and installed CLI suites while selecting the
+Intel pool. That runner selection is superseded by the [ARM64 support
+decision](2026-11-04-macos-arm64-support.md); the bootstrap, executable-link and
+fixture-lifecycle decisions below remain in effect.
 The [official standard runner table](https://github.com/github/docs/blob/9e46fa10eb2ed55c59bf6770a220477c91e1b3bf/data/reusables/actions/supported-github-runners.md)
 and [runner image catalog](https://github.com/actions/runner-images/blob/a2d4955654f519bd5b559bffaea60d9f90156630/README.md#L19-L47)
 list this label as a standard hosted runner. It requires no larger-runner
@@ -66,10 +69,12 @@ stdio. An unbounded exit-to-close join would block all remaining teardown; the
 original stdio risk existed before setup moved, and explicit lifecycle joins
 make bounded reaping necessary.
 
-The repository requires native Linux, macOS and Windows validation. It does not
-require a particular macOS CPU architecture. This lane records Darwin x64
-evidence; it does not establish Apple Silicon compatibility. Environment
-receipts retain the actual OS, architecture, toolchain and tested source.
+This decision originally treated native Linux, macOS and Windows validation
+as an OS requirement without a particular macOS CPU architecture. The Intel
+lane therefore recorded Darwin x64 evidence and made no Apple Silicon claim.
+The [ARM64 support decision](2026-11-04-macos-arm64-support.md) replaces that
+architecture-independent premise. Environment receipts continue retaining the
+actual OS, architecture, toolchain and tested source.
 
 The 180-second hook/callback, 120-second command and 10-minute job limits
 retain their settings. Setup and behavior consume separate hook/callback allowances;
@@ -80,8 +85,8 @@ validation commands and the native platform description.
 
 ## Alternatives
 
-**Retain `macos-latest`.** The alias currently selects macOS 26 arm64, whose
-runner acquisition failed. An unchanged retry would continue depending on the
+**Retain `macos-latest`.** At adoption, the alias selected macOS 26 arm64, whose
+runner acquisition had failed. An unchanged retry would continue depending on the
 same pool and would not change the acquisition conditions.
 
 **Add a standalone binary record to the application lockfile.** The selected
@@ -89,9 +94,9 @@ JavaScript engine does not execute that binary, and the requested Darwin x64
 standalone package is unpublished. The setup bootstrap requires correction;
 inventing a package identity would misrepresent the dependency graph.
 
-**Select `macos-15-intel`.** This is also a supported standard Intel label, but
-changes the OS major version as well as the architecture. The macOS 26 label
-preserves the current OS coverage.
+**Select `macos-15-intel`.** The catalog also documented this standard Intel
+label, but it would have changed the OS major version as well as the architecture.
+The macOS 26 selection preserved the OS coverage at adoption.
 
 **Increase callback or job limits.** That retains preparation/behavior coupling
 and does not remove repeated installation work. The chosen partition preserves
@@ -104,13 +109,15 @@ case-owned setup and supported package-manager linking preference.
 
 ## Consequences
 
-The macOS lane has an explicit OS major version and architecture. Its image
-continues receiving normal GitHub image updates. The full native CI must pass
-on the selected runner before the configuration is accepted; catalog support,
-component probes and dependency targets do not prove whole-suite execution.
+The original Intel selection made the lane's OS major version and architecture
+explicit while retaining normal GitHub image updates. Capacity remained under
+GitHub's control, and native acquisition annotations were required to diagnose
+a failure before execution. The later [ARM64 support
+decision](2026-11-04-macos-arm64-support.md) owns the current runner and support
+policy. Full native CI must pass on that runner before its configuration is
+accepted; catalog support, component probes and dependency targets do not prove
+whole-suite execution.
 
-Intel capacity remains controlled by GitHub. A future acquisition failure must
-be diagnosed from native job annotations. Apple Silicon validation would need
-its own supported execution environment. Local phase measurements do not prove
-native-platform speed, and changes in dependency resolution time must not be
-attributed entirely to executable-link selection.
+Local phase measurements do not prove native-platform speed, and changes in
+dependency resolution time must not be attributed entirely to executable-link
+selection.

@@ -268,8 +268,9 @@ upload HTML you trust with that authority.
 
 ## CLI development
 
-Source development uses Node.js 24 LTS and pnpm 11.28.6. The published CLI runs on
-Node.js 22 or newer. From the repository root:
+The CLI supports Linux, Windows and Apple Silicon (ARM64) macOS. Intel macOS
+is unsupported. Source development uses Node.js 24 LTS and pnpm 11.28.6. The
+published CLI runs on Node.js 22 or newer. From the repository root:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -326,7 +327,7 @@ from all changed paths, including deletions and both sides of renames:
 |---|---|
 | `packages/daynight/test/fixtures/installed-cli.ts` | CLI, Go server, Web quality and Web browser acceptance |
 | `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI validation plus Web quality and Web browser acceptance |
-| Other `packages/daynight/` paths | Linux, macOS and Windows CLI, runtime compatibility, plus shell completion |
+| Other `packages/daynight/` paths | Linux, macOS ARM64 and Windows CLI, runtime compatibility, plus shell completion |
 | `packages/daynight-server/` | Go server |
 | `packages/daynight-web/`, runtime files under `deployment/`, current Dagre and XYFlow patches | Web quality and Web browser acceptance |
 | Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` | Every module |

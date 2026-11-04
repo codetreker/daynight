@@ -200,7 +200,7 @@ export const getTaskSync = async (
   const suffix = parameters.size === 0 ? "" : `?${parameters}`;
   const response = await request(`/api/v1/projects/${project}/task-sync${suffix}`, signal, { headers: { Accept: "application/json" } });
   assertResponsePrincipal(response, expectedUserId, onPrincipalMismatch);
-  return json(response, signal, (value) => parseTaskSync(value, project), decodeTaskGraphJson);
+  return json(response, signal, (value) => parseTaskSync(value, project, expectedUserId), decodeTaskGraphJson);
 };
 
 export type TaskResponseAdmission = {

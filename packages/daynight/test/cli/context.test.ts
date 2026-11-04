@@ -120,7 +120,7 @@ describe("binary stdout", () => {
       child.once("close", (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
     });
     expect(result).toEqual({ code: 0, signal: null });
-    expect(Buffer.concat(output)).toEqual(Buffer.from(Uint8Array.from({ length: 150_000 }, (_, index) => index % 256)));
+    expect(Buffer.concat(output).equals(Uint8Array.from({ length: 150_000 }, (_, index) => index % 256))).toBe(true);
     expect(Buffer.concat(errors).toString()).toBe("");
   }, 10_000);
 

@@ -1,3 +1,4 @@
+import { projectAccessSource } from "./auth-parse";
 import { parseApiJson } from "./json";
 import { jsonContainerSources, jsonObjectSources } from "./json-source";
 
@@ -28,6 +29,9 @@ export const decodeTaskGraphJson = async (response: Response): Promise<unknown> 
   const parsed: unknown = JSON.parse(text);
   if (object(parsed) && Object.hasOwn(parsed, "project")) {
     parsed.project = projectSource(jsonObjectSources(text).get("project")!);
+  }
+  if (object(parsed) && Object.hasOwn(parsed, "actorAccess")) {
+    parsed.actorAccess = projectAccessSource(jsonObjectSources(text).get("actorAccess")!);
   }
   return parsed;
 };
