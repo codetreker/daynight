@@ -424,9 +424,12 @@ receipt identity checks and evidence limits.
 Read [AGENTS.md](AGENTS.md) for scope, shared task worktrees, verification and
 delivery. This repository manages concrete work in Daynight; load
 [`using-daynight`](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-before executing a task. See the [repository skills](.agents/skills/) for
-decision notes, scope choices and prose, and [Agent Notes](.agents/notes/README.md)
-for decision history.
+before executing a task. Use
+[`dispatch-small-change`](.agents/skills/dispatch-small-change/SKILL.md) to turn
+a bounded change request into a clear task, choose its required operating
+system, and hand it off to a Worker. See the [repository skills](.agents/skills/)
+for decision notes, scope choices and prose, and
+[Agent Notes](.agents/notes/README.md) for decision history.
 
 ## Documentation conventions
 
