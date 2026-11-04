@@ -197,6 +197,17 @@ combined platform ceiling and aggregate runner cost are not preserved. The
 [cold-start decision](../.agents/notes/archived/bug-fix/2026-10-20-gh-cold-start-preparation.md)
 records the measurements, deadline semantics and remaining limits.
 
+The macOS ordinary test command runs under
+`packages/daynight/scripts/observe-native-validation.mjs`. It preserves the
+complete Vitest command, default concurrency and test deadlines, and propagates
+the command's exit result. Incremental process/resource samples and a bounded
+post-exit macOS termination-log query are uploaded from `.tmp/native-validation/`
+as `daynight-cli-tests-termination-macos-26`, including after test failure.
+Unavailable probes are recorded as diagnostic errors; sampling cannot prove the
+absence of a short-lived process or identify a signal sender by itself. The
+[termination diagnostics decision](../.agents/notes/implemented/testing/2026-11-05-native-test-termination-diagnostics.md)
+describes the evidence limits and collection cost.
+
 Explicit `pnpm test:apfs` diagnostics on macOS mount temporary case-sensitive and
 case-insensitive APFS images to check path identity against both behaviors.
 Routine `pnpm test` and the CLI CI matrix leave this image suite unselected;
@@ -735,8 +746,8 @@ Their shared command changes only the runner's referenced mirror list; signed
 source stanzas and package indices remain intact. An unexpected source layout
 fails explicitly. The [mirror decision](../.agents/notes/implemented/testing/2026-10-22-ubuntu-package-mirrors.md)
 records the provisioning failure and the retained acceptance limits.
-Native CLI jobs typecheck and build once before running ordinary and installed
-tests against the same output. The separate runtime compatibility matrix checks
+Ordinary CLI jobs typecheck and build before tests; independent installed jobs
+build their own current-source output. The separate runtime compatibility matrix checks
 the packed CLI installation across the supported Node.js range. The Web selector
 enables `verify-web-quality` and two `verify-web` matrix entries, each with a
 20-minute bound. Shared workflow changes retain all-module selection.

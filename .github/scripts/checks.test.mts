@@ -113,7 +113,7 @@ test("the ordinary Ubuntu producer alone supplies the runtime matrix package", (
 test("native stages retain phase-owned environment, acceptance and failure-probe artifacts without collisions", () => {
   const ordinaryUploads = uploadSteps(ordinary);
   const installedUploads = uploadSteps(installed);
-  assert.deepEqual(ordinaryUploads.map(artifactName), ["daynight-runtime-package", "daynight-cli-tests-${{ matrix.os }}", "daynight-cli-tests-probes-${{ matrix.os }}"]);
+  assert.deepEqual(ordinaryUploads.map(artifactName), ["daynight-runtime-package", "daynight-cli-tests-${{ matrix.os }}", "daynight-cli-tests-probes-${{ matrix.os }}", "daynight-cli-tests-termination-${{ matrix.os }}"]);
   assert.deepEqual(installedUploads.map(artifactName), ["daynight-cli-installed-${{ matrix.os }}", "daynight-cli-installed-probes-${{ matrix.os }}"]);
   const names = [...ordinaryUploads, ...installedUploads].map(artifactName);
   assert.equal(new Set(names).size, names.length);
@@ -124,6 +124,14 @@ test("native stages retain phase-owned environment, acceptance and failure-probe
     assert.deepEqual(artifactPaths(probe), [".tmp/validation-probes.json"]);
     assert.match(probe, /^          if-no-files-found: error$/m);
   }
+});
+
+test("macOS termination diagnostics preserve the complete ordinary command and upload after failure", () => {
+  assert.match(ordinary, /name: Test the compiled CLI\n        if: \$\{\{ runner.os != 'macOS' \}\}\n        run: pnpm --filter @codetreker\/daynight exec vitest run\n/);
+  assert.match(ordinary, /name: Test the compiled CLI with macOS termination diagnostics\n        if: \$\{\{ runner.os == 'macOS' \}\}\n        run: node packages\/daynight\/scripts\/observe-native-validation.mjs --output .tmp\/native-validation -- pnpm --filter @codetreker\/daynight exec vitest run\n/);
+  const upload = uploadSteps(ordinary).find((step) => artifactName(step) === "daynight-cli-tests-termination-${{ matrix.os }}")!;
+  assert.match(upload, /if: \$\{\{ always\(\) && runner.os == 'macOS' \}\}/);
+  assert.deepEqual(artifactPaths(upload), [".tmp/native-validation/"]);
 });
 
 test("unselected CLI stages may both skip while other selected modules succeed", () => {

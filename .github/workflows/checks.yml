@@ -80,7 +80,11 @@ jobs:
       - name: Test the local development installer
         run: pnpm dev:test
       - name: Test the compiled CLI
+        if: ${{ runner.os != 'macOS' }}
         run: pnpm --filter @codetreker/daynight exec vitest run
+      - name: Test the compiled CLI with macOS termination diagnostics
+        if: ${{ runner.os == 'macOS' }}
+        run: node packages/daynight/scripts/observe-native-validation.mjs --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run
       - name: Pack the CLI for runtime compatibility checks
         if: matrix.os == 'ubuntu-latest'
         run: pnpm --filter @codetreker/daynight pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"
@@ -110,6 +114,15 @@ jobs:
           path: .tmp/validation-probes.json
           include-hidden-files: true
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload macOS test termination diagnostics
+        if: ${{ always() && runner.os == 'macOS' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-cli-tests-termination-${{ matrix.os }}
+          path: .tmp/native-validation/
+          include-hidden-files: true
+          if-no-files-found: warn
           retention-days: 30
 
   verify-installed:
