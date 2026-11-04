@@ -51,12 +51,14 @@ test('browser mode installs its browser with the original bound before ordinary 
   assert.deepEqual(observed.accepted, []);
   installing.resolve('installed');
   await pending;
-  assert.equal(observed.calls.length, 2);
+  assert.equal(observed.calls.length, 3);
   assert.deepEqual(observed.calls[0]!.args, ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'install', '--with-deps', 'chromium']);
   assert.equal(observed.calls[0]!.options.timeoutMs, 600_000);
   assert.equal(observed.calls[0]!.options.signal, controller.signal);
   assert.deepEqual(observed.calls[1]!.args, ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/playwright.config.ts']);
   assert.equal(observed.calls[1]!.options.timeoutMs, 180_000);
+  assert.deepEqual(observed.calls[2]!.args, ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/team-preference-playwright.config.ts']);
+  assert.equal(observed.calls[2]!.options.timeoutMs, 180_000);
   assert.deepEqual(observed.accepted, [controller]);
 });
 
@@ -69,7 +71,7 @@ test('CI shard arguments are bounded and only shard 2 owns navigation checks', a
     const observed = operations();
     const controller = new AbortController();
     await runCi('browser', controller, observed, shard);
-    assert.equal(observed.calls.length, current === 1 ? 1 : 2);
+    assert.equal(observed.calls.length, current === 1 ? 1 : 3);
     assert.deepEqual(observed.acceptanceOptions, [{ shard }]);
     assert.deepEqual(observed.accepted, [controller]);
   }
@@ -90,7 +92,7 @@ test('invalid CI modes start no command or acceptance', async () => {
 });
 
 test('command failures retain the original error and prevent later verification work', async () => {
-  for (const { mode, failingCommand } of [{ mode: 'quality', failingCommand: 1 }, { mode: 'quality', failingCommand: 2 }, { mode: 'quality', failingCommand: 3 }, { mode: 'browser', failingCommand: 1 }, { mode: 'browser', failingCommand: 2 }]) {
+  for (const { mode, failingCommand } of [{ mode: 'quality', failingCommand: 1 }, { mode: 'quality', failingCommand: 2 }, { mode: 'quality', failingCommand: 3 }, { mode: 'browser', failingCommand: 1 }, { mode: 'browser', failingCommand: 2 }, { mode: 'browser', failingCommand: 3 }]) {
     const observed = operations();
     const failure = new Error(`${mode} command failed`);
     observed.command = async (file, args, options) => {
@@ -109,7 +111,7 @@ test('browser acceptance failure remains a failed CI operation', async () => {
   const failure = new Error('Browser acceptance failed');
   observed.acceptance = async () => { throw failure; };
   await assert.rejects(runCi('browser', new AbortController(), observed), (error) => error === failure);
-  assert.equal(observed.calls.length, 2);
+  assert.equal(observed.calls.length, 3);
 });
 
 test('cancellation prevents new commands and acceptance after a completed command', async () => {

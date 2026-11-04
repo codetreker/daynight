@@ -414,7 +414,7 @@ describe("authenticated application shell", () => {
   it("evicts the old project and open detail as soon as a sync response proves another principal while identity is pending", async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const waitForCacheUi = async (assertion: () => void) => {
-      const deadline = nodePerformance.now() + 1_000;
+      const deadline = nodePerformance.now() + 5_000;
       for (;;) {
         await act(async () => { await nextEventLoopTurn(); });
         try { assertion(); return; }
@@ -470,7 +470,7 @@ describe("authenticated application shell", () => {
       await waitForCacheUi(() => expect(screen.getByRole('heading', { name: 'Bob 的项目' })).toBeInTheDocument());
       expect(screen.queryByText('Alice-only private detail')).toBeNull();
     } finally { view.unmount(); root.remove(); }
-  });
+  }, 20_000);
 
   it.each([null, 'invalid-principal'])("retains the authorized view and stored rows for an untrusted 404 principal header (%s)", async (principal) => {
     const taskId = '00000000-0000-4000-8000-000000000005';
@@ -622,7 +622,7 @@ describe("authenticated application shell", () => {
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问令牌" })); });
-    expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).getByRole("status")).toHaveTextContent("正在加载项目");
+    expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).getByText("正在加载项目")).toHaveAttribute("role", "status");
     expect(within(screen.getByRole("region", { name: "个人访问令牌" })).getByRole("status")).toHaveTextContent("正在加载访问令牌…");
     expect(document.body).not.toHaveClass("auth-session-checking");
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);

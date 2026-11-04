@@ -27,4 +27,8 @@ describe("Team reads", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(source(), team)));
     await expect(getTeam(team, user, new AbortController().signal, mismatch)).rejects.toMatchObject({ code: "principal_mismatch" }); expect(mismatch).toHaveBeenCalledOnce();
   });
+  it("rejects a successful status other than 200", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(source(), { status: 201, headers: { "Content-Type": "application/json", "Daynight-User-ID": user } })));
+    await expect(getTeam(team, user, new AbortController().signal, vi.fn())).rejects.toMatchObject({ kind: "protocol", status: 201 });
+  });
 });
