@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import Database from "better-sqlite3";
@@ -56,37 +56,32 @@ afterEach(async () => {
 });
 
 describe("worker repository preparation lifecycle", () => {
-  it("keeps cold cancellation before identity, locks, databases and native controllers", async () => {
-    const f = await fixture();
-    const before = (await readdir(f.homeDirectory, { recursive: true })).sort();
-    const failure = new Error("Project selection cancelled.");
-    const prepareRepositories = vi.fn(async () => { throw failure; });
-    await expect(runWorker({ ...f, prepareRepositories })).rejects.toBe(failure);
-    expect(prepareRepositories).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal));
-    expect((await readdir(f.homeDirectory, { recursive: true })).sort()).toEqual(before);
+  it.each([false, true])("starts without repositories or interactive preparation (warm: %s)", async (warm) => {
+    const f = await fixture(warm); const controller = new AbortController();
+    const prepareRepositories = vi.fn(async () => { throw new Error("Startup must not prompt."); });
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      expect(options.repositories).toEqual([]);
+      expect(options.store.listProjects()).toEqual([]);
+      expect(options.store.listTasks()).toEqual([]);
+      expect(options.store.listCleanupSchedules()).toEqual([]);
+      controller.abort(new Error("Startup observed."));
+    }));
+    await runWorker({ ...f, signal: controller.signal, ...{ prepareRepositories } });
+    expect(prepareRepositories).not.toHaveBeenCalled();
+    expect(mocks.remote.mock.results[0]!.value.resolveProject).not.toHaveBeenCalled();
+    expect(mocks.git.mock.results[0]!.value.prepareRepository).not.toHaveBeenCalled();
+    expect(mocks.herdr).not.toHaveBeenCalled();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
-    for (const factory of [mocks.coordinator, mocks.herdr, mocks.git, mocks.remote]) expect(factory).not.toHaveBeenCalled();
   });
 
-  it("requires a repository after a successful cold guide without creating runtime state", async () => {
-    const f = await fixture();
-    const before = (await readdir(f.homeDirectory, { recursive: true })).sort();
-    const prepareRepositories = vi.fn(async () => {});
-    await expect(runWorker({ ...f, prepareRepositories })).rejects.toThrow("did not select any repositories");
-    expect((await readdir(f.homeDirectory, { recursive: true })).sort()).toEqual(before);
-    expect(mocks.coordinator).not.toHaveBeenCalled();
-  });
-
-  it("bypasses the guide and persists configured project mappings before its first reconciliation", async () => {
+  it("persists configured project mappings before its first reconciliation", async () => {
     const f = await fixture(false, true); const controller = new AbortController();
-    const prepareRepositories = vi.fn(async () => { throw new Error("Configured startup must not prompt."); });
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
       expect(options.store.listProjects()).toEqual([{ projectId: uuid(1), repoUrl: f.repository.remote, localPath: f.repository.path }]);
       expect(options.repositories).toHaveLength(1);
       controller.abort(new Error("Startup observed."));
     }));
-    await runWorker({ ...f, signal: controller.signal, prepareRepositories });
-    expect(prepareRepositories).not.toHaveBeenCalled();
+    await runWorker({ ...f, signal: controller.signal });
     expect(mocks.git.mock.results[0]!.value.prepareRepository).toHaveBeenCalledExactlyOnceWith(
       { projectId: uuid(1), repoUrl: f.repository.remote, localPath: f.repository.path }, expect.anything(),
     );
@@ -114,85 +109,60 @@ describe("worker repository preparation lifecycle", () => {
     expect(f.store!.getTask(claim)).toEqual(original);
   });
 
-  it("reloads guided startup settings once before constructing its coordinator", async () => {
-    const f = await fixture(true); const controller = new AbortController();
-    let coordinatorOptions: WorkerCoordinatorOptions | undefined;
-    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
-      coordinatorOptions = options;
-      expect(options.maxConcurrent).toBe(5);
-      return coordinator(async () => {
-        await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [f.repository], maxConcurrent: 7 } }));
-        expect(options.maxConcurrent).toBe(5);
-        controller.abort(new Error("Startup settings observed."));
-      });
-    });
-    const prepareRepositories = vi.fn(async () => {
-      expect(mocks.coordinator).not.toHaveBeenCalled();
-      expect(mocks.herdr).not.toHaveBeenCalled();
-      await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [f.repository], maxConcurrent: 5 } }));
-    });
-    await runWorker({ ...f, signal: controller.signal, prepareRepositories });
-    expect(prepareRepositories).toHaveBeenCalledOnce(); expect(mocks.coordinator).toHaveBeenCalledOnce();
-    expect(coordinatorOptions!.maxConcurrent).toBe(5);
-  });
-
-  it("keeps prepared service and acquisition settings from one captured configuration source", async () => {
-    const f = await fixture(true); const controller = new AbortController();
-    const prepared = { ...f.document, worker: { repositories: [f.repository], maxConcurrent: 1, agent: "codex", model: "origin-a-model" } };
-    const nextSource = stringify({ ...prepared,
-      serverUrl: "https://origin-b.example", serverToken: "dn_pat_Zbcdefghijklmnopqrstuvwxyz1234567890",
-      worker: { ...prepared.worker, repositories: [{ ...f.repository, path: path.join(f.homeDirectory, "origin-b-repository") }], model: "origin-b-model" },
-    });
+  it("captures service credentials and worker settings from one configuration source", async () => {
+    const f = await fixture(false, true); const controller = new AbortController();
+    const replacement = stringify({ ...f.document, serverUrl: "https://other.example", worker: { repositories: [], maxConcurrent: 7 } });
     const originalRead = configurationFiles.readConfigurationSource;
-    let preparedSaved = false; let replacedAfterCapture = false;
+    let replaced = false;
     const read = vi.spyOn(configurationFiles, "readConfigurationSource").mockImplementation(async (...args) => {
       const source = await originalRead(...args);
-      if (preparedSaved && !replacedAfterCapture) {
-        await writeFile(`${f.paths.configFile}.next`, nextSource); await rename(`${f.paths.configFile}.next`, f.paths.configFile); replacedAfterCapture = true;
-      }
+      if (!replaced) { await writeFile(`${f.paths.configFile}.next`, replacement); await rename(`${f.paths.configFile}.next`, f.paths.configFile); replaced = true; }
       return source;
     });
-    let coordinatorOptions: WorkerCoordinatorOptions | undefined;
-    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
-      coordinatorOptions = options; return coordinator(async () => { controller.abort(new Error("Prepared snapshot observed.")); });
-    });
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      expect(options.serverOrigin).toBe(origin);
+      expect(options.maxConcurrent).toBe(1);
+      expect(options.repositories).toHaveLength(1);
+      controller.abort();
+    }));
     try {
-      await runWorker({ ...f, signal: controller.signal, prepareRepositories: async () => {
-        await writeFile(f.paths.configFile, stringify(prepared)); preparedSaved = true;
-      } });
-      expect(replacedAfterCapture).toBe(true); expect(await readFile(f.paths.configFile, "utf8")).toBe(nextSource);
+      await runWorker({ ...f, signal: controller.signal });
       expect(mocks.remote.mock.calls[0]![0]).toEqual({ serverUrl: origin, serverToken: token });
-      expect(coordinatorOptions!.serverOrigin).toBe(origin);
-      expect(mocks.git.mock.results[0]!.value.prepareRepository.mock.calls[0]![0]).toEqual({ projectId: uuid(1), repoUrl: f.repository.remote, localPath: f.repository.path });
-      expect(coordinatorOptions!.repositories[0]!.configuration.model).toBe("origin-a-model");
     } finally { read.mockRestore(); }
   });
 
-  it.each(["serverUrl", "serverToken"] as const)("refuses a changed %s after the warm guide before constructing resource controllers", async (field) => {
-    const f = await fixture(true);
-    await expect(runWorker({ ...f, prepareRepositories: async () => {
-      await writeFile(f.paths.configFile, stringify({ ...f.document,
-        [field]: field === "serverUrl" ? "https://changed.example" : "dn_pat_Zbcdefghijklmnopqrstuvwxyz1234567890",
-        worker: { repositories: [f.repository], maxConcurrent: 1 },
-      }));
-    } })).rejects.toThrow("service or authentication changed");
-    expect(mocks.coordinator).not.toHaveBeenCalled(); expect(mocks.herdr).not.toHaveBeenCalled(); expect(mocks.git).not.toHaveBeenCalled();
+  it("rejects a second zero-repository runner under the same worker lock", async () => {
+    const f = await fixture(); const controller = new AbortController();
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    mocks.coordinator.mockReturnValue(coordinator(async () => { entered(); }));
+    const first = runWorker({ ...f, signal: controller.signal });
+    try {
+      await started;
+      await expect(runWorker(f)).rejects.toThrow(/already running|lock/i);
+      expect(mocks.coordinator).toHaveBeenCalledOnce();
+    } finally { controller.abort(); await first; }
   });
 
-  it("does not run native work while warm repository discovery is pending", async () => {
-    const f = await fixture(true); const failure = new Error("Project discovery failed.");
+  it("keeps original task and cleanup responsibility with no configured repositories", async () => {
+    const f = await fixture(true); const controller = new AbortController();
     const binding = { projectId: uuid(1), repoUrl: f.repository.remote, localPath: f.repository.path };
     f.store!.registerProject(binding);
     const pending = f.store!.registerPending({ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), agent: "codex" });
     f.store!.activateTask(pending);
-    await expect(runWorker({ ...f, prepareRepositories: async () => {
-      expect(mocks.coordinator).not.toHaveBeenCalled(); expect(mocks.herdr).not.toHaveBeenCalled();
-      expect(f.store!.getTask(pending)?.status).toBe("active");
-      throw failure;
-    } })).rejects.toBe(failure);
+    const cleanup = f.store!.saveCleanupSchedule({ ...pending, worktreeId: uuid(7) }, { deadline: 100, failures: 2, nextAttemptAt: 50, stage: "stop", lastError: "unconfirmed" });
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      expect(options.repositories).toEqual([]);
+      expect(options.store.getTask(pending)?.status).toBe("active");
+      expect(options.store.getCleanupSchedule(pending)).toEqual(cleanup);
+      expect(options.maxConcurrent).toBe(1);
+      controller.abort(new Error("Original inventory observed."));
+    }));
+    await runWorker({ ...f, signal: controller.signal });
     expect(f.store!.getTask(pending)?.status).toBe("active");
-    expect(f.store!.getProject(binding)).toEqual(binding);
+    expect(f.store!.getCleanupSchedule(pending)).toEqual(cleanup);
   });
+
 });
 
 
@@ -234,7 +204,7 @@ it("retains a committed Worker upgrade when Web state fails and resumes after it
   await expect(runWorker(f)).rejects.toThrow("unsupported-version");
   expect(mocks.coordinator).not.toHaveBeenCalled();
   const worker = new Database(f.paths.databaseFile);
-  expect(worker.pragma("user_version", { simple: true })).toBe(7);
+  expect(worker.pragma("user_version", { simple: true })).toBe(9);
   expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 });
   worker.close();
   const web = new Database(webFile);
@@ -250,7 +220,7 @@ it("retains a committed Worker upgrade when Web state fails and resumes after it
   expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(2);
   upgradedWeb.close();
   const unchangedWorker = new Database(f.paths.databaseFile);
-  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(7);
+  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(9);
   unchangedWorker.close();
 });
 

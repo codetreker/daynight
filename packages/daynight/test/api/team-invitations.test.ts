@@ -121,6 +121,40 @@ describe("Team invitation API", () => {
     const api = client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(body, 409, userId, undefined, { "X-Request-ID": "request-id" })));
     await expect(api.createTeamInvitation(userId, teamId, "request-id")).rejects.toMatchObject({ code: "identity_mismatch", requestId: "request-id", responseRequestId: "request-id", confirmedRefusal: true });
   });
+  it.each(["create", "revoke"] as const)("recognizes an actual-principal identity_mismatch refusal for %s without replay", async (action) => {
+    const body = JSON.stringify({ error: { code: "identity_mismatch", message: secret, requestId: "request-id" } });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(body, 409, otherId));
+    const api = client(fetch);
+    let error: unknown;
+    try {
+      if (action === "create") await api.createTeamInvitation(userId, teamId, "request-id");
+      else await api.revokeTeamInvitation(userId, teamId, invitationId, "request-id");
+    } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ phase: "response", code: "identity_mismatch", confirmedRefusal: true, outcomeUnconfirmed: false });
+    expect(inspect(error, { depth: 20, showHidden: true })).not.toContain(secret);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it.each(["create", "revoke"] as const)("treats ambiguous or forged wrong-principal %s responses as unknown", async (action) => {
+    const errors = [
+      response(JSON.stringify({ error: { code: "forbidden", message: secret, requestId: "request-id" } }), 409, otherId),
+      response(JSON.stringify({ error: { code: "identity_mismatch", message: secret, requestId: "request-id" } }), 403, otherId),
+      response(JSON.stringify({ error: { code: "identity_mismatch", message: secret } }), 409, otherId),
+      response(`{"error":{"code":"identity_mismatch","code":"identity_mismatch","message":"${secret}","requestId":"request-id"}}`, 409, otherId),
+      response(JSON.stringify({ error: { code: "identity_mismatch", message: secret, requestId: "request-id" } }), 201, otherId),
+    ];
+    const fetch = vi.fn<typeof globalThis.fetch>(); errors.forEach((value) => fetch.mockResolvedValueOnce(value));
+    const api = client(fetch);
+    for (const _ of errors) {
+      let error: unknown;
+      try {
+        if (action === "create") await api.createTeamInvitation(userId, teamId, "request-id");
+        else await api.revokeTeamInvitation(userId, teamId, invitationId, "request-id");
+      } catch (caught) { error = caught; }
+      expect(error).toMatchObject({ outcomeUnconfirmed: true, confirmedRefusal: false });
+      expect(inspect(error, { depth: 20, showHidden: true })).not.toContain(secret);
+    }
+    expect(fetch).toHaveBeenCalledTimes(errors.length);
+  });
   it("rejects wrong principal and preserves unknown after a lost response without replay", async () => {
     const wrong = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(JSON.stringify({ ...metadata, link }), 201, otherId, location));
     await expect(client(wrong).createTeamInvitation(userId, teamId, "request-id")).rejects.toMatchObject({ outcomeUnconfirmed: true });

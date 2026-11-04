@@ -1,5 +1,5 @@
 import { stringifyApiJson } from "../../api/json.js";
-import type { Team, TeamInvitation } from "../../api/types.js";
+import type { Team, TeamInvitation, TeamMemberWithProfile } from "../../api/types.js";
 import { terminalText } from "../../platform/terminal.js";
 
 export const renderTeam = (team: Team): string => [
@@ -25,3 +25,15 @@ export const renderTeamInvitations = (items: readonly TeamInvitation[]): string 
   "",
 ].join("\n")).join("\n");
 export const renderTeamJson = (value: unknown): string => `${stringifyApiJson(value)}\n`;
+
+export const renderTeamMembers = (members: readonly TeamMemberWithProfile[]): string => members.length === 0 ? "No members.\n" : members.map((member) => [
+  `User ID: ${terminalText(member.userId)}`,
+  `Name: ${member.profile.name === null ? "(none)" : terminalText(member.profile.name)}`,
+  `Email: ${member.profile.email === null ? "(none)" : terminalText(member.profile.email)}`,
+  `Avatar: ${member.profile.avatarUrl === null ? "(none)" : terminalText(member.profile.avatarUrl)}`,
+  `Role: ${member.role}`,
+  `Version: ${member.version}`,
+  `Joined: ${terminalText(member.createdAt)}`,
+  `Updated: ${terminalText(member.updatedAt)}`,
+  "",
+].join("\n")).join("\n");

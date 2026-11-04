@@ -4,7 +4,7 @@
 
 ## 目标与范围
 
-Task 使用服务端预定义且有明确值结构的属性。属性目录随服务端代码发布；当前包含公开可写的 pullRequests、paused 和服务端拥有的只读 worker。通用传输、存储和完整资源保留全部属性键，具体业务只读取需要的属性。
+Task 使用服务端预定义且有明确值结构的属性。属性目录随服务端代码发布；当前包含公开可写的 pullRequests、paused 和服务端拥有的只读 worker、sessionStartup。通用传输、存储和完整资源保留全部属性键，具体业务只读取需要的属性。
 
 | 编号 | 必需行为 |
 |---|---|
@@ -15,7 +15,7 @@ Task 使用服务端预定义且有明确值结构的属性。属性目录随服
 | TP5 | 属性使用任务整体 version；真实变化增加一次版本，语义相等设置或重复删除保留版本和时间，陈旧版本始终冲突。 |
 | TP6 | 属性移除真正删除记录，完整读取省略该键；缺失、空数组和 JSON null 是不同状态。null 仅在值定义允许时合法。 |
 | TP7 | 服务端提供认证的属性定义目录及项目范围的属性读取、设置和移除资源，CLI 用 properties/set-property/remove-property 暴露它们；值解释与属性校验只由服务端负责。 |
-| TP8 | worker 有记录时必须是合法归属对象，没有保留归属时缺失；公共创建、PATCH、属性设置和属性移除均不能写 worker。 |
+| TP8 | worker 有记录时必须是合法归属对象，没有保留归属时缺失；公共创建、PATCH、属性设置和属性移除均不能写 worker 或 sessionStartup。 |
 | TP9 | 完整单项、分页列表、修改结果及 task-sync 的 snapshot/delta 保留全部当前属性；图节点继续使用不含属性的精简投影。 |
 | TP10 | 数据迁移保留既有 PR 字符串、顺序及重复项，保留执行归属与任务元数据；旧空 PR 数组保留，旧 worker:null 转为缺失。 |
 | TP11 | 非法输入或非法存储属性值返回 400 invalid_input；数据库故障及其他内部错误返回 500 internal_error，不返回局部成功或丢弃非法属性。 |
@@ -38,6 +38,10 @@ Task 使用服务端预定义且有明确值结构的属性。属性目录随服
 properties:{} 表示没有属性；properties:{"pullRequests":[]} 则保留一个值为空数组的属性。当前 pullRequests 不接受 null，worker 如果存在必须是归属对象；worker 内部允许的 herdr:null、nativeSessionId:null 仍有各自业务含义。
 
 PR 项只允许 url/title 两字段，两者均必填。嵌套未知字段、重复 JSON key、缺项或错误类型返回 400 invalid_input。结构校验不增加字符串业务要求。JSON 转义写法、对象键序和缩进不是值的差异；既有解码器对错误 Unicode surrogate 的处理保持已解码的原有语义。
+
+## 启动观察属性
+
+sessionStartup 存在时必须是绑定当前执行身份的合法启动报告，不接受 null。只有原执行所有者经既有 Worker claim 更新和服务端身份校验才能写入；普通创建、编辑、设置与删除均拒绝。新 claim 清除旧报告，完整读取保留属性，消费时仍须检查当前代际。[Task Session 需求](task-sessions.md#启动结果与恢复阻断)拥有分类与兼容要求。
 
 ## 暂停周期 ping
 
@@ -68,7 +72,7 @@ PUT 的 valueText 是未经 CLI JSON 解析的原始参数文本：
 
 ## 创建、设置和移除
 
-创建省略 properties 或其中的键时，不创建对应属性行。普通 create/PATCH 仅接受可写定义，提供 worker 即使值为 null 或与现值相同也拒绝。worker 生命周期操作保留所有其他属性，公开属性更新保留 worker。
+创建省略 properties 或其中的键时，不创建对应属性行。普通 create/PATCH 仅接受可写定义，提供 worker 或 sessionStartup 即使值为 null 或与现值相同也拒绝。worker 生命周期操作保留公开属性，新 claim 清除前次执行的 sessionStartup；公开属性更新保留全部只读执行属性。
 
 | 输入或操作 | 结果 |
 |---|---|

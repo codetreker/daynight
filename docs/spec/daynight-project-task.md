@@ -174,8 +174,8 @@ Git、取消或期限错误均按实际原因失败，不得把查询失败视�
 并确认剩余预算后才能发送创建请求。该客户端预检不承诺并发创建的原子唯一性，
 服务继续允许同一仓库有多个 project。
 
-所有 project 操作均不读取或改写当前仓库关联、不写 ignore 规则、不 clone 仓库、
-不启动 review。列表查询配置 server 中主体可访问的全部 project，不按当前仓库或 Team 筛选。详情使用
+创建、列表和详情不读取或改写当前仓库关联；转移可读取关联或通过仓库发现项目，
+但不改写关联或 ignore 规则。Project 操作不 clone 仓库，也不启动 review。列表查询配置 server 中主体可访问的全部 project，不按当前仓库或 Team 筛选。详情使用
 显式的连字符 UUID，接受大小写输入并使用规范 ID 查询。列表及详情可在 Git 仓库之外
 执行，不查询当前工作目录；命令组及操作帮助遵守 PT1 的依赖隔离。
 
@@ -185,6 +185,20 @@ Project 创建、详情、分页条目及图中的 Project 必须包含 `ownersh
 前者为完整正 int64，后者为 `1..2147483647` 的整数分钟，初始分别为 `1` 和 `60`。
 缺失或不合法字段是协议错误，不能由 CLI 补默认值；JSON 必须无损保留超过 `2^53` 的嵌套版本。
 可读 Project 输出保留既有字段，当前没有新增设置修改命令，设置通过 Web 或既有服务 API 修改。
+
+## 项目转移
+
+`daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] [--if-version <version>] [--confirm] [--json]`
+使用显式 Project 或现有仓库发现规则确定项目，不修改仓库绑定或默认 Team。目标必须是
+规范 Team UUID，或当前服务 origin 下路径恰为 `/teams/<uuid>` 的链接；userinfo、query、
+fragment、其他路径和其他服务均被拒绝。只有当前 owner Team admin 能转出，目标无需
+操作者的成员资格；单独 Project admin 不足以转出。
+
+命令预览项目、来源和目标及转移后操作者的预期角色，确认后提交该预览的精确 ownership
+与目标版本和当前用户身份。`--if-version` 指定的正 int64 必须与预览归属版本相等，
+不符时本地拒绝。无 `--confirm` 时须交互确认，非 TTY、取消和拒绝不提交。
+冲突须重新预览和决定；提交结果未知不得自动重放，后续 GET 返回 404 也不能证明成功。
+成功直接使用回执，actorAccess 为 null 仍是成功。转移保留项目身份、单独授权与邀请。
 
 ## Team 读取与上下文
 
@@ -197,6 +211,10 @@ daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confir
 daynight team invitation create [--team <uuid|personal>] [--confirm] [--json]
 daynight team invitation list [--team <uuid|personal>] [--json]
 daynight team invitation revoke <invite-id> [--team <uuid|personal>] [--confirm] [--json]
+daynight team member list [--team <uuid|personal>] [--json]
+daynight team member set-role <user-id> <member|admin> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team member remove <user-id> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team leave [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
 ```
@@ -246,6 +264,37 @@ Unicode、不能包含 NUL 或全为 Unicode `White_Space`。Personal Team 不�
 创建和撤销须交互确认或提供 `--confirm`，非交互且未确认时不提交。写入绑定当前
 用户，验证响应主体和目标；未知结果不能自动重放或创建替代邀请。秘密不写入配置、
 日志或错误诊断，损坏或恶意响应也不能使秘密进入诊断。`--json` 输出对应的确认结果。
+## Team 成员管理
+
+`team member list` 读取所选 Team 的完整成员目录，包含用户 ID、角色、真实成员关系版本、
+时间和可为 null 的资料。目录仅向当前 Team 成员开放，不提供跨 Team 搜索或任意用户加入。
+`team member set-role` 更改已有成员角色，`team member remove` 移除已有成员，`team leave`
+退出当前用户的成员关系。管理员可管理成员及自己的角色，普通成员可自行退出；普通 Team
+必须保留至少一名管理员，Personal Team 的成员关系不可更改。这些操作不修改独立 Project
+grant，也不修改配置的默认 Team。
+
+成员写入使用目标成员的真实正 int64 关系版本，不使用 Team 元数据或 Project grant 版本。
+`--if-version` 保留先前决策观察到的精确版本，与当前读取不符时在提交前拒绝；省略时使用
+当前读取版本。写操作复用交互确认或布尔 `--confirm`，取消或非交互且未确认时不提交。
+冲突需要重新观察和决策，不自动重放。写入携带当前用户身份并验证响应主体、目标和回执；
+成功回执包含操作者剩余 Team role，自行退出为 null。自行退出成功直接使用回执，不再
+读取失权后的敏感 Team 数据。未知结果以错误报告，不自动重放；后来读取只能说明当前事实，
+不能证明原写入成功。`--json` 保留完整目录或已确认回执及精确版本，可读文本安全转义。
+
+## 邀请接收
+
+`daynight invitation inspect [--stdin] [--json]` 预览同服务 Project 或 Team
+邀请，不消费邀请；`daynight invitation accept [--stdin] [--confirm] [--json]`
+由当前登录账号明确接受。两者不读取默认 Team，不支持代接受。链接和 token 不作为
+位置参数或 flag 值；交互输入隐藏，`--stdin` 读取至 EOF，最多 4096 字节，允许末尾
+一个 LF 或 CRLF。秘密不进入配置、日志、
+命令行或递归错误 cause。只接受同服务的规定路径和 fragment。
+
+accept 显示目标与当前账号并要求确认，非 TTY 且无 `--confirm` 时不得写入。
+布尔 `--confirm` 无值，重复或 `--confirm=false` 是参数错误。已有 direct Project
+grant 或 Team membership 保持角色且不消费；只有继承权限的 Project 接收者获得 direct
+member grant。失效、到期、撤销、已消费或目标删除的邀请不可用。客户端校验响应主体，
+错主体和未知提交不重放；无法从后续读取恢复丢失的回执，未知结果以非零退出报告。
 
 ## PT7. Task 命令与更新语义
 

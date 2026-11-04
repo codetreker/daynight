@@ -2,7 +2,7 @@ import { canonicalId, ProtocolError } from "../../api/parse.js";
 import { parseVersionArgument } from "../../api/json.js";
 import { ApiError } from "../../api/client.js";
 import { randomUUID } from "node:crypto";
-import type { Team, User } from "../../api/types.js";
+import type { Team, TeamRole, User } from "../../api/types.js";
 import { UsageError } from "../../cli/context.js";
 import type { CliContext } from "../../cli/context.js";
 import { parseCommand, renderCommandHelp } from "../../cli/schema.js";
@@ -30,7 +30,11 @@ export const runTeamCommand = async (args: readonly string[], context: CliContex
   if (target === null) throw new UsageError("--team must be a hyphenated UUID or personal.", `daynight team ${command.command.name} --help`);
   const action = command.command.name;
   const invitation = command.path.includes("invitation");
-  const mutation = invitation ? action === "create" || action === "revoke" : action === "create" || action === "rename" || action === "delete";
+  const isMember = command.path.includes("member");
+  const memberMutation = isMember && (action === "set-role" || action === "remove") || action === "leave";
+  const mutation = invitation ? action === "create" || action === "revoke" : action === "create" || action === "rename" || action === "delete" || memberMutation;
+  const memberId = isMember && action !== "list" ? canonicalId(command.values[0]!) : undefined;
+  if (memberId === null) throw new UsageError("user-id must be a hyphenated UUID.", `${command.path.join(" ")} --help`);
   const confirmed = command.options.has("--confirm");
   const name = command.values[0];
   if (!invitation && (action === "create" || action === "rename") && !isNonemptyText(name)) throw new UsageError("Team name must be nonempty Unicode text without NUL.", `daynight team ${action} --help`);
@@ -52,7 +56,7 @@ export const runTeamCommand = async (args: readonly string[], context: CliContex
       const result = await api.createTeam(user.id, name!, requestId).catch((cause: unknown) => throwMutationFailure(cause, "creation", requestId));
       return confirmedOutput("Team creation", result.id, () => command.options.has("--json") ? rendering.renderTeamJson(result) : rendering.renderTeam(result));
     }
-    if (!invitation && action === "list") {
+    if (!invitation && !isMember && action === "list") {
       const teams = (await api.listTeams(user.id)).map((item) => verifyPersonal(item, user));
       operation.check();
       return command.options.has("--json") ? rendering.renderTeamJson(teams) : rendering.renderTeams(teams);
@@ -61,6 +65,32 @@ export const runTeamCommand = async (args: readonly string[], context: CliContex
     const isDefault = command.path.includes("default");
     const configured = target === undefined ? await readTeamDefault(context.homeDirectory(), serverUrl, user, operation.signal) : undefined;
     const resolved = teamTarget(target ?? configured ?? "personal", user);
+    if (isMember || action === "leave") {
+      if (isMember && action === "list") {
+        const members = await api.listTeamMembers(user.id, resolved);
+        operation.check();
+        return command.options.has("--json") ? rendering.renderTeamJson(members) : rendering.renderTeamMembers(members);
+      }
+      const member = action === "leave"
+        ? verifyPersonal(await api.getTeam(user.id, resolved), user).membership
+        : (await api.listTeamMembers(user.id, resolved)).find((item) => item.userId === memberId);
+      operation.check();
+      if (member === undefined) throw new Error("Team member was not found in the current directory.");
+      if (expectedVersion !== undefined && expectedVersion !== member.version) throw new Error(`Team membership version differs from --if-version; current version is ${member.version}. Recheck the membership before confirming a new change.`);
+      const description = action === "leave" ? `Leave Team ${resolved} (membership version ${member.version})?`
+        : action === "set-role" ? `Set Team ${resolved} member ${member.userId} role to ${command.values[1]} (membership version ${member.version})?`
+          : `Remove member ${member.userId} from Team ${resolved} (membership version ${member.version})?`;
+      await confirmTeamChange(context, confirmed, description, operation.signal);
+      const requestId = randomUUID();
+      try {
+        if (action === "set-role") {
+          const receipt = await api.setTeamMemberRole(user.id, member, command.values[1] as TeamRole, requestId);
+          return confirmedOutput("Team member role change", resolved, () => command.options.has("--json") ? rendering.renderTeamJson(receipt) : `Updated member ${receipt.membership.userId} role to ${receipt.membership.role}. Actor role: ${receipt.actorRole ?? "none"}.\n`);
+        }
+        const receipt = await api.removeTeamMember(user.id, member, requestId);
+        return confirmedOutput("Team member removal", resolved, () => command.options.has("--json") ? rendering.renderTeamJson(receipt) : `Removed member ${receipt.userId} from Team ${receipt.teamId}. Actor role: ${receipt.actorRole ?? "none"}.\n`);
+      } catch (cause) { throwMutationFailure(cause, action, requestId); }
+    }
     if (command.command.name === "projects") {
       const projects = await api.listTeamProjects(user.id, resolved);
       operation.check();

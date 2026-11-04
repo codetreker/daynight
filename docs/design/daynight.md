@@ -568,10 +568,11 @@ GitHub Actions 保留原生 Linux、macOS、Windows 的普通测试与既有 rev
 安装验收，并在独立 Linux 作业中执行补全的真实 shell 验收。独立
 project/task 安装 suite 以受控 HTTP 和真实 Git 证明三个原生平台的仓库选择与
 文件行为；真实 Go/PostgreSQL 流程复用独立 Go 测试包 `cmd/e2e_tests` 的 fresh
-race binary。该包集中拥有跨进程验收、`TestMain` 和资源清理；服务主命令包保留
+binary，instrumentation 与测试进程的实际 race mode 匹配。该包集中拥有跨进程验收、`TestMain` 和资源清理；服务主命令包保留
 直接调用内部函数的测试，两边各自管理测试辅助设施。
 服务验证分为并行的覆盖率与 E2E 作业，各自准备安装后的 CLI；本地完整入口依次运行
-两部分。覆盖率作业保留生产包的 build/vet/race 与严格 coverage gate，随后在 Go 默认
+两部分。覆盖率作业保留生产包的 build/vet 与严格 coverage gate，race 在 PR CI 关闭、
+main CI 和本地默认开启，选择与回执由[服务验证说明](../../packages/daynight-server/README.md#race-instrumentation)拥有。随后在 Go 默认
 10 分钟计时器之外运行预算套件；E2E 作业独立执行完整 `cmd/e2e_tests`。常规 CI
 运行两个期限场景，通过测试侧 preload 使用
 1 秒单次、3 秒总期限，生产默认 30 秒/5 分钟单独断言；四个完整字节场景通过
