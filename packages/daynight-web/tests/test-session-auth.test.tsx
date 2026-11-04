@@ -1,3 +1,4 @@
+import { wireResponse } from './helpers/wireJson';
 import { readFileSync } from 'node:fs';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
@@ -7,7 +8,7 @@ const render = createLocaleRender('en');
 const owner = '00000009-1111-4111-8111-111111111111';
 const sessionId = '00000001-1111-4111-8111-111111111111';
 const path = `/test-sessions/${sessionId}`;
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': owner } });
+const json = (body: unknown, status = 200) => wireResponse(body, { status, headers: { 'Daynight-User-ID': owner } });
 it.each([path, '/test-sessions'])('shows login for the protected Test URL %s without requesting sessions and retains the login destination', async (targetPath) => {
   window.history.replaceState(null, '', targetPath);
   const fetch = vi.fn(async (url: string) => url === '/api/v1/me' ? json({ error: { code: 'unauthenticated', message: 'Login required', requestId: 'request' } }, 401) : json({ providers: ['github'] }));

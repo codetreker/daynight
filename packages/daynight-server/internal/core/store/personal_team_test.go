@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -211,5 +212,24 @@ func testProjectOwnershipCreationAndRequiredReads(t *testing.T, missing string) 
 		if err := s.ReadSnapshot(ctx, read); err == nil || errors.Is(err, core.ErrNotFound) {
 			t.Fatalf("project read %d accepted missing ownership or hid corruption: %v", index, err)
 		}
+	}
+}
+
+func TestIdentityUserReturnsCanonicalPersonalReference(t *testing.T) {
+	s := isolatedStore(t)
+	user, principal, _ := testAuthRecords(t, s)
+	ctx := context.Background()
+	got, err := s.IdentityUser(ctx, principal.UserID)
+	if err != nil || !reflect.DeepEqual(got, user) || got.PersonalTeam.ID == "" || got.PersonalTeam.Kind != "personal" || got.PersonalTeam.Name != nil {
+		t.Fatalf("account Personal reference differs from canonical login: %#v %#v %v", got, user, err)
+	}
+	var ownedTeam string
+	if err := s.Pool.QueryRow(ctx, `SELECT t.id::text FROM teams t JOIN team_members m ON m.team_id=t.id
+		WHERE t.personal_user_id=$1 AND m.user_id=$1 AND m.role='admin'`, user.ID).Scan(&ownedTeam); err != nil || ownedTeam != got.PersonalTeam.ID {
+		t.Fatalf("account reference does not identify the stored Personal owner: %s %v", ownedTeam, err)
+	}
+	mustQueryExec(t, s, `DELETE FROM teams WHERE id=$1`, ownedTeam)
+	if _, err := s.IdentityUser(ctx, user.ID); err == nil || errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("missing Personal Team was hidden as an absent account: %v", err)
 	}
 }
