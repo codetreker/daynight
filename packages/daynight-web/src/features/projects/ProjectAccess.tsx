@@ -23,6 +23,7 @@ export class ProjectAccessSession {
   private barrier = 0;
   private lastObservation = performance.now();
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private active = true;
   constructor(readonly projectId: string, readonly scope: TaskCacheScope) {}
   snapshot = (): AccessState => this.state;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
@@ -52,7 +53,7 @@ export class ProjectAccessSession {
   private schedule = (): void => {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
-    if (!this.live() || document.visibilityState === 'hidden' || this.read !== null) return;
+    if (!this.live() || !this.active || document.visibilityState === 'hidden' || this.read !== null) return;
     this.timer = setTimeout(() => { this.timer = null; void this.revalidate(); }, Math.max(0, this.lastObservation + 30_000 - performance.now()));
   };
   revalidate = (): Promise<ProjectAccess | null> => {
@@ -118,8 +119,21 @@ export class ProjectAccessSession {
     this.read = null;
     return this.revalidate();
   };
+  setActive = (active: boolean): void => {
+    if (this.active === active) return;
+    this.active = active;
+    if (!active) {
+      if (this.timer !== null) clearTimeout(this.timer);
+      this.timer = null;
+      this.barrier = this.beginObservation();
+      this.readAbort?.abort();
+      this.readAbort = null;
+      this.read = null;
+      this.update({ ...this.state, refreshing: false });
+    } else if (document.visibilityState !== 'hidden') void this.revalidate();
+  };
   start = (initialRead: boolean): (() => void) => {
-    const refresh = () => { if (document.visibilityState !== 'hidden') void this.revalidate(); else this.schedule(); };
+    const refresh = () => { if (this.active && document.visibilityState !== 'hidden') void this.revalidate(); else this.schedule(); };
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
     const unsubscribe = this.scope.subscribe((event) => {
@@ -130,7 +144,7 @@ export class ProjectAccessSession {
       const priorFailure = previous !== null && !(previous instanceof ApiError && previous.kind === 'server' && previous.status === 404 && previous.code === 'not_found');
       this.update({ access: null, status: 'unavailable', refreshing: false, error: knownDenial && priorFailure ? previous : event.error });
     });
-    if ((initialRead || this.scope.isProjectSuspended(this.projectId)) && document.visibilityState !== 'hidden') void this.revalidate();
+    if (this.active && (initialRead || this.scope.isProjectSuspended(this.projectId)) && document.visibilityState !== 'hidden') void this.revalidate();
     else this.schedule();
     return () => {
       this.lifetime.abort();
@@ -143,17 +157,18 @@ export class ProjectAccessSession {
 }
 
 const Context = createContext<ProjectAccessSession | null>(null);
-const Provider = ({ projectId, initialRead, children }: { readonly projectId: string; readonly initialRead: boolean; readonly children: ReactNode }) => {
+const Provider = ({ projectId, initialRead, active, children }: { readonly projectId: string; readonly initialRead: boolean; readonly active: boolean; readonly children: ReactNode }) => {
   const scope = useTaskCacheScope();
   const session = useMemo(() => new ProjectAccessSession(projectId, scope), [projectId, scope]);
+  useEffect(() => { session.setActive(active); }, [session, active]);
   useEffect(() => session.start(initialRead), [session, initialRead]);
   return <Context.Provider value={session}>{children}</Context.Provider>;
 };
 
-export const ProjectAccessBoundary = ({ projectId, initialRead = false, children }: { readonly projectId: string; readonly initialRead?: boolean; readonly children: ReactNode }) => {
+export const ProjectAccessBoundary = ({ projectId, initialRead = false, active = true, children }: { readonly projectId: string; readonly initialRead?: boolean; readonly active?: boolean; readonly children: ReactNode }) => {
   const current = useContext(Context);
   const scope = useTaskCacheScope();
-  return current?.projectId === projectId && current.scope === scope ? children : <Provider key={`${projectId}:${initialRead}`} projectId={projectId} initialRead={initialRead}>{children}</Provider>;
+  return current?.projectId === projectId && current.scope === scope ? children : <Provider key={`${projectId}:${initialRead}`} projectId={projectId} initialRead={initialRead} active={active}>{children}</Provider>;
 };
 
 export const useProjectAccess = (projectId: string) => {

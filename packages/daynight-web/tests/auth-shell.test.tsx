@@ -1444,6 +1444,7 @@ describe("Team invitation handoff", () => {
       expect(window.location.hash).toBe("");
       if (url === "/api/v1/team-invitations/inspect") return Promise.resolve(json({ team, membership: null }));
       if (url === "/api/v1/team-invitations/accept") return Promise.resolve(json({ team, membership, joined: true, consumed: true }));
+      if (url === `/api/v1/teams/${teamId}`) return Promise.resolve(json({ ...team, version: 1n, createdAt: now, updatedAt: now, membership }));
       return Promise.resolve(defaults(url));
     });
     vi.stubGlobal("fetch", fetcher);
@@ -1459,7 +1460,12 @@ describe("Team invitation handoff", () => {
     expect(window.location.pathname).toBe("/team-invitations");
     expect(window.sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
     expect(document.body.textContent).not.toContain("dnteam_secret");
-    expect(document.querySelector(`a[href^="/teams/"]`)).toBeNull();
+    const open = screen.getByRole("link", { name: "打开 Team" });
+    expect(open).toHaveAttribute("href", `/teams/${teamId}`);
+    fireEvent.click(open);
+    await screen.findByRole("heading", { name: "协作团队" });
+    expect(window.location.pathname).toBe(`/teams/${teamId}`);
+    await waitFor(() => expect(window.localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(teamId));
   });
 
   it("preserves an existing admin role in the confirmed no-consume receipt", async () => {

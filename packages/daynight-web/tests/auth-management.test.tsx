@@ -323,12 +323,12 @@ describe('authoritative project management', () => {
     vi.mocked(auth.revokeInvitation).mockImplementation(async (_projectId, invitationId) => { catalogue = catalogue.filter((item) => item.id !== invitationId); });
     members(); await readyMembers(); expect(screen.getByText(/还没有有效邀请/)).toBeInTheDocument();
     click('邀请成员'); expect(screen.getByText('7 天后到期 · 单次使用 · 加入角色：成员')).toBeInTheDocument(); await dialogClick('创建邀请链接');
-    await screen.findByLabelText('一次性邀请链接'); expect(auth.createInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', user.id, expect.any(AbortSignal), expect.any(Function));
+    await screen.findByLabelText('一次性邀请链接'); expect(auth.createInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', user.id, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
     expect(screen.getByLabelText('一次性邀请链接')).toHaveValue('https://daynight.test/invitations#once-secret'); await dialogClick('我已保存，关闭');
     expect(screen.queryByDisplayValue(/once-secret/)).toBeNull();
     await clickWhenReady('撤销邀请 invitation-a');
     expect(screen.getByText(/这个邀请链接将立即失效/)).toBeInTheDocument(); await dialogClick('撤销邀请');
-    await screen.findByText(/还没有有效邀请/); expect(auth.revokeInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'invitation-a', user.id, expect.any(AbortSignal), expect.any(Function));
+    await screen.findByText(/还没有有效邀请/); expect(auth.revokeInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'invitation-a', user.id, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
   });
 
   it('preserves unknown invitation results and requires a fresh catalogue before another action', async () => {
@@ -342,6 +342,22 @@ describe('authoritative project management', () => {
     await screen.findByText(/原操作结果仍未确认/);
     await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接'); await screen.findByLabelText('一次性邀请链接');
     expect(auth.createInvitation).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains a dispatched unknown invitation across navigation without replay', async () => {
+    const result = deferred<import('../src/api/auth').CreatedProjectInvitation>();
+    const guard = vi.fn();
+    vi.mocked(auth.createInvitation).mockImplementation(async (_project, _user, _signal, _mismatch, dispatched) => { dispatched?.(); return result.promise; });
+    const view = members({ active: true, onRoute: true, onGuardChange: guard }); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    await waitFor(() => expect(auth.createInvitation).toHaveBeenCalledOnce());
+    view.rerender(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" projectName="Very long project name" user={user} onRemoved={vi.fn()} active={false} onRoute={false} onGuardChange={guard} />);
+    await act(async () => result.reject(new ApiError('network')));
+    expect(guard).toHaveBeenCalledWith(true);
+    view.rerender(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" projectName="Very long project name" user={user} onRemoved={vi.fn()} active onRoute onGuardChange={guard} />);
+    await screen.findByText(/邀请变更结果尚未确认/);
+    expect(screen.getByRole('button', { name: '邀请成员' })).toBeDisabled();
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
   });
 
   it('keeps both unknown invitation revocations disabled after reading the catalogue', async () => {

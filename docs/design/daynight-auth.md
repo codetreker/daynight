@@ -421,8 +421,8 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 仅权限核验失败的重试保留有效资源和设置草稿；完整资源核对仍用于资源错误、缺失及写结果不确定。
 具体数据和读取机制由[计时架构](daynight-task-timing.md)与[Web 架构](daynight-web.md#项目执行提醒设置)拥有。
 项目成员页分别展示有效、Team 继承和单独授权，按 participant 的真实 grant 存在性与版本操作；确认回执提供提交后本人 access，失权时清除项目缓存并保留成功结果。成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。
-邀请的读取和写入响应核对主体；Project 接受页按 directGrant 展示真实关系，确认后消费回执并进入原项目。Team 接受页展示真实 Team 和本人关系，确认后的回执显示名称、ID、加入结果及安全返回入口。
-未确认的写入不自动重放，创建结果未知时一次性秘密无法恢复。
+普通 Team 成员页与 Project 成员页分别管理本范围的邀请；列表只显示元数据，创建回执中的链接只保存在一次结果对话框中。邀请的读取和写入响应核对主体；Project 接受页按 directGrant 展示真实关系，确认后消费回执并进入原项目。Team 接受页展示真实 Team 和本人关系，确认后的回执显示名称、ID、加入结果并提供真实 Team 路由；该路由通过现有 Team 选择机制验证并保存当前上下文。
+未确认的写入不自动重放，创建结果未知时一次性秘密无法恢复；重读只能观察当前列表，不能证明原操作结果。
 401/换账号使共享请求 generation 失效并卸载旧项目和附件内容，
 失败不伪装成空列表。ownership.version、settings.version 与 nested directGrant.version 只在声明的资源路径无损解码，
 新增授权提交 null，角色修改/移除以 bigint 提交真实 grant 观察值。grants 回执核对当前请求绑定的 principal、目标和结果；
@@ -651,6 +651,6 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 ## 交付边界
 
 真实 Personal 归属、存量迁移、登录与项目 writer、双来源准入及 Thread 强 fence 共同成立。
-普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；项目转移提供服务端预览和提交。Team 邀请的公开接收入口可登录、确认并加入；CLI 项目转移使用该预览和回执；成员管理、邀请管理界面及 Web 转移保持各自的功能所有权。当前 Project、access 与 participant
+普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；项目转移提供服务端预览和提交。Team 邀请的公开接收入口可登录、确认并加入；Team 与 Project 成员页管理各自邀请，Team 接收回执可进入真实 Team 上下文。CLI 项目转移使用该预览和回执；Web 转移保持独立功能所有权。当前 Project、access 与 participant
 公开真实 ownership 和完整权限来源，无占位来源或旧格式回退。
 可信同源 HTML 保持原权限模型，不引入预览安全系统。K1 和已准入传输语义保持。

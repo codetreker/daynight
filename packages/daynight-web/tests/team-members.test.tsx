@@ -24,6 +24,7 @@ const setup = (options: { actor?: Role; other?: Role; personal?: boolean; mutate
     const method = init?.method ?? "GET";
     if (method !== "GET") return Promise.resolve(options.mutate?.(method, String(init?.body)) ?? fail("forbidden"));
     if (url === `/api/v1/teams/${teamId}`) return Promise.resolve(response({ id: teamId, kind: options.personal ? "personal" : "ordinary", name: options.personal ? null : "Alpha", version: 1n, createdAt: time, updatedAt: time, membership: membership(userId, actor) }));
+    if (url === `/api/v1/teams/${teamId}/invitations`) return Promise.resolve(response({ items: [] }));
     if (url === `/api/v1/teams/${teamId}/members`) return Promise.resolve(response({ items: [{ ...membership(userId, actor), profile: profile("Alice") }, { ...membership(otherId, other, 9007199254740993n), profile: profile(null) }] }));
     throw new Error(`Unexpected request ${url}`);
   });
@@ -100,7 +101,7 @@ describe("Team members", () => {
     const dialog = screen.getByRole("dialog");
     await within(dialog).findByText(/result is unknown/);
     fireEvent.click(within(dialog).getByRole("button", { name: "Check current state" }));
-    await waitFor(() => expect(fixture.fetcher.mock.calls.filter(([, init]) => !init?.method)).toHaveLength(4));
+    await waitFor(() => expect(fixture.fetcher.mock.calls.filter(([url, init]) => !init?.method && !url.endsWith("/invitations"))).toHaveLength(4));
     expect(within(dialog).queryByRole("button", { name: "Remove member" })).toBeNull();
     fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
     expect(within(row(otherId)).getByRole("button", { name: "Remove" })).toBeDisabled();

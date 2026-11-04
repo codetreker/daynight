@@ -106,6 +106,7 @@ export const auth: AuthMessages = {
     alreadyMemberDetail: "Your existing role will be preserved and the invitation will not be used.", memberRole: "Joining role: Member",
     currentRole: "Current role", joined: "You joined this Team", alreadyJoined: "You are already a member of this Team", teamId: "Team ID",
     acceptUnknown: "The result is unknown. Check the invitation for current information; this cannot confirm the original result.", checkInvitation: "Check invitation",
+    open: "Open Team",
   },
   createProject: {
     open: "＋ Create project", createFirst: "Create your first project",

@@ -25,8 +25,9 @@ retains the independent Project grant contract.
 The public `/team-invitations` entry captures and removes the fragment before
 login or requests, retains the secret only for the existing short-lived login
 flow, and confirms the current account before accepting. A confirmed receipt
-shows the real Team name, ID and membership outcome with a safe return entry.
-It does not depend on a Team workspace. The [authentication requirements](../../../../docs/spec/daynight-auth.md#team-邀请)
+shows the real Team name, ID and membership outcome and links to the real Team
+workspace. The [Web invitation management decision](../feature/2026-11-05-web-scoped-invitations.md)
+owns that navigation and the management hosts. The [authentication requirements](../../../../docs/spec/daynight-auth.md#team-邀请)
 and [design](../../../../docs/design/daynight-auth.md#数据与并发) own the API and
 secret lifecycle.
 

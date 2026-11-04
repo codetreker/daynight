@@ -9,6 +9,7 @@ import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type ProjectRecord } from '../.
 import { authenticatedAPI, bearerContext, browserAuthentication, tokenContext, type AuthenticatedAPI } from './authentication';
 import { executeTask, createProject, createTask, expect, test } from './fixtures';
 import { attachmentFileButton } from './attachment-tree';
+import { verifyScopedInvitationManagement } from './w7-invitations';
 
 const scenario = (description: string) => ({ annotation: { type: 'scenario', description } });
 const origin = (info: TestInfo): string => {
@@ -632,6 +633,7 @@ test('auth-personal-tokens', scenario('auth-personal-tokens'), async ({ page, ap
 
 test('auth-invitations', scenario('auth-invitations'), async ({ page, context, api: request, playwright, allowBrowserWrites }, info) => {
   const baseURL = origin(info);
+  await verifyScopedInvitationManagement(page, request, baseURL, allowBrowserWrites);
   const project = await createProject(request, { name: `Invitation ${randomUUID()}` });
   allowBrowserWrites([
     { method: 'POST', url: `${baseURL}/api/v1/projects/${project.id}/invitations`, count: 1 },
@@ -761,6 +763,12 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
     await expect(page.getByText('You joined this Team', { exact: true })).toBeVisible();
     await expect(page.getByText(`Team ID: ${team.id}`, { exact: true })).toBeVisible();
+    const openTeam = page.getByRole('link', { name: 'Open Team' });
+    await expect(openTeam).toHaveAttribute('href', `/teams/${team.id}`);
+    await openTeam.click();
+    await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
+    await expect(page.getByRole('heading', { name: teamName, exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate((id) => localStorage.getItem(`daynight.selectedTeam:${id}`), bob.id)).toBe(team.id);
     await openInvitation(page, teamInvitation.link);
     await expect(page.getByRole('heading', { name: 'Invitation unavailable' })).toBeVisible();
     expect(new URL(page.url()).hash === '', 'Reopening a consumed invitation removes its fragment').toBe(true);
@@ -774,7 +782,7 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
     expect(unknownInvitationResponse.status()).toBe(201);
     const unknownInvitation = await unknownInvitationResponse.json() as { link: string };
     await page.goto('/projects');
-    await expect(page.getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: teamName, exact: true })).toBeVisible();
     await openInvitation(page, unknownInvitation.link);
     await expect(page.getByRole('heading', { name: 'You are invited to a Team' })).toBeVisible();
     let committedStatus: number | undefined;

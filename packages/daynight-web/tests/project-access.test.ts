@@ -104,6 +104,50 @@ it('uses sync receipts for the visible thirty-second budget and pauses its timer
   await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
 });
 
+it('pauses background access reads for an inactive retained panel and revalidates on return', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
+  const { session } = mount();
+  session.publishSync(session.beginObservation(), admin);
+  session.setActive(false);
+  window.dispatchEvent(new Event('focus'));
+  document.dispatchEvent(new Event('visibilitychange'));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(getProjectAccess).not.toHaveBeenCalled();
+  session.setActive(true);
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledOnce());
+  await session.revalidate();
+  expect(session.snapshot()).toMatchObject({ status: 'ready', access: member, refreshing: false });
+});
+
+it('ignores a late access response after a retained panel becomes inactive', async () => {
+  const pending = deferred<ProjectAccess>();
+  vi.mocked(getProjectAccess).mockReturnValueOnce(pending.promise).mockResolvedValue(member);
+  const { session } = mount();
+  const read = session.revalidate();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledOnce());
+  const signal = vi.mocked(getProjectAccess).mock.calls[0]![1];
+  session.setActive(false);
+  expect(signal.aborted).toBe(true);
+  session.setActive(true);
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+  await session.revalidate();
+  pending.resolve(admin);
+  expect(await read).toBeNull();
+  expect(session.snapshot()).toMatchObject({ status: 'ready', access: member, refreshing: false });
+});
+
+it('retains a mutation receipt while inactive and verifies it when the panel returns', async () => {
+  const { session } = mount();
+  session.publishSync(session.beginObservation(), member);
+  session.setActive(false);
+  session.publishMutation(admin);
+  expect(session.snapshot()).toMatchObject({ status: 'ready', access: admin, refreshing: false });
+  session.setActive(true);
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledOnce());
+  await session.revalidate();
+  expect(session.snapshot()).toMatchObject({ status: 'ready', access: member, refreshing: false });
+});
+
 it('exposes an access failure without replacing it with a role or an empty result', async () => {
   const failure = new Error('offline');
   vi.mocked(getProjectAccess).mockRejectedValue(failure);
