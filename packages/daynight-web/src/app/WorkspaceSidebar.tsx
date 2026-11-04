@@ -19,6 +19,7 @@ type WorkspaceSidebarProps = {
   readonly projectsActive: boolean;
   readonly sharedActive: boolean;
   readonly teamSettingsActive?: boolean;
+  readonly teamMembersActive?: boolean;
   readonly personalId: string;
   readonly selectedTeamId: string;
   readonly workersActive?: boolean;
@@ -30,7 +31,7 @@ type WorkspaceSidebarProps = {
   readonly onCreateTeam?: () => void;
 };
 
-export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, sharedActive, teamSettingsActive = false, personalId, selectedTeamId, workersActive = false, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate, onCreateTeam }: WorkspaceSidebarProps) => {
+export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, sharedActive, teamSettingsActive = false, teamMembersActive = false, personalId, selectedTeamId, workersActive = false, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate, onCreateTeam }: WorkspaceSidebarProps) => {
   const { messages: { auth: { shell: m }, workspace: { app, projects: p } } } = useI18n();
   const projects = useProjectList();
   const teamMessages = useTeamMessages();
@@ -135,6 +136,7 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
               <button className="sidebar-project-action" type="button" onClick={projects.loadMore} disabled={projects.loadingMore}>{projects.loadingMore ? p.loadingMore : projects.moreError !== null ? p.retryMore : p.loadMore}</button>
             </div>}
           </div>
+          <a className="nav-button" href={`/teams/${selectedTeamId}/members`} onClick={follow} aria-label={teamMessages.members} title={teamMessages.members} aria-current={teamMembersActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="8" r="3" /><path d="M3 19v-1a6 6 0 0 1 12 0v1M16 5a3 3 0 0 1 0 6M18 13a5 5 0 0 1 3 5v1" /></svg></span><span className="nav-text">{teamMessages.members}</span></a>
           <a className="nav-button" href={`/teams/${selectedTeamId}/settings`} onClick={follow} aria-label={teamMessages.settings} title={teamMessages.settings} aria-current={teamSettingsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">⚙</span><span className="nav-text">{teamMessages.settings}</span></a>
           <a className="nav-button" href="/shared-projects" onClick={follow} aria-label={teamMessages.shared} title={teamMessages.shared} aria-current={sharedActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">◇</span><span className="nav-text">{teamMessages.shared}</span></a>
           <a className="nav-button" href="/workers" onClick={follow} aria-label={m.workers} title={m.workers} aria-current={workersActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4M7 8h10M7 12h6" /></svg></span><span className="nav-text">{m.workers}</span></a>

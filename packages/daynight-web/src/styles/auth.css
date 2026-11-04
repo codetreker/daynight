@@ -375,3 +375,11 @@ dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
   .grant-row.head { display: grid; }
   .grant-row .person { width: auto; }
 }
+.team-member-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(110px, 1fr) auto; align-items: center; gap: 16px; padding: 16px 23px; border-bottom: 1px solid var(--line); }
+.team-member-row:last-child { border-bottom: 0; }
+@media (max-width: 600px) {
+  .team-member-row { grid-template-columns: minmax(0, 1fr) auto; padding: 16px; }
+  .team-member-row .person { grid-column: 1 / -1; }
+}
+.team-member-row .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.team-member-row .row-caption { color: var(--muted); font-size: 11px; margin-top: 4px; }

@@ -7,6 +7,9 @@ import type { TeamRef } from "./auth-types";
 
 export type Team = TeamRef & { readonly version: bigint; readonly createdAt: string; readonly updatedAt: string; readonly membership: { readonly teamId: string; readonly userId: string; readonly role: "admin" | "member"; readonly version: bigint; readonly createdAt: string; readonly updatedAt: string } };
 export type TeamPage = { readonly items: readonly Team[]; readonly nextCursor: string | null };
+export type TeamRole = "admin" | "member";
+export type TeamMembership = { readonly teamId: string; readonly userId: string; readonly role: TeamRole; readonly version: bigint; readonly createdAt: string; readonly updatedAt: string };
+export type TeamMember = TeamMembership & { readonly profile: { readonly name: string | null; readonly email: string | null; readonly avatarUrl: string | null } };
 
 const teamSource = (text: string): unknown => {
   const data = record(parseApiJson(text));
@@ -55,6 +58,40 @@ export const listTeams = (cursor: string | null, userId: string, signal: AbortSi
     if (nextCursor === "") return malformed();
     return { items, nextCursor };
   }, decodePage);
+};
+
+const parseMembership = (value: unknown, teamId: string, extra: readonly string[] = []): TeamMembership => {
+  const data = record(value);
+  exact(data, ["teamId", "userId", "role", "version", "createdAt", "updatedAt", ...extra]);
+  if (id(data.teamId) !== teamId || data.role !== "admin" && data.role !== "member" || !isTaskVersion(data.version)) return malformed();
+  return { teamId, userId: id(data.userId), role: data.role, version: data.version, createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
+};
+const nullableString = (value: unknown): string | null => value === null ? null : string(value);
+const decodeMembers = async (response: Response): Promise<unknown> => {
+  const text = await response.text();
+  const data = record(JSON.parse(text));
+  if (Array.isArray(data.items)) data.items = jsonContainerSources(jsonObjectSources(text).get("items")!).map(parseApiJson);
+  return data;
+};
+const decodeMemberReceipt = async (response: Response): Promise<unknown> => {
+  const text = await response.text();
+  const data = record(JSON.parse(text));
+  if (Object.hasOwn(data, "membership")) data.membership = parseApiJson(jsonObjectSources(text).get("membership")!);
+  return data;
+};
+
+export const listTeamMembers = (teamId: string, userId: string, signal: AbortSignal, onMismatch: () => void): Promise<readonly TeamMember[]> => {
+  const team = requestId(teamId), user = requestId(userId);
+  return teamRead(`/api/v1/teams/${team}/members`, user, signal, onMismatch, (value) => {
+    const data = record(value); exact(data, ["items"]);
+    const items = array(data.items, (item) => {
+      const membership = parseMembership(item, team, ["profile"]);
+      const profile = record(record(item).profile); exact(profile, ["name", "email", "avatarUrl"]);
+      return { ...membership, profile: { name: nullableString(profile.name), email: nullableString(profile.email), avatarUrl: nullableString(profile.avatarUrl) } };
+    });
+    if (new Set(items.map((item) => item.userId)).size !== items.length || !items.some((item) => item.userId === user)) return malformed();
+    return items;
+  }, decodeMembers);
 };
 
 export type TeamDeleteReceipt = { readonly teamId: string; readonly deleted: true };
@@ -112,5 +149,28 @@ export const deleteTeam = (userId: string, team: Team, signal: AbortSignal, onMi
     exact(data, ["teamId", "deleted"]);
     if (id(data.teamId) !== target || data.deleted !== true) return malformed();
     return { teamId: target, deleted: true };
+  });
+};
+
+export const setTeamMemberRole = (userId: string, member: TeamMembership, role: TeamRole, signal: AbortSignal, onMismatch: () => void, onDispatch: () => void): Promise<{ readonly membership: TeamMembership; readonly actorRole: TeamRole }> => {
+  const user = requestId(userId), team = requestId(member.teamId), target = requestId(member.userId);
+  if (!isTaskVersion(member.version) || role !== "admin" && role !== "member" || member.role !== "admin" && member.role !== "member") throw new ApiError("protocol");
+  return teamMutation(`/api/v1/teams/${team}/members/${target}`, "PATCH", { version: member.version, role, expectedUserId: user }, 200, { userId: user, signal, onMismatch, onDispatch }, (value) => {
+    const data = record(value); exact(data, ["membership", "actorRole"]);
+    const membership = parseMembership(data.membership, team);
+    const expectedActorRole = target === user ? role : "admin";
+    if (membership.userId !== target || membership.role !== role || membership.createdAt !== member.createdAt || (member.role === role ? membership.version !== member.version : membership.version <= member.version) || data.actorRole !== expectedActorRole) return malformed();
+    return { membership, actorRole: expectedActorRole };
+  }, decodeMemberReceipt);
+};
+
+export const removeTeamMember = (userId: string, member: TeamMembership, signal: AbortSignal, onMismatch: () => void, onDispatch: () => void): Promise<{ readonly teamId: string; readonly userId: string; readonly removed: true; readonly actorRole: TeamRole | null }> => {
+  const user = requestId(userId), team = requestId(member.teamId), target = requestId(member.userId);
+  if (!isTaskVersion(member.version)) throw new ApiError("protocol");
+  return teamMutation(`/api/v1/teams/${team}/members/${target}`, "DELETE", { version: member.version, expectedUserId: user }, 200, { userId: user, signal, onMismatch, onDispatch }, (value) => {
+    const data = record(value); exact(data, ["teamId", "userId", "removed", "actorRole"]);
+    const actorRole = target === user ? null : "admin";
+    if (id(data.teamId) !== team || id(data.userId) !== target || data.removed !== true || data.actorRole !== actorRole) return malformed();
+    return { teamId: team, userId: target, removed: true, actorRole };
   });
 };
