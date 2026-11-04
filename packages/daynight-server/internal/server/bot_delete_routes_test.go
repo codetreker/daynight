@@ -83,6 +83,7 @@ func TestBotDeletionHTTPStrictReceiptAndAdmission(t *testing.T) {
 	}
 	assertProjectError(t, projectRequest(h, "POST", base, strings.Replace(valid, `"code":null`, `"code":123`, 1)), 400, "invalid_input")
 	request := httptest.NewRequest("POST", base, strings.NewReader(valid))
+	request.Header.Set("X-Request-ID", "project-test")
 	authorizeResourceRequest(h, request)
 	response := httptest.NewRecorder()
 	h.ServeHTTP(response, request)
