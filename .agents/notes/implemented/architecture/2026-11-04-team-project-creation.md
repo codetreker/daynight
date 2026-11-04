@@ -35,6 +35,7 @@ The lock and fresh membership read bind the decision to the transaction.
 ## Consequences
 
 Team members and administrators both create Projects with independent admin
-grants. Existing clients continue to create in Personal, while explicit Team
-selection remains a separate capability. Identity mismatch causes no domain
-writes; response loss cannot establish whether a commit occurred.
+grants. API callers that omit a Team create in Personal. The [CLI selection
+decision](2026-11-05-cli-project-team-selection.md) governs its explicit and
+default targets. Identity mismatch causes no domain writes; response loss cannot
+establish whether a commit occurred.

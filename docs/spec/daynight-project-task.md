@@ -149,27 +149,33 @@ projectId: 8cb7af59-133e-4dc4-a9e6-c8a4b2429762
 
 ```bash
 daynight project create "Day Night"
-daynight project create "Day Night" --repo https://github.com/codetreker/day-night.git
+daynight project create "Day Night" --repo https://github.com/codetreker/day-night.git --team personal --confirm
 daynight project list
 daynight project list --json
 daynight project show <project-id>
 daynight project show <project-id> --json
 ```
 
-创建必须提供一个位置参数 `<name>`；`--repo` 可选。省略时按 PT3 读取当前 worktree
+创建必须提供一个位置参数 `<name>`；`--repo`、`--team <uuid|personal>` 和
+无值布尔开关 `--confirm` 可选。省略 `--repo` 时按 PT3 读取当前 worktree
 的有效 `origin`；显式提供时原样使用该地址，不读取工作目录或 Git，因此可在 Git
 仓库之外执行。含空格的名称须作为同一个 shell 参数传入；前导 `-` 的名称可使用
 `daynight project create -- -name`，或在终止符前指定 `--repo`；`--` 后的词均为位置参数。
 `--name` 不再是有效选项，名称缺失或多余位置参数均为参数错误。名称必须为
 不含 NUL 的合法 Unicode 文本，且不能全部由 Unicode `White_Space` 组成；保留原始
 字符及空白，不以 JavaScript `trim()` 改写。U+FEFF 单独作为名称有效，U+0085 单独
-作为名称无效。名称和详情 UUID 的参数错误必须在配置读取及网络访问之前拒绝。
+作为名称无效。名称、Team 选择和详情 UUID 的参数错误必须在配置读取及网络访问之前拒绝；
+重复 `--confirm` 或 `--confirm=false` 也是参数错误。
 
-创建在写入前必须读取配置 server 的全部 project 分页，将选定 repo 地址与每个
-`repoUrl` 按 PT3 的同一规则比较。零匹配时读取当前用户并提交其真实 `expectedUserId`、
-原始名称与所选原始地址，未指定 Team 时在 Personal 创建；核对响应主体且不自动重放未知写入。唯一匹配
-时成功输出 `Project already exists.` 和既有 project，不发送创建或修改请求，保留
-其名称与地址。多个匹配时报告歧义及全部匹配 ID，不创建。任一分页、响应验证、
+创建在写入前必须读取配置 server 的全部可访问 project 分页，将选定 repo 地址与
+每个 `repoUrl` 按 PT3 的同一规则比较。唯一匹配时成功输出 `Project already exists.`
+和既有 project，不解析 Team、不要求确认、不发送创建或修改请求，保留其名称与地址。
+多个匹配时报告歧义及全部匹配 ID，不创建。零匹配时才选择新项目的 Team：显式
+`--team` 优先，否则使用规范 origin 和当前用户的配置默认；没有默认时使用该用户的
+Personal Team。配置目标失效或无权时明确失败，不切换其他 Team。确认目标及当前用户
+资格后，交互调用须确认；`--confirm` 跳过提示，非交互调用缺少该开关时拒绝写入。
+提交真实 `expectedUserId`、目标 Team ID、原始名称与所选原始地址，核对响应主体；
+创建者获得独立 admin 授权，未知写入不自动重放。任一分页、响应验证、
 Git、取消或期限错误均按实际原因失败，不得把查询失败视为零匹配；完整预检成功
 并确认剩余预算后才能发送创建请求。该客户端预检不承诺并发创建的原子唯一性，
 服务继续允许同一仓库有多个 project。

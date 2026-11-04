@@ -153,7 +153,7 @@ daynight completion setup [--shell bash|zsh] [--rc-file <path>]
 daynight skill                      # Show skill help
 daynight skill install              # Select Agents, then User or Project scope
 daynight project
-daynight project create <name> [--repo <repo>]
+daynight project create <name> [--repo <repo>] [--team <uuid|personal>] [--confirm]
 daynight project list [--json]
 daynight project show <project-id> [--json]
 daynight team list [--json]
@@ -533,7 +533,7 @@ cleanup. Then use the same commands:
 
 ```bash
 daynight project create "Example"
-daynight project create "Example" --repo https://github.com/OWNER/REPO.git
+daynight project create "Example" --repo https://github.com/OWNER/REPO.git --team personal --confirm
 daynight project list
 daynight project list --json
 daynight project show <project-id> --json
@@ -547,13 +547,20 @@ with `-`, use `daynight project create -- -name` or put an explicit repository
 option before the terminator: `daynight project create --repo <repo> -- -name`.
 The name is sent unchanged.
 
-Creation first scans every project page and compares canonical repository
-identities. With no match it reads the current user, binds the request and response
-to that identity, and registers the original name and repository address in the
-Personal Team. An unknown write is not automatically replayed.
-With one match it reports `Project already exists.` and the existing project,
-leaving that project's name and address unchanged. Multiple matches fail with
-their IDs; lookup failures and exhausted command budgets stop before creation.
+Creation first scans every accessible project page and compares canonical repository
+identities. With one match it reports `Project already exists.` and the existing
+project, without resolving a Team, confirming or writing. Multiple matches fail
+with their IDs. With no match, `--team <uuid|personal>` selects the target; without
+it, the CLI uses the configured default for the current service and account, or
+Personal when no default is configured. An invalid or inaccessible default fails
+without falling back. The target must be accessible to the current user.
+
+Creation requires confirmation: `--confirm` skips the interactive prompt, and a
+noninteractive invocation without it fails before writing. The CLI binds the
+request and response to the current user and submits the original name and
+repository address. The creator receives a direct admin grant. An unknown write is
+not automatically replayed. Lookup failures and exhausted command budgets stop
+before creation.
 This client preflight does not provide atomic uniqueness against concurrent
 creators, and the service continues to allow duplicate repository registrations.
 Project commands do not write repository bindings or ignore rules. Lists traverse
