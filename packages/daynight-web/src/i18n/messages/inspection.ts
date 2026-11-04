@@ -13,6 +13,9 @@ export type InspectionMessages = {
     readonly pagination: string; readonly previous: string; readonly next: string; readonly page: string;
     readonly range: (start: string, end: string, total: string) => string;
   };
+  readonly draftNavigation: {
+    readonly title: string; readonly question: string; readonly explanation: string; readonly discard: string; readonly keep: string; readonly close: string;
+  };
   readonly pause: PauseMessages;
   readonly discussion: {
     readonly title: string; readonly empty: string; readonly loading: string; readonly refresh: string;

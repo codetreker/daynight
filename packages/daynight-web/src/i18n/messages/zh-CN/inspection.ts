@@ -11,6 +11,10 @@ export const inspection: InspectionMessages = {
     created: "创建时间", updated: "更新时间", pagination: "步骤分页", previous: "上一页", next: "下一页", page: "页码",
     range: (start, end, total) => `第 ${start}–${end} 项，共 ${total} 项步骤`,
   },
+  draftNavigation: {
+    title: '放弃未保存的修改？', question: '离开此任务并放弃未保存的修改吗？',
+    explanation: '未保存的草稿将会丢失。', discard: '放弃并离开', keep: '继续编辑', close: '取消离开',
+  },
   pause,
   discussion: {
     title: "讨论", empty: "还没有讨论", loading: "正在加载讨论", refresh: "刷新讨论",

@@ -42,6 +42,7 @@ export const runCi = async (mode: string, cancellation: AbortController,
     return;
   }
   await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'install', '--with-deps', 'chromium'], { timeoutMs: 600_000 });
+  await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/playwright.config.ts'], { timeoutMs: 180_000 });
   cancellation.signal.throwIfAborted();
   await operations.acceptance(cancellation);
 };

@@ -11,6 +11,10 @@ export const inspection: InspectionMessages = {
     created: "Created", updated: "Updated", pagination: "Steps pages", previous: "Previous", next: "Next", page: "Page",
     range: (start, end, total) => `${start}–${end} of ${total} steps`,
   },
+  draftNavigation: {
+    title: 'Discard unsaved changes?', question: 'Leave this task and discard your unsaved changes?',
+    explanation: 'Your unsaved draft will be lost.', discard: 'Discard and leave', keep: 'Keep editing', close: 'Cancel leaving',
+  },
   pause,
   discussion: {
     title: "Discussion", empty: "No discussion yet", loading: "Loading discussion", refresh: "Refresh discussion",

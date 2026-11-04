@@ -1570,6 +1570,16 @@ The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
 were never imported by a test. Empty, malformed and incomplete reports fail.
 
+The focused navigation browser suite builds a minimal editor host from the
+production router, admitted-location owner and task confirmation. It checks draft
+admission independently of Steps forms and HTTP writes, including indexed
+history traversal, retirement, beforeunload, keyboard focus and both languages at
+320px. Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
+tests/navigation/playwright.config.ts` after installing Chromium. The browser CI
+entry runs it before full-stack acceptance. Its results and failure captures
+are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
+inside the browser CI artifact directory.
+
 The required comparison is `covered * 10 > total * 9` using BigInt. Exactly 90%
 fails independently of display rounding. Pure-type declarations contribute zero
 statements only after the pinned TypeScript compiler's emitted JavaScript proves
