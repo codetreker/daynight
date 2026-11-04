@@ -1,5 +1,6 @@
 import { ApiError, attachmentPageUrl } from "../api/client";
 import { canonicalId, isAttachmentPath } from "../api/parse";
+import { browserNavigation } from './navigation';
 
 export type TaskDetailTab = "overview" | "attachments" | "discussion" | "session";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
@@ -129,13 +130,11 @@ export const taskDetailUrl = (projectId: string, taskId: string, navigation: Tas
 };
 
 export const navigate = (to: string): void => {
-  window.history.pushState(null, "", to);
-  window.dispatchEvent(new PopStateEvent("popstate"));
+  browserNavigation().navigate(to);
 };
 
 export const replaceRoute = (to: string): void => {
-  window.history.replaceState(null, "", to);
-  window.dispatchEvent(new PopStateEvent("popstate"));
+  browserNavigation().navigate(to, true);
 };
 
 export const navigateTaskDetail = (projectId: string, taskId: string, selection: TaskDetailNavigation): void => {

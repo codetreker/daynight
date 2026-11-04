@@ -196,6 +196,11 @@ project/task 身份切换按入口状态初始化。`TaskDetailSurface` 拥有�
 历史、查询参数和独立刷新由[独立详情设计](daynight-task-inspection.md#独立完整任务详情)
 拥有；文件渲染与滚动由[独立附件阅读页](daynight-task-attachments.md#独立附件阅读页)拥有。
 
+应用路由由窗口级 `BrowserNavigation` 发布已准入 location，所有外壳通过
+`useBrowserLocation` 消费它。程序导航、模态关系切换及关闭在历史写入或详情卸载前
+请求脏草稿准入；同 Task 页签/附件保持注册。已编号历史恢复、身份退休和未编号条目的
+保留限制由 [Steps 导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。
+
 弹窗与独立页的外层阅读工作区各自持有全屏模式，Surface 标题栏统一提供双语切换
 按钮。CSS 将同一外壳铺满视口，不更换 portal、presentation、key 或阅读面板，
 也不重新申请弹窗滚动锁；应用滚动容器在切换布局前后按合法范围恢复原位置。

@@ -3,8 +3,18 @@ import { createPortal } from 'react-dom';
 import { dialogFocusables } from '../task-detail/focus';
 import type { ThreadMessage } from './contract';
 import { authorLabel, providerLabel, ThreadIcon, type DiscussionMessages } from './presentation';
+import { useDraftNavigationDecision } from '../task-detail/TaskDraftNavigation';
 
-export const ThreadMessageDetails = ({ message, messages, owner, fallbackFocus, onClose, onOpenChange, canRestoreFocus }: { readonly message: ThreadMessage; readonly messages: DiscussionMessages; readonly owner: RefObject<HTMLElement | null>; readonly fallbackFocus: RefObject<HTMLElement | null>; readonly onClose: () => void; readonly onOpenChange: (open: boolean) => void; readonly canRestoreFocus: () => boolean }) => {
+type MessageDetailsProps = { readonly message: ThreadMessage; readonly messages: DiscussionMessages; readonly owner: RefObject<HTMLElement | null>; readonly fallbackFocus: RefObject<HTMLElement | null>; readonly onClose: () => void; readonly onOpenChange: (open: boolean) => void; readonly canRestoreFocus: () => boolean };
+
+export const ThreadMessageDetails = (props: MessageDetailsProps) => {
+  const decision = useDraftNavigationDecision();
+  useLayoutEffect(() => { if (decision !== null) props.onClose(); }, [decision, props.onClose]);
+  // A native top-layer dialog would make the application leave choice inert.
+  return decision === null ? <MessageDetails {...props} /> : null;
+};
+
+const MessageDetails = ({ message, messages, owner, fallbackFocus, onClose, onOpenChange, canRestoreFocus }: MessageDetailsProps) => {
   const dialog = useRef<HTMLDialogElement>(null), close = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const callbacks = useRef({ onClose, onOpenChange, canRestoreFocus }); callbacks.current = { onClose, onOpenChange, canRestoreFocus };
