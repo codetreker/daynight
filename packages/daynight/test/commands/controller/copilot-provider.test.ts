@@ -52,6 +52,19 @@ test.each(["reject", "timeout"])("Copilot cleanup failure preserves the original
   expect(fixture.child.signalCode).toBeNull();
 });
 
+test("Copilot late session creation after startup timeout cannot issue disconnect RPCs", async () => {
+  vi.useFakeTimers();
+  let settle!: (native: typeof fixture.native) => void;
+  fixture.client.createSession.mockImplementation(() => new Promise(resolve => { settle = resolve; }));
+  const pending = openCopilotProvider(fixture.options).catch(error => error);
+  await vi.waitFor(() => expect(fixture.client.createSession).toHaveBeenCalledOnce());
+  await vi.advanceTimersByTimeAsync(30_001);
+  expect(startupFailure(await pending)).toEqual({ state: "unknown", reasonCode: "native_timeout" });
+  settle(fixture.native); await Promise.resolve(); await Promise.resolve();
+  expect(fixture.native.disconnect).not.toHaveBeenCalled();
+  expect(fixture.client.forceStop).toHaveBeenCalledOnce();
+});
+
 test.each([false, true])("Copilot appends the exact role without an initial user turn (resume=%s)", async resume => {
   const instructions = "  Daynight 助手\nKeep native defaults. 😀 e\u0301\n", id = resume ? randomUUID() : null;
   const setApproveAll = vi.fn(async () => ({ success: true }));
@@ -100,8 +113,9 @@ test.each([false, true])("Copilot role startup failures preserve the error and s
   opening.mockRejectedValue(error);
   await expect(openCopilotProvider({ ...fixture.options, instructions: "Role", resumeNativeSessionId: resume ? randomUUID() : null })).rejects.toBe(error);
   expect(fixture.native.send).not.toHaveBeenCalled();
-  expect(fixture.client.rpc.runtime.shutdown).toHaveBeenCalledOnce();
-  expect(fixture.client.stop).toHaveBeenCalledOnce();
+  expect(fixture.client.rpc.runtime.shutdown).not.toHaveBeenCalled();
+  expect(fixture.client.stop).not.toHaveBeenCalled();
+  expect(fixture.client.forceStop).toHaveBeenCalledOnce();
   expect(fixture.child.kill).toHaveBeenCalledWith("SIGTERM");
   expect(fixture.child.signalCode).toBe("SIGTERM");
   expect(fixture.states.at(-1)?.activity).toBe("stopped");
@@ -144,7 +158,7 @@ test.each(["missing", "wrong_id", "wrong_cwd", "in_use", "remote"])("Copilot exa
 test("Copilot rechecks native identity and directory after opening", async () => {
   fixture.native.rpc.metadata.snapshot.mockResolvedValue({ sessionId: "wrong", workingDirectory: process.cwd(), alreadyInUse: false, isRemote: false });
   await expect(openCopilotProvider(fixture.options)).rejects.toThrow(/identity|directory/i);
-  expect(fixture.native.disconnect).toHaveBeenCalled(); expect(fixture.child.kill).toHaveBeenCalled();
+  expect(fixture.native.disconnect).not.toHaveBeenCalled(); expect(fixture.child.kill).toHaveBeenCalled();
 });
 
 test("Copilot delivers early native events and final messages upsert their streamed identity", async () => {

@@ -157,7 +157,7 @@ Task Worker 的 grant 维护每 30 秒独立扫描当前服务的未完成 Web �
 
 ### 启动观察的独立上报
 
-Controller journal 的可选 `startup` 保存 typed state/reasonCode。Provider 边界将 NativeRpc、Copilot SDK 的远端 RPC 拒绝及 Claude SDK 的结构化 initialize 拒绝规范化为明确拒绝；SDK 本地产生的写失败、连接关闭与超时仍保持 unknown，不能只凭 Error 类型或错误文本推断失败。运行时只有在 Provider 打开、进程证明及初始化错误检查完成后才记 ready。初始化后的清理失败只增加本机诊断，不覆盖原始启动分类，也不构成停止证明；已完成启动后的失联不重写启动历史。旧 journal 缺字段时保持 unknown，不从 native ID 或 activity 推断结果。
+Controller journal 的可选 `startup` 保存 typed state/reasonCode。Provider 边界将 NativeRpc、Copilot SDK 的远端 RPC 拒绝及 Claude SDK 的结构化 initialize 拒绝规范化为明确拒绝；SDK 本地产生的写失败、连接关闭与超时仍保持 unknown，不能只凭 Error 类型或错误文本推断失败。运行时只有在 Provider 打开、进程证明及初始化错误检查完成后才记 ready。Copilot 启动失败时使用 SDK 公开 forceStop 先释放传输，不再向失败连接发送 session.disconnect 或 runtime.shutdown；自有进程仍执行原有终止与退出确认，正常关闭保留 graceful 流程。初始化后的清理失败只增加本机诊断，不覆盖原始启动分类，也不构成停止证明；已完成启动后的失联不重写启动历史。旧 journal 缺字段时保持 unknown，不从 native ID 或 activity 推断结果。
 
 Worker Web 执行 JSON 保存可选 `startupReport`，包含 `schemaVersion:1`、`source:worker`、sessionId、claimId、executionGeneration、controllerInstanceId、revision、observedAt、startup 和 recovery。完整本机身份校验先于观察；同代际语义变化递增持久 revision，观察不变时保留原时间，换代清除前代报告。recovery 的 none/null 与 blocked/稳定原因码分离表达。JSON 新字段是可选向前读取扩展；旧严格二进制不支持读取新增字段，不能用删除本机记录绕过降级限制。
 

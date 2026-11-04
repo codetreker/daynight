@@ -25,7 +25,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   const nativeId = options.resumeNativeSessionId ?? randomUUID(), turns = new NativeTurns();
   let controls: CopilotControls | undefined, turnStartedAt: string | null = null;
   let native: CopilotSession | undefined, client: CopilotClient | undefined;
-  let verified = false, closed = false, disconnected = false, dispatching = false;
+  let verified = false, closed = false, disconnected = false, dispatching = false, startupFailed = false;
   let activity: ProviderState["activity"] = "initializing", currentTurnId: string | null = null, interactionId: string | null = null;
   let buffered: SessionEvent[] | undefined = [], heartbeat: NodeJS.Timeout | undefined, polling = false;
   const cancelWaiters = new Set<{ resolve(): void; reject(error: Error): void }>();
@@ -99,9 +99,9 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     rejectLost(error); interactions.dispose(error);
     if (currentTurnId) turns.complete(currentTurnId, error);
     for (const waiter of cancelWaiters) waiter.reject(error); cancelWaiters.clear();
-    try { if (native) await copilotDeadline(native.disconnect(), "Copilot session disconnect", 2000); }
+    try { if (native && !startupFailed) await copilotDeadline(native.disconnect(), "Copilot session disconnect", 2000); }
     catch { options.onDiagnostic?.("Copilot session disconnect was unconfirmed; stopping its owned runtime."); }
-    await runtime.close(); currentTurnId = null; activity = "stopped"; state();
+    await runtime.close(startupFailed); currentTurnId = null; activity = "stopped"; state();
   })();
   try {
     state(); client = await runtime.ready;
@@ -122,7 +122,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       onEvent, onPermissionRequest: () => interactions.onPermissionRequest(), onUserInputRequest: request => interactions.bindQuestion(request),
       onElicitationRequest: request => interactions.bindElicitation(request), onExitPlanModeRequest: request => interactions.bindPlan(request) };
     const opening = options.resumeNativeSessionId ? client.resumeSession(nativeId, config) : client.createSession(config);
-    void opening.then(async opened => { if (closed) await copilotDeadline(opened.disconnect(), "Late Copilot session disconnect", 2000); }).catch(() => {});
+    void opening.then(async opened => { if (closed && !startupFailed) await copilotDeadline(opened.disconnect(), "Late Copilot session disconnect", 2000); }).catch(() => {});
     native = await call(opening, "Copilot session open");
     const snapshot = await call(native.rpc.metadata.snapshot(), "Copilot session identity");
     if (native.sessionId !== nativeId || snapshot.sessionId !== nativeId || snapshot.isRemote || snapshot.alreadyInUse || !snapshot.workingDirectory || await realpath(snapshot.workingDirectory) !== cwd) throw new Error("Native Copilot session identity or working directory mismatch.");
@@ -149,6 +149,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       void call(client.ping(), "Copilot connection health", 5000).catch(() => disconnect(new Error("Native Copilot connection lost; operation results are unknown."))).finally(() => { polling = false; });
     }, 5000); heartbeat.unref();
   } catch (error) {
+    startupFailed = true;
     const failure = error instanceof ResponseError && !transportErrors.has(error.code)
       ? new ControllerStartupError({ state: "failed", reasonCode: "native_rejected" }, error.message, { cause: error }) : error;
     try { await close(); } catch { options.onDiagnostic?.("Copilot startup cleanup failed; native process stop remains unconfirmed."); }

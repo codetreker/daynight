@@ -25,6 +25,14 @@ share the native RPC error class; SDK transport errors must retain uncertainty.
 Cleanup failures remain private diagnostics and cannot replace the original
 startup outcome or establish a process stop proof.
 
+Failed Copilot initialization disposes the SDK transport through its public
+`forceStop()` before terminating the owned runtime. It skips graceful session and
+runtime RPCs because the failed connection cannot establish their completion.
+The SDK arms its teardown writer protection before disposal; process termination
+still uses the owner's existing signal and exit checks. Successful providers keep
+their graceful close path. This avoids generating a second failure while cleaning
+up an already failed startup.
+
 A protected, separate task property stores the report. An explicitly negotiated
 current response exposes only the matching claim, Session, generation and
 Controller instance. Existing Worker and Session snapshot shapes remain stable.
@@ -52,6 +60,14 @@ consumers retain their existing ownership parser.
 contain paths, credentials or user input. Disconnection and native timeouts do
 not prove rejection. Fixed classified reasons preserve useful facts without
 inventing an outcome or publishing private logs.
+
+**Patch the JSON-RPC dependency only.** Its failed-write handler both rejects the
+request and throws from an async promise executor, creating an orphan rejection.
+A workspace pnpm patch fixes local installs but does not ship with the published
+CLI's ordinary npm dependencies. Bundling the SDK or intercepting its private
+writer would expand dependency ownership. Public force-stop handles failed-startup
+cleanup without either mechanism; arbitrary active-request write races in the
+pinned dependency remain outside this correction.
 
 ## Consequences
 

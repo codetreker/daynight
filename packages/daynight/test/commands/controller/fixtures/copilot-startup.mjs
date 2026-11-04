@@ -29,6 +29,7 @@ const server = createServer(socket => {
       else if (request.method === "session.create" || request.method === "session.resume") {
         if (mode === "reject" || mode === "reject-resume") respond(request.id, { error: { code: -32602, message: "Fixture initialization rejected" } });
         else if (mode === "disconnect") process.exit(1);
+        else if (mode === "socket-close") socket.end();
         else if (mode !== "timeout") throw new Error("Unknown fixture mode.");
       } else if (request.method === "runtime.shutdown") respond(request.id, { result: {} });
       else respond(request.id, { error: { code: -32601, message: `Unexpected fixture request: ${request.method}` } });

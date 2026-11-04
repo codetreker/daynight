@@ -33,6 +33,7 @@ for (const provider of ["copilot", "claude"] as const) {
     const requests = (await readFile(log, "utf8")).trim().split("\n");
     expect(requests).toContain(provider === "claude" ? "control_request:initialize" : mode === "reject-connect" ? "connect" : mode === "reject-resume" ? "session.resume" : "session.create");
     expect(requests.some(method => method === "session.send" || method.startsWith("user:"))).toBe(false);
+    if (provider === "copilot") expect(requests).not.toContain("runtime.shutdown");
     expect(states.every(state => state.nativeSessionId === null)).toBe(true);
     expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true);
   }, 45_000);
