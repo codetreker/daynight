@@ -8,6 +8,7 @@ import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
 
 type Detail = { readonly id: string; readonly status: "loading" | "ready" | "error"; readonly team?: TeamRef; readonly error?: unknown; readonly storageError?: boolean };
 type State = { readonly key: string | null; readonly detail: Detail };
+type PendingSave = { readonly team: TeamRef; readonly replaces: string | null };
 export type TeamPreference = ReturnType<typeof useTeamPreference>;
 const PreferenceContext = createContext<TeamPreference | null>(null);
 
@@ -27,7 +28,7 @@ export const teamPreferenceKey = (userId: string) => `daynight.selectedTeam:${us
 export const useTeamPreference = (personal: TeamRef, routeKey: string | null, admission: TaskCacheScope, blocked: boolean, preserveOnRevalidation = false, guardUnavailable?: (teamId: string) => boolean) => {
   const [state, setState] = useState<State>(() => ({ key: null, detail: { id: personal.id, status: "ready", team: personal } }));
   const current = useRef<TeamRef>(personal);
-  const pendingSave = useRef<TeamRef | null>(null);
+  const pendingSave = useRef<PendingSave | null>(null);
   const blockedRef = useRef(blocked); blockedRef.current = blocked;
   const routeRef = useRef({ key: routeKey, blocked, epoch: 0, navigation: 0 });
   if (routeRef.current.key !== routeKey || routeRef.current.blocked !== blocked) routeRef.current = { key: routeKey, blocked, epoch: routeRef.current.epoch + 1, navigation: routeRef.current.navigation + (routeRef.current.key === routeKey ? 0 : 1) };
@@ -38,17 +39,20 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
   const [saveError, setSaveError] = useState(false);
   const [revision, setRevision] = useState(0);
   const retry = useCallback(() => setRevision((value) => value + 1), []);
-  const save = useCallback((team: TeamRef) => {
+  const save = useCallback((team: TeamRef, replaces: string | null = null) => {
+    if (replaces !== null && pendingSave.current !== null && pendingSave.current.team.id !== replaces && pendingSave.current.replaces !== replaces) return;
     try {
-      window.localStorage.setItem(teamPreferenceKey(admission.userId), team.id);
+      const key = teamPreferenceKey(admission.userId);
+      // Departure fallback and its retry only replace the departed Team's saved choice.
+      if (replaces === null || window.localStorage.getItem(key) === replaces) window.localStorage.setItem(key, team.id);
       pendingSave.current = null;
       setSaveError(false);
     } catch {
-      pendingSave.current = team;
+      pendingSave.current = { team, replaces };
       setSaveError(true);
     }
   }, [admission.userId]);
-  const retrySave = useCallback(() => { if (pendingSave.current !== null) save(pendingSave.current); }, [save]);
+  const retrySave = useCallback(() => { if (pendingSave.current !== null) save(pendingSave.current.team, pendingSave.current.replaces); }, [save]);
   useEffect(() => {
     if (routeKey === null || blocked) return;
     if (preserveOnRevalidation && verified.current?.navigation === navigation && verified.current.revision === revision) return;
@@ -71,7 +75,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
       let pending = false;
       if (key === "default") {
         if (pendingSave.current !== null) {
-          id = pendingSave.current.id; remembered = true; pending = true;
+          id = pendingSave.current.team.id; remembered = true; pending = true;
         } else {
           let saved: string | null;
           try { saved = window.localStorage.getItem(teamPreferenceKey(admission.userId)); }
@@ -101,11 +105,11 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
           try {
             const storageKey = teamPreferenceKey(admission.userId);
             const saved = window.localStorage.getItem(storageKey);
-            const pendingSelection = pending || pendingSave.current?.id === id;
+            const pendingSelection = pending || pendingSave.current?.team.id === id;
             if (!remembered && saved !== id && !pendingSelection) { fail(id, error); return; }
             if (remembered && !pendingSelection && saved !== id) { retry(); return; }
             if (saved === id) window.localStorage.removeItem(storageKey);
-            if (pendingSelection) { pendingSave.current = personal; setSaveError(true); }
+            if (pendingSelection) { pendingSave.current = { team: personal, replaces: null }; setSaveError(true); }
           }
           catch (storageError) { fail(id, storageError, true); return; }
           install(personal);
@@ -125,10 +129,10 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
     if (admission.isInvalidated || current.current.id !== id) return "changed";
     try {
       const key = teamPreferenceKey(admission.userId), saved = window.localStorage.getItem(key);
-      const pending = pendingSave.current?.id === id;
+      const pending = pendingSave.current?.team.id === id;
       if (saved !== id && !pending) return "changed";
       if (saved === id) window.localStorage.removeItem(key);
-      if (pending) { pendingSave.current = personal; setSaveError(true); }
+      if (pending) { pendingSave.current = { team: personal, replaces: null }; setSaveError(true); }
       return "forgotten";
     } catch { return "storage_error"; }
   }, [admission, personal]);
@@ -136,7 +140,8 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
     const key = routeRef.current.key;
     if (admission.isInvalidated || current.current.id !== id || key !== null && key !== "default" && key !== id) return;
     current.current = personal;
-    save(personal);
+    if (pendingSave.current?.team.id === id) pendingSave.current = null;
+    save(personal, id);
     if (key === "default") retry();
   }, [admission, personal, save, retry]);
   const detail: Detail = routeKey === null ? { id: current.current.id, status: "ready", team: current.current } : state.key !== routeKey ? { id: routeKey === "default" ? current.current.id : routeKey, status: "loading" } : state.detail;
