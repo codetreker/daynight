@@ -58,6 +58,10 @@ functional execution and container/browser cleanup. It preserves all complete AP
 budgets, strict performance receipts and browser diagnostics. Schema 3 evidence
 records `mode: functional` or `mode: stress`; exact report validation follows
 that mode. Raw Playwright discovery excludes the capacity spec by default.
+The later [case-shard decision](2026-11-04-web-ci-case-shards.md) distributes only
+CI functional cases, with complete union validation and combined authentication
+on shard 2. Local default and stress remain complete and unsharded, and a
+stress/shard combination fails before preparation.
 The [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
 owns execution order and evidence interpretation.
 
