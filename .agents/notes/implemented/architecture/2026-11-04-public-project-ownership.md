@@ -42,12 +42,17 @@ Personal references and inconsistent owner/source facts fail instead of receivin
 defaults. The [auth design](../../../../docs/design/daynight-auth.md) owns the
 public field definitions and snapshot boundaries.
 
-IndexedDB schema 5 rebuilds derived stores when upgrading earlier formats and
-rotates user fences. Within one epoch, Project settings and ownership merge independently by their
-own versions; equal ownership versions must identify the same Team. A new epoch
+Introducing ownership used IndexedDB schema 5 to rebuild earlier derived
+formats and rotate user fences. The
+[profile-reuse decision](../bug-fix/2026-11-04-task-view-request-reuse.md) adds a
+separate profiles store in schema 6; upgrading compatible schema-5 records
+preserves task data and fences, while upgrades from 1 through 4 still rebuild.
+Within one epoch, Project settings and ownership merge independently by their own
+versions; equal ownership versions must identify the same Team. A new epoch
 snapshot replaces the Project completely: database restoration can legitimately
 restore lower versions or a different owner from the previous history. Access,
-Team names and participant profiles remain in memory. The
+Team names and participant snapshots remain in memory. Reusable assignee profile
+content is persisted separately without access or inheritance metadata. The
 [cache design](../../../../docs/design/daynight-task-sync.md) owns merge,
 publication and recovery details.
 
@@ -75,8 +80,9 @@ explicit version paths while reducing repeated work.
 
 The protocol producer and current CLI/Web consumers switch together. An old
 client may reject the complete source fields; deployment must pair the service
-and matching consumers. Cache rebuild costs a complete task snapshot after
-upgrade, while keeping actor authority outside durable records.
+and matching consumers. Upgrading a pre-ownership cache costs a complete task snapshot; the later
+profile-only upgrade preserves compatible records. Actor authority stays outside
+durable records.
 
 Ordinary Team management, transfer and new Team commands/pages remain separate
 capabilities. Their later addition can reuse real ownership and independent grant

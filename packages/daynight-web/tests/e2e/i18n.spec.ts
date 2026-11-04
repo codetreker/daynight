@@ -215,14 +215,17 @@ test.describe('Web language journeys', () => {
     await pathInput.fill(uploadPath);
     const inputElement = await fileInput.elementHandle();
     if (frameElement === null || inputElement === null) throw new Error('Attachment elements are absent.');
-    // Returning from the preview iframe independently revalidates project access on focus.
-    // Settle that read before measuring requests caused by the locale switch.
+    // A permission read after preview focus can await cache admission after HTTP completion.
+    // Settle readiness around the controlled focus observation before measuring locale-only requests.
+    const projectSettingsLink = page.locator(`.project-title-actions a[href="/projects/${project.id}/settings"]`);
+    await expect(projectSettingsLink).toHaveCount(1);
     const accessUrl = new URL(`/api/v1/projects/${project.id}/access`, baseURL).href;
     const focusedAccess = page.waitForResponse((response) => response.url() === accessUrl && response.request().method() === 'GET');
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     const accessResponse = await focusedAccess;
     expect(accessResponse.status()).toBe(200);
     expect(await accessResponse.finished()).toBeNull();
+    await expect(projectSettingsLink).toHaveCount(1);
     const beforeModalSwitch = [...reads];
     await changeDetailLanguage('zh-CN');
     await dialog.getByRole('tab', { name: '概览', exact: true }).click();

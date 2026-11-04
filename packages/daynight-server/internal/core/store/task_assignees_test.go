@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"reflect"
 	"slices"
@@ -132,6 +133,57 @@ func TestTaskAssigneeProfileRequiresMatchingIdentity(t *testing.T) {
 		if err == nil || !reflect.DeepEqual(person, core.TaskAssignee{}) {
 			t.Fatal("missing or different person's profile became a qualified identity")
 		}
+	}
+}
+
+func TestTaskAssigneeContentVersionDistinguishesPublicProfileFacts(t *testing.T) {
+	id := queryID(100)
+	empty, escaped, unicode := "", "<>&\"\\\n", "中文 😀"
+	profiles := []struct {
+		userID       string
+		name, avatar *string
+	}{
+		{id, nil, nil}, {id, &empty, nil}, {id, nil, &empty},
+		{id, &escaped, &unicode}, {id, &unicode, &escaped},
+		{queryID(101), nil, nil},
+	}
+	versions := make(map[string]bool, len(profiles))
+	for _, profile := range profiles {
+		version := taskAssigneeContentVersion(profile.userID, profile.name, profile.avatar)
+		decoded, err := hex.DecodeString(version)
+		if err != nil || len(decoded) != 32 || version != strings.ToLower(version) || versions[version] {
+			t.Fatalf("distinct public profile facts produced an invalid or repeated version: %q %v", version, err)
+		}
+		versions[version] = true
+		member, err := taskAssigneeProfile(profile.userID, &profile.userID, profile.name, profile.avatar, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		former, err := taskAssigneeProfile(profile.userID, &profile.userID, profile.name, profile.avatar, false)
+		if err != nil || member.Version != version || former.Version != version {
+			t.Fatalf("project access changed the content version: %#v %#v %v", member, former, err)
+		}
+	}
+}
+
+func BenchmarkTaskAssigneeContentVersion(b *testing.B) {
+	avatar := "data:image/png;base64," + strings.Repeat("a", 235_600)
+	for _, test := range []struct {
+		name   string
+		avatar *string
+	}{
+		{"nullable", nil},
+		{"inline-avatar-236KB", &avatar},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			b.ReportAllocs()
+			if test.avatar != nil {
+				b.SetBytes(int64(len(*test.avatar)))
+			}
+			for b.Loop() {
+				taskAssigneeContentVersion("00000000-0000-4000-8000-000000000100", nil, test.avatar)
+			}
+		})
 	}
 }
 

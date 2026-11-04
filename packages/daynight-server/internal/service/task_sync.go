@@ -89,6 +89,14 @@ func (s *TaskSync) Get(ctx context.Context, principal core.Principal, projectID 
 		if err != nil {
 			return err
 		}
+		people, err := snapshot.TaskAssignees(ctx, projectID)
+		if err != nil {
+			return err
+		}
+		result.AssigneeVersions = make([]core.TaskAssigneeVersion, 0, len(people.Items))
+		for _, person := range people.Items {
+			result.AssigneeVersions = append(result.AssigneeVersions, core.TaskAssigneeVersion{UserID: person.UserID, Version: person.Version, HasProjectAccess: person.HasProjectAccess})
+		}
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		return err
 	})

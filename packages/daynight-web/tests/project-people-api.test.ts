@@ -6,7 +6,7 @@ const projectId = "10000000-0000-4000-8000-000000000001";
 const viewerId = "20000000-0000-4000-8000-000000000002";
 const personId = "30000000-0000-4000-8000-000000000003";
 const otherId = "40000000-0000-4000-8000-000000000004";
-const person = { userId: personId, name: null, avatarUrl: null, hasProjectAccess: false };
+const person = { version: "a".repeat(64), userId: personId, name: null, avatarUrl: null, hasProjectAccess: false };
 const signal = () => new AbortController().signal;
 const admission = () => ({ userId: viewerId, onPrincipalMismatch: vi.fn() });
 const response = (body: unknown, principal: string | null = viewerId, status = 200) => new Response(JSON.stringify(body), {
@@ -59,6 +59,9 @@ describe("project task assignee API", () => {
     { items: [{ ...person, userId: "invalid" }], unresolvedUserIds: [] },
     { items: [{ ...person, name: undefined }], unresolvedUserIds: [] },
     { items: [{ ...person, avatarUrl: undefined }], unresolvedUserIds: [] },
+    { items: [{ ...person, version: undefined }], unresolvedUserIds: [] },
+    { items: [{ ...person, version: "A".repeat(64) }], unresolvedUserIds: [] },
+    { items: [{ ...person, version: "a".repeat(63) }], unresolvedUserIds: [] },
     { items: [{ ...person, hasProjectAccess: undefined }], unresolvedUserIds: [] },
     { items: [{ ...person, hasProjectAccess: "false" }], unresolvedUserIds: [] },
     { items: [{ ...person, userId: otherId }], unresolvedUserIds: [] },
