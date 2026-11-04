@@ -415,7 +415,7 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | 观察独立授权、ownership 或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
 | 变更 Personal Team | 409 personal_team_immutable |
 | 删除仍有 Project ownership 引用的 Team | 409 team_not_empty |
-| Team 真实改名所需版本已达最大正 int64 | 409 version_exhausted；同值 no-op 仍有效 |
+| Team 真实改名或项目真实转移所需版本已达最大正 int64 | 409 version_exhausted；同值 no-op 仍有效 |
 | 无法确认 Team 管理、项目创建或项目转移 COMMIT 结果 | 503 write_outcome_unknown |
 | 生命周期前态不符或前置未完成 | 409 invalid_transition / dependency_unsatisfied |
 | 邀请已消费、到期或撤销 | 410 invitation_unavailable |
