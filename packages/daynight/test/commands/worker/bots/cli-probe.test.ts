@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../../src/api/operation.js";
+import * as nativeJob from "../../../../src/commands/worker/bots/windows-job-lease.js";
+import * as windowsJob from "../../../../src/commands/controller/windows-job.js";
 import * as processProof from "../../../../src/commands/controller/process-proof.js";
 import { BotCliProbeCleanupError, createBotCliProbe, type BotCliProbe } from "../../../../src/commands/worker/bots/cli-probe.js";
 
@@ -23,10 +25,50 @@ const checkStopped = async (scope: BotCliProbe) => {
   expect(scope.ownership.process).not.toBeNull();
   expect(await processProof.confirmControllerProcessesStopped(scope.ownership.process!, [])).toBe(true);
 };
+// These diagnostics cover only fixed, test-owned OS probes. Their commands and
+// output contain fixture process metadata, never CLI credentials or target output.
+const diagnostic = (stage: string, failure: unknown): void => {
+  if (process.platform !== "win32") return;
+  const describe = (value: unknown, depth = 0): unknown => {
+    if (!(value instanceof Error) || depth > 4) return undefined;
+    const fields = value as Error & { code?: unknown; signal?: unknown; killed?: unknown; stdout?: unknown; stderr?: unknown };
+    return { name: fields.name, message: fields.message, code: fields.code, signal: fields.signal, killed: fields.killed,
+      stdout: fields.stdout, stderr: fields.stderr, cause: describe(fields.cause, depth + 1) };
+  };
+  console.error(JSON.stringify({ fixture: "bot-cli-probe", stage, error: describe(failure) }));
+};
+beforeEach(() => {
+  if (process.platform !== "win32") return;
+  const capture = processProof.captureProcessProof;
+  vi.spyOn(processProof, "captureProcessProof").mockImplementation(async (pid, timeoutMs) => {
+    try { return await capture(pid, timeoutMs); }
+    catch (error) { diagnostic("capture-process-proof", error); throw error; }
+  });
+  const stop = processProof.stopControllerProcesses;
+  vi.spyOn(processProof, "stopControllerProcesses").mockImplementation(async (...args) => {
+    try { return await stop(...args); }
+    catch (error) { diagnostic("stop-process-scope", error); throw error; }
+  });
+  const inspectJob = windowsJob.inspectControllerJob;
+  vi.spyOn(windowsJob, "inspectControllerJob").mockImplementation(async (...args) => {
+    try {
+      const pids = await inspectJob(...args);
+      console.error(JSON.stringify({ fixture: "bot-cli-probe", stage: "inspect-job", job: args[0], stop: args[1] === true, pids }));
+      return pids;
+    } catch (error) { diagnostic("inspect-job", error); throw error; }
+  });
+});
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const scope of scopes.splice(0)) await scope.close();
+  const failures: unknown[] = [];
+  for (const scope of [...scopes]) {
+    try { await scope.close(); scopes.splice(scopes.indexOf(scope), 1); }
+    catch (error) { diagnostic("fixture-cleanup", error); failures.push(error); }
+  }
   for (const operation of operations.splice(0)) operation.dispose();
+  // Retain failed owners and their directories for the next cleanup attempt;
+  // removing an open Windows cwd only hides the original failure with EBUSY.
+  if (failures.length !== 0) throw new AggregateError(failures, "Bot probe fixtures retain unconfirmed process ownership.");
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 
@@ -34,6 +76,7 @@ describe("owned Bot CLI capability probes", () => {
   it("keeps one gated leader across commands and stops detached-stdio descendants after success", async () => {
     const f = await fixture(); const originalPid = f.scope.ownership.pid;
     expect(f.scope.ownership.targetStarted).toBe(false);
+    if (process.platform === "win32") expect(await windowsJob.inspectControllerJob(f.scope.ownership.jobObjectName!)).toContain(originalPid);
     expect((await f.scope.run(process.execPath, [f.file])).stdout).toBe("help-result\n");
     expect((await f.scope.run(process.execPath, [f.file])).stdout).toBe("help-result\n");
     expect(f.scope.ownership.pid).toBe(originalPid);
@@ -74,17 +117,23 @@ describe("owned Bot CLI capability probes", () => {
   }, 120_000);
 
   it("retains typed process ownership and a working retry after unconfirmed cleanup", async () => {
+    let lease: nativeJob.WindowsBotJobLease | undefined;
+    if (process.platform === "win32") {
+      const create = nativeJob.createWindowsBotJobLease;
+      vi.spyOn(nativeJob, "createWindowsBotJobLease").mockImplementation(async (...args) => { lease = await create(...args); return lease; });
+    }
     const f = await fixture(); await f.scope.run(process.execPath, [f.file]);
-    const original = processProof.stopControllerProcesses;
-    vi.spyOn(processProof, "stopControllerProcesses").mockRejectedValueOnce(new Error("private-process-error"));
+    if (lease !== undefined) vi.spyOn(lease, "terminate").mockImplementationOnce(() => { throw new nativeJob.WindowsBotJobError("fixture-stop", 5); });
+    else vi.spyOn(processProof, "stopControllerProcesses").mockRejectedValueOnce(new Error("private-process-error"));
     let failure: BotCliProbeCleanupError | undefined;
     try { await f.scope.close(); } catch (error) { failure = error as BotCliProbeCleanupError; }
     expect(failure).toBeInstanceOf(BotCliProbeCleanupError);
     expect(failure?.ownership.process?.pid).toBe(f.scope.ownership.pid);
     expect(failure?.cause).toBeUndefined();
     expect(String(failure)).not.toContain("private-process-error");
-    vi.mocked(processProof.stopControllerProcesses).mockImplementation(original);
+    if (lease !== undefined) expect(lease.inspect()).toContain(f.scope.ownership.pid);
     await failure!.retryCleanup(); await checkStopped(f.scope);
+    if (lease !== undefined) expect(lease.inspect()).toEqual([]);
   }, 120_000);
 
   it("never launches the target when process ownership cannot be captured", async () => {
@@ -97,8 +146,8 @@ describe("owned Bot CLI capability probes", () => {
     const operation = createOperation({ limits: { totalMs: 30_000 } }); operations.push(operation);
     const original = processProof.captureProcessProof;
     let captured: processProof.ProcessProof | undefined;
-    vi.spyOn(processProof, "captureProcessProof").mockImplementationOnce(async pid => {
-      captured = await original(pid);
+    vi.spyOn(processProof, "captureProcessProof").mockImplementationOnce(async (pid, timeoutMs) => {
+      captured = await original(pid, timeoutMs);
       return { ...captured, parentPid: process.pid + 1 };
     });
     await expect(createBotCliProbe({ environment: process.env, cwd: process.cwd() }, operation)).rejects.toThrow(/ownership changed/);

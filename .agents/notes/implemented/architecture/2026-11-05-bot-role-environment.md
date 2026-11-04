@@ -27,7 +27,10 @@ selection. A gated guardian holds process-instance ownership for the whole help
 batch. Targets start only after its POSIX process group or Windows Job boundary
 is established, and the guardian stays alive after each wrapper exits. Every
 return path confirms the group or Job has stopped; uncertain cleanup retains
-the aliases and an actionable ownership receipt with a cleanup retry. Credentials
+the aliases and an actionable ownership receipt with a cleanup retry. On Windows,
+the Bot owns a native Job handle through the existing Koffi dependency until the
+Job is empty and its guardian has closed. The Job disallows breakaway and uses
+kill-on-close. Credentials
 never become role parameters. The
 [requirements](../../../../docs/spec/bot-role-environment.md) own observable
 behavior; the [design](../../../../docs/design/bot-role-environment.md) owns the
@@ -55,6 +58,18 @@ prerequisite runner's close result cannot prove that the alias users have
 stopped. A live guardian provides attributable cleanup without changing Task
 execution or inferring ownership from a saved PID after its parent disappeared.
 
+**Reopen a named Job after closing its last handle.** Reusing the Controller's
+short-lived PowerShell helper initially avoided a second native implementation.
+However, a temporary object's name disappears when its handle count reaches
+zero, even while process references retain the object itself. Membership alone
+cannot preserve a name-based cleanup path; the Bot must retain a handle. This
+follows the [Windows temporary-object lifetime rule](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwmaketemporaryobject).
+
+**Keep a separate PowerShell process alive to hold the Job.** This would retain
+the handle but add a keeper process, pipe protocol and separate shutdown proof to
+every preparation. The existing native binding dependency can hold the handle
+inside the owner without introducing another process lifecycle.
+
 ## Consequences
 
 The template can evolve for unprepared Bots without rewriting existing roles.
@@ -64,7 +79,8 @@ preparation incurs read-only identity and CLI probes. These observations cannot
 prevent later user changes to global configuration.
 
 The probe guardian adds bounded process-identity and cleanup work, including
-Windows Job setup. A single guardian serves the whole help batch. Cleanup can
+Windows Job setup and native handle ownership. A single guardian serves the whole
+help batch. Cleanup can
 outlast an operation cancellation because releasing executable resources still
 requires positive process-exclusion evidence.
 

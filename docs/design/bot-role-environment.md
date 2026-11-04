@@ -56,8 +56,13 @@ bot、worker 的 list/show `--help`，检查对应入口与 JSON 能力。此集
 
 `createBotCliProbe` 为整组帮助调用持有一个监督进程。目标 CLI 在 IPC 放行之前
 不能启动；放行前先取得监督进程的 `ProcessProof`，Windows 还须完成 Job Object
-归属。POSIX 使用独占进程组，Windows 使用不允许 breakaway 的 Job，沿用已有
-Controller 进程身份、停止与确认函数。目标 wrapper 关闭自身及标准流后，监督
+归属。POSIX 使用独占进程组，沿用已有 Controller 进程身份、停止与确认函数。
+Windows 通过已有 Koffi 依赖调用原生 Job API，保持一个不允许 breakaway、设置
+`KILL_ON_JOB_CLOSE` 的 Job handle。临时命名对象在最后一个 handle 关闭后会失去
+名称，关联进程仍在不代表能够再次按名称打开，因此 handle 必须保留到成员为空且
+监督进程已关闭之后。启动前确认监督进程属于该 Job；停止与成员查询使用同一个
+handle，失败时保留 handle 和清理责任，不依赖重新按名称发现对象。
+目标 wrapper 关闭自身及标准流后，监督
 进程仍存活，确保遗留组成员有可归属的原始进程实例。直接进程 close 不作为整组
 停止证明。
 
@@ -65,11 +70,16 @@ Controller 进程身份、停止与确认函数。目标 wrapper 关闭自身及
 实际 CLI 的完整准备环境经私有 IPC 传入，在放行后使用，保留其原 `NODE_OPTIONS`、
 HOME、PATH 和原生设置。该隔离不修改 Worker 或用户进程环境。
 
+准备操作预算为 90 秒。身份查询使用操作剩余预算内的单次上限：Windows 为
+15 秒，其他平台为 5 秒；共享查询接口的缺省值仍为 5 秒。取消不会跳过清理，
+清理另有 60 秒窗口；底层观察调用可能跨过窗口，不能把它解释为严格墙钟上限。
+
 无论帮助命令成功、退出异常、内容不兼容、超时或取消，都必须先停止并核对探测
 进程组/Job，再返回准备结果或清理 alias。清理使用独立的有界时间窗口，不能因
 业务操作已取消而跳过。`BotCliProbeCleanupError` 保留 typed ownership 和
 `retryCleanup()`；环境层的 `BotEnvironmentCleanupError` 同时保留该回执与
 `aliasDirectory`。重试先完成进程确认，再删除本次 alias；失败时仍保留责任。
+清理错误仅暴露安全的失败阶段及适用的 Win32 错误码，不包含目标 CLI 的输出。
 重试不承诺一定能主动终止：如果原监督进程已停止而剩余组成员没有可验证的原始
 实例证明，只能继续观察或保留清理错误，不能凭保存的 PID/PGID 杀进程。
 

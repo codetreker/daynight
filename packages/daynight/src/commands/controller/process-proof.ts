@@ -4,18 +4,19 @@ import { createHash } from "node:crypto";
 export type ProcessProof = { readonly pid: number; readonly parentPid: number; readonly processGroupId: number | null; readonly startedAt: string; readonly commandHash: string; readonly jobObjectName?: string };
 // ps localizes lstart, so identity probes need a stable locale. Keep the
 // Controller and native provider environments unchanged.
-const run = (file: string, args: string[]): Promise<string> => new Promise((resolve, reject) => execFile(file, args, { encoding: "utf8", timeout: 5000, maxBuffer: 8 * 1024 * 1024, windowsHide: true, ...(file === "ps" ? { env: { ...process.env, LC_ALL: "C" } } : {}) }, (error, stdout) => error === null ? resolve(stdout) : reject(error)));
+const run = (file: string, args: string[], timeout = 5000): Promise<string> => new Promise((resolve, reject) => execFile(file, args, { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true, ...(file === "ps" ? { env: { ...process.env, LC_ALL: "C" } } : {}) }, (error, stdout) => error === null ? resolve(stdout) : reject(error)));
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 const validPid = (pid: number): void => { if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) throw new Error("Invalid process identity."); };
-export const captureProcessProof = async (pid: number): Promise<ProcessProof> => {
+export const captureProcessProof = async (pid: number, timeoutMs = 5000): Promise<ProcessProof> => {
   validPid(pid);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) throw new Error("Process identity timeout must be a positive supported integer.");
   if (process.platform === "win32") {
-    const output = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' | Select-Object ProcessId,ParentProcessId,@{Name='Birth';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},CommandLine | ConvertTo-Json -Compress`]);
+    const output = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' | Select-Object ProcessId,ParentProcessId,@{Name='Birth';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},CommandLine | ConvertTo-Json -Compress`], timeoutMs);
     const value = JSON.parse(output) as { ProcessId: number; ParentProcessId: number; Birth: string; CommandLine: string };
     if (value.ProcessId !== pid || typeof value.Birth !== "string" || typeof value.CommandLine !== "string") throw new Error("Process identity cannot be established.");
     return { pid, parentPid: value.ParentProcessId, processGroupId: null, startedAt: value.Birth, commandHash: hash(value.CommandLine) };
   }
-  const output = await run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "lstart=", "-o", "command="]);
+  const output = await run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "lstart=", "-o", "command="], timeoutMs);
   const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);
   if (match === null || Number(match[1]) !== pid) throw new Error("Process identity cannot be established.");
   return { pid, parentPid: Number(match[2]), processGroupId: Number(match[3]), startedAt: match[4]!.replace(/\s+/g, " "), commandHash: hash(match[5]!.trim()) };

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import type { Operation } from "../../../api/operation.js";
 import { captureProcessProof, confirmControllerProcessesStopped, stopControllerProcesses, type ProcessProof } from "../../controller/process-proof.js";
-import { createControllerJob, inspectControllerJob } from "../../controller/windows-job.js";
+import { createWindowsBotJobLease, WindowsBotJobError, WindowsBotJobSetupError, type WindowsBotJobLease } from "./windows-job-lease.js";
 import type { HerdrCommandResult } from "../herdr/command.js";
 import { botCliProbeChildSource } from "./cli-probe-child.js";
 
@@ -16,7 +16,7 @@ export type BotCliProbeOwnership = {
 };
 
 export class BotCliProbeCleanupError extends Error {
-  constructor(readonly ownership: BotCliProbeOwnership, readonly retryCleanup: () => Promise<void>) {
+  constructor(readonly ownership: BotCliProbeOwnership, readonly retryCleanup: () => Promise<void>, readonly failure?: { stage: string; nativeStage?: string; win32Code?: number }) {
     super("Bot CLI probe process cleanup is unconfirmed; retain its ownership and retry cleanup before releasing aliases.");
     this.name = "BotCliProbeCleanupError";
   }
@@ -48,6 +48,7 @@ export const createBotCliProbe = async (
   for (const key of Object.keys(guardianEnvironment)) if (key.toUpperCase() === "NODE_OPTIONS") delete guardianEnvironment[key];
   let child: ChildProcess | undefined, closed = false, started = false, stopped = false;
   let proof: ProcessProof | null = null, jobObjectName: string | null = null;
+  let windowsJob: WindowsBotJobLease | undefined;
   let stopPending: Promise<void> | undefined;
   let waiting: { resolve(value: Record<string, unknown>): void; reject(error: Error): void } | undefined;
   let terminalFailure: Error | undefined;
@@ -78,21 +79,29 @@ export const createBotCliProbe = async (
   const stop = async (): Promise<void> => {
     if (stopped) return;
     const deadline = Date.now() + 60_000;
+    let stage = "stop-owned-scope";
     try {
-      if (started) {
+      if (windowsJob !== undefined) {
+        stage = "terminate-job";
+        windowsJob.terminate();
+        stage = "inspect-job";
+        while (Date.now() < deadline && windowsJob.inspect().length !== 0) await delay(20);
+        if (windowsJob.inspect().length !== 0) throw new Error("Windows Bot probe Job Object members remain active.");
+      } else if (started) {
         if (proof === null) throw new Error("The probe ownership proof is unavailable.");
         await stopControllerProcesses(proof, [], deadline);
         if (!await confirmControllerProcessesStopped(proof, [])) throw new Error("Probe descendants remain active.");
-      } else {
-        // No CLI target passed the gate. Only this known supervisor can exist,
-        // including an uncertain response while it was assigned to its job.
-        if (jobObjectName !== null) await inspectControllerJob(jobObjectName, true);
-        if (child?.pid !== undefined && !closed && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       }
+      // Before the command gate, only this known guardian can need direct
+      // termination, including when native job assignment failed.
+      if (!started && child?.pid !== undefined && !closed && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      stage = "join-guardian";
       while (child !== undefined && !closed && Date.now() < deadline) await delay(20);
       if (child !== undefined && !closed) throw new Error("Probe supervisor streams remain open.");
+      stage = "close-job-handle";
+      windowsJob?.close();
       stopped = true;
-    } catch { throw new BotCliProbeCleanupError(ownership(), close); }
+    } catch (error) { throw new BotCliProbeCleanupError(ownership(), close, { stage, ...(error instanceof WindowsBotJobError ? { nativeStage: error.stage, win32Code: error.win32Code } : {}) }); }
   };
   const close = async (): Promise<void> => {
     stopPending ??= stop();
@@ -117,11 +126,14 @@ export const createBotCliProbe = async (
     child?.once("close", () => { closed = true; if (!stopped) fail(); });
     if ((await ready).type !== "ready" || child?.pid === undefined) throw new Error("Bot CLI probe supervisor did not become ready.");
     verifyGuardian();
-    proof = await captureProcessProof(child.pid);
+    proof = await captureProcessProof(child.pid, Math.max(1, Math.floor(Math.min(process.platform === "win32" ? 15_000 : 5_000, operation.remainingMs()))));
     verifyGuardian();
     if (process.platform === "win32") {
-      jobObjectName = `Local\\Daynight-${launchId}`;
-      await createControllerJob(launchId, child.pid);
+      windowsJob = await createWindowsBotJobLease(launchId);
+      jobObjectName = windowsJob.name;
+      verifyGuardian();
+      windowsJob.assign(child.pid);
+      if (!windowsJob.inspect().includes(child.pid)) throw new Error("The Windows Bot probe guardian is absent from its owned job.");
       verifyGuardian();
       proof = { ...proof, jobObjectName };
     } else if (proof.processGroupId !== proof.pid) throw new Error("Bot CLI probe supervisor does not own its process group.");
@@ -146,6 +158,7 @@ export const createBotCliProbe = async (
       },
     };
   } catch (error) {
+    if (error instanceof WindowsBotJobSetupError) { windowsJob = error.lease; jobObjectName = windowsJob.name; }
     await close();
     operation.check();
     throw error;
