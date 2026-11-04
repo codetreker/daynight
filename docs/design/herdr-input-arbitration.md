@@ -1,0 +1,55 @@
+# Herdr 严格终端输入与持久仲裁
+
+本文拥有 macOS Worker 的输入派发、人工控制与交还机制。运行、进程出生身份和停止证明由 [Herdr 生命周期](herdr-worker-lifecycle.md)拥有；消息格式、租约与容量常量由 [Session v2 契约](../spec/session-v2.md)拥有。
+
+## 范围与准入
+
+所有 macOS Daynight 输入由同一 `HerdrInputArbiter` 派发：首次 assignment、自动 continuation、服务端转发的 paste/keys、终态 cleanup prompt。`durable.ts` 不调用 legacy `agent.prompt` 输入路径；`launch` 只启动进程，原 daemon、shell、native agent 的身份和运行 ledger 可靠提交后才开放输入。Linux/Windows legacy 与 Web Controller 保留各自既有路径。
+
+Session 注册继续声明 `observe=false`、`control=false`、`archive=false`。输入组件与服务端消费接口可隔离验证，但录制、网页预览、最终归档和产品组合能力尚未满足，不能仅凭输入传输成功启用完整 Herdr Session。
+
+## 持久状态与操作身份
+
+`worker/herdr-inputs.sqlite` 使用独立版本、SQLite WAL/FULL、事务和 CAS。记录包含原 Session/claim、运行与连接代次、segment、terminal binding、控制代次、状态、租约、序号、输入来源和规范化正文摘要。操作结果与人工处置保留至执行封存并撤销写权限之后；没有短 TTL 清除或自动淘汰。
+
+| 状态 | 允许行为 |
+|---|---|
+| `automation` | 准入有效时发送 pending assignment 或新的 continuation |
+| `manual` | 当前持有者按 lease/epoch/严格递增 leaseSeq 输入；Detach 不交还自动执行 |
+| `suspended` | 只读状态、重新申请 lease、显式交还 |
+| `closing` | 拒绝普通输入；满足原条件时发送一次 cleanup prompt，然后受控停止 |
+| `closed` | 永久拒绝输入 |
+
+每次批次在原生写入前提交 `dispatching`；写入调用前同步标记可能已写。写前取消且确定没有调用原生 Input 才能 `rejected`。写后错误、断线、超时或崩溃恢复均为 `unknown`，不自动重发。正常 `Detach` 回执仅对应 `transport_completed`，不证明 provider 接收、turn 启动或业务完成。已经写出的输入无法撤回。
+
+首次 assignment 有跨运行不变的身份和正文摘要。一次确定未写的失败保留其 rejected receipt；只有 pending 且自动准入再次有效时才生成新的持久尝试 ID。未知尝试不会轮转 ID，也不因 idle、重启或释放 lease 重发。其他操作重复 ID 仅返回原结果；同 ID 异正文拒绝。
+
+旧生命周期存在但输入 journal 缺失时按 `unconfirmed` 接入，不推断可继续自动输入。生命周期中的原始首次结果继续保留；人工选择 `delivered_continue` 单独记录 actor、operation 和时间，不修改 unknown 操作结果。现有 v2 `control_state.initialAssignment=transport_completed` 在这项处置后投影为可继续的进度；它不是对原 unknown 操作的 provider ACK。
+
+## 人工控制与交还
+
+获取 lease 只做原身份、任务权限和可用原生状态的读取，不 attach。批次进行中返回 `input_busy`，不会排队等到首次输入完成再悄悄授予。租约 TTL 为 30 秒，调用方每 10 秒续约；Worker 使用本进程单调时限，重启撤销旧 lease。普通释放、失联、隐藏页签的服务端撤权和超时均保持 suspended。
+
+交还要求当前 fence/controlEpoch、无在途批次、明确 `draftHandled`、原生 readiness 和可用 composer 检查。Codex/Claude 使用当前支持界面的占位符与菜单检查；这是受限屏幕检查，不是跨 provider 的形式证明。Copilot 没有可用的通用空 composer 证明，记录为 unavailable；其人工草稿责任必须由显式交还承担，native idle 不会自动解除 manual/suspended。系统不擅自发送清空草稿快捷键。
+
+服务端控制请求包含原 actor 与请求摘要，Worker 持久提交状态和关联 ACK 后才回传。每次实际写入前再读取服务端 Session 状态、任务权限和原进程证明；已撤 lease、旧连接或控制代次不能借轮询间隔迟到写入。本地 Herdr TUI/API 仍可能并发输入，这不是全局键盘互斥。
+
+## 严格原生传输与几何
+
+`terminal-input.ts` 支持明确验证的 Herdr 0.9.5/protocol 22 布局。先核对 Hello/Welcome，再执行 `AttachTerminal(terminalId, takeover=false)`，等待完整基线和键盘模式。目标不存在直接拒绝，不按 pane 或 agent 名称回退。未知消息布局、版本、键盘模式或失效目标禁止输入。
+
+paste 使用独立、完整的 bracketed-paste Input frame；Enter 为另一帧，每帧之前重新核对准入。仅支持 Session v2 的有限按键白名单，不接收任意转义字节、mouse 或 resize。单批 paste 最多 16 KiB UTF-8，总时限 10 秒。自动 prompt 同样受此上限限制，超限不截断。
+
+API layout 或观察帧不能证明实际 PTY 尺寸。Worker 从原 pane 的 `process_info` 获取 shell PID/TTY；本机缺失 TTY 字段时，通过原 shell 的 `ps -o tty=` 读取，再只读执行 `stty -f <tty> size`。原进程出生身份与 API/client 两个 socket peer 在读取和写入准入时再次核对，尺寸或 TTY 变化拒绝。实际 attach 仍可能重应用尺寸或恢复 pending agent，因此 launchPending、未知 native 状态与非受管 foreground 禁止输入。拒绝结果只说明没有写 Input，不代表 attach 没有副作用；Detach 也不保证恢复旧尺寸。
+
+## 连接与停止
+
+准备运行使用 HTTP 注册；活动运行和段登记完成后，使用同一持久注册意图建立 Worker WebSocket。ACK 由生命周期 owner 提交之后才激活分派。每 10 秒发送控制状态并读取服务端撤权状态，socket 断开撤销本地控制；未知注册或消息不自动重放。实际运行 generation 与普通 connectionEpoch 分开，旧连接不能接管新运行。
+
+cleanup 首先同步提交 closing、提升控制代次并撤销 lease，再中止旧批次。尚未写出的输入取消；已经写出的只能保留原结果或 unknown。只有此前处于 automation、无人工草稿风险/未知输入、没有在途批次且原生界面可用时，才通过同一仲裁器发送一次 cleanup prompt。其他情况跳过提示并继续原实例受控停止；外部临时资源可能因此无法由 agent 及时收尾。
+
+正常 shutdown 的干净自动状态与人工 suspended 状态分别持久保留。已确认停止、相同已知 native conversation、有效原 claim 才允许下一代运行；只有原来安全的自动状态能恢复自动输入，manual/unknown 不会借 shutdown 交还。终态资源仍受生命周期停止证明与归档门禁约束，不能因输入通道关闭而删 worktree。
+
+## 验证边界
+
+真实 SQLite 与 socket 测试覆盖崩溃恢复、幂等、lease/epoch 竞争、未写与已写取消、cleanup 撤销及 Web/legacy 回归。macOS 三 provider 的隔离界面验证覆盖 Unicode、多行 paste、Enter/Escape/Ctrl+C/方向键、同名错误目标和实际 PTY 尺寸。模拟协议、原生界面验证和完整产品组合验收是不同证据，不互相替代。

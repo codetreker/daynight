@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { canonicalSessionJson } from "../../../src/session/v2/values.js";
+import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-store.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,11 +42,12 @@ const fixture = () => {
   let task: Task = { id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: context.claimId, state: "active", userId: ownerId, workerId, machine: { id: uuid(8), name: "test-machine" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId: context.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-04T00:00:00Z" } } };
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
-  const settings = { nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false };
+  const settings = { nativeDraft: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false };
   let beforePromptGuard: (() => void) | undefined;
   let beforeLaunchRetry: (() => void) | undefined;
   const observed = new Map<number, MacProcessObservation>();
   type Local = { ordinal: number; paths: ReturnType<typeof resolveHerdrInstancePaths>; binding: HerdrTaskBinding; started: boolean; launched: boolean; nativeVisible: boolean; daemonPid: number; shellPid: number; agentPid: number };
+  const transmit = new Map<string, (initial: boolean, body: string) => Promise<unknown>>();
   const instances = new Map<string, Local>(); let sequence = 0, reader: HerdrLifecycleStore | undefined, facade: WorkerHerdrAdapter;
   const read = () => {
     reader ??= openHerdrLifecycleStore(path.join(paths.workerDirectory, "herdr-executions.sqlite"), { onMigration: () => {} }); readers.add(reader);
@@ -59,7 +63,7 @@ const fixture = () => {
     capture: async (pid, role) => { events.push(`capture:${role}`); return proof(pid, role); },
     observe: async value => observed.get(value.pid) ?? "same",
     peer: async endpoint => {
-      const local = [...instances.values()].find(value => value.paths.apiEndpoint === endpoint); if (!local) throw new Error("Unknown endpoint");
+      const local = [...instances.values()].find(value => [value.paths.apiEndpoint, value.paths.clientEndpoint].includes(endpoint)); if (!local) throw new Error("Unknown endpoint");
       const value = proof(local.daemonPid, "daemon"); if (settings.peerReplaced) value.auditToken[7]! += 1; return value;
     },
     list: async () => [], signal: async () => { throw new Error("The facade must use the exclusive stop boundary"); },
@@ -109,6 +113,7 @@ const fixture = () => {
       state.nativeVisible = settings.nativeAfterInput;
       return { submission: "submitted" as const, observation: observation() };
     };
+    transmit.set(state.paths.clientEndpoint, input);
     return {
       paths: state.paths, attachment: { executable: "herdr", arguments: [], environment: {}, unsetEnvironment: [] },
       ensureInstance: async () => { if (!state.started) { events.push("daemon-launch"); expect(read().preparation?.phase).toBe("launch_requested"); await options.onDaemonSpawn?.(state.daemonPid); state.started = true; } return { reconnected: false, version: "0.9.5", protocol: 22, snapshot: {} }; },
@@ -131,10 +136,30 @@ const fixture = () => {
   };
   const reopen = (injectSessionApi = true) => {
     if (facade) { facade.lifecycle!.close(); facades.delete(facade); }
-    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => task, processControl: native, ...(injectSessionApi ? { sessionApi: api } : {}), createAdapter }); facades.add(facade); return facade;
+    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => task, processControl: native,
+      inspectInput: async request => {
+        if (request.purpose !== "manual" && settings.nativeDraft) throw new Error("The native composer now contains this batch's paste");
+        return { width: 100, height: 24, herdrVersion: "0.9.5", composer: "empty" };
+      },
+      submitInput: async request => {
+        beforePromptGuard?.();
+        let written = false;
+        try {
+          for (const part of request.inputs) {
+            await request.beforeWrite(); request.onWrite?.(); written = true;
+            settings.nativeDraft = part.kind === "paste";
+          }
+        } catch (error) { return { status: written ? "unknown" : "rejected", reason: String(error) }; }
+        try {
+          const body = request.inputs.filter(input => input.kind === "paste").map(input => input.text).join("");
+          await transmit.get(request.endpoint)!(read().initialAssignment === "dispatching", body);
+          return { status: "transport_completed", reason: "detached" };
+        } catch (error) { return { status: "unknown", reason: String(error) }; }
+      }, ...(injectSessionApi ? { sessionApi: api } : {}), createAdapter }); facades.add(facade); return facade;
   };
   mkdirSync(paths.workerDirectory, { recursive: true });
   const initialStore = openHerdrLifecycleStore(path.join(paths.workerDirectory, "herdr-executions.sqlite"), { onMigration: () => {} }); initialStore.close();
+  openHerdrInputStore(path.join(paths.workerDirectory, "herdr-inputs.sqlite"), { onMigration: () => {} }).close();
   reopen();
   const register = () => facade.lifecycle!.registerClaim(context, ownerId);
   const prepare = () => facade.tasks.prepareWorkspace(context, task.title, operation());
@@ -143,6 +168,39 @@ const fixture = () => {
 };
 
 describe("durable Herdr facade with real SQLite", () => {
+  it("keeps manual control across detach and blocks continuation until explicit handback", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    const input = f.facade.input!;
+    const record = f.read();
+    const message = { protocol: "daynight.session.v2" as const, schemaVersion: 2 as const, projectionVersion: 1 as const, sessionId: record.sessionId, claimId: record.claimId, executionGeneration: "1", agentControlMode: "herdr" as const, contentKind: "terminal_recording" as const, type: "control_dispatch" as const,
+      payload: { actorUserId: uuid(5), requestDigest: "a".repeat(64), request: { operationId: uuid(100), connectionEpoch: record.connectionEpoch!, controlEpoch: input.state(f.context).controlEpoch, action: "acquire_control" as const, browserClientId: uuid(101), leaseId: null, draftHandled: false, initialUnknownDisposition: null } } };
+    message.payload.requestDigest = createHash("sha256").update(canonicalSessionJson({ actorUserId: message.payload.actorUserId, request: message.payload.request })).digest("hex");
+    const ack = await input.control(f.context, message, operation());
+    expect(ack.controlState.state).toBe("manual");
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Automatic continuation", operation())).rejects.toThrow();
+    expect(f.inputs).toHaveLength(1);
+    input.suspend(f.context);
+    expect(input.state(f.context).state).toBe("suspended");
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Still automatic", operation())).rejects.toThrow();
+    expect(f.inputs).toHaveLength(1);
+  });
+  it("revokes manual input before cleanup and never appends a cleanup prompt", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    f.facade.input!.suspend(f.context);
+    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation())).toBe(false);
+    expect(f.inputs).toHaveLength(1); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+  });
+  it("sends eligible cleanup through the same input journal before controlled stop", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    expect(await f.facade.lifecycle!.cleanup!(f.context, "Cleanup now", operation())).toBe(true);
+    expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }, { initial: false, body: "Cleanup now" }]);
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+  });
+  it("does not ignore a caller's replacement terminal binding", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    await expect(f.facade.tasks.submitPrompt(f.context, { ...binding, terminalId: "replacement" }, "Continuation", operation())).rejects.toThrow();
+    expect(f.inputs).toHaveLength(1);
+  });
   it.each(["shell", "daemon", "peer", "claim"] as const)("rejects a native start retry after original %s evidence changes", async kind => {
     const f = fixture(); f.register(); const binding = await f.prepare();
     f.beforeLaunchRetry(() => {
@@ -211,7 +269,7 @@ describe("durable Herdr facade with real SQLite", () => {
   });
   it("retains unknown first input across restart and never automatically repeats it", async () => {
     const f = fixture(); f.settings.inputUnknown = true; f.register(); const binding = await f.prepare();
-    await expect(f.start(binding)).rejects.toThrow("Lost input receipt"); expect(f.read().initialAssignment).toBe("unknown");
+    await expect(f.start(binding)).rejects.toThrow(/unknown/); expect(f.read().initialAssignment).toBe("unknown");
     f.reopen(); await expect(f.facade.tasks.submitPrompt(f.context, binding, "Retry", operation())).rejects.toThrow(/admission/i);
     expect(f.inputs).toHaveLength(1); expect(f.read().initialAssignment).toBe("unknown");
   });
@@ -236,13 +294,13 @@ describe("durable Herdr facade with real SQLite", () => {
   it("rechecks the original claim after admission and immediately before native input", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare();
     f.beforePromptGuard(() => f.changeTask({ allowAgents: false }));
-    await expect(f.start(binding)).rejects.toThrow(/claim/i);
+    await expect(f.start(binding)).rejects.toThrow(/permission_denied/);
     expect(f.inputs).toHaveLength(0); expect(f.read().runs[0]!.admission).toBeNull();
   });
   it("rechecks the peer identity after admission and immediately before native input", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare();
     f.beforePromptGuard(() => { f.settings.peerReplaced = true; });
-    await expect(f.start(binding)).rejects.toThrow(/replaced/i);
+    await expect(f.start(binding)).rejects.toThrow(/target_changed/);
     expect(f.inputs).toHaveLength(0); expect(f.read().runs[0]!.admission).toBeNull();
   });
   it("cannot convert a failed journal commit into confirmed stopping after reopening", async () => {
@@ -262,7 +320,7 @@ describe("durable Herdr facade with real SQLite", () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     const exec = Database.prototype.exec; let transactions = 0;
     const failure = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-      if (sql === "BEGIN IMMEDIATE" && ++transactions === 2) throw new Error("close journal unavailable");
+      if (this.name.endsWith("herdr-executions.sqlite") && sql === "BEGIN IMMEDIATE" && ++transactions === 2) throw new Error("close journal unavailable");
       return exec.call(this, sql);
     });
     await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow(/close journal.*commit/i); failure.mockRestore();
@@ -276,7 +334,7 @@ describe("durable Herdr facade with real SQLite", () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     const exec = Database.prototype.exec; let transactions = 0;
     const failure = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-      if (sql === "BEGIN IMMEDIATE" && ++transactions === 4) throw new Error("segment journal unavailable");
+      if (this.name.endsWith("herdr-executions.sqlite") && sql === "BEGIN IMMEDIATE" && ++transactions === 4) throw new Error("segment journal unavailable");
       return exec.call(this, sql);
     });
     await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow("segment journal unavailable"); failure.mockRestore();
