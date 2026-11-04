@@ -1507,6 +1507,63 @@ describe("terminal cleanup retry scheduling", () => {
       webStore.close();
     }
   });
+
+  it.each([
+    { status: "done", retry: "deferred" }, { status: "done", retry: "due" },
+    { status: "active", retry: "deferred" }, { status: "active", retry: "due" },
+  ] as const)("isolates $status Herdr cleanup from healthy Web work when its retry is $retry", async ({ status, retry }) => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
+    const f = await fixture(2);
+    const old = { projectId: f.project.projectId, taskId: uuid(810), claimId: uuid(811), worktreeId: uuid(812) };
+    f.store.registerPending({ ...old, agent: "codex", agentControlMode: "herdr" });
+    if (status === "done") f.store.completeTask(old);
+    else f.store.activateTask(old);
+    const schedule = f.store.saveCleanupSchedule(old, { deadline: 600_000, notified: true, submitted: true, failures: 1, nextAttemptAt: retry === "deferred" ? 2000 : 1000, stage: "observation", lastError: "The previous cleanup attempt failed." });
+    f.reopenStore();
+    expect(f.store.getTask(old)?.status).toBe(status);
+    expect(f.store.getCleanupSchedule(old)).toEqual(schedule);
+    const unavailable = new Error("The retained Herdr backend cannot initialize.");
+    vi.mocked(f.herdr.ensureInstance).mockRejectedValue(unavailable);
+    f.tasks.listResources.mockRejectedValue(new Error("The private Herdr daemon is unavailable."));
+    const webConfiguration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 0 };
+    const healthy = { projectId: f.project.projectId, taskId: uuid(820), claimId: uuid(821), worktreeId: uuid(822) };
+    const successor = { ...old, claimId: uuid(813), worktreeId: uuid(814) };
+    for (const owner of [healthy, successor]) {
+      f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web" });
+      f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+    }
+    f.store.activateTask(healthy);
+    f.candidates.splice(0, f.candidates.length, task(f.project.projectId, uuid(830)));
+    const webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+    webStore.register({ ...healthy, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: webConfiguration }, 1);
+    const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000 });
+    const advance = vi.fn(async (input: import("../../../src/commands/worker/backends/web-types.js").LocalTask) => webStore.initializeWebExecution(input, 1000));
+    const restarted = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: webConfiguration }], globalConfiguration: webConfiguration, webStore, webBackend: { ...backend, advance }, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
+    try {
+      for (let tick = 1; tick <= 3; tick++) {
+        await expect(restarted.tick()).resolves.toBeUndefined();
+        await eventually(() => expect(advance).toHaveBeenCalledTimes(tick));
+        expect(advance.mock.calls.at(-1)![0].claimId).toBe(healthy.claimId);
+        expect(f.store.getTask(successor)?.status).toBe("pending");
+        expect(f.remote.claim).not.toHaveBeenCalled();
+      }
+      if (retry === "due") {
+        await eventually(() => expect(f.store.getCleanupSchedule(old)).toMatchObject({ failures: 2, nextAttemptAt: 3000, lastError: unavailable.message }));
+        expect(f.herdr.ensureInstance).toHaveBeenCalledOnce();
+        expect(f.events.filter(event => event.kind === "cleanup-error")).toHaveLength(1);
+      } else {
+        expect(f.store.getCleanupSchedule(old)).toEqual(schedule);
+        expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+        expect(f.events.some(event => event.kind === "cleanup-error")).toBe(false);
+      }
+      expect(f.events.some(event => event.kind === "cleanup-capacity-blocked")).toBe(true);
+      expect(f.tasks.listResources).not.toHaveBeenCalled();
+      expect(f.git.removeWorktree).not.toHaveBeenCalled();
+      expect(f.tasks.start).not.toHaveBeenCalled();
+      expect(webStore.getTask(healthy)?.recovery.count).toBe(0);
+    } finally { await restarted.shutdown(); webStore.close(); }
+  });
 });
 
 

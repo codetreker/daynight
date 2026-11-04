@@ -42,6 +42,11 @@ requires its private control backend when the local task is already done and
 all current configurations use Web. Cleanup and shutdown initialize that backend
 before resource observation without starting business agents; neither local done
 nor a configuration change releases the remaining responsibility or capacity.
+Cleanup-only backend initialization stays inside the eligible claim job. It does
+not become a global reconciliation prerequisite or bypass backoff while unrelated
+Web execution advances. Normal Herdr discovery still serves configured or ongoing
+Herdr execution; shutdown inspects both execution and retained cleanup duties and
+continues to reject unavailable resource evidence.
 
 Claims retry independently after 1, 2, 4, 8, 16, 32 and then at most 60 seconds.
 Normal reconciliation starts eligible work without sleeping inside a job or

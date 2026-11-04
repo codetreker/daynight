@@ -85,11 +85,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const current = options.repositories.find((repository) => repository.project.projectId === task.projectId)?.configuration ?? options.globalConfiguration;
     return current.agent === task.agent ? { ...current, agentControlMode: task.agentControlMode ?? "herdr" } : { agent: task.agent, agentControlMode: task.agentControlMode ?? "herdr", model: null, args: [], recoveryLimit: current.recoveryLimit };
   };
+  // Cleanup-only backend access stays inside its claim job and retry schedule.
   const needsHerdr = (): boolean => options.globalConfiguration.agentControlMode !== "web"
     || options.repositories.some(repository => repository.configuration.agentControlMode !== "web")
-    || options.store.listUnfinishedTasks().some(task => task.agentControlMode !== "web")
-    || [...ending.values()].some(owner => options.store.getTask(owner)?.agentControlMode !== "web" && options.webStore?.getTask(owner) == null);
-  const pendingStops = () => needsHerdr() ? options.herdr.tasks.pendingStops() : [];
+    || options.store.listUnfinishedTasks().some(task => task.agentControlMode !== "web" && !ending.has(key(task)));
+  const hasHerdrCleanup = (): boolean => [...ending.values()].some(owner => options.store.getTask(owner)?.agentControlMode !== "web" && options.webStore?.getTask(owner) == null);
+  const pendingStops = () => needsHerdr() || hasHerdrCleanup() ? options.herdr.tasks.pendingStops() : [];
   const ensureHerdr = async (signal?: AbortSignal): Promise<void> => { if (needsHerdr()) await workerOperation(operation => options.herdr.ensureInstance(operation), signal); };
   const listHerdr = async (signal?: AbortSignal): Promise<HerdrOwnedWorkspace[]> => needsHerdr() ? workerOperation(operation => options.herdr.tasks.listResources(operation), signal) : [];
   const snapshot = async (signal?: AbortSignal, scope?: WorkerProject, currentClaims: readonly ResourceOwner[] = []): Promise<Snapshot> => {
@@ -485,8 +486,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         } else owners.set(key(context), context);
       }
       try {
-        await ensureHerdr();
-        const workspaces = await listHerdr();
+        let workspaces: HerdrOwnedWorkspace[] = [];
+        if (needsHerdr() || hasHerdrCleanup()) {
+          await workerOperation(operation => options.herdr.ensureInstance(operation));
+          workspaces = await workerOperation(operation => options.herdr.tasks.listResources(operation));
+        }
         for (const workspace of workspaces) {
           if (options.store.getProject(workspace.owner) === null) {
             complete = false;
