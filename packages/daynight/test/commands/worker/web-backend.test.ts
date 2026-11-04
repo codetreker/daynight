@@ -130,13 +130,14 @@ it("retains the stopped task worktree on archive failure and retries without rel
   task = f.store.recordCleanupResult(task, "completed", null, 7);
   task = f.store.confirmAgentStopped(task, { agentStopped: true }, 8);
   task = f.store.confirmBackendResourcesClosed(task, { controllerStopped: true, endpointClosed: true }, 9);
-  const archive = vi.fn().mockRejectedValueOnce(new Error("archive offline")).mockResolvedValue(undefined);
+  const archiveError = new Error("archive offline");
+  const archive = vi.fn().mockRejectedValueOnce(archiveError).mockResolvedValue(undefined);
   const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
   const request = vi.fn<typeof requestController>();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request });
-  await expect(backend.cleanup(task, "terminal", 30)).rejects.toThrow("archive offline");
+  await expect(backend.cleanup(task, "terminal", 30)).rejects.toMatchObject({ stage: "archive", cause: archiveError });
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
-  expect(f.store.getTask(task)?.cleanup).toMatchObject({ agentStopped: true, worktreeDeleted: false });
+  expect(f.store.getTask(task)?.cleanup).toMatchObject({ agentStopped: true, worktreeDeleted: false, result: "completed", error: null, deadline: 10 });
   const result = await backend.cleanup(task, "terminal", 30);
   expect(result.cleanup?.worktreeDeleted).toBe(true);
   expect(archive).toHaveBeenCalledTimes(2);
@@ -202,7 +203,67 @@ it("cleanup propagates a local snapshot write failure without taking the IPC fal
   vi.spyOn(f.store, "updateWebExecution").mockImplementation(() => { throw failure; });
   const request = vi.fn<typeof requestController>().mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 6, request });
-  await expect(backend.cleanup(task, "shutdown", 100)).rejects.toBe(failure);
+  await expect(backend.cleanup(task, "shutdown", 100)).rejects.toMatchObject({ stage: "agent-stop", cause: failure });
   expect(request).toHaveBeenCalledOnce(); expect(fallback).not.toHaveBeenCalled(); expect(stopping).not.toHaveBeenCalled();
   expect(f.store.getTask(task)?.cleanup).toMatchObject({ input: "not-submitted", agentStopped: false, backendResourcesClosed: false });
+});
+
+
+it("reports deletion failure separately from the retained native cleanup result", async () => {
+  const f = await fixture(), failure = new Error("EACCES: denied directory");
+  vi.mocked(f.git.removeWorktree).mockRejectedValueOnce(failure);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20 });
+  await expect(backend.cleanup(f.store.getTask(f.identity)!, "terminal", 30)).rejects.toMatchObject({ stage: "worktree-removal", cause: failure });
+  const pending = f.store.getTask(f.identity)!;
+  expect(pending.cleanup).toMatchObject({ agentStopped: true, backendResourcesClosed: true, worktreeDeleted: false, result: "unavailable", error: "No controller launch was submitted.", deadline: 30 });
+  const completed = await backend.cleanup(pending, "terminal", 900_000);
+  expect(completed.cleanup).toMatchObject({ worktreeDeleted: true, deadline: 30 });
+});
+
+it.each([false, true])("shutdown stop proof is independent of unavailable Git discovery (already stopped=%s)", async alreadyStopped => {
+  const f = await fixture();
+  let task = f.store.getTask(f.identity)!;
+  if (alreadyStopped) {
+    task = f.store.beginCleanup(task, { kind: "terminal", deadline: 30 }, 10);
+    task = f.store.recordCleanupResult(task, "completed", null, 11);
+    task = f.store.confirmAgentStopped(task, { agentStopped: true }, 12);
+    task = f.store.confirmBackendResourcesClosed(task, { controllerStopped: true, endpointClosed: true }, 13);
+  }
+  vi.mocked(f.git.findWorktree).mockRejectedValue(new Error("Git registry unavailable"));
+  const archive = vi.fn();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive });
+  const result = await backend.cleanup(task, "shutdown", 20, undefined, true);
+  expect(result.cleanup).toMatchObject({ agentStopped: true, backendResourcesClosed: true, worktreeDeleted: false });
+  if (alreadyStopped) expect(result.cleanup).toEqual(task.cleanup);
+  expect(f.git.findWorktree).not.toHaveBeenCalled();
+  expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  expect(archive).not.toHaveBeenCalled();
+});
+
+
+it("retries endpoint closure after native stop without replaying native cleanup", async () => {
+  const f = await fixture();
+  let task = f.store.initializeWebExecution(f.store.getTask(f.identity)!, 2);
+  task = f.store.updateWebExecution(task, { sessionId: randomUUID(), initialPrompt: "managed", launchSubmission: "acknowledged" }, 3);
+  const execution = task.webExecution!;
+  const endpoint = path.join(f.home, "endpoint");
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: "1", serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId!, provider: "codex", cwd: f.home, nativeHome: path.join(f.home, ".codex"), configuration: task.configuration!, initialOperationId: execution.initialOperationId, initialPrompt: "managed", resumeNativeSessionId: null, credentialFile: path.join(f.home, "grant.json"), ipcEndpoint: endpoint, ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  const { writeLaunchTicket } = await import("../../../src/commands/controller/launch-ticket.js");
+  task = f.store.updateWebExecution(task, { ticketPath: await writeLaunchTicket(f.home, ticket) }, 4);
+  task = f.store.beginCleanup(task, { kind: "terminal", deadline: 30 }, 5);
+  task = f.store.recordCleanupResult(task, "completed", null, 6);
+  task = f.store.confirmAgentStopped(task, { agentStopped: true }, 7);
+  const request = vi.fn<typeof requestController>(), archive = vi.fn().mockResolvedValue(undefined);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request });
+  if (process.platform !== "win32") {
+    await mkdir(endpoint);
+    await expect(backend.cleanup(task, "terminal", 900_000)).rejects.toMatchObject({ stage: "backend-close", cause: expect.objectContaining({ code: expect.stringMatching(/EISDIR|EPERM/) }) });
+    expect(f.store.getTask(task)?.cleanup).toMatchObject({ agentStopped: true, backendResourcesClosed: false, result: "completed", error: null, deadline: 30 });
+    await rm(endpoint, { recursive: true });
+  }
+  const completed = await backend.cleanup(task, "terminal", 900_000);
+  expect(completed.cleanup).toMatchObject({ agentStopped: true, backendResourcesClosed: true, worktreeDeleted: true, deadline: 30 });
+  expect(request).not.toHaveBeenCalled();
+  expect(archive).toHaveBeenCalledOnce();
+  expect(f.git.removeWorktree).toHaveBeenCalledOnce();
 });
