@@ -18,13 +18,13 @@ export const StepMoveMenu = ({ step, index, total, available, canAdd, busy, onSe
   const menuId = useId();
   const reasonId = useId();
   const actions: { action: MoveAction; label: string; disabled: boolean }[] = [
-    { action: "addBefore", label: m.addBefore, disabled: !canAdd },
-    { action: "addAfter", label: m.addAfter, disabled: !canAdd },
     { action: "up", label: m.moveUp, disabled: !available || index === 0 },
     { action: "down", label: m.moveDown, disabled: !available || index === total - 1 },
     { action: "first", label: m.moveFirst, disabled: !available || index === 0 },
     { action: "last", label: m.moveLast, disabled: !available || index === total - 1 },
     { action: "relative", label: m.moveRelative, disabled: !available || total < 2 },
+    { action: "addBefore", label: m.addBefore, disabled: !canAdd },
+    { action: "addAfter", label: m.addAfter, disabled: !canAdd },
   ];
   const enabled = actions.map((item, i) => item.disabled ? -1 : i).filter((i) => i >= 0);
   const close = (restore: boolean) => { setOpen(false); if (restore) trigger.current?.focus(); };

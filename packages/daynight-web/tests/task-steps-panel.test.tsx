@@ -406,6 +406,19 @@ describe("Steps read failures", () => {
 
 
 describe("Step position", () => {
+  it("allows a local insertion draft during another write while position writes stay locked", () => {
+    read.canMove = false; read.canSetStatus = false; read.canAdd = false;
+    const view = renderWithLocale(panel(), { locale: "en" });
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Round 2" }));
+    expect(screen.getByRole("menuitem", { name: "Move up" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add before" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Draft during write" } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(read.move).not.toHaveBeenCalled(); expect(read.add).not.toHaveBeenCalled();
+    read.canAdd = true; read.canMove = true; read.canSetStatus = true; view.rerender(panel());
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Draft during write");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
   it("opens a named row anchor, preserves an off-page choice across filtering, and sends the selected insertion", () => {
     read.resource = resource();
     const view = renderWithLocale(panel(), { locale: "en" });
