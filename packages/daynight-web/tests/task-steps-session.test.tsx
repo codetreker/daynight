@@ -303,3 +303,45 @@ it("remembers a verified Steps version even when its cache admission fails", asy
   await waitFor(() => expect(session.stepsSnapshot(projectId, taskId).status).not.toBe("loading"));
   expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ resource: null, status: "error", stale: true, error: { kind: "protocol" } }); expect(stepsReads).toBe(3);
 });
+
+it("excludes an old write admission after deletion and same-version restoration in a new cache generation", async () => {
+  const scope = await seed(); const session = await open(scope); const write = deferred<Response>(); const restored = { ...body(), title: "Restored private title", description: "Restored private description" }; let restoredHistory = false; let stepsReads = 0;
+  const fetch = vi.fn().mockImplementation((url: string, options: RequestInit) => options.method !== undefined ? write.promise : Promise.resolve(url.endsWith("/steps") ? ++stepsReads === 1 ? failure(410, "task_deleted") : resourceResponse(resource(), TEST_VIEWER_ID) : resourceResponse(restoredHistory ? restored : body(), TEST_VIEWER_ID))); vi.stubGlobal("fetch", fetch);
+  session.load(projectId, taskId, 1, "open"); await waitFor(() => expect(session.snapshot(projectId, taskId).requiresFreshRead).toBe(false));
+  session.setStatus(projectId, taskId, "todo", 5n); await waitFor(() => expect(fetch.mock.calls.filter(([, options]) => options.method !== undefined)).toHaveLength(1));
+  const entered = deferred<void>(); const release = deferred<void>(); const transaction = scope.detailTransaction.bind(scope);
+  vi.spyOn(scope, "detailTransaction").mockImplementationOnce(async (...args) => { const result = await transaction(...args); entered.resolve(); await release.promise; return result; });
+  write.resolve(resourceResponse(body(), TEST_VIEWER_ID)); await entered.promise; start(session); await waitFor(() => expect(session.snapshot(projectId, taskId).status).toBe("deleted"));
+  restoredHistory = true; await apply(scope, restored, true); session.observe(projectId, taskId, node(scope)); expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: null, status: "loading", mutation: { phase: "idle" } });
+  release.resolve(); await drainReads(scope);
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: null, status: "loading", mutation: { phase: "idle" } });
+  session.load(projectId, taskId, 3, "open"); await waitFor(() => expect(session.snapshot(projectId, taskId).detail).toEqual(restored));
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ status: "ready", requiresFreshRead: false, mutation: { phase: "idle" } });
+  expect(fetch.mock.calls.filter(([, options]) => options.method !== undefined)).toHaveLength(1);
+});
+
+it("waits for identity verification before publishing parent cache admission that already committed", async () => {
+  const scope = await seed(); const session = await open(scope); let parentReads = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(resourceResponse(body(++parentReads === 1 ? 5n : 6n), TEST_VIEWER_ID))));
+  session.load(projectId, taskId, 1, "open"); await waitFor(() => expect(session.snapshot(projectId, taskId).requiresFreshRead).toBe(false)); await apply(scope, body(6n)); session.observe(projectId, taskId, node(scope));
+  const entered = deferred<void>(); const release = deferred<void>(); const transaction = scope.detailTransaction.bind(scope);
+  vi.spyOn(scope, "detailTransaction").mockImplementationOnce(async (...args) => { const result = await transaction(...args); entered.resolve(); await release.promise; return result; });
+  session.load(projectId, taskId, 2, "refresh"); await entered.promise; const resume = pauseAuthRequests();
+  try { release.resolve(); await new Promise<void>((resolve) => setTimeout(resolve, 0)); expect(session.snapshot(projectId, taskId).detail?.version).toBe(5n); }
+  finally { resume(); }
+  await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { version: 6n }, status: "ready", requiresFreshRead: false }));
+});
+
+it.each(["resume", "retire"] as const)("rechecks identity after committed Steps cache admission before %s", async (outcome) => {
+  const scope = await seed(); const session = await open(scope); vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(resourceResponse(resource(), TEST_VIEWER_ID))));
+  const entered = deferred<void>(); const release = deferred<void>(); const transaction = scope.detailTransaction.bind(scope);
+  vi.spyOn(scope, "detailTransaction").mockImplementationOnce(async (...args) => { const result = await transaction(...args); entered.resolve(); await release.promise; return result; });
+  start(session); await entered.promise; const resume = pauseAuthRequests();
+  if (outcome === "resume") vi.spyOn(scope, "ready").mockRejectedValueOnce(new DOMException("Identity verification changed.", "AbortError"));
+  try {
+    release.resolve(); await new Promise<void>((resolve) => setTimeout(resolve, 0)); expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull();
+    if (outcome === "retire") { await scope.invalidateScope(); expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull(); }
+  } finally { resume(); }
+  if (outcome === "resume") await waitFor(() => expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ resource: resource(), status: "ready", stale: false }));
+  else { await new Promise<void>((resolve) => setTimeout(resolve, 0)); expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull(); }
+});

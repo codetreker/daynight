@@ -254,13 +254,17 @@ export class TaskDetailSessions {
   private async acceptSteps(entry: Entry, resource: StepsResource, ticket: SyncTicket, generation: number, signal: AbortSignal): Promise<void> {
     const steps = entry.steps;
     const current = () => !this.disposed && !this.scope.isInvalidated && !signal.aborted && generation === steps.generation &&
-      steps.listeners.size > 0 && entry.admitted && this.projectGeneration(steps.projectId) === ticket.cacheGeneration;
+      steps.listeners.size > 0 && entry.admitted && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(steps.projectId) === ticket.cacheGeneration;
     await this.scope.ready(signal);
     if (!current()) return;
     const observed = this.stepsFloor(entry);
     const received = observed === null || resource.version > observed ? resource.version : observed;
     if (steps.floor !== received) { steps.floor = received; steps.retriedFloor = null; }
     const summaryVersion = await this.scope.detailTransaction(ticket, signal, async (_details, _manifest, summaries) => summaries.get(steps.taskId)?.version ?? null);
+    while (authRequestsPaused()) {
+      try { await this.scope.ready(signal); }
+      catch (error) { if (!isAbortError(error) || signal.aborted || this.scope.isInvalidated) throw error; }
+    }
     if (!current()) return;
     const floor = this.stepsFloor(entry);
     if (floor !== null && resource.version < floor) {
@@ -503,6 +507,7 @@ export class TaskDetailSessions {
   private async accept(projectId: string, taskId: string, detail: TaskDetail, ticket: SyncTicket, revision: number, reconciliation: boolean, signal: AbortSignal, generation: number | null = null, writeGeneration: number | null = null, readOpeningGeneration: number | null = null): Promise<void> {
     const entry = this.entry(projectId, taskId);
     const current = (): boolean => !signal.aborted && !this.disposed && !this.scope.isInvalidated && entry.state.status !== "deleted" &&
+      entry.admitted && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
       (generation === null || generation === entry.generation);
     if (!current()) return;
     if (detail.projectId !== projectId || detail.id !== taskId || entry.committedVersion !== null && detail.version < entry.committedVersion) throw new ApiError("protocol");
@@ -518,6 +523,10 @@ export class TaskDetailSessions {
         return { kind: "matching" as const, detail };
       });
       storageError = error;
+    }
+    while (authRequestsPaused()) {
+      try { await this.scope.ready(signal); }
+      catch (error) { if (!isAbortError(error) || signal.aborted || this.scope.isInvalidated) throw error; }
     }
     if (!current()) return;
     if (admitted.kind === "older") {
