@@ -33,8 +33,8 @@ it does not recover the original commit receipt.
 
 Caller authority remains with the existing access owner. Claim-owner names,
 email, loading, failure/retry and former-user display remain project-scoped
-profile observations. Current invitation DTOs and direct-relation readers keep
-their actual consumers; they do not supply a second roster or a fallback decoder.
+profile observations. Invitation direct-relation readers do not supply a second roster or a fallback decoder.
+The [invitation result decision](2026-11-04-project-invitation-results.md) owns its separate grant and access responses.
 The [Personal ownership decision](2026-11-04-personal-project-ownership.md)
 activates real inherited access and permits removal of the final direct admin.
 
@@ -73,7 +73,7 @@ Profiles can be unavailable without becoming authorization decisions. Versioned
 writes use real grant observations and cannot cross a changed actor identity.
 The CLI keeps its existing roster facade with a participant result, and Web's
 lossless decoder handles grant versions only at the declared resource path.
-Current invitations retain their public contract. The original projection introduced no Team data or source placeholders.
+The original projection introduced no Team data or source placeholders.
 Real inheritance now uses the same nullable-grant shape; no compatibility roster,
 new command or persistent actor cache is needed. The complete roster/access envelope updates its actual consumers together
 while retaining these identity and publication fences.

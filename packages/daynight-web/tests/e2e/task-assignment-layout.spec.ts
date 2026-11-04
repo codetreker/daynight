@@ -71,9 +71,9 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
   const aliceProfile = await profile(api), bobProfile = await profile(bob);
   try {
     const project = await createProject(api, { name: 'Assignee layout and full graph acceptance' });
-    const invitation = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: {} }); expect(invitation.status()).toBe(201);
+    const invitation = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: { expectedUserId: aliceProfile.id } }); expect(invitation.status()).toBe(201);
     const invitationBody = await invitation.json() as { link: string };
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitationBody.link).hash.slice(1) } })).status()).toBe(200);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitationBody.link).hash.slice(1), expectedUserId: bobProfile.id } })).status()).toBe(200);
     await seedUserProfile(aliceProfile.id, { name: longName, avatarUrl: new URL('/missing-assignee-avatar.png', baseURL).href });
     await seedUserProfile(bobProfile.id, { name: null, avatarUrl: null });
     const assigned = await createTask(api, project.id, { title: 'Current long-name assignee', assignedTo: aliceProfile.id, requiredPlatform: 'windows', description: Array.from({ length: 60 }, (_, index) => `## Reading ${index + 1}\n\nLong task material keeps the shared detail scrollable.`).join('\n\n') });

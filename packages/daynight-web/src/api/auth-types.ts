@@ -92,7 +92,15 @@ export type CreatedProjectInvitation = ProjectInvitation & { readonly link: stri
 export type ProjectInvitationInspection = {
   readonly projectId: string;
   readonly projectName: string;
-  readonly member?: ProjectMember;
+  readonly directGrant: ProjectGrant | null;
+  readonly access: ProjectAccess | null;
+};
+export type ProjectInvitationAcceptance = {
+  readonly projectId: string;
+  readonly directGrant: ProjectGrant;
+  readonly access: ProjectAccess;
+  readonly joined: boolean;
+  readonly consumed: boolean;
 };
 export type InvitationInspection = ProjectInvitationInspection;
 

@@ -30,7 +30,7 @@ const user = async (request: AuthenticatedAPI): Promise<{ id: string; name: stri
   return await response.json() as { id: string; name: string; email: string };
 };
 const invitation = async (request: AuthenticatedAPI, projectId: string): Promise<{ id: string; token: string }> => {
-  const response = await request.post(`/api/v1/projects/${projectId}/invitations`, { data: {} });
+  const response = await request.post(`/api/v1/projects/${projectId}/invitations`, { data: { expectedUserId: (await user(request)).id } });
   expect(response.status()).toBe(201);
   const value = await response.json() as { id: string; link: string };
   return { id: value.id, token: new URL(value.link).hash.slice(1) };
@@ -497,7 +497,7 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     const bobUser = await user(bob);
     const alice = await user(request);
     const invite = await invitation(request, project.id);
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: invite.token } })).status()).toBe(200);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: invite.token, expectedUserId: bobUser.id } })).status()).toBe(200);
     const target = `/api/v1/projects/${project.id}/members/${bobUser.id}`;
     allowBrowserWrites([{ method: 'PATCH', url: `${baseURL}${target}`, count: 2 },
       { method: 'DELETE', url: `${baseURL}/api/v1/projects/${project.id}/members/${alice.id}`, count: 1 }]);
@@ -621,10 +621,10 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   try {
     const identity = await user(bob);
     expect((await memberList(request, project.id)).items.find((member) => member.userId === identity.id)?.directGrant?.role).toBe('member');
-    expect((await bob.post('/api/v1/invitations/inspect', { data: { token: new URL(metadata.link).hash.slice(1) } })).status()).toBe(410);
+    expect((await bob.post('/api/v1/invitations/inspect', { data: { token: new URL(metadata.link).hash.slice(1) } })).status()).toBe(404);
     const revoked = await invitation(request, project.id);
-    expect((await request.delete(`/api/v1/projects/${project.id}/invitations/${revoked.id}`)).status()).toBe(204);
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: revoked.token } })).status()).toBe(410);
+    expect((await request.delete(`/api/v1/projects/${project.id}/invitations/${revoked.id}`, { data: { expectedUserId: (await user(request)).id } })).status()).toBe(204);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: revoked.token, expectedUserId: identity.id } })).status()).toBe(404);
     expect(await page.evaluate(() => sessionStorage.getItem('daynight.pendingInvitation') === null), 'Accepted invitation clears pending session storage').toBe(true);
     await picture(page, info, 'auth-invitations');
   } finally { await bob.dispose(); }
