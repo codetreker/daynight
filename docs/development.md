@@ -67,7 +67,8 @@ that normal chain. The package's existing `files: ["dist"]` rule publishes these
 reference metadata and execution ordering.
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`. Large binary
-payload assertions use `Buffer.equals` to check every byte and the total length.
+payload and copied-resource assertions use `Buffer.equals` to check every byte
+and the total length.
 Controller IPC admission tests keep real sockets, assert the production timeout
 and its cancellation, and accelerate the incomplete socket's native expiry;
 virtual time separately exercises the authenticated response wait. The

@@ -123,6 +123,10 @@ Web 将 setting intent 按用户、执行与 operationId 保存，展示 pending
 
 ## Relay 与恢复
 
+Task Session 的 current/history、归档、capability、Controller grant、排队命令和浏览器 channel 共用 `sessionrelay.member()`：先核验当前凭据，再在调用方现有 raw transaction 中调用 `store.ReadProjectAccess`。canonical 单语句读取当前有效角色和真实 direct grant；当前权限来源仍为直接授权，不读取用户展示资料。无准入返回既有 forbidden，其他数据库错误保留错误链。项目准入不持有跨到事务提交的授权来源行 share 锁，也不引入 Thread 的长期 ownership 锁；Task、Session 和凭据的原有锁序保持。admin 或 Session owner 的控制资格、Controller owner 限制和独立 Test Session 的本人边界仍分别检查。
+
+派发前按原始 requester 重新准入，不借用 Controller 的角色。在线内容在网络等待前后重验；浏览器 channel 每 250ms 重新检查项目准入与执行身份，失权后关闭连接。准入不缓存到 capability、Session 身份或归档索引中。
+
 Controller 以短期 grant 建立 WebSocket，浏览器通过项目会话权限建立另一条 WebSocket；命令和历史也有 HTTP 接口。bootstrap grant 有效期 120 秒，reconnect grant 为 15 分钟；launcher 在首次 spawn 前将 bootstrap 换成可复连凭据，避免首次连接后短暂断网必须等待续签；grant 冻结签发凭据归属，撤销父凭据会使现有连接失效。服务端每次操作核验项目权限、claim、executionGeneration 和连接 fencing，不将浏览器传入的 native ID 当作授权。Controller 在 WebSocket 升级前先验证 grant、父凭据与 active scope，收到 hello 后在 Connect 事务中重复验证并消费凭据；握手预检不能替代原子 fence 校验。连接配额包含正在升级的请求，失败升级释放预留名额，伪造或失效 token 不能先占用 WebSocket。
 
 Task Worker 的 grant 维护每 30 秒独立扫描当前服务的未完成 Web 执行，在凭据剩余不超过 120 秒时续签，不受 claim 发现的 pollIntervalMs 影响。维护过程验证 launch ticket 与原 claim、Controller、execution generation 一致；prepare、launch 和续签按执行串行，读取最新执行记录后才写入凭据。退出先取消并等待维护结束，再关闭执行存储，避免后台续签访问已关闭的数据库。续签失败保留原执行和凭据事实，并通过 worker diagnostic 暴露。
@@ -174,6 +178,16 @@ PostgreSQL 保存 Session 归属、注册身份、授权、原生与连接代次
 活跃 Controller 离线时，新页面只能读取有权限的身份与离线状态，不能加载历史或操作。已打开网页保留当前离线画面；重新同步成功后替换过期内容。终态页面按下述文件归档协议读取。独立 resume 在新的在线执行中从原生本地历史恢复，与旧页面的只读归档分离。
 
 响应操作按 interactionId 与 interactionRevision 限制同一交互的重复提交，不能按整个 turn 或 interaction_response 类型互斥。工具审批等待 tool_result 确认期间，同一工具提出的新 MCP form 必须可独立响应。浏览器只持久保存 operation 与交互身份的关联，不保存答案；缺少旧缓存时，服务端当前在线交互校验和 Controller 原生校验仍决定能否响应。
+
+## 原生正文的显示转换
+
+Controller 的 `ProviderOptions.onTimeline` 在调用 `journal.projectTimeline` 前通过 `providerDisplayEntry` 生成显示副本。Codex、Claude、Copilot 的实时事件和原生历史重放均经过这个入口；转换位于 `parseSourceEvent` 之前，既有 `sessionDisplayEntry` 整条 wire 预算降级继续位于持久化投影之后。
+
+转换仅遍历非交互正文的明确字段：user/assistant `content[].text`、`reasoning.text`、`tool_call.input` 与 `output[].text`、`error.message`、`compaction.summary`、`todo.items[].text`。条目、text part 和 todo item 按需复制，资源、身份、名称、状态、错误 code 和整个 interaction 保留原值。原生发送与响应参数不经过该转换。正常良构且无 NUL 的正文原样返回；异常段标注转义说明，将 NUL 与孤立 surrogate 写为字面 `\u0000` / `\uXXXX`，同段反斜线也转义，保留合法 Unicode pair、中文、换行和 tab。消息与 reasoning 的异常正文置于 fenced code block 内，确保 Markdown 消费者按字面渲染；正常正文继续使用原有 Markdown。围栏字符与长度根据保留内容中的 backtick/tilde 连续段选择，不能被正文提前闭合。
+
+转义说明、转换正文和所需 Markdown 围栏合计最多 200,000 个 UTF-16 code units；无法容纳下一个完整 token 时追加既有 `[Output truncated at 200000 characters]` 提示，不能切断 escape token 或 Unicode pair；`tool.truncated` 合并原截断状态和新增截断。显示仍满足协议单文本 1 MiB 字节/字符约束，整条事件沿用 1,400,000 serialized bytes 的 wire fallback。显示转换不把成功工具改为失败；只有既有整条 wire 超限降级可以替换展示条目。
+
+Provider 增量缓存保留未经此次转义的累计值，因此一个孤立高 surrogate 可暂时显示为 escape，后续低 surrogate 到达后重新从累计原值产生合法字符。转换后的副本落入 journal 和待归档文件，原生完整历史不变；恢复时可重新投影原先在持久化前被拒绝的条目，无需修改生产 journal。协议版本与存储格式不变，旧合法 journal 和 archive 沿用原读取路径。决策取舍见[原生显示文本决策](../../.agents/notes/implemented/bug-fix/2026-11-04-native-display-text.md)。
 
 ## Session View 的阅读与输入状态
 

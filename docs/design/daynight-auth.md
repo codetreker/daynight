@@ -78,7 +78,10 @@ CLI 退出接口仅允许当前 PAT 撤销自身，不提供其他令牌管理�
 `ProjectAccess` 表达当前主体的 project/user ID、有效准入角色和可空 `DirectGrant`。
 它没有独立的可写版本或存储时间；嵌入的 grant 保留自己实际的角色、版本与时间。
 `RequireProjectRead`、`RequireProjectWrite` 及 Worker 的非 claim owner 管理员检查
-消费该投影。当前准入与可见项目列表共用 Store 的直接授权关系，列表在 SQL
+消费该投影。Session relay 的共同项目准入也在原 raw transaction 中调用
+`store.ReadProjectAccess`；Session 的归属和持续重验由
+[Session 设计](task-session-protocol.md#relay-与恢复)拥有。
+当前准入与可见项目列表共用 Store 的直接授权关系，列表在 SQL
 cursor/LIMIT 前筛选。单主体查询在同一语句取得有效角色与实际 grant，不额外读取资料。
 
 `GET /api/v1/projects/{projectId}/access` 返回当前主体的
