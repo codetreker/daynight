@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
 import { dialogFocusables } from '../task-detail/focus';
 
@@ -25,9 +25,15 @@ function acquireInert(element: HTMLElement): () => void {
   };
 }
 
-export function useSessionFullscreen({ client, userId, active, identity }: Identity & { readonly active: boolean }) {
+export function useSessionFullscreen({ client, userId, active, identity, fullscreenBoundary }: Identity & { readonly active: boolean; readonly fullscreenBoundary?: RefObject<HTMLElement | null> }) {
   const sectionRef = useRef<HTMLElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const rootElement = useCallback(() => {
+    const section = sectionRef.current!;
+    const root = fullscreenBoundary?.current ?? section;
+    if (!root.contains(section)) throw new Error('The fullscreen boundary must contain its Session.');
+    return root;
+  }, [fullscreenBoundary]);
   const owner = useRef({});
   const register = useContext(SessionFullscreenContext);
   const knownIdentity = useRef<Identity>({ client, userId, identity });
@@ -52,12 +58,12 @@ export function useSessionFullscreen({ client, userId, active, identity }: Ident
 
   useLayoutEffect(() => {
     if (!fullscreen || !register) return;
-    return register({ owner: owner.current, root: sectionRef.current!, exit });
-  }, [fullscreen, register, exit]);
+    return register({ owner: owner.current, root: rootElement(), exit });
+  }, [fullscreen, register, exit, rootElement]);
 
   useLayoutEffect(() => {
     if (!fullscreen) return;
-    const root = sectionRef.current!;
+    const root = rootElement();
     const owned = new Map<HTMLElement, () => void>();
     const isolate = () => {
       const background = new Set<HTMLElement>();
@@ -90,11 +96,13 @@ export function useSessionFullscreen({ client, userId, active, identity }: Ident
       document.removeEventListener('focusin', focused);
       for (const release of owned.values()) release();
     };
-  }, [fullscreen]);
+  }, [fullscreen, rootElement]);
 
   useLayoutEffect(() => {
     if (!fullscreen) return;
-    const root = sectionRef.current!;
+    const root = rootElement();
+    const originalFullscreen = root.getAttribute('data-session-fullscreen');
+    root.setAttribute('data-session-fullscreen', 'true');
     const viewport = window.visualViewport;
     const keys = ['width', 'height', 'top', 'left'] as const;
     const original = keys.map(key => root.style.getPropertyValue(`--session-viewport-${key}`));
@@ -107,6 +115,8 @@ export function useSessionFullscreen({ client, userId, active, identity }: Ident
     viewport?.addEventListener('resize', resize);
     viewport?.addEventListener('scroll', resize);
     return () => {
+      if (originalFullscreen === null) root.removeAttribute('data-session-fullscreen');
+      else root.setAttribute('data-session-fullscreen', originalFullscreen);
       window.removeEventListener('resize', resize);
       viewport?.removeEventListener('resize', resize);
       viewport?.removeEventListener('scroll', resize);
@@ -115,13 +125,13 @@ export function useSessionFullscreen({ client, userId, active, identity }: Ident
         else root.style.removeProperty(`--session-viewport-${key}`);
       });
     };
-  }, [fullscreen]);
+  }, [fullscreen, rootElement]);
 
-  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+  const handleKeyDown = useCallback((event: KeyboardEvent<HTMLElement> | globalThis.KeyboardEvent) => {
     if (!fullscreen || event.defaultPrevented) return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); exit(); }
     else if (event.key === 'Tab') {
-      const root = sectionRef.current!;
+      const root = rootElement();
       const controls = dialogFocusables(root);
       const first = controls[0], last = controls[controls.length - 1];
       if (!first || !last) { event.preventDefault(); root.focus({ preventScroll: true }); }
@@ -130,6 +140,18 @@ export function useSessionFullscreen({ client, userId, active, identity }: Ident
       // The outer task owns a different focus boundary.
       event.stopPropagation();
     }
-  };
+  }, [fullscreen, exit, rootElement]);
+  useLayoutEffect(() => {
+    if (!fullscreen || !fullscreenBoundary) return;
+    const root = rootElement();
+    // React modal handlers run before this document listener, so their Escape
+    // and Tab ownership is respected even when they are outside the Session.
+    const keydown = (event: globalThis.KeyboardEvent) => {
+      if (event.target instanceof Node && root.contains(event.target) && !root.closest('[hidden], [inert]')) handleKeyDown(event);
+    };
+    document.addEventListener('keydown', keydown);
+    return () => document.removeEventListener('keydown', keydown);
+  }, [fullscreen, fullscreenBoundary, rootElement, handleKeyDown]);
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => { if (!fullscreenBoundary) handleKeyDown(event); };
   return { sectionRef, buttonRef, fullscreen, toggle, onKeyDown };
 }

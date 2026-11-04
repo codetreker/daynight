@@ -31,9 +31,10 @@ type Definition struct {
 }
 
 var definitions = map[string]Definition{
-	"paused":       {Name: "paused", Description: "Suppresses periodic worker pings while true; absent or false leaves them enabled.", Schema: schemaJSON(map[string]any{"type": "boolean"}), Normalize: normalizePaused, kind: "boolean"},
-	"pullRequests": {Name: "pullRequests", Description: "Pull requests associated with this task; ordered URL and title text without URL validation.", Schema: pullRequestsSchema(), Normalize: normalizePullRequests, kind: "array"},
-	"worker":       {Name: "worker", Description: "Execution ownership maintained by the service; absent when no claim is retained.", ReadOnly: true, Schema: workerSchema(), Normalize: normalizeWorker, kind: "object"},
+	"sessionStartup": {Name: "sessionStartup", Description: "Claim-bound startup and recovery observation maintained by the owning Worker.", ReadOnly: true, Schema: sessionStartupSchema(), Normalize: normalizeSessionStartup, kind: "object"},
+	"paused":         {Name: "paused", Description: "Suppresses periodic worker pings while true; absent or false leaves them enabled.", Schema: schemaJSON(map[string]any{"type": "boolean"}), Normalize: normalizePaused, kind: "boolean"},
+	"pullRequests":   {Name: "pullRequests", Description: "Pull requests associated with this task; ordered URL and title text without URL validation.", Schema: pullRequestsSchema(), Normalize: normalizePullRequests, kind: "array"},
+	"worker":         {Name: "worker", Description: "Execution ownership maintained by the service; absent when no claim is retained.", ReadOnly: true, Schema: workerSchema(), Normalize: normalizeWorker, kind: "object"},
 }
 
 func Definitions() map[string]Definition {

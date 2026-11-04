@@ -19,7 +19,7 @@ export type AuthMessages = {
     readonly members: string;
     readonly projectSettings: string;
     readonly teamWorkspace: string;
-    readonly accountLink: (args: { readonly name: string }) => string;
+    readonly accountMenu: (args: { readonly name: string }) => string;
     readonly currentAccount: string;
     readonly genericProject: string;
     readonly accessUnavailable: string;
@@ -246,6 +246,17 @@ export type AuthMessages = {
       readonly accessDescription: string;
       readonly memberColumn: string;
       readonly roleColumn: string;
+      readonly effectiveColumn: string;
+      readonly teamColumn: string;
+      readonly personalTeam: string;
+      readonly directColumn: string;
+      readonly noGrant: string;
+      readonly noAccess: string;
+      readonly grantSaved: (args: { readonly name: string; readonly role: string }) => string;
+      readonly grantRemoved: (args: { readonly name: string }) => string;
+      readonly grantChange: (args: { readonly before: string; readonly after: string; readonly effective: string }) => string;
+      readonly accessLost: string;
+      readonly returnToProjects: string;
       readonly actionColumn: string;
       readonly roleLabel: (args: { readonly name: string }) => string;
       readonly removeLabel: (args: { readonly name: string }) => string;

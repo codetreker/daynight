@@ -1,0 +1,105 @@
+import { expect, test, type Page } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
+import { BOT_TIME, BOT_USER, botDefaults, botDefinition, botId } from '../helpers/bots';
+import type {} from './bots-viewport-session';
+
+const personalId = botId(100), personal = { id: personalId, kind: 'personal', name: null };
+const profile = { id: BOT_USER, personalTeam: personal, name: 'Viewport fixture', email: null, emailVerified: null, avatarUrl: null };
+const team = { ...personal, version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME, membership: { teamId: personalId, userId: BOT_USER, role: 'admin', version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME } };
+const bots = Array.from({ length: 70 }, (_, index) => ({ ...botDefinition(index + 1), name: index === 0 ? 'Bot A' : index === 1 ? 'Bot B' : `Assistant ${index + 1}`, sessionId: botId(index + 201), testExecutionId: botId(index + 401), roleConfiguration: { instructions: 'Fixture only.', revision: '1', digest: 'a'.repeat(64) }, startupResult: { state: 'ready', code: null } }));
+const install = async (page: Page) => {
+  const writes: string[] = [];
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request(), path = new URL(request.url()).pathname;
+    if (request.method() !== 'GET') writes.push(`${request.method()} ${path}`);
+    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER } });
+    if (path === '/api/v1/me') return send(profile);
+    if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
+    if (path === `/api/v1/teams/${personalId}`) return send(team);
+    if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    if (path === '/api/v1/me/bots/defaults') return send(botDefaults());
+    if (path === '/api/v1/me/bots') return send({ items: bots, nextCursor: null });
+    const bot = bots.find(value => path === `/api/v1/me/bots/${value.id}`);
+    return bot ? send(bot) : send({ error: { code: 'not_found', message: 'Not found', requestId: 'viewport-fixture' } }, 404);
+  });
+  return writes;
+};
+const visiblePane = '.bot-session-pane:not([hidden])';
+const geometry = (page: Page) => page.evaluate(() => {
+  const timeline = document.querySelector<HTMLElement>('.bot-session-pane:not([hidden]) .session-timeline')!;
+  const composer = document.querySelector<HTMLElement>('.bot-session-pane:not([hidden]) .session-composer')!;
+  const send = document.querySelector<HTMLElement>('.bot-session-pane:not([hidden]) .session-actions button')!;
+  return { documentHeight: document.documentElement.scrollHeight, documentScroll: scrollY, width: innerWidth, height: innerHeight, composer: composer.getBoundingClientRect().toJSON(), send: send.getBoundingClientRect().toJSON(), timeline: { height: timeline.clientHeight, scrollHeight: timeline.scrollHeight, scrollTop: timeline.scrollTop }, metrics: { ...window.botViewport.metrics } };
+});
+const anchor = (page: Page) => page.locator(`${visiblePane} .session-timeline`).evaluate(timeline => {
+  const bounds = timeline.getBoundingClientRect();
+  const item = [...timeline.querySelectorAll<HTMLElement>('[data-entry-key]')].find(item => item.getBoundingClientRect().bottom > bounds.top + 1)!;
+  return { key: item.dataset.entryKey, offset: item.getBoundingClientRect().top - bounds.top, scrollTop: timeline.scrollTop };
+});
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+  test.describe(`${viewport.width}px Bot viewport`, () => {
+    test.use({ viewport });
+    test('bounds long history, preserves A/B/A reading and drafts, and scrolls the list independently', async ({ page }, testInfo) => {
+      const writes = await install(page), errors: string[] = [];
+      page.on('pageerror', error => errors.push(error.message));
+      await page.goto(`/bots/${botId(1)}`);
+      const message = () => page.getByRole('textbox', { name: 'Message', exact: true });
+      await expect(message()).toBeEnabled();
+      await expect(page.locator(`${visiblePane} .session-entry`)).toHaveCount(100);
+      await page.waitForTimeout(600);
+      const initial = await geometry(page);
+      expect(initial.documentHeight).toBeLessThanOrEqual(viewport.height + 1);
+      expect(initial.composer.top).toBeGreaterThanOrEqual(0);
+      expect(initial.composer.bottom).toBeLessThanOrEqual(viewport.height + 1);
+      expect(initial.send.bottom).toBeLessThanOrEqual(viewport.height + 1);
+      expect(initial.timeline.height).toBeGreaterThan(50);
+      expect(initial.timeline.scrollHeight).toBeGreaterThan(initial.timeline.height);
+      expect(initial.metrics.before).toBe(0);
+      await page.screenshot({ path: testInfo.outputPath('bounded-session.png') });
+      const originalMessage = await message().elementHandle(), originalTimeline = await page.locator(`${visiblePane} .session-timeline`).elementHandle();
+      await message().fill('Draft A survives the bounded viewport');
+      await page.locator(`${visiblePane} .session-timeline`).hover();
+      await page.mouse.wheel(0, -900);
+      await expect.poll(async () => (await geometry(page)).timeline.scrollTop).toBeLessThan(initial.timeline.scrollTop - 100);
+      await page.waitForTimeout(150);
+      const retained = await anchor(page);
+      await page.getByRole('link', { name: 'Close conversation', exact: true }).click();
+      const list = page.locator('.bot-list');
+      await expect(list).toBeVisible();
+      expect(await list.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
+      await list.hover(); await page.mouse.wheel(0, 700);
+      await expect.poll(() => list.evaluate(node => node.scrollTop)).toBeGreaterThan(100);
+      expect(await page.evaluate(() => scrollY)).toBe(0);
+      await list.evaluate(node => { node.scrollTop = 0; });
+      await page.getByRole('link', { name: /^Bot B / }).click();
+      await expect(message()).toBeEnabled();
+      await message().fill('Draft B');
+      await page.getByRole('link', { name: 'Close conversation', exact: true }).click();
+      await page.getByRole('link', { name: /^Bot A / }).click();
+      await expect(message()).toHaveValue('Draft A survives the bounded viewport');
+      expect(await message().evaluate((node, original) => node === original, originalMessage)).toBe(true);
+      expect(await page.locator(`${visiblePane} .session-timeline`).evaluate((node, original) => node === original, originalTimeline)).toBe(true);
+      const restored = await anchor(page);
+      expect(restored.key).toBe(retained.key);
+      expect(Math.abs(restored.offset - retained.offset)).toBeLessThanOrEqual(3);
+      await page.waitForTimeout(600);
+      expect((await geometry(page)).metrics.before).toBe(0);
+      await page.locator(`${visiblePane} .session-timeline`).hover();
+      await page.mouse.wheel(0, -100_000);
+      await expect.poll(async () => (await geometry(page)).metrics.before).toBeGreaterThan(0);
+      await page.waitForTimeout(600);
+      const final = await geometry(page);
+      expect(final.metrics.before).toBeLessThanOrEqual(2);
+      expect(final.documentHeight).toBeLessThanOrEqual(viewport.height + 1);
+      expect(final.composer.bottom).toBeLessThanOrEqual(viewport.height + 1);
+      expect(final.send.bottom).toBeLessThanOrEqual(viewport.height + 1);
+      expect(final.documentScroll).toBe(0);
+      expect(final.metrics.commands).toBe(0);
+      expect(writes).toEqual([]); expect(errors).toEqual([]);
+      await page.screenshot({ path: testInfo.outputPath('restored-session.png') });
+      const evidence = testInfo.outputPath('viewport-evidence.json');
+      await writeFile(evidence, JSON.stringify({ boundary: 'Production app shell and Bot Session rendering with controlled SessionApi and HTTP fixture; no real provider.', viewport, initial, retained, restored, final, writes, errors }, null, 2));
+      await testInfo.attach('viewport-evidence', { contentType: 'application/json', path: evidence });
+    });
+  });
+}

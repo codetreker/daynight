@@ -21,14 +21,36 @@ target. Without it, the CLI reads the default for the current normalized service
 origin and account, or uses the account's Personal Team when no entry exists.
 `team default show` validates and displays the resolved target. Invalid or
 inaccessible defaults fail explicitly; listing Teams and using an explicit target
-do not depend on the old default. These commands only read. Team defaults do not
-change project discovery or explicit project and task identity.
+do not depend on the old default. These commands only read.
+
+With authorization, `team default set <uuid|personal>` validates the target and
+membership, then saves the default for the current service and account. It can
+replace an invalid or inaccessible old default; `personal` saves the real
+Personal Team ID. The command requires interactive confirmation or `--confirm`.
+Cancellation, an identity mismatch, or a concurrent credential or current-default
+change prevents the write. A token rotation preserves the account's default.
+Team defaults do not change project discovery or explicit project and task identity.
 
 With authorization, `team create` creates an ordinary Team, `team rename` changes
 its name, and `team delete` removes an empty ordinary Team. Rename and delete use
 the explicit or default Team. Their confirmation, version and uncertain-result
 rules are in [write safety](write-safety.md#team-writes); use the commands' help
 for exact syntax.
+
+Use `team member list` to inspect the selected Team's member directory. With
+authorization, `team member set-role` changes an existing member's role,
+`team member remove` removes a member, and `team leave` removes the current
+user. An ordinary Team must retain an admin; Personal membership is immutable.
+These operations do not change Project grants or the configured default. Their
+membership version, confirmation and receipt rules are in
+[write safety](write-safety.md#team-writes).
+
+With authorization, `project transfer --to-team <uuid|same-service-link>` moves
+the explicit `--project` or the Project resolved from the repository. The source
+Team admin can transfer without destination membership. The command does not
+change the default Team or repository binding. Review the preview and follow
+[write safety](write-safety.md#project-transfers); a successful receipt may
+report that the actor no longer has access.
 
 ## Register a project
 

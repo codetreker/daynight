@@ -21,6 +21,18 @@ export const projectDefinition: CommandDefinition = {
       details: "Without --repo, use the current Git worktree's effective origin fetch address.\nAn explicit --repo works outside Git and overrides the current repository.\nRead all server projects and return an existing project with an equivalent repository address.\nMultiple matching projects require choosing an existing project by its ID.\nOnly a new project resolves --team, the configured default, or Personal and requires confirmation.\nNew creation submits the original name and repository address to the configured server.\nFor a name beginning with a dash, put options first and use -- before the name.",
     },
     {
+      name: "transfer",
+      description: "Transfer a project to another Team",
+      options: [
+        { names: ["--to-team"], description: "Destination Team UUID or same-service Team link", value: { name: "team", kind: "text" }, required: true },
+        { names: ["--project"], description: "Project UUID (defaults to the current repository)", value: { name: "project-id", kind: "text" } },
+        { names: ["--if-version"], description: "Require the observed ownership version", value: { name: "version", kind: "text" } },
+        { names: ["--confirm"], description: "Confirm without an interactive prompt" },
+        jsonOption, helpOption,
+      ],
+      details: "Only an administrator of the current owner Team can transfer a Project. The destination need not include you.\nWithout --confirm, review the preview and confirm interactively.\nA lost receipt leaves the outcome unknown; a later 404 does not establish success.\nThe transfer does not change Team defaults or repository bindings.",
+    },
+    {
       name: "list",
       description: "List all projects on the configured server",
       options: [jsonOption, helpOption],

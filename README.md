@@ -199,10 +199,12 @@ continues to own terminal sessions in the default mode.
 
 `repo add` lists accessible Projects for multiselection. Use `--project
 PROJECT_UUID` for an explicit noninteractive registration; `worker repo list`
-and `worker repo remove` inspect or change the selection. With an empty
-repository list, interactive `worker run` also guides Project selection before
-starting new tasks. Startup saves configured Project mappings before reading
-its complete current claim inventory, including after a local database reset.
+and `worker repo remove` inspect or change the selection. `worker run` accepts
+an empty repository list without prompting and can start from an ordinary
+directory. Add repositories explicitly to enable new task acquisition. Startup
+saves configured Project mappings before reading its complete current claim
+inventory, including after a local database reset; existing claims and cleanup
+responsibilities remain managed even when no repositories are configured.
 
 New registrations use `worker.repositoryRoot`, defaulting to `~/daynights`, and
 keep existing paths when the root changes. Review's clone-root setting is
@@ -342,7 +344,7 @@ from all changed paths, including deletions and both sides of renames:
 | A PR changing only the CLI `package.json` top-level `version`, with unchanged regular-file mode and other parsed fields | No application jobs |
 | Other CLI `package.json` changes limited to top-level `version`, JSON formatting or object key order | CLI |
 | Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
-| Other `packages/daynight/` paths | Independent ordinary and installed CLI jobs on Linux, macOS ARM64 and Windows; runtime compatibility and shell completion |
+| Other `packages/daynight/` paths | Complete ordinary and installed CLI phases on Linux, macOS ARM64 and Windows; runtime compatibility and shell completion |
 | `packages/daynight-server/` | Go server coverage and E2E |
 | `packages/daynight-web/` and current Dagre and XYFlow patches | Go server coverage/E2E, Web quality and Web browser acceptance |
 | Runtime files under `deployment/` | Web quality and Web browser acceptance |
@@ -368,10 +370,15 @@ workflow. Exact preparation inputs are listed in
 
 Documentation exclusions apply after CLI source ownership; changes selecting
 several modules run their union. CLI selection enables independent ordinary-test
-and installed-acceptance native matrices, each with a 10-minute bound per job.
-Both prepare their own environment and compiled output; the ordinary Ubuntu
-entry supplies the runtime matrix's package. Environment, acceptance and probe
-artifacts identify their native phase. The Web selector enables a quality job and two
+and installed-acceptance matrices on Linux and Windows, each with a 10-minute
+bound per job. A required `verify-macos` job uses one macOS ARM64 allocation for
+complete ordinary and installed phases in sequence, with a 20-minute outer bound
+and 10-minute validation-command bounds. Each phase builds current source and
+records its own environment, outcome and artifacts. The ordinary Ubuntu entry supplies
+the runtime package; runtime jobs depend only on the Linux/Windows ordinary
+producer matrix, while final `checks` still requires macOS. The
+[single-allocation decision](.agents/notes/implemented/testing/2026-11-05-single-macos-native-allocation.md)
+owns macOS failure, evidence and budget handling. The Web selector enables a quality job and two
 browser matrix entries, each with a 20-minute bound. The two browser shards
 jointly cover the complete native/container inventory; shard 2 owns the shared
 navigation, deployment, combined-authentication and persistence checks. The
@@ -420,9 +427,12 @@ receipt identity checks and evidence limits.
 Read [AGENTS.md](AGENTS.md) for scope, shared task worktrees, verification and
 delivery. This repository manages concrete work in Daynight; load
 [`using-daynight`](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md)
-before executing a task. See the [repository skills](.agents/skills/) for
-decision notes, scope choices and prose, and [Agent Notes](.agents/notes/README.md)
-for decision history.
+before executing a task. Use
+[`dispatch-small-change`](.agents/skills/dispatch-small-change/SKILL.md) to turn
+a bounded change request into a clear task, choose its required operating
+system, and hand it off to a Worker. See the [repository skills](.agents/skills/)
+for decision notes, scope choices and prose, and
+[Agent Notes](.agents/notes/README.md) for decision history.
 
 ## Documentation conventions
 

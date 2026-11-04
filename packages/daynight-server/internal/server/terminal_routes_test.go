@@ -565,6 +565,15 @@ func TestTerminalHTTPBoundaryAndReadbackErrors(t *testing.T) {
 		code                           int
 	}{
 		{"GET", "/state", "", v2.Protocol, 200},
+		{"GET", "/archive/state", "", v2.Protocol, 200},
+		{"GET", "/archive/state", "", "", 400},
+		{"GET", "/archive/state", "", sp.Protocol, 400},
+		{"GET", "/archive/state", "", "future", 400},
+		{"GET", "/archive/state?extra=1", "", v2.Protocol, 400},
+		{"GET", "/archive/state?generation=1&generation=2", "", v2.Protocol, 400},
+		{"HEAD", "/archive/state", "", v2.Protocol, 405},
+		{"POST", "/archive/state", "{}", v2.Protocol, 405},
+		{"DELETE", "/archive/state", "", v2.Protocol, 405},
 		{"GET", "/state", "", "", 400},
 		{"HEAD", "/state", "", v2.Protocol, 405},
 		{"DELETE", "/state", "", v2.Protocol, 405},
@@ -786,4 +795,59 @@ func testTerminalWorkerChannelAdvancesStoppedGeneration(t *testing.T, learnedAtS
 	}
 	// Cleanup must also use the current generation to revoke this connection.
 	waitConnected(false)
+}
+
+func TestTerminalArchiveStateHTTPRetainsDeletedOwnerReadback(t *testing.T) {
+	f := terminalHTTPSetup(t)
+	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
+	path := f.base + "/" + f.message.SessionID
+	initial := terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol)
+	if initial.Code != http.StatusOK {
+		t.Fatal(initial.Code, initial.Body.String())
+	}
+	var before map[string]any
+	if err := json.Unmarshal(initial.Body.Bytes(), &before); err != nil {
+		t.Fatal(err)
+	}
+	owner := f.message.Payload.(v2.Registration).Owner
+	if _, err := f.app.relay.service.DB.Pool.Exec(context.Background(), `UPDATE tasks SET status='done',deleted_at=now() WHERE id=$1`, owner.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	response := terminalRequest(f.h, http.MethodGet, path+"/archive/state", "", v2.Protocol)
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	var after map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &after); err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != len(after) || after["connected"] != false {
+		t.Fatal(after)
+	}
+	for _, key := range []string{"protocol", "schemaVersion", "projectionVersion", "sessionId", "claimId", "executionGeneration", "owner", "binding", "ledger", "recording", "archive"} {
+		if jsonBody(t, before[key]) != jsonBody(t, after[key]) {
+			t.Fatalf("%s changed: %#v != %#v", key, before[key], after[key])
+		}
+	}
+	for _, suffix := range []string{"/state", "/archive/content"} {
+		if ordinary := terminalRequest(f.h, http.MethodGet, path+suffix, "", v2.Protocol); ordinary.Code != http.StatusNotFound {
+			t.Fatal("ordinary deleted session reopened", ordinary.Code, ordinary.Body.String())
+		}
+	}
+	if history := terminalRequest(f.h, http.MethodGet, f.base, "", v2.Protocol); history.Code != http.StatusNotFound {
+		t.Fatal(history.Code, history.Body.String())
+	}
+	for _, suffix := range []string{"/not-a-uuid/archive/state", "/" + uuid.NewString() + "/archive/state"} {
+		if result := terminalRequest(f.h, http.MethodGet, f.base+suffix, "", v2.Protocol); result.Code == http.StatusOK {
+			t.Fatal("invalid or foreign session accepted")
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, path+"/archive/state", nil)
+	authorizeResourceRequest(f.h, request)
+	request.Header[v2.ProtocolHeader] = []string{v2.Protocol, v2.Protocol}
+	recorder := httptest.NewRecorder()
+	f.h.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatal(recorder.Code, recorder.Body.String())
+	}
 }

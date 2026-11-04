@@ -44,6 +44,22 @@ func (s *Service) TerminalState(ctx context.Context, p core.Principal, project, 
 	})
 	return out, err
 }
+
+// TerminalArchiveState retains the original Worker's finalization readback after
+// task deletion. It never grants browser access or advertises control actions.
+func (s *Service) TerminalArchiveState(ctx context.Context, p core.Principal, project, taskID, id string) (map[string]any, error) {
+	var out map[string]any
+	err := s.terminalAccess(ctx, p, project, taskID, id, true, func(tx pgx.Tx, r *terminalRecord, t task, _ bool) error {
+		if err := terminalOwner(p, r); err != nil {
+			return err
+		}
+		var err error
+		out, err = s.terminalState(ctx, tx, r, t, false)
+		return err
+	})
+	return out, err
+}
+
 func (s *Service) CurrentTerminal(ctx context.Context, p core.Principal, project, taskID string) (map[string]any, error) {
 	var out map[string]any
 	err := s.transact(ctx, func(tx pgx.Tx) error {

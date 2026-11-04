@@ -28,5 +28,6 @@ owners. One scoped provider preserves the existing shared pagination owner.
 
 Users can navigate Team and shared projects without mixing pagination scopes or
 creating a project in a newly selected Team by accident. Switching scope starts
-a fresh directory read. Selection lasts only for the current workspace session;
-remembering it across browser visits is a separate capability.
+a fresh directory read. At this decision, selection lasted only for the current
+workspace session; [browser Team preference](2026-11-04-browser-team-preference.md)
+subsequently added account-scoped persistence.

@@ -14,10 +14,10 @@ import (
 
 func TestDefinitionsExposeValueContractsWithoutSharingRegistryStorage(t *testing.T) {
 	catalog := Definitions()
-	if len(catalog) != 3 || catalog["paused"].ReadOnly || catalog["pullRequests"].ReadOnly || !catalog["worker"].ReadOnly {
+	if len(catalog) != 4 || catalog["paused"].ReadOnly || catalog["pullRequests"].ReadOnly || !catalog["worker"].ReadOnly {
 		t.Fatalf("unexpected definitions: %#v", catalog)
 	}
-	if got := propertyNames(); !slices.Equal(got, []string{"paused", "pullRequests", "worker"}) {
+	if got := propertyNames(); !slices.Equal(got, []string{"paused", "pullRequests", "sessionStartup", "worker"}) {
 		t.Fatalf("property order: %v", got)
 	}
 	encoded, err := json.Marshal(catalog)
@@ -26,7 +26,7 @@ func TestDefinitionsExposeValueContractsWithoutSharingRegistryStorage(t *testing
 	}
 	catalog["worker"].Schema[0] = 'X'
 	delete(catalog, "pullRequests")
-	if fresh := Definitions(); len(fresh) != 3 || !json.Valid(fresh["worker"].Schema) {
+	if fresh := Definitions(); len(fresh) != 4 || !json.Valid(fresh["worker"].Schema) {
 		t.Fatal("caller mutated registry definitions")
 	}
 	for _, name := range propertyNames() {
@@ -265,7 +265,7 @@ func TestStringDefinitionsAcceptRawTextAndJSONStringWithoutNewProductProperty(t 
 			t.Fatalf("string input %q: got %q (%v), want %q", test.input, actual, err, test.want)
 		}
 	}
-	if !reflect.DeepEqual(propertyNames(), []string{"paused", "pullRequests", "worker"}) {
+	if !reflect.DeepEqual(propertyNames(), []string{"paused", "pullRequests", "sessionStartup", "worker"}) {
 		t.Fatal("string shorthand test registered a product property")
 	}
 }

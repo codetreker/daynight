@@ -25,7 +25,7 @@ const fixture = (projects: readonly Project[] = []) => {
     addTaskStep: unavailable,
     deleteTaskStep: unavailable,
     listTaskSteps: unavailable, getTaskStep: unavailable,
-    getProjectAccess: unavailable,
+    getProjectAccess: unavailable, previewProjectTransfer: unavailable, transferProject: unavailable,
     readTaskThread: unavailable, postTaskThreadMessage: unavailable,
     listProjectMembers: async () => { throw new Error("Unused project member API method"); },
     getTaskPropertySchema: async () => { throw new Error("Unused property API"); },
@@ -33,7 +33,10 @@ const fixture = (projects: readonly Project[] = []) => {
     setTaskProperty: async () => { throw new Error("Unused property API"); },
     removeTaskProperty: async () => { throw new Error("Unused property API"); },
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(user),
-    getTeamCurrentUser: vi.fn<ApiClient["getTeamCurrentUser"]>().mockResolvedValue(user), listTeams: unavailable, getTeam: vi.fn<ApiClient["getTeam"]>().mockResolvedValue(personalTeam), createTeam: unavailable, renameTeam: unavailable, deleteTeam: unavailable, listTeamProjects: unavailable,
+    getTeamCurrentUser: vi.fn<ApiClient["getTeamCurrentUser"]>().mockResolvedValue(user), inspectInvitation: unavailable, acceptInvitation: unavailable, listTeams: unavailable, getTeam: vi.fn<ApiClient["getTeam"]>().mockResolvedValue(personalTeam), createTeam: unavailable, renameTeam: unavailable, deleteTeam: unavailable, listTeamProjects: unavailable,
+    listTeamInvitations: unavailable, createTeamInvitation: unavailable, revokeTeamInvitation: unavailable,
+    listTeamMembers: unavailable, setTeamMemberRole: unavailable, removeTeamMember: unavailable,
+    listBots: unavailable, getBot: unavailable, createBot: unavailable, deleteBot: unavailable, listWorkers: unavailable, getWorker: unavailable,
     reportWorker: unavailable,
     createProject: vi.fn<ApiClient["createProject"]>().mockResolvedValue(project),
     listProjects: vi.fn<ApiClient["listProjects"]>().mockResolvedValue(projects),
@@ -51,7 +54,7 @@ const fixture = (projects: readonly Project[] = []) => {
   const runServerCommand = vi.fn<ProjectCommandDependencies["runServerCommand"]>(async (current, command) => {
     const operation = createOperation();
     try {
-      const output = await command({ api, operation, serverUrl: "http://server.example:8787" });
+      const output = await command({ api, operation, serverUrl: "http://server.example:8787", serverConfiguration: { serverUrl: "http://server.example:8787" } });
       if (typeof output === "string") current.stdout(output);
       else if (output?.kind === "confirmed-mutation") current.stdout(output.output);
     }
@@ -191,7 +194,7 @@ describe("project command boundaries", () => {
     const { api, context } = fixture();
     api.listProjects.mockImplementation(async () => { controller.abort(new Error("Cancelled after listing")); return []; });
     try {
-      const failure = await runProjectCommand(["create", "Name", "--repo", project.repoUrl, "--team", "personal", "--confirm"], context, { runServerCommand: async (_current, command) => { await command({ api, operation, serverUrl: "http://server.example" }); } }).catch((error: unknown) => error);
+      const failure = await runProjectCommand(["create", "Name", "--repo", project.repoUrl, "--team", "personal", "--confirm"], context, { runServerCommand: async (_current, command) => { await command({ api, operation, serverUrl: "http://server.example", serverConfiguration: { serverUrl: "http://server.example" } }); } }).catch((error: unknown) => error);
       expect(failure).toBe(operation.signal.reason);
       expect(api.createProject).not.toHaveBeenCalled();
     } finally { operation.dispose(); }
