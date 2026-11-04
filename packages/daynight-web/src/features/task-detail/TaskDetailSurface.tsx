@@ -121,9 +121,11 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
       : matchesPlatformReview(confirmation, detail) && task.canSetRequiredPlatform);
   const confirmationOpen = confirmation !== null && confirmationValid;
   const threadDetailsOccupied = useRef(false);
+  const [sessionLayoutChanged, setSessionLayoutChanged] = useState(false);
   const [sessionFullscreen, setSessionFullscreen] = useState<SessionFullscreenRegistration | null>(null);
   const sessionFullscreenRef = useRef(sessionFullscreen); sessionFullscreenRef.current = sessionFullscreen;
   const registerSessionFullscreen = useCallback((registration: SessionFullscreenRegistration) => {
+    setSessionLayoutChanged(true);
     setSessionFullscreen(registration);
     return () => setSessionFullscreen(current => current?.owner === registration.owner ? null : current);
   }, []);
@@ -247,7 +249,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
   };
 
   const content = <SessionFullscreenContext value={registerSessionFullscreen}>
-      <Surface className={`${modal ? 'task-detail-dialog' : 'task-detail-page'}${fullscreen.active ? ' task-detail-fullscreen' : ''}${sessionFullscreen === null ? '' : ' task-detail-session-fullscreen'}${currentClaim === null ? '' : ' task-detail-has-claim'}`} ref={dialogRef} role={modal ? 'dialog' : undefined} aria-modal={modal ? true : undefined} aria-labelledby={headingId} tabIndex={modal ? undefined : -1}>
+      <Surface className={`${modal ? 'task-detail-dialog' : 'task-detail-page'}${fullscreen.active ? ' task-detail-fullscreen' : ''}${sessionFullscreen === null ? '' : ' task-detail-session-fullscreen'}${sessionLayoutChanged ? ' task-detail-session-layout' : ''}${currentClaim === null ? '' : ' task-detail-has-claim'}`} ref={dialogRef} role={modal ? 'dialog' : undefined} aria-modal={modal ? true : undefined} aria-labelledby={headingId} tabIndex={modal ? undefined : -1}>
         <TaskDetailNotifications fallbackFocus={titleRef}>
         {!modal && <div hidden={fullscreen.active}><TaskDetailPageBar projectId={projectId} /></div>}
         <header className="task-detail-header">

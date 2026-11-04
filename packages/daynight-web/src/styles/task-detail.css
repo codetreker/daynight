@@ -315,3 +315,6 @@
 .task-detail-session-fullscreen .task-detail-heading,
 .task-detail-session-fullscreen .task-detail-tabs,
 .task-detail-session-fullscreen .task-detail-notifications { display: none; }
+
+/* Replaying the entrance transform changes text-anchor measurements on exit. */
+.task-detail-session-layout { animation: none; }

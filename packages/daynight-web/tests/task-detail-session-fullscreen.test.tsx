@@ -93,6 +93,7 @@ describe('Session fullscreen inside task details', () => {
     expect(f.surface).toHaveClass('task-detail-session-fullscreen');
     fireEvent.keyDown(input, { key: 'Escape' });
     expect(f.surface).not.toHaveClass('task-detail-session-fullscreen');
+    expect(f.surface).toHaveClass('task-detail-session-layout');
     expect(f.surface.classList.contains('task-detail-fullscreen')).toBe(outer);
     expect(f.onClose).not.toHaveBeenCalled();
     expect(toggle).toHaveFocus(); expect(input).toHaveValue('Unsent draft');

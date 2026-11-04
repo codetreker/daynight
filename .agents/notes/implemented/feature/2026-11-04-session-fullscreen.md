@@ -28,7 +28,9 @@ registers the active owner and exit callback
 with `TaskDetailSurface`; cleanup removes only that owner's registration. The
 Surface expands in place and hides task chrome without changing its independent
 task fullscreen value. Exiting the Session therefore restores the prior task
-layout. The Test entry uses the same shared view without requiring a task host.
+layout. After the first Session expansion, the same mounted Surface no longer
+replays its entrance transform: intermediate animated geometry would corrupt
+reading-position measurements on exit. The Test entry uses the same shared view without requiring a task host.
 
 Session fullscreen isolates background branches along the ancestor chain with
 counted `inert` ownership and uses the existing counted body scroll lock. These
@@ -40,7 +42,12 @@ does not compete with the Session's Tab or Escape handling.
 
 The existing timeline scroll owner remains mounted. Its viewport and content
 observers restore the same text anchor or following intent after geometry
-changes; fullscreen does not restore raw offsets over that state. Where exposed,
+changes; fullscreen does not restore raw offsets over that state. A surviving
+text offset remains the anchor through layout-only changes, even when a wider
+line gains earlier characters. Recapturing that line would drift on a return
+to the original width. Composer width observers defer height writes to one
+animation frame to avoid changing observed dimensions during ResizeObserver
+delivery; input and initial layout sizing remain synchronous. Where exposed,
 `visualViewport` dimensions and offsets keep the view within the visible area
 when browser UI or a keyboard changes it. Missing API support falls back to
 window geometry, and cleanup restores the previous style values.
