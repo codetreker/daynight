@@ -13,11 +13,15 @@
 .terminal-input-reason summary { cursor: pointer; }
 .terminal-confirmation { padding: 1rem; border: 1px solid #c9c4e8; border-radius: .5rem; }
 .terminal-confirmation label { display: flex; align-items: start; gap: .5rem; margin-bottom: .75rem; }
-.managed-session-records { padding: 1rem; border-top: 1px solid #e0e3eb; min-width: 0; }
+.managed-session-records { margin-bottom: 1rem; padding-bottom: .75rem; border-bottom: 1px solid #e0e3eb; min-width: 0; }
+.managed-session-records .terminal-host-toolbar { margin-bottom: .5rem; }
+.managed-session-records h4 { margin: 0; font-size: 11px; font-weight: 550; color: #637087; }
+.managed-session-records p { font-size: 11px; line-height: 1.7; color: #737d8e; }
+.managed-recording-close { flex: none; padding: .5rem; }
 .managed-session-list { padding: 0; list-style: none; display: grid; gap: .5rem; }
 .managed-session-list .button { width: 100%; text-align: left; overflow-wrap: anywhere; }
 .terminal-session.session-fullscreen { overflow: auto; }
-@media (max-width: 600px) { .terminal-host-toolbar > label { flex-basis: 100%; flex-wrap: wrap; } .terminal-session, .managed-session-records { padding: .65rem; } }
+@media (max-width: 600px) { .terminal-host-toolbar > label { flex-basis: 100%; flex-wrap: wrap; } .terminal-session { padding: .65rem; } }
 .task-session-host { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .task-session-host > .terminal-host-toolbar { flex: none; padding: .5rem .75rem; margin: 0; border-bottom: 1px solid #e8ebf1; }
 .task-session-current { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
@@ -25,9 +29,3 @@
 .terminal-session { overflow: auto; }
 .terminal-session > * { flex-shrink: 0; }
 .terminal-session > .session-timeline-shell { flex-shrink: 1; min-height: 12rem; }
-.task-detail-panel-attachments:has(> .managed-session-records) { flex-direction: column; overflow: hidden; }
-.task-detail-panel-attachments:has(> .managed-session-records) > .task-attachments { flex: 1; min-height: 0; }
-.managed-session-records { flex: 0 1 auto; min-height: 0; max-height: 45%; overflow: auto; overscroll-behavior: contain; }
-.managed-session-records:has(.terminal-session) { flex: 1; max-height: 60%; }
-.managed-session-records .terminal-session { max-height: 70vh; }
-.managed-session-records .terminal-session.session-fullscreen { max-height: none; }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { SessionArchive } from '../../../../daynight/src/session/archive';
 import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types';
 import { ApiError } from '../../api/client';
@@ -14,6 +14,8 @@ import { useSessionMessages } from './messages';
 import { useSessionFullscreen } from './useSessionFullscreen';
 import './terminal-session.css';
 import './terminal-host.css';
+
+import type { AttachmentRecordSlots } from '../task-detail/attachments/TaskAttachments';
 
 type ScopeProps = { readonly projectId: string; readonly taskId: string; readonly active: boolean };
 function useRecords(projectId: string, taskId: string, active: boolean) {
@@ -67,17 +69,20 @@ export function TaskSessionHost({ projectId, taskId, claimId, mode, active, curr
     {selected ? <FixedSessionRecording key={`${selected.sessionId}/${selected.archive.sha256}`} api={history.api} item={selected} active={active && current} /> : null}
   </div>;
 }
-export function ManagedSessionRecords({ projectId, taskId, active }: ScopeProps) {
+export function ManagedSessionRecords({ projectId, taskId, active, resetSelection, children }: ScopeProps & { readonly resetSelection?: object; readonly children: (records: AttachmentRecordSlots) => ReactNode }) {
   const m = useTerminalHostMessages(); const history = useRecords(projectId, taskId, active);
   const [selected, setSelected] = useState<SessionHistoryItem | null>(null);
-  return <section className="managed-session-records" aria-label={m.records}>
+  useLayoutEffect(() => { setSelected(null); }, [resetSelection]);
+  const clearSelection = () => setSelected(null);
+  const sidebar = <section className="managed-session-records" aria-label={m.records}>
     <div className="terminal-host-toolbar"><h4>{m.records}</h4><button className="button" disabled={history.loading} onClick={history.refresh}>{m.refresh}</button></div>
     {history.error ? <p role="alert" className="session-error">{recordingError(history.error, m)}</p> : null}
     {history.loading ? <p role="status">{m.loading}</p> : history.items.length === 0 && !history.error ? <p>{m.empty}</p> : null}
     <ul className="managed-session-list">{history.items.map(item => <li key={item.sessionId}><button className="button" aria-pressed={selected?.sessionId === item.sessionId} onClick={() => setSelected(item)}>{recordLabel(item)} · {m[item.archive.state === 'ready' ? 'readonly' : item.archive.state]}</button></li>)}</ul>
     {history.cursor ? <button className="button" disabled={history.loading} onClick={history.more}>{m.more}</button> : null}
-    {selected ? <><button className="button" onClick={() => setSelected(null)}>{m.close}</button><FixedSessionRecording key={`${selected.sessionId}/${selected.archive.sha256}`} api={history.api} item={selected} active={active} /></> : null}
   </section>;
+  const preview = selected ? <><div className="managed-recording-close"><button className="button" onClick={clearSelection}>{m.close}</button></div><FixedSessionRecording key={`${selected.sessionId}/${selected.archive.sha256}`} api={history.api} item={selected} active={active} /></> : null;
+  return children({ sidebar, preview, clearSelection });
 }
 export function FixedSessionRecording({ api, item, active }: { readonly api: TerminalSessionApi; readonly item: SessionHistoryItem; readonly active: boolean }) {
   const scope = useTaskCacheScope(); const m = useTerminalHostMessages(); const sm = useSessionMessages();

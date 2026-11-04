@@ -17,6 +17,12 @@ closing its viewer channel releases its browser lease without stopping Worker
 recording. Historical selection and a separate managed attachment section open
 fixed Session references through read-only archive loaders.
 
+Managed entries occupy a separate section of the attachment sidebar and share
+the existing preview column. An additional vertical recording region would
+starve ordinary readers in short viewports. Switching to a recording hides and
+disables the retained file preview without discarding upload drafts or iframe
+state; selecting a file restores the ordinary reader.
+
 The terminal renderer uses text nodes and validated styles for both live and
 recorded frames. Playback orders complete frames and explicit gap nodes using
 integer segment-relative times. It stops at gaps rather than extending the last

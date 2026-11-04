@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { ManagedSessionRecords, TaskSessionHost } from '../src/features/task-agent-session/TaskSessionHost';
+import { TaskDetailReading } from '../src/features/task-detail/TaskDetailReading';
 import { createTerminalSessionApi } from '../src/api/terminal-sessions';
 vi.mock('../src/api/terminal-sessions', () => ({ createTerminalSessionApi: vi.fn(), parseSessionHistory: (value: unknown) => value }));
 vi.mock('../src/features/task-agent-session/TaskAgentSession', () => ({ TaskAgentSession: () => <div>Native timeline</div> }));
@@ -29,7 +30,7 @@ describe('unified Session and managed records', () => {
     expect(api.current).not.toHaveBeenCalled(); expect(api.channel).not.toHaveBeenCalled(); expect(api.command).not.toHaveBeenCalled();
   });
   it('managed attachment entries only open read-only records and do not expose mutation actions', async () => {
-    const api = fixture(); render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active />);
+    const api = fixture(); render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
     fireEvent.click(await screen.findByRole('button', { name: /Herdr/ }));
     await waitFor(() => expect(api.archive).toHaveBeenCalledWith(record, expect.any(AbortSignal)));
     expect(screen.queryByRole('button', { name: /delete|rename|download|take control/i })).toBeNull();
@@ -37,12 +38,45 @@ describe('unified Session and managed records', () => {
   });
   it('retains the loaded inventory across hidden tabs and refreshes only on request', async () => {
     const api = fixture();
-    const view = render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active />);
+    const view = render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
     await screen.findByRole('button', { name: /Herdr/ });
-    view.rerender(<ManagedSessionRecords projectId={projectId} taskId={taskId} active={false} />);
-    view.rerender(<ManagedSessionRecords projectId={projectId} taskId={taskId} active />);
+    view.rerender(<ManagedSessionRecords projectId={projectId} taskId={taskId} active={false}>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
+    view.rerender(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
     expect(api.history).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(api.history).toHaveBeenCalledTimes(2));
   });
+  it('shares the attachment sidebar and reader while preserving ordinary file drafts', async () => {
+    const api = fixture();
+    const stamp = '2026-11-03T10:00:00Z';
+    const attachments = { list: vi.fn(async () => ({ items: [{ path: 'report.txt', contentType: 'text/plain', sizeBytes: 12, createdAt: stamp, updatedAt: stamp }], nextCursor: null })), readText: vi.fn(async () => 'Original attachment'), checkPreview: vi.fn(), put: vi.fn(), remove: vi.fn() };
+    render(<TaskDetailReading projectId={projectId} taskId={taskId} api={attachments} description="[Read report](report.txt)" overview={node => node}
+      sessionRecords={(active, render, resetSelection) => <ManagedSessionRecords projectId={projectId} taskId={taskId} active={active} resetSelection={resetSelection}>{render}</ManagedSessionRecords>} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Attachments' }));
+    const item = await screen.findByRole('button', { name: /Herdr/ });
+    expect(item.closest('.attachment-sidebar')).not.toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: /^report.txt/ }));
+    await screen.findByText('Original attachment');
+    const original = screen.getByText('Original attachment');
+    const upload = document.querySelector('.attachment-upload-disclosure')!;
+    fireEvent.click(upload.querySelector('summary')!);
+    const target = screen.getByRole('textbox', { name: 'Target relative path' });
+    fireEvent.change(target, { target: { value: 'draft/unsent.txt' } });
+    fireEvent.click(item);
+    await screen.findByText('Recording is waiting to be archived.');
+    expect(original).not.toBeVisible();
+    expect(original).toBeInTheDocument();
+    expect(screen.getByText('Read-only').closest('.attachment-preview-pane')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^report.txt/ }));
+    expect(original).toBeVisible();
+    expect(target).toHaveValue('draft/unsent.txt');
+    expect(api.current).not.toHaveBeenCalled(); expect(api.channel).not.toHaveBeenCalled();
+    fireEvent.click(item);
+    await screen.findByText('Recording is waiting to be archived.');
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Read report' }));
+    expect(original).toBeVisible();
+    expect(api.history).toHaveBeenCalledTimes(1);
+  });
+
 });
