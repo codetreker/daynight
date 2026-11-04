@@ -224,8 +224,16 @@ separate setup and behavior limits and the existing private-directory cleanup.
 The [fixture lifecycle decision](../.agents/notes/implemented/testing/2026-10-22-submodule-discovery-fixture-lifecycle.md)
 records that separation. The installed acceptance suite additionally verifies the package
 bin, default native command shims, singleton/stale-lock behavior and the complete
-review/re-review/restart/closure lifecycle. Separate npm global-prefix acceptance
-checks self-update and installation ownership. Curated environment and scenario
+review/re-review/restart/closure lifecycle. Its Vitest global setup packs and
+installs the production package once per platform invocation. Consumers own
+private runtime directories; manual, SQL-resource and review lifecycle mutation
+uses private CLI package files with shared read-only dependencies. Global
+teardown checks the canonical package bytes and removes that installation after
+all consumers finish. Consumer receipts report runtime cleanup separately from
+the canonical preparation receipt in `.tmp/installed-cli-preparation.json`.
+The [shared preparation decision](../.agents/notes/implemented/testing/2026-11-04-shared-installed-cli-preparation.md)
+owns installation, view and cleanup responsibilities. Separate npm global-prefix
+acceptance checks self-update and installation ownership. Curated environment and scenario
 receipts are uploaded by each native CI job; [validation](#validation) describes
 their scope and interpretation. Controlled Copilot executables exercise retained sessions, durable
 launch intent, stdin prompts and streamed completion/failure handling. These
