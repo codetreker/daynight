@@ -304,11 +304,11 @@ it('marks a superseded grant reconciliation observed only after the replacement 
     if (url === `${root}/access`) return json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
     if (url === `${root}/members`) return ++rosterReads === 2 ? held.promise : json(roster(freshEmail, 'admin'));
     if (url === `${root}/invitations`) return json({ items: [] });
-    if (url === `${root}/members/${otherId}` && init?.method === 'PATCH') return failure(500);
+    if (url === `${root}/grants/${otherId}` && init?.method === 'PUT') return failure(500);
     throw new Error(`Unexpected request ${url}`);
   });
   try {
-    const role = await screen.findByRole('combobox', { name: 'Project role for Collaborator' });
+    const role = await screen.findByRole('combobox', { name: 'Direct grant for Collaborator' });
     await waitFor(() => expect(role).not.toBeDisabled());
     fireEvent.change(role, { target: { value: 'member' } });
     const confirm = screen.getByRole('button', { name: 'Save role' });
@@ -320,7 +320,7 @@ it('marks a superseded grant reconciliation observed only after the replacement 
     await focus(mounted.access());
     await act(async () => { held.resolve(json(roster(oldEmail, 'admin'))); await nextEventLoopTurn(); });
     await waitFor(() => expect(rosterReads).toBe(3));
-    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Project role for Collaborator' })).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Direct grant for Collaborator' })).not.toBeDisabled());
     expect(screen.queryByText(oldEmail)).toBeNull();
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
 });

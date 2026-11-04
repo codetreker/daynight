@@ -54,6 +54,6 @@ Grant creation and replacement can be distinguished without invented versions,
 and deleted grants cannot be targeted through an old observation. The finite
 receipt allows confirmed self-demotion or removal to succeed even if later
 project reads are forbidden. Callers must still validate response identity and
-must not automatically replay unknown writes. Web controls and their first new
-grant client remain separate work; the server protocol preserves the real
-version and nullable actor result those consumers require.
+must not automatically replay unknown writes. Web displays all three role sources and uses these routes with real versions.
+The committed receipt updates the actor access and remains visible after access
+is lost; a later read cannot turn an unknown result into a confirmed commit.

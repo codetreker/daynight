@@ -40,6 +40,14 @@ export class ProjectAccessSession {
     this.schedule();
     return true;
   };
+  publishMutation = (access: ProjectAccess | null): void => {
+    if (!this.live()) return;
+    this.barrier = this.beginObservation();
+    this.accepted = this.barrier;
+    this.lastObservation = performance.now();
+    this.update({ access, status: access === null ? 'unavailable' : 'ready', refreshing: false, error: null });
+    this.schedule();
+  };
   private schedule = (): void => {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;

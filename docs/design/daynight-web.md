@@ -929,12 +929,18 @@ Project、分页 Project 与图内 Project 的 settings.version 和 ownership.ve
 不要求浏览器提供 reviver source context。超过 `2^53` 的资源版本保持 bigint，写入时编码为
 JSON 数字；缺失或错误 settings/ownership 不补默认值。
 
-成员管理按真实 direct grant 的 role/version 编辑，不因其为最后一条 direct admin 而禁用。
-只有继承访问的 participant 没有可修改或删除的 grant。members 的 items 与 actorAccess
-由同一快照返回；MembersPanel 通过既有 access owner 的请求观察次序和身份/project 屏障
-发布本人来源，不用独立请求的旧角色与新名册混合展示。claim-owner 资料读取继续只承担展示。
-自删成功后复用当前 access owner 重验，只有权威 unavailable 才离开项目；继承权限仍存在时
-保留页面。网络、协议或服务错误保留读取重试，不推定已失权或重发原写入。
+成员表分别展示 effective role、owner Team 继承角色和真实 direct grant。有效 admin 可为
+仅继承的 participant 新增 grant，或按真实 role/version 替换、移除现有 grant；不能按任意
+用户 ID 加人，也不为最后一条 direct admin 设置保护。members 的 items 与 actorAccess
+由同一快照返回；MembersPanel 通过既有 access owner 的观察次序和身份/project 屏障发布
+本人来源，不用旧角色与新名册混合展示。claim-owner 资料读取继续只承担展示。
+
+管理操作使用 grants 回执：确认后废弃更早的读取并发布 actorAccess，展示操作对象和
+结果；null 表示已确认失权，撤回项目缓存并保留结果与返回入口，不依赖后续 GET 判断
+提交。继承仍有效时保留页面并读取当前名册。冲突重新读取后须再次审阅；身份不符撤销
+旧身份内容。网络、协议或未知提交错误不自动重放，明确读取当前事实后才能审阅新操作，
+该读取不能恢复原回执。外部 Project admin 仅使用项目范围的名册和授权接口，不读取
+owner Team 目录或设置。
 
 ## 完整项目图的本地投影
 
