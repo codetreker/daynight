@@ -10,10 +10,11 @@ type TaskDetailPanelsProps = {
   readonly discussion?: PanelSlot;
   readonly session?: PanelSlot;
   readonly active?: TaskDetailTab;
+  readonly suspended?: boolean;
   readonly onChange?: (tab: TaskDetailTab) => void;
 };
 
-export const TaskDetailPanels = ({ overview, steps, attachments, discussion, session, active: controlledActive, onChange }: TaskDetailPanelsProps) => {
+export const TaskDetailPanels = ({ overview, steps, attachments, discussion, session, active: controlledActive, onChange, suspended = false }: TaskDetailPanelsProps) => {
   const { messages } = useI18n();
   const [localActive, setLocalActive] = useState<TaskDetailTab>('overview');
   const tabs: readonly TaskDetailTab[] = ['overview', 'steps', 'attachments', ...(discussion === undefined ? [] : ['discussion'] as const), ...(session === undefined ? [] : ['session'] as const)];
@@ -49,7 +50,7 @@ export const TaskDetailPanels = ({ overview, steps, attachments, discussion, ses
     activate(next);
   };
 
-  return <div className="task-detail-panels">
+  return <div className="task-detail-panels" hidden={suspended} inert={suspended} style={suspended ? { display: 'none' } : undefined}>
     <div className="task-detail-tabs" role="tablist" aria-label={messages.inspection.detail.title}>
       {tabs.map((tab) => <button key={tab} className="task-detail-tab" id={tabId(tab)} role="tab" type="button" aria-selected={active === tab} aria-controls={panelId(tab)} tabIndex={active === tab ? 0 : -1} onClick={() => activate(tab)} onKeyDown={(event) => navigate(event, tab)}>{labels[tab]}</button>)}
     </div>

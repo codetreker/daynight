@@ -154,7 +154,7 @@ test.describe('visible authentication protocol', () => {
       await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
       await page.goto('/login');
       await expect(page).toHaveURL(`${baseURL}/projects`);
-      await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
       await page.goto('/');
       await expect(page).toHaveURL(`${baseURL}/`);
       await expect(page.locator('.landing-page')).toBeVisible();
@@ -166,7 +166,7 @@ test.describe('visible authentication protocol', () => {
       await page.setViewportSize(originalViewport);
       await page.locator('.landing-page a[href="/projects"]').first().click();
       await expect(page).toHaveURL(`${baseURL}/projects`);
-      await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
       const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
       await page.getByRole('button', { name: '退出登录', exact: true }).click();
       expect((await signedOut).status()).toBe(204);
@@ -209,12 +209,12 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     const createdResponse = await responsePromise;
     expect(createdResponse.status()).toBe(201);
     expect(createdResponse.headers()['daynight-user-id']).toBe(aliceUser.id);
-    expect(createdResponse.request().postDataJSON()).toEqual({ name: rawName, repoUrl: rawRepo, expectedUserId: aliceUser.id });
+    const profile = await (await request.get('/api/v1/me')).json() as { personalTeam: { id: string } };
+    expect(createdResponse.request().postDataJSON()).toEqual({ name: rawName, repoUrl: rawRepo, expectedUserId: aliceUser.id, teamId: profile.personalTeam.id });
     const created = await createdResponse.json() as { id: string; name: string; repoUrl: string; ownership: { teamId: string }; access: { directGrant: { role: string } } };
     expect(created.name).toBe(rawName);
     expect(created.repoUrl).toBe(rawRepo);
     expect(created.access.directGrant.role).toBe('admin');
-    const profile = await (await request.get('/api/v1/me')).json() as { personalTeam: { id: string } };
     expect(created.ownership.teamId).toBe(profile.personalTeam.id);
     await expect(page).toHaveURL(`${baseURL}/projects/${created.id}`);
     const task = await createTask(request, own.id, { title: 'Private resource boundary', description: 'Visible only to project members.', assignedTo: aliceUser.id });
@@ -756,7 +756,7 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
     expect(unknownInvitationResponse.status()).toBe(201);
     const unknownInvitation = await unknownInvitationResponse.json() as { link: string };
     await page.goto('/projects');
-    await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
     await openInvitation(page, unknownInvitation.link);
     await expect(page.getByRole('heading', { name: 'You are invited to a Team' })).toBeVisible();
     let committedStatus: number | undefined;

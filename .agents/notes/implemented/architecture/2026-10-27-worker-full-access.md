@@ -78,15 +78,23 @@ allows the private daemon's official installer to update integration configurati
 and hook assets when missing or outdated. Authentication and organization/OS
 policies retain their existing owners. Full access does not grant business
 delivery authority; managed assignment and task authorization keep their own
-rules. Input readiness
-and supported business-composer checks remain in force, and attach supports
-business input. Missing credentials and integration failures remain errors.
+rules. Herdr structured input readiness and original resource identity remain
+in force, and attach supports business input. The
+[structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
+replaces the positive visible-composer layout requirement and repeated input,
+discovery and stop cwd comparisons. Explicit known menu and disabled-input
+blockers still prevent submission without requiring a normal-layout whitelist.
+Fresh `agent.start` attempts retain a canonical shell
+cwd check immediately before submission; the `projects` override sets trust,
+not the shell directory. Missing credentials and integration failures remain
+errors.
 
 This decision partially supersedes the [Herdr
 adapter](2026-10-26-worker-herdr-adapter.md) and [manual
 control](2026-10-27-worker-manual-control.md) decisions' operator-managed native
-consent. Their original rationale remains recorded because terminal readiness
-still does not prove that pasted text reaches the business composer. The
+consent. Their original rationale remains recorded: directory trust and tool
+approval were separate startup decisions, and input transport never proved
+business processing. The
 [setup decision](2026-10-27-worker-repository-selection.md) retains read-only
 inspection and configuration ownership.
 
@@ -127,7 +135,7 @@ capabilities fail before business execution rather than silently selecting a
 weaker mode.
 
 The worker requires a newer minimum Codex version and owns additional launch
-arguments and Copilot workspace environment keys. Composer readiness remains a
-separate check; version/argument probes do not establish provider login, real
-hook execution, model availability or complete platform acceptance. Native
+arguments and Copilot workspace environment keys. Herdr readiness remains a
+separate observation; version/argument probes do not establish provider login,
+real hook execution, model availability or complete platform acceptance. Native
 organization and operating-system enforcement remain external constraints.

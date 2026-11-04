@@ -1735,8 +1735,8 @@ independent native/container services, databases, private credentials and cleanu
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
 --shard=i/2`: fully-parallel controls case-level partitioning, while each database
 still executes one browser worker serially. The current canonical inventory is
-32 scenarios, divided into disjoint sets of 16. Default file-level partitioning
-would produce a 24/8 split for this inventory.
+36 scenarios, divided into two disjoint sets of 18. Default file-level partitioning
+does not provide this case-level balance.
 
 Before preparing services, the runner collects the complete canonical functional
 inventory and the selected shard using the same functional arguments as the
@@ -1819,10 +1819,9 @@ pnpm web:acceptance
 pnpm web:acceptance:stress
 ```
 
-The ordinary local command requires thirty-five functional scenarios on each
-native/container target, seventy in total. CI retains that complete inventory
-across two disjoint case shards, running eighteen and seventeen selected scenarios on
-both targets. The explicit local stress command adds five native
+The ordinary local command requires thirty-six functional scenarios on each
+native/container target, seventy-two in total. CI retains that complete inventory
+across two disjoint case shards, running eighteen selected scenarios per shard on both targets. The explicit local stress command adds five native
 capacity/limit scenarios and their performance receipt. From this package, use
 `pnpm test:stress:browser`, or invoke `node scripts/acceptance.mts --stress`;
 `--apfs --stress` combines the local capacity matrix with explicit APFS storage.
@@ -1831,6 +1830,17 @@ preparation. Raw Playwright selection excludes the capacity spec by default and
 rejects a stress selection in CI. Both local modes retain combined authentication,
 exact source/browser identity and full cleanup; CI runs the two combined journeys
 on shard 2 while every shard performs its owned cleanup.
+
+Selected functional journeys inject shorter named polling intervals before page
+initialization: task synchronization and current-Session summary refreshes still
+use the real service, HTTP responses and normal state publication. The shared
+polling module keeps the production defaults of fifteen and five seconds;
+unit tests verify those defaults and the shorter schedules. Browser tests change
+only their owned polling periods, preserving request deadlines, freshness,
+execution clocks and real warning-threshold crossing. Cases with controlled
+browser clocks and local capacity measurements retain their own timing setup.
+The [polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-polling.md)
+owns this separation and its validation limits.
 
 Use Node 24, pnpm 11.28.6 and a frozen dependency install first. Chromium requires
 its normal runtime libraries on Linux; CI installs them with Playwright's
@@ -1866,7 +1876,7 @@ ownership revalidation. Uncertain ownership fails without recursive removal.
 Existing recovery commands remain available without opting into new attachment.
 
 The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same seventy functional scenarios and
+macOS local acceptance runs the same seventy-two functional scenarios and
 additional combined authentication checks, with native filesystem coverage
 qualified by its recorded capability. Explicit local stress acceptance adds the
 same five capacity/limit scenarios and fixed performance budgets on Linux and
@@ -1883,8 +1893,7 @@ separate PostgreSQL container/volume and ephemeral loopback listener. In paralle
 the normal dev-ci runner builds and starts the actual production image. Browser
 execution overlaps the same selected functional scenarios in native and
 production-image stream-gateway targets. Local ordinary execution selects all
-thirty-five scenarios; CI shards select eighteen and seventeen and the final gate requires
-the complete disjoint union. Explicit local stress mode then runs five native
+thirty-six scenarios; each CI shard selects eighteen, and the final gate requires the complete disjoint union. Explicit local stress mode then runs five native
 capacity/limit scenarios. In
 that mode, the native process and PostgreSQL remain alive through capacity;
 other preparation commands and the complete container stack finish before it
@@ -2000,7 +2009,7 @@ records the original data-sharing, rendering and independent-reading proof choic
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
 requires a separate eleven-check receipt on each runtime target, alongside the
-70 ordinary Playwright cases or 75 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
+72 ordinary Playwright cases or 77 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
 identities, records their initial project sets, and crosses browser and CLI data
 through shared/private projects, original-credential service restart, logout/PAT
 independence, revocation, admitted upload, real socket interruption and normally
@@ -2106,8 +2115,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (70 ordinary cases; local stress adds five native cases
-for 40 native / 35 container, 75 total), current manual/periodic refresh,
+The selected inventory (72 ordinary cases; local stress adds five native cases
+for 41 native / 36 container, 77 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -2146,6 +2155,7 @@ the remaining functional scenarios.
 | W11 | Strict raw Go/V8 coverage reports, validated functional browser receipts and the final `checks` result; explicit local stress mode additionally validates complete performance receipts |
 | W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |
 | W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
+| Steps append | `task-step-add`: real-service append and CLI readback, pagination and focus, draft navigation, conflict and committed response loss, late receipt, bilingual desktop and narrow keyboard behavior |
 | Steps status | `task-step-status`, `task-step-access-retirement`: real-service status transitions, conflict, committed response loss and failed readback, malformed success, child 404 and parent deletion, late dialog receipt, bilingual desktop and narrow keyboard menus |
 | Steps position | `task-step-position`: real-service ordered moves, bounded search and paging, no-op, invalid anchor and self-reference, conflict and lost response, focus, bilingual narrow and touch controls |
 | W20 | `task-assignment`, `task-assignment-layout`: native field propagation, real exact-version assignment/clear PATCHes, same-value zero writes, conflict and committed-response-loss GET-only recovery, people identity/access presentation, local filters with full-chain facts, bilingual desktop/narrow menu, focus, scroll and fullscreen behavior |
@@ -2196,9 +2206,9 @@ Full shard artifacts are `daynight-web-acceptance-1` and
 `daynight-web-acceptance-2`, separate from raw coverage and retained for 30 days.
 Inspect the artifact from the exact workflow run and tested checkout identity,
 which is normally a merge revision for PR runs. Complete ordinary validation
-requires thirty-five native and thirty-five container functional scenarios across
+requires thirty-six native and thirty-six container functional scenarios across
 the two CI shards or in one local run. Explicit local stress requires their
-strict native union with five capacity/limit scenarios and the same thirty-five
+strict native union with five capacity/limit scenarios and the same thirty-six
 container scenarios. Every selected phase rejects missing, extra or duplicate
 scenarios and skipped/flaky/retried results.
 Installed-CLI handoff, container callbacks and recovery require matching source

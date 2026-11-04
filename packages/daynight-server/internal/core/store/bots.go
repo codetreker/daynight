@@ -50,13 +50,14 @@ func (s *Snapshot) BotWorker(ctx context.Context, ownerID, workerID string) erro
 }
 
 const botProjection = `id::text,owner_user_id::text,worker_id::text,name,version,creation_order,request_fingerprint,
- requested_overrides,resolved_configuration,role_configuration,session_id::text,startup_result,deletion,created_at,updated_at`
+ requested_overrides,resolved_configuration,role_configuration,session_id::text,startup_result,deletion,created_at,updated_at,
+ (SELECT bound.test_execution_id::text FROM task_sessions bound WHERE bound.id=bots.session_id AND bound.bot_id=bots.id)`
 
 func scanBot(row pgx.Row) (core.Bot, error) {
 	var bot core.Bot
 	var overrides, configuration, role, startup, deletion []byte
 	if err := row.Scan(&bot.ID, &bot.OwnerUserID, &bot.WorkerID, &bot.Name, &bot.Version, &bot.CreationOrder, &bot.RequestFingerprint,
-		&overrides, &configuration, &role, &bot.SessionID, &startup, &deletion, &bot.CreatedAt, &bot.UpdatedAt); err != nil {
+		&overrides, &configuration, &role, &bot.SessionID, &startup, &deletion, &bot.CreatedAt, &bot.UpdatedAt, &bot.TestExecutionID); err != nil {
 		return core.Bot{}, err
 	}
 	for _, field := range []struct {
@@ -77,7 +78,16 @@ func scanBot(row pgx.Row) (core.Bot, error) {
 }
 
 func readBot(ctx context.Context, tx pgx.Tx, id, lock string) (core.Bot, error) {
-	bot, err := scanBot(tx.QueryRow(ctx, `SELECT `+botProjection+` FROM bots WHERE id=$1`+lock, id))
+	if lock != "" {
+		var locked string
+		if err := tx.QueryRow(ctx, `SELECT id::text FROM bots WHERE id=$1`+lock, id).Scan(&locked); err != nil {
+			return core.Bot{}, queryError("lock bot", err)
+		}
+	}
+	// A lock wait can observe a newly committed Bot row while a subquery keeps
+	// the statement's earlier snapshot. Read the association in a new statement
+	// after acquiring the row lock so both identities describe the same binding.
+	bot, err := scanBot(tx.QueryRow(ctx, `SELECT `+botProjection+` FROM bots WHERE id=$1`, id))
 	if err != nil {
 		return core.Bot{}, queryError("read bot", err)
 	}

@@ -7,7 +7,8 @@ import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import type { TaskPlatform, WorkerCPU, WorkerDisk, WorkerExecutableProbe, WorkerMachine, WorkerProbe, WorkerProbeCode, WorkerTelemetry } from "../../api/types.js";
 import { hasHerdrCommandCleanupFailure, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess } from "./herdr/command.js";
-import { createHerdrNativeEnvironment, createHerdrVersionObserver } from "./herdr/instance.js";
+import { createHerdrNativeEnvironment } from "./herdr/instance.js";
+import { createHerdrRuntimeVersionObserver, HerdrVersionUnavailableError } from "./herdr/runtime-version.js";
 import { NativeVersionOutputError, probeNativeAgentVersion } from "./herdr/version-probe.js";
 import type { WorkerPaths } from "./paths.js";
 import type { AssistantHostSample } from "./bots/host-capabilities.js";
@@ -23,6 +24,7 @@ class SampleError extends Error {
   constructor(readonly code: WorkerProbeCode, message: string, options?: ErrorOptions) { super(message, options); this.name = "WorkerSampleError"; }
 }
 const codeOf = (error: unknown): WorkerProbeCode => {
+  if (error instanceof HerdrVersionUnavailableError) return "unavailable";
   if (error instanceof SampleError) return error.code;
   if (error instanceof OperationError || error instanceof HerdrCommandDeadlineError) return "timeout";
   if (error instanceof NativeVersionOutputError) return "invalid_output";
@@ -114,12 +116,12 @@ const executableMissing = async (agent: string, environment: NodeJS.ProcessEnv, 
 };
 
 export const createWorkerTelemetryCollector = (options: {
-  paths: WorkerPaths; homeDirectory: string; version: string; workingDirectory: string; machine: WorkerMachine; platform: TaskPlatform;
+  paths: WorkerPaths; homeDirectory: string; version: string; workingDirectory: string; machine: WorkerMachine; platform: TaskPlatform; workerId: string; serverOrigin: string;
   assistantHost?: { collect: (operation: Operation) => Promise<AssistantHostSample> };
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || /[\0\r\n]/.test(options.workingDirectory)) throw new TypeError("The Worker startup directory must be absolute and contain no control separators.");
   const environment = createHerdrNativeEnvironment(options.paths, process.env);
-  const herdr = createHerdrVersionObserver(options.paths);
+  const herdr = createHerdrRuntimeVersionObserver(options);
   const cache = new Map<"codex" | "copilot", { started: number; probe: WorkerExecutableProbe; issue?: WorkerTelemetryIssue; cleanupUncertain: boolean }>();
   let pendingDisk: Promise<WorkerDisk> | null = null;
   const disk = async (operation: Operation): Promise<WorkerDisk> => {
@@ -182,7 +184,7 @@ export const createWorkerTelemetryCollector = (options: {
           probe("cpu", () => sampleCPU(collection)),
           probe("memory", () => { const totalBytes = integer(os.totalmem()); const free = integer(os.freemem()); if (totalBytes <= 0 || free > totalBytes) throw new SampleError("invalid_sample", "Available memory must fit its positive total capacity."); return { totalBytes, usedBytes: totalBytes - free }; }),
           probe("disk", () => disk(collection)),
-          probe("herdr", () => herdr.observe(collection)), version("codex"), version("copilot"),
+          probe("herdr", () => observe(herdr.observe(collection), collection)), version("codex"), version("copilot"),
           assistantPending,
         ]);
         const assistant = "value" in assistantOutcome ? assistantOutcome.value : undefined;

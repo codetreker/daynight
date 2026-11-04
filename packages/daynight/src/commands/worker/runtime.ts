@@ -196,7 +196,7 @@ export const runWorker = async (options: {
     const remote = createWorkerRemote({ serverUrl, serverToken });
     await remote.currentUserId(signal);
     const machine = machineDescription(platform);
-    const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform });
+    const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl });
     reporter = createWorkerReporter({ signal, collect: operation => telemetry.collect(operation), send: (report, operation) => remote.report(workerId, report, operation), emit: diagnostics.emit });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
     const agentEnvironment = await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal);

@@ -2,6 +2,7 @@ import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
 import { directAccessFixture, taskSyncQuery, taskSyncResponse, viewerHeaders } from './helpers/taskSync';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
+import { performance as nodePerformance } from 'node:perf_hooks';
 import { openDB } from 'idb';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
@@ -16,6 +17,7 @@ import { createLocaleRender } from "./helpers/renderWithLocale";
 import { invitationStorageKey, teamInvitationStorageKey } from "../src/features/auth/invitation";
 import { SIDEBAR_STORAGE_KEY } from "../src/app/useSidebarPreference";
 import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
+import { personalTeamPage } from "./helpers/team";
 
 const render = createLocaleRender("zh-CN");
 let topLevelFocused = true;
@@ -45,6 +47,7 @@ const fail = (status: number, code: string) => json({ error: { code, message: "h
 const graph = (url: string) => graphResponse({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, url);
 const defaults = (url: string): Response => {
   if (url === "/api/v1/me") return json(user(serverUserId, serverUserId === userId ? "Alice" : "Bob"));
+  if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(serverUserId));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
   if (url.endsWith("/members")) return json({ actorAccess: directAccessFixture(projectId, serverUserId, "admin"), items: [participant()] });
@@ -410,10 +413,14 @@ describe("authenticated application shell", () => {
 
   it("evicts the old project and open detail as soon as a sync response proves another principal while identity is pending", async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    const waitForCacheUi = (assertion: () => void) => waitFor(async () => {
-      await act(async () => { await nextEventLoopTurn(); });
-      assertion();
-    }, { timeout: 5_000 });
+    const waitForCacheUi = async (assertion: () => void) => {
+      const deadline = nodePerformance.now() + 1_000;
+      for (;;) {
+        await act(async () => { await nextEventLoopTurn(); });
+        try { assertion(); return; }
+        catch (error) { if (nodePerformance.now() >= deadline) throw error; }
+      }
+    };
     const taskId = '00000000-0000-4000-8000-000000000005';
     const detail = detailFixture(projectId, taskId, { title: 'Alice-only task', description: 'Alice-only private detail' });
     const aliceGraph = { ...graphFixture([detail]), project: project('Alice 的项目') };
@@ -944,21 +951,23 @@ describe("authenticated application shell", () => {
   });
 
   it("clears the workspace and stops automatic graph reads after a resource401", async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     window.history.replaceState(null, "", `/projects/${projectId}`);
     let expired = false;
     const fetcher = install((url) => expired && isTaskSync(url) ? fail(401, "unauthenticated") : defaults(url));
-    await act(async () => { render(<AuthenticatedApp />); });
-    await vi.waitFor(async () => {
-      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-      expect(screen.getByRole("heading", { name: "私有项目" })).toBeInTheDocument();
+    const initialSync = Promise.withResolvers<void>();
+    const applySync = TaskCacheScope.prototype.applySync;
+    vi.spyOn(TaskCacheScope.prototype, "applySync").mockImplementation(function (this: TaskCacheScope, ...args) {
+      const result = applySync.apply(this, args);
+      void result.then(() => initialSync.resolve(), initialSync.reject);
+      return result;
     });
+    await act(async () => { render(<AuthenticatedApp />); });
+    await act(async () => initialSync.promise);
+    expect(screen.getByRole("heading", { name: "私有项目" })).toBeInTheDocument();
     expired = true;
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-    await vi.waitFor(async () => {
-      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-      expect(screen.getByRole("heading", { name: "登录你的工作空间" })).toBeInTheDocument();
-    });
+    await screen.findByRole("heading", { name: "登录你的工作空间" });
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
     const graphReads = () => fetcher.mock.calls.filter(([url]) => isTaskSync(url)).length;
     expect(graphReads()).toBe(2);
@@ -1492,7 +1501,7 @@ describe("private project creation", () => {
     expect(repository.checkValidity()).toBe(true);
     fireEvent.submit(screen.getByRole("button", { name: "创建项目" }).closest("form")!);
     await waitFor(() => expect(window.location.pathname).toBe(`/projects/${projectId}`));
-    expect(fetcher.mock.calls.find(([, options]) => options?.method === "POST")?.[1]?.body).toBe(JSON.stringify({ name: "  新项目  ", repoUrl: "git@github.com:example/repo.git", expectedUserId: userId }));
+    expect(fetcher.mock.calls.find(([, options]) => options?.method === "POST")?.[1]?.body).toBe(JSON.stringify({ name: "  新项目  ", repoUrl: "git@github.com:example/repo.git", expectedUserId: userId, teamId: user().personalTeam.id }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 

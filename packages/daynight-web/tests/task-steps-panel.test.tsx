@@ -1,19 +1,28 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/client";
 import type { StepsResource, TaskStep } from "../src/api/task-steps";
 import { TaskStepsPanel } from "../src/features/task-detail/steps/TaskStepsPanel";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 
-const read = vi.hoisted(() => ({ resource: null as StepsResource | null, status: "loading", error: null as unknown, refreshing: false, stale: true, retry: vi.fn(), canSetStatus: true, setStatus: vi.fn(), canMove: true, move: vi.fn(), reconcile: vi.fn(), mutation: { operation: null as null | { action: string; stepId: string }, phase: "idle", error: null as unknown, reconciling: false, reconciliationError: null as unknown } }));
+const read = vi.hoisted(() => ({ resource: null as StepsResource | null, status: "loading", error: null as unknown, refreshing: false, stale: true, retry: vi.fn(), canSetStatus: true, canAdd: true, canMove: true, move: vi.fn(), setStatus: vi.fn(), add: vi.fn(), reconcile: vi.fn(), mutation: { operation: null as null | { action: string; stepId: string; requestId?: string }, phase: "idle", error: null as unknown, reconciling: false, reconciliationError: null as unknown } }));
 vi.mock("../src/features/task-detail/useTaskSteps", () => ({ useTaskSteps: () => read }));
+const listeners = vi.hoisted(() => new Set<() => void>());
+vi.mock("../src/features/task-detail/TaskDetailSession", () => ({ useTaskDetailSessions: () => ({
+  subscribe: (_project: string, _task: string, listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+  snapshot: () => ({ mutation: read.mutation }),
+}) }));
+const publish = () => act(() => { for (const listener of listeners) listener(); });
+const navigationDraft = vi.hoisted(() => ({ current: null as null | { isDirty: () => boolean; discard: () => void } }));
+const navigationDecision = vi.hoisted(() => ({ current: null as object | null }));
+vi.mock("../src/features/task-detail/TaskDraftNavigation", () => ({ useDirtyTaskDraft: (draft: typeof navigationDraft.current) => { navigationDraft.current = draft; }, useDraftNavigationDecision: () => navigationDecision.current }));
 const projectId = "10000000-0000-0000-0000-000000000001";
 const taskId = "20000000-0000-0000-0000-000000000002";
 const time = "2026-11-03T12:34:56.123456Z";
 const steps: TaskStep[] = Array.from({ length: 241 }, (_, index) => ({ id: index.toString(16).padStart(8, "0"), title: `Round ${index + 1}`, description: index === 1 ? "" : `Result ${index + 1}`, status: (["todo", "in_progress", "done", "skipped"] as const)[index % 4]!, createdAt: time, updatedAt: time }));
 const resource = (items: readonly TaskStep[] = steps): StepsResource => ({ projectId, taskId, version: 3n, steps: items });
 const panel = (active = true) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} renderMarkdown={(text) => <div data-testid="markdown">{text}</div>} />;
-beforeEach(() => Object.assign(read, { resource: resource(steps.slice(0, 4)), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn(), canSetStatus: true, setStatus: vi.fn(), canMove: true, move: vi.fn(), reconcile: vi.fn(), mutation: { operation: null, phase: "idle", error: null, reconciling: false, reconciliationError: null } }));
+beforeEach(() => { navigationDraft.current = null; navigationDecision.current = null; Object.assign(read, { resource: resource(steps.slice(0, 4)), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn(), canSetStatus: true, canAdd: true, canMove: true, move: vi.fn(), setStatus: vi.fn(), add: vi.fn().mockReturnValue("request-add"), reconcile: vi.fn(), mutation: { operation: null, phase: "idle", error: null, reconciling: false, reconciliationError: null, reconciledFrom: undefined } }); });
 
 describe("Step status", () => {
   it("offers four keyboard-accessible choices and retains the confirmed state until a response", () => {
@@ -87,6 +96,213 @@ describe("Step status", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Encoded size: 101 bytes; limit: 100 bytes.");
     expect(screen.queryByText("private-server-sentinel")).toBeNull();
     expect(screen.getByText("request-2")).toBeVisible();
+  });
+});
+
+describe("adding a Step", () => {
+  const form = () => within(document.querySelector(".step-add-form")!);
+  const open = () => fireEvent.click(within(document.querySelector(".steps-toolbar")!).getByRole("button", { name: "Add step" }));
+  const title = () => form().getByRole("textbox", { name: "Title" });
+  const description = () => form().getByRole("textbox", { name: "Description (Markdown, optional)" });
+  const save = () => fireEvent.click(form().getByRole("button", { name: "Save" }));
+  const submit = () => {
+    open(); fireEvent.change(title(), { target: { value: "  Review 第 2 轮  " } });
+    fireEvent.change(description(), { target: { value: "**Result**\n[next](file.md)" } });
+    fireEvent.change(form().getByLabelText("Initial status"), { target: { value: "in_progress" } });
+    save();
+    return read.add.mock.calls[0]![0] as string;
+  };
+  const setAddMutation = (stepId: string, phase: string, requestId = "request-add", error: unknown = null) => {
+    read.mutation = { operation: { action: "stepAdd", stepId, requestId }, phase, error, reconciling: false, reconciliationError: null };
+  };
+
+  it("validates the title, previews the same Markdown, and submits unmodified fields with a reserved short ID", () => {
+    renderWithLocale(panel(), { locale: "en" });
+    open(); expect(title()).toHaveFocus();
+    expect(screen.getByLabelText("Initial status")).toHaveValue("todo");
+    fireEvent.change(title(), { target: { value: " \u2003 " } }); save();
+    expect(title()).toHaveAttribute("aria-invalid", "true"); expect(read.add).not.toHaveBeenCalled();
+    fireEvent.change(title(), { target: { value: "  Review 第 2 轮  " } });
+    fireEvent.change(description(), { target: { value: "**Result**\n[next](file.md)" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(screen.getByTestId("markdown")).toHaveTextContent("**Result**");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(description()).toHaveValue("**Result**\n[next](file.md)");
+    fireEvent.change(screen.getByLabelText("Initial status"), { target: { value: "in_progress" } }); save();
+    const [stepId, ...rest] = read.add.mock.calls[0]!;
+    expect(stepId).toMatch(/^[0-9a-f]{8}$/);
+    expect(rest).toEqual(["  Review 第 2 轮  ", "**Result**\n[next](file.md)", "in_progress", 3n]);
+  });
+
+  it("retains draft through pagination and unrelated writes; cancellation and navigation require a decision", () => {
+    read.resource = resource(steps.slice(0, 101));
+    const view = renderWithLocale(panel(), { locale: "en" });
+    open(); expect(navigationDraft.current?.isDirty()).toBe(false);
+    fireEvent.change(title(), { target: { value: "Draft" } });
+    expect(navigationDraft.current?.isDirty()).toBe(true);
+    const pagination = () => within(document.querySelector(".steps-pagination")!);
+    fireEvent.click(pagination().getByRole("button", { name: "Previous" }));
+    expect(title()).toHaveValue("Draft");
+    fireEvent.click(pagination().getByRole("button", { name: "Next" }));
+    read.canAdd = false; view.rerender(panel());
+    expect(form().getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.change(title(), { target: { value: "Still editable" } });
+    expect(title()).toHaveValue("Still editable");
+    fireEvent.click(form().getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("unsaved draft");
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(title()).toHaveValue("Still editable");
+    fireEvent.click(form().getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull();
+    expect(navigationDraft.current?.isDirty()).toBe(false);
+    open(); fireEvent.change(title(), { target: { value: "Private draft" } });
+    act(() => navigationDraft.current?.discard());
+    expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull();
+  }, 15_000);
+
+  it("freezes its own pending and unknown payload, preserves rejection and offers only readback for unknown", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    const stepId = submit();
+    setAddMutation(stepId, "pending"); read.canAdd = false; view.rerender(panel());
+    expect(title()).toBeDisabled(); expect(description()).toBeDisabled();
+    expect(screen.getByLabelText("Initial status")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    setAddMutation(stepId, "unknown", "request-add", new ApiError("network")); view.rerender(panel());
+    expect(title()).toBeDisabled(); expect(screen.getByRole("alert")).toHaveTextContent("outcome is unknown");
+    fireEvent.click(screen.getByRole("button", { name: "Read current steps" }));
+    expect(read.reconcile).toHaveBeenCalledOnce(); expect(read.add).toHaveBeenCalledOnce();
+    read.mutation = { ...read.mutation, reconciliationError: new ApiError("network") }; view.rerender(panel());
+    expect(screen.getByRole("alert")).toHaveTextContent("could not be checked");
+    expect(title()).toBeDisabled(); expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    setAddMutation(stepId, "refused", "request-add", new ApiError("server", 409, "steps_limit_exceeded", "request-add", undefined, undefined, undefined, { encodedBytes: 101, maxEncodedBytes: 100 }));
+    read.canAdd = true; view.rerender(panel());
+    expect(title()).toBeEnabled(); expect(title()).toHaveValue("  Review 第 2 轮  ");
+    expect(description()).toHaveValue("**Result**\n[next](file.md)");
+    expect(screen.getByRole("alert")).toHaveTextContent("101 bytes");
+  });
+
+  it("keeps conflict and reconciled unknown drafts separate from the current resource", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    const stepId = submit();
+    setAddMutation(stepId, "conflict", "request-add", new ApiError("server", 409, "version_conflict"));
+    read.canAdd = false; view.rerender(panel());
+    expect(screen.getByRole("alert")).toHaveTextContent("task changed");
+    expect(title()).toHaveValue("  Review 第 2 轮  ");
+    fireEvent.click(screen.getByRole("button", { name: "Read current steps" }));
+    expect(read.reconcile).toHaveBeenCalledOnce(); expect(read.add).toHaveBeenCalledOnce();
+    setAddMutation(stepId, "reconciled", "request-add", new ApiError("network"));
+    Object.assign(read.mutation, { reconciledFrom: "unknown" });
+    read.resource = { ...resource(), version: 4n }; read.canAdd = true; view.rerender(panel());
+    expect(screen.getByRole("alert")).toHaveTextContent("outcome remains unknown");
+    expect(title()).toBeEnabled(); expect(description()).toHaveValue("**Result**\n[next](file.md)");
+    expect(read.add).toHaveBeenCalledOnce();
+  });
+
+  it("focuses the actual confirmed row on its page and ignores a late receipt for an earlier form", () => {
+    read.resource = resource(steps.slice(0, 100));
+    const view = renderWithLocale(panel(), { locale: "en" });
+    const firstId = submit();
+    setAddMutation(firstId, "refused"); view.rerender(panel());
+    fireEvent.click(form().getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    open(); fireEvent.change(title(), { target: { value: "New draft" } });
+    setAddMutation(firstId, "confirmed"); publish();
+    const firstStep = { ...steps[0]!, id: firstId, title: "First result" };
+    read.resource = resource([...steps.slice(0, 100), firstStep]); view.rerender(panel());
+    expect(title()).toHaveValue("New draft");
+    read.add.mockReturnValue("request-new"); save();
+    const secondId = read.add.mock.calls[1]![0] as string;
+    read.stale = true; setAddMutation(secondId, "confirmed", "request-new"); publish();
+    const secondStep = { ...steps[0]!, id: secondId, title: "New draft" };
+    read.resource = resource([...steps.slice(0, 100), firstStep, secondStep]); read.stale = false; view.rerender(panel());
+    expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull();
+    expect(screen.getByRole("spinbutton", { name: "Page" })).toHaveValue(2);
+    expect(screen.getByRole("button", { name: "New draft" })).toHaveFocus();
+  }, 15_000);
+
+  it("retains a confirmed receipt on a hidden tab even after a later parent write", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    const stepId = submit();
+    read.stale = true; read.resource = null; view.rerender(panel(false));
+    setAddMutation(stepId, "confirmed"); publish();
+    read.mutation = { operation: { action: "taskStatus", stepId: "" }, phase: "confirmed", error: null, reconciling: false, reconciliationError: null }; publish();
+    const created = { ...steps[0]!, id: stepId, title: "Saved while hidden" };
+    read.resource = { ...resource([...steps.slice(0, 4), created]), version: 5n }; read.stale = false; view.rerender(panel(true));
+    expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Saved while hidden" })).toHaveFocus();
+  });
+
+  it("retains an unknown outcome and its ID after hidden-tab readback and a later parent write", () => {
+    const view = renderWithLocale(panel(), { locale: "en" }); const stepId = submit();
+    setAddMutation(stepId, "unknown", "request-add", new ApiError("network")); read.canAdd = false; publish(); view.rerender(panel());
+    expect(title()).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Read current steps" }));
+    setAddMutation(stepId, "reconciled", "request-add", new ApiError("network"));
+    Object.assign(read.mutation, { reconciledFrom: "unknown" }); read.canAdd = true; view.rerender(panel());
+    expect(screen.getByRole("alert")).toHaveTextContent(stepId);
+    read.resource = null; view.rerender(panel(false));
+    read.mutation = { operation: { action: "taskStatus", stepId: "" }, phase: "confirmed", error: null, reconciling: false, reconciliationError: null }; publish();
+    read.resource = { ...resource(steps.slice(0, 4)), version: 5n }; view.rerender(panel(true));
+    expect(title()).toHaveValue("  Review 第 2 轮  ");
+    expect(description()).toHaveValue("**Result**\n[next](file.md)");
+    expect(screen.getByRole("alert")).toHaveTextContent("outcome remains unknown");
+    expect(screen.getByRole("alert")).toHaveTextContent(stepId);
+    expect(read.add).toHaveBeenCalledOnce();
+    read.add.mockReturnValue("request-retry"); save();
+    expect(read.add.mock.calls[1]![0]).toBe(stepId);
+    setAddMutation(stepId, "refused", "request-retry", new ApiError("server", 409, "step_id_conflict")); view.rerender(panel());
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Choose another ID" })).toBeNull();
+    expect(title()).toHaveValue("  Review 第 2 轮  ");
+    expect(read.add).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a confirmed step removed before convergence and returns focus to add", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    const stepId = submit();
+    read.stale = true; setAddMutation(stepId, "confirmed"); publish();
+    read.resource = { ...resource(steps.slice(0, 4)), version: 5n }; read.stale = false; view.rerender(panel());
+    expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent("saved but is no longer");
+    expect(screen.getByRole("button", { name: "Add step" })).toHaveFocus();
+  });
+
+  it("rejects NUL and unpaired surrogates in either field before submission", () => {
+    renderWithLocale(panel(), { locale: "en" }); open();
+    fireEvent.change(title(), { target: { value: "Bad\0title" } }); save();
+    expect(title()).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("valid Unicode");
+    fireEvent.change(title(), { target: { value: "Valid" } });
+    fireEvent.change(description(), { target: { value: "Bad\ud800" } }); save();
+    expect(description()).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("valid Unicode");
+    expect(read.add).not.toHaveBeenCalled();
+    fireEvent.change(description(), { target: { value: "Valid 😀" } }); save();
+    expect(read.add).toHaveBeenCalledOnce();
+  });
+
+  it("allows local edits during conflict readback while saving remains locked", () => {
+    const view = renderWithLocale(panel(), { locale: "en" }); const stepId = submit();
+    setAddMutation(stepId, "conflict", "request-add", new ApiError("server", 409, "version_conflict"));
+    read.mutation = { ...read.mutation, reconciling: true }; read.canAdd = false; view.rerender(panel());
+    expect(title()).toBeEnabled(); expect(description()).toBeEnabled();
+    fireEvent.change(title(), { target: { value: "Revised during readback" } });
+    expect(title()).toHaveValue("Revised during readback");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled(); expect(read.add).toHaveBeenCalledOnce();
+  });
+
+  it("keeps fields on a duplicate ID rejection and changes ID only after explicit choice", () => {
+    const view = renderWithLocale(panel(), { locale: "en" }); const firstId = submit();
+    setAddMutation(firstId, "refused", "request-add", new ApiError("server", 409, "step_id_conflict")); view.rerender(panel());
+    expect(title()).toHaveValue("  Review 第 2 轮  "); expect(description()).toHaveValue("**Result**\n[next](file.md)");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled(); expect(read.add).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Choose another ID" }));
+    expect(title()).toHaveValue("  Review 第 2 轮  ");
+    read.add.mockReturnValue("request-another"); save();
+    expect(read.add).toHaveBeenCalledTimes(2);
+    expect(read.add.mock.calls[1]![0]).toMatch(/^[0-9a-f]{8}$/);
+    expect(read.add.mock.calls[1]![0]).not.toBe(firstId);
   });
 });
 
@@ -190,6 +406,35 @@ describe("Steps read failures", () => {
 
 
 describe("Step position", () => {
+  it("closes a move dialog before a draft navigation decision and returns to the editor on cancellation", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }));
+    const title = screen.getByRole("textbox", { name: "Title" });
+    fireEvent.change(title, { target: { value: "A draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Round 1" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+    expect(screen.getByRole("dialog", { name: "Move step" })).toBeVisible();
+    navigationDecision.current = {}; view.rerender(panel());
+    expect(screen.queryByRole("dialog", { name: "Move step" })).toBeNull();
+    navigationDecision.current = null; view.rerender(panel());
+    expect(title).toHaveFocus(); expect(title).toHaveValue("A draft");
+  });
+  it("does not steal focus or change page from an actively edited add draft when a move completes", () => {
+    read.resource = resource();
+    const view = renderWithLocale(panel(), { locale: "en" });
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Round 1" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move to end" }));
+    read.mutation = { operation: { action: "stepPosition", stepId: "00000000" }, phase: "pending", error: null, reconciling: false, reconciliationError: null }; view.rerender(panel());
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }));
+    const page = screen.getByRole("spinbutton", { name: "Page" });
+    fireEvent.change(page, { target: { value: "1" } }); fireEvent.submit(page.closest("form")!);
+    const title = screen.getByRole("textbox", { name: "Title" });
+    fireEvent.change(title, { target: { value: "A draft" } }); title.focus();
+    read.resource = resource([...steps.slice(1), steps[0]!]);
+    read.mutation = { ...read.mutation, phase: "confirmed" }; view.rerender(panel());
+    expect(title).toHaveFocus(); expect(title).toHaveValue("A draft");
+    expect(page).toHaveValue(1);
+  });
   it("uses the complete order for boundary and adjacent moves", () => {
     read.resource = resource();
     const view = renderWithLocale(panel(), { locale: "en" });
@@ -222,23 +467,24 @@ describe("Step position", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Move" }));
     expect(read.move).toHaveBeenCalledWith("00000000", { after: "00000065" }, 3n);
   });
-  it("restores expansion and focus at the actual confirmed page", async () => {
+  it("restores expansion and focus at the actual confirmed page", () => {
     read.resource = resource();
     const view = renderWithLocale(panel(), { locale: "en" });
-    fireEvent.click(screen.getByRole("button", { name: "Round 1" }));
-    fireEvent.click(screen.getByRole("button", { name: "More actions for Round 1" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Move to end" }));
+    const currentStep = () => within(view.container.querySelector<HTMLElement>('[data-step-id="00000000"]')!);
+    fireEvent.click(currentStep().getByRole("button", { name: "Round 1" }));
+    fireEvent.click(currentStep().getByRole("button", { name: "More actions for Round 1" }));
+    fireEvent.click(currentStep().getByRole("menuitem", { name: "Move to end" }));
     read.mutation = { operation: { action: "stepPosition", stepId: "00000000" }, phase: "pending", error: null, reconciling: false, reconciliationError: null }; view.rerender(panel());
-    expect(screen.getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
+    expect(currentStep().getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
     read.resource = resource([...steps.slice(1), steps[0]!]);
     read.mutation = { ...read.mutation, phase: "confirmed" }; view.rerender(panel());
-    await waitFor(() => {
-      expect(screen.getByText("201–241 of 241 steps")).toBeVisible();
-      expect(screen.getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
-      expect(screen.getByRole("button", { name: "More actions for Round 1" })).toHaveFocus();
-      expect(screen.getByRole("button", { name: "Round 1" }).closest("li")!.querySelector(".step-number")).toHaveTextContent("241");
-    });
-  });
+    expect(screen.getByText("201–241 of 241 steps")).toBeVisible();
+    const confirmedStep = currentStep();
+    const disclosure = confirmedStep.getByRole("button", { name: "Round 1" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expect(confirmedStep.getByRole("button", { name: "More actions for Round 1" })).toHaveFocus();
+    expect(disclosure.closest("li")!.querySelector(".step-number")).toHaveTextContent("241");
+  }, 15_000);
   it("returns focus after a confirmed relative move within the same page", () => {
     const view = renderWithLocale(panel(), { locale: "en" });
     fireEvent.click(screen.getByRole("button", { name: "More actions for Round 1" }));

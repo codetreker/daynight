@@ -39,6 +39,13 @@ A confirmed stop, known native conversation and confirmed or explicitly resolved
 initial input permit another generation; the [input arbitration decision](2026-11-04-herdr-input-arbitration.md)
 keeps human-owned input suspended and preserves the original unknown receipt. Reconnection changes the connection epoch and starts a
 segment with an explicit gap. Uncertain input is never automatically replayed.
+An automatic known-menu or disabled-input rejection with no native write clears
+only the current admission and preserves initial pending state when applicable.
+The typed waiting result survives input-journal serialization, while any
+possible write retains unknown-result protection. Daily automatic/cleanup
+inspection supplies no empty-composer fact; explicit handback and clean recovery
+retain the resume-only empty-field requirement described by the input design.
+
 Stop proof, segment closure and ledger acknowledgement are separately recoverable
 boundaries. Without a committed stop intent, emergency signaling cannot produce
 a durable stopped result after restart.
