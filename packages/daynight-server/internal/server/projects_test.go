@@ -160,19 +160,19 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 		`{"name":{},"repoUrl":"https://github.com/example/repo"}`,
 		`{"repoUrl":"https://github.com/example/repo"}`,
 		`{"name":"ok"}`, `{"name":"ok","repoUrl":null}`, `{"name":"ok","repoUrl":1}`,
-		`{"name":" ","repoUrl":"https://github.com/example/repo"}`,
-		`{"name":"\u0000","repoUrl":"https://github.com/example/repo"}`,
-		`{"name":"ok","repoUrl":"https://user:password-secret@github.com/example/repo"}`,
-		`{"name":"ok","repoUrl":"not-a-repository"}`,
-		"{\"name\":\"" + string([]byte{0xff}) + "\",\"repoUrl\":\"https://github.com/example/repo\"}",
-		`{"name":"` + strings.Repeat("x", maxJSONBody) + `","repoUrl":"https://github.com/example/repo"}`,
+		`{"name":" ","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
+		`{"name":"\u0000","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
+		`{"name":"ok","repoUrl":"https://user:password-secret@github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
+		`{"name":"ok","repoUrl":"not-a-repository","expectedUserId":"` + handler.principal.UserID + `"}`,
+		"{\"name\":\"" + string([]byte{0xff}) + "\",\"repoUrl\":\"https://github.com/example/repo\",\"expectedUserId\":\"" + handler.principal.UserID + "\"}",
+		`{"name":"` + strings.Repeat("x", maxJSONBody) + `","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
 	} {
 		t.Run(string(body[:min(len(body), 80)]), func(t *testing.T) {
 			assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", body), http.StatusBadRequest, "invalid_input")
 		})
 	}
 	for _, contentType := range []string{"", "text/plain", "application/json; charset=iso-8859-1", "application/json; charset=", "application/json; charset=utf-8; charset=us-ascii"} {
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(`{"name":"ok","repoUrl":"https://github.com/example/repo"}`))
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(jsonBody(t, api.CreateProjectRequest{Name: "ok", RepoURL: "https://github.com/example/repo", ExpectedUserID: handler.principal.UserID})))
 		authorizeResourceRequest(handler, request)
 		request.Header.Set("Content-Type", contentType)
 		request.Header.Set("X-Request-ID", "project-test")
