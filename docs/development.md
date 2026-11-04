@@ -207,14 +207,18 @@ GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
 captured targets, disposable review artifacts, shared refs, and isolation between
-PR worktrees. Independent Git suites run in separate Vitest workers. Each suite
-copies its immutable bare-origin seed into private test directories; refs,
+PR worktrees. Independent Git suites run in separate Vitest workers. Review suites
+copy immutable bare-origin seeds into private test directories; refs,
 SQLite databases, clones and worktrees remain separate for every case. Sparse
 suites prepare their shared source graph before copying; scenario observations
 and mutations remain private. Source snapshots are prepared through batched
 native Git imports, while real clone/fetch/worktree operations remain the test
-subjects. Tests within
-a file stay sequential so environment changes and cleanup have one owner.
+subjects. Worker worktree cases separately copy file-owned starting repositories
+for the files and reftable backends. Direct mutation checks verify independent
+tracked bytes, refs and Git objects in each copy. The
+[Worker seed decision](../.agents/notes/implemented/testing/2026-11-04-worker-git-fixture-seeds.md)
+owns that fixture lifetime. Tests within a file stay sequential so environment
+changes and cleanup have one owner.
 The [Git test decision](../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)
 records the isolation rules, and the
 [CI timing report](../docs/research/windows-ci-performance.md) records native
