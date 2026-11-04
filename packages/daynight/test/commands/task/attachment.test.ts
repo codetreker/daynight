@@ -13,7 +13,7 @@ import type { TaskCommandDependencies } from "../../../src/commands/task/command
 const projectId = "abcdefab-1111-4222-8333-123456789abc";
 const taskId = "abcdefab-2222-4222-8333-123456789abc";
 const time = "2026-10-21T00:00:00.123456789Z";
-const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
 const attachment = (partial: Partial<TaskAttachment> = {}): TaskAttachment => ({ path: "docs/中文%?#.md", contentType: "text/markdown", sizeBytes: 3, createdAt: time, updatedAt: time, ...partial });
 const operations: Operation[] = [];
 const directories: string[] = [];

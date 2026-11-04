@@ -4,8 +4,8 @@ Status: implemented
 
 ## Problem
 
-The production browser job runs the same complete functional inventory against
-native and container deployments. In [run 41759820378](https://github.com/codetreker/daynight/actions/runs/41759820378/job/126344646908),
+At the time of this decision, the production browser job ran the same complete
+functional inventory against native and container deployments. In [run 41759820378](https://github.com/codetreker/daynight/actions/runs/41759820378/job/126344646908),
 the two Playwright invocations took 307.595 and 303.352 seconds, while the complete
 job took 14 minutes 17 seconds. Container preparation already overlaps native
 preparation, but browser permission waits for native functional cleanup. That
@@ -20,8 +20,12 @@ active target for a leaked resource or remove its credentials.
 
 Native and container functional targets overlap after native preparation has
 finished preparing the shared installed CLI. Each target retains one Playwright
-worker, zero retries and the complete functional and combined-authentication
-inventory. The existing atomic container permission remains bound to its
+worker and zero retries. Local ordinary/stress runs execute the complete
+functional and combined-authentication inventory. The later
+[case-shard decision](2026-11-04-web-ci-case-shards.md) partitions CI functional
+selection across two runners and assigns combined authentication to shard 2;
+this decision's within-run isolation and cleanup barriers apply to both shards.
+The existing atomic container permission remains bound to its
 acceptance run, dev-ci run and source SHA; its phase identifies completed native
 preparation. A slow container announcement is awaited with cancellation rather
 than treated as failed native preparation.
@@ -64,9 +68,12 @@ reject another phase's new profile, and run-wide CLI recovery could terminate
 its commands or delete credentials. Scheduling depends on private profile roots
 and the shared cleanup barrier.
 
-**Create more CI jobs or a new handoff protocol.** Separate jobs duplicate
-production preparation and need additional source, artifact and result
-coordination. Existing in-job targets and receipts provide the needed isolation.
+**Create more CI jobs or a new handoff protocol.** At this decision, separate jobs
+would duplicate production preparation and need additional source, artifact and
+result coordination, while the existing targets could overlap within one job.
+The later [case-shard decision](2026-11-04-web-ci-case-shards.md) accepts that
+preparation cost for two case partitions, retaining the existing target receipts
+and final gate rather than transferring runtime resources between runners.
 
 **Optimize dependency and image caches first.** In the measured run, outer pnpm
 installation took about 20 seconds and Docker Go compilation took 39.4 seconds.

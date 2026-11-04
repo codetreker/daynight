@@ -82,11 +82,11 @@ test('project-settings', { annotation: { type: 'scenario', description: 'project
     const browserWrites: string[] = [];
     page.on('request', (request) => { if (request.method() === 'PATCH') browserWrites.push(request.url()); });
     allowBrowserWrites([{ method: 'PATCH', url: `${baseURL}${settingsPath}`, count: 4 }]);
-    const invitation = await bob.post(`${projectPath}/invitations`, { data: {} }); expect(invitation.status()).toBe(201);
-    const link = (await invitation.json() as { link: string }).link;
-    expect((await api.post('/api/v1/invitations/accept', { data: { token: new URL(link).hash.slice(1) } })).status()).toBe(200);
     const aliceId = await userId(api); const bobId = await userId(bob);
-    const invitedAlice = (await memberList(bob, own.id)).find((member) => member.userId === aliceId)!;
+    const invitation = await bob.post(`${projectPath}/invitations`, { data: { expectedUserId: bobId } }); expect(invitation.status()).toBe(201);
+    const link = (await invitation.json() as { link: string }).link;
+    expect((await api.post('/api/v1/invitations/accept', { data: { token: new URL(link).hash.slice(1), expectedUserId: aliceId } })).status()).toBe(200);
+    const invitedAlice = (await memberList(bob, own.id)).items.find((member) => member.userId === aliceId)!;
     expect((await bob.patch(`${projectPath}/members/${aliceId}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: invitedAlice.directGrant!.version, role: 'admin', expectedUserId: bobId }) })).status()).toBe(200);
     const exact = 9_007_199_254_740_993n;
     await seedProjectSettingsVersion(own.id, exact);
@@ -154,12 +154,12 @@ test('project-settings', { annotation: { type: 'scenario', description: 'project
     await expect(page.getByRole('status').filter({ hasText: '已读取当前保存设置' })).toBeVisible();
     await expect(threshold).toHaveValue('100'); await expect(threshold).toBeEnabled(); expect(browserWrites).toHaveLength(3);
 
-    const bobMember = (await memberList(api, own.id)).find((member) => member.userId === bobId)!;
+    const bobMember = (await memberList(api, own.id)).items.find((member) => member.userId === bobId)!;
     expect((await api.patch(`${projectPath}/members/${bobId}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: bobMember.directGrant!.version, role: 'member', expectedUserId: aliceId }) })).status()).toBe(200);
     const ownerAccess = await bob.get(`${projectPath}/access`);
     expect(ownerAccess.status()).toBe(200);
     expect(await ownerAccess.json()).toMatchObject({ effectiveRole: 'admin', directGrant: { role: 'member' } });
-    const aliceMember = (await memberList(bob, own.id)).find((member) => member.userId === aliceId)!;
+    const aliceMember = (await memberList(bob, own.id)).items.find((member) => member.userId === aliceId)!;
     expect((await bob.patch(`${projectPath}/members/${aliceId}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: aliceMember.directGrant!.version, role: 'member', expectedUserId: bobId }) })).status()).toBe(200);
     await threshold.fill('110'); await submit.click();
     await expect(page.getByRole('status').filter({ hasText: '项目权限已变化' })).toBeVisible();

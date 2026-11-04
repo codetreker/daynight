@@ -2,6 +2,36 @@ import { pause } from "./pause";
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  steps: {
+    title: "步骤", empty: "暂无步骤", noDescription: "暂无说明",
+    loading: "加载步骤", refresh: "刷新步骤", retry: "重试",
+    loadFailed: "步骤加载失败。", refreshFailed: "步骤更新失败。", retained: "当前显示此前已加载的步骤。",
+    networkError: "无法连接服务器。", protocolError: "服务器返回的步骤数据无效。", unavailable: "此任务的步骤资源不可用。", denied: "你没有读取这些步骤的权限。", requestFailed: "服务器无法加载步骤。",
+    count: (count) => `${count} 项步骤`, status: { todo: "待开始", in_progress: "进行中", done: "已完成", skipped: "已跳过" },
+    created: "创建时间", updated: "更新时间", pagination: "步骤分页", previous: "上一页", next: "下一页", page: "页码",
+    range: (start, end, total) => `第 ${start}–${end} 项，共 ${total} 项步骤`,
+    statusMenu: (title) => `${title}的状态`, statusUnavailable: "请等待当前任务和步骤核对完成后再修改状态。",
+    conflict: "任务已变化。请读取当前步骤，再重新选择状态。", conflictReconciled: "任务已变化。已读取步骤，请重新选择状态。", unknown: "状态修改结果未知。请读取当前步骤后再修改。", unknownReconciled: "已读取步骤；先前请求的结果仍未知。",
+    checkState: "读取当前步骤", checking: "正在读取当前步骤", checkFailed: "无法核对当前步骤，暂时不能修改。",
+    statusRefused: "服务器拒绝了状态修改。", statusMissing: "未找到此步骤。请读取当前步骤后重新选择。", statusDenied: "你没有权限修改此步骤。",
+    statusExhausted: "任务版本已耗尽，无法保存此修改。", statusCapacity: "此修改会超过步骤资源的大小上限。", statusInvalid: "服务器认为状态请求无效，已拒绝修改。",
+    moveMenu: (title) => `${title}的更多操作`, moveUnavailable: "请等待当前任务和步骤核对完成后再移动。", moveUp: "上移", moveDown: "下移", moveFirst: "移到开头", moveLast: "移到末尾", moveRelative: "移动到…",
+    moveTitle: "移动步骤", target: "目标步骤", searchTargets: "搜索名称或 ID", targetPagination: "目标分页", targetPage: "目标结果页码", targetResults: "匹配步骤", noTargets: "没有匹配的步骤", targetMissing: "目标步骤已不可用，请选择其他步骤。", placement: "相对位置", before: "之前", after: "之后", cancelMove: "取消", confirmMove: "移动",
+    moveConflict: "任务已变化。请读取当前步骤，再重新选择位置。", moveConflictReconciled: "任务已变化。已读取步骤，请重新选择位置。", moveUnknown: "移动结果未知。请读取当前步骤后再修改。", moveRefused: "服务器拒绝了移动。", moveMissing: "未找到此步骤或目标。请读取当前步骤后重新选择。", moveInvalid: "服务器认为移动请求无效，目标必须是其他步骤。",
+    capacityDetails: (encoded, maximum) => `编码大小：${encoded} 字节；上限：${maximum} 字节。`,
+    add: "添加步骤", addTitle: "标题", description: "说明（Markdown，可选）", initialStatus: "初始状态",
+    edit: "编辑", preview: "预览", save: "保存", cancel: "取消", titleRequired: "请输入包含非空白字符的标题。",
+    discardTitle: "放弃未保存的修改？", discardQuestion: "放弃这个新步骤吗？", discardExplanation: "未保存的草稿将会丢失。", discard: "放弃", keep: "继续编辑",
+    addConflict: "任务已变化。请先读取当前步骤，再决定是否重新保存。", addConflictReconciled: "已读取步骤，请检查草稿后再保存。",
+    addUnknown: "添加结果未知。请读取当前步骤后再决定如何处理。", addUnknownReconciled: "已读取步骤；先前请求的结果仍未知，请检查当前步骤后再决定。",
+    addRefused: "服务器拒绝了这个步骤。", addInvalid: "服务器拒绝了步骤字段。", addDenied: "你没有权限添加步骤。",
+    invalidText: "请输入不含 NUL 的有效 Unicode 文本。", addedMissing: "步骤已保存，但当前集合中已不存在该项。",
+    duplicateId: "此步骤 ID 已存在，请先检查当前步骤。", chooseId: "选择另一个 ID",
+  },
+  draftNavigation: {
+    title: '放弃未保存的修改？', question: '离开此任务并放弃未保存的修改吗？',
+    explanation: '未保存的草稿将会丢失。', discard: '放弃并离开', keep: '继续编辑', close: '取消离开',
+  },
   pause,
   discussion: {
     title: "讨论", empty: "还没有讨论", loading: "正在加载讨论", refresh: "刷新讨论",

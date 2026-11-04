@@ -68,7 +68,7 @@
 .task-claim-execution { margin-top: 4px; color: #56627a; }
 .task-claim-phase { padding: 0 7px; border: 1px solid #e3e3f2; border-radius: 4px; color: #6666a4; background: #f1f1fc; font-size: 11px; }
 .task-claim-released .task-claim-phase { color: #737d8e; background: #f0f1f4; border-color: #e2e4e9; }
-.task-claim-withdraw { color: #ad5555; border-color: #e7d4d4; background: #fff; font-size: 11px; min-height: 30px; flex: none; }
+.task-claim-withdraw { color: #ad5555; border-color: #e7d4d4; background: #fff; font-size: 11px; min-height: 30px; flex: none; scroll-margin-top: 0; }
 .task-claim-members { margin: 6px 0 0; font-size: 11px; color: #778194; }
 .task-claim-members p { margin: 3px 0; }
 .task-claim-members[role=alert] { color: #a55858; }
@@ -231,7 +231,7 @@
   .task-detail-columns { display: block; padding: 20px 19px 24px; }
   .task-detail-aside { margin-top: 24px; }
   .task-detail-footer { padding: 8px 17px; }
-  .task-detail-tabs { padding: 0 19px; }
+  .task-detail-tabs { padding: 0 19px; flex-wrap: wrap; column-gap: 16px; row-gap: 0; }
   .task-detail-panel-attachments { padding: 14px 12px 16px; }
 }
 
@@ -244,8 +244,8 @@
   .task-detail-retained { margin: 0; font-size: 9px; line-height: 1.5; }
   .task-detail-stale { margin: 0; padding: 4px 7px; font-size: 9px; }
   .task-detail-stale .button { margin-top: 2px; padding: 3px 5px; }
-  .task-detail-tabs { margin-top: 5px; padding: 0 18px; }
-  .task-detail-tab { padding: 7px 2px; }
+  .task-detail-tabs { margin-top: 5px; padding: 0 18px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+  .task-detail-tab { padding: 7px 2px; flex: 0 0 auto; white-space: nowrap; }
   .task-detail-panel-attachments { padding: 9px 16px 10px; }
   .task-detail-footer { padding: 4px 16px; font-size: 9px; }
 
@@ -294,3 +294,29 @@
 .task-status-option:hover, .task-status-option:focus-visible { background: #f2f2fd; outline: 2px solid #8c8cf0; outline-offset: -2px; }
 .task-status-option[aria-checked=true] { color: #5555ad; background: #f6f6fd; }
 @media (max-width: 600px) { .task-status-option { padding: 11px; } }
+
+/* The existing surface expands without changing either Session or task identity. */
+.task-detail-dialog.task-detail-session-fullscreen, .task-detail-page.task-detail-session-fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: 100dvh;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+}
+.task-detail-page.task-detail-session-fullscreen { z-index: 30; }
+.task-detail-session-fullscreen > .task-detail-header,
+.task-detail-session-fullscreen > .task-detail-footer,
+.task-detail-session-fullscreen > div:has(> .task-detail-page-topbar),
+.task-detail-session-fullscreen .task-detail-heading,
+.task-detail-session-fullscreen .task-detail-tabs,
+.task-detail-session-fullscreen .task-detail-notifications { display: none; }
+
+/* Replaying the entrance transform changes text-anchor measurements on exit. */
+.task-detail-session-layout { animation: none; }
+
+.task-detail-body:has(.task-detail-panel-session:not([hidden])) > .task-detail-heading { max-height: min(50%, max(0px, calc(100% - var(--session-composer-space, 120px)))); }

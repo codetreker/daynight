@@ -15,9 +15,10 @@ import { ProjectSettingsPanel } from "../features/management/ProjectSettingsPane
 import { MembersPanel } from "../features/management/MembersPanel";
 import { CreateProjectDialog } from "../features/auth/CreateProjectDialog";
 import { InvitationPage } from "../features/auth/InvitationPage";
+import { TeamInvitationPage } from "../features/auth/TeamInvitationPage";
 import { LoginPage } from "../features/auth/LoginPage";
 import { DeviceAuthorizationPage } from "../features/auth/DeviceAuthorizationPage";
-import { captureInvitation, clearInvitation } from "../features/auth/invitation";
+import { captureInvitation, clearInvitation, persistInvitation } from "../features/auth/invitation";
 import { TaskDetailSessionProvider } from "../features/task-detail/TaskDetailSession";
 import { TaskAssigneesProvider } from "../features/task-assignees/TaskAssignees";
 import { ProjectPage } from "../features/projects/ProjectPage";
@@ -31,7 +32,10 @@ import { LanguageSelector } from "../i18n/LanguageSelector";
 import { WorkersPage } from "../features/workers/WorkersPage";
 import { WorkerDetailPage } from "../features/workers/WorkerDetailPage";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
+import { TeamsProvider, useTeams } from "../features/teams/TeamsProvider";
+import { useTeamMessages } from "../features/teams/messages";
 import { useSidebarPreference } from "./useSidebarPreference";
+import { useBrowserLocation } from './browser-location';
 import "../styles/auth.css";
 
 export { parseAuthRoute } from "./router";
@@ -67,18 +71,20 @@ const ProjectManagementNav = ({ projectId, current }: { readonly projectId: stri
   return <nav className="project-management-nav" aria-label={m.projectSettings}><a className="button" href={`/projects/${projectId}`} onClick={followLink}>{app.projectTasks}</a><a className="button" href={`/projects/${projectId}/members`} onClick={followLink} aria-current={current === "members" ? "page" : undefined}>{m.members}</a><a className="button" href={`/projects/${projectId}/settings`} onClick={followLink} aria-current={current === "settings" ? "page" : undefined}>{m.projectSettings}</a></nav>;
 };
 
-const Workspace = ({ user, children, route, onSignOut, blocked, identityChecking }: { readonly user: CurrentUser; readonly children: ReactNode; readonly route: AuthRoute; readonly onSignOut: () => void; readonly blocked: boolean; readonly identityChecking: boolean }) => {
+const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, identityChecking }: { readonly selectedTeamId: string; readonly user: CurrentUser; readonly children: ReactNode; readonly route: AuthRoute; readonly onSignOut: () => void; readonly blocked: boolean; readonly identityChecking: boolean }) => {
   const { messages: { auth: { shell: m }, workspace: { app }, setup } } = useI18n();
   const testMessages = useTestSessionListMessages();
+  const teamMessages = useTeamMessages();
+  const teams = useTeams();
   const content = useRef<HTMLElement>(null);
   const workspace = useRef<HTMLDivElement>(null);
   const sidebar = useSidebarPreference();
-  const resourceId = "projectId" in route ? route.projectId : "workerId" in route ? route.workerId : null;
-  const label = route.kind === "workers" ? m.workers : route.kind === "worker" ? m.worker : route.kind === "testSessions" ? testMessages.title : route.kind === "testSession" ? testMessages.session : route.kind === "projects" ? m.myProjects : route.kind === "account" ? m.accountSettings : route.kind === "members" ? m.members : route.kind === "settings" ? m.projectSettings : route.kind === "project" ? app.projectTasks : app.notFound;
+  const resourceId = "projectId" in route ? route.projectId : "workerId" in route ? route.workerId : "teamId" in route ? route.teamId : null;
+  const label = route.kind === "workers" ? m.workers : route.kind === "worker" ? m.worker : route.kind === "testSessions" ? testMessages.title : route.kind === "testSession" ? testMessages.session : route.kind === "projects" ? teamMessages.personal : route.kind === "team" ? teams.detail.team?.name ?? teamMessages.teamProjects : route.kind === "sharedProjects" ? teamMessages.shared : route.kind === "account" ? m.accountSettings : route.kind === "members" ? m.members : route.kind === "settings" ? m.projectSettings : route.kind === "project" ? app.projectTasks : app.notFound;
   useLayoutEffect(() => { content.current?.focus(); }, [route.kind, resourceId]);
   return (
     <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}${route.kind === "testSession" ? " test-session-shell" : ""}`} aria-hidden={blocked} inert={blocked}>
-      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + (resourceId === null ? "" : `:${resourceId}`)} projectsActive={route.kind === "projects"} workersActive={route.kind === "workers" || route.kind === "worker"} activeProjectId={"projectId" in route ? route.projectId : null} accountActive={route.kind === "account"} testSessionsActive={route.kind === "testSessions" || route.kind === "testSession"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
+      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + (resourceId === null ? "" : `:${resourceId}`)} projectsActive={route.kind === "projects" || route.kind === "team"} sharedActive={route.kind === "sharedProjects"} personalId={user.personalTeam.id} selectedTeamId={selectedTeamId} workersActive={route.kind === "workers" || route.kind === "worker"} activeProjectId={"projectId" in route ? route.projectId : null} accountActive={route.kind === "account"} testSessionsActive={route.kind === "testSessions" || route.kind === "testSession"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
       <div className="workspace" ref={workspace}>
         <a className="skip-link" href="#main-content">{app.skipToContent}</a>
         <header className="topbar">
@@ -99,15 +105,25 @@ const Workspace = ({ user, children, route, onSignOut, blocked, identityChecking
   );
 };
 
-const WorkspaceRoutes = ({ user, route, onSignOut, onIdentityMismatch, blocked, identityChecking, children }: { readonly user: CurrentUser; readonly route: AuthRoute; readonly onSignOut: () => void; readonly onIdentityMismatch: () => void; readonly blocked: boolean; readonly identityChecking: boolean; readonly children: ReactNode }) => {
-  const { messages: { auth: { shell: m }, workspace: { app } } } = useI18n();
+const WorkspaceRoutes = ({ user, route, selectedTeamId, admission, onSignOut, onIdentityMismatch, blocked, identityChecking, children }: { readonly admission: TaskCacheScope; readonly selectedTeamId: string; readonly user: CurrentUser; readonly route: AuthRoute; readonly onSignOut: () => void; readonly onIdentityMismatch: () => void; readonly blocked: boolean; readonly identityChecking: boolean; readonly children: ReactNode }) => {
+  const { messages: { auth: { shell: m }, workspace: { app }, common } } = useI18n();
   const projects = useProjectList();
-  const [creating, setCreating] = useState(false);
+  const teams = useTeams();
+  const teamMessages = useTeamMessages();
+  const [creating, setCreating] = useState<{ readonly id: string; readonly name: string; readonly personal: boolean } | null>(null);
   const [projectName, setProjectName] = useState<string | null>(null);
-  return <Workspace user={user} route={route} onSignOut={onSignOut} blocked={blocked} identityChecking={identityChecking}>
-    {children}{route.kind === "workers" ? <WorkersPage readEnabled={!identityChecking && !blocked} /> : route.kind === "worker" ? <WorkerDetailPage key={route.workerId} workerId={route.workerId} readEnabled={!identityChecking && !blocked} /> : route.kind === "testSessions" ? <TestSessionListPage /> : route.kind === "testSession" ? <TestSessionPage key={route.sessionId} sessionId={route.sessionId} /> : route.kind === "projects" ? <ProjectsPage onCreate={() => setCreating(true)} /> : route.kind === "project" ? <ProjectAccessBoundary key={route.projectId} projectId={route.projectId}><AuthorizedProject projectId={route.projectId} user={user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /></ProjectAccessBoundary> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={user} onRemoved={() => { projects.refresh(); navigate("/projects"); }} onUnavailable={projects.refresh} /></> : route.kind === "account" ? <AccountPage user={user} onSignOut={onSignOut} onIdentityMismatch={onIdentityMismatch} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>}
-    {creating && <CreateProjectDialog onClose={() => setCreating(false)} onCreated={(project) => { setCreating(false); projects.refresh(); navigate(`/projects/${project.id}`); }} />}
+  return <Workspace user={user} route={route} selectedTeamId={selectedTeamId} onSignOut={onSignOut} blocked={blocked} identityChecking={identityChecking}>
+    {children}{route.kind === "workers" ? <WorkersPage readEnabled={!identityChecking && !blocked} /> : route.kind === "worker" ? <WorkerDetailPage key={route.workerId} workerId={route.workerId} readEnabled={!identityChecking && !blocked} /> : route.kind === "testSessions" ? <TestSessionListPage /> : route.kind === "testSession" ? <TestSessionPage key={route.sessionId} sessionId={route.sessionId} /> : route.kind === "sharedProjects" ? <ProjectsPage title={teamMessages.sharedProjects} subtitle={teamMessages.sharedSubtitle} emptyDetail={teamMessages.sharedEmpty} /> : route.kind === "projects" || route.kind === "team" ? teams.detail.status === "loading" ? <section className="state-box" role="status">{teamMessages.loading}</section> : teams.detail.status === "error" ? <section className="state-box" role="alert"><h1>{teamMessages.failed}</h1><p>{teams.detail.error instanceof ApiError && (teams.detail.error.status === 403 || teams.detail.error.status === 404) ? teamMessages.unavailable : teams.detail.error instanceof ApiError && teams.detail.error.kind === "network" ? teamMessages.network : teamMessages.readError}</p>{teams.detail.error instanceof ApiError && teams.detail.error.requestId !== null && <p>{common.requestId}<code>{teams.detail.error.requestId}</code></p>}<button className="button" type="button" onClick={teams.refreshDetail}>{teamMessages.retry}</button></section> : <ProjectsPage title={teams.detail.team!.kind === "personal" ? teamMessages.personal : teams.detail.team!.name!} subtitle={teams.detail.team!.kind === "personal" ? teamMessages.personalSubtitle : teamMessages.teamSubtitle} onCreate={() => setCreating({ id: selectedTeamId, name: teams.detail.team!.kind === "personal" ? teamMessages.personal : teams.detail.team!.name!, personal: teams.detail.team!.kind === "personal" })} /> : route.kind === "project" ? <ProjectAccessBoundary key={route.projectId} projectId={route.projectId}><AuthorizedProject projectId={route.projectId} user={user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /></ProjectAccessBoundary> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={user} onRemoved={() => { projects.refresh(); navigate("/projects"); }} onUnavailable={projects.refresh} /></> : route.kind === "account" ? <AccountPage user={user} onSignOut={onSignOut} onIdentityMismatch={onIdentityMismatch} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>}
+    {creating !== null && <CreateProjectDialog admission={admission} teamId={creating.id} teamName={creating.name} teamPersonal={creating.personal} userId={user.id} onIdentityMismatch={onIdentityMismatch} onClose={() => setCreating(null)} onCreated={(project) => { setCreating(null); projects.refresh(); navigate(`/projects/${project.id}`); }} />}
   </Workspace>;
+};
+
+const TeamWorkspace = ({ user, route, admission, admissionBlocked, onSignOut, onIdentityMismatch, blocked, identityChecking, children }: { readonly user: CurrentUser; readonly route: AuthRoute; readonly admission: TaskCacheScope; readonly admissionBlocked: boolean; readonly onSignOut: () => void; readonly onIdentityMismatch: () => void; readonly blocked: boolean; readonly identityChecking: boolean; readonly children: ReactNode }) => {
+  const [lastTeamId, setLastTeamId] = useState(user.personalTeam.id);
+  const selectedTeamId = route.kind === "team" ? route.teamId : route.kind === "projects" ? user.personalTeam.id : lastTeamId;
+  useEffect(() => { if (route.kind === "team" || route.kind === "projects") setLastTeamId(selectedTeamId); }, [route.kind, selectedTeamId]);
+  const scope = route.kind === "sharedProjects" ? { kind: "shared" as const } : { kind: "team" as const, teamId: selectedTeamId };
+  return <TeamsProvider personalTeam={user.personalTeam} selectedId={selectedTeamId} admission={admission} admissionBlocked={admissionBlocked}><ProjectsProvider scope={scope} admission={admission} admissionBlocked={admissionBlocked}><WorkspaceRoutes user={user} route={route} selectedTeamId={selectedTeamId} admission={admission} onSignOut={onSignOut} onIdentityMismatch={onIdentityMismatch} blocked={blocked} identityChecking={identityChecking}>{children}</WorkspaceRoutes></ProjectsProvider></TeamsProvider>;
 };
 
 const RevalidationOverlay = ({ failed, onRetry }: { readonly failed: boolean; readonly onRetry: () => void }) => {
@@ -133,7 +149,8 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   const { locale, messages: { auth: { shell: m }, workspace: { app, projects } } } = useI18n();
   const testMessages = useTestSessionListMessages();
   const [invitation, setInvitation] = useState(captureInvitation);
-  const [location, setLocation] = useState(() => ({ pathname: window.location.pathname, search: window.location.search }));
+  const location = useBrowserLocation();
+  const invitationLocationSeen = useRef(location);
   const { pathname, search } = location;
   const [invitationRevision, setInvitationRevision] = useState(0);
   const invitationLifetime = useRef(new AbortController());
@@ -155,23 +172,36 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   const route = parseAuthRoute(pathname, search);
   const navigation = new URLSearchParams(search);
   navigation.delete("authError");
-  const requestedPath = route.kind === "login" ? route.returnPath : route.kind === "notFound" ? null : route.kind === "invitations" ? "/invitations" : pathname + (navigation.size === 0 ? "" : `?${navigation}`);
+  const requestedPath = route.kind === "login" ? route.returnPath : route.kind === "notFound" ? null : route.kind === "invitations" ? "/invitations" : route.kind === "teamInvitations" ? "/team-invitations" : pathname + (navigation.size === 0 ? "" : `?${navigation}`);
   const returnPath = requestedPath !== null && isLoginReturnPath(requestedPath) ? requestedPath : null;
   const target = returnPath === null ? null : new URL(returnPath, window.location.origin);
   const destination = target === null ? route : parseAuthRoute(target.pathname, target.search);
   const invitationFlow = invitationLocation(pathname, search);
+  const teamMessages = useTeamMessages();
+  const invitationRef = useRef(invitation); invitationRef.current = invitation;
+  const invitationFlowRef = useRef(invitationFlow); invitationFlowRef.current = invitationFlow;
   useLayoutEffect(() => {
     document.documentElement.lang = locale;
     const page = session.status === "authenticated" ? route.kind : session.status === "anonymous" ? "login" : session.status;
-    document.title = page === "testSessions" ? `${testMessages.title} · Daynight` : page === "testSession" ? `${testMessages.session} · Daynight` : (page === "attachment" || page === "task") ? app.documentTitle.task : m.documentTitle[page];
-  }, [locale, m.documentTitle, app.documentTitle.task, route.kind, session.status, testMessages.title, testMessages.session]);
+    document.title = page === "team" ? `${teamMessages.teamProjects} · Daynight` : page === "sharedProjects" ? `${teamMessages.shared} · Daynight` : page === "testSessions" ? `${testMessages.title} · Daynight` : page === "testSession" ? `${testMessages.session} · Daynight` : (page === "attachment" || page === "task") ? app.documentTitle.task : m.documentTitle[page];
+  }, [locale, m.documentTitle, app.documentTitle.task, route.kind, session.status, testMessages.title, testMessages.session, teamMessages.teamProjects, teamMessages.shared]);
   const [loginError] = useState(() => {
     const parameters = new URLSearchParams(window.location.search);
     const failed = parameters.get("authError") === "login_failed";
     if (parameters.has("authError")) { parameters.delete("authError"); window.history.replaceState(window.history.state, "", window.location.pathname + (parameters.size === 0 ? "" : `?${parameters}`)); }
     return failed;
   });
+  const discardInvitation = useCallback(() => {
+    invitationLifetime.current.abort(); setCleanupFailed(!clearInvitation());
+    const empty = { token: null, scope: null, storageUnavailable: false, cleanupFailed: false } as const;
+    invitationRef.current = empty; setInvitation(empty);
+  }, []);
   const clearSession = useCallback((notice?: SessionNotice) => {
+    if (invitationFlowRef.current && invitationRef.current.token !== null) {
+      const pending = persistInvitation(invitationRef.current);
+      invitationRef.current = pending;
+      setInvitation(pending);
+    }
     if (sessionRef.current.status === "authenticated") clearSessionDrafts(sessionRef.current.user.id);
     void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests(); ++generation.current; active.current?.abort(); active.current = null;
@@ -183,19 +213,18 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     return () => { mounted.current = false; active.current?.abort(); invitationLifetime.current.abort(); cacheScope.current?.dispose(); invalidateAuthRequests(); };
   }, []);
   useEffect(() => {
-    const onNavigate = () => {
-      if (window.location.pathname === "/invitations" && window.location.hash !== "") {
-        const incoming = captureInvitation();
-        invitationLifetime.current.abort();
-        invitationLifetime.current = new AbortController();
-        setInvitation(incoming); setInvitationRevision((value) => value + 1);
-      }
-      setLocation({ pathname: window.location.pathname, search: window.location.search });
-    };
-    window.addEventListener("popstate", onNavigate);
-    window.addEventListener("hashchange", onNavigate);
-    return () => { window.removeEventListener("popstate", onNavigate); window.removeEventListener("hashchange", onNavigate); };
-  }, []);
+    // The initial state already consumed the first secret, even when storage is unavailable.
+    if (invitationLocationSeen.current === location) return;
+    const previous = invitationLocationSeen.current;
+    invitationLocationSeen.current = location;
+    if ((location.pathname === "/invitations" || location.pathname === "/team-invitations") && (location.hash !== "" || previous.pathname !== location.pathname && (previous.pathname !== "/login" || new URLSearchParams(previous.search).get("returnPath") !== location.pathname))) {
+      const incoming = captureInvitation();
+      if (sessionRef.current.status === "authenticated") setCleanupFailed(!clearInvitation());
+      invitationLifetime.current.abort();
+      invitationLifetime.current = new AbortController();
+      setInvitation(incoming); setInvitationRevision((value) => value + 1);
+    }
+  }, [location]);
   useEffect(() => {
     const controller = new AbortController(); active.current = controller;
     const current = ++generation.current;
@@ -203,7 +232,9 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     if (sessionRef.current.status !== "authenticated") setSession({ status: "loading" });
     void me(controller.signal).then((user) => {
       if (controller.signal.aborted || current !== generation.current) return;
+      if (invitationFlowRef.current) setCleanupFailed(!clearInvitation());
       const previous = sessionRef.current;
+      if (previous.status === "authenticated" && previous.user.id !== user.id && invitationFlowRef.current) discardInvitation();
       if (previous.status === "authenticated" && previous.user.id === user.id && !cacheScope.current?.isInvalidated) {
         setSession({ ...previous, user });
       } else {
@@ -222,8 +253,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
       else setSession({ status: "error" });
     });
     return () => controller.abort();
-  }, [attempt, clearSession]);
-  const discardInvitation = useCallback(() => { invitationLifetime.current.abort(); setCleanupFailed(!clearInvitation()); setInvitation({ token: null, storageUnavailable: false }); }, []);
+  }, [attempt, clearSession, discardInvitation]);
   const completeInvitation = useCallback((projectId: string) => { discardInvitation(); navigate(`/projects/${projectId}`); }, [discardInvitation]);
   const cancelInvitation = useCallback(() => { discardInvitation(); navigate("/projects"); }, [discardInvitation]);
   const unavailableInvitation = discardInvitation;
@@ -261,6 +291,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     setAttempt((value) => value + 1);
   }, [pauseIdentity]);
   const invalidateIdentity = useCallback(() => {
+    if (invitationFlowRef.current) discardInvitation();
     if (sessionRef.current.status === "authenticated") clearSessionDrafts(sessionRef.current.user.id);
     void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests();
@@ -270,7 +301,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
       setRevalidation("idle"); setSession({ status: "loading" });
     });
     setAttempt((value) => value + 1);
-  }, [pauseIdentity]);
+  }, [pauseIdentity, discardInvitation]);
   identityRecheck.current = invalidateIdentity;
   const blocked = revalidation === "error" || revalidation === "retrying";
   useLayoutEffect(() => {
@@ -313,19 +344,20 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     const parameters = new URLSearchParams({ provider, returnPath });
     navigateToLogin(`/api/v1/auth/login?${parameters}`);
   };
-  const cleanupWarning = cleanupFailed ? <div className="notice warning" role="alert">{m.invitationCleanupError}</div> : null;
+  const cleanupWarning = cleanupFailed || invitation.cleanupFailed ? <div className="notice warning" role="alert">{m.invitationCleanupError}</div> : null;
   if (returnPath === null && (route.kind === "login" || route.kind !== "notFound" && session.status === "anonymous")) return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.invalidLoginTarget}</h1><p>{m.invalidLoginTargetDetail}</p><LanguageSelector /><a className="button primary" href="/login">{m.startFreshLogin}</a></section></main></>;
   if (route.kind === "notFound") return <>{cleanupWarning}<main className="auth-main"><section className="state-box"><h1>{app.notFound}</h1><LanguageSelector /><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section></main></>;
   if (logoutPending) return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.signingOut}</h1><LanguageSelector /></section></main></>;
   if (session.status === "loading" || session.status === "authenticated" && route.kind === "login") return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.identityLoading}</h1><LanguageSelector /></section></main></>;
   if (session.status === "error") return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.identityError}</h1><p>{m.networkRetry}</p><LanguageSelector /><button className="button primary" type="button" onClick={() => setAttempt((value) => value + 1)}>{projects.retry}</button></section></main></>;
-  if (session.status === "anonymous") return <>{cleanupWarning}{invitationFlow && invitation.storageUnavailable && <div className="notice warning" role="alert">{m.invitationStorageError}</div>}<LoginPage invitation={destination.kind === "invitations"} device={destination.kind === "device"} {...(session.notice !== undefined ? { notice: m.notice[session.notice] } : loginError ? { notice: m.notice.loginFailed } : {})} onLogin={startLogin} />{logoutFailed && <button className="button" type="button" onClick={() => signOut(logoutContinuation.current)}>{m.retryLogout}</button>}</>;
+  if (session.status === "anonymous") return <>{cleanupWarning}{invitationFlow && invitation.storageUnavailable && <div className="notice warning" role="alert">{m.invitationStorageError}</div>}<LoginPage invitation={destination.kind === "invitations" || destination.kind === "teamInvitations"} device={destination.kind === "device"} {...(session.notice !== undefined ? { notice: m.notice[session.notice] } : loginError ? { notice: m.notice.loginFailed } : {})} onLogin={startLogin} />{logoutFailed && <button className="button" type="button" onClick={() => signOut(logoutContinuation.current)}>{m.retryLogout}</button>}</>;
   const identity = `${session.user.id}:${session.generation}`;
   const revalidationOverlay = blocked ? <RevalidationOverlay failed={revalidation === "error"} onRetry={recheckIdentity} /> : null;
   if (route.kind === "attachment" || route.kind === "task") return <CurrentAccountProvider user={session.user} admissionBlocked={revalidation !== "idle"}><TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskAssigneesProvider><TaskDetailSessionProvider>{revalidationOverlay}{cleanupWarning}<div className="auth-shell" key={identity} aria-hidden={blocked} inert={blocked}>
     <TaskDetailPage key={route.projectId} projectId={route.projectId} taskId={route.taskId} navigation={{ tab: route.tab, path: route.path }} />
   </div></TaskDetailSessionProvider></TaskAssigneesProvider></TaskCacheProvider></CurrentAccountProvider>;
-  if (route.kind === "invitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} /></div></>;
+  if (route.kind === "teamInvitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><TeamInvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation.scope === "project" ? { token: null, scope: null, storageUnavailable: false, cleanupFailed: false } : invitation} user={session.user} onAccepted={discardInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} onIdentityMismatch={invalidateIdentity} /></div></>;
+  if (route.kind === "invitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation.scope === "team" ? { token: null, scope: null, storageUnavailable: false, cleanupFailed: false } : invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} onIdentityMismatch={invalidateIdentity} /></div></>;
   if (route.kind === "device") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><DeviceAuthorizationPage key={`${identity}:${route.userCode}`} user={session.user} initialCode={route.userCode} onSwitchAccount={() => signOut(returnPath)} onIdentityMismatch={invalidateIdentity} /></div></>;
-  return <CurrentAccountProvider user={session.user} admissionBlocked={revalidation !== "idle"}><TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskAssigneesProvider><TaskDetailSessionProvider>{revalidationOverlay}<ProjectsProvider key={identity}><WorkspaceRoutes user={session.user} route={route} onSignOut={() => signOut()} onIdentityMismatch={invalidateIdentity} blocked={blocked} identityChecking={revalidation !== "idle"}>{cleanupWarning}</WorkspaceRoutes></ProjectsProvider></TaskDetailSessionProvider></TaskAssigneesProvider></TaskCacheProvider></CurrentAccountProvider>;
+  return <CurrentAccountProvider user={session.user} admissionBlocked={revalidation !== "idle"}><TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskAssigneesProvider><TaskDetailSessionProvider>{revalidationOverlay}<TeamWorkspace key={identity} user={session.user} route={route} admission={cacheScope.current!} admissionBlocked={revalidation !== "idle"} onSignOut={() => signOut()} onIdentityMismatch={invalidateIdentity} blocked={blocked} identityChecking={revalidation !== "idle"}>{cleanupWarning}</TeamWorkspace></TaskDetailSessionProvider></TaskAssigneesProvider></TaskCacheProvider></CurrentAccountProvider>;
 };

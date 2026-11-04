@@ -15,6 +15,7 @@ Use the `daynight` CLI to operate it and [Daynight](https://daynight.cc) to brow
 | Project | A project associated with a Git repository, organizing tasks and project access. |
 | Task | An independently tracked work item with a description, status, dependencies, execution requirements, and PR references. In this skill, "task" means this object. |
 | Goal | A complete objective expressed through tasks and their dependencies, including requirements discussion, solution discussion, and delivery work; not a separate resource. |
+| Step | A Task-owned ordered work record maintained according to project rules; independent of Session execution and Task status. |
 | Thread | A task's durable discussion, independent of execution; explicit reads, immutable posts and same-task replies. |
 | Attachment | A task's independent attachment area for inputs and results such as documents, prototypes, and images. |
 | worker-managed | An execution environment assigned and managed by `daynight worker`; the agent executes only its explicit assignment. |
@@ -40,6 +41,7 @@ Read only the files and required references for the current operation, not every
 | Connect the current repository | [Setup](references/setup.md): CLI, sign-in, project, and repository-instruction setup |
 | Find commands | [CLI handbook](references/handbook.md): command map and help discovery |
 | Discover, select, or register projects | [Project management](references/project-management.md): project identity and reuse |
+| Read and maintain ordered Task Steps | [Task management](references/task-management.md#task-steps): operations and identities; [task execution](references/task-execution.md#maintain-steps): project-defined maintenance |
 | Query tasks, edit metadata, properties, status, or dependencies, or delete tasks | [Task management](references/task-management.md): fields, lifecycle, and relationship semantics |
 | Read or post task discussion | [Task management](references/task-management.md#discussion-threads): bounded pages, author attribution, replies and read continuity |
 | Submit and reconcile writes safely | [Write safety](references/write-safety.md): versions, conflicts, uncertain results, and attachment concurrency |

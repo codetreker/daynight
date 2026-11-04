@@ -157,3 +157,24 @@ it('preserves a visible text line across filtering and subsequent width reflow',
   charsPerLine = 40; act(() => { window.dispatchEvent(new Event('resize')); });
   expect(view.box.scrollTop).toBe(545); expect(view.following()).toBe(false);
 });
+
+it('retains the original text offset across wider and narrower layouts without user scrolling', () => {
+  const { box, update } = setup('reading '.repeat(200));
+  let charsPerLine = 40;
+  vi.spyOn(document, 'createRange').mockImplementation(() => {
+    let start = 0;
+    return {
+      setStart: (_node: Node, offset: number) => { start = offset; }, setEnd: () => {},
+      getBoundingClientRect: () => {
+        const top = Math.floor(start / charsPerLine) * 20 - box.scrollTop;
+        return { top, bottom: top + 20, height: 20 } as DOMRect;
+      },
+    } as unknown as Range;
+  });
+  fireEvent.wheel(box, { deltaY: -10 }); box.scrollTop = 100; fireEvent.scroll(box);
+  charsPerLine = 80; act(() => { window.dispatchEvent(new Event('resize')); });
+  expect(box.scrollTop).toBe(40);
+  update(1400);
+  charsPerLine = 40; act(() => { window.dispatchEvent(new Event('resize')); });
+  expect(box.scrollTop).toBe(100);
+});

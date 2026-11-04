@@ -33,20 +33,53 @@ func (tx *ProjectTx) DirectProjectMember(ctx context.Context, userID string) (co
 }
 
 func (s *Store) CreatePrivateProject(ctx context.Context, principal core.Principal, id, name, repoURL string) (core.Project, error) {
-	tx, err := s.Pool.Begin(ctx)
+	project, _, err := s.CreateProjectInTeam(ctx, principal, id, name, repoURL, nil)
+	return project, err
+}
+
+func (s *Store) CreateProjectInTeam(ctx context.Context, principal core.Principal, id, name, repoURL string, targetTeamID *string) (core.Project, core.ProjectAccess, error) {
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return core.Project{}, queryError("begin private project", err)
+		return core.Project{}, core.ProjectAccess{}, queryError("begin project creation", err)
 	}
+	project, access, err := createProjectInTeamTx(ctx, tx, principal, id, name, repoURL, targetTeamID)
+	return project, access, authQueryError("create project", err)
+}
+
+func createProjectInTeamTx(ctx context.Context, tx pgx.Tx, principal core.Principal, id, name, repoURL string, targetTeamID *string) (core.Project, core.ProjectAccess, error) {
 	var project core.Project
+	var access core.ProjectAccess
+	var err error
 	err = transact(ctx, tx, func(tx pgx.Tx) error {
 		// The user must still exist; no implicit membership is created for an external ID.
 		var userID string
 		if err := tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 FOR KEY SHARE`, principal.UserID).Scan(&userID); err != nil {
 			return err
 		}
-		teamID, err := personalTeam(ctx, tx, userID, " FOR UPDATE")
-		if err != nil {
-			return err
+		var teamID string
+		if targetTeamID == nil {
+			teamID, err = personalTeam(ctx, tx, userID, " FOR UPDATE")
+			if err != nil {
+				return err
+			}
+		} else {
+			var personalOwner *string
+			if err := tx.QueryRow(ctx, `SELECT id::text,personal_user_id::text FROM teams WHERE id=$1 FOR UPDATE`, *targetTeamID).Scan(&teamID, &personalOwner); err != nil {
+				return err
+			}
+			if personalOwner != nil {
+				if *personalOwner != userID {
+					return pgx.ErrNoRows
+				}
+				if _, err := personalTeam(ctx, tx, userID, ""); err != nil {
+					return err
+				}
+			} else {
+				var role string
+				if err := tx.QueryRow(ctx, `SELECT role FROM team_members WHERE team_id=$1 AND user_id=$2`, teamID, userID).Scan(&role); err != nil {
+					return err
+				}
+			}
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO projects (id,name,repo_url) VALUES ($1,$2,$3)`, id, name, repoURL)
 		if err != nil {
@@ -59,14 +92,21 @@ func (s *Store) CreatePrivateProject(ctx context.Context, principal core.Princip
 			return err
 		}
 		project, err = readProject(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		access, err = ReadProjectAccess(ctx, tx, userID, id)
 		return err
 	})
-	return project, authQueryError("create private project", err)
+	return project, access, err
 }
 
 func (s *Snapshot) ProjectParticipants(ctx context.Context, projectID string) ([]core.ProjectParticipant, error) {
-	rows, err := s.tx.Query(ctx, `SELECT a.user_id::text,u.id::text,u.name,u.email,u.avatar_url,a.role,
+	rows, err := s.tx.Query(ctx, `SELECT a.user_id::text,u.id::text,u.name,u.email,u.avatar_url,a.role,tm.role,t.id::text,t.name,t.personal_user_id::text,
         g.project_id::text,g.user_id::text,g.role,g.version,g.created_at,g.updated_at FROM (`+projectAccessRelation+`) a
+        JOIN project_ownership o ON o.project_id=a.project_id
+        JOIN teams t ON t.id=o.team_id
+        LEFT JOIN team_members tm ON tm.team_id=o.team_id AND tm.user_id=a.user_id
         LEFT JOIN project_grants g ON g.project_id=a.project_id AND g.user_id=a.user_id
         LEFT JOIN users u ON u.id=a.user_id
         WHERE a.project_id=$1 ORDER BY a.joined_at,a.user_id`, projectID)
@@ -79,7 +119,10 @@ func (s *Snapshot) ProjectParticipants(ctx context.Context, projectID string) ([
 		var participant core.ProjectParticipant
 		var profileID *string
 		var grant nullableProjectGrant
-		destinations := []any{&participant.UserID, &profileID, &participant.Profile.Name, &participant.Profile.Email, &participant.Profile.AvatarURL, &participant.EffectiveRole}
+		var teamRole *core.ProjectRole
+		var team core.TeamRef
+		var personalUserID *string
+		destinations := []any{&participant.UserID, &profileID, &participant.Profile.Name, &participant.Profile.Email, &participant.Profile.AvatarURL, &participant.EffectiveRole, &teamRole, &team.ID, &team.Name, &personalUserID}
 		if err := rows.Scan(append(destinations, grant.destinations()...)...); err != nil {
 			return nil, queryError("list project participants", err)
 		}
@@ -87,6 +130,13 @@ func (s *Snapshot) ProjectParticipants(ctx context.Context, projectID string) ([
 			return nil, queryError("list project participants", fmt.Errorf("project participant profile is missing or inconsistent"))
 		}
 		participant.DirectGrant = grant.value()
+		if teamRole != nil {
+			team.Kind = "ordinary"
+			if personalUserID != nil {
+				team.Kind = "personal"
+			}
+			participant.InheritedFrom = &core.ProjectInheritance{Team: team, Role: *teamRole}
+		}
 		participants = append(participants, participant)
 	}
 	return participants, authQueryError("list project participants", rows.Err())
@@ -172,4 +222,21 @@ func (tx *ProjectTx) ConsumeInvitation(ctx context.Context, id, userID string, n
 	_, err := tx.tx.Exec(ctx, `UPDATE project_invitations SET consumed_by=$3,consumed_at=$4
         WHERE project_id=$1 AND id=$2`, tx.projectID, id, userID, now)
 	return authQueryError("consume invitation", err)
+}
+
+// DirectGrant locks the actual stored grant; a missing row is not a synthetic version.
+func (tx *ProjectTx) DirectGrant(ctx context.Context, userID string) (core.ProjectGrant, error) {
+	var grant core.ProjectGrant
+	err := tx.tx.QueryRow(ctx, `SELECT project_id::text,user_id::text,role,version,created_at,updated_at
+        FROM project_grants WHERE project_id=$1 AND user_id=$2 FOR UPDATE`, tx.projectID, userID).Scan(
+		&grant.ProjectID, &grant.UserID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt)
+	return grant, authQueryError("lock direct grant", err)
+}
+
+func (tx *ProjectTx) CreateGrant(ctx context.Context, userID string, role core.ProjectRole) (core.ProjectGrant, error) {
+	_, err := tx.tx.Exec(ctx, `INSERT INTO project_grants (project_id,user_id,role) VALUES ($1,$2,$3)`, tx.projectID, userID, role)
+	if err != nil {
+		return core.ProjectGrant{}, queryError("create project grant", err)
+	}
+	return tx.DirectGrant(ctx, userID)
 }

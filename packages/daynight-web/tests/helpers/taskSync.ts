@@ -1,8 +1,9 @@
-import type { ProjectAccess } from "../../src/api/auth-types";
+import type { ProjectPersonVersion, ProjectAccess } from "../../src/api/auth-types";
 import type { GraphTask, TaskGraph, TaskProperties, TaskSummary, TaskSync } from '../../src/api/types';
 import { stringifyWireJson, wireResponse } from './wireJson';
 
 export const TEST_VIEWER_ID = '00000000-0000-4000-8000-000000000201';
+export const TEST_PROFILE_VERSION = 'a'.repeat(64);
 export const TEST_TASK_CACHE_EPOCH = '00000000-0000-4000-8000-000000000900';
 
 export const viewerHeaders = (viewerId: string, initial?: HeadersInit): Headers => {
@@ -19,6 +20,7 @@ export const taskSyncEpoch = (projectId: string): string => {
 
 export type TaskSyncFixtureOptions = {
   readonly actorAccess?: ProjectAccess;
+  readonly assigneeVersions?: readonly ProjectPersonVersion[];
   readonly query?: { readonly epoch?: string; readonly since?: string };
   readonly epoch?: string;
   readonly versionForTask: (task: GraphTask) => bigint;
@@ -35,10 +37,14 @@ const nanoseconds = (timestamp: string): bigint => {
 };
 
 export const directAccessFixture = (projectId: string, userId = TEST_VIEWER_ID, role: "member" | "admin" = "member"): ProjectAccess => ({
+  projectId, ownerTeam: { id: "00000000-0000-4000-8000-000000000701", kind: "personal", name: null }, ownership: { teamId: "00000000-0000-4000-8000-000000000701", version: 1n }, teamRole: null, canTransfer: false,
   effectiveRole: role, directGrant: { projectId, userId, role, version: 1n, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z" },
 });
 
-export const taskSyncFixture = (graph: TaskGraph, { actorAccess = directAccessFixture(graph.project.id), query = {}, epoch = taskSyncEpoch(graph.project.id), versionForTask, propertiesForTask = () => ({}) }: TaskSyncFixtureOptions): WireTaskSync => {
+const graphAssigneeVersions = (graph: TaskGraph): readonly ProjectPersonVersion[] => [...new Set(graph.tasks.flatMap((task) => task.assignedTo === null ? [] : [task.assignedTo]))]
+  .sort().map((userId) => ({ userId, version: TEST_PROFILE_VERSION, hasProjectAccess: true }));
+
+export const taskSyncFixture = (graph: TaskGraph, { assigneeVersions = graphAssigneeVersions(graph), actorAccess = directAccessFixture(graph.project.id), query = {}, epoch = taskSyncEpoch(graph.project.id), versionForTask, propertiesForTask = () => ({}) }: TaskSyncFixtureOptions): WireTaskSync => {
   const mode = query.epoch === epoch ? 'delta' : 'snapshot';
   const lowerBound = mode === 'delta' && query.since !== undefined ? nanoseconds(query.since) - 10_000_000_000n : null;
   const tasks = graph.tasks.filter((task) => lowerBound === null || nanoseconds(task.updatedAt) >= lowerBound).map((task) => ({ assignedTo: task.assignedTo,
@@ -47,7 +53,7 @@ export const taskSyncFixture = (graph: TaskGraph, { actorAccess = directAccessFi
     allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt,
     createdAt: task.createdAt, updatedAt: task.updatedAt,
   }));
-  return { actorAccess, mode, epoch, project: graph.project, observedAt: graph.observedAt, tasks };
+  return { assigneeVersions, actorAccess, mode, epoch, project: graph.project, observedAt: graph.observedAt, tasks };
 };
 
 export const taskSyncResponse = (graph: TaskGraph, { viewerId, ...options }: TaskSyncFixtureOptions & { readonly viewerId: string }, init: ResponseInit = {}): Response =>

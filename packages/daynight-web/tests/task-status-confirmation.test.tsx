@@ -14,7 +14,7 @@ vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ Task
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 const projectId = '10000000-0000-4000-8000-000000000001'; const taskId = '20000000-0000-4000-8000-000000000001'; const dependencyId = '20000000-0000-4000-8000-000000000002';
 const time = '2026-10-22T00:00:00Z'; const later = '2026-10-22T00:01:00Z';
-const project: Project = { id: projectId, name: 'Status project', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Status project', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const source = (status: TaskStatus = 'todo'): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: status === 'todo' ? null : time, completedAt: status === 'done' ? time : null, id: taskId, projectId, title: 'Reviewed task', description: 'Reviewed content',
   status, version: 9007199254740993n, properties: { pullRequests: [] }, dependsOn: [dependencyId], blockedBy: [], ready: status === 'todo', createdAt: time, updatedAt: time });
 const result = (detail: TaskDetail, status: TaskStatus): TaskDetail => detail.status === status ? detail : ({ ...detail, status, version: detail.version + 1n, ready: status === 'todo', updatedAt: later,

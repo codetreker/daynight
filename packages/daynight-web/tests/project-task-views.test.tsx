@@ -35,7 +35,7 @@ const snapshot = (items = seeds, id = project): TaskGraph => {
     const blockedBy = item.dependsOn.filter((dependency) => items.find((candidate) => candidate.id === dependency)!.status !== 'done');
     return { ...item, blockedBy, ready: item.status === 'todo' && blockedBy.length === 0 };
   });
-  return { observedAt: "2026-10-20T12:00:00Z", project: { settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id, repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp }, tasks,
+  return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id, repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp }, tasks,
     summary: { total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
       done: tasks.filter((item) => item.status === 'done').length, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
       ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length } };
@@ -119,13 +119,13 @@ describe('project task views', () => {
     expect(showAll).not.toBeChecked();
     fireEvent.click(goal);
     const list = document.getElementById(`goal-children-${canonicalTask(1)}`)!;
-    const childRows = list.querySelectorAll<HTMLButtonElement>('.goal-task-row');
+    const childRows = list.querySelectorAll<HTMLButtonElement>('.goal-task-main');
     expect(childRows).toHaveLength(3);
     for (const [position, status] of ['进行中', '待处理', '已完成'].entries()) {
       expect(childRows[position]).toBeVisible();
-      expect(childRows[position]!.querySelector('.root-status')).toHaveTextContent(status);
+      expect(childRows[position]!.closest('.goal-task-row')!.querySelector('.root-status')).toHaveTextContent(status);
     }
-    expect(goal.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(goal.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
     const completedChild = childRows[2]!;
     completedChild.focus();
     fireEvent.click(completedChild);
@@ -160,7 +160,7 @@ describe('project task views', () => {
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     await waitFor(() => expect(goalDetails).toHaveFocus());
     expect(goal).toHaveAttribute('aria-expanded', 'true');
-    expect(goal.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(goal.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
     fireEvent.click(tab('standalone'));
     fireEvent.click(tab('chains'));
     expect(chainRow()).toHaveAttribute('aria-expanded', 'false');
@@ -176,10 +176,10 @@ describe('project task views', () => {
     const stats = screen.getByRole('region', { name: '项目任务统计', hidden: true });
     expect(stats.querySelectorAll('.stat')).toHaveLength(6);
     expect(stats).toHaveTextContent('待处理5等待开始');
-    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.querySelector('.root-status')).toHaveTextContent('待处理');
+    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.parentElement!.querySelector('.root-status')).toHaveTextContent('待处理');
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.querySelector('.root-progress-label')).toHaveTextContent('0/3 已完成');
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000003')).toBeNull();
-    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000005')?.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000005')?.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
     fireEvent.click(tab('standalone'));
     expect(row('00000000-0000-4000-8000-000000000004')).toHaveTextContent('待处理');
     expect(row('00000000-0000-4000-8000-000000000004').querySelector('.root-status')).toHaveClass('graph-status-todo');
@@ -397,7 +397,7 @@ describe('project task views', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     graphRequest.mockResolvedValueOnce(snapshot([seed(canonicalTask(3))])).mockResolvedValueOnce(snapshot([seed(canonicalTask(3)), seed(canonicalTask(4), 'todo', [canonicalTask(3)])]));
     mount(); await screen.findByRole('tab', { name: '独立任务' }); const { trigger, dialog } = await openStandalone(canonicalTask(3));
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await screen.findByRole('heading', { name: '暂无独立任务' });
     expectUnfinishedCounts(2, 0);
     expect(trigger.isConnected).toBe(false); expect(dialog).toBeVisible();
@@ -416,7 +416,7 @@ describe('project task views', () => {
     await waitFor(() => expect(document.querySelector('.task-detail-dialog')).toBeVisible());
     const dialog = document.querySelector<HTMLElement>('.task-detail-dialog')!;
     await within(dialog).findByRole('heading', { name: `任务 ${canonicalTask(1)}` });
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await screen.findByRole('heading', { name: '暂无任务链' }); expect(dialog).toBeVisible();
     expectUnfinishedCounts(0, 2);
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' }); await waitFor(() => expect(tab('chains')).toHaveFocus());
@@ -1014,7 +1014,7 @@ describe('status-first project presentation', () => {
     graphRequest.mockResolvedValue(value);
     mount(); await findChainRow(canonicalTask(3));
     expect(presentedIds('chains')).toEqual([3, 1, 7, 5, 11, 9].map(canonicalTask));
-    expect(chainRow(canonicalTask(1)).querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(chainRow(canonicalTask(1)).parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
     fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
     expect(presentedIds('chains')).toEqual([3, 1, 7, 5, 11, 9].map(canonicalTask));
     fireEvent.click(tab('standalone'));
@@ -1087,7 +1087,7 @@ describe('status-first project presentation', () => {
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     expect(overviewTitles()).toEqual([title(1), '独立任务', title(3), title(5)]);
     if (refresh === 'manual') fireEvent.click(screen.getByRole('button', { name: '刷新' }));
-    else await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    else await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(overviewTitles()).toEqual([title(3), '独立任务', title(5), title(1)]));
     selectTasks();
     expect(presentedIds('standalone')).toEqual([102, 103, 101].map(canonicalTask));

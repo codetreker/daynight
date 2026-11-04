@@ -27,10 +27,9 @@ export type HerdrAgentObservation = { binding: HerdrTaskBinding; kind: string | 
 export type HerdrPromptReceipt = { submission: "submitted"; observation: HerdrAgentObservation };
 export type HerdrPromptResult = HerdrPromptReceipt | { submission: "skipped"; observation: HerdrAgentObservation };
 export type HerdrPromptGuard = (operation: Operation) => Promise<boolean>;
-export type HerdrAgentStartInput = {
-  configuration: HerdrAgentConfiguration;
+export type HerdrAgentLaunchInput = { configuration: HerdrAgentConfiguration; resumeSessionId?: string; beforeStart?: (operation: Operation) => Promise<void> };
+export type HerdrAgentStartInput = HerdrAgentLaunchInput & {
   prompt: string;
-  resumeSessionId?: string;
   // The receipt preserves the pre-input observation before session discovery
   // can observe a completed turn or fail after acknowledged submission.
   onPromptSubmitted?: (receipt: HerdrPromptReceipt) => void;
@@ -226,9 +225,13 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       return paneShellName(foreground.name) || paneShellName(argv[0]);
     });
   };
-  const startNative = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, args: string[], operation: Operation): Promise<HerdrRpcResult> => {
+  const startNative = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, args: string[], operation: Operation, beforeStart?: HerdrAgentLaunchInput["beforeStart"]): Promise<HerdrRpcResult> => {
     let readiness: { deadline: number; rejection: HerdrAgentActionError } | undefined;
     while (true) {
+      operation.check();
+      if (readiness !== undefined && performance.now() >= readiness.deadline) throw readiness.rejection;
+      // A definite rejection authorizes another attempt only after fresh caller admission.
+      if (beforeStart !== undefined) await beforeStart(operation);
       operation.check();
       if (readiness !== undefined && performance.now() >= readiness.deadline) throw readiness.rejection;
       const timeout = Math.floor(Math.min(30_000, operation.remainingMs()));
@@ -290,6 +293,37 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       if (returned.pane_id !== binding.paneId || returned.terminal_id !== binding.terminalId || returned.workspace_id !== binding.workspaceId) throw new Error("The prompt receipt does not identify the original task agent.");
     } catch (cause) { throw new HerdrAgentActionError("The prompt receipt could not identify the original task agent.", "agent.prompt", "unknown", { cause, promptSubmission: "unknown" }); }
     return { submission: "submitted", observation: before };
+  };
+  const launch = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentLaunchInput, operation: Operation): Promise<{ observation: HerdrAgentObservation; started: boolean }> => {
+    if (input.configuration.agent !== context.agent) throw new TypeError("The agent configuration differs from the execution identity.");
+    const cwd = path.normalize(await realpath(context.cwd));
+    const args = buildHerdrAgentArguments(input.configuration, cwd, input.resumeSessionId);
+    const before = await observation(context, binding, operation);
+    if (before.kind !== null || before.launchPending || before.interactiveReady) return { observation: before, started: false };
+    await options.preflight.verifyStart({ context, configuration: input.configuration, ...(input.resumeSessionId === undefined ? {} : { resumeSessionId: input.resumeSessionId }) }, operation);
+    if (context.agent === "codex" && workspaceEnvironment.PATH !== undefined) {
+      const effective = options.readCodexConfig
+        ? await options.readCodexConfig(args, cwd, operation)
+        : await readCodexConfiguration({ args, cwd, environment: { ...process.env, ...workspaceEnvironment } }, operation);
+      const overrides = codexAgentCliOverrides({ ...workspaceEnvironment, PATH: workspaceEnvironment.PATH }, effective);
+      for (const [key, value] of Object.entries(overrides)) args.push("-c", `${key}=${JSON.stringify(value)}`);
+    }
+    const started = await startNative(context, binding, args, operation, input.beforeStart);
+    const acknowledged = object(started.agent, "Started native agent");
+    const argv = array(started.argv, "Native launch arguments");
+    const expectedArgv = [context.agent, ...args];
+    if (acknowledged.pane_id !== binding.paneId || acknowledged.terminal_id !== binding.terminalId || acknowledged.workspace_id !== binding.workspaceId || argv.length !== expectedArgv.length || argv.some((value, index) => value !== expectedArgv[index])) throw new HerdrAgentActionError("The native start result differs from the requested target or arguments.", "agent.start", "unknown");
+    try {
+      while (true) {
+        const current = await observation(context, binding, operation);
+        if (input.resumeSessionId !== undefined && current.nativeSession !== null && current.nativeSession.sessionId !== canonicalId(input.resumeSessionId)) throw new HerdrAgentActionError("The resumed agent reported a different native session.", "agent.start", "unknown");
+        if (current.status === "blocked" || (!current.launchPending && current.interactiveReady && (current.kind === context.agent || current.nativeSession?.agent === context.agent || current.name === herdrExecutionAgentName(context)))) return { observation: current, started: true };
+        await wait(operation);
+      }
+    } catch (cause) {
+      if (cause instanceof HerdrAgentActionError) throw cause;
+      throw new HerdrAgentActionError("The native process could not become ready before its first input.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" });
+    }
   };
   return {
     pendingStops: (): readonly HerdrPendingStop[] => [...stoppingProcesses.values()].map(({ context, binding }) => ({ context: { ...context }, binding: { ...binding } })),
@@ -387,38 +421,24 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       if (workspace.label !== label || after.workspace.label !== label) throw new HerdrAgentActionError("The requested workspace name was not confirmed by the current snapshot.", "workspace.rename", "unknown");
     }),
     observe: observation,
+    /** Launches only; the caller must persist original process identity before submitting input. */
+    launch: (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentLaunchInput, operation: Operation): Promise<HerdrAgentObservation> => serialized(binding.workspaceId, operation, async () => (await launch(context, binding, input, operation)).observation),
+    processInfo: async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation): Promise<{ shellPid: number; foregroundPids: number[] }> => {
+      await readOwned(context, binding, operation);
+      const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info");
+      const info = object(result.process_info, "Native process observation");
+      if (info.pane_id !== binding.paneId) throw new Error("The native process observation belongs to another pane.");
+      const shellPid = pid(info.shell_pid);
+      const foregroundPids = (info.foreground_processes === undefined ? [] : array(info.foreground_processes, "Native foreground processes")).map(value => pid(object(value, "Native foreground process").pid));
+      await readOwned(context, binding, operation);
+      return { shellPid, foregroundPids };
+    },
+    submitInitialPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, beforeSubmit?: HerdrPromptGuard): Promise<HerdrPromptResult> => serialized(binding.workspaceId, operation, () => submit(context, binding, prompt, operation, true, beforeSubmit)),
     start: (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentStartInput, operation: Operation): Promise<HerdrAgentObservation> => serialized(binding.workspaceId, operation, async () => {
-      if (input.configuration.agent !== context.agent) throw new TypeError("The agent configuration differs from the execution identity.");
-      const cwd = path.normalize(await realpath(context.cwd));
-      const args = buildHerdrAgentArguments(input.configuration, cwd, input.resumeSessionId);
       if (typeof input.prompt !== "string" || input.prompt.length === 0) throw new TypeError("The startup prompt must be nonempty text.");
-      const before = await observation(context, binding, operation);
-      if (before.kind !== null || before.launchPending || before.interactiveReady) return before;
-      await options.preflight.verifyStart({ context, configuration: input.configuration, ...(input.resumeSessionId === undefined ? {} : { resumeSessionId: input.resumeSessionId }) }, operation);
-      if (context.agent === "codex" && workspaceEnvironment.PATH !== undefined) {
-        const effective = options.readCodexConfig
-          ? await options.readCodexConfig(args, cwd, operation)
-          : await readCodexConfiguration({ args, cwd, environment: { ...process.env, ...workspaceEnvironment } }, operation);
-        const overrides = codexAgentCliOverrides({ ...workspaceEnvironment, PATH: workspaceEnvironment.PATH }, effective);
-        for (const [key, value] of Object.entries(overrides)) args.push("-c", `${key}=${JSON.stringify(value)}`);
-      }
-      const started = await startNative(context, binding, args, operation);
-      const acknowledged = object(started.agent, "Started native agent");
-      const argv = array(started.argv, "Native launch arguments");
-      const expectedArgv = [context.agent, ...args];
-      if (acknowledged.pane_id !== binding.paneId || acknowledged.terminal_id !== binding.terminalId || acknowledged.workspace_id !== binding.workspaceId || argv.length !== expectedArgv.length || argv.some((value, index) => value !== expectedArgv[index])) throw new HerdrAgentActionError("The native start result differs from the requested target or arguments.", "agent.start", "unknown");
-      try {
-        while (true) {
-          const current = await observation(context, binding, operation);
-          if (current.status === "blocked") throw new HerdrAgentActionError("The native agent requires operator action before its first input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
-          if (input.resumeSessionId !== undefined && current.nativeSession !== null && current.nativeSession.sessionId !== canonicalId(input.resumeSessionId)) throw new HerdrAgentActionError("The resumed agent reported a different native session.", "agent.start", "unknown");
-          if (!current.launchPending && current.interactiveReady && (current.kind === context.agent || current.nativeSession?.agent === context.agent || current.name === herdrExecutionAgentName(context))) break;
-          await wait(operation);
-        }
-      } catch (cause) {
-        if (cause instanceof HerdrAgentActionError) throw cause;
-        throw new HerdrAgentActionError("The native process could not become ready before its first input.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" });
-      }
+      const launched = await launch(context, binding, input, operation);
+      if (!launched.started) return launched.observation;
+      if (launched.observation.status === "blocked") throw new HerdrAgentActionError("The native agent requires operator action before its first input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
       const receipt = await submit(context, binding, input.prompt, operation, true);
       if (receipt.submission === "submitted") input.onPromptSubmitted?.(receipt);
       // SessionStart may be emitted on the first input rather than process launch.

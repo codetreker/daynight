@@ -194,7 +194,10 @@ func terminalInitialProgress(previous, next string, request *v2.ControlRequest) 
 	case "pending":
 		return next == "dispatching" || next == "transport_completed" || next == "unknown"
 	case "dispatching":
-		return next == "transport_completed" || next == "unknown"
+		// The fenced Worker can prove a zero-write rejection from its durable
+		// input receipt. Only that outcome returns an attempt to pending;
+		// uncertain or completed delivery below cannot become sendable again.
+		return next == "pending" || next == "transport_completed" || next == "unknown"
 	case "unknown", "unconfirmed":
 		return request != nil && request.Action == "resume_automation" && request.InitialUnknownDisposition != nil && *request.InitialUnknownDisposition == "delivered_continue" && next == "transport_completed"
 	}
@@ -604,6 +607,7 @@ func (s *Service) SubmitTerminal(ctx context.Context, p core.Principal, project,
 		if cancelBody, e = s.storeTerminalBody(r, operationID, raw, deadline); e != nil {
 			return e
 		}
+		invalidateAutomationRecoveries(r)
 		result := terminalResult(operationID, "queued", "")
 		r.OperationSeq++
 		if c.Input != nil {

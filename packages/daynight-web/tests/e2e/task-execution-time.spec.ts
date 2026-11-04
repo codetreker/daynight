@@ -11,6 +11,7 @@ import type { TaskDetail } from '../../src/api/types';
 import { createProject, createTask, startTask, executeTask, expect, seedRunningTaskStart, seedExternalDependencies, test, type Task } from './fixtures';
 import type { AuthenticatedAPI } from './authentication';
 import { expectedChainMembers } from './visible-topology';
+import { mockPollingIntervals, shortPollingInterval } from './polling';
 
 const card = (page: Page, id: string): Locator => page.locator(`.react-flow__node[data-id="${id}"] .task-node`);
 const duration = (scope: Locator): Locator => scope.locator('time.task-duration');
@@ -63,6 +64,7 @@ const rowLayout = async (scope: Locator): Promise<void> => {
 test.use({ trace: 'off', screenshot: 'off' });
 test('task-execution-time', { annotation: { type: 'scenario', description: 'task-execution-time' } }, async ({ page, api, baseURL }, info) => {
   if (baseURL === undefined) throw new Error('Execution-time acceptance requires the actual service origin.');
+  await mockPollingIntervals(page, { taskSync: shortPollingInterval });
   const cli = await createAcceptanceCli(baseURL, info.outputPath('installed-cli-execution-time'));
   const evidence = {
     scenario: 'task-execution-time', source: 'tests/e2e/task-execution-time.spec.ts', topology: process.env.DAYNIGHT_ACCEPTANCE_TARGET,
@@ -80,6 +82,8 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
   };
   let release!: () => void;
   const released = new Promise<void>((resolve) => { release = resolve; });
+  let graphHeld!: () => void;
+  const firstHeldGraph = new Promise<void>((resolve) => { graphHeld = resolve; });
   const activeRoutes = new Set<Promise<void>>();
   const failures: unknown[] = [];
   let routeRegistered = false;
@@ -90,6 +94,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
       message: failure instanceof Error ? failure.message : String(failure) });
   };
   const holdGraph = (route: Route): Promise<void> => {
+    graphHeld();
     const pending = (async () => { await released; await route.continue(); })();
     activeRoutes.add(pending);
     return pending.catch((failure: unknown) => { retainFailure('held-graph-route', failure); throw failure; })
@@ -183,10 +188,11 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     const ticking = card(page, crossing.id);
     await expect(duration(ticking)).toBeVisible();
     await expect(ticking.locator('.task-stuck-label')).toHaveCount(0);
-    const initial = await elapsed(ticking); expect(initial).toBeLessThan(3_600_000); expect(initial).toBeGreaterThan(3_580_000);
     expect(await page.evaluate(() => Date.now())).toBe(new Date('2055-01-01T00:00:00Z').getTime());
     evidence.progress.push('fresh-below-threshold-snapshot');
     await page.route((url) => url.pathname === syncPath, holdGraph); routeRegistered = true;
+    await firstHeldGraph;
+    const initial = await elapsed(ticking); expect(initial).toBeLessThan(3_600_000); expect(initial).toBeGreaterThan(3_580_000);
     const deliveredBefore = delivered;
     const inspection = ticking.locator('.task-node-body'); const details = ticking.locator('.task-node-details');
     await inspection.click(); await details.focus();
@@ -224,10 +230,10 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     expect(Date.parse(graph.observedAt)).toBeLessThan(new Date('2055-01-01T00:00:00Z').getTime());
 
     await test.step('Observe saved warning settings through task sync', async () => {
-      await settings(90); await expect(ticking.locator('.task-stuck-label')).toHaveCount(0, { timeout: 10_000 });
+      await settings(90); await expect(ticking.locator('.task-stuck-label')).toHaveCount(0, { timeout: 20_000 });
       expect(await graphGeometry(page)).toEqual(beforeGeometry); await expect(details).toBeFocused();
       expect((await record(project.id, crossing.id, 'higher-threshold-preserves-start')).startedAt).toBe(running.startedAt);
-      await settings(60); await expect(ticking.locator('.task-stuck-label')).toHaveText('可能卡住了', { timeout: 10_000 });
+      await settings(60); await expect(ticking.locator('.task-stuck-label')).toHaveText('可能卡住了', { timeout: 20_000 });
       expect((await record(project.id, crossing.id, 'lower-threshold-preserves-start')).startedAt).toBe(running.startedAt);
     });
     await closeChain(page);
@@ -240,7 +246,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     await success(['task', 'set-status', crossing.id, 'done', '--project', project.id, '--if-version', String(running.version)]);
     const completed = await record(project.id, crossing.id, 'completed-freeze');
     expect(completed.startedAt).toBe(running.startedAt); expect(completed.completedAt).not.toBeNull();
-    await expect(ticking.locator('.graph-status')).toHaveText('已完成', { timeout: 10_000 });
+    await expect(ticking.locator('.graph-status')).toHaveText('已完成', { timeout: 20_000 });
     await expect(ticking.locator('.task-stuck-label')).toHaveCount(0);
     const frozen = await duration(ticking).getAttribute('datetime');
     expect(await elapsed(ticking)).toBe(Date.parse(completed.completedAt!) - Date.parse(completed.startedAt!));
@@ -254,6 +260,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     await success(['task', 'set-status', legacy.id, 'done', '--project', project.id, '--if-version', String(unknownBeforeCompletion.version)]);
     const completedLegacy = await record(project.id, legacy.id, 'completed-legacy-remains-unknown');
     expect(completedLegacy.version).toBe(unknownBeforeCompletion.version + 1n);
+    expect(completedLegacy.updatedAt).not.toBe(unknownBeforeCompletion.updatedAt);
     expect(completedLegacy.startedAt).toBeNull(); expect(completedLegacy.completedAt).not.toBeNull();
     await retained.dispose();
     await openTimingChain();
@@ -296,7 +303,10 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
         await expect(manualRow).not.toHaveClass(/standalone-row-stuck/);
         await expect(manualRow.locator('.task-stuck-label')).toHaveCount(0);
         await expect(manualRow).not.toHaveAccessibleDescription(/Possibly stuck|可能卡住了/);
-        const unknown = page.locator(`#standalone-task-${legacy.id}`); await expect(unknown).toBeVisible(); await expect(unknown.locator('.root-status')).toHaveText(locale === 'en' ? 'Done' : '已完成'); await expect(duration(unknown)).toHaveCount(0); await expect(unknown.locator('.task-stuck-label')).toHaveCount(0);
+        const unknown = page.locator(`#standalone-task-${legacy.id}`);
+        await expect(unknown).toBeVisible();
+        await expect(unknown.locator('.root-status')).toHaveText(locale === 'en' ? 'Done' : '已完成', { timeout: 20_000 });
+        await expect(duration(unknown)).toHaveCount(0); await expect(unknown.locator('.task-stuck-label')).toHaveCount(0);
         await expect(duration(page.locator(`#standalone-task-${briefRow.id}`))).toContainText(locale === 'en' ? '< 1 min' : '不足 1 分钟');
         for (const width of [390, 320]) {
           await page.setViewportSize({ width, height: 1000 }); await rowLayout(row); await rowLayout(unknown);

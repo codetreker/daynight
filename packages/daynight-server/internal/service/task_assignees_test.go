@@ -71,7 +71,7 @@ func TestTaskAssigneesCatalogueAndResolutionScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	outsider := servicePrincipal(t, database)
-	otherProject, err := NewProjects(database).Create(ctx, outsider, CreateProject{Name: "Other project", RepoURL: "host:other"})
+	otherProject, err := NewProjects(database).Create(ctx, outsider, CreateProject{ExpectedUserID: outsider.UserID, Name: "Other project", RepoURL: "host:other"})
 	if err != nil {
 		t.Fatal(err)
 	}

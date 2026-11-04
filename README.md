@@ -40,11 +40,16 @@ or run your own service. The interface supports English and Simplified Chinese.
   agent permission, and view elapsed time and possible-stall warnings.
 - **Run ready tasks continuously.** Use `daynight worker run` to claim eligible
   tasks across configured repositories, preserve ongoing work through restarts
-  and clean resources when the original claim leaves the worker's inventory.
-- **Observe your Workers.** Open My Workers alongside My projects to see the
-  current account's recent Workers, online/offline state, resource and software
-  observations, and authorized task snapshots. Detail keeps the last report time
-  and distinguishes an unknown inventory from idle work.
+  and stop ended executions while retaining resources until their cleanup
+  and archive requirements are satisfied.
+- **Observe and configure your Workers.** Open My Workers alongside My projects
+  to see the current account's recent Workers, online/offline state, resource and
+  software observations, and authorized task snapshots. Detail keeps the last
+  report time and distinguishes an unknown inventory from idle work. Its
+  configuration section edits cloud runtime targets and displays reported actual
+  values, partial failures and Project preparation or removal outcomes. Saved
+  targets remain distinct from applied results, and configuration is independent
+  of the recent-report window.
 - **Control a task session in the browser.** With `worker.agentControlMode: web`,
   view native messages, reasoning and tool results, send text, stop a turn, and
   answer supported approvals, questions and forms in the task’s Session tab.
@@ -53,9 +58,9 @@ or run your own service. The interface supports English and Simplified Chinese.
 
 Task Steps have [CLI list/show reads, atomic CLI Add and independent persisted HTTP reads and writes](docs/spec/daynight-task-steps.md), with complete ordered content, task-local identities and the shared parent Task version.
 
-Task creation and general editing use the CLI. The Web app provides project and Worker browsing,
-status and execution-setting controls, task deletion, attachment management and
-persistent task discussions.
+Task creation and general editing use the CLI. The Web app provides project and
+Worker browsing, Worker configuration editing, status and execution-setting
+controls, task deletion, attachment management and persistent task discussions.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 explains configuration, native prerequisites and explicit
 retry/release/resume controls. Complete platform acceptance remains
@@ -201,34 +206,38 @@ keep existing paths when the root changes. Review's clone-root setting is
 independent. Projects must already exist, and their tasks need automatic
 execution permission before the worker can acquire them.
 
-The worker runs in the foreground with one execution slot by default. It uses
-state under `DN_CONFIG_DIR/worker/` (default `~/.daynight/worker/`). In Herdr mode, run `daynight worker attach` in another
-terminal to open its private Herdr session for human input. Each task workspace
-starts with its current task title, followed by its stable Project/task/claim/worktree
-identity. The next successful inventory updates changed titles without replacing
-the native conversation. Detaching the client leaves ongoing worker tasks running.
-Ctrl+C in `worker run` cancels and joins
-all running jobs, then directly stops agents and closes their workspaces without
-sending a cleanup prompt or waiting for a cleanup turn. Claims, worktrees, native
-history and unfinished local rows remain, including for ended claims; restart
-reconciles them normally. Stop failures remain visible and retain the private
-Herdr instance when stopping is uncertain. External temporary resources may
-remain. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
-covers defaults, repository overrides, recovery, attachment and manual management.
+The worker runs in the foreground with one execution slot by default and stores
+state under `DN_CONFIG_DIR/worker/` (default `~/.daynight/worker/`). On macOS,
+each Herdr run owns a separate daemon. A durable lifecycle journal binds the
+original claim, worktree, Session, terminal and process birth identities before
+automatic input is allowed. Linux and Windows retain the shared private Herdr
+path. Each workspace shows its task title and stable ownership suffix.
 
-Herdr fresh and resumed Copilot/Codex processes use fixed full access and task-folder
-trust settings without native permission prompts. Business input remains
-available through `daynight worker attach`. The local task record retains only
-Project/task/claim, pending/active/done, frozen mode, agent type and native
-session ID. In Herdr mode, a NULL session ID produces an informational message and a fresh
-conversation in the same worktree; a known ID uses native resume. Herdr execution
-recovery counts are process-local, and restarted Herdr agents use current
-applicable settings. Both modes persist terminal cleanup responsibility, its
-original deadline, notification state and retry schedule across restarts. Web
-retains its original execution evidence and recovery pause across restarts.
-An exhausted or paused Web execution keeps its
-claim and slot, reports waiting, and requires explicit retry with the original
-native identity and complete stop proof.
+Use `daynight worker attach` in another terminal for human input, including for
+paused tasks. On macOS it selects a recorded runtime and verifies the original
+daemon before connecting. Detaching leaves execution running. Ctrl+C cancels
+and joins Worker jobs, then stops the original execution while preserving
+claims, worktrees, native history and unfinished local rows. It sends no cleanup
+prompt and does not wait for a cleanup turn. Unconfirmed stopping retains
+responsibility and blocks replacement; external temporary resources may remain.
+
+Herdr fresh and resumed Copilot/Codex processes use fixed full access and
+task-folder trust settings; business delivery remains bounded by task
+authorization. Linux and Windows retain process-local Herdr business recovery:
+a NULL native ID permits a fresh conversation, while a known ID selects resume.
+On macOS, durable launch, input and stop evidence protect the original runtime;
+a missing native ID after a possible launch cannot authorize another conversation.
+Session registration advertises no preview, control or archive capability, and
+stopped worktrees remain until archive finalization is available.
+
+Terminal cleanup preserves its original resource identity, deadline and retry
+schedule across restarts; current resource observations determine completion.
+Web retains its original execution evidence and recovery pause across restarts.
+An exhausted or paused Web execution keeps its claim and slot, reports waiting,
+and requires explicit retry with the original native identity and complete stop
+proof. See the [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+and [Herdr lifecycle design](docs/design/herdr-worker-lifecycle.md) for platform,
+recovery and retention boundaries.
 
 Stop the runner before `worker retry/release/resume`; the commands use
 its same instance lock. The [worker guide](packages/daynight/README.md#worker-manual-management)
@@ -330,7 +339,7 @@ from all changed paths, including deletions and both sides of renames:
 | A PR changing only the CLI `package.json` top-level `version`, with unchanged regular-file mode and other parsed fields | No application jobs |
 | Other CLI `package.json` changes limited to top-level `version`, JSON formatting or object key order | CLI |
 | Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
-| Other `packages/daynight/` paths | Linux, macOS ARM64 and Windows CLI, runtime compatibility, plus shell completion |
+| Other `packages/daynight/` paths | Independent ordinary and installed CLI jobs on Linux, macOS ARM64 and Windows; runtime compatibility and shell completion |
 | `packages/daynight-server/` | Go server coverage and E2E |
 | `packages/daynight-web/` and current Dagre and XYFlow patches | Go server coverage/E2E, Web quality and Web browser acceptance |
 | Runtime files under `deployment/` | Web quality and Web browser acceptance |
@@ -355,12 +364,21 @@ workflow. Exact preparation inputs are listed in
 [the selector](.github/scripts/ci-modules.mts).
 
 Documentation exclusions apply after CLI source ownership; changes selecting
-several modules run their union. The Web selector enables parallel quality and
-browser jobs, each with a 20-minute bound. The server selector enables parallel
-coverage and E2E jobs, also bounded to 20 minutes each. All selected jobs are
-required by `checks` and retain their complete integration and coverage gates.
+several modules run their union. CLI selection enables independent ordinary-test
+and installed-acceptance native matrices, each with a 10-minute bound per job.
+Both prepare their own environment and compiled output; the ordinary Ubuntu
+entry supplies the runtime matrix's package. Environment, acceptance and probe
+artifacts identify their native phase. The Web selector enables a quality job and two
+browser matrix entries, each with a 20-minute bound. The two browser shards
+jointly cover the complete native/container inventory; shard 2 owns the shared
+navigation, deployment, combined-authentication and persistence checks. The
+server selector enables parallel coverage and E2E jobs, also bounded to 20 minutes
+each. All selected jobs are required by `checks` and retain their complete
+integration and coverage gates.
 The final `checks` job uses `always()` and accepts only `success` or `skipped`
-from all preceding jobs. A newer PR run cancels the older run for that PR.
+from preceding jobs. Selected Web quality and browser matrix results must be
+`success`; the same gate validates both current-source shard summaries and their
+complete inventory before passing. A newer PR run cancels the older run for that PR.
 New `main` pushes queue behind an active `main` run without cancelling it.
 Documentation-only PRs run routing tests and that gate; every `main` push selects
 full application validation. See the

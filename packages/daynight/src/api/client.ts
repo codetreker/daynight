@@ -1,15 +1,16 @@
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
-import { canonicalStepId, confirmAddedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
+import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
-import type { AddTaskStepInput, AddTaskStepOptions, TaskStepsReadOptions, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
+import type { AddTaskStepInput, AddTaskStepOptions, DeleteTaskStepInput, MoveTaskStepInput, MoveTaskStepOptions, SetTaskStepStatusInput, TaskStepWriteOptions, TaskStepsReadOptions, UpdateTaskStepInput, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
 import { isNonemptyText, isText } from "../platform/text.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseProject, parseProjectAccess, parseProjectParticipants, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
+import { canonicalId, parsePage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
+import type { Team } from "./types.js";
 import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string };
@@ -69,10 +70,18 @@ export class ApiError extends Error {
 export type ApiClient = {
   listTaskSteps(projectId: string, taskId: string, options?: TaskStepsReadOptions): Promise<StepsResource>;
   addTaskStep(projectId: string, taskId: string, input: AddTaskStepInput, options: AddTaskStepOptions): Promise<StepsResource>;
+  deleteTaskStep(projectId: string, taskId: string, stepId: string, input: DeleteTaskStepInput, options: TaskStepWriteOptions): Promise<StepsResource>;
+  updateTaskStep(projectId: string, taskId: string, stepId: string, input: UpdateTaskStepInput, options: TaskStepWriteOptions): Promise<StepsResource>;
+  setTaskStepStatus(projectId: string, taskId: string, stepId: string, input: SetTaskStepStatusInput, options: TaskStepWriteOptions): Promise<StepsResource>;
+  moveTaskStep(projectId: string, taskId: string, stepId: string, input: MoveTaskStepInput, options: MoveTaskStepOptions): Promise<StepsResource>;
   getTaskStep(projectId: string, taskId: string, stepId: string): Promise<StepResource>;
   readTaskThread(projectId: string, taskId: string, query: ThreadReadQuery): Promise<ThreadPage>;
   postTaskThreadMessage(projectId: string, taskId: string, input: PostThreadMessageInput): Promise<ThreadMessage>;
-  getCurrentUser(): Promise<User>;
+  getCurrentUser(requirePrincipal?: boolean): Promise<User>;
+  getTeamCurrentUser(): Promise<User>;
+  listTeams(userId: string): Promise<readonly Team[]>;
+  getTeam(userId: string, teamId: string): Promise<Team>;
+  listTeamProjects(userId: string, teamId: string): Promise<readonly Project[]>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(projectId: string): Promise<Project>;
@@ -138,7 +147,7 @@ export const createApiClient = (options: {
   type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
-    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly onPrincipal?: (principal: string) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string }
+    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown; readonly maxBytes?: number } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
@@ -251,7 +260,7 @@ export const createApiClient = (options: {
         // Cancelling an already errored stream repeats its existing failure, rather than introducing a cleanup failure.
         void reader.closed.catch((error: unknown) => { bodyFailure = error; });
       }
-      if (success && (expectedUserId !== undefined || mode.kind === "json" && mode.requirePrincipal === true)) {
+      if (success && (expectedUserId !== undefined || mode.kind === "json" && mode.requirePrincipal === true) || !success && mode.kind === "json" && (status !== 401 && mode.checkFailurePrincipal === true || response.headers.has("Daynight-User-ID") && mode.checkPrincipalOnError === true && (expectedUserId !== undefined || mode.requirePrincipal === true))) {
         phase = "protocol";
         const principal = response.headers.get("Daynight-User-ID");
         if (principal === null || canonicalId(principal) === null || mode.kind === "json" && mode.requirePrincipal === true && canonicalId(principal) !== principal || expectedUserId !== undefined && canonicalId(principal) !== expectedUserId) throw new ProtocolError("The authenticated response principal does not match the expected user.");
@@ -363,7 +372,7 @@ export const createApiClient = (options: {
 
   const request = <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH", parse: JsonParser<T>, body?: unknown): Promise<T> => exchange(context, path, method, { kind: "json", parse }, [method === "POST" ? 201 : 200], body === undefined ? undefined : { kind: "json", value: body });
 
-  const list = async <T>(context: Context, path: string, parse: JsonParser<Page<T>>, identity: (item: T) => string, filters: Record<string, string> = {}, mutable = false): Promise<readonly T[]> => {
+  const list = async <T>(context: Context, path: string, parse: JsonParser<Page<T>>, identity: (item: T) => string, filters: Record<string, string> = {}, mutable = false, principal?: string): Promise<readonly T[]> => {
     const result: T[] = [];
     const seenIdentities = new Set<string>();
     const seenCursors = new Set<string>();
@@ -372,7 +381,7 @@ export const createApiClient = (options: {
       do {
         operation.check();
         const query = new URLSearchParams({ ...filters, limit: "100", ...(cursor === null ? {} : { cursor }) });
-        const page = await exchange(context, `${path}?${query}`, "GET", { kind: "json", parse }, [200], undefined, mutable);
+        const page = await exchange(context, `${path}?${query}`, "GET", { kind: "json", parse, ...(principal === undefined ? {} : { requirePrincipal: true, checkPrincipalOnError: true, onPrincipal: (actual: string) => { if (actual !== principal) throw new ProtocolError("The authenticated response principal changed during the operation."); } }) }, [200], undefined, mutable);
         for (const item of page.items) {
           const key = identity(item);
           if (seenIdentities.has(key)) throw new ProtocolError("Duplicate resource identity across list pages.");
@@ -460,6 +469,44 @@ export const createApiClient = (options: {
     } }, [200], { kind: "json", value: input }, true);
   };
 
+  const updateStep = async (action: "update" | "set-status", projectId: string, taskId: string, stepId: string, input: UpdateTaskStepInput | SetTaskStepStatusInput, options: TaskStepWriteOptions): Promise<StepsResource> => {
+    const context: Context = { operation: `task.step.${action}`, sentRequestId: options.requestId };
+    try {
+      const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
+      if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
+      const target = { ...context, projectId: project, taskId: task, stepId: step };
+      try {
+        taskVersion(input.version);
+        let normalized: UpdateTaskStepInput | SetTaskStepStatusInput;
+        if (action === "update") {
+          const fields = input as UpdateTaskStepInput;
+          if (fields.title === undefined && fields.description === undefined) throw new Error("Provide at least one Step title or description.");
+          if (fields.title !== undefined && !isNonemptyText(fields.title)) throw new Error("Step title must be nonempty Unicode text without NUL.");
+          if (fields.description !== undefined && !isText(fields.description)) throw new Error("Step description must be Unicode text without NUL.");
+          normalized = { version: fields.version, ...(fields.title === undefined ? {} : { title: fields.title }), ...(fields.description === undefined ? {} : { description: fields.description }) };
+        } else {
+          const fields = input as SetTaskStepStatusInput;
+          if (!["todo", "in_progress", "done", "skipped"].includes(fields.status)) throw new Error("Step status must be todo, in_progress, done or skipped.");
+          normalized = { version: fields.version, status: fields.status };
+        }
+        const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
+        if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
+        const pathname = resourcePath("projects", project, "tasks", task, "steps", step) + (action === "set-status" ? "/status" : "");
+        return await exchange(target, pathname, action === "update" ? "PATCH" : "PUT", {
+          kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
+          parse: (value) => parseStepsResource(value, project, task),
+          confirmMutation: (result) => confirmUpdatedTaskStep(result, step, normalized, previous),
+        }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
+      } catch (cause) {
+        if (cause instanceof ApiError) throw cause;
+        throw new ApiError(target, "prepare", { cause });
+      }
+    } catch (cause) {
+      if (cause instanceof ApiError) throw cause;
+      throw new ApiError(context, "prepare", { cause });
+    }
+  };
+
   return {
     listTaskSteps: (projectId, taskId, options) => {
       const project = resourceId(projectId), task = resourceId(taskId);
@@ -512,6 +559,68 @@ export const createApiClient = (options: {
         throw new ApiError(context, "prepare", { cause });
       }
     },
+    updateTaskStep: (projectId, taskId, stepId, input, options) => updateStep("update", projectId, taskId, stepId, input, options),
+    setTaskStepStatus: (projectId, taskId, stepId, input, options) => updateStep("set-status", projectId, taskId, stepId, input, options),
+    moveTaskStep: async (projectId, taskId, stepId, input, options) => {
+      const context: Context = { operation: "task.step.move", sentRequestId: options.requestId };
+      try {
+        const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
+        if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
+        const target = { ...context, projectId: project, taskId: task, stepId: step };
+        try {
+          taskVersion(input.version);
+          if ([input.before, input.after, input.position].filter((value) => value !== undefined).length !== 1) throw new Error("Exactly one Step position is required.");
+          if (input.position !== undefined && input.position !== "first" && input.position !== "last") throw new Error("Step position must be first or last.");
+          const anchor = (value: string): string => {
+            const id = canonicalStepId(value);
+            if (id === null || id === step) throw new Error("Step anchor must be another eight-hex Step ID.");
+            return id;
+          };
+          const normalized: MoveTaskStepInput = { version: input.version,
+            ...(input.before === undefined ? {} : { before: anchor(input.before) }),
+            ...(input.after === undefined ? {} : { after: anchor(input.after) }),
+            ...(input.position === undefined ? {} : { position: input.position }) };
+          const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
+          if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
+          return await exchange(target, resourcePath("projects", project, "tasks", task, "steps", step, "position"), "PUT", {
+            kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
+            parse: (value) => parseStepsResource(value, project, task),
+            confirmMutation: (result) => confirmMovedTaskStep(result, step, normalized, previous),
+          }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
+        } catch (cause) {
+          if (cause instanceof ApiError) throw cause;
+          throw new ApiError(target, "prepare", { cause });
+        }
+      } catch (cause) {
+        if (cause instanceof ApiError) throw cause;
+        throw new ApiError(context, "prepare", { cause });
+      }
+    },
+    deleteTaskStep: async (projectId, taskId, stepId, input, options) => {
+      const context: Context = { operation: "task.step.delete", sentRequestId: options.requestId };
+      try {
+        const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
+        if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
+        const target = { ...context, projectId: project, taskId: task, stepId: step };
+        try {
+          taskVersion(input.version);
+          const normalized: DeleteTaskStepInput = { version: input.version };
+          const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
+          if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
+          return await exchange(target, resourcePath("projects", project, "tasks", task, "steps", step), "DELETE", {
+            kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
+            parse: (value) => parseStepsResource(value, project, task),
+            confirmMutation: (result) => confirmDeletedTaskStep(result, step, normalized, previous),
+          }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
+        } catch (cause) {
+          if (cause instanceof ApiError) throw cause;
+          throw new ApiError(target, "prepare", { cause });
+        }
+      } catch (cause) {
+        if (cause instanceof ApiError) throw cause;
+        throw new ApiError(context, "prepare", { cause });
+      }
+    },
     readTaskThread: (projectId, taskId, query) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       if (!Number.isInteger(query.count) || query.count < 1 || query.count > 100 || typeof query.details !== "boolean" || query.beforeId !== undefined && query.afterId !== undefined) throw new Error("Invalid Thread page query.");
@@ -539,12 +648,45 @@ export const createApiClient = (options: {
         confirmMutation: (message) => message.id,
       }, [201], { kind: "json", value: normalized }, true);
     },
-    getCurrentUser: () => exchange({ operation: "auth.me" }, "/me", "GET", { kind: "json", parse: parseUser }, [200], undefined, true),
+    getCurrentUser: (requirePrincipal = false) => exchange({ operation: "auth.me" }, "/me", "GET", { kind: "json", requirePrincipal, parse: (value, metadata) => {
+      const user = parseUser(value);
+      if (requirePrincipal && user.id !== metadata.principalId) throw new ProtocolError("The authenticated response principal does not match the current user.");
+      return user;
+    } }, [200], undefined, true),
+    getTeamCurrentUser: () => exchange({ operation: "auth.me" }, "/me", "GET", { kind: "json", requirePrincipal: true, parse: (value, response) => {
+      const user = parseUser(value);
+      if (user.id !== response.principalId) throw new ProtocolError("The authenticated response principal does not match the user.");
+      return user;
+    } }, [200], undefined, true),
+    listTeams: (userId) => {
+      const user = resourceId(userId);
+      return list({ operation: "team.list" }, "/teams", (value) => parsePage(value, (item) => parseTeam(item, user), (team) => team.id), (team) => team.id, {}, true, user);
+    },
+    getTeam: (userId, teamId) => {
+      const user = resourceId(userId), team = resourceId(teamId);
+      return exchange({ operation: "team.show" }, `/teams/${encodeURIComponent(team)}`, "GET", { kind: "json", requirePrincipal: true, checkPrincipalOnError: true, onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); }, parse: (value) => parseTeam(value, user, team) }, [200], undefined, true);
+    },
+    listTeamProjects: (userId, teamId) => {
+      const user = resourceId(userId), team = resourceId(teamId);
+      return list({ operation: "team.projects" }, "/projects", (value) => parsePage(value, (item) => {
+        const project = parseProject(item);
+        if (project.ownership.teamId !== team) throw new ProtocolError("Project does not belong to the requested Team.");
+        return project;
+      }, (project) => project.id), (project) => project.id, { teamId: team }, true, user);
+    },
     reportWorker: (workerId, input) => {
       const worker = resourceId(workerId);
       return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], { kind: "json", value: input }, true);
     },
-    createProject: (input) => request({ operation: "project.create" }, "/projects", "POST", (value) => parseProject(value), { name: input.name, repoUrl: input.repoUrl }),
+    createProject: (input) => {
+      const expected = resourceId(input.expectedUserId);
+      const teamId = input.teamId === undefined ? undefined : resourceId(input.teamId);
+      return exchange({ operation: "project.create" }, "/projects", "POST", {
+        kind: "json", requirePrincipal: true, checkFailurePrincipal: true,
+        onPrincipal: (principal) => { if (principal !== expected) throw new ProtocolError("The authenticated response principal does not match the expected user."); },
+        parse: (value) => parseCreatedProject(value, expected, teamId),
+      }, [201], { kind: "json", value: { name: input.name, repoUrl: input.repoUrl, expectedUserId: expected, ...(teamId === undefined ? {} : { teamId }) } });
+    },
     getProject: (projectId) => {
       const project = resourceId(projectId);
       return request({ operation: "project.show", projectId: project }, `/projects/${encodeURIComponent(project)}`, "GET", (value) => parseProject(value, project));
@@ -556,7 +698,7 @@ export const createApiClient = (options: {
     },
     listProjectMembers: (projectId) => {
       const project = resourceId(projectId);
-      return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectParticipants(value, project) }, [200], undefined, true);
+      return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectParticipants(value, project, expectedUserId) }, [200], undefined, true);
     },
     createTask: (projectId, input) => {
       const project = resourceId(projectId);

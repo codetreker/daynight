@@ -40,7 +40,7 @@ type attachmentMigrationIntegrationFixture struct {
 func attachmentMigrationIntegrationSetup(t *testing.T) *attachmentMigrationIntegrationFixture {
 	t.Helper()
 	_, database, project, databaseURL, principal := taskService(t)
-	other, err := NewProjects(database).Create(t.Context(), principal, CreateProject{Name: "Migration secondary", RepoURL: "host:migration-secondary"})
+	other, err := NewProjects(database).Create(t.Context(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Migration secondary", RepoURL: "host:migration-secondary"})
 	if err != nil {
 		t.Fatal(err)
 	}

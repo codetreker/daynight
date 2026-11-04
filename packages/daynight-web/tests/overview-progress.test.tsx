@@ -25,7 +25,7 @@ const snapshot = (seeds: readonly Seed[], observed = observedAt): Extract<GraphS
       startedAt: null, completedAt: seed.completedAt === undefined ? null : seed.completedAt, createdAt: beforeCutoff, updatedAt: observed };
   });
   const graph: TaskGraph = { observedAt: observed,
-    project: { id: "project", name: "Project", repoUrl: "https://example.com/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: cutoff, updatedAt: observed },
+    project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: "project", name: "Project", repoUrl: "https://example.com/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: cutoff, updatedAt: observed },
     tasks, summary: { total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
       inProgress: tasks.filter((task) => task.status === "in_progress").length, done: tasks.filter((task) => task.status === "done").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.ready === false && task.status === "todo").length } };

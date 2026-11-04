@@ -45,8 +45,10 @@ pnpm daynight --version
 
 `pnpm check` runs type checking and tests. Standalone `pnpm test` and
 `pnpm acceptance` build the package before exercising the compiled CLI. Native CI
-typechecks and builds once, then invokes both Vitest configurations against that
-same compiled output. Ordinary suites exclude `.stress.ts` files; explicit
+runs ordinary tests and installed acceptance in independent native jobs. Each
+job installs dependencies and builds its own current-source output; the ordinary
+job also typechecks and tests the local development installer. Both phases keep
+all three platforms and a 10-minute job limit. Ordinary suites exclude `.stress.ts` files; explicit
 local stress commands select those workloads separately, as described in
 [local stress validation](#local-stress-validation). `pnpm build` clears the
 package's `dist/`, compiles
@@ -104,15 +106,16 @@ registry access. The review lifecycle suite uses controlled GitHub/Copilot
 executables with real Git and SQLite. The self-update suite uses real npm and an
 isolated, task-local global prefix with a controlled HTTP registry. Neither suite
 changes the operator's installed CLI or requires live review credentials.
-Project/task acceptance is a third native installed suite using a reusable
-pack/install fixture, real Git and controlled HTTP. Repeated private consumers
-use PNPM's supported POSIX executable-link preference; the independent e2e
-consumer still exercises default PNPM shims, and npm global updates remain real.
+Project/task acceptance is a third native installed suite using the shared
+packed production installation, real Git and controlled HTTP. Vitest prepares
+default PNPM shims once and gives consumers private runtime state or writable
+package views. Non-Vitest standalone consumers retain owned preparation with
+PNPM's supported POSIX executable-link preference; npm global updates remain real.
 
-Project/task installation preparation and self-update's initial package/global
+Project/task runtime/view preparation and self-update's initial package/global
 installation belong to case-owned setup hooks. The complete ordered business
 scenarios remain in their callbacks. Both use the existing 180-second hook and
-180-second callback limits, while the native job keeps its 10-minute limit.
+180-second callback limits. The independent installed job keeps a 10-minute limit.
 Separating these allowances changes budget ownership; it does not mean the old
 scenario-total allowance or total runtime is unchanged. Teardown aborts and
 awaits pending preparation/behavior, reaps owned processes, closes registries
@@ -154,22 +157,27 @@ loading guarantees.
 
 Native development and validation support Linux, Windows and Apple Silicon
 (ARM64) macOS. Intel macOS is unsupported. GitHub Actions runs type checking,
-build and tests on native Linux, macOS 26 ARM64 and Windows runners. The macOS
-job uses the standard `macos-26` label and verifies Darwin ARM64 before validation;
+build and tests on native Linux, macOS 26 ARM64 and Windows runners. Both native
+phases use the standard `macos-26` label for macOS and verify Darwin ARM64 before validation;
 the [platform decision](../.agents/notes/implemented/testing/2026-11-04-macos-arm64-support.md)
 records the support boundary and runner selection. Hosted capacity failures
 require diagnosis within this ARM64 runner policy.
 Each native job resolves the latest available Node.js 24 patch.
-A separate runtime matrix builds the package with Node.js 24 and checks the packed
-artifact with Node.js `22.14.0`, the latest `22` and `24` releases, and current
+The ordinary Ubuntu job builds and packs the Node.js 24 artifact consumed by the
+separate runtime matrix. Runtime jobs wait for the ordinary matrix, without an
+installed-acceptance dependency, and check that packed artifact with Node.js
+`22.14.0`, the latest `22` and `24` releases, and current
 `node`. Each runtime installs it in a fresh npm consumer with `--engine-strict`
 and exercises CLI commands, interactive prompt dependencies and SQLite. These
 checks cover the published package and its production dependency graph without
 requiring the source-development toolchain on each supported runtime.
 PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
-documentation and repository metadata. A selected CLI runs every native platform,
-the runtime compatibility matrix and the dedicated Linux shell completion job.
+documentation and repository metadata. A selected CLI runs both phases on every
+native platform, the runtime compatibility matrix and the dedicated Linux shell
+completion job. Each native phase needs only module detection; neither waits for
+the other. The [phase ownership decision](../.agents/notes/implemented/testing/2026-11-04-parallel-native-cli-validation.md)
+records the independent failure gates, artifact owners and duplicated bootstrap cost.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
@@ -178,9 +186,14 @@ preparation duration. Resolution, preparation and native execution share one
 10-second gh budget; expired preparation or an over-budget native result fails
 the probe. The version child uses isolated project-local configuration/state and
 disabled telemetry. A separate diagnostic artifact uploads after validation even
-when environment discovery fails. Every native version, the complete validation
-workload and the 600-second platform gate remain required whenever CLI validation
-is selected. The
+when environment discovery fails. Ordinary environment and diagnostic artifacts
+use `daynight-cli-tests-*` and `daynight-cli-tests-probes-*` names; installed
+receipts and diagnostics use `daynight-cli-installed-*` and
+`daynight-cli-installed-probes-*`. The installed receipts include the environment,
+curated acceptance outputs and canonical preparation/cleanup result. Every
+native version and both complete phase workloads remain required whenever CLI
+validation is selected. Each phase has its own 600-second job gate, so the former
+combined platform ceiling and aggregate runner cost are not preserved. The
 [cold-start decision](../.agents/notes/archived/bug-fix/2026-10-20-gh-cold-start-preparation.md)
 records the measurements, deadline semantics and remaining limits.
 
@@ -207,14 +220,18 @@ GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
 captured targets, disposable review artifacts, shared refs, and isolation between
-PR worktrees. Independent Git suites run in separate Vitest workers. Each suite
-copies its immutable bare-origin seed into private test directories; refs,
+PR worktrees. Independent Git suites run in separate Vitest workers. Review suites
+copy immutable bare-origin seeds into private test directories; refs,
 SQLite databases, clones and worktrees remain separate for every case. Sparse
 suites prepare their shared source graph before copying; scenario observations
 and mutations remain private. Source snapshots are prepared through batched
 native Git imports, while real clone/fetch/worktree operations remain the test
-subjects. Tests within
-a file stay sequential so environment changes and cleanup have one owner.
+subjects. Worker worktree cases separately copy file-owned starting repositories
+for the files and reftable backends. Direct mutation checks verify independent
+tracked bytes, refs and Git objects in each copy. The
+[Worker seed decision](../.agents/notes/implemented/testing/2026-11-04-worker-git-fixture-seeds.md)
+owns that fixture lifetime. Tests within a file stay sequential so environment
+changes and cleanup have one owner.
 The [Git test decision](../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)
 records the isolation rules, and the
 [CI timing report](../docs/research/windows-ci-performance.md) records native
@@ -224,8 +241,16 @@ separate setup and behavior limits and the existing private-directory cleanup.
 The [fixture lifecycle decision](../.agents/notes/implemented/testing/2026-10-22-submodule-discovery-fixture-lifecycle.md)
 records that separation. The installed acceptance suite additionally verifies the package
 bin, default native command shims, singleton/stale-lock behavior and the complete
-review/re-review/restart/closure lifecycle. Separate npm global-prefix acceptance
-checks self-update and installation ownership. Curated environment and scenario
+review/re-review/restart/closure lifecycle. Its Vitest global setup packs and
+installs the production package once per platform invocation. Consumers own
+private runtime directories; manual, SQL-resource and review lifecycle mutation
+uses private CLI package files with shared read-only dependencies. Global
+teardown checks the canonical package bytes and removes that installation after
+all consumers finish. Consumer receipts report runtime cleanup separately from
+the canonical preparation receipt in `.tmp/installed-cli-preparation.json`.
+The [shared preparation decision](../.agents/notes/implemented/testing/2026-11-04-shared-installed-cli-preparation.md)
+owns installation, view and cleanup responsibilities. Separate npm global-prefix
+acceptance checks self-update and installation ownership. Curated environment and scenario
 receipts are uploaded by each native CI job; [validation](#validation) describes
 their scope and interpretation. Controlled Copilot executables exercise retained sessions, durable
 launch intent, stdin prompts and streamed completion/failure handling. These
@@ -416,9 +441,13 @@ The private [web workspace](../packages/daynight-web/README.md) implements the p
 list, cursor paging, safe API decoding, cancellation, project statistics, task
 graphs, complete task details in centered dialogs or independent pages, and
 single-file attachment management. An open project or standalone detail synchronizes
-its IndexedDB summary base every five seconds while visible, pauses automatic
-reads while hidden and synchronizes immediately on return. The current mount must
-complete a user-matched online sync before displaying persisted private data.
+its IndexedDB summary base every fifteen seconds while visible, pauses automatic
+reads while hidden and synchronizes immediately on return. Current identity is verified through browser-managed `/me` HTTP revalidation;
+unchanged profiles use bodyless wire-level 304 responses. Persistent assignee
+content is restored only after a user-matched online project sync supplies its
+complete qualified-person version manifest. Matching profiles survive reload;
+only changed or missing content is fetched. The cached content grants no project
+or mutation authority.
 Full details reuse matching intrinsic cached content, perform a live read on
 opening and refresh on business-version changes or recovery needs.
 Refresh retains browsing state and the mounted details, including attachment
@@ -455,12 +484,13 @@ pnpm web:test
 The frontend build emits `packages/daynight-web/dist/`, validates its HTML and
 assets, and publishes a complete replacement into the Go embed directory. A
 clean Go build without generated assets fails; no placeholder UI is committed.
-The web job runs typecheck, production build, controlled-fetch UI tests, isolated
-deployment lifecycle fixtures and an exact statement gate strictly
-above 90%. It independently enumerates all product TypeScript/TSX files and
+Web validation runs typecheck, production build, controlled-fetch UI tests,
+isolated deployment lifecycle fixtures and an exact statement gate strictly
+above 90%. Quality independently enumerates all product TypeScript/TSX files and
 publishes raw counters plus a relative source manifest. When
-[CI selection](#ci-selection) selects web, the complete job contributes its result
-to the final `checks` job; existing root CLI commands retain their scope.
+[CI selection](#ci-selection) selects Web, quality and both browser shards
+contribute their required results to the final `checks` job; existing root CLI
+commands retain their scope.
 
 For a disposable full-stack HTTP target, run a command through
 `bash deployment/dev-ci/run.sh <command> [args...]`; it receives
@@ -470,7 +500,7 @@ and records cleanup failures.
 
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. After shared CLI preparation, it overlaps thirty-two native functional
+parallel. After shared CLI preparation, it overlaps thirty-six native functional
 workflows with the same container workflows, then requires complete target and
 shared CLI cleanup. The explicit local
 `pnpm web:acceptance:stress` command adds the fixed native capacity cases after
@@ -506,11 +536,14 @@ Default CLI service acceptance retains two bounded deadline probes and
 `.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
 the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
 claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
-functional mode requires thirty-two scenarios per target (64 total); stress mode
-adds five native capacity scenarios (37 native / 32 container, 69 total) and
-`native/capacity/performance.json`. Both
-modes retain strict source/browser identity, combined authentication and owned
-resource cleanup. Local measurements prove only their recorded source and host;
+local functional mode requires thirty-six scenarios per target (72 total);
+CI partitions that inventory into disjoint eighteen-case selections per
+target. Shard receipts additionally identify `shard` and `selection`, and the
+final gate requires their complete canonical union. Stress mode remains local
+and unsharded, adds five native capacity scenarios (41 native / 36 container,
+77 total) and `native/capacity/performance.json`. Both local modes retain strict
+source/browser identity, combined authentication and owned-resource cleanup;
+CI shard 2 owns both combined journeys while each shard owns its full cleanup. Local measurements prove only their recorded source and host;
 they do not establish hosted PR latency.
 
 The [local stress decision](../.agents/notes/implemented/testing/2026-11-03-local-stress-suites.md)
@@ -692,10 +725,10 @@ records the dependency boundary and its maintenance cost.
 Selected jobs keep their ordinary functional checks, coverage thresholds,
 timeouts and cleanup requirements. Stress workloads have explicit local-only
 entrypoints and are excluded from routine CI selection. The Go coverage and E2E
-jobs each build real Web assets and install the CLI; the Web browser job builds
-and exercises the Go service and production deployment. Both server jobs use the
+jobs each build real Web assets and install the CLI; each Web browser shard
+builds and exercises its own Go service and production deployment. Both server jobs use the
 same server selector and prepare independent PostgreSQL and UniAuth resources.
-The same Web selector enables quality and browser jobs; both are required by the final gate. The Ubuntu shell-completion and Web
+The same Web selector enables quality and both browser matrix entries; all are required by the final gate. The Ubuntu shell-completion and Web
 browser jobs select the
 official HTTPS Ubuntu archive and security services before package preparation.
 Their shared command changes only the runner's referenced mirror list; signed
@@ -704,53 +737,84 @@ fails explicitly. The [mirror decision](../.agents/notes/implemented/testing/202
 records the provisioning failure and the retained acceptance limits.
 Native CLI jobs typecheck and build once before running ordinary and installed
 tests against the same output. The separate runtime compatibility matrix checks
-the packed CLI installation across the supported Node.js range. Web quality and
-browser acceptance run in parallel jobs, `verify-web-quality` and `verify-web`, each with a 20-minute bound. The final
-`checks` job requires both and every other selected module; shared workflow
-changes retain all-module selection.
+the packed CLI installation across the supported Node.js range. The Web selector
+enables `verify-web-quality` and two `verify-web` matrix entries, each with a
+20-minute bound. Shared workflow changes retain all-module selection.
 
-The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness
-and the ordinary Vitest/V8 suite with its strict statement checker serially,
-each with a 180-second deadline. Only the coverage subprocess uses four workers
+The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness,
+the ordinary Vitest/V8 suite and the strict statement checker serially. Harness
+has a 180-second deadline and collection has a 300-second deadline; final source-inventory and
+coverage verification has an independent 60-second deadline. The
+[stage budget decision](../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)
+keeps a completed collection from consuming its final verification budget.
+Only the Vitest/V8 subprocess uses four workers
 through its copied environment, retaining the `forks` pool and file isolation.
 The [worker capacity decision](../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
-calibrates that existing setting for the dedicated public standard Linux
-runner's four CPUs; it does not change inputs, assertions or coverage gates.
-The `browser` mode installs pinned Chromium and Linux dependencies under the
-existing 600-second bound, then invokes ordinary core acceptance after the job's
-deployment fixture checks. The wrapper checks that each command's owned process
-group stopped after settlement, preserving both command and cleanup failures.
+calibrates that setting for the dedicated public standard Linux runner's four
+CPUs; it does not change inputs, assertions or coverage gates.
 
-The core has no quality/browser preparation callbacks or readiness-admission
-observer. Local acceptance uses its existing installed browser. Native and
-container preparation overlap. Once native preparation has installed the shared
-CLI, an atomic source/run-bound permission releases the container functional
-browser alongside the native functional browser. Each target retains one worker,
-zero retries and its complete inventory. The permission wait remains 900 seconds.
-Each browser phase uses a separate private profile root outside uploaded
-artifacts. Run-wide CLI recovery waits until both targets have drained, preserving
-active commands and credentials in the other target. Combined CLI commands
-receive cancellation and retain individual process-group checks.
-Ordinary CI completes after both functional targets, combined authentication,
-full container cleanup, browser recovery and shared CLI recovery. Explicit local
-stress acceptance adds native capacity only after those phases finish.
-Independent quality checks run on their own runner and do not add empty core
-phases or split functional browser scenarios. The
+Each browser entry invokes `browser --shard=1/2` or `browser --shard=2/2`, installs
+pinned Chromium/Linux dependencies under the existing 600-second bound, and
+builds its own real native and container deployments. Case selection uses
+`--fully-parallel --workers=1 --retries=0 --shard=i/2`; every database still runs
+one worker serially. Complete and selected discovery use the same functional
+arguments as execution and the canonical scenario inventory. Current selections
+contain eighteen cases each and jointly cover all thirty-six scenarios per target. The selected IDs and shard identity remain in the existing run evidence.
+The container callback reads its validated source/run-bound parent selection.
+
+Within each entry, native and container preparation overlap. Once native
+preparation has installed the shared CLI, an atomic source/run-bound permission
+releases the container functional browser alongside the native functional
+browser. Its permission wait remains 900 seconds. Each phase has a separate
+private profile root outside uploaded artifacts. Command wrappers require
+owned groups to stop after settlement; failures and cancellation still fail.
+Both targets drain before run-wide CLI recovery, preserving active commands and
+credentials in the other target. The
 [functional target decision](../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
-records the isolation and scheduling constraints.
+owns those isolation constraints.
+
+Shard 2 owns all 28 navigation-contract cases, dev-ci lifecycle fixtures, both
+eleven-check combined-authentication journeys and the existing real attachment
+persistence/paired-backup-restoration check. That ownership derives from the
+shard identity. Both entries retain functional, image identity, process,
+browser and resource cleanup requirements. Matrix `fail-fast` is false so the
+other entry can finish its diagnostics and cleanup after a failure.
+Local ordinary acceptance remains complete and unsharded; local stress adds
+capacity only after the same functional/container/browser/CLI barriers and
+rejects a shard combination before preparation.
+
+The existing final `checks` job first applies its general preceding-job gate.
+For selected Web validation it also requires quality and the browser matrix to
+succeed, checks out current source, sets up Node 24, and downloads exactly
+`daynight-web-summary-1` and `daynight-web-summary-2`. Each contains only the
+existing `runID/evidence.json`. The install-free report CLI validates two distinct
+run IDs, shard identities 1/2 and 2/2, clean passing receipts at `GITHUB_SHA` and
+the checkout tree, exact native/container inventories and cleanup, disjoint
+canonical coverage and both combined receipts only on shard 2. Missing,
+inconsistent or incomplete summaries fail the same required job. Full browser
+artifacts are `daynight-web-acceptance-1` and `daynight-web-acceptance-2`; coverage
+remains separate. Artifacts retain 30 days. The
+[two-shard decision](../.agents/notes/implemented/testing/2026-11-04-web-ci-case-shards.md)
+records duplication costs and the limits of the estimated critical path.
+
 The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
-records the responsibility and budget boundaries without claiming a measured
-CPU/I/O cause or guaranteed hosted speedup. The existing functional Playwright
-JSON reports also expose named phases for the largest journeys; the
+retains the independent quality responsibility and command budgets. Standard
+Playwright JSON reports expose named phases for the largest journeys. Selected
+status journeys share worker-owned API/CLI credentials and a project while
+retaining fresh per-case API contexts, browser login and artifact validation;
+permission, platform and assignment share only a project. Worker restart or a
+different service origin cannot reuse another worker's prepared resources. The
+[shared preparation decision](../.agents/notes/implemented/testing/2026-11-04-web-scenario-preparation.md)
+owns those resource lifetimes. The
 [Web validation guide](../packages/daynight-web/README.md#production-browser-acceptance)
-explains their wall-time and residual interpretation limits.
+owns detailed receipt and wall-time interpretation rules.
 The Go coverage, Go E2E and Web browser jobs restore module and compiler caches
 keyed by the server `go.sum`. Coverage validation expires Go test results before
 database/race/coverage checks; E2E uses `-count=1` to require fresh observations.
 The web pipeline retains the full production build and unique image identity check. One packed/installed CLI is reused by the native
 and container browser attachment journeys. After the web pipeline and recorded
-resource recovery, Ubuntu web CI runs the existing real-container attachment
-persistence and paired-backup check once; its `.tmp/attachment-deployment-*/`
+resource recovery, Ubuntu browser shard 2 runs the existing real-container
+attachment persistence and paired-backup check once; its `.tmp/attachment-deployment-*/`
 evidence is archived with the browser/deployment evidence. The
 [acceptance pipeline decision](../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
 records the scheduling and phase-evidence choices; the
@@ -758,9 +822,10 @@ records the scheduling and phase-evidence choices; the
 retains the other workload optimizations and their limits.
 
 The final `checks` job uses `always()` to run after routing and application jobs,
-including failed or cancelled validation. It accepts only `success` or `skipped`
-from every preceding job; any other result fails the gate. The gate uses job
-results without comparing module selection flags.
+including failed or cancelled validation. Its general gate accepts only
+`success` or `skipped` from every preceding job. For selected Web validation,
+quality and the browser matrix must specifically succeed and both summaries
+must validate; a skipped selected job cannot establish complete Web acceptance.
 
 Workflow concurrency groups runs by workflow and ref. A newer PR run cancels an
 older run for that PR. For `refs/heads/main`, `cancel-in-progress` is false: new

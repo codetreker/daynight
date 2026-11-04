@@ -1,7 +1,7 @@
 import { ProjectAccessBoundary } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import type { Project } from "../../api/types";
-import { navigate } from "../../app/router";
+import { navigate, taskDetailUrl } from "../../app/router";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
@@ -147,6 +147,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     setNotice(null);
     setDetailSelection({ id, revision: snapshot!.revision });
   }, [snapshot]);
+  const onOpenSession = useCallback((id: string) => {
+    navigate(taskDetailUrl(projectId, id, { tab: "session", path: null }));
+  }, [projectId]);
   const onSelectRelation = useCallback((id: string) => {
     setDetailSelection({ id, revision: snapshot!.revision });
   }, [snapshot]);
@@ -283,11 +286,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           </section>
           <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
-            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot}
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} active={section === "tasks"}
               filter={<TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} />} activeView={activeView} unfinishedStandaloneTaskCount={categories!.unfinishedStandaloneTaskCount}
               unfinishedChainTaskCount={categories!.unfinishedChainTaskCount} onViewChange={selectView}
               chains={{ projectId, ...(matchingTaskIds === undefined ? {} : { matchingTaskIds }), representativeIds: pageRootIds, allRepresentativeIds: categories!.chains, openChainId, onOpenChain, onCloseChain,
-                onOpenTask, showAll, onShowAllChange: changeChainVisibility,
+                onOpenTask, onOpenSession, showAll, onShowAllChange: changeChainVisibility,
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
               standalone={{ projectId, filtered: matchingTaskIds !== undefined, taskIds: pageStandaloneIds, allTaskIds: categories!.standalone, onSelectTask: onOpenTask,
                 showAll: showAllStandalone, onShowAllChange: changeStandaloneVisibility,

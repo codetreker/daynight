@@ -25,12 +25,15 @@ and use pending/active/done. One Project/task can have at most one active claim.
 Agent is copilot, codex or claude; session_id is a nullable native conversation ID.
 The [Web execution evidence decision](../architecture/2026-10-28-web-execution-evidence.md)
 adds claim-frozen mode routing and a separate Web-only evidence store. The
-resource-derived recovery and process-local execution rules below apply to Herdr;
-they do not replace the Controller journal or authorize uncertain Web replay.
+resource-derived recovery and process-local execution rules below apply to legacy
+Herdr on platforms other than macOS. The [macOS Herdr lifecycle decision](../architecture/2026-11-04-herdr-worker-lifecycle.md)
+adds separate durable run evidence, prohibits fresh replacement when the native
+identity is unknown, and retains worktrees pending archive acceptance. Neither
+path replaces the Controller journal or authorizes uncertain Web replay.
 The [SQLite format migration decision](../architecture/2026-10-30-cli-sqlite-migrations.md)
 versions the index independently. The [cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md)
 partially supersedes this note's process-local cleanup choice with a separate
-claim/worktree-bound schedule; business execution recovery remains process-local.
+claim/worktree-bound schedule; legacy business execution recovery remains process-local.
 The [resource-state decision](../architecture/2026-11-04-worker-resource-state.md)
 removes that schedule's notification progress flags and requires authoritative
 resource observations for every cleanup completion.
@@ -98,10 +101,12 @@ checkout's filesystem error must not suppress their progress. Pending startup
 and new acquisition still require successful full discovery to account for
 unknown managed resources before reserving another slot.
 
-Each successful slot allocation advances Project rotation, for both pending
-startup and new acquisition. Project-local pending order is stable, and new
-candidates retain server ready order. This keeps spare capacity from being
-consumed by one busy Project's entire batch.
+Pending startup advances Project rotation after each successful slot allocation
+and may use multiple free slots in one round. Project-local pending order is
+stable. New acquisition follows the [single-acquisition decision](../feature/2026-11-04-worker-single-acquisition.md):
+each round acquires at most one task across all configured Projects, then resumes
+rotation in the next round while preserving server ready order within each
+Project. A grant that remains pending still ends that round's acquisition.
 
 An ended index row without a global resource match enters the same serialized
 cleanup jobs as known owners. The target initially carries claim identity only;
@@ -197,23 +202,27 @@ registration failures, but couples an unrelated checkout to the target agent's
 termination. Direct target observation and deletion validation retain safety
 while keeping failures local to their actual resource.
 
-**Move the removed state into another file or remote ledger.** That keeps the
-same synchronization and recovery protocol while hiding it from the table
-shape. Business execution still has one claim index and no alternate Herdr execution
-journal. The explicit cleanup schedule is a limited exception documented by its
-own decision, rather than a hidden copy of the retired model.
+**Move the removed state into another file or remote ledger.** At the time,
+that would have retained the same synchronization and recovery protocol while
+hiding it from the table shape. The minimal shared index remained sufficient
+for the accepted resource-based behavior. The cleanup schedule adds only its
+explicit responsibility, intent, deadline and retry policy. The later macOS
+lifecycle journal serves stronger original-process and Session v2 guarantees;
+it does not enlarge the shared claim index.
 
 ## Consequences
 
-SQLite, resource interfaces and recovery share a small business model. The
+The shared SQLite index retains a small business model. Legacy Herdr resource
+reconciliation uses that model directly; macOS Herdr and Web keep separate
+evidence stores. The
 worker retains static ownership, real stop-before-delete checks, exact remote
 versions and errors. A failed or partial read is not an empty resource set.
 Old claim resources still block the same task's new execution and retain
 capacity until actual cleanup completes.
 
-Restart preserves the terminal-cleanup responsibility, deadline and retry policy, but not
-the accumulated business recovery budget, old model/args or an interrupted
-management decision. A NULL native ID
+Restart preserves the terminal-cleanup responsibility, deadline and retry policy,
+but not the accumulated business recovery budget, old model/args or an interrupted
+management decision. In legacy Herdr, a NULL native ID
 starts a fresh conversation with an `info` event; if a prior conversation existed,
 its continuity can be lost. Management takes the runner offline. The state
 directory is for one configured service/account/worker identity; changes require completing

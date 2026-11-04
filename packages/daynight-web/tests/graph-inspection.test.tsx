@@ -24,7 +24,7 @@ vi.mock('@xyflow/react', async (original) => {
 const render = createLocaleRender('zh-CN');
 const time = '2026-10-22T00:00:00Z';
 const graph: GraphData = { observedAt: "2026-10-20T12:00:00Z",
-  project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: 'Project', repoUrl: '', createdAt: time, updatedAt: time },
+  project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: 'Project', repoUrl: '', createdAt: time, updatedAt: time },
   summary: { total: 5, todo: 2, inProgress: 0, done: 3, ready: 2, blocked: 0 },
   tasks: [
     { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'A', titlePreview: 'A', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
@@ -60,9 +60,11 @@ describe('graph-local prerequisite inspection', () => {
     fireEvent.click(body(view.container, 'D'));
     expect(card(view.container, 'D')).toHaveAttribute('data-inspection', 'selected');
     expect(card(view.container, 'D')).toHaveClass('task-node-todo');
+    expect(card(view.container, 'D')).toHaveAttribute('data-task-status', 'todo');
     for (const id of ['A', 'B', 'C']) {
       expect(card(view.container, id)).toHaveAttribute('data-inspection', 'prerequisite');
       expect(card(view.container, id)).toHaveClass('task-node-done');
+      expect(card(view.container, id)).toHaveAttribute('data-task-status', 'done');
     }
     expect(card(view.container, 'B')).toHaveClass('task-node-external');
     expect(card(view.container, 'C')).toHaveClass('task-node-external');
@@ -71,6 +73,7 @@ describe('graph-local prerequisite inspection', () => {
     fireEvent.click(body(view.container, 'C'));
     expect(states()).toEqual([['A->D', 'unrelated'], ['B->C', 'highlighted'], ['C->D', 'unrelated']]);
     expect(card(view.container, 'A')).toHaveAttribute('data-inspection', 'unrelated');
+    expect(card(view.container, 'A')).toHaveAttribute('data-task-status', 'done');
     expect(card(view.container, 'B')).toHaveAttribute('data-inspection', 'prerequisite');
     fireEvent.click(body(view.container, 'C'));
     expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(4);

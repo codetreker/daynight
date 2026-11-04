@@ -2,6 +2,34 @@ import type { PauseMessages } from "./pause";
 import type { WorkerPhase } from '../../api/types';
 
 export type InspectionMessages = {
+  readonly steps: {
+    readonly title: string; readonly empty: string; readonly noDescription: string;
+    readonly loading: string; readonly refresh: string; readonly retry: string;
+    readonly loadFailed: string; readonly refreshFailed: string; readonly retained: string;
+    readonly networkError: string; readonly protocolError: string; readonly unavailable: string; readonly denied: string; readonly requestFailed: string;
+    readonly count: (count: string) => string;
+    readonly status: Readonly<Record<"todo" | "in_progress" | "done" | "skipped", string>>;
+    readonly created: string; readonly updated: string;
+    readonly pagination: string; readonly previous: string; readonly next: string; readonly page: string;
+    readonly range: (start: string, end: string, total: string) => string;
+    readonly statusMenu: (title: string) => string; readonly statusUnavailable: string;
+    readonly conflict: string; readonly conflictReconciled: string; readonly unknown: string; readonly unknownReconciled: string; readonly checkState: string; readonly checking: string; readonly checkFailed: string;
+    readonly statusRefused: string; readonly statusMissing: string; readonly statusDenied: string;
+    readonly statusExhausted: string; readonly statusCapacity: string; readonly statusInvalid: string;
+    readonly moveMenu: (title: string) => string; readonly moveUnavailable: string; readonly moveUp: string; readonly moveDown: string; readonly moveFirst: string; readonly moveLast: string; readonly moveRelative: string;
+    readonly moveTitle: string; readonly target: string; readonly searchTargets: string; readonly targetPagination: string; readonly targetPage: string; readonly targetResults: string; readonly noTargets: string; readonly targetMissing: string; readonly placement: string; readonly before: string; readonly after: string; readonly cancelMove: string; readonly confirmMove: string;
+    readonly moveConflict: string; readonly moveConflictReconciled: string; readonly moveUnknown: string; readonly moveRefused: string; readonly moveMissing: string; readonly moveInvalid: string;
+    readonly capacityDetails: (encoded: string, maximum: string) => string;
+    readonly add: string; readonly addTitle: string; readonly description: string; readonly initialStatus: string;
+    readonly edit: string; readonly preview: string; readonly save: string; readonly cancel: string; readonly titleRequired: string;
+    readonly discardTitle: string; readonly discardQuestion: string; readonly discardExplanation: string; readonly discard: string; readonly keep: string;
+    readonly addConflict: string; readonly addConflictReconciled: string; readonly addUnknown: string; readonly addUnknownReconciled: string;
+    readonly addRefused: string; readonly addInvalid: string; readonly addDenied: string;
+    readonly invalidText: string; readonly addedMissing: string; readonly duplicateId: string; readonly chooseId: string;
+  };
+  readonly draftNavigation: {
+    readonly title: string; readonly question: string; readonly explanation: string; readonly discard: string; readonly keep: string; readonly close: string;
+  };
   readonly pause: PauseMessages;
   readonly discussion: {
     readonly title: string; readonly empty: string; readonly loading: string; readonly refresh: string;

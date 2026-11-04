@@ -14,7 +14,7 @@ import { installGraphMeasurements } from './graph-measurements';
 
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
 const time = '2026-11-04T00:00:00Z';
-const project: Project = { id: id(100), name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: id(100), name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const summary = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({
   id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true,
   version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null,
@@ -62,7 +62,7 @@ describe('paused task discovery', () => {
     expect(within(root).getByText('2 已暂停')).toBeVisible();
     expect(within(root).getByText('已暂停')).toBeVisible();
     fireEvent.click(root);
-    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)).toHaveTextContent('已暂停');
+    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.goal-task-row')).toHaveTextContent('已暂停');
     view.rerender(workspace(value, 'chains', id(1)));
     const graph = await screen.findByRole('dialog');
     expect(graph.querySelectorAll('.task-node-paused')).toHaveLength(2);

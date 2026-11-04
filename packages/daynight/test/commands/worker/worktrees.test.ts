@@ -1,7 +1,8 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { cpSync } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { cleanupOperation } from "../../../src/commands/cleanup-operation.js";
 import type { Operation } from "../../../src/api/operation.js";
@@ -10,6 +11,9 @@ import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.j
 import type { ResourceOwner, WorkerProject } from "../../../src/commands/worker/types.js";
 
 const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-git-tests");
+type RefFormat = "files" | "reftable";
+let seedRoot: string | undefined;
+const seeds = new Map<RefFormat, Promise<string>>();
 const directories: string[] = [];
 const managers: ReturnType<typeof createWorkerGitManager>[] = [];
 const operations: Operation[] = [];
@@ -21,16 +25,26 @@ const manager = (root: string, options: Partial<Parameters<typeof createWorkerGi
 };
 const remote = "https://example.com/organization/repository.git";
 const ids = { projectId: "11111111-1111-4111-8111-111111111111", taskId: "22222222-2222-4222-8222-222222222222", claimId: "33333333-3333-4333-8333-333333333333", workerId: "44444444-4444-4444-8444-444444444444", worktreeId: "55555555-5555-4555-8555-555555555555" };
-const fixture = async (refFormat: "files" | "reftable" = "files") => {
-  await mkdir(scratch, { recursive: true });
-  const root = await mkdtemp(path.join(scratch, "Git 用户 ")); directories.push(root);
-  const repository = path.join(root, "repository"); await mkdir(repository);
+const prepareSeed = async (refFormat: RefFormat): Promise<string> => {
+  const repository = path.join(seedRoot!, refFormat); await mkdir(repository);
   git(repository, ["init", "--initial-branch=main", ...(refFormat === "reftable" ? ["--ref-format=reftable"] : [])]);
   git(repository, ["config", "user.name", "Fixture"]); git(repository, ["config", "user.email", "fixture@example.com"]);
   // Checkout bytes remain stable under native core.autocrlf settings; dirty-work assertions stay exact.
   await writeFile(path.join(repository, ".gitattributes"), "* text eol=lf\n");
   await writeFile(path.join(repository, "tracked.txt"), "original\n"); git(repository, ["add", ".gitattributes", "tracked.txt"]); git(repository, ["commit", "-m", "fixture"]);
   git(repository, ["remote", "add", "origin", remote]);
+  return repository;
+};
+const seed = (refFormat: RefFormat): Promise<string> => {
+  const existing = seeds.get(refFormat);
+  if (existing !== undefined) return existing;
+  const preparation = prepareSeed(refFormat); seeds.set(refFormat, preparation); return preparation;
+};
+const fixture = async (refFormat: RefFormat = "files") => {
+  const source = await seed(refFormat);
+  const root = await mkdtemp(path.join(scratch, "Git 用户 ")); directories.push(root);
+  const repository = path.join(root, "repository");
+  cpSync(source, repository, { recursive: true, force: false, errorOnExist: true });
   const project: WorkerProject = { projectId: ids.projectId, repoUrl: remote, localPath: repository };
   const owner: ResourceOwner = { projectId: ids.projectId, taskId: ids.taskId, claimId: ids.claimId, worktreeId: ids.worktreeId };
   return { root, repository, project, owner };
@@ -38,6 +52,14 @@ const fixture = async (refFormat: "files" | "reftable" = "files") => {
 const administrativeDirectory = (cwd: string): string => git(cwd, ["rev-parse", "--absolute-git-dir"]);
 const worktreePaths = (cwd: string): string[] => git(cwd, ["worktree", "list", "--porcelain", "-z"]).split("\0").filter((field) => field.startsWith("worktree ")).map((field) => path.normalize(field.slice(9)));
 const changedClaim = (owner: ResourceOwner): ResourceOwner => ({ ...owner, claimId: "66666666-6666-4666-8666-666666666666", worktreeId: "77777777-7777-4777-8777-777777777777" });
+beforeAll(async () => {
+  await mkdir(scratch, { recursive: true });
+  seedRoot = await mkdtemp(path.join(scratch, "Immutable seeds "));
+});
+afterAll(async () => {
+  await Promise.allSettled(seeds.values());
+  if (seedRoot !== undefined) await rm(seedRoot, { recursive: true, force: true });
+});
 afterEach(async () => {
   vi.unstubAllEnvs();
   operations.splice(0).forEach((entry) => entry.dispose());
@@ -46,6 +68,24 @@ afterEach(async () => {
 });
 
 describe("worker repositories and task worktrees", () => {
+  it.each(["files", "reftable"] as const)("keeps %s seed and sibling bytes, refs and objects independent of a case copy", async (refFormat) => {
+    const first = await fixture(refFormat); const sibling = await fixture(refFormat); const source = await seed(refFormat);
+    const head = git(first.repository, ["rev-parse", "HEAD"]);
+    const originalObject = git(source, ["cat-file", "-p", head]);
+    const objectPath = path.join(".git", "objects", head.slice(0, 2), head.slice(2));
+    await writeFile(path.join(first.repository, "tracked.txt"), "private case bytes\n");
+    git(first.repository, ["update-ref", "refs/heads/private-case", head]);
+    await chmod(path.join(first.repository, objectPath), 0o644);
+    await writeFile(path.join(first.repository, objectPath), "private corrupted object\n");
+    expect(() => git(first.repository, ["cat-file", "-p", head])).toThrow();
+    for (const repository of [sibling.repository, source]) {
+      expect(await readFile(path.join(repository, "tracked.txt"), "utf8")).toBe("original\n");
+      expect(git(repository, ["rev-parse", "HEAD"])).toBe(head);
+      expect(git(repository, ["for-each-ref", "--format=%(refname)", "refs/heads/private-case"])).toBe("");
+      expect(git(repository, ["cat-file", "-p", head])).toBe(originalObject);
+    }
+  });
+
   it("finds an owned worktree after a lost binding without creating or resetting one", async () => {
     const f = await fixture(); const adapter = manager(f.root);
     expect(await adapter.findWorktree(f.project, f.owner, operation())).toBeNull();

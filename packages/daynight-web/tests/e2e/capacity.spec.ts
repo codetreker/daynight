@@ -100,7 +100,7 @@ const observeSyncFetches = async (page: Page, projectId: string): Promise<void> 
     // Cache reads can cross IndexedDB tasks before fetch; retain the real polling
     // callback's provenance until its network read consumes it.
     window.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
-      if (typeof handler !== 'function' || timeout !== 5_000) return nativeInterval(handler, timeout, ...args);
+      if (typeof handler !== 'function' || timeout !== 15_000) return nativeInterval(handler, timeout, ...args);
       return nativeInterval(function (this: Window, ...parameters: unknown[]) {
         pollingCallback += 1;
         return Reflect.apply(handler, this, parameters);
@@ -336,16 +336,17 @@ const stableGeometry = (page: Page) => page.evaluate(captureStableDependencyGeom
 const bodyGeometry = (snapshot: Awaited<ReturnType<typeof stableGeometry>>) => ({ nodes: snapshot.geometry.nodes, paths: snapshot.geometry.paths, pieces: snapshot.geometry.pieces });
 
 const assertInspection = async (page: Page, fixture: CapacityFixture, selectedId: string | null, visible: GeometryExpectation) => {
+  await page.mouse.move(0, 0);
   const tasks = new Map(fixture.tasks.map((task) => [task.id, task]));
   const closure = new Set<string>(selectedId === null ? [] : [selectedId]); const pending = [...closure];
   while (pending.length > 0) for (const id of tasks.get(pending.pop()!)!.dependsOn) if (!closure.has(id)) { closure.add(id); pending.push(id); }
   const geometry = expectedCapacityGeometry(fixture);
   const external = new Set(geometry.nodes.filter((node) => !geometry.memberIds.includes(node.id)).map((node) => node.id));
-  const states = { todo: { label: '待处理', color: 'rgb(114, 126, 144)' }, in_progress: { label: '进行中', color: 'rgb(72, 103, 181)' }, done: { label: '已完成', color: 'rgb(40, 116, 84)' } };
+  const states = { todo: { label: '待处理', color: 'rgb(114, 126, 144)', background: 'rgb(241, 243, 246)' }, in_progress: { label: '进行中', color: 'rgb(72, 103, 181)', background: 'rgb(235, 242, 255)' }, done: { label: '已完成', color: 'rgb(40, 116, 84)', background: 'rgb(234, 246, 239)' } };
   const expected = {
     nodes: fixture.tasks.filter((task) => visible.nodes.some((node) => node.id === task.id)).map((task) => ({
       id: task.id, state: selectedId === null ? 'normal' : task.id === selectedId ? 'selected' : closure.has(task.id) ? 'prerequisite' : 'unrelated', pressed: String(task.id === selectedId),
-      background: selectedId === null ? external.has(task.id) ? 'rgb(246, 247, 250)' : 'rgb(255, 255, 255)' : task.id === selectedId ? 'rgb(240, 239, 255)' : closure.has(task.id) ? 'rgb(247, 246, 255)' : 'rgb(249, 250, 252)',
+      background: states[task.status].background,
       bodyTag: 'BUTTON', bodyType: 'button', bodyPopup: null, detailsTag: 'BUTTON', detailsType: 'button', detailsPopup: 'dialog',
       status: states[task.status].label, statusColor: states[task.status].color, borderColor: states[task.status].color, borderStyle: external.has(task.id) ? 'dashed' : 'solid',
     })).sort((a, b) => a.id.localeCompare(b.id)),

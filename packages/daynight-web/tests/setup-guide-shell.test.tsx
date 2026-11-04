@@ -4,9 +4,10 @@ import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
 import { SetupGuideShell } from "../src/features/setup/SetupGuideShell";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 import { viewerHeaders } from "./helpers/taskSync";
+import { personalTeamPage } from "./helpers/team";
 
 const userId = "00000000-0000-4000-8000-000000000001";
-const user = { id: userId, name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: userId, name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: viewerHeaders(userId, { "Content-Type": "application/json" }) });
 
 beforeEach(() => {
@@ -70,12 +71,14 @@ describe("public setup guide", () => {
   it("opens the header guide through a native new-tab link while preserving the authenticated workspace", async () => {
     const fetcher = vi.fn(async (url: string) => {
       if (url === "/api/v1/me") return json(user);
+      if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(userId));
       if (url.startsWith("/api/v1/projects")) return json({ items: [], nextCursor: null });
       throw new Error(`Unexpected request ${url}`);
     });
     vi.stubGlobal("fetch", fetcher);
     renderWithLocale(<AuthenticatedApp />, { locale: "zh-CN" });
-    await screen.findByRole("heading", { name: "项目" });
+    await screen.findByRole("heading", { name: "个人" });
+    await screen.findByRole("heading", { name: "还没有项目" });
     expect(fetcher.mock.calls.map(([url]) => url)).toContain("/api/v1/me");
     const link = screen.getByRole("link", { name: "使用引导" });
     expect(link).toHaveAttribute("href", "/setup");
@@ -88,7 +91,7 @@ describe("public setup guide", () => {
       expect(fireEvent.click(link, options)).toBe(true);
     }
     expect(window.location.pathname).toBe("/projects");
-    expect(screen.getByRole("heading", { name: "项目" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "个人" })).toBeVisible();
     expect(fetcher).toHaveBeenCalledTimes(before);
   });
 });

@@ -30,7 +30,16 @@ type MintedInvitation struct {
 type InvitationInspection struct {
 	ProjectID   string
 	ProjectName string
-	Member      *core.ProjectMember
+	DirectGrant *core.ProjectGrant
+	Access      *core.ProjectAccess
+}
+
+type InvitationAcceptance struct {
+	ProjectID   string
+	DirectGrant core.ProjectGrant
+	Access      core.ProjectAccess
+	Joined      bool
+	Consumed    bool
 }
 
 func requirePrincipal(principal core.Principal) error {
@@ -93,7 +102,7 @@ func completeMembershipOperation(operation func() error, refusal **Fault) error 
 	return err
 }
 
-func (s *Memberships) read(ctx context.Context, principal core.Principal, projectID string, admin bool, operation func(*store.Snapshot) error) error {
+func (s *Memberships) read(ctx context.Context, principal core.Principal, projectID string, admin bool, operation func(*store.Snapshot, core.ProjectAccess) error) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
@@ -113,7 +122,7 @@ func (s *Memberships) read(ctx context.Context, principal core.Principal, projec
 					return err
 				}
 			}
-			return operation(snapshot)
+			return operation(snapshot, access)
 		}, &refusal)
 	})
 	if err != nil {
@@ -155,14 +164,28 @@ func (s *Memberships) write(ctx context.Context, principal core.Principal, proje
 	return nil
 }
 
+type ProjectParticipants struct {
+	Items       []core.ProjectParticipant
+	ActorAccess core.ProjectAccess
+}
+
 func (s *Memberships) List(ctx context.Context, principal core.Principal, projectID string) ([]core.ProjectParticipant, error) {
-	var members []core.ProjectParticipant
-	err := s.read(ctx, principal, projectID, false, func(snapshot *store.Snapshot) error {
+	result, err := s.ListWithAccess(ctx, principal, projectID)
+	return result.Items, err
+}
+
+func (s *Memberships) ListWithAccess(ctx context.Context, principal core.Principal, projectID string) (ProjectParticipants, error) {
+	var result ProjectParticipants
+	err := s.read(ctx, principal, projectID, false, func(snapshot *store.Snapshot, access core.ProjectAccess) error {
 		var err error
-		members, err = snapshot.ProjectParticipants(ctx, projectID)
+		result.ActorAccess = access
+		result.Items, err = snapshot.ProjectParticipants(ctx, projectID)
 		return err
 	})
-	return members, err
+	if err != nil {
+		return ProjectParticipants{}, err
+	}
+	return result, nil
 }
 
 func memberMutationTarget(ctx context.Context, tx *store.ProjectTx, userID string, version int64) (core.ProjectMember, error) {
@@ -265,8 +288,11 @@ func (s *Memberships) Remove(ctx context.Context, principal core.Principal, proj
 	})
 }
 
-func (s *Memberships) CreateInvitation(ctx context.Context, principal core.Principal, projectID string) (MintedInvitation, error) {
+func (s *Memberships) CreateInvitation(ctx context.Context, principal core.Principal, projectID, expectedUserID string) (MintedInvitation, error) {
 	if err := requirePrincipal(principal); err != nil {
+		return MintedInvitation{}, err
+	}
+	if err := requireMembershipActor(principal, expectedUserID); err != nil {
 		return MintedInvitation{}, err
 	}
 	id, err := CanonicalID(projectID)
@@ -289,7 +315,7 @@ func (s *Memberships) CreateInvitation(ctx context.Context, principal core.Princ
 
 func (s *Memberships) ListInvitations(ctx context.Context, principal core.Principal, projectID string) ([]core.ProjectInvitation, error) {
 	var invitations []core.ProjectInvitation
-	err := s.read(ctx, principal, projectID, true, func(snapshot *store.Snapshot) error {
+	err := s.read(ctx, principal, projectID, true, func(snapshot *store.Snapshot, _ core.ProjectAccess) error {
 		var err error
 		invitations, err = snapshot.Invitations(ctx, projectID, s.now().UTC())
 		return err
@@ -297,8 +323,11 @@ func (s *Memberships) ListInvitations(ctx context.Context, principal core.Princi
 	return invitations, err
 }
 
-func (s *Memberships) RevokeInvitation(ctx context.Context, principal core.Principal, projectID, invitationID string) error {
+func (s *Memberships) RevokeInvitation(ctx context.Context, principal core.Principal, projectID, invitationID, expectedUserID string) error {
 	if err := requirePrincipal(principal); err != nil {
+		return err
+	}
+	if err := requireMembershipActor(principal, expectedUserID); err != nil {
 		return err
 	}
 	id, err := CanonicalID(invitationID)
@@ -359,27 +388,34 @@ func (s *Memberships) InspectInvitation(ctx context.Context, principal core.Prin
 			return err
 		}
 		result.ProjectID, result.ProjectName = project.ID, project.Name
-		member, err := snapshot.DirectProjectMember(ctx, principal.UserID, project.ID)
+		access, err := snapshot.ProjectAccess(ctx, principal, project.ID)
 		if errors.Is(err, core.ErrNotFound) {
 			return nil
 		}
 		if err == nil {
-			result.Member = &member
+			result.Access = &access
+			result.DirectGrant = access.DirectGrant
 		}
 		return err
 	})
 	return result, err
 }
 
-func (s *Memberships) AcceptInvitation(ctx context.Context, principal core.Principal, secret string) (core.ProjectMember, error) {
+func (s *Memberships) AcceptInvitation(ctx context.Context, principal core.Principal, secret, expectedUserID string) (InvitationAcceptance, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return InvitationAcceptance{}, err
+	}
+	if err := requireMembershipActor(principal, expectedUserID); err != nil {
+		return InvitationAcceptance{}, err
+	}
 	var projectID string
 	if err := s.inspect(ctx, principal, secret, func(_ *store.Snapshot, invitation core.ProjectInvitation) error {
 		projectID = invitation.ProjectID
 		return nil
 	}); err != nil {
-		return core.ProjectMember{}, err
+		return InvitationAcceptance{}, err
 	}
-	var result core.ProjectMember
+	var result InvitationAcceptance
 	var refusal *Fault
 	err := s.store.WriteProject(ctx, projectID, func(tx *store.ProjectTx) error {
 		return completeMembershipOperation(func() error {
@@ -394,28 +430,33 @@ func (s *Memberships) AcceptInvitation(ctx context.Context, principal core.Princ
 			if !invitationAvailable(invitation, now) {
 				return invitationUnavailable(nil)
 			}
-			result, err = tx.DirectProjectMember(ctx, principal.UserID)
-			if err == nil {
-				return nil
-			}
-			if !errors.Is(err, core.ErrNotFound) {
+			member, err := tx.DirectProjectMember(ctx, principal.UserID)
+			if err != nil && !errors.Is(err, core.ErrNotFound) {
 				return err
 			}
-			result, err = tx.AddInvitedMember(ctx, principal.UserID)
-			if err != nil {
-				return err
+			if errors.Is(err, core.ErrNotFound) {
+				member, err = tx.AddInvitedMember(ctx, principal.UserID)
+				if err != nil {
+					return err
+				}
+				if err := tx.ConsumeInvitation(ctx, invitation.ID, principal.UserID, now); err != nil {
+					return err
+				}
+				result.Joined, result.Consumed = true, true
 			}
-			return tx.ConsumeInvitation(ctx, invitation.ID, principal.UserID, now)
+			result.ProjectID, result.DirectGrant = projectID, member.Grant
+			result.Access, err = tx.ProjectAccess(ctx, principal)
+			return err
 		}, &refusal)
 	})
 	if errors.Is(err, core.ErrNotFound) {
-		return core.ProjectMember{}, invitationUnavailable(err)
+		return InvitationAcceptance{}, invitationUnavailable(err)
 	}
 	if err != nil {
-		return core.ProjectMember{}, err
+		return InvitationAcceptance{}, err
 	}
 	if refusal != nil {
-		return core.ProjectMember{}, refusal
+		return InvitationAcceptance{}, refusal
 	}
 	return result, nil
 }

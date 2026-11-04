@@ -106,7 +106,7 @@ export const taskDefinition: CommandDefinition = {
     },
     {
       name: "step",
-      description: "Read and add task-owned Steps independently from Sessions",
+      description: "Read and maintain task-owned Steps independently from Sessions",
       options: [helpOption],
       commands: [
         {
@@ -137,6 +137,44 @@ export const taskDefinition: CommandDefinition = {
             versionOption, projectOption, jsonOption, helpOption,
           ],
           details: "Without an anchor, append to the saved order. --before and --after are mutually exclusive. Same titles create independent records; an existing ID is a conflict and is never regenerated or retried. Without --if-version, read the current Steps version before one POST. An explicit project/version performs one POST without parent pre-reads. Unknown results retain the original ID and request UUID; at most one same-operation read observes current facts, never historical attribution or a retry. --json prints only the complete confirmed collection.",
+        },
+        {
+          name: "update",
+          description: "Update a Step title or description and return the complete confirmed collection",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }],
+          options: [
+            { ...titleOption, description: "Replace the Step title, preserving its original text" },
+            { ...descriptionOption, description: "Replace the Step Markdown description; an empty string clears it" },
+            versionOption, projectOption, jsonOption, helpOption,
+          ],
+          details: "Provide --title or --description, or both for one atomic update. Omitted fields keep their values. Titles require at least one non-Unicode-White_Space character; text is never trimmed. Status uses the separate set-status command. Without --if-version, read complete Steps before one PATCH; an explicit project/version performs one PATCH without pre-reads. Same values are no-op, but stale versions still conflict. Success returns the complete confirmed collection; unknown results preserve the original identity and request UUID with no replay.",
+        },
+        {
+          name: "set-status",
+          description: "Set a Step to todo, in_progress, done or skipped",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }, { name: "status", description: "Target Step status", choices: ["todo", "in_progress", "done", "skipped"] }],
+          options: [versionOption, projectOption, jsonOption, helpOption],
+          details: "Any of the four Step states may be set directly, independently from Task status or other Steps. Same status is no-op, but stale versions still conflict. Without --if-version, read complete Steps before one PUT; an explicit project/version performs one PUT without pre-reads. --json prints only the complete confirmed collection. Unknown results preserve the original identity and request UUID with no replay.",
+        },
+        {
+          name: "move",
+          description: "Move one Step and return the complete confirmed collection",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }],
+          options: [
+            { names: ["--before"], description: "Move immediately before another Task-local Step", value: { name: "step-id", kind: "text" } },
+            { names: ["--after"], description: "Move immediately after another Task-local Step", value: { name: "step-id", kind: "text" } },
+            { names: ["--first"], description: "Move to the beginning of the saved order" },
+            { names: ["--last"], description: "Move to the end of the saved order" },
+            versionOption, projectOption, jsonOption, helpOption,
+          ],
+          details: "Exactly one of --before, --after, --first or --last is required. Anchors must be another Step in the same Task. Moving to the current position is a no-op; all Step content and timestamps remain unchanged. Without --if-version, read complete Steps before one PUT; an explicit project/version performs one PUT without pre-reads. A confirmed resource must match the requested position and no-op/+1 version. Unknown results retain original identities and request UUID; at most one correlated read observes current facts, without replay. --json prints only the complete confirmed collection.",
+        },
+        {
+          name: "delete",
+          description: "Delete one Step and return the complete confirmed remaining collection",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }],
+          options: [versionOption, projectOption, jsonOption, helpOption],
+          details: "Remove the specified Task-local record in any Step status. Referenced attachments, PRs and other materials remain. There is no history or restore command. Without --if-version, read the current Steps version before one JSON DELETE. An explicit project/version performs one DELETE without parent pre-reads. Success requires parent version +1 and target absence; --json prints only the complete confirmed remaining collection, including steps: [] after the last deletion. Unknown results preserve the original identity and request UUID; at most one same-operation read reports current facts without attributing absence to this request or replaying it.",
         },
       ],
       details: "Without --project, resolve the current Git origin. An explicit project UUID avoids project or Task pre-reads and works outside a repository. Step IDs are Task-local eight-character identities, not prefixes or display numbers. Run daynight task step <command> --help for usage.",

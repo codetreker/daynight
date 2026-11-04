@@ -1,3 +1,4 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { readWorkerClaim } from "../../src/api/task-properties.js";
 import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -13,7 +14,7 @@ import { parse } from "yaml";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 import type { Project, Task, WorkerClaim } from "../../src/api/types.js";
-import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
+import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const id = "a1b2c3d4-1111-4222-8333-123456789abc";
@@ -25,7 +26,7 @@ const externalId = "d1b2c3d4-1111-4222-8333-123456789abc";
 const claimId = "e1b2c3d4-1111-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const workerClaim: WorkerClaim = { claimId, state: "active", userId: alternateId, workerId: unrelatedId, machine: { id: alternateId, name: "Worker machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: ordinaryId, phase: "executing", herdr: { session: "w", workspaceId: "original-workspace", paneId: "original-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
-const project = (projectId = id, repoUrl = "git@git.example:Org/Repo.git"): Project => ({ id: projectId, name: "Project 中文", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time });
+const project = (projectId = id, repoUrl = "git@git.example:Org/Repo.git"): Project => ({ id: projectId, name: "Project 中文", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time });
 const task = (projectId = id): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: {}, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const taskListItem = (value: Task): Omit<Task, "description"> => ({
   id: value.id, projectId: value.projectId, title: value.title, properties: value.properties,
@@ -48,9 +49,9 @@ const scenarios: string[] = [];
 const requests: RequestRecord[] = [];
 const servers: Server[] = [];
 const children = new Map<ChildProcess, Promise<unknown>>();
-let installed: Awaited<ReturnType<typeof createInstalledCli>> | undefined;
+let installed: Awaited<ReturnType<typeof createAcceptanceCli>> | undefined;
 let preparationRoot: string | undefined;
-let preparation: Promise<Awaited<ReturnType<typeof createInstalledCli>>>;
+let preparation: Promise<Awaited<ReturnType<typeof createAcceptanceCli>>>;
 let behavior: Promise<void> | undefined;
 let completed = false;
 let failure: unknown;
@@ -62,7 +63,7 @@ beforeAll(async () => {
     preparationRoot = mkdtempSync(path.join(temporary, "Project task 中文 "));
     await rm(evidencePath, { force: true });
     cancellation.signal.throwIfAborted();
-    installed = await createInstalledCli({
+    installed = await createAcceptanceCli({
       temporaryRoot: preparationRoot, rootDirectory: path.join(preparationRoot, "installed"), signal: cancellation.signal,
       onSpawn: (child) => {
         const closed = new Promise<void>((resolve) => child.once("close", () => { children.delete(child); resolve(); }));
@@ -110,13 +111,20 @@ const exercise = async (): Promise<void> => {
         const parts = url.pathname.split("/");
         const projectId = parts[4]!;
         if (url.pathname === "/api/v1/me") {
-          send(response, { id: alternateId, email: null, emailVerified: null, name: null, avatarUrl: null }); return;
+          response.setHeader("Daynight-User-ID", alternateId);
+          send(response, { id: alternateId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } }); return;
         }
         if (url.pathname === "/api/v1/task-properties/schema") {
           send(response, propertySchema); return;
         }
         if (url.pathname === "/api/v1/projects") {
-          if (request.method === "POST") { send(response, { ...project(), ...(body as { name: string; repoUrl: string }) }, 201); return; }
+          if (request.method === "POST") {
+            const input = body as { name: string; repoUrl: string; expectedUserId: string };
+            const created = { ...project(), name: input.name, repoUrl: input.repoUrl };
+            if (input.expectedUserId !== alternateId) { fault(response, "identity_mismatch", "native-project-identity", 409); return; }
+            response.setHeader("Daynight-User-ID", alternateId);
+            send(response, { ...created, access: { projectId: created.id, ownerTeam: { id: created.ownership.teamId, kind: "personal", name: null }, ownership: created.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: created.id, userId: alternateId, role: "admin", version: 1n, createdAt: time, updatedAt: time } } }, 201); return;
+          }
           if (broken === "page" && url.searchParams.has("cursor")) { fault(response, "internal_error", "native-later-page", 500); return; }
           const remaining = url.searchParams.has("cursor") ? projects.slice(1) : projects.slice(0, 1);
           send(response, { items: remaining, nextCursor: !url.searchParams.has("cursor") && projects.length > 1 ? "native page+/=?" : null }); return;
@@ -290,7 +298,7 @@ const exercise = async (): Promise<void> => {
     expect(existingProject.stdout).toContain("Project already exists.");
     const createdProject = await invoke(["project", "create", "Native 名称", "--repo", "https://git.example/Native/New.git"], outside, 0, true);
     expect(createdProject.stdout).toContain("Project created.");
-    expect(requests.at(-1)!.body).toEqual({ name: "Native 名称", repoUrl: "https://git.example/Native/New.git" });
+    expect(requests.at(-1)!.body).toEqual({ name: "Native 名称", repoUrl: "https://git.example/Native/New.git", expectedUserId: alternateId });
     expect(parseApiJson((await invoke(["project", "show", id, "--json"], outside, 0, true)).stdout)).toEqual(project());
     expect(parseApiJson((await invoke(["task", "show", taskId, "--json", ...explicit], outside, 0, true)).stdout)).toEqual({ ...task(), version: 9_007_199_254_740_993n });
     const createdTask = await invoke(["task", "create", "--title", "Native task", ...explicit], outside, 0, true);
@@ -759,7 +767,7 @@ afterAll(async () => {
   if (servers.some((server) => server.listening)) cleanup.push(new Error("Installed project/task servers did not close."));
   const artifact = installed === undefined ? {} : { artifact: { packageVersion: installed.receipt.packageVersion, tarballSha256: installed.receipt.tarballSha256, entrySha256: installed.receipt.entrySha256, source: installed.receipt.source } };
   try {
-    await writeFile(evidencePath, `${JSON.stringify({ schemaVersion: 1, success: completed && failure === undefined && cleanup.length === 0 && removed && preparationRemoved, platform: process.platform, nodeVersion: process.version, ...artifact, scenarios, requests: requests.map(({ method, path: pathname }) => ({ method, path: pathname })), cleanup: { installationRemoved: removed, preparationRemoved, childrenExited: children.size === 0, serversClosed: servers.every((server) => !server.listening), errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(evidencePath, `${JSON.stringify({ schemaVersion: 1, success: completed && failure === undefined && cleanup.length === 0 && removed && preparationRemoved, platform: process.platform, nodeVersion: process.version, ...artifact, scenarios, requests: requests.map(({ method, path: pathname }) => ({ method, path: pathname })), cleanup: { runtimeRemoved: removed, preparationRemoved, childrenExited: children.size === 0, serversClosed: servers.every((server) => !server.listening), errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
   } catch (cause) { cleanup.push(cause); }
   if (cleanup.length !== 0) throw new AggregateError(failure === undefined ? cleanup : [failure, ...cleanup], "Installed project/task acceptance or cleanup failed.");
   if (failure !== undefined) throw failure;

@@ -1,6 +1,6 @@
 # Worker 运行快照上报
 
-本文定义 `daynight worker run` 作为运行快照生产者的行为。[整体需求](daynight-worker.md)拥有执行与资源生命周期，[快照接口](daynight-worker-snapshots.md)拥有报告格式及服务端时间规则，[采集与调度设计](../design/daynight-worker-reporting.md)拥有客户端机制。
+本文定义 `daynight worker run` 作为运行快照生产者的行为。[整体需求](daynight-worker.md)拥有执行与资源生命周期，[快照接口](daynight-worker-snapshots.md)拥有报告格式及服务端时间规则，[采集与调度设计](../design/daynight-worker-reporting.md)拥有客户端机制。[云端配置协议](daynight-worker-configuration.md)定义显式报告扩展，机器采集、任务引用和本页默认快照回执口径保持。
 
 ## 身份、范围与时机
 
@@ -29,12 +29,16 @@ CLI 将当前运行包的 version 及启动时捕获一次的绝对 workingDirec
 | 内存 | totalmem 与 totalmem-freemem，单位为 bytes |
 | 磁盘 | 启动目录文件系统的 `blocks*bsize` 总量和 `bavail*bsize` 可用量，单位为 bytes；可用量表示调用身份可用空间 |
 | Daynight | 当前运行 CLI 包注入的版本 |
-| Herdr | 当前私有 daemon 的只读 ping 版本；端点确证不存在或拒绝连接为 not_running，权限和协议错误保持 error |
+| Herdr | 当前 Worker 与服务所属私有 daemon 的只读 ping 版本；macOS 使用原始 run 身份验证后的端点，多个存活 daemon 必须版本一致；不确定或混合版本为 error/unavailable，确证无存活 daemon 为 not_running |
 | Codex、Copilot | Worker 原生环境中纯 `--version` 的版本；仅确证 executable 不存在为 not_installed，权限、命令、输出或超时故障为 error |
 
 资源计数必须是非负安全整数，容量关系和 CPU 差分必须有效。越界、未推进或不一致的采样明确失败，不使用截断值。磁盘计算先使用 bigint，再验证可精确表示范围。底层 statfs 无法取消；某次超时后最多保留一个未完成调用，之后的磁盘探测在其完成前报告 timeout，不继续排队 I/O 或追加等待监听。
 
-Codex/Copilot 的成功、缺失及失败结果在进程内最多缓存 60 秒，并保留原 checkedAt；到期探测失败替换旧成功。版本展示不执行启动 preflight 的最低版本或功能要求，已安装但版本较旧的 CLI 仍报告实际版本。Herdr 每次报告重新 ping，不复用旧实例版本。
+Codex/Copilot 的成功、缺失及失败结果在进程内最多缓存 60 秒，并保留原 checkedAt；到期探测失败替换旧成功。版本展示不执行启动 preflight 的最低版本或功能要求，已安装但版本较旧的 CLI 仍报告实际版本。Herdr 每次报告重新观察，不复用旧实例版本。
+
+macOS 存在 durable journal 时，只读其原有格式，按当前 workerId 和 serverOrigin 选择执行记录；不迁移、恢复或修改 journal、claim 与控制状态，也不回退到遗留共享端点。忽略 stopped_confirmed run 与已确认退出的原始 daemon；stop_unknown 仍可报告经过验证的存活 daemon 版本，但不因此改变执行或停止结论。准备阶段已记录 daemon 身份时也观察它；已请求启动而尚无身份、进程身份未知或变化、端点被替换或仍存活进程的端点缺失均为 error/unavailable。每次 ping 前后核对端点的原始进程与 audit 身份；所有存活 daemon 的版本一致才为 ok。journal 读取、权限及协议错误保留字段错误。
+
+非 macOS 平台以及尚无 durable journal 的遗留 macOS 安装保持原有共享端点探测：确证端点不存在或拒绝连接为 not_running，权限和协议错误为 error。无执行记录的纯 Web Worker 不创建 journal 或执行资源，也不加载原生进程观察器。所有等待沿用采集预算与取消；取消后不得继续后续身份或 RPC 观察。报告正文不包含 run 目录、claim 或进程身份、journal 内容及原始错误。
 
 ## 任务观测
 
@@ -52,6 +56,6 @@ Codex/Copilot 的成功、缺失及失败结果在进程内最多缓存 60 秒�
 
 ## 验证
 
-调度验证覆盖即时报告、独立周期、长 tick、空闲与满并发、合并触发、单飞、取消和关停。关停验证须延后报告的 join，确认根取消已同步停止调度并中止全部 job，终止清理不能在此等待期间删除 worktree 或完成本机行。清单验证覆盖初始未知、真实空清单、部分读取失败、超并发恢复及新 claim。采集验证覆盖首次 CPU、单位与安全整数、启动目录磁盘、未完成 statfs、版本缓存和过旧已安装版本；原生清理失败不得引起替代探测积累。
+调度验证覆盖即时报告、独立周期、长 tick、空闲与满并发、合并触发、单飞、取消和关停。关停验证须延后报告的 join，确认根取消已同步停止调度并中止全部 job，终止清理不能在此等待期间删除 worktree 或完成本机行。清单验证覆盖初始未知、真实空清单、部分读取失败、超并发恢复及新 claim。采集验证覆盖首次 CPU、单位与安全整数、启动目录磁盘、未完成 statfs、版本缓存和过旧已安装版本；原生清理失败不得引起替代探测积累。Herdr 验证覆盖实际 per-run 路径、零存活 run、多 run 同版本与混合版本、原始身份退出和替换、已确认停止、stop_unknown、准备阶段、损坏或旧 journal、端点身份变化、权限与协议故障，以及采集期限和取消；同时证明原始控制记录未变、旧平台和纯 Web 保持只读延迟边界，私有证据不进入报告。
 
 实际平台采集验证使用真实 OS、CPU、内存、statfs 及原生版本命令，分别记录 Linux、macOS ARM64、Windows 的环境与状态。fixture 证明分支行为，不能代替实际平台结果；完整原生执行、恢复与业务交付仍遵守整体 Worker 验收边界。

@@ -5,6 +5,7 @@ import { navigate } from '../src/app/router';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { mockSidebarMediaQuery } from './helpers/mediaQuery';
 import { viewerHeaders } from './helpers/taskSync';
+import { personalTeamPage } from './helpers/team';
 
 const render = createLocaleRender('en');
 const owner = '00000000-0000-4000-8000-000000000001';
@@ -15,7 +16,7 @@ const observedAt = '2026-10-29T11:00:00Z';
 const reportedAt = '2026-10-29T10:59:40Z';
 let focused = true;
 let principal = owner;
-const user = (id = owner) => ({ id, name: id === owner ? 'Alice' : 'Bob', email: id === owner ? 'alice@example.com' : 'bob@example.com', emailVerified: true, avatarUrl: null });
+const user = (id = owner) => ({ personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id, name: id === owner ? 'Alice' : 'Bob', email: id === owner ? 'alice@example.com' : 'bob@example.com', emailVerified: true, avatarUrl: null });
 const json = (body: unknown, status = 200, viewer = principal) => new Response(JSON.stringify(body), { status, headers: viewerHeaders(viewer, { 'Content-Type': 'application/json' }) });
 const summary = (workerId = firstWorker, name = 'Alice worker') => ({ workerId, machine: { id: workerId, name }, platform: 'linux', lastReportedAt: reportedAt, taskObservationState: 'unavailable', taskObservedAt: null, activeTaskCount: null });
 const list = (name = 'Alice worker', viewer = principal) => json({ observedAt, items: [summary(firstWorker, name)], nextCursor: null }, 200, viewer);
@@ -33,6 +34,7 @@ const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principa
 const failure = (status: number, code: string, viewer = principal) => json({ error: { code, message: 'Hidden server details', requestId: 'rq-worker-safe' } }, status, viewer);
 const defaults = (url: string): Response => {
   if (url === '/api/v1/me') return json(user(principal));
+  if (url.startsWith('/api/v1/teams?')) return json(personalTeamPage(principal));
   if (url.startsWith('/api/v1/projects?')) return json({ items: [], nextCursor: null });
   throw new Error(`Unexpected request ${url}`);
 };

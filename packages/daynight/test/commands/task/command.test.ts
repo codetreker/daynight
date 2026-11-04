@@ -13,9 +13,9 @@ const dependencyId = "abcdefab-3333-4222-8333-123456789abc";
 const otherDependencyId = "abcdefab-4444-4222-8333-123456789abc";
 const claimId = "abcdefab-5555-4222-8333-123456789abc";
 const accountId = "abcdefab-6666-4222-8333-123456789abc";
-const currentUser = { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null };
+const currentUser = { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } };
 const time = "2026-10-20T00:00:00.123456789Z";
-const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
 const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
 const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time }] };
 const propertyResource = { projectId, taskId, version: task.version, properties: task.properties };
@@ -25,10 +25,15 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
+    updateTaskStep: async () => { throw new Error("Unused Step API method"); },
+    setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
+    moveTaskStep: vi.fn<ApiClient["moveTaskStep"]>(),
     addTaskStep: vi.fn<ApiClient["addTaskStep"]>(),
+    deleteTaskStep: vi.fn<ApiClient["deleteTaskStep"]>(),
     listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),
     readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(currentUser),
+    getTeamCurrentUser: vi.fn<ApiClient["getTeamCurrentUser"]>(), listTeams: vi.fn<ApiClient["listTeams"]>(), getTeam: vi.fn<ApiClient["getTeam"]>(), listTeamProjects: vi.fn<ApiClient["listTeamProjects"]>(),
     getProjectAccess: vi.fn<ApiClient["getProjectAccess"]>(),
     reportWorker: vi.fn<ApiClient["reportWorker"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),

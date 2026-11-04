@@ -1,5 +1,6 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 const en = {
+  enterFullscreen: 'Enter Session fullscreen', exitFullscreen: 'Exit Session fullscreen',
   display: 'Display', displayStandard: 'Standard', displayConversation: 'Conversation', displayRetry: 'Retry saving',
   displayReadError: 'The saved display preference could not be read. The current choice is not saved.',
   displayInvalidError: 'The saved display preference is invalid. The current choice is not saved.',
@@ -14,7 +15,7 @@ const en = {
   pending: 'Awaiting provider confirmation', resolved: 'Resolved', expired: 'Expired', failure: 'The operation failed.',
   initializing: 'Starting task', idle: 'Ready', working: 'Working', waiting_input: 'Waiting for an answer', stopped: 'Stopped', unknown: 'Outcome unknown', disconnected: 'Disconnected', synchronizing: 'Restoring session', connected: 'Connected',
   offlineHistory: 'The agent environment is offline. History and controls will be available when it reconnects.',
-  loading: 'Loading session…', empty: 'No conversation yet.', notRegistered: 'The worker has not registered this session yet.', unavailable: 'This execution is no longer available.', refresh: 'Refresh', older: 'Load earlier activity', latest: 'Latest', historyError: 'Earlier activity could not be loaded.',
+  loading: 'Loading session…', empty: 'No conversation yet.', notRegistered: 'The worker has not registered this session yet.', unavailable: 'This execution is no longer available.', refresh: 'Refresh', loadingOlder: 'Loading earlier activity…', retryHistory: 'Retry', latest: 'Latest', historyError: 'Earlier activity could not be loaded.',
   readOnly: 'This session is read-only.', initialPending: 'The initial task is awaiting provider acceptance.', initialUnknown: 'The initial task outcome is unknown. Check the original operation before continuing.', initialFailed: 'The initial task failed. The worker must resolve it before sending more input.', noSteer: 'This provider cannot accept input during the current turn.',
   accepted: 'Received by relay; awaiting controller', offered: 'Delivering to controller', dispatching: 'Submitting to provider', provider_accepted: 'Accepted by provider', confirmed: 'Confirmed', failed: 'Failed', rejected: 'Rejected', check: 'Check original operation', checking: 'Checking…', operationUnknown: 'Delivery outcome is unknown. Check this operation; do not resend it.',
   reasoning: 'Reasoning', input: 'Input', output: 'Output', truncated: 'Output is truncated; available resources are listed below.', compaction: 'Conversation compacted', todo: 'Tasks', resourcePending: 'Resource is being transferred', resourceUnavailable: 'Resource unavailable', download: 'Download', error: 'Session error', web: 'Web execution', herdr: 'Herdr execution',
@@ -41,6 +42,7 @@ export const sessionNativeLabels = Object.freeze({
 });
 type SessionMessages = { readonly [K in keyof typeof en]: string };
 const zh: SessionMessages = {
+  enterFullscreen: '会话全屏', exitFullscreen: '退出会话全屏',
   display: '显示', displayStandard: '标准', displayConversation: '对话', displayRetry: '重试保存',
   displayReadError: '无法读取已保存的显示偏好。当前选择尚未保存。',
   displayInvalidError: '已保存的显示偏好无效。当前选择尚未保存。',
@@ -55,7 +57,7 @@ const zh: SessionMessages = {
   pending: '等待 Provider 确认', resolved: '已处理', expired: '已过期', failure: '操作失败。',
   initializing: '正在启动任务', idle: '可发送', working: '工作中', waiting_input: '等待回答', stopped: '已停止', unknown: '结果未知', disconnected: '连接已断开', synchronizing: '正在恢复会话', connected: '已连接',
   offlineHistory: 'Agent 执行环境已离线，重新连接后可加载历史并继续操作。',
-  loading: '正在加载会话…', empty: '尚无对话。', notRegistered: 'Worker 尚未注册此会话。', unavailable: '此执行已不可用。', refresh: '刷新', older: '加载更早活动', latest: '最新', historyError: '无法加载更早活动。',
+  loading: '正在加载会话…', empty: '尚无对话。', notRegistered: 'Worker 尚未注册此会话。', unavailable: '此执行已不可用。', refresh: '刷新', loadingOlder: '正在加载更早活动…', retryHistory: '重试', latest: '最新', historyError: '无法加载更早活动。',
   readOnly: '此会话为只读。', initialPending: '首次任务正在等待 Provider 受理。', initialUnknown: '首次任务结果未知，请先核对原操作。', initialFailed: '首次任务失败，需要 Worker 处理后才能继续发送。', noSteer: '此 Provider 在当前轮次进行时不支持追加输入。',
   accepted: '中转已收到，等待 Controller 接收', offered: '正在投递给 Controller', dispatching: '正在提交给 Provider', provider_accepted: 'Provider 已受理', confirmed: '已确认', failed: '失败', rejected: '已拒绝', check: '核对原操作', checking: '核对中…', operationUnknown: '投递结果未知。请核对此操作，不要重复发送。',
   reasoning: '思考', input: '输入', output: '输出', truncated: '输出已截断；可用资源列在下方。', compaction: '对话已压缩', todo: '任务清单', resourcePending: '正在传输资源', resourceUnavailable: '资源不可用', download: '下载', error: '会话错误', web: 'Web 执行', herdr: 'Herdr 执行',

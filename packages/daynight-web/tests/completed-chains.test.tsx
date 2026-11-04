@@ -34,7 +34,7 @@ const graph = (items = seeds, id = projectId): TaskGraph => {
     const blockedBy = item.dependsOn.filter((dependency) => items.find((candidate) => candidate.id === dependency)!.status !== 'done');
     return { ...item, blockedBy, ready: item.status === 'todo' && blockedBy.length === 0 };
   });
-  return { observedAt: "2026-10-20T12:00:00Z", project: { settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time }, tasks,
+  return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time }, tasks,
     summary: { total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length, done: tasks.filter((item) => item.status === 'done').length,
       inProgress: tasks.filter((item) => item.status === 'in_progress').length, ready: tasks.filter((item) => item.ready).length,
       blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length } };
@@ -74,8 +74,8 @@ describe('completed task chain visibility', () => {
     expect(screen.getByLabelText('显示 2 条，共 4 条任务链')).toHaveTextContent('2 / 4');
     expect([count('任务总数'), count('已完成'), count('待处理')]).toEqual(['8', '5', '3']);
     fireEvent.click(graphButton('00000000-0000-4000-8000-000000000001'));
-    expect(within(root('00000000-0000-4000-8000-000000000001')).getByText('进行中')).toBeVisible();
-    expect(root('00000000-0000-4000-8000-000000000001').querySelector('.root-status')).toHaveClass('graph-status-in_progress');
+    expect(within(root('00000000-0000-4000-8000-000000000001').parentElement!).getByText('进行中')).toBeVisible();
+    expect(root('00000000-0000-4000-8000-000000000001').parentElement!.querySelector('.root-status')).toHaveClass('graph-status-in_progress');
     const projection = screen.getByTestId('projection');
     expect([...projection.querySelectorAll('[data-node-id]')].map((item) => item.getAttribute('data-node-id'))).toEqual(['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']);
     expect([...projection.querySelectorAll('[data-edge]')].map((item) => item.getAttribute('data-edge'))).toEqual(['00000000-0000-4000-8000-000000000001->00000000-0000-4000-8000-000000000002']);
@@ -157,7 +157,7 @@ describe('completed task chain visibility', () => {
     request.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph(allDone())).mockResolvedValueOnce(resetSnapshot(graph([task('00000000-0000-4000-8000-000000000011', 'todo'), task('00000000-0000-4000-8000-000000000012', 'todo', ['00000000-0000-4000-8000-000000000011'])])));
     render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
     fireEvent.click(graphButton('00000000-0000-4000-8000-000000000001'));
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await screen.findByRole('heading', { name: '暂无近期任务链' });
     expect(screen.queryByTestId('projection')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '显示所有' }));

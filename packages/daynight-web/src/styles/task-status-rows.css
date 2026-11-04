@@ -47,13 +47,11 @@
 
 .task-status-surface .root-status { color: var(--row-status); }
 
-.task-status-surface.standalone-row-stuck[data-task-status] {
+.standalone-row-stuck[data-task-status],
+.task-node-stuck[data-task-status] {
   --row-background: #fff7e8;
   --row-hover: #fff0d6;
   --row-border: #d4a04a;
-  background: var(--row-background);
-  border-color: var(--row-border);
 }
 
-.task-status-surface.standalone-row-stuck[data-task-status]:hover { background: var(--row-hover); }
 .task-status-surface.standalone-row-stuck .task-duration { color: #805b27; }

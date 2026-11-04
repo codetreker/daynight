@@ -113,7 +113,7 @@ describe('session connection identity suspension', () => {
     vi.mocked(f.api.timeline).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
     const pending = f.client.loadOlder(); f.pause();
     const event = f.event(1); if (event.type !== 'event' || event.event.kind !== 'timeline_upsert') throw new Error('fixture');
-    resolve({ ...f.page, items: [event.event.payload] }); await flush();
+    resolve({ ...f.page, beforeCursor: null, hasMoreBefore: false, items: [event.event.payload] }); await flush();
     expect(f.client.snapshot().state.entries).toHaveLength(0); expect(f.client.snapshot().loadingOlder).toBe(true);
     f.resume(); await pending; expect(f.client.snapshot().state.entries).toHaveLength(1); expect(f.client.snapshot().loadingOlder).toBe(false);
   });

@@ -138,3 +138,37 @@ it('keeps the composer and draft stable during identity verification without rep
   expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
   expect(input).toHaveValue('preserve this draft');
 });
+
+it('defers width-driven composer sizing outside ResizeObserver delivery and cancels pending work', () => {
+  const callbacks: ResizeObserverCallback[] = [];
+  const disconnect = vi.fn();
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: ResizeObserverCallback) { callbacks.push(callback); }
+    observe() {} unobserve() {} disconnect = disconnect;
+  });
+  const frames = new Map<number, FrameRequestCallback>();
+  let sequence = 0;
+  const request = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { frames.set(++sequence, callback); return sequence; });
+  const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(id => { frames.delete(id); });
+  let width = 300, height = 70;
+  vi.spyOn(HTMLTextAreaElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({ width, height: 48, top: 0, left: 0, bottom: 48, right: width, x: 0, y: 0, toJSON() {} }));
+  vi.spyOn(HTMLTextAreaElement.prototype, 'scrollHeight', 'get').mockImplementation(() => height);
+  const state = hydrateSession(emptySessionState(), { ...snapshot(), activity: 'idle' }, []);
+  const mounted = render(<SessionComposer state={state} connected onSend={async () => {}} onCancel={async () => {}} />);
+  const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+  const initialHeight = input.style.height;
+  const notify = () => callbacks[0]!([], {} as ResizeObserver);
+  width = 180; height = 110; notify();
+  expect(input.style.height).toBe(initialHeight);
+  expect(request).toHaveBeenCalledOnce();
+  width = 160; notify();
+  expect(request).toHaveBeenCalledOnce();
+  frames.get(sequence)!(0); frames.delete(sequence);
+  expect(Number.parseFloat(input.style.height)).toBeGreaterThanOrEqual(110);
+  width = 140; notify();
+  expect(request).toHaveBeenCalledTimes(2);
+  mounted.unmount();
+  expect(cancel).toHaveBeenCalledWith(sequence);
+  expect(frames.size).toBe(0);
+  expect(disconnect).toHaveBeenCalledTimes(callbacks.length);
+});

@@ -4,7 +4,7 @@ import { renderProjectList } from "../../../src/commands/project/rendering.js";
 
 if (process.env.CI) throw new Error("CLI stress tests run only on local machines.");
 
-const project: Project = { id: "abcdefab-1234-5678-90ab-abcdefabcdef", name: "Project 名称", repoUrl: "git@Git.Example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: "2026-10-20T01:02:03.123456789Z", updatedAt: "2026-10-20T02:03:04.987654321Z" };
+const project: Project = { id: "abcdefab-1234-5678-90ab-abcdefabcdef", name: "Project 名称", repoUrl: "git@Git.Example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-20T01:02:03.123456789Z", updatedAt: "2026-10-20T02:03:04.987654321Z" };
 
 describe("project rendering stress", () => {
   it("renders a large complete list without argument-stack limits", () => {

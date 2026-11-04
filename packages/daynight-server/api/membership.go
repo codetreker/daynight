@@ -25,10 +25,12 @@ type ProjectParticipant struct {
 	Profile       ProjectParticipantProfile `json:"profile"`
 	EffectiveRole string                    `json:"effectiveRole"`
 	DirectGrant   *ProjectGrant             `json:"directGrant"`
+	InheritedFrom *ProjectInheritance       `json:"inheritedFrom"`
 }
 
 type ProjectParticipantList struct {
-	Items []ProjectParticipant `json:"items"`
+	Items       []ProjectParticipant `json:"items"`
+	ActorAccess ProjectAccess        `json:"actorAccess"`
 }
 
 type SetProjectMemberRoleRequest struct {
@@ -67,11 +69,25 @@ type InspectProjectInvitationRequest struct {
 }
 
 type AcceptProjectInvitationRequest struct {
-	Token string `json:"token"`
+	Token          string `json:"token"`
+	ExpectedUserID string `json:"expectedUserId"`
+}
+
+type ProjectInvitationMutationRequest struct {
+	ExpectedUserID string `json:"expectedUserId"`
 }
 
 type ProjectInvitationInspection struct {
 	ProjectID   string         `json:"projectId"`
 	ProjectName string         `json:"projectName"`
-	Member      *ProjectMember `json:"member,omitempty"`
+	DirectGrant *ProjectGrant  `json:"directGrant"`
+	Access      *ProjectAccess `json:"access"`
+}
+
+type ProjectInvitationAcceptance struct {
+	ProjectID   string        `json:"projectId"`
+	DirectGrant ProjectGrant  `json:"directGrant"`
+	Access      ProjectAccess `json:"access"`
+	Joined      bool          `json:"joined"`
+	Consumed    bool          `json:"consumed"`
 }

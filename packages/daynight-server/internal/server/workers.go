@@ -18,6 +18,9 @@ type workersHandler struct {
 func workersRoutes(mux *http.ServeMux, workers *service.Workers, auth *Authentication, logger *slog.Logger) {
 	handler := &workersHandler{workers: workers, logger: logger}
 	base := "/api/v1/me/workers"
+	mux.HandleFunc("GET "+base+"/{workerId}/configuration", auth.Require(handler.configuration))
+	mux.HandleFunc("PUT "+base+"/{workerId}/configuration", auth.Require(handler.configuration))
+	mux.HandleFunc(base+"/{workerId}/configuration", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PUT")))
 	mux.HandleFunc("POST "+base+"/{workerId}/report", auth.Require(handler.report))
 	mux.HandleFunc(base+"/{workerId}/report", auth.Require(resourceMethodNotAllowed(logger, "POST")))
 	mux.HandleFunc("GET "+base, auth.Require(handler.list))
@@ -44,7 +47,17 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 		writeError(w, request, logger, "worker_report", "validate", err)
 		return
 	}
-	fields, err := decodeObject(w, request, workerReportFields...)
+	allowed := append([]string(nil), workerReportFields...)
+	configurationAware := false
+	if values, exists := request.Header[workerConfigurationHeader]; exists {
+		if len(values) != 1 || values[0] != "1" {
+			writeError(w, request, logger, "worker_report", "validate", invalidInput("Unsupported Worker configuration protocol."))
+			return
+		}
+		configurationAware = true
+		allowed = append(allowed, "configuration")
+	}
+	fields, err := decodeObject(w, request, allowed...)
 	if err != nil {
 		writeError(w, request, logger, "worker_report", "validate", err)
 		return
@@ -53,6 +66,13 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 	if err != nil {
 		writeError(w, request, logger, "worker_report", "validate", err)
 		return
+	}
+	if configurationAware {
+		input.Configuration, err = service.ParseWorkerConfigurationExchange(fields["configuration"])
+		if err != nil {
+			writeError(w, request, logger, "worker_report", "validate", err)
+			return
+		}
 	}
 	result, err := h.workers.Report(request.Context(), principal, id, input)
 	if err != nil {
@@ -64,6 +84,15 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 	logger.InfoContext(request.Context(), "worker report saved", "type", "resource", "component", "worker_report", "phase", "persist", "request_id", RequestID(request.Context()))
+	if configurationAware {
+		w.Header().Set(workerConfigurationHeader, "1")
+		writeJSON(w, request, logger, http.StatusOK, struct {
+			ObservedAt     time.Time                        `json:"observedAt"`
+			LastReportedAt time.Time                        `json:"lastReportedAt"`
+			Configuration  *core.WorkerConfigurationReceipt `json:"configuration"`
+		}{result.ObservedAt.UTC(), result.LastReportedAt.UTC(), result.Configuration})
+		return
+	}
 	writeJSON(w, request, logger, http.StatusOK, api.WorkerReportResponse{ObservedAt: result.ObservedAt.UTC(), LastReportedAt: result.LastReportedAt.UTC()})
 }
 
@@ -119,7 +148,7 @@ func workerDetailResponse(worker core.WorkerSnapshot) api.WorkerDetail {
 	telemetry := worker.Telemetry
 	response := api.WorkerDetail{WorkerSummary: workerSummaryResponse(worker), InventoryObservedAt: workerOptionalTime(worker.TaskSnapshot.InventoryObservedAt), Tasks: make([]api.WorkerTaskSnapshot, 0, len(worker.TaskSnapshot.Items)),
 		Telemetry: api.WorkerTelemetry{Machine: api.WorkerMachine{ID: telemetry.Machine.ID, Name: telemetry.Machine.Name}, Platform: string(telemetry.Platform),
-			WorkingDirectory: telemetry.WorkingDirectory, SampledAt: telemetry.SampledAt.UTC(),
+			WorkingDirectory: telemetry.WorkingDirectory, SampledAt: telemetry.SampledAt.UTC(), AssistantHost: workerAssistantHostResponse(telemetry.AssistantHost),
 			OS:     workerProbeResponse(telemetry.OS, func(value core.WorkerOS) api.WorkerOS { return api.WorkerOS(value) }),
 			CPU:    workerProbeResponse(telemetry.CPU, func(value core.WorkerCPU) api.WorkerCPU { return api.WorkerCPU(value) }),
 			Memory: workerProbeResponse(telemetry.Memory, func(value core.WorkerMemory) api.WorkerMemory { return api.WorkerMemory(value) }),
@@ -149,4 +178,15 @@ func workerOptionalTime(value *time.Time) *time.Time {
 	}
 	utc := value.UTC()
 	return &utc
+}
+
+func workerAssistantHostResponse(host *core.WorkerAssistantHost) *api.WorkerAssistantHost {
+	if host == nil {
+		return nil
+	}
+	response := &api.WorkerAssistantHost{ProtocolVersion: host.ProtocolVersion, ObservedAt: host.ObservedAt.UTC(), DefaultCwd: host.DefaultCwd, DefaultProvider: string(host.DefaultProvider), Providers: make([]api.WorkerAssistantProvider, 0, len(host.Providers))}
+	for _, provider := range host.Providers {
+		response.Providers = append(response.Providers, api.WorkerAssistantProvider{Provider: string(provider.Provider), Available: provider.Available, Reason: provider.Reason, Model: provider.Model, Args: provider.Args})
+	}
+	return response
 }

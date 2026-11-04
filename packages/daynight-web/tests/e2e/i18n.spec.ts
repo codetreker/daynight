@@ -59,7 +59,7 @@ test.describe('Web language journeys', () => {
     const project = await createProject(request, { name: `原始项目 Raw project ${randomUUID()}` });
     const task = await createTask(request, project.id, { title: '原始任务 Raw task', description: '原始描述 Raw description' });
     await page.goto('/projects');
-    await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     await expect(page).toHaveTitle('My projects · Daynight');
     await expect(language(page.locator('.topbar'))).toHaveValue('en');
@@ -92,7 +92,7 @@ test.describe('Web language journeys', () => {
     await expect(dialog.locator('.task-description')).toHaveText(task.description);
     await page.keyboard.press('Escape');
     await page.getByRole('link', { name: '← 项目', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
     await expect(page).toHaveTitle('我的项目 · Daynight');
     await expect(language(page.locator('.topbar'))).toHaveValue('zh-CN');
     await screenshot(page, info, 'language-startup-preferences');
@@ -215,6 +215,17 @@ test.describe('Web language journeys', () => {
     await pathInput.fill(uploadPath);
     const inputElement = await fileInput.elementHandle();
     if (frameElement === null || inputElement === null) throw new Error('Attachment elements are absent.');
+    // A permission read after preview focus can await cache admission after HTTP completion.
+    // Settle readiness around the controlled focus observation before measuring locale-only requests.
+    const projectSettingsLink = page.locator(`.project-title-actions a[href="/projects/${project.id}/settings"]`);
+    await expect(projectSettingsLink).toHaveCount(1);
+    const accessUrl = new URL(`/api/v1/projects/${project.id}/access`, baseURL).href;
+    const focusedAccess = page.waitForResponse((response) => response.url() === accessUrl && response.request().method() === 'GET');
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    const accessResponse = await focusedAccess;
+    expect(accessResponse.status()).toBe(200);
+    expect(await accessResponse.finished()).toBeNull();
+    await expect(projectSettingsLink).toHaveCount(1);
     const beforeModalSwitch = [...reads];
     await changeDetailLanguage('zh-CN');
     await dialog.getByRole('tab', { name: '概览', exact: true }).click();

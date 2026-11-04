@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphTask, TaskDetail, TaskGraph } from "../src/api/types";
 import { ApiError, setTaskStatus, getTask, getTaskSync } from "../src/api/client";
 import { useTaskGraph } from "../src/features/projects/useTaskGraph";
+import { pollingIntervalsKey } from "../src/app/polling";
 import { useTaskDetail } from "../src/features/task-detail/useTaskDetail";
 import { TaskDetailSessionBoundary } from "../src/features/task-detail/TaskDetailSession";
 import { isTaskStale, taskDescriptor, taskReviewKey } from "../src/features/task-detail/freshness";
@@ -40,7 +41,7 @@ const time = "2026-10-20T12:00:00.123456Z";
 const node: GraphTask = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, id: taskId, titlePreview: "任务一", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
 const detail: TaskDetail = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, id: taskId, projectId, title: "任务一", description: "完整描述", properties: { pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
 const graph = (id = projectId): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
-  project: { settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: "https://github.com/example/repo", createdAt: time, updatedAt: time },
+  project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: "https://github.com/example/repo", createdAt: time, updatedAt: time },
   tasks: [node], summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
 });
 const deferred = <T,>() => {
@@ -63,6 +64,24 @@ beforeEach(() => {
 beforeEach(() => { graphRequest.mockReset(); detailRequest.mockReset(); vi.mocked(setTaskStatus).mockReset(); });
 
 describe("task graph snapshots", () => {
+  it("uses the mocked polling period while retaining the ordinary automatic sync path", async () => {
+    Reflect.set(globalThis, Symbol.for(pollingIntervalsKey), { taskSync: 100 });
+    try {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+      graphRequest.mockResolvedValue(graph());
+      const { result } = renderHook(() => useTaskGraph(projectId));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      const first = result.current.snapshot!;
+      await act(async () => { await vi.advanceTimersByTimeAsync(99); });
+      expect(graphRequest).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      await waitFor(() => expect(result.current.snapshot!.revision).toBeGreaterThan(first.revision));
+      expect(graphRequest).toHaveBeenCalledTimes(2);
+      expect(result.current.snapshot!.graph).toBe(first.graph);
+      expect(result.current.snapshot!.index).toBe(first.index);
+    } finally { Reflect.deleteProperty(globalThis, Symbol.for(pollingIntervalsKey)); }
+  });
+
   it("publishes marker-only changes as task data while clock-only samples preserve the new graph and index", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     const initial: TaskGraph = { ...graph(), tasks: [
@@ -76,7 +95,7 @@ describe("task graph snapshots", () => {
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const first = result.current.snapshot!;
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(result.current.snapshot!.revision).toBeGreaterThan(first.revision));
     const changed = result.current.snapshot!;
     expect(changed.graph).not.toBe(first.graph);
@@ -86,7 +105,7 @@ describe("task graph snapshots", () => {
     expect(changed.index.representativeIds).toEqual([otherTask, taskId]);
     expect(first.index.components.get(otherTask)!.memberIds).toEqual(new Set([otherTask, taskId]));
     expect(changed.index.components.get(taskId)!.memberIds).toEqual(new Set([taskId]));
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(result.current.snapshot!.observedAt).toBe(later.observedAt));
     expect(result.current.snapshot!.graph).toBe(changed.graph);
     expect(result.current.snapshot!.index).toBe(changed.index);
@@ -116,7 +135,7 @@ describe("task graph snapshots", () => {
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const first = result.current.snapshot!;
-    await act(async () => { await vi.advanceTimersByTimeAsync(4_999); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(14_999); });
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(1));
     const next = deferred<TaskGraph>();
     graphRequest.mockReturnValueOnce(next.promise);
@@ -129,7 +148,7 @@ describe("task graph snapshots", () => {
     expect(result.current.snapshot!.graph).toBe(first.graph);
     expect(result.current.snapshot!.index).toBe(first.index);
     expect(first.observedAt).toBe(graph().observedAt);
-    expect(result.current.snapshot!.receivedAt).toBe(6_000);
+    expect(result.current.snapshot!.receivedAt).toBe(16_000);
     expect(result.current.snapshot!.revision).toBeGreaterThan(first.revision);
   });
 
@@ -143,7 +162,7 @@ describe("task graph snapshots", () => {
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const first = result.current.snapshot!;
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(result.current.snapshot!.revision).toBeGreaterThan(first.revision));
     const second = result.current.snapshot!;
     await waitFor(() => expect(result.current.error).toBeNull());
@@ -152,7 +171,7 @@ describe("task graph snapshots", () => {
     expect(second.index).toBe(first.index);
     expect(second.graph.tasks).toBe(first.graph.tasks);
     expect(second.graph.summary).toBe(first.graph.summary);
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(result.current.snapshot!.observedAt).toBe("2026-10-20T12:00:10Z"));
     expect(result.current.snapshot!.graph).toBe(second.graph);
     expect(result.current.snapshot!.index).toBe(first.index);
@@ -165,7 +184,7 @@ describe("task graph snapshots", () => {
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(1));
     const signal = graphRequest.mock.calls[0]![1];
-    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(1));
     expect(signal.aborted).toBe(false);
     act(() => result.current.refresh());
@@ -175,7 +194,7 @@ describe("task graph snapshots", () => {
     await act(async () => { slow.reject(new Error("superseded")); });
     expect(result.current.snapshot).toBe(fresh);
     await waitFor(() => expect(result.current.error).toBeNull());
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
   });
 
@@ -193,12 +212,12 @@ describe("task graph snapshots", () => {
     await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(result.current.snapshot!.revision).toBe(2));
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
     unmount();
     await act(async () => {
       document.dispatchEvent(new Event("visibilitychange"));
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(30_000);
     });
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
     expect(vi.getTimerCount()).toBe(0);
@@ -212,9 +231,9 @@ describe("task graph snapshots", () => {
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const first = result.current.snapshot!;
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(result.current).toMatchObject({ snapshot: first, error: failure }));
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(result.current).toMatchObject({ snapshot: first, error: failure, refreshing: false });
     await act(async () => { recovery.resolve(graph()); });
     await waitFor(() => expect(result.current.error).toBeNull());
@@ -230,7 +249,7 @@ describe("task graph snapshots", () => {
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("error"));
     expect(result.current).toMatchObject({ snapshot: null, status: "error", error: failure });
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(result.current).toMatchObject({ snapshot: null, status: "error", error: failure });
     await act(async () => { recovery.resolve(graph()); });
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -253,7 +272,7 @@ describe("task graph snapshots", () => {
     expect(signal.aborted).toBe(false);
     await act(async () => { pending.resolve(graph()); });
     await waitFor(() => expect(result.current.status).toBe("ready"));
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
   });
 
@@ -265,7 +284,7 @@ describe("task graph snapshots", () => {
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const first = result.current.snapshot!;
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(result.current.snapshot!.index).not.toBe(first.index));
     expect(result.current.snapshot!.index.nodes.get(taskId)).toMatchObject({ status: "done", ready: false, updatedAt: time });
     expect(result.current.snapshot!.graph.summary.done).toBe(1);
@@ -414,7 +433,7 @@ describe("task details", () => {
     expect(result.current.canSetStatus).toBe(true);
   });
 
-  it("keeps a slow reviewed version through unchanged five-second receipts and derives prerequisite completion without another GET", async () => {
+  it("keeps a slow reviewed version through unchanged fifteen-second receipts and derives prerequisite completion without another GET", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     const reviewed = { ...detail, ready: false, dependsOn: [otherTask], blockedBy: [otherTask] };
     let predecessor: GraphTask = { ...node, id: otherTask, titlePreview: "Prerequisite" };
@@ -426,7 +445,7 @@ describe("task details", () => {
     let maximumActive = 0;
     detailRequest.mockImplementation(async (_project, _task, signal) => {
       maximumActive = Math.max(maximumActive, ++active);
-      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      await new Promise((resolve) => setTimeout(resolve, 16_000));
       active--;
       expect(signal.aborted).toBe(false);
       return reviewed;
@@ -442,15 +461,15 @@ describe("task details", () => {
     const advance = async (duration: number) => {
       let remaining = duration;
       while (remaining > 0) {
-        const step = Math.min(remaining, 5_000 - elapsed % 5_000);
+        const step = Math.min(remaining, 15_000 - elapsed % 15_000);
         const previousRevision = graphRevision;
         await act(async () => { await vi.advanceTimersByTimeAsync(step); });
         elapsed += step; remaining -= step;
-        if (elapsed % 5_000 === 0) await waitFor(() => expect(graphRevision).toBeGreaterThan(previousRevision));
+        if (elapsed % 15_000 === 0) await waitFor(() => expect(graphRevision).toBeGreaterThan(previousRevision));
       }
     };
     for (let cycle = 1; cycle <= 3; cycle++) {
-      await advance(6_000);
+      await advance(16_000);
       await waitFor(() => expect(result.current.detail).toEqual(reviewed));
       expect(result.current.canSetStatus).toBe(true);
       expect(setTaskStatus).not.toHaveBeenCalled();
@@ -460,12 +479,12 @@ describe("task details", () => {
     expect(maximumActive).toBe(1);
     expect(graphRevision).toBe(4);
     predecessor = { ...predecessor, status: "done", ready: false };
-    await advance(2_000);
+    await advance(12_000);
     await waitFor(() => expect(result.current.detail).toMatchObject({ version: reviewed.version, ready: true, blockedBy: [] }));
     expect(result.current.detail!.properties.pullRequests).toBe(first!.properties.pullRequests);
     expect(result.current.requiresFreshRead).toBe(false);
     expect(result.current.canSetStatus).toBe(true);
-    await advance(10_000);
+    await advance(30_000);
     expect(detailRequest).toHaveBeenCalledOnce();
     expect(maximumActive).toBe(1);
     expect(setTaskStatus).not.toHaveBeenCalled();

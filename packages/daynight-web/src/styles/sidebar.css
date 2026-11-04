@@ -53,3 +53,20 @@
   .auth-shell .content { padding-left: 18px; padding-right: 18px; }
   .auth-shell .sidebar-preference-notice .button { white-space: normal; }
 }
+
+.auth-shell .team-selector { margin: 0 0 20px; }
+.auth-shell .team-switch { display: flex; align-items: center; gap: 8px; padding: 9px; border: 1px solid #ffffff24; border-radius: 7px; color: #eef0fa; cursor: pointer; list-style: none; }
+.auth-shell .team-switch::-webkit-details-marker { display: none; }
+.auth-shell .team-switch:focus-visible, .auth-shell .team-options a:focus-visible, .auth-shell .team-options button:focus-visible { outline: 2px solid #a3a3ff; outline-offset: 2px; }
+.auth-shell .team-avatar { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; background: #7373df30; color: #c5c5ff; }
+.auth-shell .team-switch-text { flex: 1; min-width: 0; overflow: hidden; white-space: pre; text-overflow: ellipsis; font-size: 12px; }
+.auth-shell .team-options { margin-top: 5px; padding: 5px; border: 1px solid #ffffff24; border-radius: 7px; background: #252e45; color: #e4e9f4; font-size: 12px; overflow-wrap: anywhere; }
+.auth-shell .team-options a, .auth-shell .team-options button { display: block; width: 100%; padding: 8px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; text-decoration: none; font: inherit; white-space: pre-wrap; cursor: pointer; }
+.auth-shell .team-options a:hover, .auth-shell .team-options a[aria-current] { background: #ffffff19; }
+.auth-shell .team-options p { margin: 5px; }
+.auth-shell.sidebar-collapsed .sidebar:not(.sidebar-drawer-open) .team-switch-text, .auth-shell.sidebar-collapsed .sidebar:not(.sidebar-drawer-open) .team-switch .team-chevron { display: none; }
+.auth-shell.sidebar-collapsed .sidebar:not(.sidebar-drawer-open) .team-switch { justify-content: center; padding: 5px; }
+@media (max-width: 740px) {
+  .auth-shell .sidebar:not(.sidebar-drawer-open) .team-switch-text, .auth-shell .sidebar:not(.sidebar-drawer-open) .team-switch .team-chevron { display: none; }
+  .auth-shell .sidebar:not(.sidebar-drawer-open) .team-switch { justify-content: center; padding: 5px; }
+}

@@ -23,7 +23,7 @@ vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAt
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const projectId = id(100);
 const timestamp = '2026-10-20T09:00:00.123456789Z';
-const project: Project = { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '测试项目', repoUrl: 'https://github.com/example/project', createdAt: timestamp, updatedAt: timestamp };
+const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '测试项目', repoUrl: 'https://github.com/example/project', createdAt: timestamp, updatedAt: timestamp };
 const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
   id: id(value), projectId, title: `任务 ${value}`, description: `任务 ${value} 的完整描述`, status: 'todo', version: 1n,
   properties: { pullRequests: [] }, dependsOn: [], blockedBy: [], ready: true, createdAt: timestamp, updatedAt: timestamp, ...changes,
@@ -87,6 +87,28 @@ beforeEach(() => {
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
 
 describe('task detail dialog', () => {
+  it('keeps discard confirmation above the modal detail focus owner', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/steps')
+      ? new Response(stringifyApiJson({ projectId, taskId: id(1), version: 1n, steps: [] }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) })
+      : response(detail())));
+    await open(props(), 'en');
+    await screen.findByRole('heading', { name: '任务 1' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Steps' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Add step' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    const confirmation = screen.getByRole('alertdialog');
+    const keep = within(confirmation).getByRole('button', { name: 'Keep editing' });
+    const discard = within(confirmation).getByRole('button', { name: 'Discard' });
+    expect(keep).toHaveFocus();
+    expect(document.querySelector('.task-detail-dialog')).toHaveAttribute('inert');
+    await userEvent.tab(); expect(discard).toHaveFocus();
+    await userEvent.tab({ shift: true }); expect(keep).toHaveFocus();
+    fireEvent.click(keep);
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Draft');
+    expect(document.querySelector('.task-detail-dialog')).not.toHaveAttribute('inert');
+  });
   it('copies the complete title independently of the ID and reports a localized failure with retry', async () => {
     const reviewed = detail(1, { title: `${'完整标题 & <文本> 🧩 '.repeat(30)}\n结尾` });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(reviewed)));

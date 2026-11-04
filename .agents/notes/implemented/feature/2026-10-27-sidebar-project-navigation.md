@@ -11,7 +11,9 @@ navigation.
 
 ## Decision
 
-My projects retains its index link and owns a nested list of project links.
+The selected Team or shared scope owns a nested list of project links. The
+[Team browsing decision](2026-11-04-team-workspace-browsing.md) governs scope
+selection and its pagination.
 Project, member and settings routes select their project; the index selects the
 parent entry. Ordinary links preserve native modified navigation. Truncated
 names retain full accessible names and hover titles.
@@ -44,9 +46,9 @@ already usable links after a continuation failure.
 
 ## Consequences
 
-Users can switch directly from project pages while the existing index remains
-available for repository details and project creation. Shared directory state
-survives project navigation and resets with authenticated identity. Initial
+Users can switch directly from project pages while the directory remains
+available for repository details and project creation. Directory state survives
+project navigation and resets with authenticated identity or scope changes. Initial
 reads now also occur when entering other Workspace routes, because their
 navigation displays the directory. Sidebar width changes do not initiate reads.
 
