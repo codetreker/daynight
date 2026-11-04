@@ -88,3 +88,127 @@ it('preserves unrelated draft text when a toolbar command executes', async () =>
   await waitFor(() => expect(props.onExecuteCommand).toHaveBeenCalledWith('compact', '', '3', undefined));
   expect(input).toHaveValue('still writing this');
 });
+
+it('keeps input, controls, activity, actions, and keyboard help inside one chatbox in focus order', () => {
+  const props = base();
+  props.state = { ...props.state, snapshot: { ...props.state.snapshot!, activity: 'working', currentTurnId: 'turn', turnStartedAt: new Date().toISOString(), operations: { canSend: true, canCancel: true, canRespond: true } } };
+  const view = render(<SessionComposer {...props} />);
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: 'Keep this draft' } });
+  const surface = input.closest('.session-composer-surface');
+  expect(surface).not.toBeNull();
+  expect(surface).toContainElement(screen.getByLabelText('Agent activity'));
+  expect(surface).toContainElement(screen.getByText(/Enter to send/));
+  const buttons = within(surface as HTMLElement).getAllByRole('button');
+  expect(buttons.map(button => button.getAttribute('aria-label') ?? button.textContent)).toEqual(['Model', 'Permissions', 'Open chat commands', 'Interrupt', 'Add to current turn']);
+  expect(buttons[4]).toHaveAccessibleDescription('Enter to send · Shift+Enter for a new line · /');
+  expect(buttons[4]!.parentElement).toContainElement(screen.getByText(/Enter to send/));
+  fireEvent.click(screen.getByRole('button', { name: 'Permissions' }));
+  expect(surface).not.toContainElement(screen.getByLabelText('Permission settings'));
+  fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' });
+  expect(input).toHaveFocus();
+  expect(input).toHaveValue('Keep this draft');
+  view.setLocale('zh-CN');
+  expect(screen.getByRole('textbox')).toBe(input);
+  expect(within(surface as HTMLElement).getByRole('button', { name: 'Permissions' })).toBe(buttons[1]);
+  expect(props.onSend).not.toHaveBeenCalled();
+});
+
+it('keeps failed submission details with the draft inside the same chatbox', async () => {
+  const props = base(); props.onSend.mockRejectedValue(new Error('Native delivery failed'));
+  render(<SessionComposer {...props} />);
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: 'Retain this input' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  const error = await screen.findByRole('alert');
+  expect(error).toHaveTextContent('Native delivery failed');
+  expect(input.closest('.session-composer-surface')).toContainElement(error);
+  expect(input).toHaveValue('Retain this input');
+  expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+});
+
+it.each(['focus', 'hover'] as const)('consumes Escape for a %s keyboard hint before the outer surface can close', mode => {
+  const props = base(); render(<SessionComposer {...props} />);
+  const input = screen.getByRole('textbox'), submit = screen.getByRole('button', { name: 'Send' });
+  fireEvent.change(input, { target: { value: 'Preserve this draft' } });
+  act(() => { (mode === 'focus' ? submit : input).focus(); });
+  if (mode === 'hover') fireEvent.mouseEnter(submit.parentElement!);
+  const outerEscape = vi.fn();
+  document.addEventListener('keydown', outerEscape);
+  try {
+    const target = mode === 'focus' ? submit : input;
+    expect(fireEvent.keyDown(target, { key: 'Escape', cancelable: true })).toBe(false);
+    expect(outerEscape).not.toHaveBeenCalled();
+    expect(target).toHaveFocus();
+    expect(input).toHaveValue('Preserve this draft');
+    // Once the hint is dismissed, Escape retains the surrounding surface's behavior.
+    expect(fireEvent.keyDown(target, { key: 'Escape', cancelable: true })).toBe(true);
+    expect(outerEscape).toHaveBeenCalledOnce();
+    expect(props.onSend).not.toHaveBeenCalled(); expect(props.onCancel).not.toHaveBeenCalled();
+  } finally { document.removeEventListener('keydown', outerEscape); }
+});
+
+it('dismisses a hovered hint before closing an open controls panel, then allows the outer Escape', () => {
+  render(<SessionComposer {...base()} />);
+  const input = screen.getByRole('textbox'), submit = screen.getByRole('button', { name: 'Send' });
+  fireEvent.click(screen.getByRole('button', { name: 'Permissions' }));
+  act(() => input.focus());
+  fireEvent.mouseEnter(submit.parentElement!);
+  const outerEscape = vi.fn(); document.addEventListener('keydown', outerEscape);
+  try {
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.getByLabelText('Permission settings')).toBeVisible();
+    expect(outerEscape).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.queryByLabelText('Permission settings')).toBeNull();
+    expect(outerEscape).not.toHaveBeenCalled(); expect(input).toHaveFocus();
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(outerEscape).toHaveBeenCalledOnce();
+  } finally { document.removeEventListener('keydown', outerEscape); }
+});
+
+it('dismisses a hovered keyboard hint when focus is outside the chatbox, then restores outer Escape', () => {
+  render(<><button type="button">Refresh session</button><SessionComposer {...base()} /></>);
+  const outside = screen.getByRole('button', { name: 'Refresh session' });
+  act(() => outside.focus());
+  fireEvent.mouseEnter(screen.getByRole('button', { name: 'Send' }).parentElement!);
+  const outerEscape = vi.fn(); document.addEventListener('keydown', outerEscape);
+  try {
+    expect(fireEvent.keyDown(outside, { key: 'Escape', cancelable: true })).toBe(false);
+    expect(outerEscape).not.toHaveBeenCalled(); expect(outside).toHaveFocus();
+    expect(fireEvent.keyDown(outside, { key: 'Escape', cancelable: true })).toBe(true);
+    expect(outerEscape).toHaveBeenCalledOnce();
+  } finally { document.removeEventListener('keydown', outerEscape); }
+});
+
+it('releases visible hint Escape ownership when the composer becomes inactive or unmounts', () => {
+  const props = base();
+  const view = render(<><button type="button">Outside</button><SessionComposer {...props} /></>);
+  const outside = screen.getByRole('button', { name: 'Outside' }); act(() => outside.focus());
+  fireEvent.mouseEnter(screen.getByRole('button', { name: 'Send' }).parentElement!);
+  const outerEscape = vi.fn(); document.addEventListener('keydown', outerEscape);
+  try {
+    view.rerender(<><button type="button">Outside</button><SessionComposer {...props} active={false} /></>);
+    expect(fireEvent.keyDown(outside, { key: 'Escape', cancelable: true })).toBe(true);
+    expect(outerEscape).toHaveBeenCalledOnce();
+    view.rerender(<><button type="button">Outside</button><SessionComposer {...props} /></>);
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Send' }).parentElement!);
+    view.rerender(<button type="button">Outside</button>);
+    expect(fireEvent.keyDown(screen.getByRole('button', { name: 'Outside' }), { key: 'Escape', cancelable: true })).toBe(true);
+    expect(outerEscape).toHaveBeenCalledTimes(2);
+  } finally { document.removeEventListener('keydown', outerEscape); }
+});
+
+it('leaves IME Escape native while a hovered hint is visible', () => {
+  render(<><input aria-label="Outside input" /><SessionComposer {...base()} /></>);
+  const outside = screen.getByRole('textbox', { name: 'Outside input' }); act(() => outside.focus());
+  fireEvent.mouseEnter(screen.getByRole('button', { name: 'Send' }).parentElement!);
+  const outerKey = vi.fn(); document.addEventListener('keydown', outerKey);
+  try {
+    for (const composition of [{ isComposing: true }, { keyCode: 229 }]) expect(fireEvent.keyDown(outside, { key: 'Escape', cancelable: true, ...composition })).toBe(true);
+    expect(outerKey).toHaveBeenCalledTimes(2);
+    // Native composition handling did not dismiss the hint or consume the next ordinary Escape.
+    expect(fireEvent.keyDown(outside, { key: 'Escape', cancelable: true })).toBe(false);
+    expect(outerKey).toHaveBeenCalledTimes(2); expect(outside).toHaveFocus();
+  } finally { document.removeEventListener('keydown', outerKey); }
+});

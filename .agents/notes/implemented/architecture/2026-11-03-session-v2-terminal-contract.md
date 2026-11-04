@@ -78,3 +78,7 @@ The protocol modules do not enable Herdr routes, input or playback. Runtime
 capabilities may be advertised only after their implementations and native
 validation exist. Contract tests preserve interoperability, not native execution
 or end-to-end availability claims.
+
+The [terminal server decision](2026-11-03-terminal-session-server.md) defines
+shared registry dispatch, trusted recording responsibility and correlated control
+ACKs while retaining these strict v1/v2 decoding rules.

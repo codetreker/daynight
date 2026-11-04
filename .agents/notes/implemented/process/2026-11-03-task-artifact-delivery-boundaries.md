@@ -1,26 +1,27 @@
-# Agent Note: Task artifact and delivery boundaries
+# Agent Note: Task artifact and documentation delivery boundaries
 
 Status: implemented
 
 ## Problem
 
 Design discussions produce several kinds of artifacts before implementation is
-ready. Treating every artifact as a repository deliverable can publish mock UI
-source and separate ordinary documentation from the code that makes it accurate.
-Permission to publish one design document also needs a clear artifact boundary.
+ready. Publishing ordinary documentation separately can detach its claims from
+the code that makes them accurate. Permission to publish one design document also
+needs a clear boundary so that other design inputs are not implicitly published.
 
 ## Decision
 
-[Repository instructions](../../../../AGENTS.md) keep mock UI and interactive
-prototype artifacts in the owning Daynight task attachments. Their HTML, scripts,
-styles, assets and generated previews cannot be committed, pushed, included in a
-repository PR or placed in product or source directories. Git-ignored scratch
-copies may support local inspection and are removed after use.
+[Repository instructions](../../../../AGENTS.md) require ordinary documentation to
+ship in the same PR as its corresponding implementation. A standalone
+documentation PR needs explicit user permission for its actual scope. Permission
+to publish an architecture document does not extend to other design inputs or
+prototypes.
 
-Ordinary documentation ships in the same PR as its corresponding implementation.
-A standalone documentation PR needs explicit user permission for its actual
-scope. Permission to publish an architecture document does not extend to other
-design inputs or prototypes.
+The [UI mockup ownership decision](2026-11-03-ui-mockup-ownership.md) owns prototype
+storage and the ban on repository mockups, including interactive previews composed
+from production components and tests that target them. Reviewable prototypes stay
+in their owning Daynight task attachments; local inspection uses only the task
+worktree's Git-ignored `.tmp/` and removes those copies after use.
 
 ## Alternatives
 
@@ -31,8 +32,7 @@ text. Task attachments already provide durable access to the actual design input
 
 ## Consequences
 
-Task attachments preserve prototype ownership, and implementation PRs keep their
-ordinary documentation synchronized with behavior. Reviewers assess the document
-actually authorized for standalone publication. Local inspection still works
-through ignored scratch copies. This policy does not itself authorize a
-repository-wide removal of historical prototypes.
+Implementation PRs keep their ordinary documentation synchronized with behavior.
+Reviewers assess the document actually authorized for standalone publication.
+Prototype storage and product-validation boundaries remain with the dedicated
+mockup ownership decision; a document publication exception does not relax them.

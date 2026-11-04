@@ -4,7 +4,7 @@ import type { TaskSessionClient } from './client';
 import { SessionComposer } from './SessionComposer';
 import { SessionTimeline } from './SessionTimeline';
 import { sessionRespondGate } from './state';
-import { useSessionMessages } from './messages';
+import { sessionNativeLabels, useSessionMessages } from './messages';
 import '../../styles/task-session.css';
 
 export function SessionView({ client, active, current }: { readonly client: TaskSessionClient; readonly active: boolean; readonly current: boolean }) {
@@ -14,13 +14,14 @@ export function SessionView({ client, active, current }: { readonly client: Task
   const s = view.state.snapshot;
   const connected = current && view.connected;
   if (!s || view.status === 'unavailable') return <div className="session-empty" role="status"><p>{view.status === 'loading' ? m.loading : view.status === 'not_registered' ? m.notRegistered : view.status === 'unavailable' ? m.unavailable : view.error}</p><button className="button" disabled={view.authPaused} onClick={client.refresh}>{m.refresh}</button></div>;
-  const operations = [...view.state.operations.values()].slice(-12);
+  // Provider acceptance completes input delivery, but controls still need confirmation.
+  const operations = [...view.state.operations.values()].filter(operation => operation.error !== null || !(operation.state === 'confirmed' || operation.state === 'provider_accepted' && ['send_message', 'execute_command'].includes(operation.kind))).slice(-12);
   const readOnly = s.lifecycle !== 'active';
   const archiveLabel = view.archiveState === 'ready' ? m.archived : view.archiveState === 'failed' ? m.archiveFailed : view.archiveState === 'unavailable' ? (s.lifecycle === 'draining' ? m.archivePreparing : m.archiveUnavailable) : view.archiveState === 'pending' ? m.archivePending : m.archiveLoading;
   const runtimeReady = connected && s.synchronized && s.connectionState === 'connected';
-  const activityLabel = readOnly ? m.archived : !connected || s.connectionState === 'disconnected' ? m.disconnected : !s.synchronized || s.connectionState === 'synchronizing' ? m.synchronizing : m[s.activity];
+  const activityLabel = readOnly ? sessionNativeLabels.archived : !connected || s.connectionState === 'disconnected' ? sessionNativeLabels.disconnected : !s.synchronized || s.connectionState === 'synchronizing' ? sessionNativeLabels.synchronizing : sessionNativeLabels[s.activity];
   return <section className="task-agent-session" aria-label={m.title}>
-    <header className="session-header"><div><strong>{s.identity.provider === 'claude' ? 'Claude Code' : s.identity.provider === 'copilot' ? 'GitHub Copilot' : 'Codex'}</strong><span className={`session-status ${runtimeReady ? 'online' : 'offline'}`} role="status">{activityLabel}</span></div><button className="button" disabled={view.authPaused} onClick={client.refresh}>{m.refresh}</button></header>
+    <header className="session-header"><div><strong>{s.identity.provider === 'claude' ? 'Claude Code' : s.identity.provider === 'copilot' ? 'GitHub Copilot' : 'Codex'}</strong><span className={`session-status ${runtimeReady ? 'online' : 'offline'}`} role="status" lang="en">{activityLabel}</span></div><button className="button" disabled={view.authPaused} onClick={client.refresh}>{m.refresh}</button></header>
     {!readOnly && s.connectionState === 'disconnected' ? <p className="session-empty" role="status">{m.offlineHistory}</p> : null}
     {view.error ? <p className="session-error" role="alert">{view.error}</p> : null}
     {readOnly ? <p className="session-empty" role="status">{archiveLabel}</p> : null}

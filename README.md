@@ -25,6 +25,11 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Keep the working material with the task.** Upload designs, screenshots and
   other files; read Markdown with Mermaid flowcharts, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
+- **Discuss tasks in the browser or CLI.** Open a task's Discussion tab to read,
+  post and reply as your account, with persistent history independent of Sessions.
+  [Thread commands](packages/daynight/README.md#task-discussion-threads) provide
+  complete messages and explicit pagination, including verified Agent attribution
+  when an Agent explicitly supplies its current claim.
 - **Work with coding agents.** Install the `using-daynight` skill for Codex,
   Copilot CLI or Claude Code to register work, discuss designs, execute specified
   tasks and review handoffs. Ordinary execution handles one specified task.
@@ -46,8 +51,11 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Automate PR review.** Monitor configured GitHub repositories and retain
   per-PR worktrees, Copilot sessions and review state across restarts.
 
+Task Steps have [independent persisted reads and atomic HTTP additions, content updates, status changes, moves and deletions](docs/spec/daynight-task-steps.md), with complete ordered content, task-local identities and the shared parent Task version.
+
 Task creation and general editing use the CLI. The Web app provides project and Worker browsing,
-status and execution-setting controls, task deletion and attachment management.
+status and execution-setting controls, task deletion, attachment management and
+persistent task discussions.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 explains configuration, native prerequisites and explicit
 retry/release/resume controls. Complete platform acceptance remains
@@ -260,8 +268,9 @@ upload HTML you trust with that authority.
 
 ## CLI development
 
-Source development uses Node.js 24 LTS and pnpm 11.28.6. The published CLI runs on
-Node.js 22 or newer. From the repository root:
+The CLI supports Linux, Windows and Apple Silicon (ARM64) macOS. Intel macOS
+is unsupported. Source development uses Node.js 24 LTS and pnpm 11.28.6. The
+published CLI runs on Node.js 22 or newer. From the repository root:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -317,7 +326,8 @@ from all changed paths, including deletions and both sides of renames:
 | Changed paths | PR application jobs |
 |---|---|
 | `packages/daynight/test/fixtures/installed-cli.ts` | CLI, Go server, Web quality and Web browser acceptance |
-| Other `packages/daynight/` paths | Linux, macOS and Windows CLI, runtime compatibility, plus shell completion |
+| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI validation plus Web quality and Web browser acceptance |
+| Other `packages/daynight/` paths | Linux, macOS ARM64 and Windows CLI, runtime compatibility, plus shell completion |
 | `packages/daynight-server/` | Go server |
 | `packages/daynight-web/`, runtime files under `deployment/`, current Dagre and XYFlow patches | Web quality and Web browser acceptance |
 | Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` | Every module |
@@ -329,18 +339,33 @@ SQL resources and bundled Markdown. Other documentation exclusions apply before 
 changes selecting several modules run their union. The Web selector enables
 parallel quality and browser jobs, each with a 20-minute bound; both are required
 by `checks`. Selected jobs retain their complete integration and coverage gates.
-The final `checks` job runs unless the workflow is cancelled and accepts only
-`success` or `skipped` from all preceding jobs. A newer run on the same ref cancels
-the older workflow. Documentation-only PRs run routing tests and that gate;
-every `main` push runs full application validation. See the
+The final `checks` job uses `always()` and accepts only `success` or `skipped`
+from all preceding jobs. A newer PR run cancels the older run for that PR.
+New `main` pushes queue behind an active `main` run without cancelling it.
+Documentation-only PRs run routing tests and that gate; every `main` push selects
+full application validation. See the
 [CI guide](docs/development.md#ci-selection) for routing and execution details.
 
 ## Validation
 
 `pnpm check` covers CLI type checking and tests; `pnpm acceptance` exercises the
 installed package. Server and Web checks have separate commands and require
-statement coverage strictly greater than 90%. For document changes, check local
-links and anchors, newly created files and `git diff --check`.
+statement coverage strictly greater than 90%. Routine CI suites exclude stress
+workloads. Run the corresponding explicit local command when full-scale evidence
+is required:
+
+| Local workload | Command from the repository root |
+|---|---|
+| CLI rendering and Session-v2 archive limits | `pnpm test:stress` |
+| Installed CLI production decoded-byte budgets | `pnpm test:stress:budgets` |
+| Go query, archive and repeated-write workloads | `pnpm server:test:stress` |
+| Web graph and geometry workloads | `pnpm web:test:stress` |
+| Production browser capacity and timing matrix | `pnpm web:acceptance:stress` |
+
+These stress entrypoints refuse a CI environment. The
+[development guide](docs/development.md#local-stress-validation) owns their
+prerequisites and evidence boundaries. For document changes, check local links
+and anchors, newly created files and `git diff --check`.
 
 Acceptance results belong to their tested revision, artifacts, environment and
 execution scope. Controlled process fixtures do not prove live Copilot/GitHub
@@ -378,6 +403,11 @@ their PR and CI run. CI artifacts expire after 30 days; lasting conclusions must
 remain understandable in their research or decision owner with methods, source
 identity and limitations. See the
 [evidence ownership decision](.agents/notes/archived/process/2026-10-20-source-bound-validation-evidence.md).
+
+UI mockups, `mockui` pages, their resource bundles, and tests targeting them
+must not be committed, including interactive previews composed from production
+components. Keep local prototypes in the task worktree's Git-ignored `.tmp/`
+and reviewable prototypes in their owning Daynight task's attachments.
 
 Specifications and designs use Chinese headings and prose while preserving
 technical literals. Other documents, skills, code, comments and commit messages

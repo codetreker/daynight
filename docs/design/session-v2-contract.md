@@ -105,6 +105,10 @@ FrameFile.data 的原始 UTF-8 字节也必须不超过 256 KiB，包括其空�
 | `snapshot` | `connectionEpoch:Seq`、`segmentId:UUID`、`segmentOrdinal:Seq`、Binding `binding`、Frame `frame`、`recorded:boolean` |
 | `control_state` | `connectionEpoch:Seq`、`controlEpoch:Seq`、`state`、`lease:Lease|null`、`initialAssignment`、`availableActions`、`unavailableReason:ErrorCode|null` |
 | `control_request` | `operationId:UUID`、`connectionEpoch/controlEpoch:Seq`、`action`、`browserClientId:UUID`、`leaseId:UUID|null`、`draftHandled:boolean`、`initialUnknownDisposition:null|delivered_continue` |
+| `control_dispatch` | `actorUserId:UUID`、`requestDigest:Hash`、`request:ControlRequest` |
+| `control_ack` | `requestDigest:Hash`、`durable:true`、`controlState:ControlState`、`result:OperationResult` |
+| `recording_responsibility` | `responsibilityId:UUID`、`recordingEnabled:boolean` |
+| `recording_evidence` | `responsibilityId:UUID`、`evidenceId:UUID`、`revision:Seq`、`selectedFrameCount/registeredFrameCount:ZeroSeq`、`captureError:ErrorCode|null`、`closed:boolean`、`journalSha256/sourceSha256:Hash` |
 | `operation` | `operationId:UUID`、`connectionEpoch:Seq`、`segmentId:UUID`、Binding `binding`、`controlEpoch:Seq`、`leaseId:UUID`、`leaseSeq:Seq`、`kind:paste|keys`、对应 `payload` |
 | `operation_result` | `operationId:UUID`、`state`、`errorCode:ErrorCode|null` |
 | `generation_ledger` | `runs:Run[]`、`finalizationId:UUID|null` |
@@ -120,9 +124,9 @@ control_state 的 `state=automation|manual|suspended|closing|closed`；manual
 `pending|dispatching|transport_completed|unknown|unconfirmed`；unknown/unconfirmed
 不能 automation，dispatching 不能 manual。
 
-动作集合是 `acquire_control|release_control|resume_automation|paste|keys`，
-control_request 只接受前三项。acquire 使用 null lease 与 false/null 确认字段；
-release 要求 lease，确认字段仍 false/null；resume 要求 `draftHandled=true`，
+动作集合是 `acquire_control|renew_control|release_control|resume_automation|paste|keys`，
+control_request 只接受前四项。acquire 使用 null lease 与 false/null 确认字段；
+renew/release 要求 lease，确认字段仍 false/null；resume 要求 `draftHandled=true`，
 Worker 结合持久首次输入状态决定是否还必须提供 `delivered_continue`。
 
 paste payload 为 `{text}`，非空、最多 16 KiB UTF-8，可含 LF/CR/TAB，不含其他
@@ -134,6 +138,63 @@ operation_result 的 state 为 `queued|dispatching|transport_completed|rejected|
 rejected 要求非空 errorCode，unknown 必须 `input_unknown`，其他状态 errorCode
 必须 null。generation_ledger 的非空 finalizationId 与 finalization 消息都要求
 全部运行已停止；库不执行冻结 CAS。
+
+## 控制请求的认证派发与持久确认
+
+服务端补充的 `control_dispatch` 和 `control_ack` 保留原 `control_request`、
+`control_state` 和 `operation_result` 的形状。`requestDigest` 是规范 JSON
+`{actorUserId,request}` 的 SHA-256；外层 fence 仍须单独核对。原始 decoder
+验证 dispatch 的摘要，不能仅从对象 parser 的结果推断摘要已验证。
+`actorUserId` 来自服务端认证，浏览器不能替其他用户提供该值。
+
+Worker 只在持久提交请求结果与仲裁状态后发送 `durable:true` 的 ACK。
+ACK 的 result 只接受 `transport_completed|rejected|unknown`，其 operationId
+关联原派发请求。`transport_completed` 对控制请求表示该次仲裁转换已经持久完成，
+不是原生 provider 接受输入。服务端核对请求摘要、执行与连接代次、原 holder、
+browser 和预期转换；迟到结果只能结算原操作，不能恢复过期控制。
+
+`renew_control` 是独立的幂等请求，必须携带当前 leaseId；续约保留同一 holder、
+browser、leaseId 和 controlEpoch，Worker 与服务端都核对尚未到期，仍需 durable
+ACK 才能延长浏览器可用期。过期后需重新 acquire，不能通过续约复活。acquire
+成功必须为 manual；release 成功必须为 suspended；resume 成功必须为 automation。
+浏览器不能以未关联的 control_state 或 queued/dispatching 结果自行取得控制。
+
+这些补充消息及 renew 动作须由能力发现明确声明，不能只凭同一 v2 字符串推断
+旧 Worker 已实现。未匹配的组合保持不可用，不降级为原生输入或即时授予。
+
+## 可信 Worker 的录制责任
+
+每个运行代次在采集开始前，通过 `recording_responsibility` 登记固定责任 ID 和
+是否启用录制。服务端先持久 ACK；Worker 将同一身份可靠写入本机日志后才能采集。
+此后无需运行期逐帧联网或远端备份。初始 ACK 未确认时不能假称已建立责任。
+原 owner、claim、generation、Worker、worktree、录制策略和责任 ID 不得替换。
+
+Worker 在选择内容前持久登记责任，随后登记文件和索引；计数与修订单调增长，
+捕获错误不可清除。`recording_evidence` 可提交中间状态或最终关闭证据：
+registeredFrameCount 不得大于 selectedFrameCount；每个修订有固定 evidenceId
+与完整正文。相同 ID 或修订的重试只接受相同内容；已经 closed 的证据不可追加、
+清零或替换。服务端按原代次持久保存并比较既有观察，原始 decoder 只验证单条
+结构，不替服务端执行跨提交的单调性、身份或冻结检查。
+
+`journalSha256` 标识 Worker 可信持久日志的固定原始字节。`sourceSha256` 是该
+运行所选规范 JSON `{files,index}` 的 SHA-256：从已验证的 Archive 按该 Run 的
+segmentIds 筛选 files/index，保留归档内顺序及 FrameFile.data 的原始文本。
+无帧运行使用 `{files:[],index:[]}` 的固定摘要。Go `SourceDigest`/
+`EmptySourceDigest` 和 TS `sourceDigest`/`emptySourceDigest` 共享向量；这些摘要
+不替代最终归档原始字节的 hash。
+
+最终 evidence 必须源于完整可信日志的正常关闭；日志缺失、断裂、已登记文件丢失
+或无法核实关闭时不能重建零帧证据。ready 要求每代 closed、selected 和 registered
+均等于该代实际归档文件数，并核对 sourceSha256；错误必须与 partial 的可信缺口
+相容，不能用 gap 掩盖损坏。unavailable 要求每代 closed、两个计数为零、无捕获
+错误、空 source 摘要，以及原策略与原因一致；还须核对所有运行已停止和最终冻结。
+不可用回执原有 NoRecordingEvidence 是这些持久事实的终态投影，不是其来源。
+
+Worker 是真实采集和本机持久事实的可信生产者；服务端不能直接观察远程磁盘。
+journal hash 只证明内容身份，不独立证明采集事实；单调比较也仅覆盖服务端已
+观察的记录。完整本地状态或日志尾部回滚到自洽旧前缀、恶意 Worker 与凭据滥用
+没有独立远程证明。缺可信正常关闭证据仍须保留失败或未知责任，不能据目录为空
+签发 unavailable。录制模块必须以真实 Worker 故障注入验证这些恢复约束。
 
 ## 归档文件和引用
 
@@ -225,6 +286,10 @@ TS 公开 `decodeSessionV2Message`、`decodeSessionV2Archive`、
 `SESSION_V2_LIMITS`、`SESSION_V2_KEYS`。解析入口、类型和限额的
 实际导出以对应模块为准；调用者不能把内部值 helper 当成完整消息验证。
 
+Go 的补充辅助入口包括 `ControlRequestDigest`、`SourceDigest`、
+`EmptySourceDigest`；TS 对应 `controlRequestDigest` 及 `responsibility.ts` 的
+`sourceDigest`、`emptySourceDigest`。
+
 Go 通过 `DecodeMessage([]byte) (Message,error)` 与
 `DecodeArchive([]byte) (Archive,error)` 完成结构和 hash 校验，`Message.Payload`
 使用受限的 payload 类型集合。`SelectProtocol(*string)` 以 nil 表示缺省，非 nil
@@ -238,7 +303,11 @@ Go 通过 `DecodeMessage([]byte) (Message,error)` 与
 Go 消息与输入操作的序列化拒绝 nil payload，以及外层 type/kind 与具体 payload
 类型不一致的组合；这不替代 decoder 对其余字段、引用和完整性的验证。
 
-两种语言对 manifest 中每个原始 fixture 执行对应 decoder。大边界由测试构造，
-避免提交数十 MiB 文件。既有 v1 fixtures 与 archive 回归保持运行。验证不仅
-检查字段类型，还检查排序、归属、完整性和非法终态，CI 采用仓库标准 CLI 与 Go gate。
+两种语言对 manifest 中每个原始 fixture 执行对应 decoder。常规 CI 采用仓库标准
+CLI 与 Go gate，保留紧凑归档、256 KiB 帧边界、快速数量/字节拒绝以及排序、归属、
+完整性和非法终态；既有 v1 fixtures 与 archive 回归保持运行。
+完整 100000 帧、60 MiB 录制、64 MiB 归档及其他规模边界由显式本地压力套件构造，
+避免提交数十 MiB 文件。仓库根 `pnpm test:stress` 运行 TS 压力套件，
+`pnpm server:test:stress` 运行 Go 压力套件；相应配置、构建标签测试入口在 CI 中拒绝。
+生产协议限额与完整规模的精确边界断言保持不变。
 原生副作用与性能承诺必须由真实隔离运行另行验证。

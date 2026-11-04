@@ -41,9 +41,11 @@ Tasks can read or write the shared task-list position.
 
 The [Web specification](../../../../docs/spec/daynight-web.md) owns the required
 restoration behavior, and the [Web design](../../../../docs/design/daynight-web.md)
-owns the component composition. The production-component project fixture uses
-the same preference implementation and styles. The static authentication
-prototype retains deterministic scenario resets as a visual reference.
+owns the component composition. The original production-component project
+fixture used the same preference implementation and styles. The static
+authentication prototype provided deterministic scenario resets as a visual
+reference. Their repository retention is superseded by the [prototype ownership
+decision](../process/2026-11-03-ui-mockup-ownership.md).
 
 ## Alternatives
 

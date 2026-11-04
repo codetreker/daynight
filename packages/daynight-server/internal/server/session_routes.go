@@ -17,6 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/google/uuid"
 )
@@ -26,15 +27,16 @@ const relayWriteTimeout = 5 * time.Second
 const relayMaxConnections = 1024
 
 type sessionRoutes struct {
-	service     *sessionrelay.Service
-	auth        *Authentication
-	logger      *slog.Logger
-	instance    string
-	mutex       sync.Mutex
-	closing     bool
-	reserved    int
-	connections map[*websocket.Conn]context.CancelFunc
-	active      sync.WaitGroup
+	service         *sessionrelay.Service
+	auth            *Authentication
+	logger          *slog.Logger
+	instance        string
+	mutex           sync.Mutex
+	closing         bool
+	reserved        int
+	connections     map[*websocket.Conn]context.CancelFunc
+	terminalViewers map[string]*websocket.Conn
+	active          sync.WaitGroup
 }
 type sessionApplication struct {
 	http.Handler
@@ -44,14 +46,27 @@ type sessionApplication struct {
 func (a *sessionApplication) Shutdown(ctx context.Context) error { return a.relay.shutdown(ctx) }
 
 func newSessionRoutes(s *sessionrelay.Service, auth *Authentication, logger *slog.Logger) *sessionRoutes {
+	if s != nil && auth != nil {
+		s.Origin = auth.origin
+	}
 	return &sessionRoutes{service: s, auth: auth, logger: logger, instance: uuid.NewString(), connections: make(map[*websocket.Conn]context.CancelFunc)}
 }
 func (h *sessionRoutes) register(mux *http.ServeMux) {
+	h.registerTerminalRoutes(mux)
 	h.registerTestRoutes(mux)
 	h.registerArchiveRoutes(mux)
 	mux.HandleFunc("GET /api/v1/session-capabilities", h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
 		if _, err := queryValues(r); err != nil {
 			h.failure(w, r, err)
+			return
+		}
+		protocol, err := selectedSessionProtocol(r)
+		if err != nil {
+			h.failure(w, r, err)
+			return
+		}
+		if protocol == v2.Protocol {
+			writeJSON(w, r, h.logger, http.StatusOK, map[string]any{"protocol": v2.Protocol, "schemaVersion": 2, "projectionVersion": 1, "providers": []string{"codex", "claude", "copilot"}, "backends": []string{"herdr"}, "recordingResponsibilityVersion": 1, "controlDispatchVersion": 1, "workerCapabilitiesRequired": true})
 			return
 		}
 		writeJSON(w, r, h.logger, http.StatusOK, map[string]any{"protocol": sp.Protocol, "schemaVersion": 1, "projectionVersion": 1, "providers": []string{"codex", "claude", "copilot"}})
@@ -74,7 +89,7 @@ func (h *sessionRoutes) register(mux *http.ServeMux) {
 	for route, handler := range handlers {
 		mux.HandleFunc(route, h.auth.Require(h.parameters(handler)))
 	}
-	for path, methods := range map[string]string{sessionBase: "POST", sessionBase + "/current": "GET", sessionBase + "/{sessionId}/controller-grant": "POST", sessionBase + "/{sessionId}/timeline": "GET", sessionBase + "/{sessionId}/commands": "POST", sessionBase + "/{sessionId}/operations/{operationId}": "GET", sessionBase + "/{sessionId}/resources/{resourceId}/content": "GET", sessionBase + "/{sessionId}/channel": "GET"} {
+	for path, methods := range map[string]string{sessionBase: "GET, POST", sessionBase + "/current": "GET", sessionBase + "/{sessionId}/controller-grant": "POST", sessionBase + "/{sessionId}/timeline": "GET", sessionBase + "/{sessionId}/commands": "POST", sessionBase + "/{sessionId}/operations/{operationId}": "GET", sessionBase + "/{sessionId}/resources/{resourceId}/content": "GET", sessionBase + "/{sessionId}/channel": "GET"} {
 		fallback := methodNotAllowed(h.logger, methods)
 		mux.HandleFunc(path, h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) { fallback(w, r) }))
 		if methods == "GET" {
@@ -89,7 +104,7 @@ func (h *sessionRoutes) register(mux *http.ServeMux) {
 }
 func (h *sessionRoutes) parameters(next AuthenticatedHandler) AuthenticatedHandler {
 	return func(w http.ResponseWriter, r *http.Request, p core.Principal) {
-		for _, name := range []string{"projectId", "taskId", "sessionId", "operationId", "resourceId"} {
+		for _, name := range []string{"projectId", "taskId", "sessionId", "operationId", "resourceId", "evidenceId"} {
 			if raw := r.PathValue(name); raw != "" {
 				id, err := service.CanonicalID(raw)
 				if err != nil {
@@ -98,6 +113,15 @@ func (h *sessionRoutes) parameters(next AuthenticatedHandler) AuthenticatedHandl
 				}
 				r.SetPathValue(name, id)
 			}
+		}
+		protocol, err := selectedSessionProtocol(r)
+		if err != nil {
+			h.failure(w, r, err)
+			return
+		}
+		if protocol == v2.Protocol {
+			h.terminalRoute(w, r, p)
+			return
 		}
 		next(w, r, p)
 	}
@@ -272,6 +296,16 @@ func (h *sessionRoutes) putResource(w http.ResponseWriter, r *http.Request) {
 		h.failure(w, r, err)
 		return
 	}
+	protocol, protocolErr := selectedSessionProtocol(r)
+	if protocolErr != nil {
+		h.failure(w, r, protocolErr)
+		return
+	}
+	if protocol != sp.Protocol {
+		h.failure(w, r, terminalFault("unsupported_protocol", "Web controller endpoints require daynight.session.v1."))
+		return
+	}
+
 	if _, err = queryValues(r); err != nil {
 		h.failure(w, r, err)
 		return
@@ -323,7 +357,15 @@ func (h *sessionRoutes) accept(w http.ResponseWriter, r *http.Request) (*websock
 	h.active.Add(1)
 	h.mutex.Unlock()
 	// Exact Origin was already checked; library host matching is intentionally bypassed.
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true, CompressionMode: websocket.CompressionDisabled})
+	protocol, protocolErr := selectedSessionProtocol(r)
+	if protocolErr != nil {
+		h.mutex.Lock()
+		h.reserved--
+		h.mutex.Unlock()
+		h.active.Done()
+		return nil, nil, nil, protocolErr
+	}
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{protocol}, InsecureSkipVerify: true, CompressionMode: websocket.CompressionDisabled})
 	if err != nil {
 		h.mutex.Lock()
 		h.reserved--
@@ -378,8 +420,12 @@ func relayWrite(ctx context.Context, conn *websocket.Conn, value any) error {
 	if err != nil {
 		return err
 	}
-	if len(data) > sp.MaxFrameBytes {
-		return &service.Fault{Code: "payload_too_large", Message: "Session frame exceeds the 2 MiB limit."}
+	limit := sp.MaxFrameBytes
+	if conn != nil && conn.Subprotocol() == v2.Protocol {
+		limit = 4 * 1024 * 1024
+	}
+	if len(data) > limit {
+		return &service.Fault{Code: "payload_too_large", Message: "Session frame exceeds the negotiated protocol limit."}
 	}
 	write, cancel := context.WithTimeout(ctx, relayWriteTimeout)
 	defer cancel()
@@ -419,6 +465,16 @@ func (h *sessionRoutes) controllerChannel(w http.ResponseWriter, r *http.Request
 		h.failure(w, r, err)
 		return
 	}
+	protocol, protocolErr := selectedSessionProtocol(r)
+	if protocolErr != nil {
+		h.failure(w, r, protocolErr)
+		return
+	}
+	if protocol != sp.Protocol {
+		h.failure(w, r, terminalFault("unsupported_protocol", "Web controller endpoints require daynight.session.v1."))
+		return
+	}
+
 	if _, err = queryValues(r); err != nil {
 		h.failure(w, r, err)
 		return

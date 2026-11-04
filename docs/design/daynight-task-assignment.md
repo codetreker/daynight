@@ -1,6 +1,6 @@
-# Task 负责人服务端设计
+# Task 负责人设计
 
-状态：原生负责人列及事务、读取生产者、任务筛选和项目内人员读取已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
+状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 负责人命令、Web 负责人写入/展示/筛选和 schema 4 缓存，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
 
 ## 数据所有权
 
@@ -40,7 +40,7 @@ Tasks.write 在明确 no-op/删除路径之后，只对真正 create/update 的�
 
 完整 Task、task-sync 和图各自的 projection/scanner/assembler 直接读取 assigned_to::text；字段、版本、依赖和属性属于同一既有读取快照。summary 与图携带轻量 UUID，不嵌入可变用户资料。
 
-锁序保持项目→父任务→属性→Session。成员变更共享项目锁；自动领取在同一写事务内要求当前 AssignedTo 非空且等于 principal.UserID，领取结果绑定该认证调用者。负责人变化不重写 worker 或 Session/archive 身份；released/completed 历史继续保留，新的负责人不因此获得旧执行的控制权。
+锁序保持项目→父任务→属性→Session。成员变更共享项目锁；自动领取在同一写事务内要求当前 AssignedTo 非空且等于 principal.UserID，领取结果绑定该认证调用者。负责人变化不重写 worker 或 Session/archive 身份；released/completed 历史继续保留，新的负责人不因此获得旧执行的控制权。[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有领取资格与原执行授权分离的取舍。
 
 ## 原生任务筛选与游标
 
@@ -72,7 +72,31 @@ HTTP 以局部 query 解析只允许重复 userId，不放宽共用 queryValues 
 
 Go 组装仍验证规范 ID、互斥和完整覆盖：items 与 unresolved 恰好覆盖规范请求一次，各自稳定排序。query/scan/rows/取消或事务失败不安装部分集合。错误不借用 ErrNotFound 表示资料缺失，避免外层误译为项目 404。
 
-完整目录面向显式打开或重试；周期消费者使用当前展示/选中 ID 的限定模式，空集合不发请求，不能省略参数退化为全量。CLI/Web 消费和刷新 owner 仍是独立客户端能力，人员资料不写入 Task 版本或浏览器持久任务记录。
+完整目录面向显式打开或重试；周期消费者使用当前展示/选中 ID 的限定模式，空集合不发请求，不能省略参数退化为全量。Web消费和刷新由认证scope内的TaskAssignees拥有，人员资料不写入Task版本或浏览器持久任务记录。CLI 已严格消费 Task/graph 的 assignedTo，普通元数据命令使用完整 Task 响应，不为姓名调用目录；[客户端设计](daynight-project-task.md)拥有命令、me 身份与输出。
+
+## CLI 字段与命令
+
+CLI 的 Task/graph 读取器严格要求 nullable assignedTo，可读输出显示当前 UUID 或 unassigned，JSON 保留该字段。create/update 使用 UUID 设置，update 以互斥的清空选项发送 null；普通 PATCH 完整响应直接成为结果，不增加成功后的 GET 或人员查询。list 支持 UUID/me/unassigned，并与 ready、状态、许可和平台条件组合；有界 ready 命令保持原有参数。me 解析使用每页成功响应的 principal 头，完整遍历绑定第一页身份，空页也校验，且不额外请求 /me。完整命令、响应验证与错误边界由[客户端设计](daynight-project-task.md)拥有。
+
+## Web 字段与任务写入
+
+TaskDetailSession 继续唯一拥有所有 Task mutation，assignedTo action 复用普通 PATCH helper。规范目标与previous值比较决定预期v或v+1；等值保留updatedAt/许可，实际变化要求目标/false及其他材料保持。所有其他action也核验assignedTo未变，withdraw只获准移除其worker归属。
+
+HTTP200确认后才能抬高已提交版本下限；响应读取失败或未知结果沿既有GET核对队列，不重放PATCH。更高版本完整当前值可替代原意图，旧历史/旧owner不能发布结果。确认、摘要同步与详情持久化继续属于现有ticket/generation边界。
+
+Web所有Task/detail/summary/graph解析和比较纳入assignedTo。schema4复用既有升级事务，1/2/3直接清除projects/summaries/details、清水位并轮换user fence；新字段消费者与此重建同时交付，不把缺字段解释为null。mutable profile不进入IDB或Task version。
+
+## Web 人员与界面所有者
+
+TaskAssigneesProvider在认证TaskCache边界中为当前scope提供TaskAssignees。当前挂载行、详情和具体过滤以独立symbol登记ID需求，合并、排序去重后分100项；空集合不请求。ProjectPage与独立TaskDetailPage将graph-owner symbol和正revision登记为receipt；重挂载的revision从1开始仍可触发读取，不能用全局lastRevision单调判重。
+
+限定读取在途时合并一个后继刷新，避免慢请求每5秒被取消而永不完成。完整目录只由打开/重试触发。capture从已授权内存manifest取得userFence/cacheGeneration等ticket，不调用beginSync重复验证整项目持久摘要；scope.ready前后均检查身份、历史、需求及所有权，正结果在无await段发布。
+
+people map按每个人最新派发序号合并，晚到catalogue不能覆盖较新限定结果；unresolved同样保留顺序fence。可信同用户404先由scope.canRevokeProject核验捕获ticket，再沿scope.signal撤权；菜单关闭或需求变化不丢失父项目失权，旧E1不能清新E2。错误与清理故障保留原状态和原因，不制造失权资料。
+
+TaskAssigneeIdentity显示真实nullable姓名/头像，name缺失显示短UUID，图片失败使用当前身份首字形态；不生成email。TaskAssigneeSelect紧邻状态24px成组，TaskAssigneeFilter拥有all/me/unassigned/user显示状态。AssigneePicker的fixed菜单在surface的焦点所有者子树内，尺寸和12px边界按视口计算，随scroll/resize/fullscreen及进入动画稳定定位；键盘与Escape/Tab/外部点击保留现有详情层级和焦点。
+
+ProjectPage从完整index导出匹配ID，再在显示集合和分页前相交；ChainList保留完整component进度和依赖，仅裁剪展示的子任务集合。概览与图不继承负责人过滤，显式概览定位可回到all以展示目标。新增界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
 
 ## 观测与验证
 
@@ -80,4 +104,6 @@ Go 组装仍验证规范 ID、互斥和完整覆盖：items 与 unresolved 恰�
 
 真实 PostgreSQL 验证迁移保全、三套字段投影、nullable 输入、等值及失权目标、全部写入保留、竞态和后续失败回滚。原始 JSON 检查字段存在；迁移 026 的历史事实测试固定其历史 schema，现行迁移另行覆盖。
 
-查询验证过滤先于分页、完整 scope、旧任务游标拒绝和其他列表版本不变、worker inventory 组合、自动候选本人筛选与 claim 事务负责人校验。目录验证两种模式的原始引用完整性、隐私、精确覆盖、100/101 边界、真实快照并发及所有失败路径。至少 10000 任务和 100 人员的生产查询 EXPLAIN ANALYZE BUFFERS 与响应样本绑定被测代码；数量样本不改变 Web 图规模限制，也不是生产容量上限。
+查询验证过滤先于分页、完整 scope、旧任务游标拒绝和其他列表版本不变、worker inventory 组合、自动候选本人筛选与 claim 事务负责人校验。目录验证两种模式的原始引用完整性、隐私、精确覆盖、100/101 边界、真实快照并发及所有失败路径。至少 10000 任务和 100 人员的生产查询 EXPLAIN ANALYZE BUFFERS 与响应样本通过显式本地 `bash scripts/stress.sh`（在服务模块内）运行，并绑定被测代码；常规 Go CI 排除该压力样本，保留真实 PostgreSQL 的过滤、游标、权限及失败路径验证和严格覆盖率门槛。数量样本不改变 Web 图规模限制，也不是生产容量上限。
+
+Web验证覆盖字段/schema4升级、mutation同值/确认下限/材料保持、people需求/receipt/派发和负向撤权fence、完整链筛选、菜单焦点及双语窄屏。生产功能场景task-assignment与task-assignment-layout分别拥有真实写入/未知结果核对，以及身份/布局/完整图显示的验证；完整inventory由Web验收所有者定义。

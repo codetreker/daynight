@@ -1,7 +1,7 @@
 # Daynight 客户端架构设计
 
 状态：`packages/daynight/` 是通过 `@codetreker/daynight` 分发的 TypeScript 客户端
-命令工具包，支持 Linux、macOS 和 Windows。`review` 提供 GitHub PR 审查，`worker` 提供前台任务认领与资源对账，`update`
+命令工具包，支持 Linux、Windows 和 Apple Silicon（ARM64）macOS，不支持 Intel macOS。`review` 提供 GitHub PR 审查，`worker` 提供前台任务认领与资源对账，`update`
 管理当前 npm 全局安装，`login/logout` 管理 CLI 凭据，review 拥有仓库配置和首次引导，`completion` 生成 Bash 和 zsh
 的原生补全脚本并安装启动配置；`--skill` 输出独立的 CLI 使用手册，`skill` 提供公开 `using-daynight` skill 的交互安装。project/task
 CLI 的共享配置、HTTP、仓库关联基础及 project/task 命令已完成，安装产物、真实服务
@@ -524,9 +524,10 @@ project/task 安装 suite 以受控 HTTP 和真实 Git 证明三个原生平台�
 race binary。该包集中拥有跨进程验收、`TestMain` 和资源清理；服务主命令包保留
 直接调用内部函数的测试，两边各自管理测试辅助设施。
 服务验证的编排层只安装一次 CLI，执行 Go 覆盖率 gate，再在 Go 默认 10 分钟
-计时器之外运行期限与真实解码字节预算探针。期限场景通过测试侧 preload 使用
-1 秒单次、3 秒总期限，生产默认 30 秒/5 分钟单独断言；字节场景保留真实
-128/256 MiB 边界和 +1 字节拒绝。职责与证据见
+计时器之外运行所选预算套件。常规 CI 运行两个期限场景，通过测试侧 preload 使用
+1 秒单次、3 秒总期限，生产默认 30 秒/5 分钟单独断言；四个完整字节场景通过
+显式本地 `pnpm test:stress:budgets` 运行，保留真实 128/256 MiB 边界和 +1 字节拒绝，
+并在 CI 环境中拒绝。职责与证据见
 [project/task 设计](daynight-project-task.md#验证与交付证据)。
 [仓库验证说明](../../README.md#validation)定义本地及原生 receipt 的源码身份、
 受控 GitHub/Copilot 行为与真实服务验收的证据边界。运行结果随对应 PR 与 CI 保存；

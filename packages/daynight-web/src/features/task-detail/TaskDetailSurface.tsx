@@ -1,3 +1,5 @@
+import { isThreadScopeLoss } from '../task-thread/api';
+import { TaskDiscussion } from '../task-thread/TaskDiscussion';
 import { readPullRequests, readWorkerClaim } from "../../api/task-properties";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
@@ -29,6 +31,8 @@ import { matchesDeletionReview, TaskDeletionConfirmation, TaskDeletionFeedback, 
 import { TaskPullRequests } from './TaskPullRequests';
 import { TaskDetailNotice, TaskDetailNotifications } from './TaskDetailNotice';
 import { ProjectGraphErrorDetail } from '../projects/ProjectGraphError';
+import { TaskAssigneeSelect } from '../task-assignment/TaskAssigneeSelect';
+import { TaskAssignmentFeedback } from '../task-assignment/TaskAssignmentFeedback';
 import '../../styles/task-detail.css';
 
 export type DetailFullscreen = {
@@ -111,6 +115,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
     : confirmation.kind === 'allowAgents' ? matchesAgentPermissionReview(confirmation, detail) && task.canSetAgentPermission
       : matchesPlatformReview(confirmation, detail) && task.canSetRequiredPlatform);
   const confirmationOpen = confirmation !== null && confirmationValid;
+  const threadDetailsOccupied = useRef(false);
   useLayoutEffect(() => { if (confirmation !== null && !confirmationValid) setConfirmation(null); }, [confirmation, confirmationValid]);
   const confirm = (): void => {
     if (confirmation === null || !confirmationValid) return;
@@ -146,7 +151,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
     if (!fullscreen.active) fullscreenRef.current!.focus({ preventScroll: true });
   }, [fullscreen.active]);
   const onEscape = () => {
-    if (confirmationOpen) return;
+    if (confirmationOpen || threadDetailsOccupied.current) return;
     if (fullscreen.active) changeFullscreen(false);
     else onClose?.();
   };
@@ -169,7 +174,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   useLayoutEffect(() => {
     if (!modal && !fullscreen.active) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (callbacks.current.confirmationOpen || event.defaultPrevented) return;
+      if (callbacks.current.confirmationOpen || threadDetailsOccupied.current || event.defaultPrevented) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         callbacks.current.onEscape();
@@ -200,7 +205,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   }, []);
 
   useLayoutEffect(() => {
-    if (modal && !confirmationOpen && !dialogRef.current!.contains(document.activeElement)) closeRef.current!.focus();
+    if (modal && !confirmationOpen && !threadDetailsOccupied.current && !dialogRef.current!.contains(document.activeElement)) closeRef.current!.focus();
   }, [taskId, status, error, snapshot.revision, confirmationOpen]);
 
   const snapshotNode = snapshot.index.nodes.get(taskId);
@@ -262,20 +267,23 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
                 <div className="task-detail-status-row">
                   <div className="task-detail-badges">
                     <div className="task-detail-state-controls">
-                      <TaskStatusMenu status={detail.status} disabled={!task.canSetStatus} onSelect={(status) => requestConfirmation({ kind: 'status', status, detail })} />
+                      <div className="task-detail-status-assignee">
+                        <TaskStatusMenu status={detail.status} disabled={!task.canSetStatus} onSelect={(status) => requestConfirmation({ kind: 'status', status, detail })} />
+                        <TaskAssigneeSelect projectId={projectId} detail={detail} disabled={!task.canSetAssignedTo} owner={dialogRef} resetKey={`${taskId}/${fullscreen.active}`} onSelect={(assignedTo) => task.setAssignedTo(assignedTo, detail.version)} />
+                      </div>
                       <TaskPlatformSelect detail={detail} disabled={!task.canSetRequiredPlatform} describedBy={platformFeedbackId}
                         onReview={(requiredPlatform) => requestConfirmation({ kind: 'requiredPlatform', detail, requiredPlatform })} />
                     </div>
                     {worker !== undefined && <span className="task-detail-execution-mode">{worker.agentControlMode === 'web' ? sessionMessages.web : sessionMessages.herdr}</span>}
                     {detail.status === 'todo' && <span className={detail.ready ? 'task-detail-ready' : 'task-detail-blocked'}>{detail.ready ? m.ready : m.blocked}</span>}
                   </div>
-                  <TaskAgentPermissionSwitch detail={detail} disabled={!task.canSetAgentPermission} describedBy={automationFeedbackId}
-                    onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />
+                  {task.assignmentUncertain ? <span className="task-assignment-uncertain" role="status">{messages.assignment.uncertain}</span> : <TaskAgentPermissionSwitch detail={detail} disabled={!task.canSetAgentPermission} describedBy={automationFeedbackId}
+                    onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />}
                 </div>
                 {currentClaim !== null && <TaskClaimSummary worker={currentClaim} members={membership.members} membershipStatus={membership.status} membershipError={membership.error} onRetryMembers={membership.retry}
                   canWithdraw={task.canWithdrawClaim && mayWithdraw} {...(mayWithdraw ? { onWithdraw: () => requestConfirmation({ kind: 'withdraw', detail, claimId: currentClaim.claimId }) } : {})} />}
               </div>
-              <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} {...(worker?.agentControlMode === 'web' ? { session: (active: boolean) => <TaskAgentSession key={worker!.claimId} projectId={projectId} taskId={taskId} claimId={worker!.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : {})} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
+              <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} discussion={(active: boolean) => <TaskDiscussion projectId={projectId} taskId={taskId} active={active} parentUnavailable={isThreadScopeLoss(error)} owner={dialogRef} onDetailsOpenChange={(open) => { threadDetailsOccupied.current = open; }} />} {...(worker?.agentControlMode === 'web' ? { session: (active: boolean) => <TaskAgentSession key={worker!.claimId} projectId={projectId} taskId={taskId} claimId={worker!.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : {})} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
                 <div className="task-detail-columns">
                   <div className="task-detail-main">
                     <section className="task-detail-section" aria-label={m.description}>
@@ -314,6 +322,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
         <TaskWithdrawalFeedback key={`${scope}/withdrawal`} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskStatusFeedback key={`${scope}/status`} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskAgentPermissionFeedback key={`${scope}/permission`} id={automationFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
+        <TaskAssignmentFeedback mutation={task.mutation} uncertain={task.assignmentUncertain} onReconcile={task.reconcile} />
         <TaskPlatformFeedback key={`${scope}/platform`} id={platformFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskDetailNotice key={`${scope}/read`} active={retainedDetail} event={readNoticeEvent} tone={error === null ? 'info' : 'error'} recoverable>
           <div className="task-detail-read-error" role={error === null ? 'status' : 'alert'}>
@@ -343,5 +352,5 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
           ? <TaskAgentPermissionConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />
           : <TaskPlatformConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />)}
     </>;
-  return modal ? <div className="task-detail-backdrop" onClick={(event) => { if (event.target === event.currentTarget && !confirmationOpen) onClose!(); }}>{content}</div> : content;
+  return modal ? <div className="task-detail-backdrop" onClick={(event) => { if (event.target === event.currentTarget && !confirmationOpen && !threadDetailsOccupied.current) onClose!(); }}>{content}</div> : content;
 };

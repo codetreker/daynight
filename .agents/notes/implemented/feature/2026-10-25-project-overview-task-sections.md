@@ -59,9 +59,10 @@ now owns a fixed viewport-relative area and restores its list trigger with
 
 The [Web specification](../../../../docs/spec/daynight-web.md) owns required
 behavior, and the [Web design](../../../../docs/design/daynight-web.md) owns the
-current composition. The production-component browsing fixture is the current
-layout reference; the original static task-category preview retains its earlier
-visual baseline and state examples.
+current composition. The production-component browsing fixture illustrated the
+section layout, while the original static task-category preview supplied its
+earlier visual baseline and state examples. Their repository retention is
+superseded by the [prototype ownership decision](../process/2026-11-03-ui-mockup-ownership.md).
 
 ## Alternatives
 
@@ -97,8 +98,10 @@ content in the hidden panel.
 Browser verification must distinguish outer retention from inner category
 remounting, and prove scroll isolation with real document geometry. Layout tests
 also cover empty projects, recoverable refresh failure, long content, responsive
-orientation and visible focus restoration. Existing production acceptance and
-capacity scenarios retain their gates and measurement boundaries. Explicit
+orientation and visible focus restoration. Existing production functional
+acceptance retains its gates. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+retains capacity scenarios and measurement boundaries in explicit local stress
+acceptance. Explicit
 Task list entry remains part of cold start without a saved section preference
 where measurement already begins before project navigation; warm graph operation
 measurements remain unchanged.

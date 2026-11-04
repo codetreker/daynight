@@ -2,7 +2,7 @@
 
 ## 所有者与调用方向
 
-[需求](../spec/daynight-task-thread.md)拥有服务端行为及消费者义务。`api/task_threads.go` 定义公开 DTO；`internal/core/task_thread.go` 定义消息、不可变作者、内部位置和页面；`internal/core/store/task_thread_*.go` 拥有 PostgreSQL 读写；`internal/service/task_thread.go` 编排授权、来源、容量及错误；`internal/server/task_threads.go` 注册路由、严格解码和输出。
+[需求](../spec/daynight-task-thread.md)拥有服务端行为及消费者义务，[CLI设计](task-thread-cli.md)拥有终端解析、展示、预算与确认生命周期，[Web设计](task-thread-web.md)拥有Discussion面板、临时内存与连续读取。`api/task_threads.go`定义公开DTO；`internal/core/task_thread.go`定义消息、不可变作者、内部位置和页面；`internal/core/store/task_thread_*.go`拥有PostgreSQL读写；`internal/service/task_thread.go`编排授权、来源、容量及错误；`internal/server/task_threads.go`注册路由、严格解码和输出。
 
 `internal/taskthreadjson` 是纯编码所有者，将 core 映射到 API 并生成实际响应字节。service 的消息/页文档同时携带 core 值和已验证 JSON；server 直接写入该缓冲，不再经过 Encoder 或追加 LF。createdAt 通过显式 UTC `2006-01-02T15:04:05.000Z` 格式化。store 不依赖 HTTP 或 API DTO。
 

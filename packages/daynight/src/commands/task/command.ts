@@ -52,6 +52,11 @@ export const runTaskCommand = async (
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
+  if (command.path[2] === "thread") {
+    const { runTaskThreadCommand } = await import("./thread.js");
+    await runTaskThreadCommand(command, context, dependencies);
+    return;
+  }
   if (command.path[2] === "attachment") {
     const { runTaskAttachmentCommand } = await import("./attachment.js");
     await runTaskAttachmentCommand(command, context, dependencies);
@@ -73,6 +78,20 @@ export const runTaskCommand = async (
   const status = command.options.get("--status") as TaskFilters["status"];
   const allowAgentsArgument = command.options.get("--allow-agents") as "true" | "false" | undefined;
   const allowAgents = allowAgentsArgument === undefined ? undefined : allowAgentsArgument === "true";
+  const assignedToArgument = command.options.get("--assigned-to") as string | undefined;
+  const clearAssignedTo = command.options.has("--clear-assigned-to");
+  if (clearAssignedTo && assignedToArgument !== undefined) throw new UsageError("--clear-assigned-to conflicts with --assigned-to.", help);
+  let assignedTo: string | undefined;
+  if (assignedToArgument !== undefined) {
+    if (name === "list" && (assignedToArgument === "me" || assignedToArgument === "unassigned")) assignedTo = assignedToArgument;
+    else {
+      const { canonicalId } = await import("../../api/parse.js");
+      const parsed = canonicalId(assignedToArgument);
+      if (parsed === null) throw new UsageError(name === "list" ? "--assigned-to must be a hyphenated UUID, me or unassigned." : "--assigned-to must be a hyphenated UUID.", help);
+      assignedTo = parsed;
+    }
+  }
+  const assignmentFields: Pick<UpdateTaskInput, "assignedTo"> = clearAssignedTo ? { assignedTo: null } : assignedTo === undefined || name === "list" ? {} : { assignedTo };
   const requiredPlatform = command.options.get("--required-platform") as TaskPlatform | undefined;
   const clearRequiredPlatform = command.options.has("--clear-required-platform");
   if (clearRequiredPlatform && requiredPlatform !== undefined) throw new UsageError("--clear-required-platform conflicts with --required-platform.", help);
@@ -90,13 +109,14 @@ export const runTaskCommand = async (
   if (description !== undefined && !isText(description)) throw new UsageError("Task description must be UTF-8 text without NUL characters.", help);
   const dependencyFields = await compileDependencies(dependsOn, externalDependsOn, clearDependencies, help);
   const changes: Omit<UpdateTaskInput, "version"> = {
+    ...assignmentFields,
     ...(allowAgents === undefined ? {} : { allowAgents }),
     ...platformFields,
     ...(title === undefined ? {} : { title }),
     ...(description === undefined ? {} : { description }),
     ...dependencyFields,
   };
-  if (name === "update" && Object.keys(changes).length === 0) throw new UsageError("Task update requires a title, description, automatic-execution permission, platform requirement, or dependency change.", help);
+  if (name === "update" && Object.keys(changes).length === 0) throw new UsageError("Task update requires a title, description, assignee, automatic-execution permission, platform requirement, or dependency change.", help);
   const rawProjectId = command.options.get("--project") as string | undefined;
   let projectId: string | undefined;
   let taskId: string | undefined;
@@ -136,13 +156,13 @@ export const runTaskCommand = async (
     const { renderTask, renderTaskGraph, renderTaskGraphDependencies, renderTaskJson, renderTaskList, renderTaskListJson, renderTaskSummaryList } = await import("./rendering.js");
     operation.check();
     if (command.command.name === "create") {
-      const input: CreateTaskInput = { title: title!, ...(description === undefined ? {} : { description }), ...platformFields, ...dependencyFields };
+      const input: CreateTaskInput = { title: title!, ...(description === undefined ? {} : { description }), ...assignmentFields, ...platformFields, ...dependencyFields };
       const task = await api.createTask(project.id, input);
       operation.check();
       return `Task created.\n${renderTask(task)}`;
     }
     if (command.command.name === "list") {
-      const filters: TaskFilters = { ...(status === undefined ? {} : { status }), ...(command.options.has("--ready") ? { ready: true } : {}), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) };
+      const filters: TaskFilters = { ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }), ...(command.options.has("--ready") ? { ready: true } : {}), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) };
       const tasks = (await api.listTasks(project.id, filters))
         .filter((task) => all || status !== undefined || task.status !== "done")
         .toSorted((left, right) => taskPriority(left) - taskPriority(right));

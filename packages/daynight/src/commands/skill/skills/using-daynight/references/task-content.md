@@ -4,15 +4,18 @@ Applies to creation, breakdown, handoff, and execution.
 Descriptions and their actual references should let an independent reader understand the task without the original chat, private worktrees, or temporary files.
 Follow the target repository's documentation and language rules.
 
-## Task and session boundary
+## Task, Thread and Session boundary
 
-Tasks store what must be implemented and delivered; sessions store how to execute or discuss it.
-Apply the same boundary to descriptions, attachments, and referenced material.
+Task descriptions and attachments store effective requirements, solutions and formal results.
+Thread stores durable participant discussion; Session stores execution content, tool activity and operating context.
+Apply these responsibilities to descriptions, attachments and referenced material.
+Use [Thread commands](task-management.md#discussion-threads) to read, post and reply without changing task metadata or triggering execution.
+An accepted conclusion in discussion must be incorporated into its effective content owner; a message alone does not replace the required task material or grant operational permission.
 
 | Store in the task | Store in the session or relevant platform |
 | --- | --- |
 | Objectives, requirements, scope, delivery constraints, required inputs, acceptance criteria | Execution steps, tool choices, agent assignments, operational authorization |
-| Current requirements or architecture, accepted conclusions and essential rationale, substantive open questions | Discussion rounds, confirmation process, debugging history, CI and review progress |
+| Current requirements or architecture, accepted conclusions and essential rationale, substantive open questions | Discussion rounds and confirmation process in Thread; debugging history, CI/review progress and execution context in Session |
 | Deliverables, immutable revisions, acceptance conclusions, key observations and limitations | Worktree, HEAD, claim, blocker, waiting, and recovery context |
 
 Classify by purpose, not by filenames or words such as "plan" or "method".

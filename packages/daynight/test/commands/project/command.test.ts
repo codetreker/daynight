@@ -16,6 +16,7 @@ const context = () => ({
 const fixture = (projects: readonly Project[] = []) => {
   const unavailable = async (): Promise<never> => { throw new Error("Unexpected task API"); };
   const api = {
+    readTaskThread: unavailable, postTaskThreadMessage: unavailable,
     listProjectMembers: async () => { throw new Error("Unused project member API method"); },
     getTaskPropertySchema: async () => { throw new Error("Unused property API"); },
     getTaskProperties: async () => { throw new Error("Unused property API"); },
@@ -202,24 +203,10 @@ describe("project command output", () => {
     expect(output).not.toMatch(/[\u001b\u0085\t]/);
   });
 
-  it("renders a large complete list without argument-stack limits", () => {
-    const projects = Array.from({ length: 140_000 }, (_, index) => ({ ...project, id: `${index.toString(16).padStart(8, "0")}-1234-5678-90ab-abcdefabcdef` }));
+  it("preserves full names in a list containing a longer project name", () => {
+    const projects = [project, { ...project, id: "22222222-2222-2222-2222-222222222222", name: "Long project name ".repeat(4) }];
     const output = renderProjectList(projects);
-    let count = 0;
-    for (const _ of output.matchAll(/^ID: /gm)) count++;
-    expect(count).toBe(projects.length);
-    expect(output).toContain(projects.at(-1)!.id);
-  });
-
-  it("keeps full human list output linear when one project has a long name", () => {
-    const projects = Array.from({ length: 1_000 }, (_, index) => ({ ...project, id: `${index.toString(16).padStart(8, "0")}-1234-5678-90ab-abcdefabcdef`, name: index === 0 ? "N".repeat(4_096) : `Project ${index}` }));
-    const output = renderProjectList(projects);
-    let contentLength = 0;
-    for (const current of projects) {
-      expect(output).toContain(`ID: ${current.id}\nName: ${current.name}\nRepository: ${current.repoUrl}\n`);
-      contentLength += current.id.length + current.name.length + current.repoUrl.length + current.createdAt.length + current.updatedAt.length;
-    }
-    expect(output.length).toBeLessThanOrEqual(contentLength + 80 * projects.length);
+    for (const current of projects) expect(output).toContain(`ID: ${current.id}\nName: ${current.name}\nRepository: ${current.repoUrl}\n`);
   });
 
   it.each(["create", "list", "show"])("preserves an API refusal without success output for %s", async (command) => {

@@ -57,6 +57,12 @@ export type PullRequestProperty = {
 
 export type WorkerState = "active" | "released" | "completed";
 export type WorkerAgent = "codex" | "copilot" | "claude";
+export type ThreadReadQuery = { readonly beforeId?: string; readonly afterId?: string; readonly count: number; readonly details: boolean };
+export type PostThreadMessageInput = { readonly body: string; readonly replyTo?: string; readonly claimId?: string };
+export type ThreadExecution = { readonly claimId: string; readonly workerId: string; readonly provider: WorkerAgent };
+export type ThreadAuthor = { readonly userId: string; readonly displayName: string | null; readonly Agent: boolean; readonly execution?: ThreadExecution };
+export type ThreadMessage = { readonly id: string; readonly author: ThreadAuthor; readonly body: string; readonly createdAt: string; readonly replyTo?: string };
+export type ThreadPage = { readonly items: readonly ThreadMessage[]; readonly hasMoreBefore: boolean; readonly hasMoreAfter: boolean };
 export type AgentControlMode = "herdr" | "web";
 export type WorkerPhase = "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused";
 export type WorkerMachine = { readonly id: string; readonly name: string };
@@ -134,6 +140,7 @@ export type Task = {
   readonly status: TaskStatus;
   readonly allowAgents: boolean;
   readonly requiredPlatform: TaskPlatform | null;
+  readonly assignedTo: string | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
   readonly version: bigint;
@@ -173,6 +180,7 @@ export type CreateProjectInput = { readonly name: string; readonly repoUrl: stri
 export type CreateTaskInput = {
   readonly title: string;
   readonly requiredPlatform?: TaskPlatform | null;
+  readonly assignedTo?: string | null;
   readonly description?: string;
   readonly properties?: WritableTaskProperties;
   readonly dependsOn?: readonly string[];
@@ -182,6 +190,7 @@ export type UpdateTaskInput = {
   readonly version: bigint;
   readonly allowAgents?: boolean;
   readonly requiredPlatform?: TaskPlatform | null;
+  readonly assignedTo?: string | null;
   readonly title?: string;
   readonly description?: string;
   readonly properties?: WritableTaskProperties;
@@ -215,11 +224,11 @@ export type ResumeWorkerTaskInput = WorkerClaimDescriptor & {
   readonly previousClaimId: string;
 };
 export type TaskFilters = {
+  readonly assignedTo?: string;
   readonly status?: TaskStatus;
   readonly ready?: boolean;
   readonly allowAgents?: boolean;
   readonly compatiblePlatform?: TaskPlatform;
-  readonly assignedTo?: string;
   readonly workerId?: string;
 };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };

@@ -6,6 +6,12 @@ type Fault struct {
 	Cause      error
 	TaskIDs    []string
 	GraphLimit *GraphLimitDetails
+	StepsLimit *StepsLimitDetails
+}
+
+type StepsLimitDetails struct {
+	EncodedBytes    int64
+	MaxEncodedBytes int64
 }
 
 type GraphLimitDetails struct {

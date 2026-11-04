@@ -20,7 +20,7 @@ const render: typeof localeRender = (ui, options) => localeRender(ui, { ...optio
 const time = '2026-10-20T12:00:00Z';
 const projectId = '10000000-0000-0000-0000-000000000001';
 const [A, B, C, X] = [1, 2, 3, 4].map((value) => `20000000-0000-0000-0000-${String(value).padStart(12, '0')}`) as [string, string, string, string];
-const node = (id: string, titlePreview: string, dependsOn: readonly string[]): GraphTask => ({
+const node = (id: string, titlePreview: string, dependsOn: readonly string[]): GraphTask => ({ assignedTo: null,
   id, titlePreview, titleTruncated: false, status: 'todo', dependsOn, externalDependsOn: [], blockedBy: dependsOn,
   ready: dependsOn.length === 0, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time,
 });

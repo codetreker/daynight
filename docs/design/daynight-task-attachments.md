@@ -577,12 +577,6 @@ PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的�
 [全屏阅读决策](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)
 拥有该 owner 扩展的理由，[Web 附件决策](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)保留原有同源与清理取舍。
 
-`tests/mockups/attachments.html` 仅由 Vite 开发服务提供，实际组件和 CSS 使用内存
-fixture API 与原生 fixture 文件，覆盖有文件、空态、加载、失败和忙碌状态及长内容。fixture 分配的对象
-URL 在删除后仍保持有效，到 fixture dispose 才释放，避免已加载组件使用失效地址。
-生产构建保留单一应用 index，不包含该入口或 fixture 文件。该 mockup 及本地浏览器
-探针验证前端交互；真实服务的安装 CLI/生产浏览器旅程另由组合验收覆盖。
-
 ## 独立附件阅读页
 
 独立附件入口是完整任务详情的一种初始状态。
@@ -628,8 +622,7 @@ Go UI mux 精确登记基础任务和附件页面 GET/HEAD，继续交付相同 
 保留完整附件面板复用的理由，[独立详情决策](../../.agents/notes/implemented/architecture/2026-10-24-standalone-task-detail.md)
 拥有当前完整任务详情组合。
 
-前端实际组件 mockup 与真实服务验收分别证明其被测行为；fixture 临时对象 URL
-只用于演示。源码、构建产物及浏览器环境的证据必须对应其被测对象，历史运行结果
+源码、构建产物及浏览器环境的证据必须对应其被测对象，历史运行结果
 不能替代当前扩展的验证。原有边界的选择依据记录在
 [附件组合验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)。
 
@@ -764,13 +757,13 @@ Go 的 `installed_cli_task_attachment_workflow` 使用既有安装回执与实�
 必须确认 `storageRootRemoved`。
 
 Web 新增 `task-attachments` 功能场景，在原生和实际生产容器上让同一次安装的 CLI
-与页面操作同一批数据；原有八个图功能场景及四个原生容量/超限场景保持完整。
+与页面操作同一批数据；图功能场景属于常规 CI，完整原生容量/超限矩阵由显式本地压力验收保留。
 完整上下文交付另加入 `capacity-external`，原生容量/超限共五个场景；机制与统计
 由[看板设计](daynight-web.md#验证与-ci)拥有。
 另有 `project-view-tabs` 验证项目内任务视图；[双语界面](daynight-web-i18n.md)增加三个功能场景，
 [三状态架构](daynight-task-status.md)拥有当前状态设置。状态、冲突、恢复与组合场景只允许
 登记资源和精确次数的 PUT status；附件写入保持自己的 fixture-scoped allowlist。
-当前严格 inventory 为原生 33 个、容器 28 个，共 61 个结果，任务描述阅读、鉴权、设置、
+当前常规严格 inventory 为原生、容器各 29 个功能场景，共 58 个；显式本地压力模式另加五项原生容量/超限，共 63 个结果。任务描述阅读、鉴权、设置、
 许可和计时场景仍保有独立的写入边界。
 
 附件场景与
@@ -789,7 +782,7 @@ compositor 像素中的 fixture 专用色块。判断器将匹配像素按连通
 
 运行回执校验 Git SHA/dirty 标记及实际 tarball/entry 摘要；dirty 标记不是脏源码内容
 指纹。CI 继续要求干净 checkout 等于 `GITHUB_SHA`。浏览器、CLI 和辅助子进程/组均
-归本次 run 管理，失败或取消也必须清理。Web CI 完成生产浏览器、容量及恢复后，
+归本次 run 管理，失败或取消也必须清理。Web CI 完成功能生产浏览器及恢复后，
 再运行一次既有真实部署附件检查，保留配套备份恢复回执。所有通过结论须绑定
 对应实际运行的源码、产物及环境回执。
 

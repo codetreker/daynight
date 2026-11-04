@@ -1,5 +1,8 @@
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
+import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
+import type { ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
+import { isNonemptyText } from "../platform/text.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
@@ -22,6 +25,7 @@ export class ApiError extends Error {
   readonly details?: ErrorDetails;
   readonly outcomeUnconfirmed: boolean;
   readonly confirmedRefusal: boolean;
+  readonly confirmedMessageId?: string;
 
   constructor(context: Context, phase: ApiPhase, options: {
     readonly cause: unknown;
@@ -29,6 +33,7 @@ export class ApiError extends Error {
     readonly serverError?: ServerError;
     readonly outcomeUnconfirmed?: boolean;
     readonly confirmedRefusal?: boolean;
+    readonly confirmedMessageId?: string;
   }) {
     const target = [context.projectId === undefined ? "" : ` project=${context.projectId}`, context.taskId === undefined ? "" : ` task=${context.taskId}`].join("");
     const server = options.serverError;
@@ -48,10 +53,13 @@ export class ApiError extends Error {
     if (details !== undefined) this.details = details;
     this.outcomeUnconfirmed = options.outcomeUnconfirmed === true;
     this.confirmedRefusal = options.confirmedRefusal === true;
+    if (options.confirmedMessageId !== undefined) this.confirmedMessageId = options.confirmedMessageId;
   }
 }
 
 export type ApiClient = {
+  readTaskThread(projectId: string, taskId: string, query: ThreadReadQuery): Promise<ThreadPage>;
+  postTaskThreadMessage(projectId: string, taskId: string, input: PostThreadMessageInput): Promise<ThreadMessage>;
   getCurrentUser(): Promise<User>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   createProject(input: CreateProjectInput): Promise<Project>;
@@ -107,8 +115,10 @@ export const createApiClient = (options: {
   const operation = options.operation;
   const fetch = options.fetch ?? globalThis.fetch;
 
+  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string };
+  type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
-    | { readonly kind: "json"; readonly parse: (value: unknown) => T }
+    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
@@ -127,6 +137,7 @@ export const createApiClient = (options: {
     let requestDeadline = Infinity;
     let totalBudgetCapped = false;
     let serverError: ServerError | undefined;
+    let confirmedMessageId: string | undefined;
     const controller = new AbortController();
     const checkRequest = (): void => {
       operation.check();
@@ -199,6 +210,7 @@ export const createApiClient = (options: {
       status = response.status;
       phase = "response";
       const success = statuses.includes(status);
+      let principalId: string | undefined;
       const binary = success && mode.kind === "bytes";
       const empty = success && mode.kind === "empty";
       const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -211,10 +223,11 @@ export const createApiClient = (options: {
         // Cancelling an already errored stream repeats its existing failure, rather than introducing a cleanup failure.
         void reader.closed.catch((error: unknown) => { bodyFailure = error; });
       }
-      if (success && expectedUserId !== undefined) {
+      if (success && (expectedUserId !== undefined || mode.kind === "json" && mode.requirePrincipal === true)) {
         phase = "protocol";
         const principal = response.headers.get("Daynight-User-ID");
-        if (principal === null || canonicalId(principal) !== expectedUserId) throw new ProtocolError("The authenticated response principal does not match the expected user.");
+        if (principal === null || canonicalId(principal) === null || mode.kind === "json" && mode.requirePrincipal === true && canonicalId(principal) !== principal || expectedUserId !== undefined && canonicalId(principal) !== expectedUserId) throw new ProtocolError("The authenticated response principal does not match the expected user.");
+        principalId = canonicalId(principal)!;
         phase = "response";
       }
       if (reader !== undefined) {
@@ -231,7 +244,7 @@ export const createApiClient = (options: {
             continue;
           }
           operation.consume(chunk.value.byteLength);
-          if (bytes > operation.limits.responseBytes) throw new OperationError("response_limit");
+          if (bytes > Math.min(operation.limits.responseBytes, mode.kind === "json" && mode.responseBytes !== undefined ? mode.responseBytes : Infinity)) throw new OperationError("response_limit");
           if (empty) throw new ProtocolError("Expected an empty response body.");
           // Count the whole bounded body even when UTF-8 decoding fails before its end.
           if (decodingError === undefined) {
@@ -250,17 +263,20 @@ export const createApiClient = (options: {
       chunks.push(pendingText, decoder.decode());
       const responseContentType = response.headers.get("content-type");
       if (responseContentType === null || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(responseContentType)) throw new ProtocolError("Expected an application/json UTF-8 response.");
-      const value = parseApiJson(chunks.join(""));
+      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), ...(principalId === undefined ? {} : { principalId }) };
+      const source = chunks.join("");
+      const value = mode.kind === "json" && mode.decodeJsonSource !== undefined ? mode.decodeJsonSource(source, responseContext) : parseApiJson(source);
       checkRequest();
       if (!success) {
         if (status < 400 || status > 599) throw new ProtocolError("Unexpected HTTP status.");
         serverError = parseServerError(value);
-        const confirmedRefusal = status >= 400 && status < 500;
+        const confirmedRefusal = status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
         throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: method !== "GET" && !confirmedRefusal });
       }
       if (mode.kind !== "json") throw new ProtocolError("Unexpected response mode.");
-      const result = mode.parse(value);
-      checkRequest();
+      const result = mode.parse(value, responseContext);
+      if (mode.confirmMutation !== undefined) confirmedMessageId = mode.confirmMutation(result);
+      else checkRequest();
       if (uploadReader !== undefined && !uploadDone) {
         await Promise.race([uploadReader.cancel(), aborted]);
         checkRequest();
@@ -290,19 +306,22 @@ export const createApiClient = (options: {
         ...(serverError === undefined ? {} : { serverError }),
         confirmedRefusal: cause instanceof ApiError && cause.confirmedRefusal,
         outcomeUnconfirmed: cause instanceof ApiError ? cause.outcomeUnconfirmed : method !== "GET" && dispatched,
+        ...(confirmedMessageId === undefined ? {} : { confirmedMessageId, outcomeUnconfirmed: false }),
       });
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       removeAbort();
       removeOperationAbort();
-      reader?.releaseLock();
-      uploadReader?.releaseLock();
+      try { reader?.releaseLock(); uploadReader?.releaseLock(); }
+      catch (cause) {
+        throw new ApiError(context, phase, { cause, ...(confirmedMessageId === undefined ? {} : { confirmedMessageId }), outcomeUnconfirmed: confirmedMessageId === undefined && method !== "GET" && dispatched });
+      }
     }
   };
 
-  const request = <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH", parse: (value: unknown) => T, body?: unknown): Promise<T> => exchange(context, path, method, { kind: "json", parse }, [method === "POST" ? 201 : 200], body === undefined ? undefined : { kind: "json", value: body });
+  const request = <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH", parse: JsonParser<T>, body?: unknown): Promise<T> => exchange(context, path, method, { kind: "json", parse }, [method === "POST" ? 201 : 200], body === undefined ? undefined : { kind: "json", value: body });
 
-  const list = async <T>(context: Context, path: string, parse: (item: unknown) => T, identity: (item: T) => string, filters: Record<string, string> = {}, mutable = false): Promise<readonly T[]> => {
+  const list = async <T>(context: Context, path: string, parse: JsonParser<Page<T>>, identity: (item: T) => string, filters: Record<string, string> = {}, mutable = false): Promise<readonly T[]> => {
     const result: T[] = [];
     const seenIdentities = new Set<string>();
     const seenCursors = new Set<string>();
@@ -311,7 +330,7 @@ export const createApiClient = (options: {
       do {
         operation.check();
         const query = new URLSearchParams({ ...filters, limit: "100", ...(cursor === null ? {} : { cursor }) });
-        const page = await exchange(context, `${path}?${query}`, "GET", { kind: "json", parse: (value) => parsePage(value, parse, identity) }, [200], undefined, mutable);
+        const page = await exchange(context, `${path}?${query}`, "GET", { kind: "json", parse }, [200], undefined, mutable);
         for (const item of page.items) {
           const key = identity(item);
           if (seenIdentities.has(key)) throw new ProtocolError("Duplicate resource identity across list pages.");
@@ -332,18 +351,19 @@ export const createApiClient = (options: {
     }
   };
 
+  const taskAssignmentFilter = (value: string | undefined): string | undefined => {
+    if (value === undefined || value === "me" || value === "unassigned") return value;
+    if (typeof value !== "string") throw new Error("Assigned-to filter must be a hyphenated UUID, me or unassigned.");
+    const parsed = canonicalId(value);
+    if (parsed === null) throw new Error("Assigned-to filter must be a hyphenated UUID, me or unassigned.");
+    return parsed;
+  };
+  const taskAssignmentInput = (value: string | null | undefined): string | null | undefined => value === undefined || value === null ? value : resourceId(value);
   const taskFilterQuery = (filters: TaskFilters): Record<string, string> => {
     if (filters.status !== undefined && filters.status !== "todo" && filters.status !== "in_progress" && filters.status !== "done") throw new Error("Task status must be todo, in_progress or done.");
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
     if (filters.compatiblePlatform !== undefined && filters.compatiblePlatform !== "windows" && filters.compatiblePlatform !== "linux" && filters.compatiblePlatform !== "macos") throw new Error("Compatible platform must be windows, linux or macos.");
-    let assignedTo = filters.assignedTo;
-    if (assignedTo !== undefined && assignedTo !== "me" && assignedTo !== "unassigned") {
-      if (typeof assignedTo !== "string") throw new Error("Task assignee filter must be me, unassigned or a hyphenated UUID.");
-      const parsed = canonicalId(assignedTo);
-      if (parsed === null) throw new Error("Task assignee filter must be me, unassigned or a hyphenated UUID.");
-      assignedTo = parsed;
-    }
     let workerId: string | undefined;
     if (filters.workerId !== undefined) {
       if (typeof filters.workerId !== "string") throw new Error("Worker ID filter must be a hyphenated UUID.");
@@ -351,19 +371,35 @@ export const createApiClient = (options: {
       if (parsed === null) throw new Error("Worker ID filter must be a hyphenated UUID.");
       workerId = parsed;
     }
-    return { ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(workerId === undefined ? {} : { workerId }) };
+    const assignedTo = taskAssignmentFilter(filters.assignedTo);
+    return { ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(workerId === undefined ? {} : { workerId }) };
   };
-  const filteredTask = (value: unknown, project: string, filters: TaskFilters): Task => {
+  const filteredTask = (value: unknown, project: string, filters: TaskFilters, expectedAssignment: string | null | undefined): Task => {
     const task = parseTask(value, project);
     const worker = readWorkerClaim(task.properties);
     if (
-      (filters.status !== undefined && task.status !== filters.status)
+      (expectedAssignment !== undefined && task.assignedTo !== expectedAssignment)
+      || (filters.status !== undefined && task.status !== filters.status)
       || (filters.ready !== undefined && task.ready !== filters.ready)
       || (filters.allowAgents !== undefined && task.allowAgents !== filters.allowAgents)
       || (filters.compatiblePlatform !== undefined && task.requiredPlatform !== null && task.requiredPlatform !== filters.compatiblePlatform)
       || (filters.workerId !== undefined && (worker === undefined || worker.state !== "active" || worker.workerId !== canonicalId(filters.workerId)))
     ) throw new ProtocolError("Task does not match the requested filters.");
     return task;
+  };
+  const taskPageParser = (project: string, filters: TaskFilters): JsonParser<Page<Task>> => {
+    const selected = taskAssignmentFilter(filters.assignedTo);
+    let boundPrincipal: string | undefined;
+    return (value, metadata) => {
+      let expectedAssignment: string | null | undefined = selected === "unassigned" ? null : selected;
+      if (selected === "me") {
+        const principal = metadata.principalHeader === null ? null : canonicalId(metadata.principalHeader);
+        if (principal === null || principal !== metadata.principalHeader || boundPrincipal !== undefined && boundPrincipal !== principal) throw new ProtocolError("The authenticated response principal is invalid or changed during pagination.");
+        boundPrincipal = principal;
+        expectedAssignment = principal;
+      }
+      return parsePage(value, (item) => filteredTask(item, project, filters, expectedAssignment), (task) => task.id);
+    };
   };
   const taskVersion = (version: bigint): void => {
     if (typeof version !== "bigint" || version < 1n || version > 9_223_372_036_854_775_807n) throw new Error("Task version must be a positive int64.");
@@ -383,6 +419,33 @@ export const createApiClient = (options: {
   };
 
   return {
+    readTaskThread: (projectId, taskId, query) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      if (!Number.isInteger(query.count) || query.count < 1 || query.count > 100 || typeof query.details !== "boolean" || query.beforeId !== undefined && query.afterId !== undefined) throw new Error("Invalid Thread page query.");
+      const normalized = { count: query.count, details: query.details, ...(query.beforeId === undefined ? {} : { beforeId: resourceId(query.beforeId) }), ...(query.afterId === undefined ? {} : { afterId: resourceId(query.afterId) }) };
+      const params = new URLSearchParams({ count: String(normalized.count), details: String(normalized.details), ...(normalized.beforeId === undefined ? {} : { beforeId: normalized.beforeId }), ...(normalized.afterId === undefined ? {} : { afterId: normalized.afterId }) });
+      return exchange({ operation: "task.thread.read", projectId: project, taskId: task }, `${resourcePath("projects", project, "tasks", task, "thread", "messages")}?${params}`, "GET", {
+        kind: "json", requirePrincipal: true, responseBytes: THREAD_PAGE_BYTES,
+        decodeJsonSource: (source, response) => decodeThreadJsonSource(source, response.success ? "page" : "error"),
+        parse: (value) => parseThreadPage(value, normalized),
+      }, [200], undefined, true);
+    },
+    postTaskThreadMessage: (projectId, taskId, input) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      if (!isNonemptyText(input.body) || Buffer.byteLength(input.body, "utf8") > THREAD_MESSAGE_BYTES) throw new Error("Thread body must be nonempty text of at most 65536 UTF-8 bytes.");
+      const normalized = { body: input.body, ...(input.replyTo === undefined ? {} : { replyTo: resourceId(input.replyTo) }), ...(input.claimId === undefined ? {} : { claimId: resourceId(input.claimId) }) };
+      return exchange({ operation: "task.thread.post", projectId: project, taskId: task }, resourcePath("projects", project, "tasks", task, "thread", "messages"), "POST", {
+        kind: "json", requirePrincipal: true, responseBytes: THREAD_MESSAGE_BYTES,
+        decodeJsonSource: (source, response) => decodeThreadJsonSource(source, response.success ? "message" : "error"),
+        parse: (value, response) => {
+          const message = parseThreadMessage(value, false);
+          if (message.author.userId !== response.principalId || message.body !== normalized.body || message.replyTo !== normalized.replyTo || message.author.Agent !== (normalized.claimId !== undefined)) throw new ProtocolError("Thread message does not match the submitted content or authenticated author.");
+          return message;
+        },
+        confirmedFailure: (status, error) => status === 503 && error.code === "clock_not_advanced",
+        confirmMutation: (message) => message.id,
+      }, [201], { kind: "json", value: normalized }, true);
+    },
     getCurrentUser: () => exchange({ operation: "auth.me" }, "/me", "GET", { kind: "json", parse: parseUser }, [200], undefined, true),
     reportWorker: (workerId, input) => {
       const worker = resourceId(workerId);
@@ -393,15 +456,21 @@ export const createApiClient = (options: {
       const project = resourceId(projectId);
       return request({ operation: "project.show", projectId: project }, `/projects/${encodeURIComponent(project)}`, "GET", (value) => parseProject(value, project));
     },
-    listProjects: () => list({ operation: "project.list" }, "/projects", (value) => parseProject(value), (project) => project.id),
+    listProjects: () => list({ operation: "project.list" }, "/projects", (value) => parsePage(value, (item) => parseProject(item), (project) => project.id), (project) => project.id),
     listProjectMembers: (projectId) => {
       const project = resourceId(projectId);
       return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectMembers(value, project) }, [200], undefined, true);
     },
     createTask: (projectId, input) => {
       const project = resourceId(projectId);
-      return request({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", (value) => parseTask(value, project), {
+      const assignedTo = taskAssignmentInput(input.assignedTo);
+      return request({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", (value) => {
+        const task = parseTask(value, project);
+        if (task.assignedTo !== (assignedTo === undefined ? null : assignedTo)) throw new ProtocolError("Task does not confirm the requested assignment.");
+        return task;
+      }, {
         title: input.title,
+        ...(assignedTo === undefined ? {} : { assignedTo }),
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
         ...(input.description === undefined ? {} : { description: input.description }),
         ...(input.dependsOn === undefined ? {} : { dependsOn: input.dependsOn }),
@@ -440,15 +509,16 @@ export const createApiClient = (options: {
     },
     listTasks: (projectId, filters = {}) => {
       const project = resourceId(projectId);
-      return list({ operation: "task.list", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, (value) => filteredTask(value, project, filters), (task) => task.id, taskFilterQuery(filters));
+      return list({ operation: "task.list", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, taskPageParser(project, filters), (task) => task.id, taskFilterQuery(filters));
     },
     listTaskPage: (projectId, query) => {
       const project = resourceId(projectId);
       if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 100) throw new Error("Task page limit must be an integer from 1 to 100.");
       if (query.cursor !== undefined && (typeof query.cursor !== "string" || query.cursor === "")) throw new Error("Task page cursor must be a nonempty string.");
       const search = new URLSearchParams({ ...taskFilterQuery(query), limit: String(query.limit), ...(query.cursor === undefined ? {} : { cursor: query.cursor }) });
-      return request({ operation: "task.list-page", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${search}`, "GET", (value) => {
-        const page = parsePage(value, (item) => filteredTask(item, project, query), (task) => task.id);
+      const parse = taskPageParser(project, query);
+      return request({ operation: "task.list-page", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${search}`, "GET", (value, metadata) => {
+        const page = parse(value, metadata);
         if (page.items.length > query.limit) throw new ProtocolError("Task page exceeds the requested limit.");
         return page;
       });
@@ -470,8 +540,14 @@ export const createApiClient = (options: {
     },
     updateTask: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => parseTask(value, project, task), {
+      const assignedTo = taskAssignmentInput(input.assignedTo);
+      return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => {
+        const result = parseTask(value, project, task);
+        if (assignedTo !== undefined && result.assignedTo !== assignedTo) throw new ProtocolError("Task does not confirm the requested assignment.");
+        return result;
+      }, {
         version: input.version,
+        ...(assignedTo === undefined ? {} : { assignedTo }),
         ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
         ...(input.title === undefined ? {} : { title: input.title }),
@@ -512,7 +588,7 @@ export const createApiClient = (options: {
     },
     listTaskAttachments: (projectId, taskId) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      return list({ operation: "task.attachment.list", projectId: project, taskId: task }, attachmentPrefix(project, task), parseTaskAttachment, (attachment) => attachment.path, {}, true);
+      return list({ operation: "task.attachment.list", projectId: project, taskId: task }, attachmentPrefix(project, task), (value) => parsePage(value, parseTaskAttachment, (attachment) => attachment.path), (attachment) => attachment.path, {}, true);
     },
     readTaskAttachment: (projectId, taskId, path, consume) => {
       const project = resourceId(projectId), task = resourceId(taskId), attachmentPath = validateAttachmentPath(path);

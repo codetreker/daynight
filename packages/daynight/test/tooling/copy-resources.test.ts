@@ -81,6 +81,8 @@ describe("packaged resource copy", () => {
     expect(metadata.name).toBe("daynight");
     expect(typeof metadata.description).toBe("string");
     expect((metadata.description as string).trim()).not.toBe("");
+    expect(manual).toContain("daynight task thread read");
+    expect(manual).toContain("daynight task thread post");
     const localLinks = [...manual.matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)].map((match) => match[1]!)
       .filter((target) => !target.startsWith("#") && !/^[a-z][a-z0-9+.-]*:/iu.test(target));
     expect(localLinks).toEqual([]);

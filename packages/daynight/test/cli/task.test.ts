@@ -17,17 +17,17 @@ const secondId = "b1b2c3d4-1111-4222-8333-123456789abd";
 const thirdId = "b1b2c3d4-1111-4222-8333-123456789abe";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project 中文", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (partial: Partial<Task> = {}): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, ...partial });
+const task = (partial: Partial<Task> = {}): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, ...partial });
 const taskListItem = (value: Task): Omit<Task, "description"> => ({
   id: value.id, projectId: value.projectId, title: value.title, properties: value.properties,
-  status: value.status, allowAgents: value.allowAgents, requiredPlatform: value.requiredPlatform, version: value.version, startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt,
+  status: value.status, allowAgents: value.allowAgents, assignedTo: value.assignedTo, requiredPlatform: value.requiredPlatform, version: value.version, startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt,
   dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
 });
 const graph = (): TaskGraph => ({
   observedAt: time,
   project,
   summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
-  tasks: [{ id: taskId, titlePreview: "Task 中文", titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time }],
+  tasks: [{ id: taskId, titlePreview: "Task 中文", titleTruncated: false, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time }],
 });
 const taskPath = `/api/v1/projects/${projectId}/tasks`;
 const projectPath = `/api/v1/projects/${projectId}`;
@@ -128,6 +128,67 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 };
 
 const explicit = ["--project", projectId];
+
+describe("compiled Task Thread commands", () => {
+  const accountId = "aabbccdd-1111-4111-8111-111111111111";
+  const messageId = "dddddddd-1111-4111-8111-111111111111";
+  const threadPath = `${taskPath}/${taskId}/thread/messages`;
+  const threadMessage = { id: messageId, author: { userId: accountId, displayName: null, Agent: false }, createdAt: "2026-11-03T10:20:30.000Z", body: "  中文\n\tId: forged\nHas more messages after...\n" };
+
+  it("performs one real HTTP request per explicit read/post and ships help/manual discovery", async () => {
+    const f = await fixture();
+    try {
+      const { requests } = await f.serve((request, response) => {
+        response.setHeader("Daynight-User-ID", accountId);
+        if (request.pathname !== threadPath) { refuse(response, "not_found", "unexpected", 404); return; }
+        if (request.method === "GET") respond(response, { items: [threadMessage], hasMoreBefore: true, hasMoreAfter: true });
+        else respond(response, { ...threadMessage, body: (request.body as { body: string }).body }, 201);
+      });
+      const help = await f.invoke(["thread", "read", "--help"]);
+      expect(help.code, help.stderr).toBe(0); expect(help.stdout).toContain("default: 20");
+      const invalid = await f.invoke(["thread", "read", taskId, "--json", ...explicit]);
+      expect(invalid.code).toBe(2); expect(invalid.stdout).toBe(""); expect(requests).toHaveLength(0);
+      const read = await f.invoke(["thread", "read", taskId, ...explicit]);
+      expect(read.code, read.stderr).toBe(0); expect(read.stderr).toBe("");
+      expect(read.stdout).toContain(`Author: Account (${accountId})`);
+      expect(read.stdout).toContain("Message:\n    中文\n  \tId: forged\n  Has more messages after...\n  ");
+      expect(read.stdout.startsWith("... Has more messages before\n")).toBe(true);
+      expect(read.stdout.endsWith("Has more messages after...\n")).toBe(true);
+      expect(requests).toHaveLength(1); expect(requests[0]!.query.get("count")).toBe("20");
+      const posted = await f.invoke(["thread", "post", taskId, `--body=${threadMessage.body}`, ...explicit]);
+      expect(posted.code, posted.stderr).toBe(0); expect(posted.stderr).toBe("");
+      expect(posted.stdout).toBe(`Message posted.\nId: ${messageId}\n`);
+      expect(requests).toHaveLength(2); expect(requests.map(({ method }) => method)).toEqual(["GET", "POST"]);
+      expect(requests[1]!.body).toEqual({ body: threadMessage.body });
+      expect(requests.every(({ pathname }) => pathname === threadPath)).toBe(true);
+    } finally { await f.close(); }
+  });
+
+  it("keeps unknown and definite POST failures distinct without leaking server text or replaying", async () => {
+    const f = await fixture();
+    try {
+      let mode: "clock" | "unknown" | "invalid" = "clock";
+      const { requests } = await f.serve((_request, response) => {
+        if (mode === "invalid") {
+          response.writeHead(201, { "Content-Type": "application/json", "Daynight-User-ID": accountId });
+          response.end(JSON.stringify(threadMessage).replace('"body":', '"body":"secret Markdown","body":'));
+        } else respond(response, { error: { code: mode === "clock" ? "clock_not_advanced" : "message_outcome_unknown", requestId: "thread-failure", message: "secret Markdown and credentials" } }, 503);
+      });
+      const args = ["thread", "post", taskId, `--body=${threadMessage.body}`, ...explicit];
+      const definite = await f.invoke(args);
+      expect(definite.code).toBe(1); expect(definite.stdout).toBe("");
+      expect(definite.stderr).toContain("code=clock_not_advanced"); expect(definite.stderr).not.toContain("outcome is unknown");
+      for (const next of ["unknown", "invalid"] as const) {
+        mode = next;
+        const unknown = await f.invoke(args);
+        expect(unknown.code).toBe(1); expect(unknown.stdout).toBe("");
+        expect(unknown.stderr).toContain("The posting outcome is unknown.");
+        expect(unknown.stderr).not.toContain("secret"); expect(unknown.stderr).not.toContain("Id: forged");
+      }
+      expect(requests).toHaveLength(3);
+    } finally { await f.close(); }
+  });
+});
 
 const attachmentPath = `${taskPath}/${taskId}/attachments`;
 const attachment = (relativePath: string, bytes: Uint8Array, contentType = "application/octet-stream"): TaskAttachment => ({ path: relativePath, sizeBytes: bytes.byteLength, contentType, createdAt: time, updatedAt: time });

@@ -1,15 +1,24 @@
 # Daynight CLI
 
 The `@codetreker/daynight` package provides the `daynight` command and its `dn`
-alias. Use it to manage server-backed projects, tasks and attachments, install
-the `using-daynight` skill for coding agents, run foreground task workers through
+alias. Use it to manage server-backed projects, tasks, discussion threads and
+attachments, install the `using-daynight` skill for coding agents, run foreground
+task workers through
 Herdr or browser-connected native Controllers, and run a local GitHub PR reviewer through Copilot CLI. Both command names
-share configuration and behavior.
+share configuration and behavior. Supported native platforms are Linux, Windows
+and Apple Silicon (ARM64) macOS. Intel macOS is unsupported.
 
 See the [project overview](../../README.md) for the browser workspace and service,
 and the [development guide](../../docs/development.md) for source builds,
-validation, package versions and npm publication. Each command's `--help` owns
-its exact usage. Review execution additionally requires Git, an authenticated
+validation, package versions and npm publication. Ordinary test and installed
+acceptance suites exclude stress workloads. From this package, `pnpm test:stress`
+builds the CLI and runs the rendering and full Session-v2 `.stress.ts` suites;
+`pnpm test:stress:budgets` runs the server validation gate with the four full
+128 MiB/256 MiB installed-CLI byte probes. The latter requires an isolated
+`DAYNIGHT_TEST_DATABASE_URL` and the [server validation prerequisites](../daynight-server/README.md#validate).
+Both commands are explicit local-only validation and refuse CI. The
+[local stress guide](../../docs/development.md#local-stress-validation) owns
+selection and receipt interpretation. Each command's `--help` owns its exact usage. Review execution additionally requires Git, an authenticated
 GitHub CLI and Copilot CLI on `PATH`.
 
 - [Install and update](#install-and-update)
@@ -22,6 +31,7 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Project management](#project-management)
 - [Task management](#task-management)
 - [Task deletion](#task-deletion)
+- [Task discussion threads](#task-discussion-threads)
 - [Task attachments](#task-attachments)
 - [Worker configuration and startup](#worker-configuration-and-startup)
 - [Worker manual management](#worker-manual-management)
@@ -148,13 +158,15 @@ daynight project list [--json]
 daynight project show <project-id> [--json]
 daynight task
 daynight task create --title <title> [options]
-daynight task list [--all | --status <status>] [--ready] [--json] [--project <project-id>]
+daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
+daynight task thread read <task-id> [--before-id <message-id> | --after-id <message-id>] [--count=N] [--details] [--project <project-id>]
+daynight task thread post <task-id> --body <text> [--reply-to <message-id>] [--claim-id <claim-id>] [--project <project-id>]
 daynight task attachment
 daynight task attachment put <task-id> <file> [--path <relative-path>] [--project <project-id>]
 daynight task attachment list <task-id> [--tree | --json] [--project <project-id>]
@@ -417,9 +429,7 @@ keep the credential name within 100 characters. The credential never expires by 
 The Web account's token manager can set a future expiration, restore “Never expires”, or
 revoke it. Changing expiration keeps the same credential, so the saved CLI login
 continues without replacing its secret. Expired or revoked credentials cannot be
-revived. The [token manager mockup](../../packages/daynight-web/tests/mockups/tokens.html)
-shares the production components and styles for creating tokens and editing
-expiration, including conflict and uncertain-result states. A credential
+revived. A credential
 represents the account's current project permissions. `daynight logout` revokes the current credential and removes
 its local value after a confirmed response; an already invalid credential is
 removed locally. Network or unconfirmed failures remain visible. Configuration
@@ -553,6 +563,8 @@ daynight task list --allow-agents false --ready
 daynight task list --ready
 daynight task list --all --json
 daynight task list --status in_progress --json
+daynight task list --ready --assigned-to me --json
+daynight task list --assigned-to unassigned --json
 daynight task show <task-id> --json
 daynight task properties <task-id> --json
 daynight task properties --schema --json
@@ -563,6 +575,9 @@ daynight task update <task-id> --allow-agents true --if-version <version>
 daynight task create --title "Check Windows build" --required-platform windows
 daynight task update <task-id> --required-platform macos --if-version <version>
 daynight task update <task-id> --clear-required-platform --if-version <version>
+daynight task create --title "Review installation" --assigned-to <user-uuid>
+daynight task update <task-id> --assigned-to <user-uuid> --if-version <version>
+daynight task update <task-id> --clear-assigned-to --if-version <version>
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task update <task-id> --depends-on <task-a> --depends-on <task-b>
 daynight task update <task-id> --clear-dependencies
@@ -600,7 +615,7 @@ in the root `.gitignore`. A cached binding is verified against the server on eac
 use and remains stable if another project later shares that repository.
 
 Creation starts in `todo` with `allowAgents=false` and unrestricted
-`requiredPlatform=null` unless explicitly set. Unset properties remain absent;
+`requiredPlatform=null` and `assignedTo=null` unless explicitly set. Unset properties remain absent;
 creation does not inject a PR array or worker null. `task set-status <id> <status>`
 sets `todo`, `in_progress` or `done`, including reopening and direct completion.
 Every project member may use ordinary status setting. Active worker completion
@@ -622,7 +637,7 @@ Entering in_progress or done requires all direct prerequisites, ordinary and
 external, to be done. Reopening done requires no direct in-progress or done
 dependents. Refusals return sorted blocking task IDs without cascading changes.
 The project transaction serializes status and dependency writes and preserves
-materials, properties/PRs, permission, both dependency sets and attachments.
+materials, assignedTo, properties/PRs, permission, both dependency sets and attachments.
 
 Migration `014_task_status_assignment.sql` converts historical proposed rows
 to todo, increments only those versions and updates their update time while
@@ -728,7 +743,26 @@ service order across all pages. This order applies to human and JSON results.
 `task ready` accepts neither `--status` nor `--cursor`. `task list` supports the
 same permission and compatibility filters across every matching page. Both are
 automatic-selection conditions independent of readiness; explicitly designated
-execution retains the manual exception.
+execution retains the manual exception. List also accepts
+`--assigned-to <user-uuid|me|unassigned>`, combined with its other filters and
+preserved across every page. `task ready` has no assignee option; use
+`task list --ready --assigned-to me` for that intersection. Automatic acquisition
+requires the task to be assigned to the worker's authenticated account, in addition
+to permission and other eligibility checks. Existing claim inventory and manual
+control remain execution-based; the
+[self-assigned acquisition decision](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)
+owns the runtime rule.
+
+For `me`, each successful task-page response must carry one canonical
+Daynight-User-ID, even when its items array is empty. A complete list traversal
+binds its first successful page to that identity and rejects a different later
+principal or a task assigned to someone else. The binding is per traversal, not
+a global client cache. UUID and unassigned filters also verify every result;
+mismatches are protocol errors, not locally discarded rows. No extra `/me`
+request is issued. Non-me requests without a configured expectedUserId retain
+their existing optional-header behavior. Error responses retain the existing
+service-error and configured-principal admission behavior; me adds no new
+error-response header requirement.
 
 Updates preserve omitted fields; an empty description clears it. Repeated
 `--depends-on` and `--external-depends-on` declare the complete ordinary and
@@ -738,8 +772,18 @@ only those external edges. IDs are canonicalized and sorted; malformed and
 case-equivalent duplicate/cross-declared UUIDs fail before configuration or
 network access. `--clear-dependencies` sends two empty sets and conflicts with
 either dependency option. An update needs at least one mutable
-field. `--allow-agents true|false` explicitly changes automatic-execution
-permission; omitted preserves it. Creation rejects the option. Existing tasks
+field. Create/update accept `--assigned-to <user-uuid>`; update also accepts
+`--clear-assigned-to` to send null. Omission preserves an existing assignee; the
+set/clear options conflict, and invalid UUIDs or combinations fail before
+configuration, Git or HTTP access. Writes accept UUIDs, not the list tokens
+me/unassigned. A real assignment change atomically sets allowAgents=false; an
+equal assignment causes no permission reset; a pure equal update preserves
+version and timestamps. Other supplied fields keep their ordinary mutation
+rules. Actual changes are refused while in_progress. Assignment grants neither project access nor
+control of another worker, Session or archive.
+
+`--allow-agents true|false` explicitly changes automatic-execution permission;
+omission preserves it when assignment does not change. Creation rejects the option. Existing tasks
 receive true through migration without changing versions or business timestamps.
 A matching same-value permission PATCH retains version and time, while a stale
 version still conflicts and an actual in-progress toggle fails atomically.
@@ -752,8 +796,12 @@ are refused atomically. Explicit manual status setting remains available for eve
 requirement. The query platform selects candidates; it does not configure or
 prove the environment of a future worker.
 By default the CLI reads the task version before PATCH; `--if-version <n>`
-uses that exact positive int64 version. Conflicts and failed writes are reported
-without automatic retries.
+uses that exact positive int64 version without a task pre-read. Existing project
+resolution/admission still applies. Null clearing is serialized literally; only
+undefined fields are omitted. A normal write consumes the full Task response
+without a post-write GET or a name lookup. A combined update may advance its
+version for other fields, so v+1 alone does not establish an assignee change.
+Conflicts and failed writes are reported without automatic retries.
 
 Text options accept both separated values and `--option=value`. Inline assignment
 splits at the first equals sign and supports leading dashes, such as
@@ -776,19 +824,23 @@ CLI options.
 
 Human task lists use labeled blocks containing ID, project, title, complete
 properties, status, readiness, automatic-execution permission, required platform,
-dependencies and blocking. Property rows are ordered by name and rendered as
+assignee, dependencies and blocking. Property rows are ordered by name and rendered as
 terminal-safe JSON; missing keys are not replaced with default values.
 Description, version and timestamps
 remain available in show, ready, create and update output. Graph nodes include
-state, permission, required platform, dependencies, blocking and title-preview truncation flags.
+state, permission, required platform, assignee, dependencies, blocking and
+title-preview truncation flags.
 Task and graph decoders require a boolean `allowAgents`; missing, null or
 nonboolean values are protocol errors. They also require `requiredPlatform`
 as null or one of the three platform enums; missing keys or other values fail
 without a runtime default. Human output uses `Required platform: any` for null
-and the enum otherwise. Queries support
+and the enum otherwise. `assignedTo` is also required as null or a canonical
+local user UUID on every Task and graph node; missing, malformed or noncanonical
+values fail instead of defaulting. Human output adds `Assigned to: USER_UUID` or
+`Assigned to: unassigned`, with no profile request or rule narration. Task metadata queries support
 `--json`: task `list` returns every matching task in one array, omitting only
-`description` while retaining every other API field, including raw PR strings,
-version and timestamps. This applies to the default list and every filter,
+`description` while retaining every other API field, including explicit nullable
+assignedTo, raw PR strings, version and timestamps. This applies to the default list and every filter,
 including `--all`. Project lists retain all API fields. Task `ready` returns its
 selected full tasks as an array, details return one full resource, and graphs
 return the selected task-chain API object unless `--depends-only` projects the
@@ -906,6 +958,68 @@ outcome unknown. The [deletion requirements](../../docs/spec/daynight-task-delet
 and [design](../../docs/design/daynight-task-deletion.md) own retained history,
 reference removal and cache invalidation.
 
+## Task discussion threads
+
+```bash
+daynight task thread read <task-id>
+daynight task thread read <task-id> --after-id <last-read-message-id> --count=20
+daynight task thread read <task-id> --before-id <first-shown-message-id> --count=20
+daynight task thread read <task-id> --details --project <project-id>
+daynight task thread post <task-id> --body 'What should the retry policy be?'
+daynight task thread post <task-id> --body 'Use an explicit retry decision.' --reply-to <message-id>
+daynight task thread post <task-id> --body 'The check passed.' --claim-id <active-claim-id>
+```
+
+A Thread holds durable discussion independently of task execution. Reads and
+posts work before execution, while its original environment is offline, and
+after completion. Messages are immutable and replies refer to messages in the
+selected task. Posting neither changes task metadata nor wakes an Agent.
+Descriptions and attachments remain the owners of effective requirements,
+solutions and formal results; Sessions hold execution content.
+
+Read fetches one page, defaulting to the latest messages. `--count=N` accepts
+1 through 100 and defaults to 20; the CLI always sends that value explicitly.
+`--before-id` and `--after-id` are mutually exclusive. Messages display from old
+to new with complete Id, Author and account Id, millisecond UTC CreatedAt,
+optional ReplyTo, and complete Message. Agent authors also have `Agent: True`.
+`--details` expands verified claim, worker and provider attribution. Thread
+commands provide readable text and do not accept `--json`.
+
+`... Has more messages before` appears above a page with earlier messages;
+`Has more messages after...` appears below a page with later messages. Continue
+history with the first displayed Id and incremental reading with the last
+fully consumed displayed Id. The 256 KiB output budget can reduce the page
+below its requested count; complete messages remain contiguous and bodies are
+never truncated. A post receipt cannot advance the read position: after reading
+A, another person's B and a local post C must still be read from A.
+
+Post requires nonblank `--body`, preserving its original whitespace. For text
+beginning with a dash, use `--body=-example`. The service generates the message
+Id and authenticates the author. Omit `--claim-id` for an ordinary account post;
+provide a current claim explicitly for verified Agent attribution. The CLI does
+not infer a claim or accept a client message Id, version or submission token.
+`--reply-to` is optional and must identify a message in the same task.
+
+Terminal text escapes dangerous controls. Multiline Message lines are indented,
+retain LF and TAB, and encode literal backslashes before visible control
+escapes; DEL is `\x7f`, CR is `\r`, and other unsafe controls use `\uXXXX`.
+The representation preserves the full body without executing terminal escapes.
+Success prints `Message posted.`, the complete Id and optional ReplyTo, without
+repeating the body. An uncertain post exits with a clear unknown-outcome message.
+Read the Thread before deciding whether to send again; equal text cannot prove
+that a particular request succeeded. The CLI never automatically repeats POST.
+
+The [Thread requirements](../../docs/spec/daynight-task-thread.md) own the
+service contract; the [CLI design](../../docs/design/task-thread-cli.md) owns
+source validation, rendering and submission confirmation. Explicit `--project`
+uses the supplied UUID directly for the Thread request; otherwise the existing
+Git binding resolves the project. Origin and credential remain fixed for one
+invocation. Argument errors exit 2 before configuration or network access;
+other failures exit 1. Diagnostics remain on stderr and exclude message bodies
+and untrusted server text. A confirmed post followed by a local receipt-output
+or cleanup failure retains its confirmed message Id and is not reported as an
+unknown remote result.
+
 ## Task attachments
 
 Attachment commands use the existing project selection and server configuration:
@@ -956,7 +1070,8 @@ records binary transport and output ownership.
 assigned to its authenticated account across configured repositories, runs native agents through the claim's Herdr or
 Web backend, and cleans resources when the original claim leaves its complete
 inventory. The agent owns delivery, acceptance, evidence and final claim-bound
-completion.
+completion. Worker follows the CLI platform support policy: Linux, Windows and
+Apple Silicon (ARM64) macOS.
 
 The running worker reports an account-owned runtime snapshot immediately after
 identity and authentication are ready, every 30 seconds, and after complete task

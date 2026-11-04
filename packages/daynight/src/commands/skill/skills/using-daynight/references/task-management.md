@@ -1,6 +1,6 @@
 # Task management
 
-Covers query scope, metadata, lifecycle, and dependency semantics.
+Covers query scope, discussion, metadata, lifecycle, and dependency semantics.
 See [authorization and scope](authorization.md) for operational permissions.
 Follow [write safety](write-safety.md) for all writes.
 Consult the relevant `--help` for arguments and field-clearing syntax.
@@ -10,10 +10,11 @@ Consult the relevant `--help` for arguments and field-clearing syntax.
 | Read operation | Scope and limits |
 | --- | --- |
 | `task ready` | One capped page of candidate `todo` tasks whose direct prerequisites are all complete, ordered by creation, not relevance. An empty page does not rule out in-progress or blocked work. |
-| `task list` | Traverse all matching pages. Excludes `done` by default; explicitly include completed tasks when checking for duplicates or inspecting history. |
+| `task list` | Traverse all matching pages. Excludes `done` by default; explicitly include completed tasks when checking for duplicates or inspecting history. `--assigned-to <uuid\|me\|unassigned>` filters responsibility, and combines with the other list filters. |
 | `task show` | A single task's full description, metadata, and exact version. Read it before operating on the selected task. |
 | `task properties <task-id>` | The selected task's complete current property object and exact task version. |
 | `task properties --schema` | The authenticated service's property definitions; no project or Git repository is required. |
+| `task thread read <task-id>` | One bounded page of durable discussion, independent of task metadata and execution. |
 | `task graph <task-id>` | The target's full bidirectionally connected component of ordinary dependencies, plus one layer of external prerequisites for those tasks. Includes all statuses without recursively expanding external tasks. |
 
 Human-readable lists are summaries; JSON lists omit only `description`.
@@ -26,6 +27,40 @@ A candidate page or a single task cannot replace complete relationship verificat
 Lists group tasks into in-progress, ready todo, blocked todo, and, when explicitly included, done.
 These groups are not relevance rankings. See command help for filter syntax.
 
+## Discussion threads
+
+Use `task thread read <task-id>` for one bounded page of durable discussion,
+independent of the current executor or Controller. The default is the latest
+20 messages; `--count=N` accepts 1–100. Use exactly one of `--before-id` or
+`--after-id` with a complete message UUID to read history or continue forward.
+Pages display complete messages from old to new. A 256 KiB text limit can return
+fewer messages than requested without truncating bodies. Thread read and post
+accept `--project`; explicit selection does not read Task or Project first.
+
+Readable blocks show full message/account Ids, Author, CreatedAt, optional
+ReplyTo and Message. Agent authors include `Agent: True`; `--details` expands
+verified claim/worker/provider attribution. A missing or empty display name
+appears as Account with its actual account Id. There is no `--json` mode.
+Terminal controls are visibly escaped and multiline bodies retain LF/TAB with
+fixed indentation. More-before appears only above the page; more-after only
+below it. Continue history from its first displayed Id, forward reads from its
+last completely consumed Id. Empty forward reads preserve the input position.
+
+Post with `task thread post <task-id> --body <text>`, optionally `--reply-to
+<message-id>` and `--claim-id <active-claim-id>`. Body whitespace is preserved;
+use `--body=-example` for dash-prefixed text. The service supplies the message
+Id and author. Omit claim Id for an ordinary account; provide it explicitly for
+verified Agent attribution. It is not inferred from task state or environment.
+Messages are immutable and a reply must belong to the selected task.
+
+Posting does not change task status, version, timestamps, properties or
+dependencies, and does not trigger an Agent. Reading or posting discussion
+grants no execution or delivery permission. Keep effective requirements and
+results in their [content owners](task-content.md#task-thread-and-session-boundary).
+Follow [Thread write safety](write-safety.md#thread-posts) for unknown outcomes.
+A post receipt must not advance the continuously read position: after A, an
+unseen B and a local post C must still be read using `--after-id A`.
+
 ## Metadata
 
 `task update` cannot change status.
@@ -35,17 +70,32 @@ See the [task content standard](task-content.md) for organizing descriptions and
 
 | Field | Semantics and limits |
 | --- | --- |
-| `allowAgents` | Permission for automatic selection. False for new tasks and cannot be enabled during creation. Enable only after an explicit [handoff](handoff.md) review. Omitting it from an update preserves its value. |
+| `allowAgents` | Permission for automatic selection. False for new tasks and cannot be enabled during creation. Enable only after an explicit [handoff](handoff.md) review. Omission preserves its value when assignment does not change. |
 | `requiredPlatform` | `null`, `windows`, `linux`, or `macos`; null means unrestricted. Can be specified during creation or updates and cleared during updates. |
+| `assignedTo` | One optional human responsible for the task, represented by a local user UUID or null. Create/update use `--assigned-to <user-uuid>`; update uses `--clear-assigned-to` to send null. These options conflict. Omission during update preserves the current value. |
 
-Actual changes to either field are prohibited while `in_progress`.
+A real assignee change, including first assignment or clearing, sets `allowAgents=false`
+in the same update. A same-value assignment does not reset permission. The selected
+new person must have project access; a retained former assignee may remain unchanged.
+Human responsibility grants no project access or control of an existing claim.
+Automatic acquisition requires assignment to the worker's authenticated account,
+in addition to automatic permission and the other eligibility checks. Existing
+claim inventory and explicit manual resume retain their execution-based authority.
+Human responsibility is separate from the worker-managed execution assignment.
+
+Actual changes to these fields are prohibited while `in_progress`.
 Same-value requests preserve the version and timestamps, but stale versions still conflict.
-Status operations and other metadata operations preserve these fields.
+Status, worker and property operations preserve the human assignee. Other metadata
+changes preserve all omitted fields subject to the assignment/permission rule above.
 
 List and ready support filtering by automatic-execution permission and platform compatibility.
 The service combines filters before pagination or candidate limits.
 Platform compatibility includes unrestricted and exact-match tasks without changing dependency readiness.
 Preserve filters across pages; do not locally filter a capped, unfiltered ready page.
+Assignee filtering belongs to `list`, not `ready`; combine `--ready --assigned-to me`
+on list when needed. `me` is bound to the successful response principal on every
+page, including empty pages; a complete list traversal cannot change that identity.
+No extra identity lookup is required.
 
 Ordinary execution explicitly targeted by the user is not restricted by automatic-selection permission or platform compatibility, but must still satisfy dependency, input, and authorization requirements.
 Automatic execution must use the actual runtime platform and recheck full task eligibility before starting.

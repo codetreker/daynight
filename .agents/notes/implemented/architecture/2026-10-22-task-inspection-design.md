@@ -14,8 +14,9 @@ structured descriptions and planning attachments.
 
 The adopted [requirements](../../../../docs/spec/daynight-task-inspection.md)
 and [design](../../../../docs/design/daynight-task-inspection.md) define the
-target behavior. This delivery consists of that design, an interactive visual
-prototype and a four-task implementation breakdown. The
+target behavior. The original design delivery included an interactive visual
+prototype and a four-task implementation breakdown. Prototype repository
+retention is superseded by the [prototype ownership decision](../process/2026-11-03-ui-mockup-ownership.md). The
 [complete prerequisite context decision](../feature/2026-10-22-complete-prerequisite-context.md)
 implements the first task: complete ancestors, separate counts and a readable
 upstream-aware initial viewport. The
@@ -100,7 +101,9 @@ delivery reviewable and responsible for its own observable acceptance.
 ## Consequences
 
 Complete ancestry can make one open chain graph approach the complete-project
-limit, so the existing capacity matrix and performance budgets remain required.
+limit, so the existing capacity matrix and performance budgets remain required
+for explicit local stress verification. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+separates that full-scale evidence from ordinary CI correctness and coverage.
 Many nodes and edges may change style during selection; the former two-node
 selection cost assumption no longer establishes feedback time. Curved dash
 length and independent geometry validation are substantive work.
@@ -118,5 +121,6 @@ original direct-boundary rationale and links its replacement. The existing
 retained rendering and layered-detail rationale. The
 [graph-dialog decision](../feature/2026-10-26-task-chain-graph-dialog.md) replaces
 inline entry with a click-only modal and unifies normal/fullscreen ownership;
-the centered detail composition keeps its portal and reading lifecycle. The standalone prototype proves its own
-interaction, not production behavior or capacity.
+the centered detail composition keeps its portal and reading lifecycle. The
+original standalone prototype proved its own interaction; production behavior
+and capacity require source-bound acceptance.

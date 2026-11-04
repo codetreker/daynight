@@ -25,7 +25,10 @@ The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
 Task assignee. Ordinary task creation/PATCH and full Task, summary and graph
 producers carry it. Native assignee filtering and project-scoped people reads
-are implemented; CLI/Web assignment consumers remain separate capabilities.
+are implemented. The Web consumes assignment with schema-4 cache rebuilding,
+people presentation, mutation and local list filters. The CLI consumes the required
+nullable field and supports assignment/clearing, current-ID output and explicit
+list filters.
 
 The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define UniAuth identity
@@ -71,11 +74,11 @@ transaction-completion faults remain 500 internal_error and take precedence over
 a saved property validation refusal. A stored project epoch invalidates caches after supported
 history replacement and transactional task soft deletion. The Web persists
 summaries and details and replaces them atomically after an epoch change. Its
-schema-3 upgrade rebuilds project, summary and detail stores, rotates user fences
-and clears old watermarks before a complete snapshot. That browser projection
-does not yet consume assignedTo; new-field consumers and their cache-format
-upgrade must be delivered together. Absent properties in old
-summaries cannot be inferred as an empty object. Graph nodes omit properties,
+schema-4 upgrade directly rebuilds project, summary and detail stores from
+versions 1, 2 or 3, rotates user fences and clears old watermarks before a complete
+snapshot. Strict assignedTo consumption and that cache-format upgrade are
+delivered together. Absent properties or assignedTo in old summaries cannot be
+inferred as an empty object or null. Graph nodes omit properties,
 and cached values grant no detail or mutation admission. Complete properties
 increase transport, parsing and summary storage costs: node/edge limits and the
 detail-cache byte budget do not bound total summary bytes. Network, decoding and
@@ -89,6 +92,11 @@ all incoming ordinary/external references, including deleted-source history,
 updates each affected source version once and marks the target in one transaction.
 The target's own prerequisites remain. Target removal and one epoch rotation are
 atomic, with the task-local `410 task_deleted` response for later access.
+
+Herdr Task Sessions use explicit `daynight.session.v2` selection with the shared
+Session registry and archive storage. The [terminal server design](../../docs/design/terminal-session-server.md)
+defines routes, Worker capability gates, durable recording evidence and control
+ACKs. These server APIs do not establish native Worker or browser readiness.
 
 ## CLI device authorization
 
@@ -368,7 +376,15 @@ temporary outputs under this module's `.tmp/`. Both Go-consuming CI jobs restore
 module and compiler caches using `go.sum`; `go clean -testcache` still invalidates
 server test results before validation so database and coverage observations run
 again. Both local validation and CI use
-`scripts/check.sh` and the same coverage configuration. The tests cover real
+`scripts/check.sh` and the same coverage configuration. Ordinary Go discovery
+excludes stress-tagged files. With an isolated test database configured, run
+`bash scripts/stress.sh` explicitly for the 10,000-task/100-person query sample,
+full-scale Session-v2 archives and repeated concurrent overwrite workload. It
+uses race detection and selects only `TestStress*` in the three owning packages.
+The script and raw tagged test entrypoints refuse a nonempty `CI` environment.
+CI retains compact archive boundary checks and a deterministic two-writer
+publication test. The query sample remains source-bound local evidence, rather
+than a production capacity limit. The tests cover real
 database connection/query cancellation, HTTP cancellation, graceful and forced
 drain, listener/pool reuse, process configuration/exit status, and log redaction.
 
@@ -868,6 +884,188 @@ project identity and graph counts without recording task content, repository
 addresses or query strings. The CLI uses this endpoint; the Web dashboard uses
 `task-sync` and computes its graphs locally.
 
+## Task Steps API
+
+Task-owned Steps persist independently from Sessions and expose dedicated reads,
+atomic collection additions, content updates, independent status settings,
+position moves and current-record deletions. The
+[resource contract](../../docs/spec/daynight-task-steps.md) owns field,
+identity, permission, version, encoding and refusal semantics. Migration 030
+stores normalized rows without changing existing Task fields or migration
+checksums. Steps remain outside ordinary Task, list, graph and synchronization
+projections.
+
+For `T = /api/v1/projects/{projectId}/tasks/{taskId}`:
+
+| Method | Path | Result |
+|---|---|---|
+| `GET` / `HEAD` | `T/steps` | Complete ordered projectId/taskId/version/steps resource; empty is `[]`. |
+| `GET` / `HEAD` | `T/steps/{stepId}` | Parent identity/version and complete `step`; the eight-hex input is case-insensitive. |
+| `POST` | `T/steps` | `201`, canonical item `Location` and complete ordered collection after append or before/after insertion. |
+| `PATCH` | `T/steps/{stepId}` | `200`, complete ordered collection after an atomic title/description update or no-op. |
+| `PUT` | `T/steps/{stepId}/status` | `200`, complete ordered collection after an independent status setting or no-op. |
+| `PUT` | `T/steps/{stepId}/position` | `200`, complete ordered collection after a before/after/first/last move or no-op. |
+| `DELETE` | `T/steps/{stepId}` | `200`, complete remaining collection after deleting the specified current record; the last deletion returns `steps: []`. |
+
+Requests accept no query, including a trailing empty `?`. Unsupported collection
+methods return an authenticated `405` with `Allow: GET, HEAD, POST`; item methods
+return `Allow: GET, HEAD, PATCH, DELETE`; status and position methods, including HEAD, return
+`Allow: PUT`. Both project roles can read and modify Steps. Normal Task
+nonmembership/missing scope is `404`, parent soft deletion is `410`, and a missing
+child or anchor is `404`. Responses retain `no-store` and principal/request
+receipts; Cookie writes require the configured Origin.
+
+Writes accept one JSON object within 1 MiB and require a positive exact int64
+`version`. POST also requires a caller-chosen eight-hex `id` and `title`. Omitted
+`description` is empty and omitted `status` is `todo`; the four statuses are
+`todo`, `in_progress`, `done` and `skipped`. Optional `before` and `after` are
+mutually exclusive and refer only to the same Task. IDs normalize to lowercase;
+title and Markdown retain their originals. Duplicate titles create independent
+records; an existing ID always conflicts.
+
+Content PATCH accepts only `version` and at least one of `title`/`description`.
+Omitted fields preserve their values; an empty description clears it. A paired
+update saves both fields atomically. Status PUT accepts only `version` and a
+required four-state value; all transitions are allowed, including multiple
+in-progress Steps and updates while the parent Task is done. Both update the
+same existing record and return a full collection without a new Location.
+
+Position PUT accepts only `version` and exactly one of `before`, `after` or
+`position`. Relative anchors are another Step in the same Task; `position` is
+the string `first` or `last`, never a boolean field. Target and anchor IDs
+normalize before placement checks. After parent/version admission and target
+resolution, a self-anchor is `400 invalid_input`;
+a missing target or anchor is `404` without a fallback position or cross-Task
+lookup. The target moves within the complete collection, preserving every
+Step's ID, title, description, status and created/updated timestamps. It returns
+a full collection without a new Location.
+
+DELETE accepts only a JSON `version` and removes the Task-local current record
+in any Step state. It returns the complete remaining collection, including an
+explicit empty array when the last record is removed, with no new Location.
+A missing target is a child `404`, never a successful no-op. Stale versions
+conflict before target lookup; a current missing target is checked before version
+exhaustion. Deleting an existing target always changes the collection and refuses
+at MaxInt64. The deleted ID becomes available for a later explicit POST, which
+creates a new record with its own creation time and submitted content/defaults;
+it does not restore the former record. No history, recovery or bulk deletion
+resource is provided.
+
+Unknown/duplicate/read-only fields, explicit null, wrong types, NUL, invalid
+UTF-8 and lone escaped UTF-16 surrogates are refused. Valid surrogate pairs,
+literal U+FFFD and escaped backslashes are preserved.
+
+Reads use one repeatable-read snapshot and a narrow Task header, independent from
+properties and execution policy. Writes use the existing project transaction and
+lock order: project, member admission, narrow parent lock, tombstone and exact
+version, then current rows. Add checks duplicate ID before anchor and constructs
+an immutable insertion candidate. Content/status changes share one actual
+existing-target change path, resolve that Task's target and compare merged
+semantic values before assigning time. Move resolves the target and any anchor
+and copies the final order without changing content or times. Current same-value
+updates and already-occupied positions are no-ops: the old complete resource, version and all times are returned without a clock
+sample, target/position UPDATE or parent touch. Adjacent relative moves, first/last
+boundaries and valid singleton moves follow the same rule, including MaxInt64.
+Stale same-value requests still conflict; a missing target is a child 404 before
+version exhaustion; a missing anchor remains a distinct child absence. Delete
+resolves its current target and builds a copied remaining collection with dense
+positions; its empty result is a non-null array and has no no-op branch.
+
+Real changes check exhaustion, sample database UTC microsecond time, encode the
+complete candidate, persist only the intended rows and touch the parent once.
+Add shifts affected positions and inserts one row. Content/status changes update
+only the target's title/description/status/updated_at; its ID, position and
+created_at remain fixed. Move writes only the affected interval's final dense
+positions with one CASE UPDATE and leaves all Step timestamps unchanged; the
+deferred unique constraint checks the final order without sentinel positions.
+Delete physically removes one current row and compacts only its trailing
+positions. Every survivor retains its identity, content, status, timestamps and
+relative order. The remaining candidate passes complete codec preflight before
+target deletion, compaction or parent touch.
+For content/status changes, the one clock sample equals the target's new
+updatedAt and the parent's updated_at; for Move and Delete it belongs to the
+parent alone.
+No-op versus real-change competition can produce two successful responses when the
+no-op finishes first, but only one actual change advances the shared version.
+Concurrent same-version actual Task and Steps writes permit at most one change.
+
+Steps preserve Task business fields, properties, dependencies, execution timing
+and Worker/Session ownership. Deleting a Step also preserves referenced
+attachments, PRs and Sessions. Task state, disabled automatic execution, absent
+Sessions and active Worker ownership do not restrict Steps. No Steps write
+freezes a Session or calls the full Task updater.
+
+`internal/tasksteps` is the sole public DTO/codec owner. Exact Encoder output
+includes default escaping and terminal LF, with 19 version digits reserved
+within 67,108,864 bytes. A frozen successfully encoded collection is the response
+body. An over-limit real-change candidate returns `409 steps_limit_exceeded`
+with `encodedBytes` and `maxEncodedBytes` details before any data mutation; a
+status string-length increase uses the same check. Shrinking a description
+follows the same full-resource/version rules. Other write refusals are
+`409 version_conflict`, `409 step_id_conflict` for Add and `409 version_exhausted`
+for actual changes. Invalid stored rows, non-dense order, read over-capacity,
+database failures and failed transaction cleanup are internal errors; the service
+never substitutes a partial or empty result.
+
+The shared transaction owner preserves operation, commit and cleanup failures
+and their original causes. Confirmed Commit remains `committed` after response
+loss; confirmed rollback is `not_committed`; unconfirmed Commit is `unknown`.
+The driver's closed-transaction cleanup after failed Commit cannot prove rollback.
+Cleanup failure outranks a nested business refusal. The handler logs fixed safe
+diagnostics under `component=task_step`, `operation=add|update|set_status|move|delete`, business
+`changed`/`unchanged` and prepare/persist/commit/response phases. No-op skips the
+persist phase; its business `unchanged` is independent from a `committed`
+transaction. Logs omit input values and arbitrary Fault/driver messages.
+Transaction outcome is independent from `response_outcome=written|failed|canceled_before_body`
+and `written_bytes`. A completed network write does not prove client receipt.
+Recovery GET request IDs may append `.r1`, `.r2` and so on to the original ID;
+`read_kind=reconcile`, version and found/absent/current-state observations describe
+current facts without attributing them to an unknown write. Clients retain the
+original identity and do not replay writes automatically. Current absence after
+an unknown deletion does not attribute that state to the operation, and a current
+same-ID record does not establish that it is the original record.
+
+Routine tests cover migration preservation, scoped reads, snapshot interleaving,
+raw text, exact int64, auth/Origin/HEAD/query/method refusals, malformed storage,
+append/anchors/defaults, atomic content and four-state changes, dense moves,
+self/missing anchors, current-record deletion, ID reuse, no-op/exhaustion,
+concurrency, parent and Session preservation, rollback and completion facts, and
+safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
+and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
+`TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
+`TestStepsHTTPDelete*`. Actual binary read restart persistence is covered by
+`TestBuiltBinaryStepsReadPersistence`. After preparing the normal auth fixture
+and an isolated PostgreSQL database, focused tests can be run from this module:
+
+```bash
+source scripts/env.sh
+export DAYNIGHT_TEST_DATABASE_URL='postgres://.../isolated-test-database'
+export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
+go test ./internal/core/store ./internal/service ./internal/server -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
+```
+
+Maximum-resource HTTP tests use the `stress` build tag and run separately from
+routine CI:
+
+```bash
+go test -tags=stress ./internal/server -run '^TestStepsHTTP(ExactCapacity|AddCapacity|ChangeCapacity|MoveCapacity|DeleteCapacity)Stress$' -count=1 -timeout=5m
+```
+
+The read case seeds legitimate bounded individual records, observes complete
+64 MiB HTTP bytes at the maximum int64 version, checks the same content at a
+one-digit version, and refuses an illegally seeded over-capacity collection.
+The add case checks an exact successful candidate and subsequent complete GET,
+then a one-byte over-limit candidate with no data writes. The change case checks
+an exact PATCH and GET, one-byte over-limit refusal before target UPDATE/touch,
+shrinking, status length increases and legal maximum no-op. The move case checks
+an exact-capacity move and subsequent GET, preserved Step times and a maximum
+version no-op without clock, position UPDATE or parent touch. Routine PostgreSQL
+cases verify interval-write and parent-touch rollback and same-version competition.
+The delete case checks removal from a maximum legal resource through actual HTTP
+bytes and the complete remaining GET; routine cases verify target/tail/parent-touch
+rollback, terminal empty collection, current target absence and new-record ID reuse.
+Run-specific results and source identity belong to the corresponding PR evidence.
+
 ## Task Thread API
 
 Persistent discussion belongs to each task independently of its execution.
@@ -1161,7 +1359,8 @@ receipt.
 
 The [binary scenarios](cmd/e2e_tests/acceptance_test.go) and their
 [process/evidence harness](cmd/e2e_tests/acceptance_process_test.go) map to
-the [V1–V10 requirements](../../docs/spec/daynight-server.md) as follows:
+the [V1–V10 requirements](../../docs/spec/daynight-server.md). The installed
+Thread scenario also verifies the [discussion contract](../../docs/spec/daynight-task-thread.md):
 
 | Requirement | Observable evidence |
 |---|---|
@@ -1175,6 +1374,7 @@ the [V1–V10 requirements](../../docs/spec/daynight-server.md) as follows:
 | V8: coverage and race gates | [`scripts/check.sh`](scripts/check.sh), [`.go-cov.toml`](.go-cov.toml), the raw profile and [exact-boundary/malformed-profile tests](scripts/coverage.test.mts) |
 | V9: mandatory infrastructure and complete CI | Missing/unavailable PostgreSQL fails the check; test-result expiration preserves real observations; the [final `checks` job](../../.github/workflows/checks.yml) accepts only `success` or `skipped` from every preceding job and rejects failures, cancellations and other results under the [repository CI rules](../../README.md#ci-selection); main pushes run all modules |
 | V10: correlation and privacy | Workflow/refusal/partial-failure/cancellation/startup scenarios verify HTTP request IDs, canonical resource IDs, structured categories and absence of submitted secret markers from logs |
+| Task Thread: CLI/service contract | [`installed_cli_task_thread`](cmd/e2e_tests/acceptance_thread_cli_test.go) verifies authenticated human/Agent authors, replies and nullable snapshots, millisecond message-ID pagination, complete resource/text byte bounds, controlled refusals and unknown submissions, task immutability and owned resource cleanup |
 
 HTTP error assertions preserve expected status/code, JSON response headers and
 exact error.requestId/X-Request-ID correlation. Known secret markers and database
@@ -1264,13 +1464,19 @@ or a mocked client as runtime proof.
 The [cross-layer decision](../../.agents/notes/implemented/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 owns these methods and their relationship to production browser journeys.
 
-The Node orchestrator reuses that installation for six budget probes after the
-Go coverage gate. Deadline probes load a test-only preload with 1-second request
-and 3-second operation deadlines, while separately asserting the installed
-production defaults of 30 seconds and five minutes. Four decoded-byte probes use
-the unchanged 128 MiB/256 MiB defaults and exact-limit/+1-byte pairs. Each probe's
-`deadlines` records `totalMs`, `requestMs` and whether it was mocked in the root
-`.tmp/project-task-service-evidence.json` receipt. Successful package-level
+The Node orchestrator reuses that installation for two deadline probes after
+the Go coverage gate. They load a test-only preload with 1-second request and
+3-second operation deadlines, while separately asserting the installed production
+defaults of 30 seconds and five minutes. Their `deadlines` records `totalMs`,
+`requestMs` and whether it was mocked in the root
+`.tmp/project-task-service-evidence.json` receipt.
+
+The explicit local `bash scripts/check.sh --stress-budgets` command retains the
+same setup and Go coverage gate, then selects the four decoded-byte probes using
+the unchanged 128 MiB/256 MiB defaults and exact-limit/+1-byte pairs. It writes
+`.tmp/project-task-stress-evidence.json`; the script and raw probe entrypoints
+refuse CI before stress setup. The CLI package's `pnpm test:stress:budgets` and
+repository-root command of the same name forward to this entrypoint. Successful package-level
 coverage and actual process results are separate evidence: binary HTTP tests
 supplement the store/service/server package tests.
 The owning store/service tests retain deterministic snapshot and lock proofs:

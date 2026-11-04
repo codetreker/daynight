@@ -1,6 +1,6 @@
 # Worker 需求
 
-本文定义 `daynight worker run` 的行为与可观察验收条件。[整体架构](../design/daynight-worker.md)拥有运行机制，[认领架构](../design/daynight-worker-claims.md)拥有服务端归属协议。账号级运行快照的服务端契约由[快照需求](daynight-worker-snapshots.md)拥有，客户端采集与持续报告由[上报需求](daynight-worker-reporting.md)拥有；在线状态和近期可见性不参与 claim 资格、执行控制或本机恢复。命令可用性与组件验证不替代 Linux、macOS、Windows 的完整原生运行验收。
+本文定义 `daynight worker run` 的行为与可观察验收条件。[整体架构](../design/daynight-worker.md)拥有运行机制，[认领架构](../design/daynight-worker-claims.md)拥有服务端归属协议。账号级运行快照的服务端契约由[快照需求](daynight-worker-snapshots.md)拥有，客户端采集与持续报告由[上报需求](daynight-worker-reporting.md)拥有；在线状态和近期可见性不参与 claim 资格、执行控制或本机恢复。命令可用性与组件验证不替代 Linux、macOS ARM64、Windows 的完整原生运行验收。
 
 ## 目标与范围
 
@@ -12,7 +12,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 
 ### W-01：前台运行、配置与平台
 
-- `daynight worker run` 在前台运行，支持 Linux、macOS 和 Windows。实际平台为 windows/linux/macos；WSL Linux 计为 linux，未知平台明确拒绝。
+- `daynight worker run` 在前台运行，支持 Linux、Windows 和 Apple Silicon（ARM64）macOS，不支持 Intel macOS，遵守[客户端平台要求](daynight.md#c1-包与平台)。实际平台枚举仍为 windows/linux/macos；WSL Linux 计为 linux，未知平台明确拒绝。
 - `daynight worker setup` 要求 stdin/stderr 为交互终端，先汇总环境缺项与修复指引，再单选 Copilot/Codex 并多选一个或多个既有可访问 Project。重复配置预选当前项目；最终确认前展示所选 agent、Project、目录、移除范围及不兼容参数重置。所选 agent 应用于全部选中 Project；匹配注册保留传输 URL/路径，同类型 model/args 保留，切换类型清除不兼容值。
 - Setup 将 agent/model/args 与完整 Project 选择一次原子保存，相关字段或服务/凭据变动时拒绝旧选择；无关配置、原 root 拼写、注释和安全 alias 保留。取消、空选、认证/API/保存失败均无部分保存。已有 claim、worktree 和 native history 保留；重新启动的 native 进程使用当前适用配置。
 - Setup 只做有界只读环境探测，不启动 daemon/native agent/worker，不 clone、打开 SQLite、claim、安装或登录。探测验证所选 agent 的固定 full access 参数能力；Codex 至少为 0.135。缺原生依赖允许保存并明确要求修复；只读版本、参数及 hook 检查不证明 provider 登录、真实 hook 执行、live 协议或完整任务验收。取消等待已启动探测收尾，未确认清理故障保留原错误链并使 setup 明确失败。
@@ -70,6 +70,9 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 - 原生会话已知而原 worktree 意外丢失时报告错误并保留 active；尚无原会话的新执行可以按规则准备工作区。异常既有路径保留并报告，不用空目录掩盖旧成果丢失。
 - Git 静态标记没有 workerId，须关联本机行、专用 Herdr 或当前自有 claim 才能证明属于本 worker。没有这种关联的 Git-only 遗留资源报告并保留，不因自有清单缺席删除。
 - 终止删除前确认当前受管进程停止、workspace 关闭。保留 .git 指针至内容移除完成，最后删除目录和注册；中断后仍存在但缺指针的路径保留错误。结束后保留分支、提交历史和交付引用，新 claim 使用新工作区身份及原生会话。
+- 已确认归属的 worktree 内，POSIX 普通目录具有当前有效用户所有权、与 worktree 相同设备及 owner 读取/搜索权限时，可以仅补充缺失的 owner 写权限，以清理 Go module cache 的嵌套 0555 目录与 0444 文件。权限修改必须绑定已核验的目录句柄；普通文件、硬链接文件与符号链接目标的权限不变。不使用 sudo、全局 chmod 或共享缓存清空。无法安全处理的权限、所有者、设备或 I/O 错误保留并返回。
+- 内容删除逐项核验归属和目录身份；发现替换后停止，不继续修改未知目标。部分失败保留 .git 和剩余内容供重新核验后重试；取消或超时必须等待已提交的文件系统操作收尾，不允许未结束的删除与重试并发。只有目录及 Git 注册均已删除才完成清理和释放 W-05 的名额。该机制要求原执行的写入进程已停止，不提供针对仍在并发改写路径的外部进程的原子文件系统隔离。
+- 已完成清理被过期资源快照再次观察时，完整停止/关闭/删除证据与当前 Git 资源消失的重新核验共同允许结束重复收尾；done 状态本身不允许忽略仍存在或归属不明的资源。
 
 ### W-07：执行模式与 agent 执行
 

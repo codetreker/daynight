@@ -22,8 +22,9 @@ A neutral currentTaskWrite constructor preserves assignment through metadata,
 status, property and worker writes. Input normalization precedes candidate
 comparison. Actual assignment changes run a shared transaction policy after
 no-op/deletion handling, reject in-progress work, validate a new target and set
-AllowAgents false in the same update. Equal values preserve permission and do
-not revalidate a retained former assignee.
+AllowAgents false in the same update. Equal assignment causes no permission
+reset and does not revalidate a retained former assignee; other supplied fields
+retain their ordinary mutation rules.
 
 Migration 028 adds the column and project/assignment/keyset index. Historical
 and soft-deleted tasks receive NULL without rewriting versions, business times,
@@ -50,6 +51,40 @@ profiles. A qualified reference without a user row is an internal integrity
 failure; a request with no scoped qualification is explicitly unresolved without
 revealing a global profile. Nullable names and avatars remain actual data.
 
+Web Task/detail/summary/graph consumers require the nullable field, and schema 4
+rebuilds old task material from versions 1, 2 and 3. The detail session owns one
+normal Task PATCH and read-only reconciliation of unknown outcomes. It predicts
+same-value versions separately and preserves assignment across all other
+mutations.
+
+A scope-owned, session-memory people owner coalesces rendered/detail/filter ID
+demands and successful mount-local receipts. Batches contain at most 100 IDs;
+empty demand sends no request, and full catalogues are opened explicitly. Each
+person has an accepted dispatch sequence, while project/user fences protect
+history and authorization. A trusted parent-project denial is processed even
+when presentation demand changes, without letting an old history revoke a new
+one.
+
+The Web keeps status and assignee in one compact control group and matches
+assignees only in displayed list selections. Full chain progress, dependencies,
+readiness and overview facts retain the complete index. Mutable profile data
+never enters Task versions or persistent task records.
+
+The CLI requires nullable assignedTo on every Task and graph input, preserves it
+in JSON and shows its current UUID or unassigned in text. Ordinary create/update
+flags own assignment and null clearing; list alone accepts UUID/me/unassigned
+filters. Ready has no assignee command option. Automatic worker candidates use
+me, while complete existing-claim inventory remains unfiltered by responsibility;
+the [self-assigned acquisition decision](2026-11-03-worker-self-assigned-claims.md)
+owns that runtime rule.
+
+For me filtering, successful task-page parsing receives that response's
+principal header. A complete traversal binds its first successful identity and
+checks every page, even an empty one, without an extra identity request. The
+binding belongs to one traversal; normal non-me requests retain their existing
+optional-header behavior when no expected principal is configured. Ordinary
+Task PATCH returns the complete mutation result, so the CLI adds no normal
+post-write GET or profile lookup.
 
 ## Alternatives
 
@@ -90,6 +125,26 @@ to the requested set; full enumeration remains an explicit catalogue operation.
 qualified references. Retaining raw candidate IDs and nullable joined user IDs
 lets the service expose integrity failure instead of successful partial output.
 
+**Filter task-sync or rebuild the graph from matches.** Hidden prerequisites
+would disappear from readiness and progress. Matching displayed rows before
+pagination retains navigation context without changing authoritative graph
+facts.
+
+**Publish directory results only against the latest visible demand.** That
+would drop an already observed project denial when a menu closes or a person
+set changes. Scope/ticket-bound negative admission remains distinct from
+positive profile publication.
+
+**Store only a largest receipt revision.** Re-mounted graph owners start their
+local counter again. Owner identity plus revision preserves successful-refresh
+semantics without a false global sequence.
+
+**Infer me from a task or cached client identity.** An empty page has no task
+from which to infer it, and an unconfigured client has no expected principal.
+Per-response metadata validates the actual successful response and detects
+later-page account changes without adding a separate /me round trip or global
+identity state.
+
 ## Consequences
 
 Server callers receive one versioned native field and atomic permission reset.
@@ -106,7 +161,9 @@ worker-only traversal.
 People reads return minimal fields and explicit unresolved IDs. They neither
 create membership nor change task versions, and errors never publish a partial
 set. Complete catalogue cost remains a measured consideration; the bounded mode
-has direct cardinality, qualification and query-plan checks. CLI/Web assignment
-operations and browser cache consumption remain separate consumer capabilities.
+has direct cardinality, qualification and query-plan checks. CLI assignment
+operations use required nullable parsing, direct mutation and principal-bound
+list validation. Web assignment and schema-4 consumption are implemented
+together, with session-memory people data and complete graph facts.
 Migration, raw-wire, snapshot, privacy, race and rollback checks retain these
 boundaries.

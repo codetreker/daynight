@@ -15,7 +15,7 @@ JSON 列表字段见[描述省略决策](../../.agents/notes/implemented/simplif
 任务起止字段与图时钟的读取机制由[执行计时架构](daynight-task-timing.md)扩展；
 CLI 同步保留 `startedAt`、`completedAt`、`observedAt` 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
-服务端[负责人设计](daynight-task-assignment.md)已实现原生 assignedTo、任务筛选和项目内人员读取；当前 CLI 尚未消费其读取字段或负责人选项。本文的 CLI DTO、渲染和 JSON 保留要求适用于当前已实现的客户端任务模型。
+服务端[负责人设计](daynight-task-assignment.md)拥有原生 assignedTo、任务筛选和项目内人员读取。CLI 的 Task/graph 严格解析、普通元数据设置/清空、list 筛选及当前ID输出已实现，复用同一字段契约，不增加人名或头像请求。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、通用 CLI 属性命令与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 使用通用 JSON map，键缺失不补值，worker 的公开写入限制由服务端定义拥有。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
 
@@ -182,6 +182,8 @@ HTTP 层按操作消费 JSON、原始字节或空响应，只接受 API 规定�
 数组语义与现有服务契约一致。错误保留 cause，并区分网络、期限、主动取消、HTTP
 拒绝和响应结构失败。
 
+私有成功JSON解析边界提供该响应的principal header元数据。me专用Task Page解析器在items为空时也要求单个规范Daynight-User-ID；listTasks每次遍历绑定第一页身份，后页不得变更，独立调用不共享该绑定。每项assignedTo必须等于该principal；UUID/unassigned模式核验其选择。listTaskPage校验本次成功响应，跨调用续页再由服务端cursor scope约束。不从首项推断身份，不多发/me，也不为me错误改写401/404等真实服务拒绝。普通非me且未配置expectedUserId的请求保留原可选header行为，显式expectedUserId检查继续适用。
+
 所有写请求只发一次，HTTP 层不自动重试、不自动跟随改变写入目标的重定向。写入
 后的网络失败或取消意味着结果未确认；诊断明确说明这一点，并提供 project/task
 目标供用户查询。读取也不自动重试，避免隐藏服务与分页失败。
@@ -335,7 +337,7 @@ flowchart TD
 | `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时 `POST /api/v1/projects`，提交原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
-| `task create [--required-platform <platform>]` | `POST /api/v1/projects/{projectId}/tasks`，可选 requiredPlatform |
+| `task create [--required-platform <platform>] [--assigned-to <user-uuid>]` | `POST /api/v1/projects/{projectId}/tasks`，可选 requiredPlatform 与 assignedTo |
 | `task list` | `GET /api/v1/projects/{projectId}/tasks`，保留相同筛选遍历 cursor |
 | `task ready [--limit <N>] [--allow-agents true\|false] [--compatible-platform <platform>]` | 单次 `GET /api/v1/projects/{projectId}/tasks?ready=true&limit=N`，可带 allowAgents、compatiblePlatform，不提交 cursor |
 | `task show <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}` |
@@ -378,6 +380,8 @@ graph summary 只返回 total、todo、inProgress、done、ready、blocked，统
 create/update 的 --required-platform 设置枚举，update --clear-required-platform 发送null并互斥；
 省略保留。list/ready --compatible-platform 与许可、状态、ready共同投影到服务查询并绑定cursor，
 先于分页/上限，客户端验证响应匹配并暴露协议错，不本地删项。平台不改变ready或人工setter。
+
+负责人选项属于普通任务元数据。create/update 的 --assigned-to 接受自由UUID文本并规范化；update 的 --clear-assigned-to 发送null，与设置冲突。省略仅不生成key，不把null当作undefined；AssignedTo也参与至少一个更新字段判断。写入仅UUID，list另接受小写me/unassigned并传到每页。ready命令不增加该字段；用户可用task list --ready组合查询。worker 新候选使用 me，而完整既有 claim 库存仍省略该条件；[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有运行时资格规则，CLI 元数据命令保留独立职责。
 
 `task ready` 将常见的下一项工作选择限制为前 N 项，避免项目积累任务后每次
 选择都读取完整 ready 集合。命令校验 `--limit` 为十进制整数 `1..100`，省略时
@@ -439,6 +443,8 @@ Windows 的 .cmd 启动器经 CMD 转发参数，字面 CR/LF 不能作为可靠
 
 `Task` 和 graph-task 解码要求 `allowAgents` 为明确布尔值；不从缺失、null 或字符串补默认值。`update --allow-agents` 把实际布尔放入普通 PATCH，省略时不产生该字段；create 不接受该选项。同值与 in_progress 锁定由服务判定，命令不自动重试。参数定义同时提供 true/false 的静态补全。
 
+`assignedTo` 在Task/graph共用dependencyState中严格读取，为必填null或规范UUID；ready、worker/status等共用Task路径因此统一保留。create/update输入使用optional nullable字段，响应核验显式负责人目标；不能凭组合PATCH增加v+1就推断负责人实际变化，也不为此添加GET。正文成功后采用完整Task；未知结果保持不重放语义。
+
 `requiredPlatform` 在完整 Task 与 graph-task 均为必填 null/三平台枚举。创建只在 `--required-platform` 出现时发送枚举；update 用同名选项设置，或用互斥的 `--clear-required-platform` 发送 null，二者都省略时不生成 key。静态 choices 为 windows/linux/macos，同一参数定义拥有帮助和三种 shell 补全。服务器负责同值、锁定和迁移语义；CLI 不以缺字段默认值兼容旧资源，也不把查询参数当作实际运行环境。后续 worker 根据自身运行环境选取该枚举，WSL 的 Linux 运行时属于 linux。
 
 `Task.version` 与 PATCH 版本覆盖完整正 `int64` 范围，内部使用 `bigint`；JSON 读取
@@ -484,7 +490,7 @@ Project 渲染由 `commands/project/rendering.ts` 拥有，与 API 数据分离�
 显示为 `\uXXXX`。普通 Unicode、emoji 和原有反斜线保持原样；该转换只属于终端
 显示，不改变提交给服务或 JSON 输出的数据。
 
-Task 的 `rendering.ts` 提供列表标签块与完整资源标签块，均显示 `Automatic execution` 的真实布尔值与 `Required platform`，null 平台显示为 any，其他值保留枚举；graph 的可读节点同样保留两字段。列表包含 `ID`、
+Task 的 `rendering.ts` 提供列表标签块与完整资源标签块，均显示 `Automatic execution` 的真实布尔值、`Required platform` 和 `Assigned to`。null平台为any，null负责人为unassigned；graph可读节点同样保留这些字段。UUID由既有terminalText渲染，不增加姓名查询或规则旁白。列表包含 `ID`、
 `Project`、`Title`、`Status`、`Ready`、`Depends on`、`Blocked by`，以及关联 PR
 数量、按顺序编号的 title/url；完整资源另外包含 `Description`、完整十进制
 `Version`、`Created` 和 `Updated`，供 show、ready、create 和 update 使用。
@@ -502,7 +508,7 @@ terminalText。创建和更新分别以 `Task created.`、`Task updated.` 表明
 的数组，ready 为所选完整 task 的数组，普通 graph 为服务原始任务链图响应对象。
 Task 的 `renderTaskListJson` 在命令完成状态选择和稳定分组后建立输出投影，
 每个 task 只移除 `description`；默认及所有合法筛选共享该路径。其余字段保留
-API 名称、类型及原始值，包括 PR 列表、完整 int64 版本、时间戳以及明确的起止 `null`；
+API 名称、类型及原始值，包括 PR 列表、完整 int64 版本、assignedTo、时间戳以及明确的起止 `null`；
 graph JSON 保留顶层数据库 `observedAt`。这些字段不在命令层计算或省略，并继续使用
 `stringifyApiJson` 精确序列化。完整 API DTO、验证、分页、服务响应及其他操作
 不采用该投影，描述仍由 show、ready、create 和 update 返回。
@@ -529,16 +535,17 @@ stderr 错误包含操作名、已确定的 project/task ID、失败阶段和可
 
 ## 验证与交付证据
 
-验证由需求 V1–V15 约束。测试按模块归属组织，避免只镜像实现分支：
+验证由需求 V1–V16 约束。测试按模块归属组织，避免只镜像实现分支：
 
 | 层次 | 关键观察 |
 |---|---|
 | 纯数据与参数 | 正规化表和拒绝 fixture、字段存在性、依赖替换/清空、版本参数、ready limit 默认/边界/拒绝、JSON 格式 |
+| 负责人协议与身份 | 设置/清空/省略、冲突零I/O、所有Task/graph必填nullable字段；me空页与多页header、每遍历身份隔离、错误响应保留与无额外/me；正常PATCH无postGET、结果目标核验而不凭v+1推断副作用 |
 | CLI 依赖边界 | 缺失 Git/SQLite/review 工具、配置文件或 serverUrl 时，帮助、版本、update 与 review 保持独立；省略地址使用生产默认值，非法显式值失败，无本地凭据在网络前提示登录；显式 repo 创建、列表和详情不读取工作目录或 Git；login/logout 的浏览器和配置生命周期独立验证 |
 | Git 与本地状态 | 真实仓库的 insteadOf、子目录、worktree、submodule、ignore 生效、被跟踪目录、并发锁及原子替换 |
 | 受控 HTTP | 创建及 task discover 的多页零/一/多匹配、唯一匹配创建命令保留原资源、后页失败无 POST、server 或 origin 独立变化、缓存 404/不符、500/无效响应、循环或持续推进 cursor、单次/总期限、字节超限、取消及写响应丢失 |
 | 真实服务 | 隔离 PostgreSQL 与 Go server 的 project/task 全流程、依赖拒绝、版本并发冲突、图快照和图超限；ready 的前 N 项及依赖完成后的候选变化 |
-| 安装后跨平台 | Linux、macOS、Windows 的已构建 CLI 调用真实 Git、文件锁、rename、退出码、stdout/stderr 和信号清理 |
+| 安装后跨平台 | Linux、macOS ARM64、Windows 的已构建 CLI 调用真实 Git、文件锁、rename、退出码、stdout/stderr 和信号清理 |
 
 断言本地准备失败时服务器未收到 mutation，显式 project 从未读取本地关联，project
 命令不读写绑定及 ignore，有效缓存后增加重复 project 仍使用原绑定，以及完整页
@@ -549,9 +556,9 @@ stderr 错误包含操作名、已确定的 project/task ID、失败阶段和可
 及写入结果继续使用包含描述的完整资源输出。
 真实服务验收保留服务 request ID 与目标 ID，便于将错误对应到 API 及数据库事实。
 
-预算验证使用可控制时钟和流式响应，覆盖每页均在单次期限内且 cursor 唯一推进、
-最终仍耗尽总期限的服务；分别跨越 128 MiB 单响应及 256 MiB 累计边界，并验证按
-解码后字节计数。锁验证使用真实并发进程观察即时竞争失败，覆盖取消发生于获取前
+常规预算验证使用可控制时钟和流式响应，覆盖每页均在单次期限内且 cursor 唯一推进、
+最终仍耗尽总期限的服务。显式本地压力验收另跨越 128 MiB 单响应及 256 MiB 累计边界，
+验证按解码后字节计数；生产上限和精确边界断言保持。锁验证使用真实并发进程观察即时竞争失败，覆盖取消发生于获取前
 或持有后的清理。不能用缩短线上常量、截断数据或跳过真实 Git/服务语义替代验收。
 
 Project 命令的实际编译入口已在受控 HTTP 条件下验证创建、完整分页、
@@ -569,7 +576,12 @@ Project 命令的实际编译入口已在受控 HTTP 条件下验证创建、完
 fixture [`installed-cli.ts`](../../packages/daynight/test/fixtures/installed-cli.ts) 统一
 拥有打包、安装、launcher 身份和任务目录；原生 suite 为
 [`project-task.acceptance.ts`](../../packages/daynight/test/cli/project-task.acceptance.ts)。根目录
-`.tmp/project-task-evidence.json` 记录该路径的来源、场景与清理。
+`.tmp/project-task-evidence.json` 记录该路径的来源、场景与清理。打包、私有安装与来源回执
+由该案例的 beforeAll 准备，callback 保留完整的有状态业务序列。afterAll 先取消并等待
+仍在运行的准备和业务，再终止自有子进程、关闭 HTTP server、移除安装树；实际清理
+验证完成后才写入成功回执。准备与业务使用各自既有的 hook/callback 期限，数字门槛
+保持，场景总墙钟预算的归属发生变化。重复私有安装采用 PNPM 支持的 POSIX executable
+symlink 偏好；独立 e2e 仍验证默认 PNPM shim，生产依赖与真实 npm 更新不变。
 
 服务路径的 Node 编排入口为
 `node packages/daynight/scripts/project-task-acceptance.ts`，由 Go 检查脚本调用；
@@ -596,14 +608,17 @@ PR 控制字符可见转义及无原始终端控制字符输出。
 安装来操作同组真实数据。机制与证据字段见[附件验证设计](daynight-task-attachments.md#实现验证)，
 其选择依据记录在
 [附件跨层验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)；
-原有 PT 场景和六个预算探针保持完整。
+原有 PT 场景与两个常规期限探针保持；四个完整字节预算探针由显式本地压力入口拥有。
 
 编排层执行固定版本 go-cov，以 `--skip-result-packages cmd/e2e_tests` 省略没有
 产品语句的 E2E 测试包结果汇总行；该包测试仍完整执行，测试失败仍向上传递。
 生产包及函数的覆盖率门槛、critical 检查和原始 coverage profile 保持完整。
-strict raw coverage 检查通过后，才在 Go 默认 10 分钟计时器之外运行六个公开安装
-CLI 场景：持续推进 cursor 的总期限、
-响应开始后停顿的单次期限，以及两组 gzip 解码字节边界配对。两个期限场景使用
+strict raw coverage 检查通过后，才在 Go 默认 10 分钟计时器之外运行所选公开安装
+CLI 预算套件。常规 `scripts/check.sh` 和 CI 选择 `deadlines` 的两个期限场景：
+持续推进 cursor 的总期限和响应开始后停顿的单次期限。
+显式本地 `scripts/check.sh --stress-budgets` 选择 `stress-budgets` 的四个 gzip 解码
+字节边界场景；CLI 包的 `test:stress:budgets` 和仓库根同名命令转发该入口。该选项与
+原始探针入口在非空 `CI` 环境下于压力准备之前拒绝。两个期限场景使用
 测试侧 Node.js `registerHooks` preload，只包装安装产物的 `api/operation.js` 导出，
 复用原有 `createOperation` 实现并注入 3 秒总期限和 1 秒单次期限。preload 先断言
 安装产物的生产默认值仍为 300,000/30,000 ms 和 128/256 MiB；测试不改写安装文件、
@@ -614,13 +629,16 @@ CLI 场景：持续推进 cursor 的总期限、
 以空白补齐字节数；单响应成功结果为一个小型 project，累计成功结果为三个唯一
 project，各页均满足列表协议，失败 stdout 必须为空。
 累计场景的三页分别为 96、96、64 MiB，超限场景只在最后一页增加 1 字节，
-每页均低于单响应上限。两种期限场景并行运行，四个字节边界场景依次执行；
-四个字节场景使用完整生产默认值，不加载期限 mock；两个期限场景仍验证实际等待、
-正确错误分类、持续分页、空 stdout 和清理。已有 20 分钟 Go 作业保留其全部 gate。
-根目录 `.tmp/project-task-service-evidence.json` 记录共享安装身份、Go 命令/覆盖率
-结果、解码与传输字节、探针结果和进程/socket/目录清理。每个预算场景的
-`deadlines` 记录实际 `totalMs`、`requestMs` 与 `mocked`，避免将短期限行为证据
-误解为实际等待了生产期限。本地 `c19b064` dirty receipt 与
+每页均低于单响应上限。常规套件的两种期限场景并行运行，本地压力套件的四个
+字节边界场景依次执行。四个字节场景使用完整生产默认值，不加载期限 mock；两个
+期限场景仍验证实际等待、正确错误分类、持续分页、空 stdout 和清理。
+已有 20 分钟 Go 作业保留 build/vet/race 与严格 coverage gate。
+根目录 `.tmp/project-task-service-evidence.json` 拥有常规期限证据，
+`.tmp/project-task-stress-evidence.json` 拥有本地完整字节证据；schema 1 中的 `suite`
+和精确场景名集合验证所选工作负载。回执记录共享安装身份、Go 命令/覆盖率结果、
+解码与传输字节、探针结果和进程/socket/目录清理。每个预算场景的 `deadlines`
+记录实际 `totalMs`、`requestMs` 与 `mocked`，避免将短期限行为证据误解为实际等待了
+生产期限。本地 `c19b064` dirty receipt 与
 [PR #55](https://github.com/codetreker/daynight/pull/55) 的干净托管 receipt 保留真实
 30 秒/5 分钟预算的历史证据；它们不代表当前源码的运行结果。逐次结果随对应 PR 与 CI 保存；
 [仓库验证说明](../../README.md#validation)拥有 receipt 解释。

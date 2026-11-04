@@ -89,10 +89,12 @@ same PR. Open a standalone documentation PR only with explicit user permission;
 permission for one document does not authorize publishing other documents.
 
 Mock UI and interactive prototype artifacts belong in the owning Daynight task
-attachments. Never commit or push them, include them in a repository PR, or place
-them in product or source directories. Local inspection copies may exist only in
-Git-ignored scratch space and must be removed after use. This rule covers their
-HTML, scripts, styles, assets, and generated previews.
+attachments. Never commit or push UI mockups, `mockui` pages, their resource
+bundles, generated previews, or tests that target them; never include them in a
+repository PR or place them in product or source directories. This includes
+interactive previews composed from production components. Keep local inspection
+copies only in the task worktree's Git-ignored `.tmp/`, remove them after use,
+and save reviewable prototypes as attachments of their owning Daynight task.
 
 Rewrite edited documents as coherent wholes and synchronize related active
 documents in the same change. Preserve historical statements about a decision's

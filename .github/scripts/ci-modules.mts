@@ -18,6 +18,8 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
     if (path === "packages/daynight/test/fixtures/installed-cli.ts") return { ...allModules };
     if (path.startsWith("packages/daynight/src/")) {
       selected.cli = true;
+      if (path.startsWith("packages/daynight/src/api/") || path.startsWith("packages/daynight/src/session/") ||
+        path === "packages/daynight/src/platform/text.ts") selected.web = true;
       continue;
     }
     if (

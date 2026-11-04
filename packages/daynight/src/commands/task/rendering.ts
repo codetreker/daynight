@@ -15,6 +15,8 @@ const taskProperties = (task: Task): readonly string[] => [
   ...Object.entries(task.properties).sort(([left], [right]) => left.localeCompare(right)).map(([name, value]) => `  ${terminalText(name)}: ${terminalText(stringifyApiJson(value))}`),
 ];
 
+const taskAssignment = (task: Pick<Task, "assignedTo">): string => `Assigned to: ${task.assignedTo === null ? "unassigned" : terminalText(task.assignedTo)}`;
+
 const taskDependencies = (task: Pick<Task, "ready" | "dependsOn" | "externalDependsOn" | "blockedBy">): readonly string[] => [
   `Ready: ${task.ready}`,
   `Depends on: ${identifiers(task.dependsOn)}`,
@@ -27,6 +29,7 @@ export const renderTask = (task: Task): string => [
   `Description: ${terminalText(task.description)}`,
   ...taskProperties(task),
   `Status: ${terminalText(task.status)}`,
+  taskAssignment(task),
   `Automatic execution: ${task.allowAgents}`,
   `Required platform: ${task.requiredPlatform === null ? "any" : task.requiredPlatform}`,
   `Version: ${task.version}`,
@@ -42,6 +45,7 @@ export const renderTaskSummaryList = (tasks: readonly Task[]): string => tasks.l
   ...taskIdentity(task),
   ...taskProperties(task),
   `Status: ${terminalText(task.status)}`,
+  taskAssignment(task),
   `Automatic execution: ${task.allowAgents}`,
   `Required platform: ${task.requiredPlatform === null ? "any" : task.requiredPlatform}`,
   ...taskDependencies(task),
@@ -53,6 +57,7 @@ const renderGraphTask = (task: GraphTask): string => [
   `Title preview: ${terminalText(task.titlePreview)}`,
   `Title truncated: ${task.titleTruncated}`,
   `Status: ${terminalText(task.status)}`,
+  taskAssignment(task),
   `Automatic execution: ${task.allowAgents}`,
   `Required platform: ${task.requiredPlatform === null ? "any" : task.requiredPlatform}`,
   ...taskDependencies(task),

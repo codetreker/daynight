@@ -1,6 +1,6 @@
 # 任务依赖追踪与详情阅读设计
 
-完整前置上下文、渐进概览、局部依赖检查、独立 Details 与平滑路线已实现。Markdown 描述、附件导航和 bundled skill 指引也已实现。[要求](../spec/daynight-task-inspection.md)和[原型](mockups/task-inspection/index.html)分别拥有行为与视觉。
+完整前置上下文、渐进概览、局部依赖检查、独立 Details 与平滑路线已实现。Markdown 描述、附件导航和 bundled skill 指引也已实现。[要求](../spec/daynight-task-inspection.md)拥有行为。
 
 ## 实现范围
 
@@ -50,7 +50,7 @@ ProjectPage保持详情资源和入口/关闭恢复所有权。当前画布拥�
 
 `TaskDetailSurface` 组合已有详情 hook、关系跳转、PR 和附件组件；`TaskDetailDialog` 提供弹窗外壳，独立页面使用相同主体。样式由 `task-detail.css` 的 `task-detail-*` 命名空间拥有。普通模式外壳相对可用视口居中，宽度 `min(960px, 100% − 2 × gutter)`，桌面 `gutter = 24px`，600px 及以下为 12px；最大高度为 `min(880px, 100dvh − 2 × gutter)`。标题栏、详情页签、关闭按钮和底部说明处于面板滚动内容之外。实际任务标题直接作为顶栏 `h2` 和对话框可访问名称，加载与首次失败使用状态标题；正文头部只保留状态和操作控件；tooltip 与限时气泡的机制由[详情提示设计](daynight-web.md#任务详情提示)拥有，不参与页签和阅读区的高度分配。完整标题自身有界、可聚焦并支持原生键盘滚动；已加载标题文字右侧放置不收缩的复制图标按钮，保持标题和按钮间距，顶栏保留全屏切换、“…”菜单与关闭入口，当前状态菜单位于标题下的公共状态行、平台切换之前；“…”紧邻关闭按钮左侧，收纳按当前任务/页签/附件生成的真实新标签链接和任务删除，独立页菜单只提供删除。菜单先关闭并聚焦“…”按钮，再打开既有删除确认，取消确认可恢复到仍存在的入口；菜单的键盘导航和外部关闭独立于详情的 Escape 层级。详情通过共享 `LocaleProvider` 沿用应用当前语言。默认“概览”正文独立滚动，包含描述、PR 与元数据/关系；完整 ID 旁与标题旁统一使用 `TaskCopyButton`，以两个错位叠放方框表示复制，保留双语 `aria-label` 和原生 `title`。组件直接调用 Clipboard API 写入完整原值，pending 时禁用按钮，成功与失败使用 `TaskDetailNotice`；标题实例按 project/task 与标题值绑定，ID 实例按完整 ID 绑定，卸载使迟到结果失效。复制失败保留可选原文和重试；桌面为阅读主栏与 265px 侧栏，850px 及以下侧栏收为 225px，600px 及以下堆叠。附件页签占用全部正文宽度，在所有宽度下保持左列表、右预览；尺寸链及唯一右侧滚动所有者由[附件设计](daynight-task-attachments.md#web-文件树与预览)拥有。长文本换行，代码和表格只在所属区域横向滚动。描述使用共享 Markdown 视图和现有附件导航，详情加载与错误继续由详情资源拥有。
 
-继续复用 body portal、共享滚动锁、背景 inert、焦点循环、遮罩关闭和分层 Esc。附件菜单与原生删除确认在详情子树内拥有当前层键盘处理，Escape 关闭该层并保留详情；具体行为由[附件设计](daynight-task-attachments.md#web-文件树与预览)拥有。清理 inert、滚动锁和监听器的同步阶段与 DOM 移除后恢复焦点的阶段保持既有职责。原入口消失或处于隐藏的项目任务区时，不以 DOM 仍连接作为可聚焦证据。优先选择仍可见图浮层的关闭控件，否则使用当前可见任务或页签控件；概览或空项目中没有任务入口时恢复当前项目页签或标题。任务关系切换不卸载外壳，不中途恢复到旧入口。外壳不引入图重挂载。`dialogFocusables` 与实际对话框中的同源附件 frame 共用可见控件枚举，frame 的文档与活动键盘所有者共同决定监听生命周期，重载、owner 变化和卸载均释放旧监听。独立完整详情页普通模式使用浏览器键盘行为，全屏模式使用下述阅读工作区所有者；附件的完整清单、渲染与滚动仍由[附件设计](daynight-task-attachments.md#独立附件阅读页)拥有。
+继续复用body portal、共享滚动锁、背景inert、焦点循环、遮罩关闭和分层Esc。Discussion消息详情独占子层键盘，并向Surface报告焦点占用；[Thread Web设计](task-thread-web.md#阅读键盘与验证)拥有该子层的关闭与焦点归还。附件菜单与原生删除确认在详情子树内拥有当前层键盘处理，Escape 关闭该层并保留详情；具体行为由[附件设计](daynight-task-attachments.md#web-文件树与预览)拥有。清理 inert、滚动锁和监听器的同步阶段与 DOM 移除后恢复焦点的阶段保持既有职责。原入口消失或处于隐藏的项目任务区时，不以 DOM 仍连接作为可聚焦证据。优先选择仍可见图浮层的关闭控件，否则使用当前可见任务或页签控件；概览或空项目中没有任务入口时恢复当前项目页签或标题。任务关系切换不卸载外壳，不中途恢复到旧入口。外壳不引入图重挂载。`dialogFocusables` 与实际对话框中的同源附件 frame 共用可见控件枚举，frame 的文档与活动键盘所有者共同决定监听生命周期，重载、owner 变化和卸载均释放旧监听。独立完整详情页普通模式使用浏览器键盘行为，全屏模式使用下述阅读工作区所有者；附件的完整清单、渲染与滚动仍由[附件设计](daynight-task-attachments.md#独立附件阅读页)拥有。
 
 ## 全屏阅读工作区
 
@@ -102,7 +102,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 路由使用 `TaskDetailNavigation` 表达 `tab` 与可空 `path`。
 `taskDetailUrl(projectId, taskId, navigation)` 生成任务入口或附件路径入口及所需的
 `tab` 查询参数。`/projects/{projectId}/tasks/{taskId}` 默认为概览，已有附件路径
-默认为附件；显式 `tab=overview|attachments` 覆盖该默认值。没有文件的附件页签使用
+默认为附件；显式 `tab=overview|attachments|discussion|session` 覆盖该默认值；Session不可用时回到概览，Discussion始终存在。没有文件的附件页签使用
 基础任务路径，隐藏的已选文件可随概览 URL 保留。路径沿用现有分段编码、UUID 和
 附件路径校验；App 同时感知 pathname 和 search，登录返回地址保留导航查询参数，
 构造登录入口时移除临时 `authError`，使旧登录失败不成为返回后的状态。
@@ -238,6 +238,6 @@ Mermaid 仍建立临时绘图 DOM，自定义样式资源及普通 Markdown 外�
 
 独立地从完整 API 投影 P 和实际 S 推导每个卡片是否存在隐藏直接邻居，验证 96/136px 高度；P 外无关后续不产生 footer。实际DOM路线的端点/方向、平滑相切、全部可见卡片避让、真实CTM、完整body coverage、参考弧长/phase及原生箭头独立判断，不能由生产规划器输出充当有效预期。可选输入只做编译忠实度，负例覆盖缺/多边、错误箭头、穿卡片和相位/覆盖失败。稳定性比较使用图坐标/相对变换，页面滚动诊断单独保留，不能把一致的文档平移误判为图变化。
 
-53场景（29原生/24容器）、四个完整1000任务输入及999/5000边、每图五次、mandatory visibility、超限、coverage、零retry、timeout和cleanup保持。验收验证selected/hidden上游及selectMs≤300，保留open≤3000及detail/zoom/pan≤300。普通Details→close→立即zoom/pan、可信可见任务选择、高亮态同序列，每项取较慢state、网络单独计量；close与zoom间不加等待/reset/fit。
+常规 CI 与默认验收保留两个目标各 31 个功能场景，共 62 项；显式本地压力验收增加五个原生容量场景，共 67 项（原生 36、容器 31），两种模式另有 22 项 combined-auth 检查。压力模式保留四个完整 1000 任务输入及 999/5000 边、每图五次、mandatory visibility 和超限检查；所选场景的 coverage、零 retry、timeout 与 cleanup 保持。验收验证selected/hidden上游及selectMs≤300，保留open≤3000及detail/zoom/pan≤300。普通Details→close→立即zoom/pan、可信可见任务选择、高亮态同序列，每项取较慢state、网络单独计量；close与zoom间不加等待/reset/fit。
 
-`task-description-markdown` 在原生/容器目标保留独立描述阅读旅程，并验证图内检查→Details→相对附件导航→关闭后 S、选择、几何和视口保持。API 不引入格式标记或旧数据特判，现有字符串直接按 Markdown 展示，不批量改写已有任务描述。原型不替代生产验收。生产验证覆盖 typecheck、测试/coverage、build、真实 component/native/container/capacity 和独立审查。结果必须绑定确切源码。
+`task-description-markdown` 在原生/容器目标保留独立描述阅读旅程，并验证图内检查→Details→相对附件导航→关闭后 S、选择、几何和视口保持。API 不引入格式标记或旧数据特判，现有字符串直接按 Markdown 展示，不批量改写已有任务描述。原型不替代生产验收。生产验证覆盖 typecheck、测试/coverage、build、真实 component/native/container 和独立审查，完整 capacity 由显式本地压力入口验证。结果必须绑定确切源码。

@@ -41,6 +41,8 @@ export const id = (value: unknown): string => {
   return parsed;
 };
 
+export const nullableId = (value: unknown): string | null => value === null ? null : id(value);
+
 export const timestamp = (value: unknown): string => {
   const parsed = string(value);
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(parsed)) return malformed();

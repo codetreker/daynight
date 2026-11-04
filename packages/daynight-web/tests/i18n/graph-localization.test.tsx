@@ -10,7 +10,7 @@ import * as layoutModule from '../../src/features/task-graph/layout';
 import { LanguageSelector } from '../../src/i18n/LanguageSelector';
 import { messagesByLocale } from '../../src/i18n/messages';
 import { renderWithLocale } from '../helpers/renderWithLocale';
-import { browsingProjects } from '../mockups/browsing-fixture';
+import { progressiveGraph } from '../helpers/graphData';
 import { installGraphMeasurements } from '../graph-measurements';
 
 const time = '2026-10-20T00:00:00Z';
@@ -18,11 +18,11 @@ const graph: GraphData = { observedAt: "2026-10-20T12:00:00Z",
   project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },
   summary: { total: 5, todo: 2, inProgress: 1, done: 2, ready: 1, blocked: 1 },
   tasks: [
-    { requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'B', titlePreview: '设计方案', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { requiredPlatform: null, allowAgents: false, externalDependsOn: ['B'], startedAt: null, completedAt: null, id: 'C', titlePreview: '合流实现', titleTruncated: true, status: 'in_progress', dependsOn: ['A', 'B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { requiredPlatform: null, allowAgents: false, externalDependsOn: ['F'], startedAt: null, completedAt: null, id: 'D', titlePreview: '最终验收', titleTruncated: false, status: 'todo', dependsOn: ['C', 'F'], blockedBy: ['C', 'F'], ready: false, createdAt: time, updatedAt: time },
-    { requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'F', titlePreview: '发布检查', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'B', titlePreview: '设计方案', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['B'], startedAt: null, completedAt: null, id: 'C', titlePreview: '合流实现', titleTruncated: true, status: 'in_progress', dependsOn: ['A', 'B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: ['F'], startedAt: null, completedAt: null, id: 'D', titlePreview: '最终验收', titleTruncated: false, status: 'todo', dependsOn: ['C', 'F'], blockedBy: ['C', 'F'], ready: false, createdAt: time, updatedAt: time },
+    { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'F', titlePreview: '发布检查', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
   ],
 };
 const index = buildGraphIndex(graph);
@@ -50,8 +50,8 @@ describe('localized task graph presentation', () => {
       ],
     };
     const waitingIndex = buildGraphIndex(waitingGraph);
-    const view = renderWithLocale(<ChainList index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
-      openChainId="A" onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} showAll={false} onShowAllChange={noop} />, { locale: 'en' });
+    const view = renderWithLocale(<ChainList projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
+      openChainId="A" onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} showAll={false} onShowAllChange={noop} />, { locale: 'en', taskCache: true });
     const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked' });
     expect(view.container.querySelector('#task-root-A .root-status')).toHaveTextContent('To do');
     expect(view.container.querySelector('#task-root-A .root-progress-label')).toHaveTextContent('0/2 completed');
@@ -67,8 +67,8 @@ describe('localized task graph presentation', () => {
     const user = userEvent.setup();
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const select = vi.fn();
-    const view = renderWithLocale(<ChainList index={index} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
-      openChainId="A" onOpenChain={noop} onOpenTask={select} onCloseChain={noop} showAll={false} onShowAllChange={noop} />, { locale: 'en' });
+    const view = renderWithLocale(<ChainList projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
+      openChainId="A" onOpenChain={noop} onOpenTask={select} onCloseChain={noop} showAll={false} onShowAllChange={noop} />, { locale: 'en', taskCache: true });
     await ready(view.container);
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
     expect(screen.getAllByText('3 tasks · 2 unfinished')).toHaveLength(1);
@@ -122,13 +122,13 @@ describe('localized task graph presentation', () => {
 
   it('retranslates expanded visibility controls without changing the actual visible graph, detail selection or viewport', async () => {
     const user = userEvent.setup();
-    const fixture = browsingProjects.progressive;
+    const fixture = progressiveGraph;
     const index = buildGraphIndex(fixture);
     const rootId = fixture.tasks.find((task) => task.titlePreview === '渐进展开 · 主链交付起点')!.id;
     const joinId = fixture.tasks.find((task) => task.titlePreview === '合流任务 · 40 个外部前置')!.id;
     const open = vi.fn();
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
-    const view = renderWithLocale(<><LanguageSelector /><TaskGraph index={index} rootId={rootId} onOpenTask={open} /></>, { locale: 'en' });
+    const view = renderWithLocale(<><LanguageSelector /><TaskGraph index={index} rootId={rootId} onOpenTask={open} /></>, { locale: 'en', taskCache: true });
     await waitFor(() => { expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(50); });
     const body = screen.getByRole('button', { name: '合流任务 · 40 个外部前置, To do, blocked' });
     fireEvent.click(body);
@@ -172,7 +172,7 @@ describe('localized task graph presentation', () => {
     const user = userEvent.setup();
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const onClose = vi.fn();
-    const view = renderWithLocale(<><button type="button">Background</button><TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>, { locale: 'en' });
+    const view = renderWithLocale(<><button type="button">Background</button><TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>, { locale: 'en', taskCache: true });
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     const toggle = screen.getByRole('button', { name: 'View fullscreen' });
@@ -210,7 +210,7 @@ describe('localized task graph presentation', () => {
   it('retranslates an existing layout failure without repeating the failed layout', async () => {
     const user = userEvent.setup();
     const layout = vi.spyOn(layoutModule, 'layoutGraph').mockImplementation(() => { throw new Error('layout failed'); });
-    renderWithLocale(<><LanguageSelector /><TaskGraph index={index} rootId="A" onOpenTask={noop} /></>, { locale: 'en' });
+    renderWithLocale(<><LanguageSelector /><TaskGraph index={index} rootId="A" onOpenTask={noop} /></>, { locale: 'en', taskCache: true });
     const alert = screen.getByRole('alert');
     expect(alert).toHaveTextContent('Task graph layout failed');
     await user.selectOptions(screen.getByRole('combobox'), 'zh-CN');
@@ -223,11 +223,11 @@ describe('localized task graph presentation', () => {
   it('renders empty and hidden-completed chain states in the chosen language', () => {
     const props = { index, allRepresentativeIds: [], representativeIds: [], openChainId: null,
       onOpenChain: noop, onCloseChain: noop, onOpenTask: noop, showAll: false, onShowAllChange: noop };
-    const view = renderWithLocale(<ChainList {...props} />, { locale: 'en' });
+    const view = renderWithLocale(<ChainList projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
     expect(screen.getByRole('heading', { name: 'No task chains' })).toBeTruthy();
     expect(screen.getByLabelText('Showing 0 of 0 task chains')).toHaveTextContent('Newest first · 0 / 0 task chains');
     const completeIndex = buildGraphIndex({ ...graph, summary: { total: 5, todo: 0, inProgress: 0, done: 5, ready: 0, blocked: 0 }, tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })) });
-    view.rerender(<ChainList {...props} index={completeIndex} allRepresentativeIds={representativeIds} />);
+    view.rerender(<ChainList projectId="00000000-0000-4000-8000-000000000101" {...props} index={completeIndex} allRepresentativeIds={representativeIds} />);
     expect(screen.getByRole('heading', { name: 'No recent task chains' })).toBeTruthy();
     expect(screen.getByText('3 completed task chains are outside the current filter. Select “Show all” to view them.')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Show all' })).toBeTruthy();

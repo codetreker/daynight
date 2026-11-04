@@ -1,6 +1,6 @@
 # Task Steps 架构设计
 
-状态：架构已确认，产品尚未实现。本文定义 Task Steps 的持久化、事务、HTTP、CLI 和 Web 实现机制。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。本文完整描述实现所需的结构与边界。
+状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除已实现；CLI 与 Web 的 Steps 交互尚未交付。本文描述已实现的服务端机制与已确认的客户端目标架构。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。
 
 ## 目标与边界
 
@@ -10,17 +10,17 @@ Steps 是 Task 拥有的有序工作记录，跨 Session 和执行环境保留�
 
 ## 现有机制与复用点
 
-以下证据固定在源码 revision `1f665571d2cb689e3d3731904ab1af9aedb2666b`，用于区分现有机制和本文提议。迁移基线已包括 `028_task_assignment.sql` 与 `029_task_threads.sql`；新增表使用交付时尚未占用的下一迁移序号。
+以下证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端部分描述当前实现，CLI、指令资源和 Web 部分描述尚待交付的目标机制。
 
 | 证据 | 当前事实及设计含义 |
 |---|---|
-| [`WriteProject` 与 `Task`](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-server/internal/core/store/project_tx.go#L34-L54) | `FOR UPDATE` 依次锁项目和父任务；Steps 复用同一锁序。 |
-| [`ReadSnapshot`](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-server/internal/core/store/snapshot.go#L16-L24) | `RepeatableRead` 与 `ReadOnly` 已提供一致只读快照；父版本和步骤必须在其中共同读取。 |
-| [`UpdateTask`](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-server/internal/core/store/project_tx.go#L130-L174) | 更新同时写属性、替换依赖并调用 `freezeTaskSessions`；Steps 需要只触及父版本和更新时间的存储方法。 |
-| [`versionedWrite`](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-server/internal/service/task.go#L221-L256) | 版本判断后调用 `requireCompatibleWorker`；应拆出中性的准入与版本逻辑，执行归属策略继续由 Task 操作拥有。 |
-| [`TaskDetailSessions`](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-web/src/features/task-detail/TaskDetailSession.tsx#L11-L69) | 一个 Task 入口拥有 mutation、身份 fence 和提交互斥；Steps 接入这一所有者。 |
-| [`DETAIL_CACHE_LIMITS`](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-web/src/features/task-detail/detail-cache.ts#L9-L20) | 单详情 2 MiB、总计 8 MiB；完整 Steps 不能进入该 TaskDetail 缓存。 |
-| [`property` 命令](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight/src/commands/task/property.ts#L29-L49) | 显式 project/version 可跳过发现和预读；Steps 沿用这一请求预算。 |
+| [`WriteProject`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/project_tx.go#L35-L51) 与 [`TaskHeader`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/task_steps.go#L74-L76) | `FOR UPDATE` 依次锁项目和父任务头；Steps 使用同一锁序且不加载完整 Task。 |
+| [`ReadSnapshot`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/snapshot.go#L16-L24) | `RepeatableRead` 与 `ReadOnly` 已提供一致只读快照；父版本和步骤必须在其中共同读取。 |
+| [`UpdateTask`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/project_tx.go#L130-L174) | 更新同时写属性、替换依赖并调用 `freezeTaskSessions`；Steps 需要只触及父版本和更新时间的存储方法。 |
+| [`taskWriteIdentity`、`requireTaskVersion` 与 `taskWriteHeader`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/service/task_write_admission.go#L11-L48) | Task 与 Steps 共用中性的身份及精确版本检查；Steps 锁窄任务头，Worker 兼容和执行归属策略由 Task 操作拥有。 |
+| [`TaskDetailSessions`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-web/src/features/task-detail/TaskDetailSession.tsx#L11-L69) | 一个 Task 入口拥有 mutation、身份 fence 和提交互斥；Steps 接入这一所有者。 |
+| [`DETAIL_CACHE_LIMITS`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-web/src/features/task-detail/detail-cache.ts#L9-L20) | 单详情 2 MiB、总计 8 MiB；完整 Steps 不能进入该 TaskDetail 缓存。 |
+| [`property` 命令](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight/src/commands/task/property.ts#L29-L49) | 显式 project/version 可跳过发现和预读；Steps 沿用这一请求预算。 |
 
 ## 职责与数据流
 
@@ -43,8 +43,8 @@ flowchart LR
 | `internal/core/task_steps.go` | Step、状态、父任务头和有序集合领域值；不包含 HTTP 处理。 |
 | `internal/tasksteps/` | 纯字段校验、ID 规范化、不可变候选、语义比较及公开资源编码。 |
 | `internal/core/store/task_steps.go` | 父任务头锁定、快照读取、步骤差异写入、只更新父版本和时间。 |
-| `internal/service/task_steps.go` | 项目准入、版本、操作顺序、容量、事务结果和用例错误。 |
-| `api/task_steps.go`、`internal/server/task_steps.go` | 严格输入 DTO、路由、HTTP 方法与公共结果；输出复用中性 codec 的资源类型。 |
+| `internal/service/task_steps*.go` 与 `task_write_admission.go` | 项目准入、版本、操作顺序、容量、事务结果和用例错误。 |
+| `api/task_steps.go`、`internal/server/task_steps*.go` | 严格输入 DTO、路由、HTTP 方法与公共结果；输出复用中性 codec 的资源类型。 |
 | CLI `api/task-steps.ts`、`commands/task/step.ts`、`step-rendering.ts` | 类型解析、七个命令、请求与文本/JSON 输出。 |
 | Web `api/task-steps.ts`、Task 详情会话与 Steps 面板 | 独立资源读取、共享提交生命周期、草稿、呈现和附件导航。 |
 
@@ -58,7 +58,7 @@ flowchart LR
 | 独立有序 JSON 集合行 | 父行保持较小；每次字段或状态修改仍重写完整集合 | 顺序自然，但身份和逐项完整性全部依赖集合解码。 |
 | 独立 `task_steps` 行 | 内容修改只写目标行，排序只写受影响位置；完整响应仍遍历集合 | 采用此方案，保留独立项读写和数据库唯一性。 |
 
-采用以下表结构；创建表的迁移不改旧迁移及 checksum。
+迁移 `030_task_steps.sql` 创建以下表结构，保留已有迁移及 checksum。
 
 ```sql
 CREATE TABLE task_steps (
@@ -75,7 +75,7 @@ CREATE TABLE task_steps (
 );
 ```
 
-Task UUID 已全局唯一，步骤行不重复 project ID。授权先定位父项目和任务，再按 `task_id` 访问行。沿用[独立属性行](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-server/internal/core/store/migrations/026_task_property_rows.sql#L3-L7)的所有权方式，不增加 foreign key。
+Task UUID 已全局唯一，步骤行不重复 project ID。授权先定位父项目和任务，再按 `task_id` 访问行。沿用[独立属性行](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/migrations/026_task_property_rows.sql#L3-L7)的所有权方式，不增加 foreign key。
 
 每个 Task 的位置稠密为 `0..n-1`，查询使用 `ORDER BY position`。插入、删除和移动先在内存构造最终顺序，再更新受影响行的位置；不使用临时哨兵位置。延迟唯一约束允许一次事务中的交换和区间平移，在提交时检查最终唯一性，语义见 [PostgreSQL CREATE TABLE](https://www.postgresql.org/docs/18/sql-createtable.html) 与 [SET CONSTRAINTS](https://www.postgresql.org/docs/18/sql-set-constraints.html)。
 
@@ -146,15 +146,15 @@ Task 元数据与整个 Steps 集合统一使用 `Task.version`，`StepsResource
 
 中性的成员、父任务头和精确版本检查提取为共享准入原语；原 Task 写入继续拥有 Worker 兼容和生命周期策略。Steps 不通过布尔开关跳过某个通用 helper 的策略，也不读取 Worker 属性来决定可写性。
 
-新增父任务 touch 仅执行 `version = version + 1, updated_at = $chosenTime`，不调用完整 `UpdateTask`，不替换依赖、属性或执行时间，不冻结 Session。项目→父 Task→步骤的锁序与现有写入一致。
+父任务 touch 仅执行 `version = version + 1, updated_at = $chosenTime`，不调用完整 `UpdateTask`，不替换依赖、属性或执行时间，不冻结 Session。项目→父 Task→步骤的锁序与现有写入一致。
 
-所有业务拒绝在数据修改前确定。Step 用例让拒绝和故障从事务回调传播并回滚；不沿用当前 `Tasks.write` 把 prepare Fault 转成成功回调的模式。现有[该处理](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-server/internal/service/task.go#L160-L219)仅在 prepare 尚未写入时成立，不能用于写后容量拒绝。数据库、事务完成和取消错误保留原错误链。
+所有业务拒绝在数据修改前确定。Step 用例让拒绝和故障从事务回调传播并回滚；不沿用当前 `Tasks.write` 把 prepare Fault 转成成功回调的模式。现有[该处理](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/service/task.go#L157-L215)仅在 prepare 尚未写入时成立，不能用于写后容量拒绝。数据库、事务完成和取消错误保留原错误链。
 
 ### 精确容量与时间
 
-公开 codec 使用与现有 [`writeJSON`](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-server/internal/server/http.go#L163-L170)相同的 `json.Encoder.Encode` 设置，计入默认 HTML 转义及末尾换行。容量由该 codec 的实际 UTF-8 输出计量，父版本按 19 位最大正 int64 保留空间；上限恰为 67,108,864 字节。
+公开 codec 使用与现有 [`writeJSON`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/server/http.go#L163-L170)相同的 `json.Encoder.Encode` 设置，计入默认 HTML 转义及末尾换行。容量由该 codec 的实际 UTF-8 输出计量，父版本按 19 位最大正 int64 保留空间；上限恰为 67,108,864 字节。
 
-用于容量校验的 Step 时间就是将要存储和返回的时间。数据库时间先转 UTC 并保持微秒精度，再生成候选；不先用应用纳秒值计量后交由数据库截断。现有[同步精度规则](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-server/internal/core/store/task_sync.go#L19-L33)已明确 PostgreSQL 的微秒边界。
+用于容量校验的 Step 时间就是将要存储和返回的时间。数据库时间先转 UTC 并保持微秒精度，再生成候选；不先用应用纳秒值计量后交由数据库截断。现有[同步精度规则](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/task_sync.go#L19-L33)已明确 PostgreSQL 的微秒边界。
 
 codec 是确定性的纯函数；容量检查和 HTTP 响应共用它。候选一旦通过，service 不再更改字段。超限返回 `steps_limit_exceeded` 与 encodedBytes/maxEncodedBytes，事务零变更；正常提交后的断连仍按未知结果处理。
 
@@ -174,7 +174,7 @@ typed API 复用 `runServerCommand`、`exchange`、精确 bigint JSON codec 和�
 
 输入标题复用现有无 NUL、Unicode `White_Space` 文本规则，说明保留原值。响应 parser 检查完整字段、作用域、唯一规范 ID、状态和时间；保留数组顺序，失败不返回 `[]`。add/delete 必须确认 version +1，其他修改允许原版本 no-op 或 +1，并核对目标结果。
 
-`ApiError` context 增加可选 stepId，add 的 ID 在递交前确定，任何未知诊断保留它。错误详情 parser 与类型共同保留容量字节数；当前 [parseServerError](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight/src/api/parse.ts#L188-L197)只投影既有图/任务字段，不能直接沿用其丢弃新字段的结果。
+`ApiError` context 增加可选 stepId，add 的 ID 在递交前确定，任何未知诊断保留它。错误详情 parser 与类型共同保留容量字节数；当前 [parseServerError](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight/src/api/parse.ts#L182-L194)只投影既有图/任务字段，不能直接沿用其丢弃新字段的结果。
 
 4xx 明确拒绝、5xx/传输/取消/协议失败的未知分类沿用共享 transport。未知结果先读完整 Steps，只证明当前事实；不自动重发，不改用新 ID。JSON stdout 仅输出完整资源，可读输出使用现有安全转义和 0/1/2 退出码。
 
@@ -184,7 +184,7 @@ canonical skill 的 task-content 区分持久 Steps 与 Session 计划、工具�
 
 `TaskDetailSessions` 的每个 Task entry 增加独立 Steps read state 和 Step 操作 union。`useTaskSteps` 只是订阅视图；提交、pending/unknown、身份 fence、晚响应和关闭后仍存续的写入仍归现有 session owner。
 
-当前[执行器](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-web/src/features/task-detail/TaskDetailSession.tsx#L489-L621)假定普通响应都是 TaskDetail，核对只读 Task。应重构为明确的 Task-result/Steps-result 和对应读回分派，保留一个提交生命周期及互斥，不复制第二个控制器。
+当前[执行器](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-web/src/features/task-detail/TaskDetailSession.tsx#L505-L638)假定普通响应都是 TaskDetail，核对只读 Task。应重构为明确的 Task-result/Steps-result 和对应读回分派，保留一个提交生命周期及互斥，不复制第二个控制器。
 
 Steps 首次激活才读取，完整数据保存在当前 Task session 内存。项目摘要、TaskDetail 与 Steps 各自保留真实返回版本；新 Steps 版本不能替旧 TaskDetail 补造 updatedAt，也不能推进项目同步水位。
 
@@ -221,7 +221,7 @@ Steps workspace 按 Task 身份保存展开 ID、一个表单、草稿、预览�
 
 **本地每页最多 100 行。** 完整资源仍一次读取，分页只限制 DOM，不改变服务端顺序或 API。跨页移动仍按 ID 作用于完整数组；添加、移动、删除后选择目标或相邻项所在页并恢复焦点。草稿和展开状态由 ID 保存，换页不会丢失。
 
-该方式沿用[现有 PR 区域](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/docs/design/daynight-task-properties.md)限制挂载数量的方式，避免合法大集合直接形成巨大 DOM。超过 100 项才出现分页控件，展示全局范围和总数；不足一页时保留原列表。视觉验收使用 Task 附件中的交互原型，覆盖 241 项、跨页移动与添加、删除末页及保留草稿等情境。
+该方式沿用[现有 PR 区域](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/docs/design/daynight-task-properties.md)限制挂载数量的方式，避免合法大集合直接形成巨大 DOM。超过 100 项才出现分页控件，展示全局范围和总数；不足一页时保留原列表。视觉验收使用 Task 附件中的交互原型，覆盖 241 项、跨页移动与添加、删除末页及保留草稿等情境。
 
 添加位置和相对移动的目标选择也使用有界本地控件：位置类型只有末尾/之前/之后等固定项，目标按名称或 8 位 ID 在完整内存集合中筛选，每次最多挂载 100 个候选，并提供结果翻页。当前选择按稳定 ID 保留，筛选或翻页不改变已选目标，任何非当前行页的目标仍可到达。主列表页码使用数值跳转及前后页控件，不为所有页生成无限增长的 option 列表。上述控件不增加服务端查询或分页 API。
 
@@ -232,11 +232,11 @@ Steps workspace 按 Task 身份保存展开 ID、一个表单、草稿、预览�
 
 CLI 显式 project/version 为一次业务写；默认版本为一次 GET 加一次写。响应最多 64 MiB，共享 transport 的单响应 128 MiB/操作总量 256 MiB 保持。Web Steps 写后还需父详情/同步准入，代价在交互上以 busy/freshness 表达，不以旧数据冒充当前基线。
 
-本功能没有新增 MCP/模型工具定义，工具 schema/token 预算不适用。命令调用和输出预算由上述具体资源形状拥有；尚无实现运行数据，不作耗时、吞吐或 token 节省结论。
+本功能没有新增 MCP/模型工具定义，工具 schema/token 预算不适用。命令调用和输出预算由上述具体资源形状拥有；本文未给出吞吐、耗时或 token 节省基准，不作相应收益结论。
 
 ## 迁移与部署
 
-增加表、约束和迁移注册，不修改已应用文件。迁移与 ledger 同事务；已有任务的字段、版本、时间、属性及历史不变。新 API 读取零行得到合法空集合，不扫描或转换描述、Session todo 和原生历史。
+迁移 `030_task_steps.sql` 增加表和约束，迁移注册保留已应用文件。迁移与 ledger 同事务；已有任务的字段、版本、时间、属性及历史不变。Steps API 读取零行得到合法空集合，不扫描或转换描述、Session todo 和原生历史。
 
 服务端先提供资源，CLI 和 Web 以同一契约交付。旧客户端忽略新入口并保留原 Task 投影；这是未变化的旧接口，不增加旧数据兼容分支。新客户端连接不支持 Steps 的服务时明确报告能力缺失，不能显示为空集合。
 
@@ -267,7 +267,7 @@ CLI 显式 project/version 为一次业务写；默认版本为一次 GET 加一
 
 ## 可观测性与失败边界
 
-复用现有请求 context、slog JSON 和 [RequestLogging/LogFailure](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-server/internal/server/logging.go)。middleware 建立 request_id，认证后绑定 user_id，再附加经准入的 project_id/task_id；目标操作附加规范 step_id，列表以 Task 为最具体资源身份。
+复用现有请求 context、slog JSON 和 [RequestLogging/LogFailure](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/server/logging.go)。middleware 建立 request_id，认证后绑定 user_id，再附加经准入的 project_id/task_id；目标操作附加规范 step_id，列表以 Task 为最具体资源身份。
 
 CLI 与 Web 在递交 Steps 修改前生成标准 UUID 作为此次请求 ID，使用服务已支持的 `X-Request-ID` 传递，并与原 payload、Step ID 保留。恢复 GET 使用原 ID 加 `.r1`、`.r2` 等后缀，每个请求仍有独立 request_id，可按前缀关联；无须新增 HTTP header、幂等键或后端操作记录。该关联只用于诊断，不证明历史归因，也不参与授权或版本判断。直接 API 调用仍可使用既有请求 ID 规则。
 
@@ -284,7 +284,7 @@ Steps 日志使用 `component=task_step`、operation、phase=read|prepare|persis
 | 响应 | 独立 response_outcome=written|failed|canceled_before_body，包含已写字节；网络写完也不等于客户端确认接收。 |
 | 读回 | phase=read，read_kind=reconcile；记录当前版本与 found/absent/current_state，不宣称未知操作造成了该状态。 |
 
-现有 [`transact`](https://github.com/codetreker/daynight/blob/1f665571d2cb689e3d3731904ab1af9aedb2666b/packages/daynight-server/internal/core/store/transaction.go#L13-L24)只返回合并错误。应在该事务所有者内提供可识别的 operation/commit/cleanup 阶段及提交已知性，并保留 errors.Is/As 错误链；Steps 消费这些元信息，不创建第二个事务执行器。成功返回意味着 commit 已确认，未确认的 Commit 错误保守分类为 unknown。
+现有 [`transact`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/transaction.go#L13-L66)通过 `TransactionError` 保留 operation/commit/cleanup 阶段、提交已知性和 errors.Is/As 错误链；Steps 消费这些元信息，不创建第二个事务执行器。成功返回意味着 commit 已确认，明确的 `ErrTxCommitRollback` 表达未提交，其他未确认的 Commit 错误保守分类为 unknown。
 
 Steps 的公共资源 writer 使用同一 codec，返回明确的已写/失败/写前取消结果并记录 response 阶段。现有 `writeJSON` 在取消时可静默返回，通用请求日志对未写响应会使用默认状态；Steps 不据该默认 200 判定业务成功，不为此重写无关路由的生命周期。
 
@@ -304,6 +304,6 @@ jq -c --arg rid "$STEP_REQUEST_ID" \
 
 ## 架构基线摘要
 
-采用独立步骤行、稠密顺序、共享父版本、独立 HTTP 资源，以及现有 Web 会话的资源化扩展。新增实现保持项目流程、Worker 和 Session 边界。
+服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；客户端目标通过现有 Web 会话的资源化扩展消费该资源。各层保持项目流程、Worker 和 Session 边界。
 
 大集合按 100 行本地分页，只约束 DOM 挂载。集合完整性、顺序及服务端操作保持相同契约；Task 附件中的交互原型提供 Web 的具体视觉与跨页交互输入。本架构及其交付边界约束后续实现。
