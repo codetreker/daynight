@@ -420,10 +420,10 @@ test('step resources retire after actual membership revocation', { annotation: {
   try {
     const aliceProfile = await (await api.get('/api/v1/me')).json() as { id: string };
     const bobProfile = await (await bob.get('/api/v1/me')).json() as { id: string };
-    const invitationResponse = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: {} });
+    const invitationResponse = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: { expectedUserId: aliceProfile.id } });
     expect(invitationResponse.status()).toBe(201);
     const invitation = await invitationResponse.json() as { link: string };
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitation.link).hash.slice(1) } })).status()).toBe(200);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitation.link).hash.slice(1), expectedUserId: bobProfile.id } })).status()).toBe(200);
     await browserAuthentication(context, baseURL, 'bob');
     const bobPage = await context.newPage();
     const now = new Date('2030-01-01T00:00:00Z');
