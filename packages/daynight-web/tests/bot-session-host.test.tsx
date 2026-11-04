@@ -65,3 +65,68 @@ it('retains a cold bookmark on failed history and resumes the same target throug
   await waitFor(() => expect(cache.snapshot()[0]!.reading.current?.getRestoreStatus()).toBe('restored'));
   expect(older).toBe(2);
 });
+
+it.each([false, true])('resumes canceled cold history after Controller replacement (delayed readiness: %s)', async delayed => {
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.classList.contains('session-timeline') ? 200 : 0; });
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(2000);
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({ top: 0, bottom: 200, left: 0, right: 400, x: 0, y: 0, width: 400, height: 200, toJSON() {} }));
+  const bot = botFixture(), cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), createApi: () => bot.api }); caches.push(cache);
+  cache.select(bot.binding); const old = cache.snapshot()[0]!;
+  await waitFor(() => expect(old.client.snapshot().connected).toBe(true));
+  const { sessionFenceKey } = await import('../../daynight/src/session/protocol');
+  old.retained.bookmark = { identity: JSON.stringify([old.key, sessionFenceKey(bot.snapshot())]), historyEpoch: bot.snapshot().historyEpoch, following: false, anchor: { key: 'early', top: 0 } };
+  cache.close();
+  let older = 0, canceled = false;
+  vi.mocked(bot.api.timeline).mockImplementation(async (_id, direction, _cursor, signal) => {
+    if (direction === 'tail') return { ...bot.page, beforeCursor: 'before', hasMoreBefore: true };
+    if (++older === 1) return new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => { canceled = true; reject(new DOMException('Canceled', 'AbortError')); }, { once: true });
+    });
+    return { ...bot.page, items: [{ kind: 'assistant_message', entryId: 'early', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Recovered Controller reading target' }] }] };
+  });
+  render(<BotSessionHost cache={cache} binding={bot.binding} />);
+  await waitFor(() => expect(older).toBe(1));
+  const pane = cache.snapshot()[0]!, generation = pane.client.snapshot().connectionGeneration;
+  // Keep the viewport away from its automatic top-edge paginator.
+  const timeline = document.querySelector<HTMLElement>('.session-timeline')!;
+  timeline.scrollTop = 800;
+  const replaced = { ...bot.snapshot(), connectionEpoch: '2', sessionRevision: '20', synchronized: !delayed };
+  act(() => bot.receive({ protocol: replaced.protocol, type: 'snapshot', userId: botOwner, snapshot: replaced, cursor: 'replacement' }));
+  expect(canceled).toBe(true);
+  expect(pane.client.snapshot().connectionGeneration).toBe(generation);
+  if (delayed) {
+    expect(older).toBe(1);
+    act(() => bot.receive({ protocol: replaced.protocol, type: 'snapshot', userId: botOwner, snapshot: { ...replaced, synchronized: true, sessionRevision: '21' }, cursor: 'ready' }));
+  }
+  await screen.findByText('Recovered Controller reading target');
+  await waitFor(() => expect(pane.reading.current?.getRestoreStatus()).toBe('restored'));
+  expect(older).toBe(2);
+});
+
+it('does not consume a cold-history attempt while auth admission is paused before its view updates', async () => {
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.classList.contains('session-timeline') ? 200 : 0; });
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(2000);
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({ top: 0, bottom: 200, left: 0, right: 400, x: 0, y: 0, width: 400, height: 200, toJSON() {} }));
+  const bot = botFixture(); let paused = false, older = 0;
+  vi.mocked(bot.api.timeline).mockImplementation(async (_id, direction) => {
+    if (direction === 'tail') return { ...bot.page, beforeCursor: 'before', hasMoreBefore: true };
+    older++;
+    return { ...bot.page, items: [{ kind: 'assistant_message', entryId: 'early', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Recovered after authentication' }] }] };
+  });
+  const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, isPaused: () => paused, storage: null, onPrincipalMismatch: vi.fn(), createApi: () => bot.api }); caches.push(cache);
+  cache.select(bot.binding); const pane = cache.snapshot()[0]!;
+  await waitFor(() => expect(pane.client.snapshot().historyReady).toBe(true));
+  const { sessionFenceKey } = await import('../../daynight/src/session/protocol');
+  pane.retained.bookmark = { identity: JSON.stringify([pane.key, sessionFenceKey(bot.snapshot())]), historyEpoch: bot.snapshot().historyEpoch, following: false, anchor: { key: 'early', top: 0 } };
+  paused = true;
+  render(<BotSessionHost cache={cache} binding={bot.binding} />);
+  const timeline = document.querySelector<HTMLElement>('.session-timeline')!;
+  timeline.scrollTop = 800;
+  expect(older).toBe(0);
+  act(() => cache.syncAvailability());
+  expect(pane.client.snapshot().authPaused).toBe(true);
+  act(() => { paused = false; cache.syncAvailability(); });
+  await screen.findByText('Recovered after authentication');
+  await waitFor(() => expect(pane.reading.current?.getRestoreStatus()).toBe('restored'));
+  expect(older).toBe(1);
+});

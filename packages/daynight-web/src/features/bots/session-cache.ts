@@ -4,7 +4,7 @@ import type { TimelineReadingBookmark } from '../../ui/useTimelineScroll';
 import { TaskSessionClient } from '../task-agent-session/client';
 import type { SessionTimelineReadingHandle } from '../task-agent-session/SessionTimeline';
 import { clearSessionDisplayPreference } from '../task-agent-session/useSessionDisplayPreference';
-import { BotSessionStorage } from './session-storage';
+import { BotSessionStorage, clearBotSessionStorage } from './session-storage';
 
 export const botSessionKey = (binding: BotSessionBinding): string => JSON.stringify([binding.ownerUserId, binding.botId, binding.sessionId, binding.testExecutionId]);
 type Retained = { readonly storage: BotSessionStorage; bookmark: TimelineReadingBookmark | null };
@@ -81,11 +81,14 @@ export class BotSessionCache {
   /** Deletion or access loss includes evicted state and prevents stale selections reopening it. */
   invalidateBot(botId: string): void {
     this.revoked.add(botId);
+    for (const sessionId of clearBotSessionStorage(this.options.userId, botId, this.options.storage)) clearSessionDisplayPreference({ userId: this.options.userId, sessionId });
     for (const [key, saved] of this.retained) if (saved.binding.botId === botId) this.remove(key, true);
     this.publish();
   }
   invalidate = (): void => {
+    if (this.invalidated) return;
     this.invalidated = true;
+    for (const sessionId of clearBotSessionStorage(this.options.userId, undefined, this.options.storage)) clearSessionDisplayPreference({ userId: this.options.userId, sessionId });
     for (const key of this.retained.keys()) this.remove(key, true);
     this.publish();
   };

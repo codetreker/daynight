@@ -49,3 +49,24 @@ it('clears cold account state and permits newly saved authorized drafts after lo
   new BotSessionStorage(identity, sessionStorage).setItem('draft', 'after login');
   expect(new BotSessionStorage(identity, sessionStorage).getItem('draft')).toBe('after login');
 });
+
+it.each(['enumeration', 'removal'] as const)('keeps namespace invalidation across new storage instances when %s fails', failure => {
+  sessionStorage.clear();
+  const identity = JSON.stringify([`revoked-${failure}`, 'bot', 'session', 'execution']);
+  const original = new BotSessionStorage(identity, sessionStorage);
+  original.setItem('draft', 'revoked draft'); original.setItem('operation', 'original operation');
+  const failing: Storage = {
+    get length() { if (failure === 'enumeration') throw Error('denied'); return sessionStorage.length; },
+    key: i => sessionStorage.key(i), getItem: key => sessionStorage.getItem(key), setItem: (key, value) => sessionStorage.setItem(key, value),
+    removeItem: () => { throw Error('denied'); }, clear: () => { throw Error('denied'); },
+  };
+  new BotSessionStorage(identity, failing).invalidate();
+  const authorized = new BotSessionStorage(identity, sessionStorage);
+  expect(authorized.getItem('draft')).toBeNull(); expect(authorized.getItem('operation')).toBeNull();
+  expect(authorized.length).toBe(0);
+  original.setItem('draft', 'late old writer');
+  expect(new BotSessionStorage(identity, sessionStorage).getItem('draft')).toBeNull();
+  authorized.setItem('draft', 'fresh authorized draft');
+  const reopened = new BotSessionStorage(identity, sessionStorage);
+  expect(reopened.getItem('draft')).toBe('fresh authorized draft'); expect(reopened.getItem('operation')).toBeNull();
+});

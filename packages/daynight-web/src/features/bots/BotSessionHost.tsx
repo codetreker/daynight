@@ -58,11 +58,18 @@ function BotPane({ pane, active, current }: { readonly pane: BotSessionPane; rea
     // Latest cancels restoration. A resolved/rejected bookmark must not be reapplied
     // by a later receipt, reconnect, display change or unrelated render.
     if (status !== 'pending') { pane.retained.bookmark = null; return; }
+    const snapshot = view.state.snapshot;
+    // Controller replacement can cancel a page without replacing the browser channel.
+    // Wait for admission before remembering an attempt that loadOlder can start.
+    if (!snapshot?.synchronized || snapshot.connectionState !== 'connected' || snapshot.lifecycle !== 'active') return;
     const key = bookmark.anchor?.key;
-    const page = `${view.connectionGeneration}/${view.historyRevision}`;
+    const page = `${view.connectionGeneration}/${snapshot.connectionEpoch}/${view.historyRevision}`;
     if (!key || view.state.entries.some(entry => entry.entryId === key) || !view.historyReady || !view.hasOlder || view.loadingOlder || view.historyError || view.authPaused || attemptedPage.current === page) return;
     attemptedPage.current = page;
     void pane.client.loadOlder();
+    // Admission can change before authPaused reaches the view. A synchronous
+    // refusal must leave the page eligible when availability next changes.
+    if (!pane.client.snapshot().loadingOlder) attemptedPage.current = null;
   });
   return <SessionView client={pane.client} userId={pane.binding.ownerUserId} active={active} current={current} reading={reading} />;
 }

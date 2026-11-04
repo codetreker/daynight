@@ -19,14 +19,19 @@ serialized draft/receipt state plus the shared detached reading bookmark after
 LRU eviction. Identity validity remains independent of visible selection.
 
 Eviction closes transport and releases heavy state; revocation invalidates saved
-state and prevents stale selections reopening it. Account cleanup covers cold
-storage even when its page has unmounted. Memory values and deletion tombstones
-remain authoritative after storage failures. Authenticated generation changes
+state and prevents stale selections reopening it. Bot and account cleanup cover
+cold namespaces even when a new page cache has never selected the old binding.
+Page-owned namespace versions revoke older storage instances and suppress stale
+disk values after enumeration or deletion failures; freshly authorized instances
+can persist new values. Memory values and deletion tombstones remain authoritative. Authenticated generation changes
 remove obsolete drafts and receipts. Recovery queries an original unknown
 operation rather than repeating its input.
 
 Cold reading restoration uses existing pagination, requires observed progress,
-and retries across connection generations. A failed page retains the bookmark;
+and retries across browser connection generations and Controller connection epochs.
+Only an admissible page request records an attempt; a replacement Controller
+that is still synchronizing or an authentication gate that refuses the request
+must not consume its retry. A failed page retains the bookmark;
 Latest cancels it. The [design](../../../../docs/design/bot-session-view.md)
 owns interfaces, ownership and fallback details. This consumes the existing
 [reading bookmark decision](2026-11-04-session-display-reading.md) and extends
