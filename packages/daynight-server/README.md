@@ -1123,6 +1123,14 @@ cache epoch or task-sync. It remains readable and writable before execution,
 while the Controller is offline, and after completion. Deleted tasks retain
 messages but refuse access through their task resource.
 
+Writes use canonical `store.LockProjectAuthorization` with Task share,
+credential share, actual direct-grant share and head update locks in that order.
+The positive grant remains locked through commit; admission returns current
+locked-row role and real grant facts after any wait. It acquires no Project row
+lock or profile projection. The final credential-expiry check follows all waits
+and encoding. Ordinary resource and Session admission keep their existing
+nonlocking access reads.
+
 For `T=/api/v1/projects/{projectId}/tasks/{taskId}`:
 
 | Method | Path | Result |

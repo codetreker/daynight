@@ -52,6 +52,14 @@ personal TestSession access remain independent of project roles. The
 owns these resource-specific rules. Missing access maps to the existing refusal;
 other canonical query errors retain their causes.
 
+Thread consumes `LockProjectAuthorization` from the same canonical storage
+owner. This strong primitive locks the actual positive direct grant through
+commit and returns access and grant facts from that locked row after any wait.
+The caller acquires Task and credential share locks first; no Project row lock
+or profile read is introduced. Ordinary point reads and Session admission retain
+their existing nonlocking behavior. The [Thread decision](2026-11-03-task-thread-storage.md)
+owns its stronger lock lifetime, transaction outcome and cancellation rules.
+
 Role and removal inputs bind the reviewed `expectedUserId` to the authenticated
 principal before domain SQL. A mismatch is an explicit 409; no project lookup or
 authorization write starts. Admitted writes use the existing project row lock
