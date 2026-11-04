@@ -49,14 +49,33 @@ Provider 传递沿用[共享角色机制](task-session-protocol.md#角色指令�
 原样保留，有 alias 时只按现有规则前置目录。HOME、CODEX_HOME 和其他原生账户
 目录不替换；Provider 的 native PATH 合并逻辑仍由其已有适配器负责。
 
-在准备后的环境和 Bot cwd 下，通过现有有界子进程 runner 执行 project、task、bot、
-worker 的 list/show `--help`，检查对应入口与 JSON 能力。此集合是启动前兼容性
-检查，不是角色动作白名单。缺少能力、命令失败或取消不能报告准备成功。随后重读
-服务认证和 alias 配置，检测准备期间变化；不承诺检测之后的配置不会改变。
+在准备后的环境和 Bot cwd 下，通过 Bot 专用 CLI 探测监督进程执行 project、task、
+bot、worker 的 list/show `--help`，检查对应入口与 JSON 能力。此集合是启动前
+兼容性检查，不是角色动作白名单。缺少能力、命令失败或取消不能报告准备成功。
+随后重读服务认证和 alias 配置，检测准备期间变化；不承诺检测之后的配置不会改变。
 
-成功后，消费者需在所有仍使用 shim 的后代停止后调用 `release()`。普通失败会
-删除本次创建的 alias 目录；子进程清理结果未知时保留目录及清理失败类别，由
-持有执行责任的消费者继续核实。不能在无法证明后代停止时删除其运行资源。
+`createBotCliProbe` 为整组帮助调用持有一个监督进程。目标 CLI 在 IPC 放行之前
+不能启动；放行前先取得监督进程的 `ProcessProof`，Windows 还须完成 Job Object
+归属。POSIX 使用独占进程组，Windows 使用不允许 breakaway 的 Job，沿用已有
+Controller 进程身份、停止与确认函数。目标 wrapper 关闭自身及标准流后，监督
+进程仍存活，确保遗留组成员有可归属的原始进程实例。直接进程 close 不作为整组
+停止证明。
+
+内部监督进程移除自身的 `NODE_OPTIONS`，避免用户预加载代码在门控前执行；
+实际 CLI 的完整准备环境经私有 IPC 传入，在放行后使用，保留其原 `NODE_OPTIONS`、
+HOME、PATH 和原生设置。该隔离不修改 Worker 或用户进程环境。
+
+无论帮助命令成功、退出异常、内容不兼容、超时或取消，都必须先停止并核对探测
+进程组/Job，再返回准备结果或清理 alias。清理使用独立的有界时间窗口，不能因
+业务操作已取消而跳过。`BotCliProbeCleanupError` 保留 typed ownership 和
+`retryCleanup()`；环境层的 `BotEnvironmentCleanupError` 同时保留该回执与
+`aliasDirectory`。重试先完成进程确认，再删除本次 alias；失败时仍保留责任。
+重试不承诺一定能主动终止：如果原监督进程已停止而剩余组成员没有可验证的原始
+实例证明，只能继续观察或保留清理错误，不能凭保存的 PID/PGID 杀进程。
+
+准备成功后，消费者在实际 Agent 及仍使用 shim 的后代停止后调用 `release()`。
+不能在无法证明探测进程组/Job 停止时删除其运行资源，也不能把清理未知降级成
+普通的命令不兼容错误。
 
 ## 验证与边界
 

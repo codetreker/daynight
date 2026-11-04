@@ -1,12 +1,16 @@
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../../src/api/operation.js";
 import { ApiError } from "../../../../src/api/client.js";
 import { resolveConfigurationPaths } from "../../../../src/config/paths.js";
-import { prepareBotEnvironment } from "../../../../src/commands/worker/bots/environment.js";
-import { HerdrCommandCleanupError, HerdrCommandError, runHerdrCommand, type HerdrCommand } from "../../../../src/commands/worker/herdr/command.js";
+import { BotEnvironmentCleanupError, prepareBotEnvironment } from "../../../../src/commands/worker/bots/environment.js";
+import { HerdrCommandError, runHerdrCommand, type HerdrCommand } from "../../../../src/commands/worker/herdr/command.js";
+
+import { BotCliProbeCleanupError } from "../../../../src/commands/worker/bots/cli-probe.js";
 
 const owner = "11111111-1111-4111-8111-111111111111";
 const other = "22222222-2222-4222-8222-222222222222";
@@ -173,15 +177,23 @@ describe("Bot CLI environment preparation", () => {
   it.skipIf(process.platform === "win32")("retains aliases when child cleanup is unconfirmed without leaking child output", async () => {
     const f = await fixture();
     await f.config(`agentCliAliases:\n  daynight: ${JSON.stringify(process.execPath)}\n`);
-    f.runCommand.mockRejectedValue(new HerdrCommandCleanupError([new Error("private-child-output")], new Error("private-child-cause")));
+    const ownership = { launchId: owner, pid: null, process: null, jobObjectName: null, targetStarted: true };
+    const retry = vi.fn(async () => {});
+    const probeFailure = new BotCliProbeCleanupError(ownership, retry);
+    retry.mockRejectedValueOnce(probeFailure);
+    f.runCommand.mockRejectedValue(probeFailure);
     try { await prepareBotEnvironment(f.options, f.dependencies); throw new Error("Expected refusal"); }
     catch (error) {
-      expect(error).toBeInstanceOf(HerdrCommandCleanupError);
-      expect(String(error)).not.toContain("private-child");
-      const directory = (error as Error & { aliasDirectory: string }).aliasDirectory;
+      expect(error).toBeInstanceOf(BotEnvironmentCleanupError);
+      const failure = error as BotEnvironmentCleanupError;
+      expect(failure.ownership).toBe(ownership);
+      const directory = failure.aliasDirectory!;
       expect((await stat(directory)).isDirectory()).toBe(true);
-      expect((error as Error).cause).toBeUndefined();
-      await rm(directory, { recursive: true });
+      expect(failure.cause).toBeUndefined();
+      await expect(failure.retryCleanup()).rejects.toBe(probeFailure);
+      expect((await stat(directory)).isDirectory()).toBe(true);
+      await failure.retryCleanup();
+      await expect(stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
     }
   });
 
@@ -209,5 +221,27 @@ describe("Bot CLI environment preparation", () => {
       expect(String(error)).toContain("daynight login");
     }
   });
+
+  it.skipIf(process.platform === "win32")("stops ignored-stdio descendants before rejecting unsupported CLI help", async () => {
+    const f = await fixture(); const pidFile = path.join(f.root, "descendants");
+    const executable = path.join(f.root, "wrapper.cjs");
+    await writeFile(executable, `#!${process.execPath}\nconst child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio:'ignore'}); require('node:fs').appendFileSync(${JSON.stringify(pidFile)}, String(child.pid)+'\\n'); child.unref(); console.log('Unsupported CLI');\n`, { mode: 0o700 });
+    await f.config(`agentCliAliases:\n  daynight: ${JSON.stringify(executable)}\n`);
+    const readPids = async () => (await readFile(pidFile, "utf8")).trim().split("\n").map(Number);
+    const live = async (pid: number) => {
+      try { return !(await promisify(execFile)("ps", ["-p", String(pid), "-o", "stat="])).stdout.trim().startsWith("Z"); }
+      catch { return false; }
+    };
+    try {
+      await expect(prepareBotEnvironment(f.options, { fetch: f.fetch })).rejects.toThrow(/advertise/);
+      const pids = await readPids(); expect(pids.length).toBeGreaterThan(0);
+      expect(await Promise.all(pids.map(live))).toEqual(pids.map(() => false));
+      expect(await readdir(path.join(f.options.workerPaths.stateDirectory, "agent-cli-aliases"))).toEqual([]);
+    } finally {
+      for (const pid of await readPids().catch(() => [])) if (await live(pid)) {
+        try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+      }
+    }
+  }, 30_000);
 
 });

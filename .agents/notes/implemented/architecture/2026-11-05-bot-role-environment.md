@@ -23,7 +23,12 @@ CLI environment preparation binds DN_CONFIG_DIR to the target Worker's paths,
 uses ordinary CLI configuration and authentication, verifies server and current
 principal, and probes the effective CLI through bounded help commands. Existing
 alias preparation and native environment rules remain the owners of executable
-selection. Credentials never become role parameters. The
+selection. A gated guardian holds process-instance ownership for the whole help
+batch. Targets start only after its POSIX process group or Windows Job boundary
+is established, and the guardian stays alive after each wrapper exits. Every
+return path confirms the group or Job has stopped; uncertain cleanup retains
+the aliases and an actionable ownership receipt with a cleanup retry. Credentials
+never become role parameters. The
 [requirements](../../../../docs/spec/bot-role-environment.md) own observable
 behavior; the [design](../../../../docs/design/bot-role-environment.md) owns the
 consumer interfaces and cleanup responsibilities.
@@ -44,6 +49,12 @@ CLI discovery and restrict otherwise authorized requests. The existing skill
 supplies applicable task workflows, while help describes the actual commands.
 Ordinary queries do not need a Goal.
 
+**Treat direct CLI closure as complete probe cleanup.** A wrapper can close its
+streams and exit while an inherited child continues executing. The ordinary
+prerequisite runner's close result cannot prove that the alias users have
+stopped. A live guardian provides attributable cleanup without changing Task
+execution or inferring ownership from a saved PID after its parent disappeared.
+
 ## Consequences
 
 The template can evolve for unprepared Bots without rewriting existing roles.
@@ -51,6 +62,11 @@ Checks fail before startup when configuration or authentication is observably
 wrong, while preserving real provider homes and account permissions. Each
 preparation incurs read-only identity and CLI probes. These observations cannot
 prevent later user changes to global configuration.
+
+The probe guardian adds bounded process-identity and cleanup work, including
+Windows Job setup. A single guardian serves the whole help batch. Cleanup can
+outlast an operation cancellation because releasing executable resources still
+requires positive process-exclusion evidence.
 
 The hosting consumer must persist preparation before registration, reconcile
 unknown outcomes, inject the server-frozen text, and release owned aliases only
