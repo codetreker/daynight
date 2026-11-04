@@ -250,7 +250,7 @@ task-management、project-management 与 write-safety 分别解释任务、项�
 
 资料更新和内容核验先于许可更新。最终审查所依据的 task version 传给现有
 `task update --allow-agents true`；可在同一更新提交最终 description，不携带无关字段。
-负责人检查使用显式 project 的 `task list --all --assigned-to me --json`，复用逐页认证身份绑定与返回项负责人校验。目标 ID 必须在完整结果中，且 assignedTo 非空、与完整审查任务的负责人和精确版本一致；不增加 ready、许可或平台筛选。缺席、不符、不可读或版本变化不能通过；重读并重新判断，不改派任务。最终许可更新仍受精确版本保护。已启用任务检查失败保持只读并报告实际许可，既有 claim 恢复不重新执行本人候选资格检查。
+负责人检查只读取显式目标的 `task show <task-id> --project <project-id> --json`，不枚举项目或账号任务集合。done 在归属检查前直接报告无需移交。其他状态将目标 assignedTo 与 setup 或当前 session 已独立确认的当前认证账号本地 user UUID 比较；未知身份、空值、不符或目标不可读时报告阻塞，不查询其他任务或改派。名称、邮箱、目标负责人和历史 worker 不是本人 UUID 的独立依据。目标版本变化须重读并重新判断，最终许可更新仍受精确版本保护。已启用任务检查失败保持只读并报告实际许可，既有 claim 恢复不重新执行本人候选资格检查。
 
 blocked todo 在设计和接口已清楚时可以预先移交，真实依赖继续阻止执行。已有 true 的
 任务只读复审，失败保留许可并报告调度风险；不会把复审假定为暂停。撤销或停止按
