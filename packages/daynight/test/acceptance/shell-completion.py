@@ -641,7 +641,7 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
             ("empty team member prefix", "daynight team member ", ["list", "set-role", "remove"]),
             ("empty team member remove options", "daynight team member remove aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa ", ["--team", "--if-version", "--confirm", "--json"]),
             ("empty team leave options", "daynight team leave ", ["--team", "--if-version", "--confirm", "--json"]),
-            ("empty team default prefix", "daynight team default ", ["show"]),
+            ("empty team default prefix", "daynight team default ", ["show", "set"]),
             ("empty team delete options", "daynight team delete ", ["--team", "--if-version", "--confirm", "--json"]),
             ("empty team show options", "daynight team show ", ["--team", "--json"]),
             ("empty team projects options", "daynight team projects ", ["--team", "--json"]),

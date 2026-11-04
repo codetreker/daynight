@@ -29,8 +29,9 @@ export const teamDefinition: CommandDefinition = {
       { name: "list", description: "List Team invitation metadata", options: [team, json, help], details: "The list never contains invitation links or secrets." },
       { name: "revoke", description: "Revoke a Team invitation", arguments: [{ name: "invite-id", description: "Invitation UUID" }], options: [team, confirm, json, help], details: "Without --confirm, an interactive confirmation is required. An already revoked invitation is a no-op." },
     ], options: [help] },
-    { name: "default", description: "Read the current account's default Team", commands: [
+    { name: "default", description: "Manage the current account's default Team", commands: [
       { name: "show", description: "Show and validate the default Team", options: [json, help], details: "An unconfigured default resolves to the current account's Personal Team." },
+      { name: "set", description: "Set the default Team", arguments: [{ name: "team", description: "Team UUID or personal" }], options: [confirm, json, help], details: "Verifies membership before saving the default for this server and account. Without --confirm, an interactive confirmation is required." },
     ], options: [help] },
   ], options: [help], details: "Run daynight team <command> --help for command usage.",
 };

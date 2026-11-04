@@ -217,6 +217,7 @@ daynight team member remove <user-id> [--team <uuid|personal>] [--if-version <ve
 daynight team leave [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
+daynight team default set <uuid|personal> [--confirm] [--json]
 ```
 
 `team list` 读取当前用户加入的全部 Team；`show` 读取目标 Team 与本人角色，
@@ -224,7 +225,7 @@ daynight team default show [--json]
 和当前 `/me` 用户 ID 读取配置 `teamDefaults`，当前 pair 缺失时使用 `/me` 的真实
 Personal Team ID。配置值无效、目标不存在或无权时明确失败，不静默切换 Personal。
 `default show` 验证配置目标，失效时失败；`team list` 和显式目标不依赖旧默认，
-因此仍可用于检查和修复失效配置。读取不写配置或远程资源。默认只影响 Team 上下文，
+因此仍可用于检查失效配置。读取不写配置或远程资源。默认只影响 Team 上下文，
 不改变显式 Project、Task 或现有仓库发现，`project list` 仍读取全部可访问项目。
 
 Team 与项目列表完整读取并验证全部页面后才输出；重复 ID、游标循环、预算或任何一页
@@ -232,6 +233,16 @@ Team 与项目列表完整读取并验证全部页面后才输出；重复 ID、
 必须属于所选 Team。`--json` 保留完整资源与精确版本；`default show` 返回 `configured`
 （配置 ID 或 `null`）和已验证的 `team`。可读文本遵守终端转义规则。
 帮助及参数校验先于配置与网络读取。
+
+`team default set` 验证目标及当前用户的成员资格，再将目标保存到当前服务和账号的
+配置项；它不依赖旧默认，因此可以修复无效或失权的配置。`personal` 保存当前用户真实的
+Personal Team UUID。未提供无值布尔 `--confirm` 时须交互确认，非交互调用在写入前
+失败；重复开关或 `--confirm=false` 是参数错误。取消或响应主体不匹配不写入。
+`--json` 返回保存的 `configured` 和已验证的 `team`。
+同账号轮换 token 后保留选择，不同账号或服务独立。写入保留注释、未知字段和其他
+配置项；并发修改当前凭据或当前默认时拒绝覆盖，共享 YAML alias 会连带改变其他设置时
+拒绝写入。本地替换结果不确定时读取当前配置项，不自动重放。该命令不修改 Web 偏好
+或仓库绑定。
 
 ## Team 生命周期
 

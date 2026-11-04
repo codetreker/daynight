@@ -29,10 +29,14 @@ export const runTeamCommand = async (args: readonly string[], context: CliContex
   const target = explicit === undefined || explicit === "personal" ? explicit : canonicalId(explicit);
   if (target === null) throw new UsageError("--team must be a hyphenated UUID or personal.", `daynight team ${command.command.name} --help`);
   const action = command.command.name;
+  const isDefault = command.path.includes("default");
+  const setDefault = isDefault && action === "set";
+  const defaultTarget = setDefault ? (command.values[0] === "personal" ? "personal" : canonicalId(command.values[0] ?? "")) : undefined;
+  if (setDefault && defaultTarget === null) throw new UsageError("Team must be a hyphenated UUID or personal.", "daynight team default set --help");
   const invitation = command.path.includes("invitation");
   const isMember = command.path.includes("member");
   const memberMutation = isMember && (action === "set-role" || action === "remove") || action === "leave";
-  const mutation = invitation ? action === "create" || action === "revoke" : action === "create" || action === "rename" || action === "delete" || memberMutation;
+  const mutation = invitation ? action === "create" || action === "revoke" : action === "create" || action === "rename" || action === "delete" || memberMutation || setDefault;
   const memberId = isMember && action !== "list" ? canonicalId(command.values[0]!) : undefined;
   if (memberId === null) throw new UsageError("user-id must be a hyphenated UUID.", `${command.path.join(" ")} --help`);
   const confirmed = command.options.has("--confirm");
@@ -47,7 +51,7 @@ export const runTeamCommand = async (args: readonly string[], context: CliContex
     catch { throw new UsageError("--if-version must be a positive 64-bit integer.", `daynight team ${action} --help`); }
   }
   if (mutation) requireTeamConfirmation(context, confirmed);
-  await dependencies.runServerCommand(context, async ({ api, operation, serverUrl }) => {
+  await dependencies.runServerCommand(context, async ({ api, operation, serverUrl, serverConfiguration }) => {
     const user = await api.getTeamCurrentUser();
     const rendering = await import("./rendering.js");
     if (!invitation && action === "create") {
@@ -62,7 +66,20 @@ export const runTeamCommand = async (args: readonly string[], context: CliContex
       return command.options.has("--json") ? rendering.renderTeamJson(teams) : rendering.renderTeams(teams);
     }
     const { readTeamDefault, teamTarget } = await import("./context.js");
-    const isDefault = command.path.includes("default");
+    if (setDefault) {
+      const { resolveConfigurationPaths } = await import("../../config/paths.js");
+      const { readTeamDefaultSnapshot, writeTeamDefault } = await import("../../config/team-default.js");
+      const paths = resolveConfigurationPaths(context.homeDirectory());
+      const snapshot = await readTeamDefaultSnapshot(paths, serverConfiguration, user.id, operation.signal);
+      const resolved = teamTarget(defaultTarget!, user);
+      const team = verifyPersonal(await api.getTeam(user.id, resolved), user);
+      operation.check();
+      await confirmTeamChange(context, confirmed, `Set default Team to ${terminalText(JSON.stringify(team.name ?? "Personal"))} (${team.id}, ${team.membership.role})?`, operation.signal);
+      await writeTeamDefault(paths, serverConfiguration, user.id, snapshot, team.id, operation.signal);
+      return confirmedOutput("Default Team update", team.id, () => command.options.has("--json")
+        ? rendering.renderTeamJson({ configured: team.id, team })
+        : `Configured: ${team.id}\n${rendering.renderTeam(team)}`);
+    }
     const configured = target === undefined ? await readTeamDefault(context.homeDirectory(), serverUrl, user, operation.signal) : undefined;
     const resolved = teamTarget(target ?? configured ?? "personal", user);
     if (isMember || action === "leave") {

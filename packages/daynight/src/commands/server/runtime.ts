@@ -4,12 +4,14 @@ import type { ApiClient, Operation, OperationLimits } from "../../api/index.js";
 import type { CliContext } from "../../cli/context.js";
 import { resolveConfigurationPaths } from "../../config/paths.js";
 import { loadServerConfiguration } from "../../config/server.js";
+import type { ServerConfiguration } from "../../config/server.js";
 import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 
 export type ServerSession = {
   readonly api: ApiClient;
   readonly operation: Operation;
   readonly serverUrl: string;
+  readonly serverConfiguration: ServerConfiguration;
 };
 
 export type ConfirmedMutationOutput = {
@@ -79,7 +81,7 @@ export const runServerCommand = async (
     if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
     operation.check();
     const api = createApiClient({ serverUrl, serverToken, operation, ...(options.fetch === undefined ? {} : { fetch: options.fetch }) });
-    const output = await command({ api, operation, serverUrl });
+    const output = await command({ api, operation, serverUrl, serverConfiguration: { serverUrl, serverToken } });
     if (typeof output === "object" && output.kind === "confirmed-mutation") {
       confirmed = output;
       const receipt = createOperation({ limits: { totalMs: 5_000 } });
