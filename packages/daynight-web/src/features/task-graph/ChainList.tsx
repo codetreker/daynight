@@ -1,3 +1,4 @@
+import { TaskPausedBadge, TaskPauseCount, usePausedTaskIds, useTaskPaused } from "../task-pause/TaskPause";
 import { ListPagination } from "../projects/ListPagination";
 import type { PaginationState } from "../projects/usePagination";
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -43,11 +44,12 @@ type GoalTaskRowProps = {
 const GoalTaskRow = memo(({ projectId, task, rootId, onOpenTask }: GoalTaskRowProps) => {
   const { messages: { common, workspace: { project } } } = useI18n();
   const execution = useTaskExecution(task);
+  const paused = useTaskPaused(task.id);
   return <li>
     <button className="goal-task-row task-status-surface" data-task-status={task.status} id={`chain-task-${rootId}-${task.id}`} type="button" onClick={(event) => onOpenTask(task.id, event.currentTarget)} aria-haspopup="dialog">
       <span className={`goal-task-dot graph-status-${task.status}`} aria-hidden="true" />
       <span className="root-heading"><span className="root-title">{task.titlePreview}{task.titleTruncated ? '…' : ''}</span>{execution !== null && <span className="goal-task-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} tooltip="duration" /></span>}<span className="task-assignee-row-meta"><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /></span></span>
-      <span className="goal-task-status"><span className={`root-status graph-status-${task.status}`}>{common.status[task.status]}</span>{task.ready && <span className="task-ready">{project.ready}</span>}{task.blockedBy.length > 0 && <span className="graph-blocked-badge">{project.blocked}</span>}</span>
+      <span className="goal-task-status">{paused && <TaskPausedBadge />}<span className={`root-status graph-status-${task.status}`}>{common.status[task.status]}</span>{task.ready && <span className="task-ready">{project.ready}</span>}{task.blockedBy.length > 0 && <span className="graph-blocked-badge">{project.blocked}</span>}</span>
       <svg className="goal-task-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
     </button>
   </li>;
@@ -59,6 +61,8 @@ const ChainRow = memo(({ projectId, matchingTaskIds, index, rootId, open, onOpen
   const task = index.nodes.get(rootId)!;
   const component = index.components.get(rootId)!;
   const progress = component.progress;
+  const pausedTaskIds = usePausedTaskIds();
+  const pausedCount = [...component.memberIds].filter((id) => pausedTaskIds.has(id)).length;
   const inProgressCount = [...component.memberIds].filter((id) => index.nodes.get(id)!.status === 'in_progress').length;
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   const members = useMemo(() => {
@@ -80,7 +84,7 @@ const ChainRow = memo(({ projectId, matchingTaskIds, index, rootId, open, onOpen
         aria-controls={`goal-children-${rootId}`} onClick={() => setExpanded((value) => !value)}>
         <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
         <span className="root-heading">
-          <span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgressCount })}</span></span>
+          <span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgressCount })}</span><TaskPauseCount count={pausedCount} />{pausedTaskIds.has(rootId) && <TaskPausedBadge />}</span>
           <span className="task-assignee-row-meta"><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /></span>
         </span>
         <span className="root-progress"><span className="root-progress-label">{m.progress({ done: progress.done, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${progress.done / progress.total * 100}%` }} /></span></span>

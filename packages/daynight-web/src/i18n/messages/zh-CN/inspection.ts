@@ -1,6 +1,8 @@
+import { pause } from "./pause";
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  pause,
   discussion: {
     title: "讨论", empty: "还没有讨论", loading: "正在加载讨论", refresh: "刷新讨论",
     loadOlder: "加载较早的消息", loadNewer: "加载较新的消息", viewLatest: "查看新消息",

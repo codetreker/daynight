@@ -1,14 +1,14 @@
 import { waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { deleteTask, getTask, setTaskAgentPermission, setTaskRequiredPlatform, setTaskStatus } from '../src/api/client';
+import { deleteTask, getTask, setTaskAgentPermission, setTaskRequiredPlatform, setTaskStatus, unpauseTask } from '../src/api/client';
 import type { TaskDetail } from '../src/api/types';
 import { canDeleteTask, TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { admitTaskGraph, createTaskSessionWorld } from './helpers/taskSessions';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), deleteTask: vi.fn(), getTask: vi.fn(), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn() }));
+vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), deleteTask: vi.fn(), getTask: vi.fn(), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn(), unpauseTask: vi.fn() }));
 const project = '10000000-0000-4000-8000-000000000001'; const task = '20000000-0000-4000-8000-000000000001'; const sibling = '20000000-0000-4000-8000-000000000002';
-const initial = detailFixture(project, task, { title: 'Old reviewed task', version: 9n });
+const initial = detailFixture(project, task, { title: 'Old reviewed task', version: 9n, properties: { paused: true } });
 const replacement = { ...initial, title: 'Different restored task at the same version' };
 const reads = vi.mocked(getTask); const deletes = vi.mocked(deleteTask);
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; };
@@ -42,10 +42,10 @@ const pausePreparation = (sessions: TaskDetailSessions, point: 'beginSync' | 'de
   }
   return { entered: entered.promise, release: release.resolve };
 };
-const assertNoWrites = () => { expect(deletes).not.toHaveBeenCalled(); expect(setTaskStatus).not.toHaveBeenCalled(); expect(setTaskAgentPermission).not.toHaveBeenCalled(); expect(setTaskRequiredPlatform).not.toHaveBeenCalled(); };
+const assertNoWrites = () => { expect(deletes).not.toHaveBeenCalled(); expect(setTaskStatus).not.toHaveBeenCalled(); expect(setTaskAgentPermission).not.toHaveBeenCalled(); expect(setTaskRequiredPlatform).not.toHaveBeenCalled(); expect(unpauseTask).not.toHaveBeenCalled(); };
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 afterEach(() => { for (const [sessions, world] of worlds) { sessions.dispose(); world.dispose(); } for (const release of releases) release(); releases.clear(); worlds.clear(); });
-beforeEach(() => { reads.mockReset().mockResolvedValue(initial); deletes.mockReset(); vi.mocked(setTaskStatus).mockReset(); vi.mocked(setTaskAgentPermission).mockReset(); vi.mocked(setTaskRequiredPlatform).mockReset(); });
+beforeEach(() => { reads.mockReset().mockResolvedValue(initial); deletes.mockReset(); vi.mocked(setTaskStatus).mockReset(); vi.mocked(setTaskAgentPermission).mockReset(); vi.mocked(setTaskRequiredPlatform).mockReset(); vi.mocked(unpauseTask).mockReset(); });
 
 describe('reviewed task mutation preparation', () => {
   it.each((['beginSync', 'detailTransaction'] as const).flatMap((point) => [false, true].map((observe) => ({ point, observe }))))('expires a reviewed DELETE paused at $point when replacement history arrives with observe=$observe', async ({ point, observe }) => {
@@ -58,11 +58,12 @@ describe('reviewed task mutation preparation', () => {
     const pending = deferred<void>(); deletes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, replacement.version, true);
     await waitFor(() => expect(deletes).toHaveBeenCalledExactlyOnceWith(project, task, replacement.version, true, expect.any(AbortSignal), expect.anything()));
   });
-  it.each((['status', 'allowAgents', 'requiredPlatform'] as const).flatMap((action) => (['beginSync', 'detailTransaction'] as const).map((point) => ({ action, point }))))('expires $action preparation paused at $point before it can mutate a different history', async ({ action, point }) => {
+  it.each((['status', 'allowAgents', 'requiredPlatform', 'unpause'] as const).flatMap((action) => (['beginSync', 'detailTransaction'] as const).map((point) => ({ action, point }))))('expires $action preparation paused at $point before it can mutate a different history', async ({ action, point }) => {
     const sessions = createSessions(); await open(sessions); const gate = pausePreparation(sessions, point);
     if (action === 'status') sessions.setStatus(project, task, 'done', initial.version);
     else if (action === 'allowAgents') sessions.setAgentPermission(project, task, true, initial.version);
-    else sessions.setRequiredPlatform(project, task, 'linux', initial.version);
+    else if (action === 'requiredPlatform') sessions.setRequiredPlatform(project, task, 'linux', initial.version);
+    else sessions.unpause(project, task, initial.version);
     await gate.entered; assertNoWrites(); await replace(sessions, [replacement]); const world = worlds.get(sessions)!; sessions.observe(project, task, world.node(project, task), true);
     reads.mockResolvedValue(replacement); gate.release(); await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(replacement));
     assertNoWrites(); expect(reads).toHaveBeenCalledTimes(2); expect(sessions.snapshot(project, task).mutation.phase).not.toBe('pending'); expect(canDeleteTask(sessions.snapshot(project, task))).toBe(true);
