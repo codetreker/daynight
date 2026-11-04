@@ -54,8 +54,10 @@ preparation callback into the runtime. An empty selection is resolved before
 new task resources are created; configured Projects are registered locally
 before the first complete claim inventory, including with an empty database.
 The [simplification decision](../simplification/2026-10-27-worker-claim-records.md)
-removes the original promise that persisted cleanup deadlines continue while a
-restarted process waits for Project selection. Current-process cleanup jobs
+removed the original promise that cleanup jobs continue while a restarted
+process waits for Project selection. The [cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md)
+preserves the original terminal deadline and notification state, but starts no
+cleanup side effects during Project selection. Current-process cleanup jobs
 remain separate from normal reconciliation.
 
 After preparation, service credentials and worker settings are validated from
@@ -136,9 +138,10 @@ An independent worker root shares path calculations while preserving ownership.
 
 **Prepare before entering any retained runtime.** The original detailed model
 started durable cleanup discovery before waiting for Project selection, so old
-deadlines could advance. The six-column model has no cross-process cleanup
-intent or deadline to continue; fresh project mappings and complete inventory
-establish the next process's resource decisions.
+deadlines could advance. The six-column model then removed cross-process cleanup
+intent and deadlines; current-resource reconciliation established each new
+process's decisions. Durable terminal schedules now preserve retry eligibility
+without moving cleanup before runtime preparation or authorizing unknown owners.
 
 **Read service and worker settings separately after preparation.** An atomic
 configuration replacement between reads can pass the original service check

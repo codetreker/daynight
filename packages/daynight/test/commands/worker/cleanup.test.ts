@@ -154,7 +154,7 @@ describe("cleanup operation budgets", () => {
     await advanceTime(299_999);
     expect(f.events.some(event => event.kind === "cleaned")).toBe(false);
     await advanceTime(1);
-    expect(await result).toMatchObject({ name: "OperationError", kind: "deadline" });
+    expect(await result).toMatchObject({ stage: "worktree-removal", cause: { name: "OperationError", kind: "deadline" } });
     expect(f.store.getTask(f.task)?.status).toBe("active");
     f.clock(301_000);
     expect(f.driver.remaining(f.owner)).toBe(300_000);
@@ -173,7 +173,7 @@ describe("cleanup operation budgets", () => {
     await vi.advanceTimersByTimeAsync(0);
     await advanceTime(181_000);
     controller.abort(new Error("stop requested"));
-    expect(await result).toMatchObject({ kind: "cancelled", cause: controller.signal.reason });
+    expect(await result).toMatchObject({ stage: "agent-stop", cause: { kind: "cancelled", cause: controller.signal.reason } });
     expect(f.removeWorktree).not.toHaveBeenCalled();
     expect(f.events.some(event => event.kind === "cleaned")).toBe(false);
   });

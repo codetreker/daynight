@@ -21,7 +21,7 @@ Controller cleanup-response waiting and final process-stop proof use the same
 five-minute upper bound. Signal escalation
 intervals remain independent of that final deadline.
 
-The agent still has its original ten-minute cleanup turn. Notification and
+The agent retains its original persisted ten-minute cleanup turn. Notification and
 Controller cleanup-response waits are capped by the remaining turn time, and
 polling does not renew that deadline. Shutdown continues to stop resources
 directly without an agent cleanup turn, archive upload or worktree deletion.

@@ -1489,9 +1489,10 @@ lost across a process interruption.
 
 During normal reconciliation, when the original claim is absent from a
 successful complete inventory, the worker asks its agent to release attributable
-temporary files, services and processes outside the worktree. It waits at most
-ten minutes for this cleanup attempt, stops the agent, closes its workspace, removes the matching worktree
-and marks the local row done. Done, release and force withdrawal have the same terminal
+temporary files, services and processes outside the worktree. It waits until
+cleanup completes or the original ten-minute deadline expires, then stops the
+agent, closes its workspace, removes the matching worktree and marks the local
+row done. Done, release and force withdrawal have the same terminal
 resource rule. Cleanup observations, notification, stop/close, and worktree
 verification and deletion each have a five-minute operation budget, including
 their RPC, cleanup provenance HTTP verification, Controller cleanup requests
@@ -1506,10 +1507,11 @@ remain errors; removal does not apply a file chmod fallback. Git registration
 removal uses `--force --force`. Branches, commits and external link targets remain
 protected by the existing cleanup rules.
 
-Known-target cleanup and shutdown observe that Herdr execution directly;
-worktree deletion validates only its target Git registration and directory.
-Unrelated repository or sibling-worktree registration errors are reported
-separately and do not prevent a healthy agent from stopping.
+Known-target cleanup observes that Herdr execution directly; worktree deletion
+validates only its target Git registration and directory. Shutdown proves the
+original processes stopped without depending on Git discovery or cleanup retry
+backoff. Unrelated repository or sibling-worktree registration errors are
+reported separately and do not prevent a healthy agent from stopping.
 
 After the cleanup message is successfully submitted, a subsequent patrol that
 observes idle completes the cleanup turn and proceeds to stop the agent and
@@ -1520,20 +1522,20 @@ and the current bounded wait, without automatic replay. Reaching the deadline
 still proceeds through actual stop confirmation. Idle in this terminal cleanup
 phase does not complete the business task.
 
-Cleanup timing and progress are in memory. Polls do not extend the current
-attempt's deadline; after a crash, the next successful reconciliation observes
-remaining resources and starts a new cleanup attempt and timer. Cleanup prompts
-may repeat. Separate tasks have independent bounded jobs, so one held RPC does
-not postpone another task's cleanup. A cleanup already selected in the current
-process can continue during later service-read failures.
+Terminal cleanup persists its original deadline, notification state and
+per-claim retry schedule. Polls, retries and restarts do not extend that deadline
+or replay the native cleanup prompt. Recovery observes remaining resources
+before releasing responsibility. Separate tasks have independent bounded jobs,
+so one held RPC does not postpone another task's cleanup. A cleanup already
+selected can continue during later service-read failures.
 
 Ctrl+C stops acquisition and scheduling, cancels all running jobs including
 terminal cleanup, and joins them before directly stopping agents and closing
 their workspaces. Process exit sends no cleanup prompt and does not wait for a
 cleanup turn. It preserves claims, worktrees, native session IDs and all
 unfinished active/pending rows, including those whose ownership has ended. The
-next run uses normal inventory reconciliation to re-enter terminal cleanup for
-ended claims. External temporary resources may remain after direct interruption.
+next run restores retained terminal cleanup responsibilities and reconciles
+current inventories and resources for ended claims. External temporary resources may remain after direct interruption.
 Normal completion, release, withdrawal and manual-control cleanup retain their
 notification and removal sequence. Pending stop confirmations must settle before the private
 Herdr instance stops; stop errors remain visible, and uncertain stopping retains
