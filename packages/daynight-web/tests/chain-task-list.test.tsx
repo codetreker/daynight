@@ -28,7 +28,7 @@ const indexOf = (items = seeds): GraphIndex => {
   });
   const graph: TaskGraph = {
     observedAt: time,
-    project: { id: 'project', name: 'Project', repoUrl: 'https://github.com/example/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
+    project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: 'project', name: 'Project', repoUrl: 'https://github.com/example/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
     tasks,
     summary: {
       total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,

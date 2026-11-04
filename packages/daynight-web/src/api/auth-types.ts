@@ -2,12 +2,16 @@ export type AuthProvider = "microsoft" | "google" | "github";
 export type LoginProvider = AuthProvider;
 export type AuthConfig = { readonly providers: readonly AuthProvider[] };
 
+export type TeamRef = { readonly id: string; readonly kind: "personal" | "ordinary"; readonly name: string | null };
+export type ProjectOwnership = { readonly teamId: string; readonly version: bigint };
+
 export type User = {
   readonly id: string;
   readonly email: string | null;
   readonly emailVerified: boolean | null;
   readonly name: string | null;
   readonly avatarUrl: string | null;
+  readonly personalTeam: TeamRef;
 };
 export type CurrentUser = User;
 
@@ -33,12 +37,23 @@ export type ProjectGrant = {
   readonly updatedAt: string;
 };
 export type ProjectAccess = {
+  readonly projectId: string;
+  readonly ownerTeam: TeamRef;
+  readonly ownership: ProjectOwnership;
+  readonly teamRole: ProjectRole | null;
+  readonly canTransfer: boolean;
   readonly effectiveRole: ProjectRole;
   readonly directGrant: ProjectGrant | null;
 };
 
+export type ProjectPersonVersion = {
+  readonly userId: string;
+  readonly version: string;
+  readonly hasProjectAccess: boolean;
+};
 export type ProjectPerson = {
   readonly userId: string;
+  readonly version: string;
   readonly name: string | null;
   readonly avatarUrl: string | null;
   readonly hasProjectAccess: boolean;
@@ -50,7 +65,9 @@ export type ProjectPeople = {
 export type ProjectPeopleQuery =
   | { readonly kind: "catalogue" }
   | { readonly kind: "resolve"; readonly userIds: readonly string[] };
+export type ProjectParticipants = { readonly items: readonly ProjectParticipant[]; readonly actorAccess: ProjectAccess };
 export type ProjectParticipant = {
+  readonly inheritedFrom: { readonly team: TeamRef; readonly role: ProjectRole } | null;
   readonly userId: string;
   readonly profile: { readonly name: string | null; readonly email: string | null; readonly avatarUrl: string | null };
   readonly effectiveRole: ProjectRole;

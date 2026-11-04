@@ -25,8 +25,35 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil || count != len(schemaMigrations) {
 		t.Fatalf("versions: %d, %v", count, err)
 	}
-	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND contype = 'f'`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
-		t.Fatalf("foreign keys: %d, %v", foreignKeys, err)
+	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND contype = 'f' AND conrelid <> 'bots'::regclass`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
+		t.Fatalf("legacy tables gained foreign keys: %d, %v", foreignKeys, err)
+	}
+	wantedBotKeys := map[string]bool{
+		"FOREIGN KEY (owner_user_id) REFERENCES users(id)":                              true,
+		"FOREIGN KEY (owner_user_id, worker_id) REFERENCES workers(user_id, worker_id)": true,
+	}
+	rows, err := database.Pool.Query(ctx, `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='bots'::regclass AND contype='f'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var definition string
+		if err := rows.Scan(&definition); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		if !wantedBotKeys[definition] {
+			rows.Close()
+			t.Fatalf("unexpected Bot foreign key: %s", definition)
+		}
+		delete(wantedBotKeys, definition)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(wantedBotKeys) != 0 {
+		t.Fatalf("missing Bot ownership constraints: %v", wantedBotKeys)
 	}
 	for _, sql := range []string{
 		`INSERT INTO projects (id, name, repo_url) VALUES ('00000000-0000-0000-0000-000000000001', '  ', 'https://example.com/repo')`,

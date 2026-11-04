@@ -7,7 +7,9 @@ const userId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const otherId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const time = "2026-10-27T00:00:00Z";
 const grant: ProjectGrant = { projectId, userId, role: "member", version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time };
-const participant: ProjectParticipant = { userId, profile: { name: null, email: null, avatarUrl: null }, effectiveRole: "admin", directGrant: grant };
+const ownerTeam = { id: otherId, kind: "ordinary" as const, name: " Team " };
+const actorAccess = { projectId, ownerTeam, ownership: { teamId: otherId, version: 9_007_199_254_740_995n }, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: grant };
+const participant: ProjectParticipant = { inheritedFrom: { team: ownerTeam, role: "admin" }, userId, profile: { name: null, email: null, avatarUrl: null }, effectiveRole: "admin", directGrant: grant };
 const operations: Operation[] = [];
 const api = (fetch: typeof globalThis.fetch) => {
   const operation = createOperation();
@@ -22,32 +24,32 @@ describe("project participants", () => {
     const participants: readonly ProjectParticipant[] = [participant, {
       userId: otherId,
       profile: { name: "  Display name\n", email: "", avatarUrl: "https://example.test/avatar" },
-      effectiveRole: "member",
+      inheritedFrom: null, effectiveRole: "member",
       directGrant: { ...grant, userId: otherId, version: 9_223_372_036_854_775_807n },
     }];
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ items: participants }));
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ actorAccess, items: participants }));
     await expect(api(fetch).listProjectMembers(projectId.toUpperCase())).resolves.toEqual(participants);
     expect(fetch).toHaveBeenCalledExactlyOnceWith(new URL(`http://localhost:8787/api/v1/projects/${projectId}/members`), expect.objectContaining({ method: "GET", cache: "no-store" }));
   });
 
   it("keeps nullable profile fields and an explicitly absent grant without creating writable fields", async () => {
     const participants: readonly ProjectParticipant[] = [{ ...participant, directGrant: null }];
-    await expect(api(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ items: participants }))).listProjectMembers(projectId)).resolves.toEqual(participants);
+    await expect(api(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ actorAccess, items: participants }))).listProjectMembers(projectId)).resolves.toEqual(participants);
   });
 
   it("accepts an empty complete roster", async () => {
-    await expect(api(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ items: [] }))).listProjectMembers(projectId)).resolves.toEqual([]);
+    await expect(api(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ actorAccess, items: [] }))).listProjectMembers(projectId)).resolves.toEqual([]);
   });
 
   it.each([
-    null, [], {}, { items: null }, { items: [], nextCursor: "partial" },
+    null, [], {}, { items: [participant] }, { actorAccess: { ...actorAccess, projectId: otherId }, items: [participant] }, { actorAccess, items: null }, { actorAccess, items: [], nextCursor: "partial" },
     { items: [participant], actorAccess: { effectiveRole: "admin", directGrant: grant } },
-    { items: [participant, { ...participant, profile: { name: "Same user", email: null, avatarUrl: null } }] },
-    { items: [{ ...participant, userId: "invalid" }] }, { items: [{ ...participant, userId: userId.toUpperCase() }] },
-    { items: [{ ...participant, effectiveRole: "owner" }] }, { items: [{ ...participant, effectiveRole: undefined }] },
-    { items: [{ ...participant, directGrant: undefined }] }, { items: [{ ...participant, extra: true }] },
-    { items: [{ ...grant, name: null, email: null, avatarUrl: null }] },
-    { items: [{ ...participant, role: "admin", version: 1 }] },
+    { actorAccess, items: [participant, { ...participant, profile: { name: "Same user", email: null, avatarUrl: null } }] },
+    { actorAccess, items: [{ ...participant, userId: "invalid" }] }, { actorAccess, items: [{ ...participant, userId: userId.toUpperCase() }] },
+    { actorAccess, items: [{ ...participant, effectiveRole: "owner" }] }, { actorAccess, items: [{ ...participant, effectiveRole: undefined }] },
+    { actorAccess, items: [{ ...participant, directGrant: undefined }] }, { actorAccess, items: [{ ...participant, extra: true }] },
+    { actorAccess, items: [{ ...grant, name: null, email: null, avatarUrl: null }] },
+    { actorAccess, items: [{ ...participant, role: "admin", version: 1 }] },
   ])("rejects obsolete, duplicate or incomplete roster evidence case %#", async (value) => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(value));
     await expect(api(fetch).listProjectMembers(projectId)).rejects.toMatchObject({ operation: "project.members", phase: "protocol", outcomeUnconfirmed: false });
@@ -60,7 +62,7 @@ describe("project participants", () => {
     { name: 7, email: null, avatarUrl: null }, { name: null, email: false, avatarUrl: null },
     { name: null, email: null, avatarUrl: {} }, { name: null, email: null, avatarUrl: null, userId },
   ])("requires a complete nonnull profile object with nullable text fields case %#", async (profile) => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ items: [{ ...participant, profile }] }));
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ actorAccess, items: [{ ...participant, profile }] }));
     await expect(api(fetch).listProjectMembers(projectId)).rejects.toMatchObject({ operation: "project.members", phase: "protocol", outcomeUnconfirmed: false });
   });
 
@@ -70,12 +72,12 @@ describe("project participants", () => {
     { ...grant, version: 9_223_372_036_854_776_000 }, { ...grant, createdAt: "invalid" },
     { ...grant, updatedAt: undefined }, { ...grant, email: null },
   ])("rejects invalid grants or grants outside the requested participant scope case %#", async (directGrant) => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ items: [{ ...participant, directGrant }] }));
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ actorAccess, items: [{ ...participant, directGrant }] }));
     await expect(api(fetch).listProjectMembers(projectId)).rejects.toMatchObject({ operation: "project.members", phase: "protocol", outcomeUnconfirmed: false });
   });
 
   it.each([undefined, "invalid", otherId, `${userId}, ${userId}`])("rejects roster provenance %s before publishing participants", async (principal) => {
-    const result = response({ items: [participant] });
+    const result = response({ actorAccess, items: [participant] });
     if (principal === undefined) result.headers.delete("Daynight-User-ID");
     else result.headers.set("Daynight-User-ID", principal);
     await expect(api(vi.fn<typeof globalThis.fetch>().mockResolvedValue(result)).listProjectMembers(projectId)).rejects.toMatchObject({ operation: "project.members", phase: "protocol", outcomeUnconfirmed: false });

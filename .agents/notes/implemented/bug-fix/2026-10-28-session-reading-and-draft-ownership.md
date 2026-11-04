@@ -12,7 +12,7 @@ Claude displays locally dispatched user text under the same stable identity as a
 
 The shared Task/Test Session View separates raw tool output from safe message Markdown. It preserves message line breaks, namespaces generated footnotes, and exposes bounded tool regions and tables to keyboard navigation. Copilot result projection removes identical native summary/detail fields while retaining distinct output and errors; native success remains authoritative.
 
-Reading state follows user intent. A visible text anchor preserves the reading line across width changes, with a stable entry fallback. Touch starts alone do not pause following. Keyboard reading and internal footnote navigation can pause it.
+Reading state follows user intent. A visible text anchor preserves the reading line across width changes, with a stable entry fallback. Touch starts alone do not pause following. Keyboard reading and internal footnote navigation can pause it. [Automatic Session history loading](2026-11-04-session-history-autoload.md) reuses this anchor for prepend and preserves following during short-page fill; its request policy remains separate from the shared scroll owner.
 
 The Session client owns tab-local drafts, partitioned by principal, session scope, and full execution fence. A submission associates the exact operation and draft revision. Acknowledgements cannot erase subsequent edits, and unknown outcomes never cause replay. Logout, identity changes, execution changes, and denied reentry clear the corresponding drafts. Storage failure leaves memory editing available.
 

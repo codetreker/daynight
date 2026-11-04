@@ -30,6 +30,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	NewMembershipRoutes(service.NewMemberships(dependencies.Store), auth, logger).RegisterRoutes(mux)
 	projectRoutes(mux, service.NewProjects(dependencies.Store), auth, logger)
 	workersRoutes(mux, service.NewWorkers(dependencies.Store), auth, logger)
+	botsRoutes(mux, service.NewBots(dependencies.Store), auth, logger)
 	taskRoutes(mux, service.NewTasks(dependencies.Store), auth, logger)
 	taskStepsRoutes(mux, service.NewTaskSteps(dependencies.Store), auth, logger)
 	taskThreadRoutes(mux, service.NewTaskThreads(dependencies.Store), auth, logger)

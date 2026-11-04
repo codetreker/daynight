@@ -72,6 +72,20 @@ Task version is the collection version. Ordinary task show/list/graph output doe
 not include the full collection. This CLI provides Step list/show reads, Add,
 Update, Set-status, Move and Delete.
 
+Projects define whether and how to use Steps, including their names, granularity
+and workflow. Steps persist across Sessions and can describe meaningful work and
+its results. A project may prelist work or append records as work becomes known;
+separate coding or review rounds can have separate records. Keep transient Session
+plans, commands, logs and operational authorization in the Session rather than
+turning them into persistent Step content. The installed `using-daynight` skill
+provides task execution and content guidance.
+
+Step status, order and review outcome are independent: `done` records the Step's
+status and does not by itself mean a review passed. The four statuses have no
+required transition order. Steps do not determine Worker claims, Task completion
+or execution authorization. Follow the project's rules and existing authorization
+when maintaining them.
+
 List preserves saved order and prints the parent Task version, total count and
 one-based display number, full short ID, status and complete title for each
 record. An empty collection reports zero Steps. Show prints every target field,
@@ -80,7 +94,8 @@ terminal-control and bidi-control escapes; JSON preserves raw strings and exact 
 List JSON is the complete projectId/taskId/version/steps resource; show JSON is
 the complete projectId/taskId/version/step resource. Neither is a bare array.
 
-Use the complete eight-hex Step ID, never a UUID, prefix or display number.
+Identify a Step by its Task and complete eight-hex Step ID, never a UUID, prefix
+or display number. Different Tasks may contain the same Step ID.
 For list/show, explicit `--project` works outside Git and issues the selected GET without a
 hidden project or parent read; omitted project selection uses normal repository
 discovery. Help runs before configuration, Git or network access. Reads validate
@@ -223,6 +238,13 @@ Read `task show <task-id> --json` before deciding a change, then supply its exac
 `version` through `--if-version` on updates, status, property and delete writes.
 Versions are positive decimal int64 values; preserve every digit without
 floating-point rounding. Reread after each write before the next change.
+
+Steps and Task metadata share the same parent version. Before a Step decision,
+read `task step list <task-id> --json` and use the exact returned version with
+`--if-version`. Changes to either resource can conflict with a Step write, even
+when they affect different fields. A same-value content or status update or a
+move to the current position is a no-op with the current version; a stale
+version still conflicts.
 
 Without `--if-version`, the CLI reads the latest version immediately before
 submitting; that read does not protect an earlier decision. On conflict, reread

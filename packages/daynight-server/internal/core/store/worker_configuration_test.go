@@ -19,7 +19,7 @@ func storeWorkerConfiguration() core.WorkerConfiguration {
 func TestWorkerConfigurationMigrationPreservesWorkersAndTasks(t *testing.T) {
 	ctx := context.Background()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:32]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:33]); err != nil {
 		t.Fatal(err)
 	}
 	database := &Store{Pool: pool}

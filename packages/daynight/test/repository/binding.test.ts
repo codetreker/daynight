@@ -21,7 +21,7 @@ vi.mock("../../src/repository/git.js", async (importOriginal) => {
 
 const id = "11111111-1111-1111-1111-111111111111";
 const serverUrl = "http://localhost:8787";
-const project: Project = { id, name: "Project", repoUrl: "https://git.example/Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z" };
+const project: Project = { id, name: "Project", repoUrl: "https://git.example/Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z" };
 const binding: ProjectBinding = { serverUrl, repoIdentity: "git.example/Org/Repo", projectId: id };
 const directories: string[] = [];
 const operations: Operation[] = [];

@@ -126,7 +126,7 @@ const pauseRefreshClock = async (page: Page): Promise<void> => {
 };
 const nextAutomaticRefresh = async (page: Page, projectId: string): Promise<number> => {
   const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
-  await page.clock.fastForward(5_000);
+  await page.clock.fastForward(15_000);
   return (await response).status();
 };
 
@@ -638,7 +638,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     const before = await appearance();
     last = await seedExternalDependencies(request, shortcut.id, last, [first.id]);
     const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${shortcut.id}/task-sync`);
-    await page.clock.fastForward(5_000); expect((await response).status()).toBe(200);
+    await page.clock.fastForward(15_000); expect((await response).status()).toBe(200);
     await expect(page.locator(`.task-dependency-edge[data-id="${first.id}->${last.id}"]`)).toHaveAttribute('data-external', 'true');
     await expect(page.locator(`.task-dependency-edge[data-id="${middle.id}->${last.id}"]`)).toHaveAttribute('data-external', 'false');
     await expect(page.locator('.task-node-external')).toHaveCount(0);
@@ -1525,7 +1525,7 @@ test('failure-recovery', scenario('failure-recovery'), async ({ page, api: reque
   await page.getByRole('button', { name: '放大', exact: true }).click();
   await withDependencyFailure(async () => {
     const failed = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
-    await page.clock.fastForward(5_000);
+    await page.clock.fastForward(15_000);
     const response = await failed;
     expect(response.status()).toBe(500);
     const body = await response.json() as { error: { requestId: string; code: string } };

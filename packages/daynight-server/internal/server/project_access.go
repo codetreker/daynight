@@ -19,7 +19,12 @@ func projectAccessResponse(access core.ProjectAccess) api.ProjectAccess {
 		response := projectGrantResponse(*grant)
 		direct = &response
 	}
-	return api.ProjectAccess{EffectiveRole: string(access.Role), DirectGrant: direct}
+	var teamRole *string
+	if access.TeamRole != nil {
+		role := string(*access.TeamRole)
+		teamRole = &role
+	}
+	return api.ProjectAccess{ProjectID: access.ProjectID, OwnerTeam: teamRefResponse(access.OwnerTeam), Ownership: ownershipResponse(access.Ownership), EffectiveRole: string(access.Role), DirectGrant: direct, TeamRole: teamRole, CanTransfer: access.CanTransfer}
 }
 
 func (h *projectHandler) access(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -41,4 +46,12 @@ func (h *projectHandler) access(w http.ResponseWriter, request *http.Request, pr
 	}
 	logger.InfoContext(request.Context(), "project access read", "type", "resource", "component", "project_access", "phase", "get", "request_id", RequestID(request.Context()))
 	writeJSON(w, request, logger, http.StatusOK, projectAccessResponse(access))
+}
+
+func ownershipResponse(ownership core.ProjectOwnership) api.ProjectOwnership {
+	return api.ProjectOwnership{TeamID: ownership.TeamID, Version: ownership.Version}
+}
+
+func teamRefResponse(team core.TeamRef) api.TeamRef {
+	return api.TeamRef{ID: team.ID, Kind: team.Kind, Name: team.Name}
 }

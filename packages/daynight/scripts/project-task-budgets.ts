@@ -62,6 +62,7 @@ const project = (index: number) => ({
   name: `Budget project ${index}`,
   repoUrl: `https://git.example/budget/repo-${index}.git`,
   settings: { version: 1, executionWarningMinutes: 60 },
+  ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1 },
   createdAt: new Date(Date.UTC(2026, 9, 20) + index).toISOString(),
   updatedAt: new Date(Date.UTC(2026, 9, 20) + index).toISOString(),
 });

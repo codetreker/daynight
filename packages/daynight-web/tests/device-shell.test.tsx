@@ -5,7 +5,7 @@ import { invalidateAuthRequests } from "../src/api/client";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 
 const render = createLocaleRender("zh-CN");
-const user = { id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
 const other = { ...user, id: "00000000-0000-4000-8000-000000000002", name: "Bob" };
 const code = "BCDFG-HJKLM";
 const inspection = () => ({ userCode: code, expiresAt: new Date(Date.now() + 600_000).toISOString(), status: "pending" });

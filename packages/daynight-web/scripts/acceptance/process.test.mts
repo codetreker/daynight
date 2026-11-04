@@ -44,6 +44,30 @@ test('raw capture returns ordinary failure status and awaits process identity re
   });
 });
 
+test('command input streams large fixture payloads without using an argument', async () => {
+  await fixture(async (cwd) => {
+    const input = `UPDATE users SET avatar_url = '${'x'.repeat(235_654)}';`;
+    const result = await commandBytes(process.execPath, ['-e', 'let input=""; process.stdin.setEncoding("utf8"); process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(input));'], { cwd, input });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr.length, 0);
+    assert.equal(result.stdout.toString('utf8'), input);
+    const binary = Uint8Array.from([0, 255, 128, 32, 10]);
+    const echoed = await commandBytes(process.execPath, ['-e', 'process.stdin.pipe(process.stdout)'], { cwd, input: binary });
+    assert.equal(echoed.exitCode, 0);
+    assert.deepEqual(echoed.stdout, Buffer.from(binary));
+  });
+});
+
+test('a broken input pipe remains an error and reaps the command group', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
+  await fixture(async (cwd) => {
+    let group: number | undefined;
+    await assert.rejects(commandBytes(process.execPath, ['-e', 'require("node:fs").closeSync(0); setInterval(() => {}, 1000)'], {
+      cwd, input: Buffer.alloc(256 * 1024), timeoutMs: 5_000, onSpawn: (child) => { group = child.pid; },
+    }), (error: unknown) => error instanceof Error && 'code' in error && ['EPIPE', 'ECONNRESET'].includes(String(error.code)));
+    requireGroupStopped(group!);
+  });
+});
+
 test('raw output retains the 8 MiB bound', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
   await fixture(async (cwd) => {
     let group: number | undefined;
@@ -63,7 +87,7 @@ test('timeout and cancellation reap the owned command group', { skip: !['linux',
       let started: () => void = () => {};
       const ready = new Promise<void>((resolve) => { started = resolve; });
       const pending = commandBytes(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
-        cwd, timeoutMs: cancelled ? 5_000 : 100, signal: controller.signal,
+        cwd, input: 'pending fixture input', timeoutMs: cancelled ? 5_000 : 100, signal: controller.signal,
         onSpawn: (child) => { group = child.pid; started(); },
       });
       await ready;
