@@ -1,3 +1,4 @@
+import { CLEANUP_OPERATION_MS, cleanupOperation } from "../../cleanup-operation.js";
 import path from "node:path";
 import { lstat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -186,7 +187,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId
               || ticket.worktreeId !== task.worktreeId || ticket.workerId !== task.workerId || ticket.serverOrigin !== task.serverOrigin) throw new Error("The cleanup ticket does not identify the original execution.");
             let response: Awaited<ReturnType<typeof request>> | undefined;
-            try { response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 1000 }); }
+            try { response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: CLEANUP_OPERATION_MS }); }
             catch (error) {
               signal.throwIfAborted();
               const observed = readControllerSnapshot(journal(task));
@@ -216,7 +217,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               const operationId = task.webExecution!.cleanupOperationId!;
               let operation = readControllerOperation(journal(task), operationId);
               if (operation === null) {
-                try { await request(ticket, { kind: "cleanup", operationId, prompt: workerCleanupPrompt(task, intent.deadline), deadline: intent.deadline }, { signal, timeoutMs: 30000 }); }
+                try { await request(ticket, { kind: "cleanup", operationId, prompt: workerCleanupPrompt(task, intent.deadline), deadline: intent.deadline }, { signal, timeoutMs: Math.max(1, Math.min(CLEANUP_OPERATION_MS, intent.deadline - options.now())) }); }
                 catch (error) {
                   signal.throwIfAborted();
                   operation = readControllerOperation(journal(task), operationId);
@@ -228,9 +229,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               if (operation === null || !["confirmed", "failed", "rejected", "expired"].includes(operation.state)) return { task, complete: false };
             }
             if (!stopped) {
-              if (reachable) try { await request(ticket, { kind: "stop", deadline: options.now() + 5000 }, { signal, timeoutMs: 5000 }); } catch { /* OS process observation remains authoritative after an IPC loss. */ }
+              if (reachable) try { await request(ticket, { kind: "stop", deadline: options.now() + CLEANUP_OPERATION_MS }, { signal, timeoutMs: CLEANUP_OPERATION_MS }); } catch { /* OS process observation remains authoritative after an IPC loss. */ }
               signal.throwIfAborted();
-              try { await stopControllerProcesses(proof, native, Date.now() + 5000); }
+              try { await stopControllerProcesses(proof, native, Date.now() + CLEANUP_OPERATION_MS); }
               catch (error) { if (!await confirmControllerProcessesStopped(proof, native)) throw error; }
               stopped = await confirmControllerProcessesStopped(proof, native);
             }
@@ -249,8 +250,8 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         stage = "worktree-removal";
         const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
-        await workerOperation(operation => options.git.removeWorktree(project, task, operation), signal);
-        if (await workerOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
+        await cleanupOperation(operation => options.git.removeWorktree(project, task, operation), signal);
+        if (await cleanupOperation(operation => options.git.findWorktree(project, task, operation), signal) !== null) throw new Error("The original task still has Git worktree resources after cleanup.");
         return { task, complete: true };
       } catch (error) {
         throw new WorkerCleanupError(stage, error);

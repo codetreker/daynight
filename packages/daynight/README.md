@@ -1510,16 +1510,24 @@ lost across a process interruption.
 
 During normal reconciliation, when the original claim is absent from a
 successful complete inventory, the worker asks its agent to release attributable
-temporary files, services and processes outside the worktree. It waits until the
-original ten-minute cleanup deadline at most, stops the agent, closes its
-workspace, removes the matching worktree and marks the local row done. Done,
-release and force withdrawal have the same terminal resource rule. Failed stop
-or deletion retains responsibility and the error.
+temporary files, services and processes outside the worktree. It gives the
+original agent an advisory cleanup opportunity until fresh observations permit
+stopping or the original ten-minute deadline expires, then stops the agent,
+closes its workspace and reconciles the matching worktree. Actual resource
+absence permits marking the local row done. Done, release and force withdrawal have the same terminal
+resource rule. Cleanup observations, notification, stop/close, and worktree
+verification and deletion each have a five-minute operation budget, including
+their RPC, cleanup provenance HTTP verification, Controller cleanup requests
+and Git commands. Notification and
+Controller cleanup-response waits are also capped by the remaining ten-minute
+agent deadline. Ordinary execution keeps its existing operation budgets. Failed
+stop or deletion retains responsibility and the error.
 
-Known-target cleanup and shutdown observe that Herdr execution directly;
-worktree deletion validates only its target Git registration and directory.
-Unrelated repository or sibling-worktree registration errors are reported
-separately and do not prevent a healthy agent from stopping.
+Known-target cleanup observes that Herdr execution directly; worktree deletion
+validates only its target Git registration and directory. Shutdown proves the
+original processes stopped without depending on Git discovery or cleanup retry
+backoff. Unrelated repository or sibling-worktree registration errors are
+reported separately and do not prevent a healthy agent from stopping.
 
 Each bounded Herdr cleanup call sends one advisory message to the still-live
 original agent, then reads fresh snapshots until idle permits stopping, resources

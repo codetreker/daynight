@@ -1,6 +1,6 @@
-import { readPullRequests, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
+import { readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, withdrawWorkerClaim } from "../../api/client";
+import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, unpauseTask, withdrawWorkerClaim } from "../../api/client";
 import { isTaskStale } from "./freshness";
 import type { ExecutionPlatform, GraphTask, TaskDetail, TaskStatus } from "../../api/types";
 import { TaskCacheError } from "../task-cache/database";
@@ -8,7 +8,7 @@ import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import type { SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
 import { materializeDetail, readCachedDetail, saveDetail, validateDetailSummary, type DetailAdmission } from "./detail-cache";
 
-export type TaskMutationOperation = { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
+export type TaskMutationOperation = { readonly action: "unpause"; readonly version: bigint } | { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
 type TaskMutationReview = { readonly detail: TaskDetail; readonly cacheGeneration: string };
 class TaskMutationReviewExpired extends Error {}
 export type TaskMutationState = {
@@ -61,6 +61,7 @@ const canMutate = (state: DetailState): boolean => state.detail !== null && stat
   state.mutation.phase !== "pending" && state.mutation.phase !== "unknown" && !state.mutation.reconciling && state.mutation.reconciliationError === null && !state.requiresFreshRead && state.error === null;
 export const canDeleteTask = (state: DetailState): boolean => canMutate(state);
 export const canSetStatus = (state: DetailState): boolean => canMutate(state);
+export const canUnpause = (state: DetailState): boolean => canMutate(state) && readTaskPaused(state.detail!.properties) === true;
 export const canSetAgentPermission = (state: DetailState): boolean => state.detail !== null && state.detail.status !== "in_progress" && canMutate(state);
 export const canSetRequiredPlatform = canSetAgentPermission;
 export const canSetAssignedTo = canSetAgentPermission;
@@ -407,6 +408,11 @@ export class TaskDetailSessions {
     if (!canSetAgentPermission(state) || state.detail!.version !== version || state.detail!.allowAgents === allowAgents) return;
     this.performMutation(projectId, taskId, { action: "allowAgents", allowAgents, version });
   }
+  unpause(projectId: string, taskId: string, version: bigint): void {
+    const state = this.writableState(projectId, taskId);
+    if (!canUnpause(state) || state.detail!.version !== version) return;
+    this.performMutation(projectId, taskId, { action: "unpause", version });
+  }
   setRequiredPlatform(projectId: string, taskId: string, requiredPlatform: ExecutionPlatform | null, version: bigint): void {
     const state = this.writableState(projectId, taskId);
     if (!canSetRequiredPlatform(state) || state.detail!.version !== version || state.detail!.requiredPlatform === requiredPlatform) return;
@@ -544,6 +550,8 @@ export class TaskDetailSessions {
             ? withdrawWorkerClaim(projectId, taskId, operation.claimId, operation.version, signal, admission)
             : operation.action === "allowAgents"
             ? setTaskAgentPermission(projectId, taskId, operation.allowAgents, operation.version, signal, admission)
+            : operation.action === "unpause"
+              ? unpauseTask(projectId, taskId, operation.version, signal, admission)
             : operation.action === "requiredPlatform"
               ? setTaskRequiredPlatform(projectId, taskId, operation.requiredPlatform, operation.version, signal, admission)
               : operation.action === "assignedTo"
@@ -564,13 +572,16 @@ export class TaskDetailSessions {
             ? detail.status === "todo" && !detail.allowAgents && readWorkerClaim(detail.properties) === undefined && detail.startedAt === null && detail.completedAt === null && detail.requiredPlatform === previous.requiredPlatform
             : operation.action === "allowAgents"
             ? detail.status === previous.status && detail.allowAgents === operation.allowAgents && detail.requiredPlatform === previous.requiredPlatform && preservesTiming
+            : operation.action === "unpause"
+              ? detail.status === previous.status && readTaskPaused(detail.properties) === false && detail.allowAgents === previous.allowAgents && detail.requiredPlatform === previous.requiredPlatform && preservesTiming
             : operation.action === "requiredPlatform"
               ? detail.status === previous.status && detail.requiredPlatform === operation.requiredPlatform && detail.allowAgents === previous.allowAgents && preservesTiming
               : operation.action === "assignedTo"
               ? detail.status === previous.status && detail.assignedTo === operation.assignedTo && detail.requiredPlatform === previous.requiredPlatform &&
                 detail.allowAgents === (changed ? false : previous.allowAgents) && preservesTiming && (changed || detail.updatedAt === previous.updatedAt)
               : detail.status === operation.status && detail.allowAgents === previous.allowAgents && detail.requiredPlatform === previous.requiredPlatform && validStatusTiming(previous, detail, operation.status);
-          if (detail.projectId !== projectId || detail.id !== taskId || !validResult || !preservesMaterials(previous, detail, operation.action !== "withdraw", operation.action !== "assignedTo") || detail.version !== committedVersion) throw new ApiError("protocol");
+          const expectedMaterials = operation.action === "unpause" ? { ...previous, properties: { ...previous.properties, paused: false } } : previous;
+          if (detail.projectId !== projectId || detail.id !== taskId || !validResult || !preservesMaterials(expectedMaterials, detail, operation.action !== "withdraw", operation.action !== "assignedTo") || detail.version !== committedVersion) throw new ApiError("protocol");
           validated = true;
           confirmed = true;
           entry.committedVersion = detail.version;

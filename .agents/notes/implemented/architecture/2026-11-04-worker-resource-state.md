@@ -55,7 +55,11 @@ deadline expires. A failed or uncertain send is not replayed within that call.
 An interrupted call or restarted Worker may notify the still-live original agent
 again. The deadline never restarts, and no new agent is launched for cleanup.
 Idle determines when to begin stopping; fresh workspace and OS stop observations
-establish resource absence after stopAndClose.
+establish resource absence after stopAndClose. The separate
+[operation-budget decision](../bug-fix/2026-11-04-worker-cleanup-operation-budget.md)
+limits each cleanup observation or mutation to five minutes, including nested
+requests. That per-operation budget does not replace the ten-minute advisory
+deadline or establish cleanup completion.
 
 Git cleanup observes the worktree directory and its owned administrative
 registration separately. A missing directory already meets its target; a remaining

@@ -1,6 +1,6 @@
 import { parseProjectAccess } from "./auth-parse";
 import { isTaskVersion } from "./json";
-import { parseTaskProperties } from "./task-properties";
+import { parseTaskProperties, readTaskPaused } from "./task-properties";
 import { array, boolean, id, malformed, project, record, string, timestamp, executionPlatform } from "./parse";
 import type { TaskSummary, TaskSync } from "./types";
 import { nullableId } from "./validation";
@@ -21,8 +21,10 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
   const externalDependsOn = ids(data.externalDependsOn);
   if (externalDependsOn.some((dependency) => !dependsOn.includes(dependency))) return malformed();
   if (data.status !== "todo" && data.status !== "in_progress" && data.status !== "done") return malformed();
+  const properties = parseTaskProperties(data.properties);
+  readTaskPaused(properties);
   return {
-    id: id(data.id), version, properties: parseTaskProperties(data.properties),
+    id: id(data.id), version, properties,
     titlePreview: string(data.titlePreview), titleTruncated: boolean(data.titleTruncated),
     status: data.status, dependsOn, externalDependsOn,
     allowAgents: boolean(data.allowAgents),

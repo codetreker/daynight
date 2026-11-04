@@ -79,6 +79,10 @@ using short native promise-timer ticks for their controlled resource states.
 Their tests retain exact cadence, deadline clipping and cancellation assertions;
 the [coordinator polling decision](../.agents/notes/implemented/testing/2026-11-04-coordinator-test-polling.md)
 owns that test boundary.
+Native supervisor fixtures use production observation budgets and a controlled
+parent clock only after a real TERM receipt and native signal-observation window.
+The [native fixture decision](../.agents/notes/implemented/testing/2026-11-04-native-supervisor-fixture-clock.md)
+records the real-process proof and cleanup requirements.
 The pnpm dependency store is local to `.tmp/pnpm-store`. Native skill terminal
 acceptance uses the development-only `node-pty` dependency, including Windows
 ConPTY. The workspace build policy permits only the pinned node-pty hook and
@@ -162,9 +166,6 @@ PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
 documentation and repository metadata. A selected CLI runs every native platform,
 the runtime compatibility matrix and the dedicated Linux shell completion job.
-On PRs, the Linux job also enforces package version increases before ordinary
-validation. It compares the PR's complete source changes with
-its merge base and its package version with the event's target-branch revision.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
@@ -205,10 +206,10 @@ captured targets, disposable review artifacts, shared refs, and isolation betwee
 PR worktrees. Independent Git suites run in separate Vitest workers. Each suite
 copies its immutable bare-origin seed into private test directories; refs,
 SQLite databases, clones and worktrees remain separate for every case. Sparse
-suites prepare their shared source graph before copying, and version-gate tests
-reuse only immutable default-base objects; scenario observations and mutations
-remain private. Source snapshots are prepared through batched native Git imports,
-while real clone/fetch/worktree operations remain the test subjects. Tests within
+suites prepare their shared source graph before copying; scenario observations
+and mutations remain private. Source snapshots are prepared through batched
+native Git imports, while real clone/fetch/worktree operations remain the test
+subjects. Tests within
 a file stay sequential so environment changes and cleanup have one owner.
 The [Git test decision](../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)
 records the isolation rules, and the
@@ -465,7 +466,7 @@ and records cleanup failures.
 
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. It runs thirty-one native functional workflows, then the same
+parallel. It runs thirty-two native functional workflows, then the same
 container workflows and complete container cleanup. The explicit local
 `pnpm web:acceptance:stress` command adds the fixed native capacity cases after
 those phases. Both modes require Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and
@@ -500,8 +501,8 @@ Default CLI service acceptance retains two bounded deadline probes and
 `.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
 the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
 claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
-functional mode requires thirty-one scenarios per target (62 total); stress mode
-adds five native capacity scenarios (36 native / 31 container, 67 total) and
+functional mode requires thirty-two scenarios per target (64 total); stress mode
+adds five native capacity scenarios (37 native / 32 container, 69 total) and
 `native/capacity/performance.json`. Both
 modes retain strict source/browser identity, combined authentication and owned
 resource cleanup. Local measurements prove only their recorded source and host;
@@ -512,24 +513,17 @@ records the workload split and retained correctness guarantees.
 
 ## Package versions
 
-Changes to `packages/daynight/src/`, either package manifest, `pnpm-lock.yaml`,
-`pnpm-workspace.yaml`, `.npmrc`, either application TypeScript configuration, or
-the package's build-cleanup and resource-copy scripts require a strictly greater
-SemVer in `packages/daynight/package.json`. Source
-additions, deletions and moves all count. Unchanged versions, downgrades and
-build-metadata-only changes fail. Tests, fixtures, documentation, CI workflows
-and validation scripts alone do not require a version increase. CI enforces this
-policy in the PR's Linux CLI job using the event's explicit base and head commits.
+Choose `packages/daynight/package.json`'s version when preparing a CLI release.
+PR and main CI validate affected code without comparing package versions between
+Git revisions. Source, dependency and build-input changes can merge while the
+package version stays unchanged.
 
-Update the version in the same PR as the code. To check committed revisions
-locally, run `pnpm version:check pull_request <base-sha> <head-sha>` or
-`pnpm version:check push <before-sha> <after-sha>`. The command reads versions
-from those commits; uncommitted files do not affect the result. The local push
-mode compares the complete before/after range; an all-zero before SHA validates
-the starting version without a predecessor comparison. Missing history,
-unreadable manifests and invalid versions fail visibly. The
-[toolchain decision](../.agents/notes/archived/process/2026-10-16-typescript-cli-toolchain.md)
-records the original comparison and CI ownership choices.
+Publication requires a valid stable SemVer. An existing exact Git tag or npm
+version produces a successful skip; a new publication must advance npm's
+`latest` version. The [publication guide](#npm-publication) defines these checks
+and the source-bound artifact guarantees. The
+[version policy decision](../.agents/notes/implemented/simplification/2026-11-04-release-time-versioning.md)
+records why version selection belongs to release preparation.
 
 ## npm publication
 
@@ -719,13 +713,13 @@ records the concurrency and aggregation policy.
 Documentation-only PRs run routing tests and this final gate
 without installing application dependencies or running application tests. Every
 `main` push retains full application validation. npm publication runs its own
-CLI validation at the frozen release commit. Package-version enforcement belongs
-to PR validation. The
+CLI validation at the frozen release commit. Version checks apply at publication
+as described under [package versions](#package-versions). The
 [selection decision](../.agents/notes/archived/process/2026-10-21-module-scoped-pr-ci.md)
 records the routing alternatives and maintenance costs; the
 [CI simplification decision](../.agents/notes/archived/simplification/2026-10-21-ci-gate-simplification.md)
-records the version-check timing and final job-result gate choices. The
-[cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
+records the earlier PR version-check timing and the retained final job-result
+gate choices. The [cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
 preserves the earlier rationale for stopping aggregation during cancellation.
 
 To validate the routing rules locally without application dependencies, run:

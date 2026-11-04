@@ -1,3 +1,4 @@
+import { TaskPauseCount } from "../task-pause/TaskPause";
 import { useId } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 import type { OverviewProgress, OverviewProgressCount, OverviewTaskTarget } from "./overview-progress";
@@ -7,14 +8,16 @@ import type { GraphSnapshot } from "./useTaskGraph";
 import "../../styles/task-status-rows.css";
 import { compareTaskStatus } from "./task-order";
 
-export const ProjectOverview = ({ snapshot, progress, pagination, onNavigate }: {
+export const ProjectOverview = ({ snapshot, progress, pagination, onNavigate, onOpenTask }: {
   readonly snapshot: GraphSnapshot;
   readonly progress: OverviewProgress;
   readonly pagination: PaginationState;
   readonly onNavigate: (target: OverviewTaskTarget) => void;
+  readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
 }) => {
-  const { messages: { workspace: { project: m, sections, overview }, common }, format } = useI18n();
+  const { messages: { workspace: { project: m, sections, overview }, inspection: { pause }, common }, format } = useI18n();
   const summary = snapshot.graph.summary;
+  const pausedTask = snapshot.graph.tasks.find((task) => snapshot.pausedTaskIds.has(task.id));
   const headingId = useId();
   const completion = summary.total === 0 ? 0 : Math.round(summary.done * 100 / summary.total);
   const row = (title: string, value: OverviewProgressCount, target: OverviewTaskTarget, scope?: string) => <button className="overview-progress-row task-status-surface" data-task-status={value.status} type="button"
@@ -31,7 +34,7 @@ export const ProjectOverview = ({ snapshot, progress, pagination, onNavigate }: 
     element: <li key="standalone">{row(overview.standalone, progress.standalone, { kind: "standalone" }, overview.standaloneScope)}</li> });
   const orderedRows = rows.toSorted((left, right) => compareTaskStatus(left.status, right.status));
   return <>
-    <div className="project-section-heading"><h2>{sections.overview}</h2><p title={sections.overviewDescription}>{sections.overviewDescription}</p></div>
+    <div className="project-section-heading"><h2>{sections.overview}</h2><p title={sections.overviewDescription}>{sections.overviewDescription}</p>{pausedTask !== undefined && <TaskPauseCount count={snapshot.pausedTaskIds.size} label={pause.openTask(pausedTask.titlePreview)} onClick={(event) => onOpenTask(pausedTask.id, event.currentTarget)} />}</div>
     <section className="stats" aria-label={m.statistics}>
       <div className="stat"><p className="stat-label">{m.totalTasks}</p><p className="stat-number">{format.number(summary.total)}</p><p className="stat-foot">{m.uniqueTasks}</p></div>
       <div className="stat done"><p className="stat-label">{common.status.done}</p><p className="stat-number">{format.number(summary.done)}</p><p className="stat-foot">{m.completion({ percent: completion })}</p></div>
