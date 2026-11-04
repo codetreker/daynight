@@ -157,7 +157,7 @@ describe('completed task chain visibility', () => {
     request.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph(allDone())).mockResolvedValueOnce(resetSnapshot(graph([task('00000000-0000-4000-8000-000000000011', 'todo'), task('00000000-0000-4000-8000-000000000012', 'todo', ['00000000-0000-4000-8000-000000000011'])])));
     render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
     fireEvent.click(graphButton('00000000-0000-4000-8000-000000000001'));
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await screen.findByRole('heading', { name: '暂无近期任务链' });
     expect(screen.queryByTestId('projection')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '显示所有' }));

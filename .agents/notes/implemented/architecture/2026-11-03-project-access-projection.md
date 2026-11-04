@@ -21,7 +21,7 @@ including empty deltas. Existing [grant transactions](2026-10-22-project-members
 continue to read direct facts for mutation and invitation no-ops.
 
 One identity/project-bound memory provider consumes successful sync observations
-and explicit access reads. The existing five-second sync refreshes ordinary graph
+and explicit access reads. The existing fifteen-second sync refreshes ordinary graph
 pages. Other pages use a visible thirty-second fallback; focus, visibility restore
 and management entry revalidate. Concurrent GETs coalesce. Request-start ordering,
 identity and project lifetime fences reject older observations, and management

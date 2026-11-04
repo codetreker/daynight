@@ -25,8 +25,8 @@ The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
 Task assignee. Ordinary task creation/PATCH and full Task, summary and graph
 producers carry it. Native assignee filtering and project-scoped people reads
-are implemented. The Web consumes assignment with schema-4 cache rebuilding,
-people presentation, mutation and local list filters. The CLI consumes the required
+are implemented. The Web consumes assignment with schema-5 persistent profile
+content, strict task parsing, people presentation, mutation and local list filters. The CLI consumes the required
 nullable field and supports assignment/clearing, current-ID output and explicit
 list filters.
 
@@ -38,6 +38,13 @@ implements persistent users, browser-bound login transactions, sessions, PATs an
 callable HTTP handlers. NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The [membership foundation](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
 adds NewMemberships/NewMembershipRoutes, transaction-scoped access checks, private
 project creation, filtered project lists, administrator changes and invitations.
+GET/HEAD `/api/v1/me` authenticates and reads the current user before comparing a
+strong ETag over the complete identity-bound JSON representation. Successful
+responses use `Cache-Control: private, no-cache`; an unchanged validator receives
+a bodyless 304, while a changed profile/account receives 200. HEAD omits the body.
+Authentication and user-read failures retain no-store errors and cannot return
+304. The Web overrides its usual no-store fetch policy only for `/me`, allowing
+browser-managed revalidation across reloads without a custom identity store.
 Stored `ProjectGrant` facts and their real observation versions are distinct from
 computed `ProjectAccess`. The authenticated
 `GET /api/v1/projects/{projectId}/access` returns exactly
@@ -82,9 +89,15 @@ exact decimal strings; each intrinsic summary includes explicit nullable
 assignedTo and the complete current properties object, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and batched property rows share one
 repeatable-read snapshot. Every snapshot and delta, including an empty delta,
-also returns required top-level `actorAccess` using the access endpoint's DTO.
-The existing admission result supplies it in the same snapshot; its nested grant
-version remains an exact int64 JSON number. Browser consumers publish access only
+also returns required top-level `actorAccess` using the access endpoint's DTO and
+complete `assigneeVersions` entries `{userId,version,hasProjectAccess}` for the
+qualified people catalogue. The existing admission result supplies access in the
+same snapshot; its nested grant version remains an exact int64 JSON number.
+People metadata contains no names or avatars, is UUID-sorted and distinct, and
+uses the same qualification and content versions as task-assignees. Any profile
+query, integrity or transaction failure fails the whole sync. Hashing reads all
+qualified profile content on each sync, costing O(people + total profile bytes);
+manifest transport is O(people). It introduces no PostgreSQL migration. Browser consumers publish access only
 to the current identity/project memory owner, outside persistent Project and Task
 records. Missing keys propagate removal through whole-summary
 replacement; ordinary property changes preserve the epoch. Invalid stored
@@ -93,10 +106,13 @@ transaction-completion faults remain 500 internal_error and take precedence over
 a saved property validation refusal. A stored project epoch invalidates caches after supported
 history replacement and transactional task soft deletion. The Web persists
 summaries and details and replaces them atomically after an epoch change. Its
-schema-4 upgrade directly rebuilds project, summary and detail stores from
-versions 1, 2 or 3, rotates user fences and clears old watermarks before a complete
-snapshot. Strict assignedTo consumption and that cache-format upgrade are
-delivered together. Absent properties or assignedTo in old summaries cannot be
+schema-5 upgrade adds a separate profiles store while retaining valid schema-4
+task data and user fences. Upgrades from versions 1, 2 or 3 still rebuild
+incompatible project, summary and detail stores, rotate user fences and clear old
+watermarks before a complete snapshot. Profile content is reusable after reload
+only after current identity/project admission and version matching; access stays
+in the live manifest. Ordinary task epoch replacement can retain matching profile
+content while all publication remains generation-fenced. Absent properties or assignedTo in old summaries cannot be
 inferred as an empty object or null. Graph nodes omit properties,
 and cached values grant no detail or mutation admission. Complete properties
 increase transport, parsing and summary storage costs: node/edge limits and the
@@ -1313,9 +1329,12 @@ they are disjoint and cover the requested IDs exactly. The complete catalogue
 has an empty unresolved array. HEAD and method refusal retain the authenticated
 GET/no-store/Allow contract.
 
-Each item has only userId, nullable name, nullable avatarUrl and boolean
-hasProjectAccess. Values preserve the canonical profile; no name or email
-fallback is synthesized, and email, external identity, role, version and
+Each item has only userId, required version, nullable name, nullable avatarUrl
+and boolean hasProjectAccess. Version is a server-issued lowercase 64-hex
+SHA-256 identifier of userId/name/avatarUrl content; clients do not compute it.
+Access, role, login timestamps and task references do not change an unchanged
+profile version. Values preserve the canonical profile; no name or email
+fallback is synthesized, and email, external identity, role, Task versions and
 execution records are not returned. No scoped membership or live-task reference
 means unresolved, regardless of whether a global user exists. A raw qualifying
 reference whose users row is missing is an internal integrity failure, not an
@@ -1323,9 +1342,12 @@ unresolved ID or a null name. Both modes authorize and read references/profiles
 within one repeatable-read snapshot and fail as a whole on query, scan, rows,
 cancellation or transaction-completion errors.
 
-Full catalogue reads are intended for explicit selection/retry. Recurring
-consumers resolve their rendered/selected IDs in batches of at most 100; an empty
-set sends no request rather than omitting arguments and enumerating everything.
+Full catalogue reads remain available to explicit enumeration callers. The Web
+uses task-sync's complete qualified-person metadata and resolves only profiles
+missing from its persistent cache or carrying a changed content version, in
+batches of at most 100. Picker reopening and recovery reuse unchanged profiles;
+an empty set sends no request rather than omitting arguments and enumerating
+everything.
 The [assignment contract](../../docs/spec/daynight-task-assignment.md) owns the
 privacy, qualification and error rules. Neither mode mutates Task versions.
 

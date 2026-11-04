@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { listProjectPeople } from "../../api/auth";
-import type { ProjectPeople, ProjectPeopleQuery, ProjectPerson } from "../../api/auth-types";
+import type { ProjectPeople, ProjectPerson, ProjectPersonVersion } from "../../api/auth-types";
 import { ApiError, authRequestsPaused, isAbortError, requestId } from "../../api/client";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
+import type { CachedProfile } from "../task-cache/database";
 import type { CacheEvent, SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
 
 export type AssigneePeopleSnapshot = {
@@ -15,19 +16,22 @@ export type AssigneePeopleSnapshot = {
 type ProjectPeopleState = {
   generation: string | null;
   userFence: string | null;
+  profiles: Map<string, CachedProfile>;
+  dirtyProfiles: Map<string, CachedProfile>;
+  hydrated: boolean;
+  versions: ReadonlyMap<string, ProjectPersonVersion>;
+  // A GET can observe newer content than its triggering sync; reuse it until the next successful graph observation.
+  resolvedAgainst: Map<string, string>;
+  unresolvedVersions: Map<string, string>;
   people: Map<string, ProjectPerson>;
   unresolved: Set<string>;
-  sequences: Map<string, number>;
-  sequence: number;
   demands: Map<symbol, readonly string[]>;
   demandIds: readonly string[];
-  demandRevision: number;
   receipts: Map<symbol, number>;
   queued: boolean;
   resolving: boolean;
   refreshPending: boolean;
-  catalogueOperation: number;
-  catalogueIds: readonly string[];
+  catalogueRequested: boolean;
   catalogueStatus: AssigneePeopleSnapshot["status"];
   error: unknown;
   listeners: Set<() => void>;
@@ -51,10 +55,10 @@ export class TaskAssignees {
     let state = this.projects.get(projectId);
     if (state === undefined) {
       state = {
-        generation: null, userFence: null, people: new Map(), unresolved: new Set(), sequences: new Map(), sequence: 0,
-        demands: new Map(), demandIds: [], demandRevision: 0, receipts: new Map(), queued: false, resolving: false,
-        refreshPending: false, catalogueOperation: 0, catalogueIds: [], catalogueStatus: "idle", error: null,
-        listeners: new Set(), snapshot: emptySnapshot(),
+        generation: null, userFence: null, profiles: new Map(), dirtyProfiles: new Map(), hydrated: false,
+        versions: new Map(), resolvedAgainst: new Map(), unresolvedVersions: new Map(), people: new Map(), unresolved: new Set(),
+        demands: new Map(), demandIds: [], receipts: new Map(), queued: false, resolving: false, refreshPending: false,
+        catalogueRequested: false, catalogueStatus: "idle", error: null, listeners: new Set(), snapshot: emptySnapshot(),
       };
       this.projects.set(projectId, state);
     }
@@ -69,17 +73,17 @@ export class TaskAssignees {
   private emit(state: ProjectPeopleState): void {
     state.snapshot = {
       people: state.people, unresolvedUserIds: state.unresolved, error: state.error, status: state.catalogueStatus,
-      items: state.catalogueIds.flatMap((id) => {
+      items: state.catalogueRequested ? [...state.versions.keys()].flatMap((id) => {
         const person = state.people.get(id);
-        return person === undefined || state.unresolved.has(id) ? [] : [person];
-      }),
+        return person === undefined ? [] : [person];
+      }) : [],
     };
     for (const listener of state.listeners) listener();
   }
   private clear(state: ProjectPeopleState): void {
-    state.people = new Map(); state.unresolved = new Set(); state.sequences.clear();
-    state.catalogueIds = []; state.catalogueStatus = "idle"; state.error = null;
-    state.demandRevision += 1;
+    state.profiles.clear(); state.dirtyProfiles.clear(); state.resolvedAgainst.clear(); state.unresolvedVersions.clear();
+    state.hydrated = false; state.versions = new Map(); state.people = new Map(); state.unresolved = new Set();
+    state.catalogueStatus = "idle"; state.error = null;
     this.emit(state);
   }
   private readonly onScopeAbort = (): void => {
@@ -89,23 +93,32 @@ export class TaskAssignees {
     const state = this.projects.get(event.projectId);
     if (state === undefined) return;
     if (event.accessRevoked === true) {
-      if (event.revokedGeneration !== state.generation) return;
-      this.clear(state);
-      state.error = event.error ?? null;
-      this.emit(state);
+      if (event.revokedGeneration !== state.generation && state.generation !== null) return;
+      this.clear(state); state.error = event.error ?? null; this.emit(state);
       return;
     }
-    if (this.scope.isInvalidated || authRequestsPaused()) return;
-    const current = this.scope.getAuthorizedProject(event.projectId);
-    if (current !== null) {
-      const { userFence, cacheGeneration, epoch, maxUpdatedAt } = current.manifest;
-      this.adoptHistory(state, { userId: this.scope.userId, projectId: event.projectId, userFence, cacheGeneration, epoch, maxUpdatedAt });
-    }
+    if (!this.scope.isInvalidated && !authRequestsPaused()) this.schedule(event.projectId, state);
   };
-  private adoptHistory(state: ProjectPeopleState, ticket: SyncTicket): void {
-    if (state.generation === ticket.cacheGeneration && state.userFence === ticket.userFence) return;
-    this.clear(state);
+  private reconcile(state: ProjectPeopleState, versions: readonly ProjectPersonVersion[]): void {
+    const current = new Map(versions.map((person) => [person.userId, person]));
+    for (const [id, version] of state.resolvedAgainst) if (current.get(id)?.version !== version) state.resolvedAgainst.delete(id);
+    for (const [id, version] of state.unresolvedVersions) if (current.get(id)?.version !== version) state.unresolvedVersions.delete(id);
+    const people = new Map<string, ProjectPerson>();
+    for (const [id, version] of current) {
+      const profile = state.profiles.get(id);
+      if (profile === undefined || profile.version !== version.version && state.resolvedAgainst.get(id) !== version.version) continue;
+      const previous = state.people.get(id);
+      people.set(id, previous?.version === profile.version && previous.hasProjectAccess === version.hasProjectAccess
+        ? previous : { ...profile, hasProjectAccess: version.hasProjectAccess });
+    }
+    state.versions = current; state.people = people;
+    state.unresolved = new Set([...state.demandIds.filter((id) => !current.has(id)), ...state.unresolvedVersions.keys()]);
+  }
+  private adoptHistory(state: ProjectPeopleState, ticket: SyncTicket, versions: readonly ProjectPersonVersion[]): void {
+    if (state.userFence !== ticket.userFence) this.clear(state);
+    if (state.generation !== ticket.cacheGeneration) { state.resolvedAgainst.clear(); state.unresolvedVersions.clear(); }
     state.generation = ticket.cacheGeneration; state.userFence = ticket.userFence;
+    this.reconcile(state, versions);
   }
   private async ready<T>(signal: AbortSignal, work: () => T): Promise<T | null> {
     while (!this.disposed && !this.scope.isInvalidated && !signal.aborted) {
@@ -125,10 +138,10 @@ export class TaskAssignees {
   private capture(projectId: string, state: ProjectPeopleState, signal: AbortSignal): Promise<SyncTicket | null> {
     return this.ready(signal, () => {
       const current = this.scope.getAuthorizedProject(projectId);
-      if (current === null) return null;
+      if (current === null || current.assigneeVersions === null) return null;
       const { userFence, cacheGeneration, epoch, maxUpdatedAt } = current.manifest;
       const ticket = { userId: this.scope.userId, projectId, userFence, cacheGeneration, epoch, maxUpdatedAt };
-      this.adoptHistory(state, ticket);
+      this.adoptHistory(state, ticket, current.assigneeVersions);
       return ticket;
     });
   }
@@ -137,9 +150,9 @@ export class TaskAssignees {
     return state.generation === ticket.cacheGeneration && state.userFence === ticket.userFence &&
       current?.cacheGeneration === ticket.cacheGeneration && current.userFence === ticket.userFence;
   }
-  private async request(ticket: SyncTicket, query: ProjectPeopleQuery, signal: AbortSignal): Promise<ProjectPeople> {
+  private async request(ticket: SyncTicket, userIds: readonly string[], signal: AbortSignal): Promise<ProjectPeople> {
     try {
-      return await listProjectPeople(ticket.projectId, query, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
+      return await listProjectPeople(ticket.projectId, { kind: "resolve", userIds }, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
     } catch (error) {
       // Parent-project denial survives presentation changes; the scope fences its captured history.
       if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found" && this.scope.canRevokeProject(ticket)) {
@@ -148,18 +161,28 @@ export class TaskAssignees {
       throw error;
     }
   }
-  private publish(state: ProjectPeopleState, response: ProjectPeople, sequence: number): void {
-    const people = new Map(state.people), unresolved = new Set(state.unresolved);
+  private publish(state: ProjectPeopleState, ticket: SyncTicket, response: ProjectPeople, requested: ReadonlyMap<string, string>, observation: ReadonlyMap<symbol, number>): void {
+    if (!this.matches(state, ticket)) return;
+    const current = this.scope.getAuthorizedProject(ticket.projectId)!;
+    if (current.assigneeVersions === null) return;
+    this.reconcile(state, current.assigneeVersions);
     for (const person of response.items) {
-      if (sequence < (state.sequences.get(person.userId) ?? 0)) continue;
-      state.sequences.set(person.userId, sequence); people.set(person.userId, person); unresolved.delete(person.userId);
+      const expected = requested.get(person.userId), live = state.versions.get(person.userId);
+      if (live === undefined || live.version !== person.version && (live.version !== expected || state.receipts !== observation)) continue;
+      const { hasProjectAccess: _access, ...profile } = person;
+      state.profiles.set(person.userId, profile); state.dirtyProfiles.set(person.userId, profile);
+      state.resolvedAgainst.set(person.userId, live.version); state.unresolvedVersions.delete(person.userId);
     }
-    for (const id of response.unresolvedUserIds) {
-      if (sequence < (state.sequences.get(id) ?? 0)) continue;
-      state.sequences.set(id, sequence); unresolved.add(id);
-    }
-    state.people = people; state.unresolved = unresolved;
+    for (const id of response.unresolvedUserIds) if (state.receipts === observation && state.versions.get(id)?.version === requested.get(id)) state.unresolvedVersions.set(id, requested.get(id)!);
+    this.reconcile(state, current.assigneeVersions);
     this.emit(state);
+  }
+  private async persist(state: ProjectPeopleState, ticket: SyncTicket, signal: AbortSignal): Promise<void> {
+    if (state.dirtyProfiles.size === 0) return;
+    const profiles = [...state.dirtyProfiles.values()];
+    await this.scope.writeProfiles(ticket, profiles, signal);
+    if (!this.matches(state, ticket)) return;
+    for (const profile of profiles) if (state.dirtyProfiles.get(profile.userId) === profile) state.dirtyProfiles.delete(profile.userId);
   }
   setDemand(projectId: string, owner: symbol, userIds: readonly string[]): void {
     const state = this.project(projectId);
@@ -168,21 +191,20 @@ export class TaskAssignees {
   }
   removeDemand(projectId: string, owner: symbol): void {
     const state = this.project(projectId);
-    state.demands.delete(owner);
-    this.updateDemand(projectId, state);
+    state.demands.delete(owner); this.updateDemand(projectId, state);
   }
   private updateDemand(projectId: string, state: ProjectPeopleState): void {
     const ids = [...new Set([...state.demands.values()].flat())].sort();
     if (sameIds(ids, state.demandIds)) return;
-    state.demandIds = ids; state.demandRevision += 1;
-    this.schedule(projectId, state);
+    state.demandIds = ids; this.schedule(projectId, state);
   }
   receipt(projectId: string, owner: symbol, revision: number): void {
     if (!Number.isSafeInteger(revision) || revision < 0) return;
     const state = this.project(projectId);
     if (revision === 0) { state.receipts.delete(owner); return; }
     if (state.receipts.get(owner) === revision) return;
-    state.receipts.set(owner, revision);
+    state.receipts = new Map(state.receipts).set(owner, revision);
+    state.resolvedAgainst.clear(); state.unresolvedVersions.clear();
     this.schedule(projectId, state);
   }
   removeReceipt(projectId: string, owner: symbol): void { this.project(projectId).receipts.delete(owner); }
@@ -196,65 +218,64 @@ export class TaskAssignees {
   }
   private async resolve(projectId: string, state: ProjectPeopleState): Promise<void> {
     if (state.resolving) { state.refreshPending = true; return; }
-    if (state.demandIds.length === 0 || state.receipts.size === 0) return;
+    if (!state.catalogueRequested && (state.demandIds.length === 0 || state.receipts.size === 0)) return;
     state.resolving = true; state.refreshPending = false;
     const signal = AbortSignal.any([this.lifetime.signal, this.scope.signal]);
     try {
       const ticket = await this.capture(projectId, state, signal);
-      if (ticket === null || state.demandIds.length === 0 || state.receipts.size === 0) return;
-      const demandRevision = state.demandRevision, ids = state.demandIds;
+      if (ticket === null) return;
+      if (!state.hydrated) {
+        const profiles = await this.scope.readProfiles(ticket, signal);
+        await this.ready(signal, () => {
+          if (!this.matches(state, ticket)) return;
+          for (const profile of profiles) state.profiles.set(profile.userId, profile);
+          state.hydrated = true;
+        });
+      }
+      const admitted = await this.capture(projectId, state, signal);
+      if (admitted === null || admitted.cacheGeneration !== ticket.cacheGeneration) return;
+      await this.persist(state, ticket, signal);
+      const desired = state.catalogueRequested ? [...state.versions.keys()] : state.demandIds;
+      const ids = desired.filter((id) => state.versions.has(id) && !state.people.has(id) && !state.unresolved.has(id));
+      if (state.catalogueRequested && ids.length !== 0) state.catalogueStatus = "loading";
+      this.emit(state);
       const batches: Promise<unknown>[] = [];
       for (let offset = 0; offset < ids.length; offset += 100) {
-        const userIds = ids.slice(offset, offset + 100), sequence = ++state.sequence;
-        batches.push(this.request(ticket, { kind: "resolve", userIds }, signal).then(async (response) => {
-          await this.ready(signal, () => {
-            if (state.demandRevision === demandRevision && this.matches(state, ticket)) this.publish(state, response, sequence);
-          });
+        const userIds = ids.slice(offset, offset + 100);
+        const requested = new Map(userIds.map((id) => [id, state.versions.get(id)!.version]));
+        const observation = state.receipts;
+        batches.push(this.request(ticket, userIds, signal).then(async (response) => {
+          await this.ready(signal, () => this.publish(state, ticket, response, requested, observation));
         }));
       }
       const outcomes = await Promise.allSettled(batches);
       await this.ready(signal, () => {
-        if (state.demandRevision !== demandRevision || !this.matches(state, ticket)) return;
+        if (!this.matches(state, ticket)) return;
         const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected" && !isAbortError(outcome.reason));
         state.error = failure?.reason ?? null;
+        if (state.catalogueRequested) state.catalogueStatus = failure === undefined ? "ready" : "error";
         this.emit(state);
       });
+      if (this.matches(state, ticket)) await this.persist(state, ticket, signal);
     } catch (error) {
-      if (!signal.aborted && !isAbortError(error) && !this.disposed) { state.error = error; this.emit(state); }
+      if (!signal.aborted && !isAbortError(error) && !this.disposed) {
+        state.error = error; if (state.catalogueRequested) state.catalogueStatus = "error"; this.emit(state);
+      }
     } finally {
       state.resolving = false;
       if (state.refreshPending) { state.refreshPending = false; this.schedule(projectId, state); }
     }
   }
   openCatalogue(projectId: string): void {
-    const state = this.project(projectId), operation = ++state.catalogueOperation;
-    state.catalogueStatus = "loading"; state.error = null; this.emit(state);
-    const signal = AbortSignal.any([this.lifetime.signal, this.scope.signal]);
-    void (async () => {
-      const ticket = await this.capture(projectId, state, signal);
-      if (ticket === null || operation !== state.catalogueOperation) return;
-      state.catalogueStatus = "loading"; this.emit(state);
-      const sequence = ++state.sequence;
-      try {
-        const response = await this.request(ticket, { kind: "catalogue" }, signal);
-        await this.ready(signal, () => {
-          if (operation !== state.catalogueOperation || !this.matches(state, ticket)) return;
-          state.catalogueIds = response.items.map((person) => person.userId);
-          state.catalogueStatus = "ready"; state.error = null;
-          this.publish(state, response, sequence);
-        });
-      } catch (error) {
-        if (signal.aborted || isAbortError(error)) return;
-        await this.ready(signal, () => {
-          if (operation !== state.catalogueOperation || !this.matches(state, ticket)) return;
-          state.catalogueStatus = "error"; state.error = error; this.emit(state);
-        });
-      }
-    })().catch((error: unknown) => {
-      if (!signal.aborted && !isAbortError(error) && !this.disposed && operation === state.catalogueOperation) {
-        state.catalogueStatus = "error"; state.error = error; this.emit(state);
-      }
-    });
+    const state = this.project(projectId);
+    if (state.catalogueRequested) return;
+    state.catalogueRequested = true; state.catalogueStatus = "loading";
+    this.emit(state); this.schedule(projectId, state);
+  }
+  retryCatalogue(projectId: string): void {
+    const state = this.project(projectId);
+    state.catalogueRequested = true; state.catalogueStatus = "loading"; state.error = null;
+    this.emit(state); this.schedule(projectId, state);
   }
   dispose(): void {
     this.disposed = true; this.lifetime.abort(); this.unsubscribe();
@@ -299,5 +320,6 @@ export const useProjectAssigneeCatalogue = (projectId: string) => {
   const owner = useOwner();
   const snapshot = usePeople(owner, projectId);
   const open = useCallback(() => owner.openCatalogue(projectId), [owner, projectId]);
-  return { ...snapshot, open, retry: open };
+  const retry = useCallback(() => owner.retryCatalogue(projectId), [owner, projectId]);
+  return { ...snapshot, open, retry };
 };

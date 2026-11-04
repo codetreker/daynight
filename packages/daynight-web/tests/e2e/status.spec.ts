@@ -213,7 +213,7 @@ test('task-status-conflicts', { annotation: { type: 'scenario', description: 'ta
     const classified = await seedExternalDependencies(api, project.id, blocked, [prerequisite.id]);
     await open(page, project.id, blocked.id); await select(page, 'todo');
     await seedExternalDependencies(api, project.id, classified, []);
-    await page.clock.runFor(5_100);
+    await page.clock.runFor(15_100);
     await expect(confirmation(page)).toHaveCount(0);
     await expect(detail(page).locator('.task-detail-relation-external')).toHaveCount(0);
     expect(lifecycle.evidence.writes).toHaveLength(3);

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 
 type assigneeHTTPEntry struct {
 	UserID           string  `json:"userId"`
+	Version          string  `json:"version"`
 	Name             *string `json:"name"`
 	AvatarURL        *string `json:"avatarUrl"`
 	HasProjectAccess bool    `json:"hasProjectAccess"`
@@ -71,10 +73,10 @@ func decodeAssigneeHTTPResult(t *testing.T, response *httptest.ResponseRecorder,
 	}
 	ids := make([]string, 0, len(entries))
 	for index, entry := range entries {
-		if len(entry) != 4 {
+		if len(entry) != 5 {
 			t.Fatalf("assignee entry contains extra or missing fields: %s", fields["items"])
 		}
-		for _, key := range []string{"userId", "name", "avatarUrl", "hasProjectAccess"} {
+		for _, key := range []string{"userId", "version", "name", "avatarUrl", "hasProjectAccess"} {
 			if _, ok := entry[key]; !ok {
 				t.Fatalf("missing assignee entry field %q", key)
 			}
@@ -86,6 +88,10 @@ func decodeAssigneeHTTPResult(t *testing.T, response *httptest.ResponseRecorder,
 		id, err := uuid.Parse(result.Items[index].UserID)
 		if err != nil || id.String() != result.Items[index].UserID {
 			t.Fatalf("noncanonical assignee identity: %#v", result.Items[index])
+		}
+		version := result.Items[index].Version
+		if decoded, err := hex.DecodeString(version); err != nil || len(decoded) != sha256.Size || version != strings.ToLower(version) {
+			t.Fatalf("invalid assignee content version: %q", version)
 		}
 		ids = append(ids, result.Items[index].UserID)
 	}

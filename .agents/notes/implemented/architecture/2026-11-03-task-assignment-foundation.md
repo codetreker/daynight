@@ -59,19 +59,26 @@ revealing a global profile. Nullable names and avatars remain actual data.
 Bounded resolution probes only requested identities; an unrequested missing
 profile cannot fail that read, while complete enumeration still exposes it.
 
-Web Task/detail/summary/graph consumers require the nullable field, and schema 4
-rebuilds old task material from versions 1, 2 and 3. The detail session owns one
+Web Task/detail/summary/graph consumers require the nullable field. The original
+schema-4 rebuild of versions 1, 2 and 3 remains part of the current schema-5
+upgrade; upgrading schema 4 adds the independent profile store without clearing
+compatible task material. The detail session owns one
 normal Task PATCH and read-only reconciliation of unknown outcomes. It predicts
 same-value versions separately and preserves assignment across all other
 mutations.
 
-A scope-owned, session-memory people owner coalesces rendered/detail/filter ID
-demands and successful mount-local receipts. Batches contain at most 100 IDs;
-empty demand sends no request, and full catalogues are opened explicitly. Each
-person has an accepted dispatch sequence, while project/user fences protect
-history and authorization. A trusted parent-project denial is processed even
-when presentation demand changes, without letting an old history revoke a new
-one.
+A scope-owned people owner coalesces rendered/detail/filter ID demands per
+project and uses successful mount-local receipts for admission. The
+[request-reuse decision](../bug-fix/2026-11-04-task-view-request-reuse.md) replaces
+the original receipt-driven full-profile refresh with persistent versioned
+content and a complete lightweight qualification manifest in task-sync. Only
+missing or changed content is resolved, including valid nullable profiles;
+access-only changes use current metadata without retransferring avatars. Batches
+contain at most 100 IDs and empty demand sends no request. The picker uses that
+manifest and cached content, with explicit recovery for missing or failed reads.
+Captured profile versions and current-manifest checks reject obsolete results,
+while project/user fences protect history and authorization. A trusted parent-project denial is processed even
+when presentation demand changes, without letting an old history revoke a new one.
 
 The Web keeps status and assignee in one compact control group and matches
 assignees only in displayed list selections. Full chain progress, dependencies,
@@ -152,8 +159,8 @@ set changes. Scope/ticket-bound negative admission remains distinct from
 positive profile publication.
 
 **Store only a largest receipt revision.** Re-mounted graph owners start their
-local counter again. Owner identity plus revision preserves successful-refresh
-semantics without a false global sequence.
+local counter again. Owner identity plus revision preserves mount-local admission
+without a false global sequence.
 
 **Infer me from a task or cached client identity.** An empty page has no task
 from which to infer it, and an unconfigured client has no expected principal.
@@ -179,7 +186,7 @@ create membership nor change task versions, and errors never publish a partial
 set. Complete catalogue cost remains a measured consideration; the bounded mode
 has direct cardinality, qualification and query-plan checks. CLI assignment
 operations use required nullable parsing, direct mutation and principal-bound
-list validation. Web assignment and schema-4 consumption are implemented
-together, with session-memory people data and complete graph facts.
+list validation. Web assignment uses strict nullable task data, schema-5 profile
+persistence, live qualification metadata and complete graph facts.
 Migration, raw-wire, snapshot, privacy, race and rollback checks retain these
 boundaries.

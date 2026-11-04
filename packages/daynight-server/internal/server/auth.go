@@ -201,7 +201,7 @@ func (h *Authentication) me(w http.ResponseWriter, request *http.Request, p core
 		writeError(w, request, h.logger.With("user_id", p.UserID), "auth", "me", err)
 		return
 	}
-	writeJSON(w, request, h.logger, http.StatusOK, userResponse(user))
+	h.writeCachedUser(w, request, userResponse(user))
 }
 func (h *Authentication) logout(w http.ResponseWriter, request *http.Request, p core.Principal) {
 	if err := h.identity.Logout(request.Context(), p); err != nil {

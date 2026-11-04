@@ -66,8 +66,10 @@ task-sync projection. The later
 [full-property synchronization decision](2026-10-30-task-property-sync.md) added
 complete properties to snapshot and delta records and rebuilt old summaries with
 schema 3. The [assignment decision](2026-11-03-task-assignment-foundation.md) owns
-the current schema-4 rebuild and required nullable assignedTo field. Graph nodes
-retain their property-free projection.
+the required nullable assignedTo field and earlier-format task rebuilds. The
+[profile-reuse decision](../bug-fix/2026-11-04-task-view-request-reuse.md) owns the
+current schema-5 profile store, preserving compatible schema-4 task data. Graph
+nodes retain their property-free projection.
 
 ## Alternatives
 

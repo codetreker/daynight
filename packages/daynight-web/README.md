@@ -205,6 +205,13 @@ any visibility-triggered refresh can dispatch. An authenticated mount that is
 already away applies the pause before child request effects. Returning confirms
 identity: same-user success resumes requests, while identity replacement or
 session loss cancels queued requests from the previous session. Identity checks and logout bypass this wait.
+The `/me` request alone uses browser HTTP revalidation with `cache: no-cache`.
+Successful responses carry `private, no-cache` and a strong ETag over the complete
+identity-bound representation. An unchanged authenticated response is bodyless
+304 on the wire and reuses the browser's stored profile; reload still verifies the
+current login without retransferring an unchanged avatar. A different account,
+changed profile or missing HTTP cache receives 200. Authentication and profile
+read failures retain no-store errors; no custom `/me` IndexedDB is used.
 A failed check keeps requests waiting through recovery. The [foreground verification decision](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 records this presentation policy. Ordinary same-origin
 iframe focus changes do not count as top-level returns. Requests
@@ -394,10 +401,11 @@ edit changes task time or graph geometry.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 4 and idb 8.0.4, with `userScopes`, `projects`, `summaries` and `details`
-stores. Upgrades directly from schema 1, 2 or 3 rebuild projects, summaries and
-details, rotate user fences and clear old epochs/watermarks before a complete
-snapshot. Missing properties or assignedTo in old records cannot be inferred as
+schema 5 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details` and
+`profiles` stores. Upgrading schema 4 adds profiles while preserving task records,
+user fences and watermarks. Upgrades from schema 1, 2 or 3 also rebuild
+incompatible projects, summaries and details, rotate user fences and clear old
+epochs/watermarks before a complete snapshot. Missing properties or assignedTo in old records cannot be inferred as
 empty objects or null.
 Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
@@ -470,8 +478,8 @@ a bound cold peer with no projection, without rebroadcast. Stale hints cannot
 replace a newer generation or denial. Failed IDB opening,
 blocked upgrades, abnormal close, corruption or writes use existing visible
 error/Retry states and retain an allowed current view. Missing or malformed user
-scope records are repaired in one four-store transaction: replace the fence,
-clear only that user's summaries/details and invalidate its project baselines.
+scope records are repaired in one shared-cache transaction: replace the fence,
+clear only that user's summaries/details/profiles and invalidate its project baselines.
 The repair never parses or reuses the damaged fence. For that user-corruption
 repair, memory binding, scope retirement and hints wait for commit; a cold scope can then bind the replacement,
 while an already-bound scope retires and requests identity verification. A failed
@@ -485,7 +493,7 @@ owns the algorithm, schema, failure rules and detail integration.
 
 ## Persistent task details
 
-`TaskDetailSessions(scope)` uses the same authenticated scope and schema-4 details
+`TaskDetailSessions(scope)` uses the same authenticated scope and schema-5 details
 store as project summaries. `detail-cache.ts` validates intrinsic bodies against
 the current summary and guarded lifecycle ticket, then materializes readiness and
 blockers from the complete local graph. Full current properties preserve actual
@@ -548,8 +556,8 @@ Task, summary and graph consumers require an explicit assignedTo field containin
 null or a canonical local user UUID. Equality, freshness, review keys and material
 preservation include the field. Its native storage, atomic permission reset and
 in-progress write policy belong to the [assignment contract](../../docs/spec/daynight-task-assignment.md).
-Schema 4 and the strict consumers are delivered together; profile data is never
-persisted in task records or included in task versions.
+Schema 5 preserves strict task parsing and stores versioned profile content in a
+separate store; profile data never enters task records or task versions.
 
 The detail places status and assignee in one 24px compact group, followed by
 platform and readiness, with automatic execution on the right. The assignee
@@ -559,10 +567,12 @@ name displays a short UUID, failed images use an identity placeholder, and only
 an explicit hasProjectAccess=false result marks a former member. Long names
 retain accessible full text and narrow layouts keep controls within the viewport.
 
-Opening the shared picker or choosing Retry requests the complete project
-catalogue. Search accepts names and UUIDs; assignment choices contain current
-members and clearing, while filters can retain former assignees. Loading and
-failure keep choices unavailable with explicit recovery. Arrow keys move among
+The shared picker uses the complete qualified-person manifest from task-sync and
+loads only missing or changed profiles. Ordinary reopening reuses matching
+content and in-flight work; explicit Retry recovers failed or missing items.
+Search accepts names and UUIDs; assignment choices contain current members and
+clearing, while filters can retain former assignees. Loading and failure keep
+choices unavailable with explicit recovery. Arrow keys move among
 options, Escape closes and restores the trigger, and Tab or outside click closes
 without stealing subsequent focus. A fixed popup stays inside the surface's
 focus-owner subtree and tracks scrolling, resizing and fullscreen changes.
@@ -578,17 +588,41 @@ through values and availability, retaining necessary errors, access status and
 recovery actions.
 
 TaskAssigneesProvider lives inside the authenticated TaskCacheProvider and outside
-the detail provider. Its session-memory owner coalesces mounted row, detail and
-selected-filter ID demands, sorts and deduplicates them, then resolves batches of
-at most 100. Empty demand sends no request. Successful graph receipts, including
-empty deltas, refresh the bounded set; owner identity plus mount-local revision
-handles remounts, and a slow request retains one queued refresh. Complete
-catalogues remain explicit open/Retry reads, with no second polling loop.
-Per-person dispatch sequencing prevents an old catalogue from replacing a newer
-resolve. Scope fences and captured authorized in-memory manifests protect
-publication without another beginSync. Trusted same-user project 404 responses
-withdraw admission even after presentation demand changes; stale histories
-cannot withdraw a replacement generation.
+the detail provider. Every successful task-sync supplies required complete
+`assigneeVersions` metadata: `{userId, version, hasProjectAccess}` for each current
+member or retained assignee, including when tasks are unchanged. Versions are
+server-issued lowercase SHA-256 content identifiers for user ID, nullable name
+and avatar only. Access, role, login timestamps and task changes do not alter an
+unchanged profile's version.
+
+The `profiles` store persists `{userId, version, name, avatarUrl}` under the
+viewer/project/profile-user key and userFence. It stores no access boolean.
+After live `/me` and project admission, the owner hydrates content matching the
+fresh manifest. Local summary previews supply no people qualification. Mounted
+row, detail and selected-filter demands are coalesced; only qualified people with
+missing or changed content are resolved in batches of at most 100. Nullable
+fields remain complete data. Empty demand sends no request. Ordinary task opens,
+successful empty deltas and picker reopening reuse matching profiles, including
+their inline data-URL avatars. Access-only changes use the live manifest without
+redownloading the same content.
+
+In-flight demands are shared. Same-history results remain useful after demand
+changes, and each GET retains its actual observed content version. A profile
+read newer than its initiating manifest cannot be relabeled with the old version
+or cause an immediate retry loop. Ahead-of-manifest and transient unresolved
+exceptions last only through their current positive graph-receipt observation.
+The next new successful receipt clears them even if content tokens are unchanged;
+duplicate receipts and presentation changes preserve the observation. Each GET
+captures that observation, so an older conflicting result cannot restore its
+exception later. Normally matching cached profiles still cause no extra GET.
+Ordinary task epoch replacement retains
+same-userFence content for validation by a fresh manifest; all reads, writes and
+publication still check the current project generation. Logout, account change,
+session loss and project access withdrawal clear the corresponding profiles.
+Failures stay visible and retryable. Trusted same-user project 404 responses
+withdraw admission even after presentation changes; stale histories cannot
+withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/implemented/bug-fix/2026-11-04-task-view-request-reuse.md)
+owns the versioning, HTTP cache and scan-cost trade-offs.
 
 The task-list filter supports All, Assigned to me, Unassigned and a person. It
 intersects recent/show-all selections before pagination and returns to page one
@@ -1132,7 +1166,7 @@ edges use the persisted marker independently of outside-component card context.
 The complete model is specified in the
 [external dependency design](../../docs/design/daynight-external-dependencies.md).
 
-An open project automatically requests task-sync every five seconds while the
+An open project automatically requests task-sync every fifteen seconds while the
 document is visible. Hidden documents start no periodic reads; returning requests
 immediately unless a sync is already active. Automatic ticks skip active syncs.
 Manual refresh cancels the active read and starts immediately. Every successful

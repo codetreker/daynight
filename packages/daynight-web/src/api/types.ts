@@ -1,4 +1,4 @@
-import type { ProjectAccess } from "./auth-types";
+import type { ProjectPersonVersion, ProjectAccess } from "./auth-types";
 
 export type ExecutionPlatform = "windows" | "linux" | "macos";
 
@@ -133,6 +133,7 @@ export type TaskSummary = Omit<GraphTask, "blockedBy" | "ready"> & {
 };
 
 export type TaskSync = {
+  readonly assigneeVersions: readonly ProjectPersonVersion[];
   readonly actorAccess: ProjectAccess;
   readonly mode: "snapshot" | "delta";
   readonly epoch: string;

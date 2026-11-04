@@ -126,7 +126,7 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   try {
     const workerProtocol = /^\/api\/v1\/projects\/[^/]+\/(?:tasks|task-sync|task-graph)(?:[/?]|$)/.test(url) && !/\/(?:attachments|preview|sessions)(?:[/?]|$)/.test(url);
     const headers = workerProtocol ? { ...(init.headers instanceof Headers || Array.isArray(init.headers) ? Object.fromEntries(new Headers(init.headers)) : init.headers), "Daynight-Worker-Protocol": "2" } : init.headers;
-    response = await fetch(url, { ...init, ...(headers ? { headers } : {}), signal, cache: "no-store", credentials: "same-origin", redirect: "error" });
+    response = await fetch(url, { cache: "no-store", ...init, ...(headers ? { headers } : {}), signal, credentials: "same-origin", redirect: "error" });
   } catch (error) {
     signal.throwIfAborted();
     if (isAbortError(error)) throw error;

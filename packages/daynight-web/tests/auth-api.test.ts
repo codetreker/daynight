@@ -26,6 +26,13 @@ const mock = (value: Response) => {
 };
 afterEach(() => { vi.unstubAllGlobals(); invalidateAuthRequests(); });
 
+describe("current-user HTTP cache", () => {
+  it("rejects a raw 304 instead of treating absent browser cache content as a profile", async () => {
+    mock(new Response(null, { status: 304 }));
+    await expect(me(signal())).rejects.toMatchObject({ kind: "protocol", status: 304 });
+  });
+});
+
 describe("identity revalidation request pause", () => {
   it("dispatches ordinary requests synchronously when identity is already confirmed", async () => {
     const fetcher = mock(response(user));
@@ -132,7 +139,7 @@ describe("session and personal credentials API", () => {
     const abortSignal = signal();
     expect(await me(abortSignal)).toEqual(user);
     expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/v1/me", {
-      signal: abortSignal, cache: "no-store", credentials: "same-origin", redirect: "error", headers: { Accept: "application/json" },
+      signal: abortSignal, cache: "no-cache", credentials: "same-origin", redirect: "error", headers: { Accept: "application/json" },
     });
     fetcher.mockResolvedValue(response({ providers: ["github", "microsoft"] }));
     expect(await getAuthConfig(abortSignal)).toEqual({ providers: ["github", "microsoft"] });

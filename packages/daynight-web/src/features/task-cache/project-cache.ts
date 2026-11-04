@@ -1,14 +1,16 @@
 import type { IDBPObjectStore, IDBPTransaction } from "idb";
 import { ApiError, authRequestsPaused, isAbortError, requestId, waitForAuthRequests } from "../../api/client";
-import { canonicalId } from "../../api/parse";
+import { canonicalId, record, string } from "../../api/parse";
+import { parseProfileVersion } from "../../api/profile-version";
+import type { ProjectPersonVersion } from "../../api/auth-types";
 import { parseTaskSummary } from "../../api/task-sync";
 import type { Project, TaskSummary, TaskSync } from "../../api/types";
-import { TASK_CACHE_STORES, TaskCacheDatabase, TaskCacheError, type ProjectRecord, type TaskCacheSchema } from "./database";
+import { TASK_CACHE_STORES, TaskCacheDatabase, TaskCacheError, type CachedProfile, type ProjectRecord, type TaskCacheSchema } from "./database";
 import { validateProjectManifest, validateUserScope } from "./lifecycle";
 import { GraphDataError } from "../task-graph/model";
 import { compareTimestamps, maxUpdatedAt, projectSummaries, sameProject, sameSummary, type TaskProjection } from "./projection";
 
-type Transaction = IDBPTransaction<TaskCacheSchema, ["userScopes", "projects", "summaries", "details"], "readwrite">;
+type Transaction = IDBPTransaction<TaskCacheSchema, [...typeof TASK_CACHE_STORES], "readwrite">;
 export type SyncTicket = {
   readonly userId: string; readonly projectId: string; readonly userFence: string;
   readonly cacheGeneration: string; readonly epoch: string | null; readonly maxUpdatedAt: string | null;
@@ -16,8 +18,9 @@ export type SyncTicket = {
 export type CachedProject = TaskProjection & {
   readonly manifest: ProjectRecord;
   readonly summaries: ReadonlyMap<string, TaskSummary>;
+  readonly assigneeVersions: readonly ProjectPersonVersion[] | null;
 };
-export type DetailStore = IDBPObjectStore<TaskCacheSchema, ["userScopes", "projects", "summaries", "details"], "details", "readwrite">;
+export type DetailStore = IDBPObjectStore<TaskCacheSchema, [...typeof TASK_CACHE_STORES], "details", "readwrite">;
 export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly revokedGeneration?: string };
 type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string };
 class TaskCacheLifecycleChanged extends DOMException {
@@ -159,7 +162,7 @@ export class TaskCacheScope {
   private async replaceUserScope(transaction: Transaction, cause: "corrupt" | "user"): Promise<string> {
     const userFence = crypto.randomUUID();
     await transaction.objectStore("userScopes").put({ userId: this.userId, userFence });
-    for (const name of ["summaries", "details"] as const) {
+    for (const name of ["summaries", "details", "profiles"] as const) {
       for await (const cursor of transaction.objectStore(name).index("by-user").iterate(this.userId)) await cursor.delete();
     }
     for await (const cursor of transaction.objectStore("projects").index("by-user").iterate(this.userId)) {
@@ -209,7 +212,7 @@ export class TaskCacheScope {
       return tasks;
     } catch (error) { if (error instanceof TaskCacheError || isAbortError(error)) throw error; throw new TaskCacheError("corrupt", error); }
   }
-  private materialize(manifest: ProjectRecord, tasks: readonly TaskSummary[]): CachedProject {
+  private materialize(manifest: ProjectRecord, tasks: readonly TaskSummary[], assigneeVersions?: readonly ProjectPersonVersion[]): CachedProject {
     const previous = this.projections.get(manifest.projectId);
     const sameTasks = previous !== undefined && previous.manifest.cacheGeneration === manifest.cacheGeneration &&
       previous.summaries.size === tasks.length && tasks.every((task) => {
@@ -226,6 +229,7 @@ export class TaskCacheScope {
     const result: CachedProject = {
       ...projection, manifest,
       summaries: sameTasks ? previous.summaries : new Map(tasks.map((task) => [task.id, task])),
+      assigneeVersions: assigneeVersions ?? (previous?.manifest.cacheGeneration === manifest.cacheGeneration ? previous.assigneeVersions : null),
     };
     this.projections.set(manifest.projectId, result);
     return result;
@@ -243,7 +247,7 @@ export class TaskCacheScope {
     const work = this.ready(this.signal).then(() => this.userTransaction(async (transaction, userFence) => {
       const manifest = await this.manifest(transaction, projectId, userFence);
       if (userFence !== ticket.userFence || manifest?.cacheGeneration !== ticket.cacheGeneration) return;
-      await this.clearProjectRows(transaction, projectId);
+      await this.clearProjectRows(transaction, projectId, true);
       await transaction.objectStore("projects").put(invalidated(this.userId, projectId, userFence));
     }, this.signal)).then(() => {
       if (this.deniedProjects.get(projectId) === ticket) this.deniedProjects.delete(projectId);
@@ -350,9 +354,16 @@ export class TaskCacheScope {
     }
     this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
     this.assertProjectGeneration(ticket.projectId, result.manifest.cacheGeneration, signal);
+    const previousVersions = this.projections.get(ticket.projectId)?.assigneeVersions;
+    const versionsChanged = previousVersions === undefined || previousVersions === null || previousVersions.length !== response.assigneeVersions.length ||
+      previousVersions.some((person, index) => {
+        const next = response.assigneeVersions[index]!;
+        return person.userId !== next.userId || person.version !== next.version || person.hasProjectAccess !== next.hasProjectAccess;
+      });
     this.authorizedProjects.add(ticket.projectId);
-    const project = this.materialize(result.manifest, result.tasks);
-    if (result.changed) { this.hint(ticket.projectId); this.emit({ projectId: ticket.projectId }); }
+    const project = this.materialize(result.manifest, result.tasks, response.assigneeVersions);
+    if (result.changed) this.hint(ticket.projectId);
+    if (result.changed || versionsChanged) this.emit({ projectId: ticket.projectId });
     return { project, changed: result.changed, changedTaskIds: result.changedTaskIds };
   }
   async readProject(projectId: string, signal: AbortSignal): Promise<CachedProject | null> {
@@ -387,6 +398,45 @@ export class TaskCacheScope {
     this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
     return result;
   }
+  async readProfiles(ticket: SyncTicket, signal: AbortSignal): Promise<readonly CachedProfile[]> {
+    const outcome = await this.profileTransaction(ticket, signal, async (transaction) => {
+      const rows = await transaction.objectStore("profiles").index("by-project").getAll([this.userId, ticket.projectId]);
+      try {
+        const profiles = rows.map((row) => {
+          const profile = record(row.profile);
+          if (row.userId !== this.userId || row.projectId !== ticket.projectId || row.userFence !== ticket.userFence ||
+            canonicalId(row.profileUserId) !== row.profileUserId || profile.userId !== row.profileUserId) throw new Error("Invalid cached profile ownership.");
+          return { userId: row.profileUserId, version: parseProfileVersion(profile.version),
+            name: profile.name === null ? null : string(profile.name), avatarUrl: profile.avatarUrl === null ? null : string(profile.avatarUrl) };
+        });
+        return { kind: "profiles" as const, profiles };
+      } catch (error) {
+        for await (const cursor of transaction.objectStore("profiles").index("by-project").iterate([this.userId, ticket.projectId])) await cursor.delete();
+        return { kind: "corrupt" as const, error: new TaskCacheError("corrupt", error) };
+      }
+    });
+    if (outcome.kind === "corrupt") throw outcome.error;
+    return outcome.profiles;
+  }
+  async writeProfiles(ticket: SyncTicket, profiles: readonly CachedProfile[], signal: AbortSignal): Promise<void> {
+    return this.profileTransaction(ticket, signal, async (transaction) => {
+      for (const profile of profiles) await transaction.objectStore("profiles").put({ userId: this.userId, projectId: ticket.projectId,
+        profileUserId: profile.userId, userFence: ticket.userFence, profile });
+    });
+  }
+  private async profileTransaction<T>(ticket: SyncTicket, signal: AbortSignal, work: (transaction: Transaction) => Promise<T>): Promise<T> {
+    await this.ready(signal);
+    if (ticket.userId !== this.userId || !this.authorizedProjects.has(ticket.projectId)) return released();
+    this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
+    const result = await this.userTransaction(async (transaction, userFence) => {
+      const manifest = await this.manifest(transaction, ticket.projectId, userFence);
+      if (manifest === undefined || manifest.state !== "active" || userFence !== ticket.userFence || manifest.cacheGeneration !== ticket.cacheGeneration) return released();
+      this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
+      return work(transaction);
+    }, signal);
+    this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
+    return result;
+  }
   getSummaryVersion(projectId: string, taskId: string): bigint | null {
     return this.getAuthorizedProject(projectId)?.versions.get(taskId) ?? null;
   }
@@ -399,8 +449,9 @@ export class TaskCacheScope {
     this.assertLive();
     return this.authorizedProjects.has(projectId) ? this.projections.get(projectId) ?? null : null;
   }
-  private async clearProjectRows(transaction: Transaction, projectId: string): Promise<void> {
-    for (const name of ["summaries", "details"] as const) {
+  private async clearProjectRows(transaction: Transaction, projectId: string, includeProfiles = false): Promise<void> {
+    const stores = includeProfiles ? ["summaries", "details", "profiles"] as const : ["summaries", "details"] as const;
+    for (const name of stores) {
       const index = transaction.objectStore(name).index("by-project");
       for await (const cursor of index.iterate([this.userId, projectId])) await cursor.delete();
     }
@@ -409,7 +460,7 @@ export class TaskCacheScope {
     projectId = requestId(projectId);
     await this.ready(signal);
     await this.userTransaction(async (transaction, fence) => {
-      await this.clearProjectRows(transaction, projectId);
+      await this.clearProjectRows(transaction, projectId, true);
       await transaction.objectStore("projects").put(invalidated(this.userId, projectId, fence, cause));
     }, signal);
     if (cause === "access") { this.projections.delete(projectId); this.authorizedProjects.delete(projectId); }

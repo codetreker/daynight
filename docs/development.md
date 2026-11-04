@@ -416,9 +416,13 @@ The private [web workspace](../packages/daynight-web/README.md) implements the p
 list, cursor paging, safe API decoding, cancellation, project statistics, task
 graphs, complete task details in centered dialogs or independent pages, and
 single-file attachment management. An open project or standalone detail synchronizes
-its IndexedDB summary base every five seconds while visible, pauses automatic
-reads while hidden and synchronizes immediately on return. The current mount must
-complete a user-matched online sync before displaying persisted private data.
+its IndexedDB summary base every fifteen seconds while visible, pauses automatic
+reads while hidden and synchronizes immediately on return. Current identity is verified through browser-managed `/me` HTTP revalidation;
+unchanged profiles use bodyless wire-level 304 responses. Persistent assignee
+content is restored only after a user-matched online project sync supplies its
+complete qualified-person version manifest. Matching profiles survive reload;
+only changed or missing content is fetched. The cached content grants no project
+or mutation authority.
 Full details reuse matching intrinsic cached content, perform a live read on
 opening and refresh on business-version changes or recovery needs.
 Refresh retains browsing state and the mounted details, including attachment

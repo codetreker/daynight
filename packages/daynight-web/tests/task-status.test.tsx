@@ -149,7 +149,7 @@ describe('status in shared production task details', () => {
     records.set(standalone, changed);
     await act(async () => {
       if (trigger === 'status') mutation.resolve(commit());
-      else await vi.advanceTimersByTimeAsync(5_000);
+      else await vi.advanceTimersByTimeAsync(15_000);
     });
     await waitFor(() => expect(otherReads).toBe(2));
     expect(tab.isConnected).toBe(true);

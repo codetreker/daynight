@@ -1,7 +1,9 @@
+import { parseProfileVersion } from "./profile-version";
 import { parseProjectAccess } from "./auth-parse";
 import { isTaskVersion } from "./json";
 import { parseTaskProperties, readTaskPaused } from "./task-properties";
 import { array, boolean, id, malformed, project, record, string, timestamp, executionPlatform } from "./parse";
+import type { ProjectPersonVersion } from "./auth-types";
 import type { TaskSummary, TaskSync } from "./types";
 import { nullableId } from "./validation";
 
@@ -40,11 +42,17 @@ export const parseTaskSync = (value: unknown, projectId: string, userId?: string
   const data = record(value);
   if (data.mode !== "snapshot" && data.mode !== "delta") return malformed();
   const result: TaskSync = {
+    assigneeVersions: array(data.assigneeVersions, (value): ProjectPersonVersion => {
+      const person = record(value);
+      if (Object.keys(person).length !== 3 || Object.keys(person).some((key) => !["userId", "version", "hasProjectAccess"].includes(key))) return malformed();
+      return { userId: id(person.userId), version: parseProfileVersion(person.version), hasProjectAccess: boolean(person.hasProjectAccess) };
+    }),
     actorAccess: parseProjectAccess(data.actorAccess, projectId, userId),
     mode: data.mode, epoch: id(data.epoch), project: project(data.project),
     observedAt: timestamp(data.observedAt), tasks: array(data.tasks, parseTaskSummary),
   };
-  if (result.project.id !== projectId || result.tasks.length > 1000 ||
+  if (new Set(result.assigneeVersions.map((person) => person.userId)).size !== result.assigneeVersions.length ||
+    result.project.id !== projectId || result.tasks.length > 1000 ||
     new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length ||
     result.tasks.reduce((count, task) => count + task.dependsOn.length, 0) > 5000) return malformed();
   return result;
