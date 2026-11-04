@@ -364,3 +364,5 @@ dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
   .auth-aside { padding: 23px 25px; }
   .auth-card h1 { font-size: 25px; }
 }
+
+.auth-modal-backdrop[hidden] { display: none; }

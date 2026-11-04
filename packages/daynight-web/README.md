@@ -1,7 +1,7 @@
 # daynight-web
 
 The React/TypeScript Web app provides a public product introduction and a private
-workspace. The workspace implements project browsing, account-owned Worker
+workspace. The workspace implements Team creation and settings, project browsing, account-owned Worker
 observations and cloud configuration, cursor pagination, request cancellation,
 runtime API decoding, native browser routing and a pure dependency graph model
 with horizontal layout. Project task views use an IndexedDB summary cache and the
@@ -30,7 +30,7 @@ projects, member and invitation management, CLI device authorization, and person
 `Application` responds to browser location under the persistent `LocaleProvider`: `/`
 shows the public introduction, `/setup` selects the zero-API guide, and other pages
 use the existing authenticated lifecycle. `/login` is explicit and `/projects` is
-the project index. Business APIs require a browser session or PAT; project
+the project index; `/teams/{teamId}/settings` opens Team settings. Business APIs require a browser session or PAT; project
 resources also require current membership, while Worker resources belong to the
 current account and filter their saved task observations by current project access. The Go service
 retains loopback-only listening. Trusted same-origin previews, relative resources

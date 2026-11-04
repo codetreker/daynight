@@ -162,9 +162,11 @@ describe("Team workspace routes", () => {
   it("parses Team and shared paths and admits them as login destinations", () => {
     expect(parseAuthRoute(`/teams/${projectId.toUpperCase()}`)).toEqual({ kind: "team", teamId: projectId });
     expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}`)).toEqual({ kind: "team", teamId: projectId });
+    expect(parseAuthRoute(`/teams/${projectId}/settings`)).toEqual({ kind: "teamSettings", teamId: projectId });
+    expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}/settings`)).toEqual({ kind: "teamSettings", teamId: projectId });
     expect(parseAuthRoute("/shared-projects")).toEqual({ kind: "sharedProjects" });
-    for (const path of [`/teams/${projectId}`, "/shared-projects"]) expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: path })}`)).toBe(path);
-    for (const path of ["/teams/", "/teams/invalid", "/teams/%ZZ", "/teams/%2f", `/teams/${projectId}/extra`, "/shared-projects/"]) {
+    for (const path of [`/teams/${projectId}`, `/teams/${projectId}/settings`, "/shared-projects"]) expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: path })}`)).toBe(path);
+    for (const path of ["/teams/", "/teams/invalid", "/teams/%ZZ", "/teams/%2f", `/teams/${projectId}/extra`, `/teams/${projectId}/settings/extra`, "/teams/invalid/settings", "/shared-projects/"]) {
       expect(parseAuthRoute(path)).toEqual({ kind: "notFound" });
       expect(isLoginReturnPath(path)).toBe(false);
     }
