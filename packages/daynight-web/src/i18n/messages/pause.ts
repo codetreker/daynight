@@ -1,0 +1,21 @@
+export type PauseMessages = {
+  readonly label: string;
+  readonly count: (count: string) => string;
+  readonly openTask: (title: string) => string;
+  readonly unpause: string;
+  readonly unpausing: string;
+  readonly unavailable: string;
+  readonly confirmed: string;
+  readonly conflict: string;
+  readonly unknown: string;
+  readonly reconciled: string;
+  readonly checking: string;
+  readonly checkState: string;
+  readonly checkFailed: string;
+  readonly networkError: string;
+  readonly protocolError: string;
+  readonly versionConflict: string;
+  readonly notFound: string;
+  readonly refused: string;
+  readonly requestFailed: string;
+};

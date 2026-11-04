@@ -1,5 +1,5 @@
 import type { Project, TaskGraph, TaskGraphSummary, TaskSummary } from "../../api/types";
-import { sameTaskProperties } from "../../api/task-properties";
+import { readTaskPaused, sameTaskProperties } from "../../api/task-properties";
 import { buildGraphIndex, type GraphIndex } from "../task-graph/model";
 
 export const compareTimestamps = (left: string, right: string): number => {
@@ -34,7 +34,7 @@ export const sameProject = (left: Project, right: Project): boolean =>
   left.settings.version === right.settings.version && left.settings.executionWarningMinutes === right.settings.executionWarningMinutes &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 
-export type TaskProjection = { readonly graph: TaskGraph; readonly index: GraphIndex; readonly versions: ReadonlyMap<string, bigint> };
+export type TaskProjection = { readonly graph: TaskGraph; readonly index: GraphIndex; readonly versions: ReadonlyMap<string, bigint>; readonly pausedTaskIds: ReadonlySet<string> };
 
 export const projectSummaries = (project: Project, summaries: readonly TaskSummary[], observedAt: string): TaskProjection => {
   const ordered = [...summaries].sort((left, right) => compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id));
@@ -49,5 +49,5 @@ export const projectSummaries = (project: Project, summaries: readonly TaskSumma
     return { ...task, blockedBy, ready };
   });
   const graph: TaskGraph = { project, observedAt, tasks, summary };
-  return { graph, index: buildGraphIndex(graph), versions: new Map(ordered.map((task) => [task.id, task.version])) };
+  return { graph, index: buildGraphIndex(graph), pausedTaskIds: new Set(ordered.filter((task) => readTaskPaused(task.properties) === true).map((task) => task.id)), versions: new Map(ordered.map((task) => [task.id, task.version])) };
 };

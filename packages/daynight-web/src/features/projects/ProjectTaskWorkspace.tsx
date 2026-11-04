@@ -1,3 +1,4 @@
+import { TaskPauseCount, TaskPauseProvider } from "../task-pause/TaskPause";
 import type { ComponentProps, ReactNode } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskExecutionClockProvider } from "../task-execution/TaskExecutionClock";
@@ -20,9 +21,9 @@ export const ProjectTaskWorkspace = ({ projectId, snapshot, activeView, unfinish
 }) => {
   const { messages: { workspace: { project: m, sections } } } = useI18n();
   return <>
-    <div className="project-section-heading"><h2>{sections.tasks}</h2></div>
+    <div className="project-section-heading"><h2>{sections.tasks}</h2><TaskPauseCount count={snapshot.pausedTaskIds.size} /></div>
     {snapshot.graph.summary.total === 0 ? <section className="state-box"><h2>{m.empty}</h2><p>{m.emptyDetail}</p></section> : (
-      <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
+      <TaskPauseProvider taskIds={snapshot.pausedTaskIds}><TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
         <ProjectTaskTabs activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
           unfinishedChainTaskCount={unfinishedChainTaskCount} onViewChange={onViewChange} />
         {filter}
@@ -32,7 +33,7 @@ export const ProjectTaskWorkspace = ({ projectId, snapshot, activeView, unfinish
         <div role="tabpanel" id="project-task-panel-standalone" aria-labelledby="project-task-tab-standalone" hidden={activeView !== "standalone"} tabIndex={-1}>
           {activeView === "standalone" && <StandaloneList index={snapshot.index} {...standalone} />}
         </div>
-      </TaskExecutionClockProvider>
+      </TaskExecutionClockProvider></TaskPauseProvider>
     )}
   </>;
 };

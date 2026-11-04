@@ -6,6 +6,17 @@ export type ModuleSelection = Record<Module, boolean>;
 
 const allModules: ModuleSelection = { cli: true, server: true, web: true };
 const sharedInputs = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"]);
+const serverCliInputs = new Set([
+  "packages/daynight/package.json",
+  "packages/daynight/tsconfig.json",
+  "packages/daynight/tsconfig.build.json",
+  "packages/daynight/config.example.yml",
+  "packages/daynight/scripts/clean-dist.ts",
+  "packages/daynight/scripts/copy-resources.ts",
+  "packages/daynight/scripts/project-task-acceptance.ts",
+  "packages/daynight/scripts/project-task-budgets.ts",
+  "packages/daynight/test/fixtures/installed-operation-limits.ts",
+]);
 const webPatches = new Set([
   "patches/@dagrejs__dagre@3.1.1.patch",
   "patches/@xyflow__system@0.0.83.patch",
@@ -18,6 +29,7 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
     if (path === "packages/daynight/test/fixtures/installed-cli.ts") return { ...allModules };
     if (path.startsWith("packages/daynight/src/")) {
       selected.cli = true;
+      selected.server = true;
       if (path.startsWith("packages/daynight/src/api/") || path.startsWith("packages/daynight/src/session/") ||
         path === "packages/daynight/src/platform/text.ts") selected.web = true;
       continue;
@@ -27,9 +39,13 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
       /(^|\/)(README|AGENTS|CLAUDE)\.md$/.test(path) || path === ".gitignore" ||
       path === ".github/workflows/publish.yml"
     ) continue;
+    if (serverCliInputs.has(path)) selected.server = true;
     if (path.startsWith("packages/daynight/") || path === "scripts/dev-install.mjs" || path === "scripts/dev-install.test.mjs") selected.cli = true;
     else if (path.startsWith("packages/daynight-server/")) selected.server = true;
-    else if (path.startsWith("packages/daynight-web/") || path.startsWith("deployment/") || webPatches.has(path)) selected.web = true;
+    else if (path.startsWith("packages/daynight-web/") || webPatches.has(path)) {
+      selected.web = true;
+      selected.server = true;
+    } else if (path.startsWith("deployment/")) selected.web = true;
     else return { ...allModules };
   }
   return selected;

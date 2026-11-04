@@ -13,7 +13,7 @@ import { isTaskVersion } from "./json";
 
 export { array, boolean, canonicalId, executionPlatform, id, malformed, nonemptyString, record, string, timestamp } from "./validation";
 import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableId, nullableTimestamp, record, requiredPlatform, status, string, timestamp } from "./validation";
-import { parseTaskProperties, readPullRequests, readWorkerClaim } from "./task-properties";
+import { parseTaskProperties, readPullRequests, readTaskPaused, readWorkerClaim } from "./task-properties";
 
 const projectSettings = (value: unknown): Project["settings"] => {
   const data = record(value);
@@ -118,6 +118,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
   };
   if (parsed.projectId !== projectId || parsed.id !== taskId) return malformed();
   readPullRequests(parsed.properties);
+  readTaskPaused(parsed.properties);
   const worker = readWorkerClaim(parsed.properties);
   if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
   if (worker?.state === "released" && parsed.status !== "todo") return malformed();

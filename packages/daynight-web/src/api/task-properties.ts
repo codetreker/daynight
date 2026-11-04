@@ -46,6 +46,11 @@ const workerClaim = (value: unknown): WorkerClaim => {
   };
 };
 
+export const readTaskPaused = (properties: TaskProperties): boolean | undefined => {
+  if (!Object.hasOwn(properties, "paused")) return undefined;
+  return typeof properties.paused === "boolean" ? properties.paused : malformed();
+};
+
 export const readPullRequests = (properties: TaskProperties): readonly PullRequestProperty[] | undefined => {
   if (!Object.hasOwn(properties, "pullRequests")) return undefined;
   const value = properties.pullRequests;

@@ -1566,7 +1566,7 @@ official Ubuntu archives before installation, as delivered in
 
 Native functional checks start after the native process and browser are ready.
 Native preparation installs the shared CLI before an atomic, run/source-bound
-permission releases the container's thirty-one functional checks. Native and
+permission releases the container's thirty-two functional checks. Native and
 container functional browsers then overlap against independent service,
 database, authentication and storage resources. Each phase has a separate
 private Chromium profile root. Run-wide CLI recovery waits until both targets
@@ -1610,8 +1610,8 @@ pnpm web:acceptance
 pnpm web:acceptance:stress
 ```
 
-The ordinary command and CI require thirty-one functional scenarios on each
-native/container target, sixty-two in total. The explicit local stress command adds five native
+The ordinary command and CI require thirty-two functional scenarios on each
+native/container target, sixty-four in total. The explicit local stress command adds five native
 capacity/limit scenarios and their performance receipt. From this package, use
 `pnpm test:stress:browser`, or invoke `node scripts/acceptance.mts --stress`;
 `--apfs --stress` combines the local capacity matrix with explicit APFS storage.
@@ -1654,7 +1654,7 @@ ownership revalidation. Uncertain ownership fails without recursive removal.
 Existing recovery commands remain available without opting into new attachment.
 
 The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same sixty-two functional scenarios and
+macOS local acceptance runs the same sixty-four functional scenarios and
 additional combined authentication checks, with native filesystem coverage
 qualified by its recorded capability. Explicit local stress acceptance adds the
 same five capacity/limit scenarios and fixed performance budgets on Linux and
@@ -1669,8 +1669,8 @@ npm registry unless the build variable is explicitly supplied.
 The command builds real embedded assets and a new Go executable and owns a
 separate PostgreSQL container/volume and ephemeral loopback listener. In parallel,
 the normal dev-ci runner builds and starts the actual production image. Browser
-execution proceeds through thirty-one native functional scenarios and the same
-thirty-one functional scenarios through the production image's stream gateway.
+execution overlaps thirty-two native functional scenarios with the same
+thirty-two scenarios through the production image's stream gateway.
 Explicit local stress mode then runs five native capacity/limit scenarios. In
 that mode, the native process and PostgreSQL remain alive through capacity;
 other preparation commands and the complete container stack finish before it
@@ -1707,6 +1707,13 @@ loss and GET-only recovery with preserved task materials. The
 long/null names, avatar failure, popup/focus/scroll/fullscreen behavior, former
 members, read-only browsing, local filters and complete progress with hidden
 siblings.
+
+The `task-pause` journey verifies pause discovery in the project overview,
+standalone and chain lists, dependency graph and common detail heading. It admits
+only registered exact-version Unpause PATCHes, checks preserved task materials,
+pending protection, stale conflicts and committed-response-loss GET-only
+reconciliation, and covers English/Chinese narrow layouts. Pause counts retain
+their complete project/component scope independently of status and list filters.
 
 The [status journeys](tests/e2e/status.spec.ts) reuse the packed CLI and each
 target's authenticated service with the same Alice identity. Origin, method,
@@ -1755,7 +1762,7 @@ records the original data-sharing, rendering and independent-reading proof choic
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
 requires a separate eleven-check receipt on each runtime target, alongside the
-62 ordinary Playwright cases or 67 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
+64 ordinary Playwright cases or 69 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
 identities, records their initial project sets, and crosses browser and CLI data
 through shared/private projects, original-credential service restart, logout/PAT
 independence, revocation, admitted upload, real socket interruption and normally
@@ -1861,8 +1868,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (62 ordinary cases; local stress adds five native cases
-for 36 native / 31 container, 67 total), current manual/periodic refresh,
+The selected inventory (64 ordinary cases; local stress adds five native cases
+for 37 native / 32 container, 69 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -1875,13 +1882,14 @@ The [graph functional scenarios](tests/e2e/workflow.spec.ts),
 [authentication journeys](tests/e2e/auth.spec.ts),
 [status journeys](tests/e2e/status.spec.ts),
 [permission journey](tests/e2e/task-agent-permission.spec.ts),
+[pause journey](tests/e2e/task-pause.spec.ts),
 [platform journey](tests/e2e/task-platform.spec.ts),
 [standalone-detail journey](tests/e2e/task-detail-page.spec.ts),
 [project-settings journey](tests/e2e/project-settings.spec.ts),
 [execution-time journey](tests/e2e/task-execution-time.spec.ts),
 [capacity scenarios](tests/e2e/capacity.spec.ts) and
 [acceptance runner](scripts/acceptance.mts) map to the
-[W1–W15 requirements](../../docs/spec/daynight-web.md) and
+[Web requirements](../../docs/spec/daynight-web.md) and
 [language requirements](../../docs/spec/daynight-web-i18n.md) and
 [execution-timing requirements](../../docs/spec/daynight-task-timing.md) as follows. Names are stable
 scenario annotations validated in each target's report. `capacity-*` annotations
@@ -1901,6 +1909,7 @@ the remaining functional scenarios.
 | W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |
 | W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
 | W20 | `task-assignment`, `task-assignment-layout`: native field propagation, real exact-version assignment/clear PATCHes, same-value zero writes, conflict and committed-response-loss GET-only recovery, people identity/access presentation, local filters with full-chain facts, bilingual desktop/narrow menu, focus, scroll and fullscreen behavior |
+| W21 | `task-pause`: project/list/chain/graph pause discovery, complete-scope counts, common heading and Unpause, exact-version property PATCH with preserved task materials, duplicate protection, conflict and committed-response-loss GET-only recovery, bilingual narrow layouts |
 | W15 | `task-platform`: status-row selection and confirmation, zero-write dismissal and select-focus restoration, set/clear, shared status/permission gate, exact versions, stale/unknown GET-only recovery, cross-task late ownership, manual-start lock, field propagation and bilingual narrow layouts |
 | TT3 | `project-settings`: real-service direct entry/reload, administrator save and independent member read, project isolation, exact settings versions above 2^53, stale conflict and demotion, read-only member recovery, actual commit with lost response and failed-read retry without PATCH replay, bilingual 320px/390px form/control/navigation containment and unclipped text |
 | TT1–TT2, TT4–TT6 | `task-execution-time`: real PostgreSQL crossing with graph deliveries held and an incorrect client wall clock, one-second local progress, stable focus/DOM/geometry/edges/viewport, real saved-threshold changes, installed-CLI completion and frozen polling, unknown legacy starts, sub-minute/multi-day/shared/external cards and standalone rows, bilingual 320px/390px layout; browser GET/HEAD only, with fixture mutations through authenticated API or installed CLI |
@@ -1939,10 +1948,10 @@ retries; skipped, flaky, duplicate/missing or incomplete scenarios fail validati
 When selected, the web CI job archives `daynight-web-acceptance` separately from raw
 coverage for 30 days. Inspect the artifact from the exact workflow run and its
 tested checkout identity, which is normally a merge revision for PR runs. A pass
-requires exactly thirty-one native and thirty-one container functional
+requires exactly thirty-two native and thirty-two container functional
 scenarios. Explicit local stress mode requires the strict native union of those
-thirty-one functional and five capacity/limit scenarios, plus the same
-thirty-one container scenarios. Every phase and target rejects missing, extra
+thirty-two functional and five capacity/limit scenarios, plus the same
+thirty-two container scenarios. Every phase and target rejects missing, extra
 or duplicate scenarios and skipped/flaky/retried results.
 Installed-CLI handoff, container callbacks and recovery require matching source
 commit/tree/dirty state as well as existing package/artifact ownership. A missing

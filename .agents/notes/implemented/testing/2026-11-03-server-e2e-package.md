@@ -18,17 +18,19 @@ acceptance scenarios, the offline attachment migration scenario, their `TestMain
 and their fixtures. It builds the actual `cmd/daynight-server` executable and
 retains isolated PostgreSQL schemas, storage roots, process control, source and
 artifact checks, concurrency barriers, error assertions and cleanup evidence.
-The existing `go test ./...` and `go-cov` invocation discover the package.
+`go test ./...` discovers the package. The
+[CI split decision](2026-11-04-server-e2e-ci-jobs.md) places its complete
+race-enabled execution in a separate validation mode and CI job.
 
-The central Node orchestrator passes `--skip-result-packages cmd/e2e_tests` to
-`go-cov`. This package contains only `_test.go` files, so it has no product
-statements; the pinned tool otherwise interprets its `[no statements]` package
-result as 0% against the package threshold. The option omits that result-summary
-row while preserving test execution, test-failure propagation, the raw profile
-and every production coverage check. The tool matches
-[module-relative package-name substrings](https://github.com/codetreker/go-cov/blob/d6caf2759e330b48d69a543695e37002a48feb1d/internal/coverage/parse.go#L287-L301).
-The directory remains test-only; production code belongs to its owning package
-so the report omission cannot hide product coverage.
+At package extraction, the central Node orchestrator used
+`--skip-result-packages cmd/e2e_tests` with `go-cov`: the pinned tool otherwise
+interpreted this test-only package's `[no statements]` result as 0% against its
+package threshold. That reporting exception used
+[module-relative substring matching](https://github.com/codetreker/go-cov/blob/d6caf2759e330b48d69a543695e37002a48feb1d/internal/coverage/parse.go#L287-L301)
+and preserved execution and every production coverage check. Independent E2E execution now removes the package
+from coverage execution after verifying recursively that it contains only test
+Go source. Production code belongs to its owning package so the execution
+exception cannot hide product coverage.
 
 `cmd/daynight-server` retains the executable and tests that call its internal
 functions directly. Its tests own temporary storage, address allocation and
@@ -58,9 +60,10 @@ appropriate to its resources.
 
 ## Consequences
 
-The complete gate retains its existing scenarios, race detection, production
-coverage thresholds, installed CLI artifact checks and evidence paths. The
-no-statements test package is omitted only from package-result reporting. The binary still
+The complete gate retains its scenarios, race detection, production coverage
+thresholds, installed CLI artifact checks and built-process evidence. The
+independent E2E validation mode runs the complete test-only package; production
+coverage remains in its owning packages. The binary still
 targets the production command, and its execution remains separate from the
 owning packages' statement coverage. Directory depth is unchanged, so module,
 repository and migration paths retain their existing resolution.

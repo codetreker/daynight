@@ -220,10 +220,15 @@ Herdr fresh and resumed Copilot/Codex processes use fixed full access and task-f
 trust settings without native permission prompts. Business input remains
 available through `daynight worker attach`. The local task record retains only
 Project/task/claim, pending/active/done, frozen mode, agent type and native
-session ID. A NULL session ID produces an informational message and a fresh
-conversation in the same worktree; a known ID uses native resume. Cleanup timers
-and recovery counts are process-local, and restarted agents use current applicable
-settings.
+session ID. In Herdr mode, a NULL session ID produces an informational message and a fresh
+conversation in the same worktree; a known ID uses native resume. Herdr execution
+recovery counts are process-local, and restarted Herdr agents use current
+applicable settings. Both modes persist terminal cleanup responsibility, its
+original deadline, notification state and retry schedule across restarts. Web
+retains its original execution evidence and recovery pause across restarts.
+An exhausted or paused Web execution keeps its
+claim and slot, reports waiting, and requires explicit retry with the original
+native identity and complete stop proof.
 
 Stop the runner before `worker retry/release/resume`; the commands use
 its same instance lock. The [worker guide](packages/daynight/README.md#worker-manual-management)
@@ -325,20 +330,27 @@ from all changed paths, including deletions and both sides of renames:
 
 | Changed paths | PR application jobs |
 |---|---|
-| `packages/daynight/test/fixtures/installed-cli.ts` | CLI, Go server, Web quality and Web browser acceptance |
-| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI validation plus Web quality and Web browser acceptance |
+| `packages/daynight/test/fixtures/installed-cli.ts` | Every module |
+| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI, Go server coverage/E2E, Web quality and Web browser acceptance |
+| Other `packages/daynight/src/` paths | CLI and Go server coverage/E2E |
+| CLI manifest, TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
 | Other `packages/daynight/` paths | Linux, macOS ARM64 and Windows CLI, runtime compatibility, plus shell completion |
-| `packages/daynight-server/` | Go server |
-| `packages/daynight-web/`, runtime files under `deployment/`, current Dagre and XYFlow patches | Web quality and Web browser acceptance |
+| `packages/daynight-server/` | Go server coverage and E2E |
+| `packages/daynight-web/` and current Dagre and XYFlow patches | Go server coverage/E2E, Web quality and Web browser acceptance |
+| Runtime files under `deployment/` | Web quality and Web browser acceptance |
 | Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` | Every module |
 | Root `.gitignore`, `docs/`, `.agents/`, `.claude/`, files named `README.md`, `AGENTS.md` or `CLAUDE.md`, manual `publish.yml` workflow | No application jobs |
 | CI routing/workflow changes and other unclassified paths | Every module |
 
 Runtime files under `packages/daynight/src/` always select CLI checks, including
-SQL resources and bundled Markdown. Other documentation exclusions apply before module selection;
-changes selecting several modules run their union. The Web selector enables
-parallel quality and browser jobs, each with a 20-minute bound; both are required
-by `checks`. Selected jobs retain their complete integration and coverage gates.
+SQL resources and bundled Markdown, and select both Go server jobs because they
+install the CLI. The exact CLI preparation inputs are listed in
+[the selector](.github/scripts/ci-modules.mts). Other documentation exclusions
+apply before module selection; changes selecting several modules run their union. The Web selector enables
+parallel quality and browser jobs, each with a 20-minute bound. The server selector
+enables parallel coverage and E2E jobs, also bounded to 20 minutes each. All
+selected jobs are required by `checks` and retain their complete integration and
+coverage gates.
 The final `checks` job uses `always()` and accepts only `success` or `skipped`
 from all preceding jobs. A newer PR run cancels the older run for that PR.
 New `main` pushes queue behind an active `main` run without cancelling it.

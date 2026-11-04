@@ -79,6 +79,10 @@ using short native promise-timer ticks for their controlled resource states.
 Their tests retain exact cadence, deadline clipping and cancellation assertions;
 the [coordinator polling decision](../.agents/notes/implemented/testing/2026-11-04-coordinator-test-polling.md)
 owns that test boundary.
+Native supervisor fixtures use production observation budgets and a controlled
+parent clock only after a real TERM receipt and native signal-observation window.
+The [native fixture decision](../.agents/notes/implemented/testing/2026-11-04-native-supervisor-fixture-clock.md)
+records the real-process proof and cleanup requirements.
 The pnpm dependency store is local to `.tmp/pnpm-store`. Native skill terminal
 acceptance uses the development-only `node-pty` dependency, including Windows
 ConPTY. The workspace build policy permits only the pinned node-pty hook and
@@ -368,28 +372,42 @@ PostgreSQL database, then run:
 bash scripts/check.sh
 ```
 
-This first runs the shared `pnpm web:build` to publish real embedded assets, then
-builds the binary, runs vet and race-enabled `go-cov`, and enforces total
-statement coverage strictly greater than 90%, package coverage of at least 85%,
-and function coverage of at least 80%, with critical-block checks enabled. The
-same raw coverage profile supplies an exact strict comparison; exactly 90%
-fails, independently of display rounding. No product files or functions are
-excluded. When [CI selection](#ci-selection) selects the server, the complete
-Go job contributes its result to the final `checks` job. PostgreSQL absence is a
-failure, not a skipped test. The gate includes an installed-CLI service path and
-resource-budget probes. A Node orchestrator shares one real installation across
-the Go command scenarios and, after the unchanged go-cov/strict-profile checks,
-public-command deadline probes outside Go's default ten-minute timer. Test-only
-mocks use a 1-second request and 3-second operation budget while separately
-asserting the installed production defaults of 30 seconds and five minutes.
-The four 128 MiB single-response and 256 MiB cumulative decoded-byte probes run
-only through the explicit local stress entrypoint, preserving real exact-limit
-and +1-byte tests. Each receipt identifies actual deadlines and mock status. The
-Go job retains its 20-minute bound, race checks and strict coverage gates. The [acceptance design](../docs/design/daynight-project-task.md#验证与交付证据)
-owns the mechanism and source-bound evidence. The
-[server validation guide](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence) maps
-requirements to tests and describes the CI receipt containing tested source and
-binary identity, scenario results and resource cleanup.
+The complete entrypoint prepares real embedded Web assets and the pinned UniAuth
+fixture, then runs coverage and E2E validation in sequence. Select either
+responsibility independently with `bash scripts/check.sh --coverage` or
+`bash scripts/check.sh --e2e`; each prepares its own required inputs and installed
+CLI. Both require PostgreSQL, whose absence fails validation.
+
+Coverage validation builds the binary, runs vet and race-enabled `go-cov`, and
+enforces total statement coverage strictly greater than 90%, package coverage of
+at least 85%, and function coverage of at least 80%, with critical-block checks
+enabled. The raw profile supplies an exact strict comparison; exactly 90% fails
+independently of display rounding. No production files or functions are excluded.
+Only the test-only `cmd/e2e_tests` package is removed from coverage execution;
+a recursive source check rejects non-test Go files there before validation.
+
+The coverage installation supports the authentication package's installed-CLI
+assertions and its normally issued PAT handoff to two public-command deadline
+probes. These probes run outside Go's ten-minute timer. Test-only mocks use a
+1-second request and 3-second operation budget while separately asserting the
+installed production defaults of 30 seconds and five minutes. The four 128 MiB
+single-response and 256 MiB cumulative decoded-byte probes run only through the
+explicit local stress entrypoint, preserving real exact-limit and +1-byte tests.
+Each receipt identifies actual deadlines and mock status.
+
+E2E validation runs the complete `cmd/e2e_tests` package with race detection,
+`-count=1` and a ten-minute timeout, including its freshly built race-enabled
+server and independent installed CLI. It owns built-process scenarios and
+source/artifact provenance, concurrency, refusal and cleanup assertions. It does
+not consume the coverage installation or run deadline probes.
+
+When [CI selection](#ci-selection) selects the server, `verify-server` and
+`verify-server-e2e` run concurrently on separate runners, each with its own
+PostgreSQL and a 20-minute bound; both contribute to the final `checks` job.
+The [server validation guide](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
+owns receipt paths, resource ownership and requirement-to-test mappings, and the
+[CI split decision](../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)
+records the execution boundary and retained gates.
 
 ## Web development
 
@@ -451,8 +469,9 @@ and records cleanup failures.
 
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. It runs thirty-one native functional workflows, then the same
-container workflows and complete container cleanup. The explicit local
+parallel. After shared CLI preparation, it overlaps thirty-two native functional
+workflows with the same container workflows, then requires complete target and
+shared CLI cleanup. The explicit local
 `pnpm web:acceptance:stress` command adds the fixed native capacity cases after
 those phases. Both modes require Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and
 Playwright Chromium. The
@@ -480,14 +499,14 @@ omits files with the `stress` build tag; ordinary Vitest discovery omits
 The package-local commands are documented by their owners. From the server
 module, `bash scripts/stress.sh` runs its query, archive and repeated-write
 workloads; `bash scripts/check.sh --stress-budgets` selects the installed CLI's
-four full-byte probes after the usual Go gate.
+four full-byte probes in coverage validation and then runs the complete E2E suite.
 
 Default CLI service acceptance retains two bounded deadline probes and
 `.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
 the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
 claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
-functional mode requires thirty-one scenarios per target (62 total); stress mode
-adds five native capacity scenarios (36 native / 31 container, 67 total) and
+functional mode requires thirty-two scenarios per target (64 total); stress mode
+adds five native capacity scenarios (37 native / 32 container, 69 total) and
 `native/capacity/performance.json`. Both
 modes retain strict source/browser identity, combined authentication and owned
 resource cleanup. Local measurements prove only their recorded source and host;
@@ -621,8 +640,13 @@ The [root README routing table](../README.md#ci-selection) owns path selection.
 
 Every path under `packages/daynight/src/` selects CLI validation, including
 runtime Markdown such as the bundled review skill's `SKILL.md` or `README.md`.
+Every CLI source change also selects both Go server jobs, which install the CLI.
 The browser-consumed `src/api/` and `src/session/` trees and exact
-`src/platform/text.ts` path also select Web quality and browser validation.
+`src/platform/text.ts` path additionally select Web quality and browser validation.
+The exact manifest, build/configuration and acceptance-script inputs in
+[the selector](../.github/scripts/ci-modules.mts) select CLI and both server jobs.
+Web source and its Dagre/XYFlow patches select both server jobs because those jobs
+build embedded Web assets.
 Other documentation exclusions apply before module selection. The `.gitignore`
 exclusion matches only the repository root; nested ignore files retain their
 module ownership or the unclassified-path fallback. An excluded path does not
@@ -631,11 +655,11 @@ patches select all jobs until their consumers are explicitly assigned.
 
 Selected jobs keep their ordinary functional checks, coverage thresholds,
 timeouts and cleanup requirements. Stress workloads have explicit local-only
-entrypoints and are excluded from routine CI selection. The Go job still builds real web assets and
-exercises the installed CLI; the web job still builds and exercises the Go
-service and production deployment. Selecting one module does not split these
-existing integration suites. The same Web selector enables quality and browser
-jobs; both are required by the final gate. The Ubuntu shell-completion and Web
+entrypoints and are excluded from routine CI selection. The Go coverage and E2E
+jobs each build real Web assets and install the CLI; the Web browser job builds
+and exercises the Go service and production deployment. Both server jobs use the
+same server selector and prepare independent PostgreSQL and UniAuth resources.
+The same Web selector enables quality and browser jobs; both are required by the final gate. The Ubuntu shell-completion and Web
 browser jobs select the
 official HTTPS Ubuntu archive and security services before package preparation.
 Their shared command changes only the runner's referenced mirror list; signed
@@ -681,10 +705,10 @@ records the isolation and scheduling constraints.
 The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
 records the responsibility and budget boundaries without claiming a measured
 CPU/I/O cause or guaranteed hosted speedup.
-Both Go-consuming jobs restore module and compiler caches keyed by the server
-`go.sum`, while the server check expires test results before database/race/
-coverage validation. The web pipeline retains the full production build and
-unique image identity check. One packed/installed CLI is reused by the native
+The Go coverage, Go E2E and Web browser jobs restore module and compiler caches
+keyed by the server `go.sum`. Coverage validation expires Go test results before
+database/race/coverage checks; E2E uses `-count=1` to require fresh observations.
+The web pipeline retains the full production build and unique image identity check. One packed/installed CLI is reused by the native
 and container browser attachment journeys. After the web pipeline and recorded
 resource recovery, Ubuntu web CI runs the existing real-container attachment
 persistence and paired-backup check once; its `.tmp/attachment-deployment-*/`

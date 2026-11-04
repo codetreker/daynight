@@ -517,39 +517,56 @@ HTTP 测试验证路由、DTO、错误映射、project 范围查找、分页筛�
 `success` 或 `skipped`，失败、取消及其他结果使汇总失败；未选中的 job 为 `skipped`。
 Go、web、CLI 和 shell completion 各自的检查内容及门槛保持。
 统一验证入口为模块内的 `bash scripts/check.sh`，要求显式设置
-`DAYNIGHT_TEST_DATABASE_URL`。干净 checkout 先从根目录 frozen 安装 Node 24/pnpm
-11.28.6 依赖，Go 检查在任何 build/vet/race 前调用共享 `pnpm web:build` 发布
-资源；缺少工具、依赖或真实产物直接失败。独立 `cmd/e2e_tests` 测试包的 `TestMain`
-每次构建新的 race binary，通过真实 HTTP、PostgreSQL、信号和进程重启执行验收。
-`go test ./...` 和既有 `go-cov` 入口都包含这个测试包。主命令包测试自行管理临时
+`DAYNIGHT_TEST_DATABASE_URL`，依次完成覆盖率与 E2E 两个阶段。干净 checkout 先从
+根目录 frozen 安装 Node 24/pnpm 11.28.6 依赖；`--coverage` 和 `--e2e` 可分别
+选择一个阶段。每种选择都在 Go build/test 前发布真实 Web 资源、准备固定 UniAuth
+夹具并构建安装 CLI，缺少工具、依赖或真实产物直接失败。两个 CI job 使用同一
+server selector，在各自 runner 与 PostgreSQL 服务上并行执行，分别保留 20 分钟
+上限，最终 `checks` 等待并检查两者。选择规则包含实际消费的 CLI 源码、打包和
+准备输入及 Web 构建输入。
+
+覆盖率阶段保留 build、vet、race、固定版本 `go-cov` 与 strict raw profile 检查。
+编排层把 `cmd/e2e_tests` 的完整 module import path 传给 `--exclude-packages`，
+使该纯测试包不再在覆盖率阶段执行。由于固定工具按子串匹配，编排层先通过
+`go list ./...` 确认该匹配仅命中精确的 E2E 包，任何同名扩展或嵌套包都失败，
+并递归拒绝该目录中的非 `_test.go` Go 源文件，防止排除生产语句。生产覆盖率的
+范围和所有门槛保持。
+
+E2E 阶段以 `go test -race -count=1 -timeout=10m ./cmd/e2e_tests` 完整执行
+独立测试包。其 `TestMain` 每次构建新的 race binary，通过真实 HTTP、PostgreSQL、
+信号和进程重启执行验收。`go test ./...` 仍能发现此包。主命令包测试自行管理临时
 存储与轻量辅助函数，单独选择该包时不触发 E2E 构建、源码身份核验或证据初始化；
 其中直接运行服务的测试仍需真实 PostgreSQL 和 UniAuth。测试包归属与选择方式见
-[服务端验证说明](../../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)。
+[E2E 测试包决策](../../.agents/notes/implemented/testing/2026-11-03-server-e2e-package.md)，
+CI 分工与代价见[独立作业决策](../../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)。
 
-安装 CLI 验收复用此 E2E 测试包的 fixture，包含
+安装 CLI 验收复用 E2E 测试包的 fixture，包含
 `installed_cli_project_task_workflow` 场景，通过 `PT.V*` 要求编号对应 CLI 的真实
-project/task 操作、依赖推进、重启持久化及版本竞争。Node 编排入口在 Go
-覆盖率 gate 前准备一次安装，将同一产物用于 Go 场景及随后预算探针。编排层固定传入
-`--skip-result-packages cmd/e2e_tests`，仅省略无产品语句测试包的结果汇总行；测试仍
-执行且失败仍使 gate 失败，生产覆盖率、race、critical 与 strict raw profile 检查保持
-原义。机制见[E2E 测试包决策](../../.agents/notes/implemented/testing/2026-11-03-server-e2e-package.md)。预算探针运行在 Go 默认
-10 分钟 test timer 之外；常规入口与 CI 选择两个期限场景，通过测试侧 preload 使用
-1 秒单次和 3 秒总期限，生产默认 30 秒/5 分钟由测试单独断言。显式本地
-`bash scripts/check.sh --stress-budgets` 另选择四个完整字节场景，保留真实
-128 MiB/256 MiB 限制及精确边界和 +1 字节配对，并在 CI 环境中拒绝。
-原有 Go 作业仍为 20 分钟，严格覆盖率门槛保持。
+project/task 操作、依赖推进、重启持久化及版本竞争。E2E 与覆盖率各自拥有一次
+独立安装，互不传递活跃资源或凭据。覆盖率阶段的安装供 `internal/server` 鉴权
+断言使用；该包的正常 PAT 签发是随后预算探针的凭据生产者，私有交接文件、探针
+和安装清理均留在同一阶段。预算探针运行在 Go 默认 10 分钟 test timer 之外；
+常规入口与 CI 选择两个期限场景，通过测试侧 preload 使用 1 秒单次和 3 秒总期限，
+生产默认 30 秒/5 分钟由测试单独断言。显式本地
+`bash scripts/check.sh --stress-budgets` 在覆盖率阶段选择四个完整字节场景，随后
+完成 E2E，保留真实 128 MiB/256 MiB 限制及精确边界和 +1 字节配对，并在 CI 环境中拒绝。
 独立实际进程场景在其顶层测试内最多四个并发，各自保留 schema、进程、数据库
 屏障及清理；顶层测试间的全局环境修改仍串行。原始服务场景不被 CLI 场景替换，细节见
 [安装联调决策](../../.agents/notes/archived/testing/2026-10-20-installed-project-task-acceptance.md)及
-[CLI 设计](daynight-project-task.md#验证与交付证据)。根目录
-`.tmp/project-task-service-evidence.json` 记录安装身份、Go/期限结果与清理；本地完整字节
-套件写入 `.tmp/project-task-stress-evidence.json`，两者均校验所选 suite 和精确场景集合。CI
-发布 `.tmp/acceptance-evidence.json` 和同次 `.tmp/coverage.out`；前者记录源版本、
-binary hash、场景及资源清理，CI 要求 checkout 干净且 Git revision 与 `GITHUB_SHA`
-一致。V1–V10 的证据归属与 receipt 解释见
+[CLI 设计](daynight-project-task.md#验证与交付证据)。
+
+根目录 `.tmp/project-task-service-evidence.json` 记录覆盖率阶段安装身份、Go/期限
+结果与清理；本地完整字节套件改写入 `.tmp/project-task-stress-evidence.json`，
+两者均校验所选 suite 和精确场景集合。根目录 `.tmp/project-task-e2e-evidence.json`
+记录 E2E 安装身份、Go 命令和安装清理，不包含预算探针。各阶段回执同时记录实际
+源码 revision、tree、dirty 与所选 package 清单。CI 的 `daynight-server-acceptance`
+归档覆盖率与期限回执，`daynight-server-e2e-acceptance` 归档 E2E 编排回执及 Go 包
+增量写入的 `.tmp/acceptance-evidence.json`；后者记录源版本、binary hash、场景及
+资源清理。失败路径仍上传已产生的诊断。CI 要求 checkout 干净且 Git revision 与
+`GITHUB_SHA` 一致。V1–V10 的证据归属与 receipt 解释见
 [服务端验证说明](../../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)；
 逐次运行结果随对应 PR 与 CI 保存。
 
-运行前失效项目内的 Go 测试结果缓存，确保数据库状态
-变化不能被缓存报告掩盖；Go 与 web 两个 job 通过 `setup-go` 复用以 server `go.sum`
-为依赖身份的编译与模块缓存。真实业务和跨层验收证据随对应任务交付。
+覆盖率阶段运行前失效项目内的 Go 测试结果缓存，E2E 使用 `-count=1`，确保数据库
+状态变化不能被缓存报告掩盖。覆盖率、E2E 与 Web browser 三个 job 通过 `setup-go`
+复用以 server `go.sum` 为依赖身份的编译与模块缓存。真实业务和跨层验收证据随对应任务交付。
