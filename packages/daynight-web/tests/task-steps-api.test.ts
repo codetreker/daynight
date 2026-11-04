@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/client";
 import { parseApiJson, stringifyApiJson } from "../src/api/json";
-import { addTaskStep, getTaskSteps, parseTaskSteps, setTaskStepStatus } from "../src/api/task-steps";
+import { addTaskStep, getTaskSteps, moveTaskStep, parseTaskSteps, setTaskStepStatus } from "../src/api/task-steps";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
 const taskId = "20000000-0000-0000-0000-00000000000b";
@@ -98,5 +98,23 @@ describe("append Steps transport", () => {
     const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
     await expect(addTaskStep(projectId, taskId, bad, new AbortController().signal, admission(), "r")).rejects.toMatchObject({ kind: "protocol" });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("Step position transport", () => {
+  it.each([{ position: "first" } as const, { position: "last" } as const, { before: "0000000B" } as const, { after: "0000000B" } as const])("sends the scoped placement with exact version %#", async (placement) => {
+    const fetcher = vi.fn().mockResolvedValue(response(resource)); vi.stubGlobal("fetch", fetcher);
+    const owner = { ...admission(), onWriteConfirmed: vi.fn() };
+    await expect(moveTaskStep(projectId, taskId, "0000000A", placement, resource.version, new AbortController().signal, owner, "request-id")).resolves.toEqual(resource);
+    const normalized = "before" in placement ? { before: "0000000b" } : "after" in placement ? { after: "0000000b" } : placement;
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a/position`, expect.objectContaining({ method: "PUT", body: stringifyApiJson({ version: resource.version, ...normalized }), headers: expect.objectContaining({ "X-Request-ID": "request-id" }) }));
+    expect(owner.onWriteConfirmed).toHaveBeenCalledOnce();
+  });
+  it("preserves self-reference and missing-anchor refusals from the service", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(response({ error: { code: "invalid_input", message: "self", requestId: "r1" } }, 400)).mockResolvedValueOnce(response({ error: { code: "not_found", message: "missing", requestId: "r2" } }, 404)); vi.stubGlobal("fetch", fetcher);
+    await expect(moveTaskStep(projectId, taskId, step.id, { before: step.id }, 1n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ status: 400, code: "invalid_input" });
+    await expect(moveTaskStep(projectId, taskId, step.id, { after: "ffffffff" }, 1n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ status: 404, code: "not_found" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });

@@ -17,7 +17,11 @@ subjects; the [Worker seed decision](../../.agents/notes/implemented/testing/202
 records that lifetime and its native isolation checks. The historical review
 split measurements do not measure that Worker change. Separate runs have
 different runner load, so historical variation is included rather than treating
-one measurement as a stable benchmark.
+one measurement as a stable benchmark. Ordinary tests and installed acceptance
+now run in independent native jobs; the
+[phase ownership decision](../../.agents/notes/implemented/testing/2026-11-04-parallel-native-cli-validation.md)
+records their dependencies, evidence and runner-cost trade-off. Historical
+combined-job timings below retain their original phase composition.
 
 ## Baseline
 

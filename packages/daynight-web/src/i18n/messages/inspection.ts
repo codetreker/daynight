@@ -16,6 +16,9 @@ export type InspectionMessages = {
     readonly conflict: string; readonly conflictReconciled: string; readonly unknown: string; readonly unknownReconciled: string; readonly checkState: string; readonly checking: string; readonly checkFailed: string;
     readonly statusRefused: string; readonly statusMissing: string; readonly statusDenied: string;
     readonly statusExhausted: string; readonly statusCapacity: string; readonly statusInvalid: string;
+    readonly moveMenu: (title: string) => string; readonly moveUnavailable: string; readonly moveUp: string; readonly moveDown: string; readonly moveFirst: string; readonly moveLast: string; readonly moveRelative: string;
+    readonly moveTitle: string; readonly target: string; readonly searchTargets: string; readonly targetPagination: string; readonly targetPage: string; readonly targetResults: string; readonly noTargets: string; readonly targetMissing: string; readonly placement: string; readonly before: string; readonly after: string; readonly cancelMove: string; readonly confirmMove: string;
+    readonly moveConflict: string; readonly moveConflictReconciled: string; readonly moveUnknown: string; readonly moveRefused: string; readonly moveMissing: string; readonly moveInvalid: string;
     readonly capacityDetails: (encoded: string, maximum: string) => string;
     readonly add: string; readonly addTitle: string; readonly description: string; readonly initialStatus: string;
     readonly edit: string; readonly preview: string; readonly save: string; readonly cancel: string; readonly titleRequired: string;

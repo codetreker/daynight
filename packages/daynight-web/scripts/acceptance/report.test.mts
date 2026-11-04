@@ -48,13 +48,13 @@ const stressNativeNames = [...functionalNames, ...capacityNames];
 const scenario = (name: string): Scenario => ({ name, title: name, durationMs: 12, screenshots: [`/owned/${name}.png`] });
 
 test('keeps functional and explicit local stress inventory totals distinct', () => {
-  assert.equal(functionalNames.length, 35);
-  assert.equal(functionalNames.length * 2, 70);
-  assert.equal(stressNativeNames.length, 40);
-  assert.equal(stressNativeNames.length + functionalNames.length, 75);
+  assert.equal(functionalNames.length, 36);
+  assert.equal(functionalNames.length * 2, 72);
+  assert.equal(stressNativeNames.length, 41);
+  assert.equal(stressNativeNames.length + functionalNames.length, 77);
 });
 
-test('verifies exactly thirty-five functional scenarios for the container target', () => {
+test('verifies exactly thirty-six functional scenarios for the container target', () => {
   const scenarios = readReport(report([...functionalNames]), functionalNames);
   assert.equal(scenarios.length, functionalNames.length);
   assert.deepEqual(scenarios.map(({ name }) => name), functionalNames);
@@ -92,7 +92,7 @@ test('requires the platform journey in each complete target report', () => {
   assert.throws(() => aggregateScenarios([withoutPlatform.map(scenario), capacityNames.map(scenario)], stressNativeNames), /Required acceptance scenario missing: task-platform/);
 });
 
-for (const name of ['task-assignment', 'task-assignment-layout', 'task-step-status', 'task-step-access-retirement', 'task-step-add'] as const) {
+for (const name of ['task-assignment', 'task-assignment-layout', 'task-step-status', 'task-step-access-retirement', 'task-step-position', 'task-step-add'] as const) {
   test(`requires the ${name} journey in each complete target report`, () => {
     const incomplete = functionalNames.filter((candidate) => candidate !== name);
     assert.throws(() => readReport(report(incomplete), functionalNames), new RegExp(`Required acceptance scenario missing: ${name}`));

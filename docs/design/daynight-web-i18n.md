@@ -29,7 +29,7 @@ packages/daynight-web/
 语言，切换保留状态与焦点。[公开入口设计](daynight-landing.md)拥有具体组合。
 [AuthenticatedApp](daynight-auth.md) 的 messages.auth 完整英语/简体中文契约拥有
 登录、设备授权、账户、项目创建、成员、邀请、令牌及工作空间 Worker 路由文案。
-messages.workers 拥有 Worker 列表/详情、观测状态、资源/版本、时间、同步失败与可访问名称。
+messages.workers 拥有 Worker 列表/详情、观测状态、资源/版本、时间、同步失败与可访问名称；其中 messages.workers.configuration 拥有配置字段、覆盖方式、目标与实际结果、逐项诊断、草稿校验、保存冲突和未知结果核对文案。
 入口在绘制前设置当前语言及与路径对应的推广页、指南或鉴权加载标题；后续页面元数据、
 路由与会话状态按当前目录更新。
 身份变化释放用户内容，但不重建语言 Provider。真实 UniAuth 生产验收保留对应源码与浏览器环境的证据。

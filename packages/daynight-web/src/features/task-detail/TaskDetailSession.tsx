@@ -1,7 +1,7 @@
 import { readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, unpauseTask, withdrawWorkerClaim } from "../../api/client";
-import { addTaskStep, getTaskSteps, setTaskStepStatus, type AddStepInput, type StepStatus, type StepsResource } from "../../api/task-steps";
+import { addTaskStep, getTaskSteps, moveTaskStep, setTaskStepStatus, type AddStepInput, type StepPlacement, type StepStatus, type StepsResource } from "../../api/task-steps";
 import { isTaskStale } from "./freshness";
 import type { ExecutionPlatform, GraphTask, TaskDetail, TaskStatus } from "../../api/types";
 import { TaskCacheError } from "../task-cache/database";
@@ -9,9 +9,24 @@ import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import type { SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
 import { materializeDetail, readCachedDetail, saveDetail, validateDetailSummary, type DetailAdmission } from "./detail-cache";
 
-export type TaskMutationOperation = { readonly action: "unpause"; readonly version: bigint } | { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "stepAdd"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepStatus"; readonly stepId: string; readonly status: StepStatus; readonly version: bigint; readonly requestId: string } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
-const isStepOperation = (operation: TaskMutationOperation | null): operation is Extract<TaskMutationOperation, { action: "stepStatus" | "stepAdd" }> =>
-  operation?.action === "stepStatus" || operation?.action === "stepAdd";
+export type TaskMutationOperation = { readonly action: "unpause"; readonly version: bigint } | { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "stepAdd"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepPosition"; readonly stepId: string; readonly placement: StepPlacement; readonly version: bigint; readonly requestId: string } | { readonly action: "stepStatus"; readonly stepId: string; readonly status: StepStatus; readonly version: bigint; readonly requestId: string } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
+const isStepOperation = (operation: TaskMutationOperation | null): operation is Extract<TaskMutationOperation, { action: "stepStatus" | "stepAdd" | "stepPosition" }> =>
+  operation?.action === "stepStatus" || operation?.action === "stepAdd" || operation?.action === "stepPosition";
+const movedSteps = (resource: StepsResource, stepId: string, placement: StepPlacement): StepsResource["steps"] | null => {
+  const from = resource.steps.findIndex((step) => step.id === stepId);
+  if (from < 0) return null;
+  const remaining = resource.steps.filter((step) => step.id !== stepId);
+  let to: number;
+  if ("position" in placement) to = placement.position === "first" ? 0 : remaining.length;
+  else {
+    const anchor = ("before" in placement ? placement.before : placement.after).toLowerCase();
+    const index = remaining.findIndex((step) => step.id === anchor);
+    if (index < 0) return null;
+    to = index + ("after" in placement ? 1 : 0);
+  }
+  remaining.splice(to, 0, resource.steps[from]!);
+  return remaining;
+};
 type TaskMutationReview = { readonly detail: TaskDetail; readonly cacheGeneration: string };
 class TaskMutationReviewExpired extends Error {}
 export type TaskMutationState = {
@@ -738,6 +753,14 @@ export class TaskDetailSessions {
     this.performMutation(projectId, taskId, { action: "stepAdd", stepId: target, version, requestId }, { id: target, title, description, status, version });
     return requestId;
   }
+  moveStep(projectId: string, taskId: string, stepId: string, placement: StepPlacement, version: bigint): void {
+    const entry = this.entry(projectId, taskId);
+    const target = stepId.toLowerCase();
+    const normalized = "before" in placement ? { before: placement.before.toLowerCase() } : "after" in placement ? { after: placement.after.toLowerCase() } : placement;
+    if (!this.canSetStepStatus(projectId, taskId) || entry.steps.state.resource?.version !== version || !entry.steps.state.resource.steps.some((step) => step.id === target) || !/^[0-9a-f]{8}$/.test(target) ||
+      ("before" in normalized ? !/^[0-9a-f]{8}$/.test(normalized.before) : "after" in normalized ? !/^[0-9a-f]{8}$/.test(normalized.after) : normalized.position !== "first" && normalized.position !== "last")) return;
+    this.performMutation(projectId, taskId, { action: "stepPosition", stepId: target, placement: normalized, version, requestId: crypto.randomUUID() });
+  }
   setStatus(projectId: string, taskId: string, status: TaskStatus, version: bigint): void {
     const state = this.writableState(projectId, taskId);
     if (!canSetStatus(state) || state.detail!.version !== version || !["todo", "in_progress", "done"].includes(status)) return;
@@ -870,7 +893,9 @@ export class TaskDetailSessions {
       let submitted = false;
       let confirmed = false;
       let validated = false;
-      const changed = operation.action === "stepStatus" ? previousSteps?.steps.find((step) => step.id === operation.stepId)?.status !== operation.status
+      const moved = operation.action === "stepPosition" && previousSteps !== null ? movedSteps(previousSteps, operation.stepId, operation.placement) : null;
+      const changed = operation.action === "stepPosition" ? moved === null || moved.some((step, index) => step.id !== previousSteps!.steps[index]?.id)
+        : operation.action === "stepStatus" ? previousSteps?.steps.find((step) => step.id === operation.stepId)?.status !== operation.status
         : operation.action === "status" ? previous.status !== operation.status
         : operation.action === "assignedTo" ? previous.assignedTo !== operation.assignedTo : true;
       const committedVersion = operation.version + (changed ? 1n : 0n);
@@ -895,18 +920,21 @@ export class TaskDetailSessions {
             submitted = true;
             return operation.action === "stepStatus"
               ? setTaskStepStatus(projectId, taskId, operation.stepId, operation.status, operation.version, signal, admission, operation.requestId)
-              : addTaskStep(projectId, taskId, addInput!, signal, admission, operation.requestId);
+              : operation.action === "stepAdd"
+                ? addTaskStep(projectId, taskId, addInput!, signal, admission, operation.requestId)
+                : moveTaskStep(projectId, taskId, operation.stepId, operation.placement, operation.version, signal, admission, operation.requestId);
           });
           if (response === null) return;
           await this.runMutationStage(projectId, taskId, operation, async () => {
             if (!this.admitMutationOutcome(projectId, taskId, operation, requestTicket)) return;
             const result = response.value;
+            const expected = operation.action === "stepPosition" ? moved : previousSteps!.steps;
             const valid = operation.action === "stepAdd"
               ? result.version === committedVersion && result.steps.length === previousSteps!.steps.length + 1 && sameSteps(previousSteps!, { ...result, steps: result.steps.slice(0, -1) })
-              : result.version === committedVersion && result.steps.length === previousSteps!.steps.length && result.steps.every((step, index) => {
-                const old = previousSteps!.steps[index]!;
+              : expected !== null && result.version === committedVersion && result.steps.length === expected.length && result.steps.every((step, index) => {
+                const old = expected[index]!;
                 return step.id === old.id && step.title === old.title && step.description === old.description && step.createdAt === old.createdAt &&
-                  (step.id === operation.stepId ? step.status === operation.status && (changed || step.updatedAt === old.updatedAt) : step.status === old.status && step.updatedAt === old.updatedAt);
+                  (operation.action === "stepStatus" && step.id === operation.stepId ? step.status === operation.status && (changed || step.updatedAt === old.updatedAt) : step.status === old.status && step.updatedAt === old.updatedAt);
               });
             if (!valid) throw new ApiError("protocol");
             validated = true;

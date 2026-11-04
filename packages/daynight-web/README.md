@@ -2,9 +2,10 @@
 
 The React/TypeScript Web app provides a public product introduction and a private
 workspace. The workspace implements project browsing, account-owned Worker
-observations, cursor pagination, request cancellation, runtime API decoding, native
-browser routing and a pure dependency graph model with horizontal layout. Project task views
-use an IndexedDB summary cache and the authenticated task-sync endpoint.
+observations and cloud configuration, cursor pagination, request cancellation,
+runtime API decoding, native browser routing and a pure dependency graph model
+with horizontal layout. Project task views use an IndexedDB summary cache and the
+authenticated task-sync endpoint.
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
@@ -269,9 +270,11 @@ unavailable for editing.
 
 ## My Workers
 
-The account-owned `/workers` list and `/workers/{workerId}` detail show Workers
-that have reported within the last 72 hours. Both support direct access, reloads
-and login return destinations. They mount inside the existing authenticated
+The account-owned `/workers` list shows Workers that have reported within the
+last 72 hours. `/workers/{workerId}` combines Runtime overview and Configuration
+tabs: runtime observations retain that window, while cloud configuration is an
+independent, retained resource. Both routes support direct access, reloads and
+login return destinations. They mount inside the existing authenticated
 workspace and share its navigation, styles and language. Sidebar project loading
 or failure does not admit or block Worker reads. Worker ID participates in the
 page's resource key, content focus and mobile navigation lifetime.
@@ -280,8 +283,9 @@ The list uses only the actual summary: machine name, platform, last report time,
 task observation state and currently visible task count. It does not infer an OS
 release or load every detail. `null` task count means information unavailable;
 observed zero means idle. Stale task information retains its observation time.
-The complete collection sorts online first, latest report next and Worker ID as
-the stable tie-breaker.
+The complete collection groups online Workers first while preserving the
+service’s creation-time and Worker ID order within each group. Heartbeats do not
+change that relative order.
 
 Detail resource cards render actual OS type/release/version/architecture, CPU
 model/logical processor count/use, used/total memory and available/total capacity
@@ -305,14 +309,15 @@ resource identity and request generations fence late results. The shell's
 Same-account verification retains the last observation but rereads it; account
 replacement destroys the old workspace and its memory.
 
-One visible page owns one five-second single-flight refresh and one one-second
-ticker. The list traverses every cursor privately and replaces the collection
+The visible runtime observation view owns one five-second single-flight refresh
+and one one-second ticker. The list traverses every cursor privately and replaces the collection
 only when the whole traversal succeeds. A failed page retains the previous
 complete collection and exposes retry. Its last response supplies `observedAt`
 and the paired `performance.now()` receipt for a common server-time anchor.
 Online means less than 120 seconds since `lastReportedAt`; exactly 120 seconds
 is offline. Exactly 72 hours remains recent; later observations disappear, and
-an expired detail becomes unavailable. Browser wall-clock changes do not affect
+an expired runtime overview becomes unavailable. This does not clear or block
+the Configuration tab. Browser wall-clock changes do not affect
 these rules.
 
 Read failure, hidden state and identity checking freeze the last published
@@ -328,7 +333,8 @@ Actual refresh failures show the synchronization error, last successful
 observation and retry action throughout further attempts until success. Worker
 offline notices and probe failures retain their distinct meanings; browser
 connectivity does not establish Worker liveness. An admitted current-principal
-404 clears the old detail. Initial loading, initial failure, empty results and
+404 clears the old runtime observation. Configuration reads handle their own
+resource result. Initial loading, initial failure, empty results and
 retained-snapshot refresh failure have separate displays.
 
 Online badges use green. Offline text and dot use `#b54708` on `#fff0e6`, with
@@ -341,6 +347,49 @@ the server. Neither offline state, expiry nor a read error mutates a task or
 claim. Stable React identities preserve still-present keyboard targets during
 ticks and refreshes; desktop and 390px layouts wrap long names, paths and tasks.
 
+### Cloud runtime configuration
+
+Configuration edits the cloud target and shows the Worker's last reported
+application results. It supports concurrency, polling interval in milliseconds,
+recovery limit, default Agent/model/args, and selected Projects with native
+overrides. Repository root and local paths, Worker identity, service connection
+and credentials, and agent control mode remain locally managed.
+
+Project override controls preserve inheritance separately from an explicit
+provider-default model (`null`) and empty arguments (`[]`). Arguments are edited
+as a JSON string array. Invalid raw inputs remain in the form with validation
+feedback. The Project chooser loads the complete accessible directory; selected
+inaccessible Projects retain only their ID and saved override intent. Removing
+saved Projects requires confirmation before the single target PUT. Cancel and
+Escape make no write.
+
+A successful save confirms a target, not local application. Per-item results
+retain their target revision, actual value, pending/applying/applied/error state,
+current diagnostic, last failure and retry time. Project removal outcomes remain
+visible after the Project leaves the desired list. Offline Workers retain their
+last confirmed results and may receive a newly saved target when they reconnect.
+Without a recent runtime observation, the page does not invent a current online
+state. An uninitialized `desired:null` resource is not editable; the browser
+cannot create the first target.
+
+`api/worker-configuration.ts` strictly decodes the account-owned resource.
+`features/workers/configuration/model.ts` and `useWorkerConfiguration.ts` keep
+latest resource, draft baseline, raw input and submitted snapshot separate.
+Opening Configuration mounts its state; switching tabs preserves the mounted
+editor and draft while pausing configuration reads. The active, visible,
+identity-admitted tab performs its own five-second single-flight refresh without
+using the runtime observation clock.
+
+Background results do not replace draft input, focus or selection. Saving uses
+the draft's target revision; observation updates cannot invalidate that baseline.
+A conflict retains the draft and exposes the latest cloud value for explicit
+loading. Definite failures retain input. A potentially committed write is
+reconciled by GET before another save, without replaying PUT or attributing a
+matching current value to that request. Later input is not overwritten by an
+earlier submitted snapshot. Account and Worker lifetimes fence reads and writes;
+configuration and drafts stay in page memory, outside project storage and
+IndexedDB.
+
 The [Web requirements](../../docs/spec/daynight-web.md#我的-worker),
 [Web design](../../docs/design/daynight-web.md#我的-worker-列表与详情) and
 [observation decision](../../.agents/notes/implemented/architecture/2026-10-29-web-worker-observations.md)
@@ -348,7 +397,10 @@ own the page behavior and its rationale. The
 [snapshot protocol](../../docs/spec/daynight-worker-snapshots.md) owns the exact
 DTOs and permission filtering; the
 [client reporting contract](../../docs/spec/daynight-worker-reporting.md) owns
-collection, reporting and version age. Component or controlled-browser results
+collection, reporting and version age. The
+[configuration contract](../../docs/spec/daynight-worker-configuration.md) and
+[editor decision](../../.agents/notes/implemented/architecture/2026-11-04-web-worker-configuration-editor.md)
+own target/application semantics and form ownership. Component or controlled-browser results
 prove their stated frontend scope; combined Server, CLI and Web acceptance must
 separately establish real reporting, resources, permissions and recovery.
 
@@ -641,7 +693,7 @@ index. Overview positioning can clear a filter that hides its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
-## Steps reading and status
+## Steps reading, status and position
 
 Task details always expose Steps after Overview, in both the dialog and standalone
 page. `tab=steps` preserves the tab through direct access, reload and browser
@@ -660,7 +712,7 @@ admission so late responses cannot restore a deleted detail. First-read errors, 
 retained-content errors remain distinct and retryable. A Steps 404 checks the
 parent before retiring access; 403 remains a refusal, and parent 410 uses the
 existing deleted-task presentation. Retirement and the last active reader's
-unsubscribe release complete collections, including pending admission, unless a status operation still needs them. Steps never
+unsubscribe release complete collections, including pending admission, unless a Steps write operation still needs them. Steps never
 enter the TaskDetail LRU or IndexedDB.
 
 The list mounts at most 100 rows per page, with global numbering, previous/next
@@ -671,8 +723,11 @@ submits through the same owner as Task writes and retains the confirmed state
 until the response is validated. The owner reconciles the Steps resource, parent
 detail and authorized summary before allowing another write. Conflicts and
 unknown outcomes expose recovery without replaying the operation; a failed
-readback keeps the submission gate closed. Other Steps write controls are not
-exposed. At heights up to 500px, a single scrollable tab row reserves
+readback keeps the submission gate closed. Position controls move up, down, to
+either end or relative to a selected Step. The picker filters the complete
+collection by name or ID, mounts at most 100 candidates and retains selection
+across filtering and pages. Confirmed moves locate the actual page and preserve
+expansion and focus by ID. Other Steps write controls are not exposed. At heights up to 500px, a single scrollable tab row reserves
 reading space; the tab owner reveals its target after focus, selection styling
 and locale updates. At heights up to 600px, pagination scrolls with the list so
 its controls cannot cover the remaining reading area. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
@@ -1680,7 +1735,7 @@ independent native/container services, databases, private credentials and cleanu
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
 --shard=i/2`: fully-parallel controls case-level partitioning, while each database
 still executes one browser worker serially. The current canonical inventory is
-35 scenarios, divided into disjoint sets of 18 and 17. Default file-level partitioning
+36 scenarios, divided into two disjoint sets of 18. Default file-level partitioning
 does not provide this case-level balance.
 
 Before preparing services, the runner collects the complete canonical functional
@@ -1764,10 +1819,9 @@ pnpm web:acceptance
 pnpm web:acceptance:stress
 ```
 
-The ordinary local command requires thirty-five functional scenarios on each
-native/container target, seventy in total. CI retains that complete inventory
-across two disjoint case shards, running eighteen and seventeen selected scenarios respectively on
-both targets. The explicit local stress command adds five native
+The ordinary local command requires thirty-six functional scenarios on each
+native/container target, seventy-two in total. CI retains that complete inventory
+across two disjoint case shards, running eighteen selected scenarios per shard on both targets. The explicit local stress command adds five native
 capacity/limit scenarios and their performance receipt. From this package, use
 `pnpm test:stress:browser`, or invoke `node scripts/acceptance.mts --stress`;
 `--apfs --stress` combines the local capacity matrix with explicit APFS storage.
@@ -1811,7 +1865,7 @@ ownership revalidation. Uncertain ownership fails without recursive removal.
 Existing recovery commands remain available without opting into new attachment.
 
 The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same seventy functional scenarios and
+macOS local acceptance runs the same seventy-two functional scenarios and
 additional combined authentication checks, with native filesystem coverage
 qualified by its recorded capability. Explicit local stress acceptance adds the
 same five capacity/limit scenarios and fixed performance budgets on Linux and
@@ -1828,8 +1882,7 @@ separate PostgreSQL container/volume and ephemeral loopback listener. In paralle
 the normal dev-ci runner builds and starts the actual production image. Browser
 execution overlaps the same selected functional scenarios in native and
 production-image stream-gateway targets. Local ordinary execution selects all
-thirty-five scenarios; CI shards select eighteen and seventeen respectively and the final gate requires
-the complete disjoint union. Explicit local stress mode then runs five native
+thirty-six scenarios; each CI shard selects eighteen, and the final gate requires the complete disjoint union. Explicit local stress mode then runs five native
 capacity/limit scenarios. In
 that mode, the native process and PostgreSQL remain alive through capacity;
 other preparation commands and the complete container stack finish before it
@@ -1945,7 +1998,7 @@ records the original data-sharing, rendering and independent-reading proof choic
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
 requires a separate eleven-check receipt on each runtime target, alongside the
-70 ordinary Playwright cases or 75 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
+72 ordinary Playwright cases or 77 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
 identities, records their initial project sets, and crosses browser and CLI data
 through shared/private projects, original-credential service restart, logout/PAT
 independence, revocation, admitted upload, real socket interruption and normally
@@ -2051,8 +2104,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (70 ordinary cases; local stress adds five native cases
-for 40 native / 35 container, 75 total), current manual/periodic refresh,
+The selected inventory (72 ordinary cases; local stress adds five native cases
+for 41 native / 36 container, 77 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -2093,6 +2146,7 @@ the remaining functional scenarios.
 | W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
 | Steps append | `task-step-add`: real-service append and CLI readback, pagination and focus, draft navigation, conflict and committed response loss, late receipt, bilingual desktop and narrow keyboard behavior |
 | Steps status | `task-step-status`, `task-step-access-retirement`: real-service status transitions, conflict, committed response loss and failed readback, malformed success, child 404 and parent deletion, late dialog receipt, bilingual desktop and narrow keyboard menus |
+| Steps position | `task-step-position`: real-service ordered moves, bounded search and paging, no-op, invalid anchor and self-reference, conflict and lost response, focus, bilingual narrow and touch controls |
 | W20 | `task-assignment`, `task-assignment-layout`: native field propagation, real exact-version assignment/clear PATCHes, same-value zero writes, conflict and committed-response-loss GET-only recovery, people identity/access presentation, local filters with full-chain facts, bilingual desktop/narrow menu, focus, scroll and fullscreen behavior |
 | W21 | `task-pause`: project/list/chain/graph pause discovery, complete-scope counts, common heading and Unpause, exact-version property PATCH with preserved task materials, duplicate protection, conflict and committed-response-loss GET-only recovery, bilingual narrow layouts |
 | W15 | `task-platform`: status-row selection and confirmation, zero-write dismissal and select-focus restoration, set/clear, shared status/permission gate, exact versions, stale/unknown GET-only recovery, cross-task late ownership, manual-start lock, field propagation and bilingual narrow layouts |
@@ -2141,9 +2195,9 @@ Full shard artifacts are `daynight-web-acceptance-1` and
 `daynight-web-acceptance-2`, separate from raw coverage and retained for 30 days.
 Inspect the artifact from the exact workflow run and tested checkout identity,
 which is normally a merge revision for PR runs. Complete ordinary validation
-requires thirty-five native and thirty-five container functional scenarios across
+requires thirty-six native and thirty-six container functional scenarios across
 the two CI shards or in one local run. Explicit local stress requires their
-strict native union with five capacity/limit scenarios and the same thirty-five
+strict native union with five capacity/limit scenarios and the same thirty-six
 container scenarios. Every selected phase rejects missing, extra or duplicate
 scenarios and skipped/flaky/retried results.
 Installed-CLI handoff, container callbacks and recovery require matching source

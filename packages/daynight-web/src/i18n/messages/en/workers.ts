@@ -1,6 +1,8 @@
 import type { WorkersMessages } from '../workers';
+import { workerConfiguration } from './worker-configuration';
 
 export const workers: WorkersMessages = {
+  configuration: workerConfiguration,
   title: 'My Workers', subtitle: 'See recently active Workers and their runtime status.', list: 'Worker list',
   loading: 'Loading Workers', loadingDetail: 'Reading recent Workers and their runtime observations.',
   detailLoading: 'Loading Worker', detailLoadingDetail: 'Reading the latest runtime and task observations.', detailLoadingFailed: 'Worker details could not be loaded',

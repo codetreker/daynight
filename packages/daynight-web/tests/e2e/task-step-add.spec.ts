@@ -12,6 +12,7 @@ const endpoint = (project: string, task: string): string => `/api/v1/projects/${
 test('append steps with draft protection and recovery through the real service', { annotation: { type: 'scenario', description: 'task-step-add' } }, async ({ page, api, baseURL, allowBrowserWrites, statusPreparation }, info) => {
   const projectId = statusPreparation.projectId;
   const task = await createTask(api, projectId, { title: 'Append browser acceptance' });
+  const previousTask = await createTask(api, projectId, { title: 'History origin', dependsOn: [task.id] });
   const path = endpoint(projectId, task.id);
   let version = task.version;
   for (let index = 0; index < 100; index++) {
@@ -23,7 +24,7 @@ test('append steps with draft protection and recovery through the real service',
   allowBrowserWrites([{ method: 'POST', url, count: 5 }]);
   let mode: 'normal' | 'conflict' | 'lost' | 'late' = 'normal';
   let readsBlocked = false;
-  let releaseLate!: () => void; let enterLate!: () => void;
+  let releaseLate!: () => void; let enterLate!: () => void; let releaseMove = () => {};
   const lateGate = new Promise<void>(resolve => { releaseLate = resolve; });
   const lateEntered = new Promise<void>(resolve => { enterLate = resolve; });
   const writes: { id: string; requestId: string; status: number }[] = [];
@@ -52,7 +53,38 @@ test('append steps with draft protection and recovery through the real service',
   };
   const save = () => form(page).getByRole('button', { name: '保存', exact: true }).click();
   try {
-    await page.goto(`/projects/${projectId}/tasks/${task.id}?tab=steps`);
+    // Reach this task through application history so a Back traversal leaves its draft scope.
+    await page.goto(`/projects/${projectId}/tasks/${previousTask.id}`);
+    const relation = () => root(page).getByRole('region', { name: '前置依赖', exact: true }).getByRole('button', { name: 'Append browser acceptance，普通依赖', exact: true });
+    await relation().click();
+    await root(page).getByRole('tab', { name: '步骤', exact: true }).click();
+    await expect(root(page).getByRole('button', { name: '添加步骤', exact: true })).toBeEnabled();
+    await add('移动导航草稿');
+    const moveTrigger = root(page).locator('.step-row[data-step-id="00000000"] .step-more');
+    const openRelativeMove = async () => {
+      await expect(moveTrigger).toHaveAttribute('aria-disabled', 'false');
+      await moveTrigger.click();
+      await page.getByRole('menuitem', { name: '移动到…', exact: true }).click();
+      await expect(page.getByRole('dialog', { name: '移动步骤', exact: true })).toBeVisible();
+    };
+    await openRelativeMove();
+    await page.evaluate(() => history.go(-2));
+    const leave = page.getByRole('alertdialog');
+    await expect(leave).toBeVisible();
+    await expect(page.getByRole('dialog', { name: '移动步骤', exact: true })).toHaveCount(0);
+    await expect(leave.getByRole('button', { name: '继续编辑' })).toBeFocused();
+    await leave.getByRole('button', { name: '继续编辑' }).click();
+    await expect(page).toHaveURL(new RegExp(`/tasks/${task.id}\\?tab=steps$`));
+    await expect(form(page).getByRole('textbox', { name: '标题' })).toHaveValue('移动导航草稿');
+    await expect(root(page).locator('.task-detail-title')).toBeFocused();
+    await openRelativeMove();
+    await page.evaluate(() => history.go(-2));
+    await expect(leave).toBeVisible();
+    await expect(page.getByRole('dialog', { name: '移动步骤', exact: true })).toHaveCount(0);
+    await leave.getByRole('button', { name: '放弃并离开' }).click();
+    await expect(page).toHaveURL(new RegExp(`/tasks/${previousTask.id}$`));
+    await expect(root(page).locator('.task-detail-title')).toHaveText('History origin');
+    await relation().click(); await root(page).getByRole('tab', { name: '步骤', exact: true }).click();
     await expect(root(page).getByRole('button', { name: '添加步骤', exact: true })).toBeEnabled();
     await add('新增真实步骤', '**说明**');
     await form(page).getByRole('combobox', { name: '初始状态' }).selectOption('in_progress');
@@ -117,5 +149,33 @@ test('append steps with draft protection and recovery through the real service',
     await page.getByRole('alertdialog').getByRole('button', { name: '继续编辑' }).click();
     await expect(form(page).getByRole('textbox', { name: '标题' })).toHaveValue('新的草稿');
     expect(writes).toHaveLength(5);
-  } finally { releaseLate(); }
+    await form(page).getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: '放弃', exact: true }).click();
+
+    // A move receipt for a row on page 2 must not steal an active add editor or switch it to page 1.
+    const positionUrl = new URL(`${path}/${first.id}/position`, baseURL).href;
+    allowBrowserWrites([{ method: 'PUT', url: positionUrl, count: 1 }]);
+    let moveEntered!: () => void;
+    const moveWaiting = new Promise<void>(resolve => { moveEntered = resolve; });
+    const moveGate = new Promise<void>(resolve => { releaseMove = resolve; });
+    await page.route(positionUrl, async route => {
+      const response = await authenticatedAPI(page.context().request).fetch(route.request(), { timeout: 15_000, maxRetries: 0 });
+      expect(response.status()).toBe(200); moveEntered(); await moveGate;
+      await fulfillAuthenticatedResponse(route, response);
+    });
+    const movedRow = root(page).locator(`.step-row[data-step-id="${first.id}"]`);
+    const more = movedRow.locator('.step-more');
+    await expect(more).toHaveAttribute('aria-disabled', 'false'); await more.click();
+    await page.getByRole('menuitem', { name: '移到开头', exact: true }).click();
+    await moveWaiting; await add('移动期间的新草稿');
+    const editor = form(page).getByRole('textbox', { name: '标题', exact: true });
+    await expect(editor).toBeFocused();
+    await expect(root(page).getByRole('spinbutton', { name: '页码' })).toHaveValue('2');
+    releaseMove();
+    await expect(form(page).getByRole('button', { name: '保存', exact: true })).toBeEnabled();
+    await expect(editor).toHaveValue('移动期间的新草稿'); await expect(editor).toBeFocused();
+    await expect(root(page).getByRole('spinbutton', { name: '页码' })).toHaveValue('2');
+    const afterMove = await api.get(path); expect(afterMove.status()).toBe(200);
+    expect(parseTaskSteps(parseApiJson(await afterMove.text()), projectId, task.id).steps[0]?.id).toBe(first.id);
+  } finally { releaseLate(); releaseMove(); }
 });
