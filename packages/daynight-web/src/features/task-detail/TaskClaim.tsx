@@ -18,24 +18,31 @@ export const mayWithdrawClaim = (worker: WorkerClaim, viewerId: string, role: Pr
   return worker.state !== 'completed' && role !== null && (worker.userId === viewerId || role === 'admin');
 };
 
-export const TaskClaimSummary = ({ worker, members, membershipStatus, membershipError, onRetryMembers, canWithdraw, onWithdraw }: {
+export const TaskClaimSummary = ({ worker, members, membershipStatus, membershipError, onRetryMembers, profileRecoveryUrl, canWithdraw, onWithdraw }: {
   readonly worker: WorkerClaim;
   readonly members: readonly ProjectParticipant[];
   readonly membershipStatus: 'loading' | 'ready' | 'error';
   readonly membershipError: unknown;
   readonly onRetryMembers: () => void;
+  readonly profileRecoveryUrl?: string;
   readonly canWithdraw: boolean;
   readonly onWithdraw?: () => void;
 }) => {
   const { messages: { inspection: { claim: m }, common } } = useI18n();
   const member = members.find((item) => item.userId === worker.userId);
   const label = member === undefined ? worker.userId : identityName({ ...member.profile, userId: member.userId });
+  const unreadable = membershipError instanceof ApiError && membershipError.kind === 'protocol';
   return <section className={`task-claim task-claim-${worker.state}`} aria-label={worker.state === 'active' ? m.active : m.released}>
     <div className="task-claim-summary">
       <div className="task-claim-owner"><span className="task-claim-label">{worker.state === 'active' ? m.active : m.released}</span><strong title={worker.userId}>{label}</strong>{member !== undefined && member.profile.email !== null && member.profile.email !== label && <span className="task-claim-account">{member.profile.email}</span>}{member === undefined && membershipStatus === 'ready' && <span className="task-claim-account">{m.formerMember}</span>}</div>
       <div className="task-claim-execution"><span><span className="task-claim-label">{m.machine}</span> {worker.machine.name}</span><span><span className="task-claim-label">{m.agent}</span> {worker.agent === 'codex' ? 'Codex' : worker.agent === 'claude' ? 'Claude Code' : 'Copilot'}</span><span className="task-claim-phase">{m.phase[worker.phase]}</span></div>
       {membershipStatus === 'loading' && <p className="task-claim-members" role="status">{m.membersLoading}</p>}
-      {membershipStatus === 'error' && <div className="task-claim-members" role="alert"><p>{m.membersError}</p>{membershipError instanceof ApiError && membershipError.requestId !== null && <p className="request-id">{common.requestId} <code>{membershipError.requestId}</code></p>}<button className="inline-link" type="button" onClick={onRetryMembers}>{m.retryMembers}</button></div>}
+      {membershipStatus === 'error' && <div className="task-claim-members" role="alert">
+        <p>{unreadable ? m.membersProtocolError : m.membersError}</p>
+        {membershipError instanceof ApiError && membershipError.requestId !== null && <p className="request-id">{common.requestId} <code>{membershipError.requestId}</code></p>}
+        {unreadable && profileRecoveryUrl !== undefined && <p>{m.membersRecovery} <a className="inline-link" href={profileRecoveryUrl} target="_blank" rel="noopener noreferrer">{m.openFreshPage}</a></p>}
+        <button className="inline-link" type="button" onClick={onRetryMembers}>{m.retryMembers}</button>
+      </div>}
     </div>
     {onWithdraw !== undefined && <button className="button task-claim-withdraw" type="button" disabled={!canWithdraw} onClick={onWithdraw}>{m.withdraw}</button>}
   </section>;
