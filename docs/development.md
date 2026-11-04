@@ -513,15 +513,22 @@ records the workload split and retained correctness guarantees.
 
 ## Package versions
 
-Choose `packages/daynight/package.json`'s version when preparing a CLI release.
-PR and main CI validate affected code without comparing package versions between
-Git revisions. Source, dependency and build-input changes can merge while the
-package version stays unchanged.
+Ordinary change PRs keep `packages/daynight/package.json` version unchanged.
+PR and main CI validate affected code without comparing versions between Git
+revisions.
+Version selection and complete CLI publication belong to the repository's
+[release-daynight skill](../.agents/skills/release-daynight/SKILL.md). It analyzes
+CLI changes since the public npm `latest` source, selects patch or minor unless
+an explicit version is supplied, and retains an already prepared version when
+it meets the release requirements. The skill owns the classification rules,
+version PR delivery, release completion evidence, and interrupted-release
+reconciliation.
 
-Publication requires a valid stable SemVer. An existing exact Git tag or npm
-version produces a successful skip; a new publication must advance npm's
-`latest` version. The [publication guide](#npm-publication) defines these checks
-and the source-bound artifact guarantees. The
+Publication accepts stable `x.y.z` versions. A new release must advance public
+npm `latest`; existing npm versions and release tags are immutable. The
+[publication procedure](#npm-publication) describes the workflow's admission,
+validation, and existing-version skips. A successful skip alone does not prove
+that the requested source was published. The
 [version policy decision](../.agents/notes/implemented/simplification/2026-11-04-release-time-versioning.md)
 records why version selection belongs to release preparation.
 
@@ -545,7 +552,10 @@ successful publication within two days; npm requires an expired configuration
 to be recreated. These settings belong to npmjs and are not configured by the
 repository. See npm's [trusted publishing documentation](https://docs.npmjs.com/trusted-publishers).
 
-After merging a stable package version to `main`, run:
+For an authorized release, use the
+[release-daynight skill](../.agents/skills/release-daynight/SKILL.md) to select the
+version and complete any protected version PR. Its publication step dispatches
+the following workflow after the stable version is on `main`:
 
 ```bash
 gh workflow run publish.yml --ref main

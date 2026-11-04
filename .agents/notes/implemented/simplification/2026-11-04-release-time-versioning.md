@@ -11,7 +11,11 @@ can select the same version and invalidate one another's comparison.
 
 ## Decision
 
-Package versions are selected during release preparation. PR and main validation
+Package versions are selected during release preparation through the
+[release-daynight skill](../../../skills/release-daynight/SKILL.md). Ordinary
+change PRs leave the package version unchanged; the
+[release workflow decision](../process/2026-11-04-release-daynight-skill.md) owns
+version classification and complete release verification. PR and main validation
 run without comparing package versions between Git revisions. The dedicated
 version-increase workflow step, local command, checker and checker tests are
 removed. Module routing and application validation retain their existing rules.

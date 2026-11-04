@@ -44,8 +44,9 @@ pnpm 11 reads package-manager settings from `pnpm-workspace.yaml`, so
 The existing `allowBuilds` entries and dependency patches remain in place. The
 empty `.npmrc` is removed, and Docker copies the workspace settings before its
 frozen install. The lockfile is regenerated with pnpm 11 while retaining pinned
-dependency versions. The package version advances because workspace and
-lockfile changes are release inputs. The
+dependency versions. That migration advanced the package version under the
+per-change release-input rule then in use. Current version selection follows
+the [release-time versioning decision](../simplification/2026-11-04-release-time-versioning.md). The
 [pnpm migration guide](https://github.com/pnpm/pnpm/blob/fe4a0c232384289de82be3d502896ca7e070050c/pnpm11/docs/migration.md)
 owns the configuration changes.
 

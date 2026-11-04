@@ -302,10 +302,12 @@ browser acceptance and complete validation commands.
 
 ## Package versions
 
-Choose the version in `packages/daynight/package.json` when preparing a CLI
-release. Code and build-input changes can merge without increasing that version;
-CI validates the affected modules independently of release numbering. The
-[version guide](docs/development.md#package-versions) explains release checks.
+Ordinary change PRs leave the version in `packages/daynight/package.json`
+unchanged. Use the repository's
+[release-daynight skill](.agents/skills/release-daynight/SKILL.md) to select a
+release version, deliver any version PR, publish, and verify the npm release.
+The [version guide](docs/development.md#package-versions) describes ownership and
+publication constraints.
 
 ### npm publication
 
