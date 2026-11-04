@@ -477,6 +477,48 @@ describe("direct task resource management", () => {
     expect(f.prompts).toEqual([]);
   });
 
+  it("rejects a fresh launch when the original shell changes cwd during caller admission", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const otherCwd = path.join(f.context.cwd, "other"); await mkdir(otherCwd);
+    const beforeStart = vi.fn(async () => { f.panes[0]!.cwd = otherCwd; });
+    await expect(f.manager.launch(f.context, binding, { configuration, beforeStart }, operation())).rejects.toMatchObject({
+      action: "agent.start", submission: "not-submitted", message: expect.stringContaining(`cwd is ${otherCwd}; expected`), cause: expect.any(Error),
+    });
+    expect(beforeStart).toHaveBeenCalledOnce();
+    expect(f.calls.filter(call => call.method === "agent.start")).toEqual([]);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("does not retry a definitely rejected launch after the original shell changes cwd", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const otherCwd = path.join(f.context.cwd, "other"); await mkdir(otherCwd);
+    f.hook(async method => {
+      if (method === "pane.process_info") return shellProcesses(binding);
+      if (method === "agent.start") { f.panes[0]!.cwd = otherCwd; throw busyShell(); }
+      return undefined;
+    });
+    await expect(f.manager.launch(f.context, binding, { configuration }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "not-submitted", message: expect.stringContaining(`cwd is ${otherCwd}; expected`) });
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each(["pane_id", "terminal_id"])("does not launch after caller admission replaces the original %s", async field => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    await expect(f.manager.launch(f.context, binding, { configuration, beforeStart: async () => { f.panes[0]![field] = "replacement"; } }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "not-submitted", cause: expect.any(Error) });
+    expect(f.calls.filter(call => call.method === "agent.start")).toEqual([]);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("preserves a failed final shell observation as a definitely unsubmitted launch", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const failure = new HerdrRpcError("shell snapshot unavailable", { method: "session.snapshot", requestId: "final-shell", submission: "unknown" });
+    let admitted = false;
+    f.hook(async method => { if (method === "session.snapshot" && admitted) throw failure; return undefined; });
+    await expect(f.manager.launch(f.context, binding, { configuration, beforeStart: async () => { admitted = true; } }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "not-submitted", cause: failure });
+    expect(f.calls.filter(call => call.method === "agent.start")).toEqual([]);
+    expect(f.prompts).toEqual([]);
+  });
+
   it.each([1, 2])("does not retry a rejected start guard on attempt %s", async rejectedAttempt => {
     const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     const failure = new HerdrAgentActionError("Original launch target changed.", "agent.start", "rejected", { cause: busyShell() });
@@ -664,6 +706,8 @@ describe("direct task resource management", () => {
     expect(await f.manager.prepareWorkspace(f.context, taskTitle, operation())).toEqual(binding);
     expect(await f.manager.observe(f.context, binding, operation())).toMatchObject({ binding, kind: "codex" });
     expect(await f.manager.listResources(operation())).toMatchObject([{ panes: [{ binding, cwd: f.agents[0]!.cwd }] }]);
+    expect((await f.manager.start(f.context, binding, { configuration, prompt: "must not repeat assignment" }, operation())).binding).toEqual(binding);
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
     await f.manager.submitPrompt(f.context, binding, "continue in the original agent", operation());
     expect(f.prompts).toEqual(["continue in the original agent"]);
     await f.manager.stopAndClose(f.context, binding, operation());

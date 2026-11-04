@@ -1638,6 +1638,14 @@ shell without its extra launch environment. The saved SQLite session_id selects
 resume or fresh startup; an inactive pane's retained reference is not saved as a
 newly observed session ID. A live agent keeps its current connection.
 
+Workspace creation supplies the shell's initial cwd. Before every fresh
+`agent.start` attempt, after caller admission, the original pane's current cwd
+must canonical-match the task worktree. Herdr writes argv into the existing
+shell, whose startup scripts may have changed directories; native trust
+arguments do not set cwd. A mismatch fails as definitely not-submitted without
+starting the native agent. Reconnecting to an existing live agent returns
+before this launch-only check.
+
 A replacement shell can still be initializing when Herdr rejects `agent.start`
 with `agent_pane_busy`. The adapter retries this explicit rejection for at most
 two seconds while the original workspace, pane and terminal remain owned,
@@ -1755,9 +1763,10 @@ configuration, credentials and organization/OS policies keep their existing
 owners; task delivery still follows its business authorization. Automatic input
 uses Herdr's structured agent identity, readiness, launch and blocked states. It
 does not inspect terminal text, status bars, directory displays, borders or menus.
-The worker supplies the task cwd at workspace creation and native launch; resource
-discovery, input observation and stopping do not require pane and agent cwd
-metadata to agree. A human workspace at the same cwd does not prevent creation
+The worker supplies the initial task cwd at workspace creation and checks the
+original shell cwd only immediately before a fresh native start. Resource
+discovery, live-agent reconnection, input observation and stopping do not require
+pane and agent cwd metadata to agree. A human workspace at the same cwd does not prevent creation
 of a separately owned task workspace. Actual creation errors come from
 `workspace.create`. Original workspace/pane/terminal binding, final task
 authorization, process-stop evidence and prompt receipts remain checked. Missing credentials, integration failures and launch errors

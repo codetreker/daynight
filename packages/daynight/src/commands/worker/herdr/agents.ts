@@ -217,7 +217,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       return paneShellName(foreground.name) || paneShellName(argv[0]);
     });
   };
-  const startNative = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, args: string[], operation: Operation, beforeStart?: HerdrAgentLaunchInput["beforeStart"]): Promise<HerdrRpcResult> => {
+  const startNative = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, cwd: string, args: string[], operation: Operation, beforeStart?: HerdrAgentLaunchInput["beforeStart"]): Promise<HerdrRpcResult> => {
     let readiness: { deadline: number; rejection: HerdrAgentActionError } | undefined;
     while (true) {
       operation.check();
@@ -225,6 +225,13 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       // A definite rejection authorizes another attempt only after fresh caller admission.
       if (beforeStart !== undefined) await beforeStart(operation);
       operation.check();
+      try {
+        const { pane } = await readOwned(context, binding, operation);
+        const actualCwd = text(pane!.cwd, "Native launch shell cwd");
+        if (!path.isAbsolute(actualCwd)) throw new Error("The original task shell cwd must be absolute before native launch.");
+        if (path.normalize(await realpath(actualCwd)) !== cwd) throw new Error(`The original task shell cwd is ${actualCwd}; expected ${cwd}. Restore its working directory before starting the native agent.`);
+        operation.check();
+      } catch (cause) { throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The original task shell cwd could not be confirmed before native launch.", "agent.start", "not-submitted", { cause }); }
       if (readiness !== undefined && performance.now() >= readiness.deadline) throw readiness.rejection;
       const timeout = Math.floor(Math.min(30_000, operation.remainingMs()));
       if (timeout <= 3000) throw readiness === undefined ? new HerdrAgentActionError("The remaining operation budget cannot start a native agent.", "agent.start", "not-submitted") : readiness.rejection;
@@ -272,7 +279,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       const overrides = codexAgentCliOverrides({ ...workspaceEnvironment, PATH: workspaceEnvironment.PATH }, effective);
       for (const [key, value] of Object.entries(overrides)) args.push("-c", `${key}=${JSON.stringify(value)}`);
     }
-    const started = await startNative(context, binding, args, operation, input.beforeStart);
+    const started = await startNative(context, binding, cwd, args, operation, input.beforeStart);
     const acknowledged = object(started.agent, "Started native agent");
     const argv = array(started.argv, "Native launch arguments");
     const expectedArgv = [context.agent, ...args];

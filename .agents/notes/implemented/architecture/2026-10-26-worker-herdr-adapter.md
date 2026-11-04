@@ -32,8 +32,10 @@ and identity decision](2026-10-28-worker-workspace-names.md) uses task titles as
 mutable display prefixes and four stable UUIDs as owner identity, replacing the
 original origin/project/task/claim/worktree label and whole-label name hash.
 The [structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
-replaces visible-composer parsing and repeated cwd metadata equality checks with
-Herdr structured readiness and the original workspace/pane/terminal binding.
+replaces visible-composer parsing and repeated input, discovery and stop cwd
+comparisons with Herdr structured readiness and the original
+workspace/pane/terminal binding. Fresh starts retain one canonical cwd check
+after caller admission and immediately before each `agent.start` attempt.
 Native environment reconnection stays read-only; a separate serialized naming
 operation may update the display prefix. The original receipts,
 history prerequisites, persisted PID provenance and native-consent handling below
@@ -135,8 +137,11 @@ The [structured input decision](../simplification/2026-11-04-worker-structured-i
 removes that duplicate visible-text admission and repeated cwd metadata
 comparison. Current input uses Herdr's structured readiness, launch and blocked
 states after original workspace/pane/terminal and agent identity verification.
-The worker owns the launch directory; terminal presentation and cwd telemetry
-do not determine whether an already-bound task can receive input. Neither an
+Workspace creation sets the shell's initial directory, and a fresh `agent.start`
+attempt checks the original pane's canonical cwd after caller admission and
+before submission. That launch-only precondition does not apply to a live-agent
+reconnect. Terminal presentation and cwd telemetry do not determine whether an
+already-bound task can receive input or stop. Neither an
 empty-looking composer nor a ready status changes a submitted or unknown
 prompt into a never-submitted one.
 
