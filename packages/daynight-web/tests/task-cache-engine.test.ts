@@ -426,7 +426,7 @@ it("rolls property replacements and the watermark back together after a partial 
   expect(await database.get("projects", [userId, projectId])).toEqual(initial.project.manifest);
 });
 
-it("merges ownership by its exact independent version across delta and epoch rebuilds without persisting access", async () => {
+it("merges ownership within one epoch and replaces restored history without persisting access", async () => {
   const cache = scope(); const initial = await seed(cache);
   const ownership = { teamId: otherProject, version: 9_007_199_254_740_993n };
   const changed = await delta(cache, [], { project: { ...project, ownership } });
@@ -435,10 +435,11 @@ it("merges ownership by its exact independent version across delta and epoch reb
   expect(changed.project.index).toBe(initial.project.index);
   const old = await delta(cache, [], { project: { ...project, updatedAt: later } });
   expect(old.project.graph.project.ownership).toEqual(ownership);
+  await expect(delta(cache, [], { project: { ...project, ownership: { ...ownership, teamId: project.ownership.teamId } } })).rejects.toMatchObject({ kind: "protocol" });
   const next = await delta(cache, [], { mode: "snapshot", epoch: nextEpoch });
-  expect(next.project.graph.project.ownership).toEqual(ownership);
+  expect(next.project.graph.project.ownership).toEqual(project.ownership);
   const database = await inspect();
   expect((await database.get("projects", [userId, projectId]))!.project).not.toHaveProperty("access");
   expect((await database.get("projects", [userId, projectId]))!.project).not.toHaveProperty("ownerTeam");
-  await expect(delta(cache, [], { epoch: nextEpoch, project: { ...project, ownership: { ...ownership, teamId: project.ownership.teamId } } })).rejects.toMatchObject({ kind: "protocol" });
+  expect(next.project.graph.project.settings).toEqual(project.settings);
 });

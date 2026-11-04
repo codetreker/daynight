@@ -326,7 +326,7 @@ export class TaskCacheScope {
           merged.set(task.id, task); changedTaskIds.push(task.id);
         }
         const tasks = [...merged.values()];
-        const project = current.project === null ? response.project : mergeProject(current.project, response.project);
+        const project = current.project === null || replacing ? response.project : mergeProject(current.project, response.project);
         try { projectSummaries(project, tasks, response.observedAt); }
         catch (error) { if (error instanceof GraphDataError) throw new ApiError("protocol", null, "protocol", null, undefined, error); throw error; }
         const manifest: ProjectRecord = {

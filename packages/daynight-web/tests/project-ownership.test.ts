@@ -1,3 +1,5 @@
+import { parseTaskSync } from '../src/api/task-sync';
+import { taskSyncFromGraph } from './helpers/taskSync';
 import { expect, it } from 'vitest';
 import { parseMembers, parseProjectAccess, parseUser, decodeMembersJson } from '../src/api/auth-parse';
 import { parseTeamRef } from '../src/api/team-parse';
@@ -54,4 +56,14 @@ it('rejects contradictions between effective permission, owner identity and its 
 it('retains raw Unicode Team names and rejects only malformed, NUL or Unicode White_Space-only names', () => {
   for (const name of ['\uFEFF', '  名称  ', 'same name']) expect(parseTeamRef({ id: access.ownerTeam.id, kind: 'ordinary', name }).name).toBe(name);
   for (const name of ['', '\u0085', '\u2000 \n', '\uD800', 'a\0b']) expect(() => parseTeamRef({ id: access.ownerTeam.id, kind: 'ordinary', name })).toThrow();
+});
+
+
+it('requires task-sync actor access and intrinsic Project to describe the same ownership snapshot', () => {
+  const sync = taskSyncFromGraph({ ...graph, project: intrinsic }, { actorAccess: access, versionForTask: () => 1n });
+  const wireSync = { ...sync, tasks: sync.tasks.map((task) => ({ ...task, version: task.version.toString() })) };
+  expect(parseTaskSync(wireSync, projectId, TEST_VIEWER_ID).actorAccess.ownership).toEqual(intrinsic.ownership);
+  for (const ownership of [{ ...access.ownership, version: exact + 1n }, { ...access.ownership, teamId: taskId }]) {
+    expect(() => parseTaskSync({ ...wireSync, actorAccess: { ...access, ownership, ownerTeam: { ...access.ownerTeam, id: ownership.teamId } } }, projectId, TEST_VIEWER_ID)).toThrow();
+  }
 });

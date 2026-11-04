@@ -40,8 +40,10 @@ defaults. The [auth design](../../../../docs/design/daynight-auth.md) owns the
 public field definitions and snapshot boundaries.
 
 IndexedDB schema 5 rebuilds derived stores when upgrading earlier formats and
-rotates user fences. Project settings and ownership merge independently by their
-own versions; equal ownership versions must identify the same Team. Access,
+rotates user fences. Within one epoch, Project settings and ownership merge independently by their
+own versions; equal ownership versions must identify the same Team. A new epoch
+snapshot replaces the Project completely: database restoration can legitimately
+restore lower versions or a different owner from the previous history. Access,
 Team names and participant profiles remain in memory. The
 [cache design](../../../../docs/design/daynight-task-sync.md) owns merge,
 publication and recovery details.

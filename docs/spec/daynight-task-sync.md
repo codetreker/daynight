@@ -52,8 +52,9 @@
 directGrant 与 canTransfer。ownership 和 grant 版本是无损正 int64 JSON number，不同于任务摘要
 version 的十进制字符串。即使 delta.tasks 为空，本人角色和实际 grant 也必须返回。
 客户端先核对响应身份，再解码并发布这一投影；旧请求、旧身份和旧项目不能覆盖新观察。
-Project 内在字段含必填 ownership，设置与归属按各自精确版本独立合并，旧版本不能回退，
-同一归属版本对应不同 Team 是协议错误。actorAccess 只进入内存权限所有者，不写入 Project/Task 或 IndexedDB，不改变 epoch、
+Project 内在字段含必填 ownership，同一 epoch 的 delta 中设置与归属按各自精确版本独立合并，旧版本不能回退，
+同一历史中相同归属版本对应不同 Team 是协议错误。新 epoch 的 snapshot 完整替换旧 Project，
+数据库恢复后较低的真实版本和归属也必须生效。actorAccess 只进入内存权限所有者，不写入 Project/Task 或 IndexedDB，不改变 epoch、
 任务业务版本或同步水位；权限失败与内容缓存失败分别遵守各自错误边界。
 
 每次实际成功同步都取得新 observedAt 与当前 Project；只用于本页显示计时和设置。持久缓存不恢复 performance.now 锚点，重复响应不重建图布局。仅本地摘要的页面不显示最近成功刷新时间、运行中耗时或可能卡住提醒；已完成任务仍可使用持久起止时间显示耗时。概览与任务列表的近期分类按浏览器本地时区的自然日计算；暂时当前时刻使用本机时间，成功同步后切换为服务端样本与单调时间，分类口径由[Web 需求](daynight-web.md#项目整体进度)拥有。项目设置通过已有 settings.version 合并，迟到响应不得回退设置。
