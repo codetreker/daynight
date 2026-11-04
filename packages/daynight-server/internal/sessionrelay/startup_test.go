@@ -64,6 +64,13 @@ func TestCurrentStartupNegotiationFiltersStaleReports(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) { stale := report; mutate(&stale); persist(stale); read(nil) })
 	}
+	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE task_properties SET value='{"schemaVersion":2}' WHERE task_id=$1 AND name='sessionStartup'`, f.task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.CurrentWithStartup(ctx, f.p, f.project, f.task); err == nil {
+		t.Fatal("corrupt persisted startup evidence became a successful current response")
+	}
+	persist(report)
 	if _, err := f.s.DB.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID); err != nil {
 		t.Fatal(err)
 	}
