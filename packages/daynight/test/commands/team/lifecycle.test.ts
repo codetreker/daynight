@@ -9,6 +9,8 @@ const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const personalId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const teamId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const otherId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const invitationId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const invitationSecret = `dnteam_${"a".repeat(42)}A`;
 const time = "2026-11-04T00:00:00Z";
 const me = { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: personalId, kind: "personal", name: null } };
 const version = 9_007_199_254_740_993n;
@@ -24,10 +26,11 @@ const fixture = async (options: { name?: string; answer?: string; interactive?: 
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
     const method = init!.method!, pathname = new URL(String(url)).pathname;
     calls.push({ method, body: typeof init?.body === "string" ? init.body : undefined, requestId: new Headers(init?.headers).get("X-Request-ID") });
-    const headers = { "content-type": "application/json", "Daynight-User-ID": method === "GET" ? userId : options.principal ?? userId, ...(method === "POST" ? { Location: options.badLocation ? "/invalid" : `/api/v1/teams/${teamId}` } : {}) };
+    const headers = { "content-type": "application/json", "Daynight-User-ID": method === "GET" ? userId : options.principal ?? userId, ...(method === "POST" ? { Location: options.badLocation ? "/invalid" : pathname.endsWith("/invitations") ? `/api/v1/teams/${teamId}/invitations/${invitationId}` : `/api/v1/teams/${teamId}` } : {}) };
     if (method === "GET") return new Response(stringifyApiJson(pathname.endsWith("/me") ? me : observed), { headers });
     if (options.failure === "lost") throw new Error("connection lost");
     if (options.failure) return new Response(JSON.stringify({ error: { code: options.failure, message: "rejected", requestId: "request" } }), { status: 409, headers });
+    if (method === "POST" && pathname.endsWith("/invitations")) return new Response(JSON.stringify({ id: invitationId, teamId, createdBy: userId, createdAt: time, expiresAt: "2026-11-11T00:00:00Z", consumedBy: null, consumedAt: null, revokedAt: null, link: `http://localhost:8787/team-invitations#${invitationSecret}` }), { status: 201, headers });
     if (method === "DELETE") {
       const response = new Response(JSON.stringify({ teamId: options.badReceipt ? otherId : teamId, deleted: true }), { headers });
       if (options.releaseFails) {
@@ -111,6 +114,20 @@ describe("Team lifecycle", () => {
     const f = await fixture({ writeOutputFails: true });
     await expect(runTeamCommand(["delete", "--team", teamId, "--confirm"], f.context, f.dependencies)).rejects.toThrow(/Team deletion was confirmed/);
     expect(f.calls.map(x => x.method)).toEqual(["GET", "GET", "DELETE"]);
+  });
+  it("identifies a confirmed invitation and protects the link when output fails", async () => {
+    const f = await fixture();
+    f.stdoutBytes.mockRejectedValue(new Error(`output ${invitationSecret}`, { cause: new Error(invitationSecret) }));
+    const result = runTeamCommand(["invitation", "create", "--team", teamId, "--confirm"], f.context, f.dependencies);
+    await expect(result).rejects.toThrow(`confirmed for invitation ${invitationId}`);
+    await result.catch((error: unknown) => {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(`confirmed for invitation ${invitationId}`);
+      expect((error as Error).message).toContain("cannot be recovered");
+      let cause: unknown = error;
+      while (cause instanceof Error) { expect(cause.message).not.toContain(invitationSecret); cause = cause.cause; }
+    });
+    expect(f.calls.map(x => x.method)).toEqual(["GET", "GET", "POST"]);
   });
   it("preserves a confirmed receipt when the response reader fails to release", async () => {
     const f = await fixture({ releaseFails: true });

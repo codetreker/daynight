@@ -360,6 +360,7 @@ flowchart TD
 | `team show`、`team default show` | `GET /api/v1/me`，再按选定 ID 读取 `GET /api/v1/teams/{id}` |
 | `team create` | `GET /api/v1/me`，确认后 `POST /api/v1/teams`，提交原始名称与 `expectedUserId` |
 | `team rename`、`team delete` | `GET /api/v1/me` 和目标 Team，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}`，提交名称、精确 version 和 `expectedUserId` |
+| `team invitation create`、`list`、`revoke` | 解析当前用户和目标 Team，分别 POST、GET `/api/v1/teams/{id}/invitations` 或 DELETE 其指定邀请；写入确认并携带 `expectedUserId` |
 | `team member list` | `GET /api/v1/me`，再读取所选 Team 的完整 `GET /api/v1/teams/{id}/members` 目录 |
 | `team member set-role`、`team member remove`、`team leave` | `GET /api/v1/me` 与目标成员快照，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}/members/{userId}`，提交真实成员版本与 `expectedUserId` |
 | `team projects` | `GET /api/v1/me`，再读取全部 `GET /api/v1/projects?teamId=...` 页 |
@@ -407,6 +408,10 @@ typed mutation API 绑定 `/me` 主体并校验响应主体、资源与删除回
 消费回执，不追加读取判断提交。拒绝、取消和未知提交保留各自结果；网络中断、取消
 等待、无效成功响应或未知提交不能证明回滚，也不能自动重发。后续读取只描述当前事实。
 
+邀请管理只输出经过验证的同服务一次性链接，列表只接受并渲染元数据；撤销消费有限
+回执，`changed:false` 是确认的未变更结果，但不能区分已撤销、已消费或不存在。创建响应可能含秘密，因此解析和错误
+诊断在暴露原因链之前隔离不可信响应内容；链接不写配置或长期缓存。服务端继续负责
+权限和 Personal Team 拒绝，客户端验证响应主体与请求目标。
 成员目录解析验证每项 Team、用户身份、角色、精确关系版本、时间及 nullable 资料，完整
 验证后才输出。成员变更使用该关系的版本而非 Team 元数据或 Project grant 版本；`leave`
 以当前用户为目标。typed mutation API 验证响应主体及目标，消费服务返回的成员关系或
