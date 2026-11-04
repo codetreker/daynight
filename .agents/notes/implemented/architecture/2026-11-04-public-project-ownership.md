@@ -86,8 +86,9 @@ durable records.
 
 The [Team lifecycle decision](2026-11-04-team-lifecycle.md) owns ordinary Team
 metadata and empty deletion separately from these public Project projections.
-Member management, transfer and new Team commands/pages remain separate
-capabilities. They can reuse real ownership and independent grant facts without
+Member management and new Team commands/pages remain separate capabilities.
+The [transfer decision](2026-11-04-project-transfer.md) owns the versioned
+ownership mutation and its receipt. They can reuse real ownership and independent grant facts without
 changing the cache's permission boundary. The
 [Personal ownership decision](2026-11-04-personal-project-ownership.md),
 [access projection](2026-11-03-project-access-projection.md) and
