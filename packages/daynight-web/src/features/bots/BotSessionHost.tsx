@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type RefObject } from 'react';
 import { authRequestsPaused } from '../../api/client';
 import type { BotSessionBinding } from '../../api/sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -26,10 +26,11 @@ export function useBotSessionCache(): BotSessionCache {
 }
 
 /** The caller supplies only an authenticated Bot's real Session binding, or null while it is unknown. */
-export function BotSessionHost({ cache, binding, active = true }: {
+export function BotSessionHost({ cache, binding, active = true, fullscreenBoundary }: {
   readonly cache: BotSessionCache;
   readonly binding: BotSessionBinding | null;
   readonly active?: boolean;
+  readonly fullscreenBoundary?: RefObject<HTMLElement | null>;
 }) {
   const panes = useSyncExternalStore(cache.subscribe, cache.snapshot), m = useSessionMessages();
   const key = binding ? botSessionKey(binding) : null;
@@ -39,12 +40,12 @@ export function BotSessionHost({ cache, binding, active = true }: {
   return <section className="bot-session-host" aria-label={m.title}>
     {!selected ? <p className="session-empty" role="status">{current ? m.loading : m.unavailable}</p> : null}
     {panes.map(pane => <div key={pane.key} className="bot-session-pane" data-bot-id={pane.binding.botId} hidden={!active || !current || pane.key !== key} inert={!active || !current || pane.key !== key}>
-      <BotPane pane={pane} current={current} active={active && current && pane.key === key} />
+      <BotPane pane={pane} current={current} active={active && current && pane.key === key} {...(fullscreenBoundary ? { fullscreenBoundary } : {})} />
     </div>)}
   </section>;
 }
 
-function BotPane({ pane, active, current }: { readonly pane: BotSessionPane; readonly active: boolean; readonly current: boolean }) {
+function BotPane({ pane, active, current, fullscreenBoundary }: { readonly pane: BotSessionPane; readonly active: boolean; readonly current: boolean; readonly fullscreenBoundary?: RefObject<HTMLElement | null> }) {
   const view = useSyncExternalStore(pane.client.subscribe, pane.client.snapshot);
   const restored = useRef<SessionTimelineReadingHandle | null>(null), attemptedPage = useRef<string | null>(null);
   const reading = useMemo(() => ({ scope: pane.key, ref: pane.reading }), [pane]);
@@ -78,5 +79,5 @@ function BotPane({ pane, active, current }: { readonly pane: BotSessionPane; rea
     // refusal must leave the page eligible when availability next changes.
     if (!pane.client.snapshot().loadingOlder) attemptedPage.current = null;
   });
-  return <SessionView client={pane.client} userId={pane.binding.ownerUserId} active={active} current={current} reading={reading} />;
+  return <SessionView client={pane.client} userId={pane.binding.ownerUserId} active={active} current={current} reading={reading} {...(fullscreenBoundary ? { fullscreenBoundary } : {})} />;
 }

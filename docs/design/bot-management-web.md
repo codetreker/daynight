@@ -26,4 +26,18 @@
 
 助手路由复用既有 Session 页面按动态视口约束的应用外壳。页面网格、对话列与 SessionHost 的高度链允许收缩；列表和时间线各自滚动，输入框留在可用视口内。时间线的实际滚动面继续由共享 Session View 拥有，确保历史分页触发与缓存阅读位置使用同一滚动坐标。
 
+## 详情与全屏边界
+
+`BotsPage` 拥有局部 `detailsOpen` 状态和名称按钮 ref；它们不参与 Session cache、pane key 或 client 的依赖。面板是会话内容的兄弟节点，`BotDetailsPanel` 接收当前详情读取所得的 Bot、相同 workerId 的 defaults 观测及 stale 标记，不另行读取或保存选中 Bot。切换时 `useBotRead` 的资源 key 隔离会立即清空旧值；面板可以保持挂载并显示加载，随后与标题及绑定一起接纳新目标。权威删除、拒绝访问、无选中项和读取失去准入均撤下面板。
+
+名称、Worker、cwd 和 Agent 来自已解析的 Bot 定义。`BotStatus` 复用列表与标题的启动结果及观测解释，详情状态不以 Worker 名称替代可用性说明；冻结启动配置不受后来 defaults 变化影响。读取失败与不可用保持原有状态，不将持久 ready 转换为当前 Session 同步事实。
+
+面板使用同一个 `dialog` 元素：宽屏以非模态 `open` 和 complementary 语义参加横向 flex 布局，窄屏通过 `showModal()` 进入浏览器 top layer。窗口宽度 1000px 是两种布局的分界。断点变化先关闭原模式再打开新模式；只有抽屉取得既有计数式 body scroll lock。打开后聚焦关闭按钮，清理时仅向仍连接且未隐藏或 inert 的当前名称按钮恢复焦点。原生模态负责背景 inert；抽屉只在 Tab 到达首尾时循环本面板控件，避免单个关闭按钮后的焦点离开网页。
+
+`BotSessionHost` 将可选 `fullscreenBoundary` ref 透传给 `SessionView` 和 `useSessionFullscreen`。助手提供稳定的 `.bot-conversation` 祖先，包含名称、会话内容和详情；hook 校验该边界确实包含原 Session section，并将注册、背景隔离、焦点范围、视口变量及 `data-session-fullscreen` 状态应用于它。原 section 保持挂载且不重复使用固定全屏定位。未提供边界的 Task/Test 调用方仍以原 Session section 为根。
+
+外层边界模式在 document 冒泡阶段处理键盘，晚于 React 内层控件。详情先消费自己的 Escape；窄屏 Tab 在抽屉首尾循环后停止向外传播。这样关闭详情不退出全屏，也不让外层 Tab 处理器选择原生模态之外的控件。外层模式的焦点观察允许详情内部焦点，因为 dialog 是同一边界的后代。退出或卸载恢复本层持有的属性、样式与 inert 所有权，不改写其他模态拥有者。
+
+详情和全屏改变尺寸时，仍由既有时间线观察器保持文字阅读锚点与跟随意图，不缓存或重放原始 scrollTop。边界选择与取舍见[详情面板决策](../../.agents/notes/implemented/feature/2026-11-05-bot-details-panel.md)。
+
 取舍见[管理页面决策](../../.agents/notes/implemented/architecture/2026-11-05-bot-management-web.md)。
