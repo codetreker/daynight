@@ -39,3 +39,31 @@ type DeleteTeamReceipt struct {
 	TeamID  string `json:"teamId"`
 	Deleted bool   `json:"deleted"`
 }
+
+type TeamInvitation struct {
+	ID         string     `json:"id"`
+	TeamID     string     `json:"teamId"`
+	CreatedBy  string     `json:"createdBy"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	ExpiresAt  time.Time  `json:"expiresAt"`
+	ConsumedBy *string    `json:"consumedBy"`
+	ConsumedAt *time.Time `json:"consumedAt"`
+	RevokedAt  *time.Time `json:"revokedAt"`
+}
+type TeamInvitationList struct {
+	Items []TeamInvitation `json:"items"`
+}
+type CreatedTeamInvitation struct {
+	TeamInvitation
+	Link string `json:"link"`
+}
+type TeamInvitationInspection struct {
+	Team       TeamRef     `json:"team"`
+	Membership *TeamMember `json:"membership"`
+}
+type TeamInvitationAcceptance struct {
+	Team       TeamRef    `json:"team"`
+	Membership TeamMember `json:"membership"`
+	Joined     bool       `json:"joined"`
+	Consumed   bool       `json:"consumed"`
+}

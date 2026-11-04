@@ -15,15 +15,25 @@ import (
 type teamHandler struct {
 	teams  *service.Teams
 	logger *slog.Logger
+	origin string
 }
 
 func teamRoutes(mux *http.ServeMux, teams *service.Teams, auth *Authentication, logger *slog.Logger) {
-	h := &teamHandler{teams: teams, logger: logger}
+	h := &teamHandler{teams: teams, logger: logger, origin: auth.origin}
 	mux.HandleFunc("GET /api/v1/teams", auth.Require(h.list))
 	mux.HandleFunc("POST /api/v1/teams", auth.Require(h.create))
 	mux.HandleFunc("GET /api/v1/teams/{teamId}", auth.Require(h.get))
 	mux.HandleFunc("PATCH /api/v1/teams/{teamId}", auth.Require(h.rename))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}", auth.Require(h.remove))
+	mux.HandleFunc("GET /api/v1/teams/{teamId}/invitations", auth.Require(h.listInvitations))
+	mux.HandleFunc("POST /api/v1/teams/{teamId}/invitations", auth.Require(h.createInvitation))
+	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/invitations/{inviteId}", auth.Require(h.revokeInvitation))
+	mux.HandleFunc("POST /api/v1/team-invitations/inspect", auth.Require(h.inspectInvitation))
+	mux.HandleFunc("POST /api/v1/team-invitations/accept", auth.Require(h.acceptInvitation))
+	mux.HandleFunc("/api/v1/teams/{teamId}/invitations", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
+	mux.HandleFunc("/api/v1/teams/{teamId}/invitations/{inviteId}", auth.Require(resourceMethodNotAllowed(logger, "DELETE")))
+	mux.HandleFunc("/api/v1/team-invitations/inspect", auth.Require(resourceMethodNotAllowed(logger, "POST")))
+	mux.HandleFunc("/api/v1/team-invitations/accept", auth.Require(resourceMethodNotAllowed(logger, "POST")))
 	mux.HandleFunc("/api/v1/teams", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 	mux.HandleFunc("/api/v1/teams/{teamId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
 }

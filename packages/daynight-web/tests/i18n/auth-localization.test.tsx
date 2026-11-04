@@ -343,7 +343,7 @@ describe("authentication language changes", () => {
     await interaction.selectOptions(language(), "zh-CN");
     expect(screen.getByRole("heading", { name: zhCN.auth.invitation.loading })).toBe(heading);
     expect(window.location.hash).toBe("");
-    expect(window.sessionStorage.getItem(invitationStorageKey)).toBe("raw-invitation-secret");
+    expect(window.sessionStorage.getItem(invitationStorageKey)).toBeNull();
     expect(document.title).toBe(zhCN.auth.shell.documentTitle.invitations);
     expect(fetcher).toHaveBeenCalledTimes(requests);
     await act(async () => pending.resolve(json({ projectId, projectName: "项目 Raw", directGrant: null, access: null })));
