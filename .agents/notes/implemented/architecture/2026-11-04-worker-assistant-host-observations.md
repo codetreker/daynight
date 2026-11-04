@@ -56,7 +56,9 @@ shape or adding a second UI availability indicator.
 Legacy reports remain valid and cannot become assistant candidates. Failures
 remain explicit, and unsupported arguments and raw native output are excluded
 from reports. Bounded probes retain cleanup responsibility instead of starting
-replacement processes after uncertain termination.
+replacement processes after uncertain termination. Telemetry joins every probe
+before propagating assistant failure or cancellation, preserving all cleanup
+errors so reporter shutdown cannot finish before native cleanup.
 
 The protocol does not provide hosting, authentication checks, successful Bot
 creation, or cross-machine path verification. Those consumers must combine the
