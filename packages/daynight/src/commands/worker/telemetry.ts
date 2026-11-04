@@ -115,12 +115,32 @@ const executableMissing = async (agent: string, environment: NodeJS.ProcessEnv, 
 
 export const createWorkerTelemetryCollector = (options: {
   paths: WorkerPaths; homeDirectory: string; version: string; workingDirectory: string; machine: WorkerMachine; platform: TaskPlatform;
-  assistantHost?: { collect: (operation: Operation) => Promise<AssistantHostSample> };
+  assistantHost?: {
+    collect: (operation: Operation) => Promise<AssistantHostSample>;
+    markCleanupUncertain?: (provider: "codex" | "copilot", error: unknown) => void;
+    getCleanupUncertain?: (provider: "codex" | "copilot") => unknown | undefined;
+  };
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || /[\0\r\n]/.test(options.workingDirectory)) throw new TypeError("The Worker startup directory must be absolute and contain no control separators.");
   const environment = createHerdrNativeEnvironment(options.paths, process.env);
   const herdr = createHerdrVersionObserver(options.paths);
-  const cache = new Map<"codex" | "copilot", { started: number; probe: WorkerExecutableProbe; issue?: WorkerTelemetryIssue; cleanupUncertain: boolean }>();
+  const cache = new Map<"codex" | "copilot", { started: number; probe: WorkerExecutableProbe; issue?: WorkerTelemetryIssue }>();
+  const cleanupUncertain = new Map<"codex" | "copilot", unknown>();
+  const markCleanupUncertain = (agent: "codex" | "copilot", error: unknown): void => {
+    if (cleanupUncertain.has(agent)) return;
+    cleanupUncertain.set(agent, error);
+    options.assistantHost?.markCleanupUncertain?.(agent, error);
+  };
+  const blockedByCleanupUncertainty = (agent: "codex" | "copilot"): unknown | undefined => {
+    const local = cleanupUncertain.get(agent);
+    if (local !== undefined) return local;
+    const assistant = options.assistantHost?.getCleanupUncertain?.(agent);
+    if (assistant !== undefined) {
+      cleanupUncertain.set(agent, assistant);
+      return assistant;
+    }
+    return undefined;
+  };
   let pendingDisk: Promise<WorkerDisk> | null = null;
   const disk = async (operation: Operation): Promise<WorkerDisk> => {
     // A timed-out OS request cannot be cancelled; avoid adding I/O or observers while it remains pending.
@@ -148,8 +168,9 @@ export const createWorkerTelemetryCollector = (options: {
       const version = async (agent: "codex" | "copilot"): Promise<WorkerExecutableProbe> => {
         const previous = cache.get(agent);
         // A missing close acknowledgement leaves ownership uncertain; starting a replacement could leak another process tree.
-        if (previous?.cleanupUncertain === true) {
-          const error = previous.issue!.error;
+        const blocked = blockedByCleanupUncertainty(agent);
+        if (blocked !== undefined) {
+          const error = blocked;
           issues.push({ component: agent, code: "unavailable", error });
           return { state: "error", checkedAt: new Date().toISOString(), code: "unavailable" };
         }
@@ -159,17 +180,16 @@ export const createWorkerTelemetryCollector = (options: {
         }
         const started = performance.now(); const checkedAt = new Date().toISOString();
         let result: WorkerExecutableProbe; let issue: WorkerTelemetryIssue | undefined;
-        let cleanupUncertain = false;
         try {
           result = { state: "ok", checkedAt, value: await probeNativeAgentVersion({ agent, environment, cwd: options.workingDirectory, runCommand: (command, childOperation) => runHerdrCommand(command, childOperation, spawnHerdrProcess, { cleanupWithinDeadline: true }) }, collection) };
         } catch (error) {
-          cleanupUncertain = hasHerdrCommandCleanupFailure(error);
+          if (hasHerdrCommandCleanupFailure(error)) markCleanupUncertain(agent, error);
           try {
-            if (!cleanupUncertain && hasCode(error, "ENOENT") && await executableMissing(agent, environment, options.workingDirectory, collection)) result = { state: "not_installed", checkedAt };
+            if (!hasHerdrCommandCleanupFailure(error) && hasCode(error, "ENOENT") && await executableMissing(agent, environment, options.workingDirectory, collection)) result = { state: "not_installed", checkedAt };
             else { const code = codeOf(error); issue = { component: agent, code, error }; result = { state: "error", checkedAt, code }; }
           } catch (lookupError) { const code = codeOf(lookupError); issue = { component: agent, code, error: new Error("Native executable absence could not be established.", { cause: lookupError }) }; result = { state: "error", checkedAt, code }; }
         }
-        cache.set(agent, { started, probe: result, ...(issue === undefined ? {} : { issue }), cleanupUncertain });
+        cache.set(agent, { started, probe: result, ...(issue === undefined ? {} : { issue }) });
         if (issue !== undefined) issues.push(issue);
         return result;
       };
@@ -186,7 +206,10 @@ export const createWorkerTelemetryCollector = (options: {
           assistantPending,
         ]);
         const assistant = "value" in assistantOutcome ? assistantOutcome.value : undefined;
-        for (const issue of assistant?.issues ?? []) issues.push({ component: `assistantHost_${issue.provider}`, code: issue.reason === "unsupported_arguments" ? "unavailable" : issue.reason === "invalid_cwd" ? "invalid_sample" : issue.reason, error: issue.error });
+        for (const issue of assistant?.issues ?? []) {
+          if (hasHerdrCommandCleanupFailure(issue.error) && (issue.provider === "codex" || issue.provider === "copilot")) markCleanupUncertain(issue.provider, issue.error);
+          issues.push({ component: `assistantHost_${issue.provider}`, code: issue.reason === "unsupported_arguments" ? "unavailable" : issue.reason === "invalid_cwd" ? "invalid_sample" : issue.reason, error: issue.error });
+        }
         const failures: unknown[] = "error" in assistantOutcome ? [assistantOutcome.error] : [];
         try { operation.check(); }
         catch (error) { failures.unshift(error); }

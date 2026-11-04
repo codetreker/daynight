@@ -30,7 +30,15 @@ not evidence of availability. A fresh successful provider probe is a candidate
 condition, not proof of authentication or a synchronized native Session.
 
 The default runtime leaves the collector disconnected until the complete
-hosting path is integrated. The [snapshot contract](../../../../docs/spec/daynight-worker-snapshots.md#助手托管预检)
+hosting path is integrated. When composed, ordinary Codex/Copilot version
+observations and assistant-host preflight now share one process-lifetime
+cleanup-uncertainty barrier per executable identity (`codex` or `copilot`).
+After either observer reports unconfirmed command cleanup, both observers stop
+starting replacement probes for that executable while unrelated executables
+remain observable. The first cleanup error remains authoritative for later
+unavailable reports and shutdown propagation.
+
+The [snapshot contract](../../../../docs/spec/daynight-worker-snapshots.md#助手托管预检)
 owns exact fields and limits; the [collection design](../../../../docs/design/daynight-worker-reporting.md#助手托管预检接入)
 owns execution and cleanup behavior.
 
@@ -56,9 +64,11 @@ shape or adding a second UI availability indicator.
 Legacy reports remain valid and cannot become assistant candidates. Failures
 remain explicit, and unsupported arguments and raw native output are excluded
 from reports. Bounded probes retain cleanup responsibility instead of starting
-replacement processes after uncertain termination. Telemetry joins every probe
-before propagating assistant failure or cancellation, preserving all cleanup
-errors so reporter shutdown cannot finish before native cleanup.
+replacement processes after uncertain termination. In composed mode, a cleanup
+uncertainty reported by either observer blocks later probes by both observers
+for that executable even after ordinary cache expiry. Telemetry joins every
+probe before propagating assistant failure or cancellation, preserving all
+cleanup errors so reporter shutdown cannot finish before native cleanup.
 
 The protocol does not provide hosting, authentication checks, successful Bot
 creation, or cross-machine path verification. Those consumers must combine the

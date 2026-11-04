@@ -12,6 +12,11 @@ import type { ExecutionConfiguration } from "../types.js";
 
 export type AssistantHostIssue = { provider: WorkerAgent; reason: WorkerAssistantHostReason; error: unknown };
 export type AssistantHostSample = { assistantHost: WorkerAssistantHost; issues: readonly AssistantHostIssue[] };
+export type AssistantHostCollector = {
+  collect: (operation: Operation) => Promise<AssistantHostSample>;
+  markCleanupUncertain: (provider: WorkerAgent, error: unknown) => void;
+  getCleanupUncertain: (provider: WorkerAgent) => unknown | undefined;
+};
 
 const providers = ["codex", "claude", "copilot"] as const;
 const validText = (value: string, bytes: number): boolean => value.trim() !== "" && value.isWellFormed() && !/\p{Cc}/u.test(value) && Buffer.byteLength(value) <= bytes;
@@ -70,6 +75,10 @@ export const createAssistantHostCollector = (options: {
   const resolveExecutable = options.resolveExecutable ?? assistantProviderExecutable;
   const runCommand = options.runCommand ?? ((command, operation) => runHerdrCommand(command, operation, spawnHerdrProcess, { cleanupWithinDeadline: true }));
   const cleanupFailures = new Map<WorkerAgent, unknown>();
+  const markCleanupUncertain = (provider: WorkerAgent, error: unknown): void => {
+    if (!cleanupFailures.has(provider)) cleanupFailures.set(provider, error);
+  };
+  const getCleanupUncertain = (provider: WorkerAgent): unknown | undefined => cleanupFailures.get(provider);
   let pendingDirectory = false;
   const directory = async (operation: Operation): Promise<string> => {
     if (pendingDirectory) throw new OperationError("deadline");
@@ -83,48 +92,52 @@ export const createAssistantHostCollector = (options: {
     void request.then(() => { pendingDirectory = false; }, () => { pendingDirectory = false; });
     return observe(request, operation);
   };
-  return {
-    collect: async (operation: Operation): Promise<AssistantHostSample> => {
-      operation.check();
-      const collection = createOperation({ signal: operation.signal, limits: { ...operation.limits, totalMs: Math.max(1, Math.floor(Math.min(5_000, operation.remainingMs()))), requestMs: Math.min(5_000, operation.limits.requestMs) } });
-      const observedAt = new Date().toISOString();
-      const issues: AssistantHostIssue[] = [];
-      let cwd = options.workingDirectory, directoryError: unknown;
-      try {
-        try { cwd = await directory(collection); } catch (error) { directoryError = error; }
-        const entries = await Promise.all(providers.map(async (provider): Promise<WorkerAssistantProvider> => {
-          const model = provider === configuration.agent ? configuration.model : null;
-          const args = provider === configuration.agent ? [...configuration.args] : [];
-          const fail = (reason: WorkerAssistantHostReason, error: unknown, hideConfiguration = false): WorkerAssistantProvider => {
-            issues.push({ provider, reason, error });
-            return { provider, available: false, reason, model: hideConfiguration ? null : model, args: hideConfiguration ? [] : args };
-          };
-          try {
-            if ((model !== null && !validText(model, 256)) || args.length > 128 || args.some(arg => !validText(arg, 4096))) throw new Error("Assistant provider configuration exceeds the supported report bounds.");
-            parseProviderArguments(provider, args);
-          } catch (error) { return fail("unsupported_arguments", error, true); }
-          if (directoryError !== undefined) return fail(directoryError instanceof OperationError ? "timeout" : "invalid_cwd", directoryError);
-          if (cleanupFailures.has(provider)) return fail("unavailable", cleanupFailures.get(provider));
-          try {
-            collection.check();
-            const file = resolveExecutable(provider);
-            const version = await runCommand({ file, args: ["--version"], environment, cwd }, collection);
-            parseNativeAgentVersion(provider, version.stdout);
-            const help = await runCommand({ file, args: helpArguments(provider), environment, cwd }, collection);
-            if (!supportsWeb(provider, help.stdout)) return fail("unavailable", new Error("The native executable does not advertise the required Web transport options."));
-            collection.check();
-            return { provider, available: true, reason: null, model, args };
-          } catch (error) {
-            if (hasHerdrCommandCleanupFailure(error)) cleanupFailures.set(provider, error);
-            return fail(reasonOf(error), error);
-          }
-        }));
-        try { operation.check(); } catch (error) {
-          if (cleanupFailures.size > 0) throw new AggregateError([error, ...cleanupFailures.values()], "Assistant host observation was cancelled with unconfirmed process cleanup.", { cause: error });
-          throw error;
+  const collect = async (operation: Operation): Promise<AssistantHostSample> => {
+    operation.check();
+    const collection = createOperation({ signal: operation.signal, limits: { ...operation.limits, totalMs: Math.max(1, Math.floor(Math.min(5_000, operation.remainingMs()))), requestMs: Math.min(5_000, operation.limits.requestMs) } });
+    const observedAt = new Date().toISOString();
+    const issues: AssistantHostIssue[] = [];
+    let cwd = options.workingDirectory, directoryError: unknown;
+    try {
+      try { cwd = await directory(collection); } catch (error) { directoryError = error; }
+      const entries = await Promise.all(providers.map(async (provider): Promise<WorkerAssistantProvider> => {
+        const model = provider === configuration.agent ? configuration.model : null;
+        const args = provider === configuration.agent ? [...configuration.args] : [];
+        const fail = (reason: WorkerAssistantHostReason, error: unknown, hideConfiguration = false): WorkerAssistantProvider => {
+          issues.push({ provider, reason, error });
+          return { provider, available: false, reason, model: hideConfiguration ? null : model, args: hideConfiguration ? [] : args };
+        };
+        try {
+          if ((model !== null && !validText(model, 256)) || args.length > 128 || args.some(arg => !validText(arg, 4096))) throw new Error("Assistant provider configuration exceeds the supported report bounds.");
+          parseProviderArguments(provider, args);
+        } catch (error) { return fail("unsupported_arguments", error, true); }
+        if (directoryError !== undefined) return fail(directoryError instanceof OperationError ? "timeout" : "invalid_cwd", directoryError);
+        const blocked = getCleanupUncertain(provider);
+        if (blocked !== undefined) return fail("unavailable", blocked);
+        try {
+          collection.check();
+          const file = resolveExecutable(provider);
+          const version = await runCommand({ file, args: ["--version"], environment, cwd }, collection);
+          parseNativeAgentVersion(provider, version.stdout);
+          const help = await runCommand({ file, args: helpArguments(provider), environment, cwd }, collection);
+          if (!supportsWeb(provider, help.stdout)) return fail("unavailable", new Error("The native executable does not advertise the required Web transport options."));
+          collection.check();
+          return { provider, available: true, reason: null, model, args };
+        } catch (error) {
+          if (hasHerdrCommandCleanupFailure(error)) markCleanupUncertain(provider, error);
+          return fail(reasonOf(error), error);
         }
-        return { assistantHost: { protocolVersion: 1, observedAt, defaultCwd: cwd, defaultProvider: configuration.agent, providers: entries }, issues };
-      } finally { collection.dispose(); }
-    },
+      }));
+      try { operation.check(); } catch (error) {
+        if (cleanupFailures.size > 0) throw new AggregateError([error, ...cleanupFailures.values()], "Assistant host observation was cancelled with unconfirmed process cleanup.", { cause: error });
+        throw error;
+      }
+      return { assistantHost: { protocolVersion: 1, observedAt, defaultCwd: cwd, defaultProvider: configuration.agent, providers: entries }, issues };
+    } finally { collection.dispose(); }
+  };
+  return {
+    collect,
+    markCleanupUncertain,
+    getCleanupUncertain,
   };
 };
