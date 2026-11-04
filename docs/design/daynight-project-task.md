@@ -16,7 +16,7 @@ JSON 列表字段见[描述省略决策](../../.agents/notes/implemented/simplif
 CLI 同步保留 `startedAt`、`completedAt`、`observedAt` 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
 服务端[负责人设计](daynight-task-assignment.md)拥有原生 assignedTo、任务筛选和项目内人员读取。CLI 的 Task/graph 严格解析、普通元数据设置/清空、list 筛选及当前ID输出已实现，复用同一字段契约，不增加人名或头像请求。
-[Steps 资源要求](../spec/daynight-task-steps.md)扩展独立的 task step list/show 读取与 Add；它不将完整 Steps 加入普通 Task 投影。
+[Steps 资源要求](../spec/daynight-task-steps.md)扩展独立的 task step list/show 读取、Add、Update、Set-status 与 Move；它不将完整 Steps 加入普通 Task 投影。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、通用 CLI 属性命令与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 使用通用 JSON map，键缺失不补值，worker 的公开写入限制由服务端定义拥有。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
 
@@ -91,8 +91,10 @@ Project 的定义由 [`definition.ts`](../../packages/daynight/src/commands/proj
 [补全设计](daynight-completion.md)拥有。命令组先解析参数和帮助，校验名称及详情
 UUID，再惰性加载共享 server runtime 和业务渲染。Task 的 definition、command 和
 rendering 分别拥有语法、API/仓库关联组合及可读/JSON 输出，属性 dispatch 组合相同 server session 和版本化属性资源。
-Step 分派先于普通 Task 分支；`step.ts` 组合 list/show 读取与 Add 分派；`step-add.ts` 先编译原值参数与短 ID，
-`step-write.ts` 再组合实际版本分支、不可变尝试和同操作事实核对，
+Step 分派先于普通 Task 分支；`step.ts` 组合 list/show 读取与 Add/Update/Set-status/Move 分派；
+`step-add.ts` 编译新增参数与短 ID，`step-update.ts` 编译内容或状态修改，
+`step-move.ts` 编译互斥位置与同 Task 锚点；`step-write.ts` 的 `executeStepWrite`
+再组合实际版本分支、带操作名的不可变尝试和同操作事实核对，
 `step-rendering.ts` 单独拥有完整 Steps/Step 资源的文本与 JSON 输出，
 `step-diagnostics.ts` 拥有安全公开诊断并保留内部 cause。四状态 Step 类型
 不复用 TaskStatus。帮助与本地 ID 参数校验完成后才加载配置、Git 或 HTTP。
@@ -159,7 +161,7 @@ CLI 登录/退出在锁内共同核对 origin/token，保留其他能力已完�
 共享 runtime 将同一信号传给 `loadServerConfiguration`；配置读取层接受可选的
 `AbortSignal` 并传入 `readFile`，同步 YAML 解析完成后再次检查操作状态。已正规化
 的 server 地址、API 客户端及操作对象组成 `ServerSession`。普通元数据 callback 返回完整字符串，runtime 最终检查后一次写 stdout；附件 read
-通过可等待的字节输出逐段写入。Thread 与 Step Add 返回 `ConfirmedMutationOutput`，
+通过可等待的字节输出逐段写入。Thread 与 Step 写入返回 `ConfirmedMutationOutput`，
 其确认事实与调用者的安全 failureText 进入既有受限回执输出生命周期，后续本地
 输出或清理失败仍保留确认。SIGINT、SIGTERM 及 Windows
 SIGBREAK 触发同一取消源。结束时先等待 `closeStdoutBytes` 关闭并回收实际创建的
@@ -358,6 +360,9 @@ flowchart TD
 | `task step list <id>` | 一次 `GET /api/v1/projects/{projectId}/tasks/{id}/steps`，完整有序资源，无 query 或分页 |
 | `task step show <id> <step-id>` | 一次 `GET /api/v1/projects/{projectId}/tasks/{id}/steps/{stepId}`，按 Task 内规范短 ID 读取 |
 | `task step add <id>` | 显式版本一次 `POST /api/v1/projects/{projectId}/tasks/{id}/steps`；默认先完整 GET Steps 再 POST，成功 201 返回完整资源 |
+| `task step update <id> <step-id>` | 显式版本一次 PATCH 单项；默认先完整 GET Steps，200 返回完整确认资源 |
+| `task step set-status <id> <step-id> <status>` | 显式版本一次 PUT 单项 /status；默认先完整 GET Steps，200 返回完整确认资源 |
+| `task step move <id> <step-id>` | 显式版本一次 PUT 单项 /position；默认先完整 GET Steps，200 返回完整确认顺序 |
 | `task update <id>` | 可选先 GET task，再 PATCH 同一路径，只写元数据 |
 | `task set-status <id> <status> [--claim-id <claim-id>]` | 可选先 GET task，再 PUT 同一 task 的 `/status`；普通 body 为 version/status，显式 done claim 完成为 version/status/claimId |
 | `task delete <id> [--remove-depends]` | 可选先 GET task，再 DELETE 同一路径提交精确 version；可选开关明确发送 removeDepends=true 解除全部传入引用，默认严格删除；成功 `204`，保留任务与附件 |
@@ -389,14 +394,21 @@ Steps 正文的有效单响应上限是配置预算与 64 MiB 资源上限的较
 相等的新项时间及正确位置；默认预读存在时，还检查旧项内容/时间/相对顺序。
 显式版本不为该确认补加 GET。成功只输出服务确认资源。
 
+`updateTaskStep` 与 `setTaskStepStatus` 分别提交 PATCH 内容和 PUT 状态，完整 200
+须匹配目标的显式字段及原版本或 +1。有真实预读时，省略字段、成员、顺序、
+非目标与创建时间保持；同值保持版本和更新时间，真实变化 +1 且目标更新时间变化。
+`moveTaskStep` 提交 PUT 位置，确认目标的首尾或锚点相邻位置及原版本或 +1；
+有预读时另核对每条记录的全部字段和时间、非目标相对顺序，以及真实移动 +1
+或原位置 no-op 同版本。显式版本均维持一次写请求，不补造旧基线。
+
 `step-write-errors.ts` 保留递交前失败、完整 4xx 拒绝、unknown 与已确认事实。
 公开容量 details 的 encodedBytes/maxEncodedBytes 在类型和 parser 中严格保留；
-任意损坏详情不能被丢弃后冒充正常拒绝。未知 Add 至多以原 UUID.r1 在同一仍有效
+任意损坏详情不能被丢弃后冒充正常拒绝。未知 Step 写入至多以原 UUID.r1 在同一仍有效
 Operation/API/身份内 GET 一次完整集合，只报告当前版本与目标 found/absent，
 不改变 unknown、非零退出或空成功 stdout。操作已取消/耗尽时不另建读取，不从
 旧预读补造观察，也不重发或换 ID。原服务/响应 ID 单独保留，回显相等不参与确认。
 
-共享 exchange 的 `confirmedMutationId` 供 Thread 与 Add 两个实际调用者使用，
+共享 exchange 的 `confirmedMutationId` 供 Thread 与四个 Step 写命令使用，
 在严格回执核对后设置并穿过 catch/finally 清理。已知 4xx 与已确认结果的元信息
 和错误链不因清理失败丢失。确认结果由 runtime 的 `ConfirmedMutationOutput`
 交给既有受限输出通道，具体命令提供 failureText，Thread 文案保持其现有语义。
@@ -549,7 +561,9 @@ terminalText。创建和更新分别以 `Task created.`、`Task updated.` 表明
 新增起止字段和图时钟由 JSON 保留，不为可读渲染器增加标签。所有字段
 使用终端转义且不补齐等宽列，空间随资源内容总长度线性增长。
 
-Step Add 的可读成功前缀为 `Step added. ID: <id>`，JSON 无前缀，仅含完整确认资源。
+Step Add、Update、Set-status 与 Move 的可读成功前缀分别为
+`Step added. ID: <id>`、`Step updated. ID: <id>`、`Step status set. ID: <id>`
+与 `Step moved. ID: <id>`，JSON 无前缀，仅含完整确认资源。
 未知诊断保留原 Project/Task/Step 与 UUID，当前事实和“没有当前观察”分别表达，
 提供普通显式 project list/show 指导，不输出完整提交正文或任意内部 cause。
 

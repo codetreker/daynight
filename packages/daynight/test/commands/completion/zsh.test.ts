@@ -53,7 +53,7 @@ describe("native zsh completion", () => {
     expect(script).toContain("(--path)--path=[Attachment relative path (default\\: source basename)]:relative-path:->text_value");
   });
 
-  it("discovers delivered Step reads and Add without future write verbs", () => {
+  it("discovers delivered Step commands without future write verbs", () => {
     const step = taskDefinition.commands!.find(({ name }) => name === "step")!;
     const script = renderZshCompletion(step);
     expect(script).toContain("'list:Read every Step in its saved order'");
@@ -64,7 +64,11 @@ describe("native zsh completion", () => {
     const add = renderZshCompletion(step.commands!.find(({ name }) => name === "add")!);
     for (const option of ["--project=", "--title=", "--description=", "--status=", "--id=", "--before=", "--after=", "--if-version="]) expect(add).toContain(option);
     expect(add).toContain("skipped");
-    expect(script).not.toContain("'set-status:");
+    expect(script).toContain("'set-status:");
+    expect(script).toContain("'update:");
+    expect(script).toContain("'move:");
+    const move = renderZshCompletion(step.commands!.find(({ name }) => name === "move")!);
+    for (const option of ["--before=", "--after=", "--first", "--last", "--if-version="]) expect(move).toContain(option);
     expect(script).not.toContain("'delete:");
   });
 
