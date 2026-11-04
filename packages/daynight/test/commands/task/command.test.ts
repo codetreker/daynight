@@ -33,7 +33,7 @@ const fixture = (operation = createOperation()) => {
     listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),
     readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(currentUser),
-    getTeamCurrentUser: vi.fn<ApiClient["getTeamCurrentUser"]>(), listTeams: vi.fn<ApiClient["listTeams"]>(), getTeam: vi.fn<ApiClient["getTeam"]>(), createTeam: vi.fn<ApiClient["createTeam"]>(), renameTeam: vi.fn<ApiClient["renameTeam"]>(), deleteTeam: vi.fn<ApiClient["deleteTeam"]>(), listTeamProjects: vi.fn<ApiClient["listTeamProjects"]>(),
+    getTeamCurrentUser: vi.fn<ApiClient["getTeamCurrentUser"]>(), listTeams: vi.fn<ApiClient["listTeams"]>(), getTeam: vi.fn<ApiClient["getTeam"]>(), createTeam: vi.fn<ApiClient["createTeam"]>(), renameTeam: vi.fn<ApiClient["renameTeam"]>(), deleteTeam: vi.fn<ApiClient["deleteTeam"]>(), listTeamProjects: vi.fn<ApiClient["listTeamProjects"]>(), listTeamInvitations: vi.fn<ApiClient["listTeamInvitations"]>(), createTeamInvitation: vi.fn<ApiClient["createTeamInvitation"]>(), revokeTeamInvitation: vi.fn<ApiClient["revokeTeamInvitation"]>(),
     getProjectAccess: vi.fn<ApiClient["getProjectAccess"]>(),
     reportWorker: vi.fn<ApiClient["reportWorker"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),

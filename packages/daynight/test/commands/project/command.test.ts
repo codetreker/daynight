@@ -32,7 +32,7 @@ const fixture = (projects: readonly Project[] = []) => {
     setTaskProperty: async () => { throw new Error("Unused property API"); },
     removeTaskProperty: async () => { throw new Error("Unused property API"); },
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(user),
-    getTeamCurrentUser: unavailable, listTeams: unavailable, getTeam: unavailable, createTeam: unavailable, renameTeam: unavailable, deleteTeam: unavailable, listTeamProjects: unavailable,
+    getTeamCurrentUser: unavailable, listTeams: unavailable, getTeam: unavailable, createTeam: unavailable, renameTeam: unavailable, deleteTeam: unavailable, listTeamProjects: unavailable, listTeamInvitations: unavailable, createTeamInvitation: unavailable, revokeTeamInvitation: unavailable,
     reportWorker: unavailable,
     createProject: vi.fn<ApiClient["createProject"]>().mockResolvedValue(project),
     listProjects: vi.fn<ApiClient["listProjects"]>().mockResolvedValue(projects),

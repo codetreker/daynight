@@ -99,6 +99,19 @@ export type Team = TeamRef & {
   };
 };
 
+export type TeamInvitation = {
+  readonly id: string;
+  readonly teamId: string;
+  readonly createdBy: string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly consumedBy: string | null;
+  readonly consumedAt: string | null;
+  readonly revokedAt: string | null;
+};
+export type CreatedTeamInvitation = TeamInvitation & { readonly link: string };
+export type TeamInvitationRevokeReceipt = { readonly teamId: string; readonly invitationId: string; readonly changed: boolean };
+
 export type ProjectOwnership = {
   readonly teamId: string;
   readonly version: bigint;

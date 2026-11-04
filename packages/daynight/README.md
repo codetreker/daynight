@@ -161,6 +161,9 @@ daynight team show [--team <uuid|personal>] [--json]
 daynight team create <name> [--confirm] [--json]
 daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team invitation create [--team <uuid|personal>] [--confirm] [--json]
+daynight team invitation list [--team <uuid|personal>] [--json]
+daynight team invitation revoke <invite-id> [--team <uuid|personal>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
 daynight task
@@ -606,6 +609,15 @@ conflicts require a fresh decision, and unknown outcomes are never replayed.
 Reading current facts does not recover a lost receipt. A later output or cleanup
 failure retains a confirmed receipt. Use `--json` for the confirmed resource or
 deletion receipt.
+
+`team invitation create` creates a single-use link for an ordinary Team. The
+link is disclosed once on stdout; save it securely before sharing it. Listing
+invitations returns metadata only and cannot recover the link. `revoke` disables
+an invitation; an unchanged receipt can also mean it was already revoked,
+consumed, or absent. Create
+and revoke require confirmation or `--confirm`, and use the explicit or default
+Team context. Personal Teams cannot have invitations. An unknown create result
+does not cause a replacement invitation to be created automatically.
 
 ## Task management
 
