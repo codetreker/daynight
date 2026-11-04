@@ -11,7 +11,7 @@ export const inspection: InspectionMessages = {
     created: "Created", updated: "Updated", pagination: "Steps pages", previous: "Previous", next: "Next", page: "Page",
     range: (start, end, total) => `${start}–${end} of ${total} steps`,
     statusMenu: (title) => `Status for ${title}`, statusUnavailable: "Wait for the current task and steps to be checked before changing status.",
-    conflict: "The task changed. Read the current steps before choosing a status again.", conflictReconciled: "The task changed. Current steps have been read; choose a status again.", unknown: "The status change outcome is unknown. Read the current steps before another change.", unknownReconciled: "The current steps have been read. The earlier request's outcome remains unknown.",
+    conflict: "The task changed. Read the current steps before choosing a status again.", conflictReconciled: "The task changed. Steps were read; choose a status again.", unknown: "The status change outcome is unknown. Read the current steps before another change.", unknownReconciled: "Steps were read. The earlier request's outcome remains unknown.",
     checkState: "Read current steps", checking: "Reading current steps", checkFailed: "Current steps could not be checked. Changes remain unavailable.",
     statusRefused: "The server refused the status change.", statusMissing: "This step was not found. Read the current steps before choosing again.", statusDenied: "You do not have permission to change this step.",
     statusExhausted: "The task version is exhausted; this change cannot be saved.", statusCapacity: "This change would exceed the steps resource size limit.", statusInvalid: "The server rejected the status request as invalid.",

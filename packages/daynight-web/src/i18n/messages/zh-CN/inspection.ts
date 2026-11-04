@@ -11,7 +11,7 @@ export const inspection: InspectionMessages = {
     created: "创建时间", updated: "更新时间", pagination: "步骤分页", previous: "上一页", next: "下一页", page: "页码",
     range: (start, end, total) => `第 ${start}–${end} 项，共 ${total} 项步骤`,
     statusMenu: (title) => `${title}的状态`, statusUnavailable: "请等待当前任务和步骤核对完成后再修改状态。",
-    conflict: "任务已变化。请读取当前步骤，再重新选择状态。", conflictReconciled: "任务已变化。已读取当前步骤，请重新选择状态。", unknown: "状态修改结果未知。请读取当前步骤后再修改。", unknownReconciled: "已读取当前步骤；先前请求的结果仍未知。",
+    conflict: "任务已变化。请读取当前步骤，再重新选择状态。", conflictReconciled: "任务已变化。已读取步骤，请重新选择状态。", unknown: "状态修改结果未知。请读取当前步骤后再修改。", unknownReconciled: "已读取步骤；先前请求的结果仍未知。",
     checkState: "读取当前步骤", checking: "正在读取当前步骤", checkFailed: "无法核对当前步骤，暂时不能修改。",
     statusRefused: "服务器拒绝了状态修改。", statusMissing: "未找到此步骤。请读取当前步骤后重新选择。", statusDenied: "你没有权限修改此步骤。",
     statusExhausted: "任务版本已耗尽，无法保存此修改。", statusCapacity: "此修改会超过步骤资源的大小上限。", statusInvalid: "服务器认为状态请求无效，已拒绝修改。",
