@@ -3,7 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
+import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, HerdrInputBlockedError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrPromptReceipt, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
@@ -33,6 +33,7 @@ const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspace
   const tabs: Entry[] = [];
   const calls: { method: string; params: Entry }[] = [];
   const prompts: string[] = [];
+  const screen = { text: "› Ask Codex to do anything\n\n  GPT-6.1 Terra medium · daynight/task · Context 0% used" };
   const processes = new Map<string, number[]>();
   const executing = new Set<number>([200]);
   let next = 0;
@@ -69,6 +70,7 @@ const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspace
     }
     if (method === "agent.start") return { type: "agent_started", agent: launch(params), argv: [kind, ...params.args as string[]] };
     if (method === "agent.prompt") { prompts.push(String(params.text)); return { type: "agent_prompted", agent: structuredClone(agents.find((value) => value.pane_id === params.target)) }; }
+    if (method === "agent.read") return { type: "pane_read", read: { pane_id: params.target, workspace_id: panes.find(value => value.pane_id === params.target)!.workspace_id, source: "visible", format: "text", text: screen.text, truncated: false } };
     if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: params.pane_id, shell_pid: 100, foreground_process_group_id: 100, foreground_processes: (processes.get(String(params.pane_id)) ?? []).map((value) => ({ pid: value, name: value === 100 ? "shell" : kind })) } };
     if (method === "tab.create") {
       const workspace = workspaces.find((value) => value.workspace_id === params.workspace_id)!; const created = addPane(workspace, String(params.label));
@@ -90,7 +92,7 @@ const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspace
     throw new Error(`Unexpected fixture method ${method}`);
   } };
   const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => { preflights += 1; } }, workspaceEnvironment, readCodexConfig, processExecuting: async (value) => executing.has(value), pollIntervalMs: 1 });
-  return { context, manager, workspaces, panes, agents, tabs, calls, prompts, processes, executing, closeProcesses, rpc, snapshot, launch, hook: (value: typeof hook) => { hook = value; }, preflights: () => preflights };
+  return { context, manager, workspaces, panes, agents, tabs, calls, prompts, screen, processes, executing, closeProcesses, rpc, snapshot, launch, hook: (value: typeof hook) => { hook = value; }, preflights: () => preflights };
 };
 const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
   const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
@@ -688,14 +690,74 @@ describe("direct task resource management", () => {
     expect(f.prompts).toEqual([]); expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
   });
 
-  it.each(["codex", "claude"] as const)("delivers %s initial and continuation input without terminal presentation metadata", async (kind) => {
+  it.each(["codex", "claude"] as const)("delivers %s initial and continuation input without a recognized composer or status layout", async (kind) => {
     const f = await fixture(kind); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
-    f.hook(async (method) => { if (method === "agent.read") throw new Error("Terminal presentation is unavailable"); return undefined; });
+    f.screen.text = "Custom terminal presentation without prompt, model or directory metadata";
     await f.manager.start(f.context, binding, { configuration: { agent: kind, model: null, args: [] }, prompt: "managed\nassignment" }, operation());
     f.agents[0]!.agent_status = "idle";
     await f.manager.submitPrompt(f.context, binding, "continue", operation());
     expect(f.prompts).toEqual(["managed\nassignment", "continue"]);
-    expect(f.calls.some((call) => call.method === "agent.read")).toBe(false);
+    expect(f.calls.filter((call) => call.method === "agent.read")).toHaveLength(2);
+  });
+
+  it.each([
+    { agent: "codex" as const, screen: "Select model\n› 1. GPT-6.1 Terra\n  2. GPT-6.1 Sol\n\nenter select · esc back", blocker: "menu" },
+    { agent: "codex" as const, screen: "Select model\n› 1. GPT-6.1 Terra\n› Search models\nenter select · esc back", blocker: "menu" },
+    { agent: "codex" as const, screen: "Folder access\nTrust this folder?\n› 1. Trust and continue\n  2. Quit\nenter continue · esc quit", blocker: "menu" },
+    { agent: "codex" as const, screen: "› Input disabled.", blocker: "disabled" },
+    { agent: "codex" as const, screen: "› Viewing sub-agent — direct input is disabled", blocker: "disabled" },
+    { agent: "claude" as const, screen: "Do you trust the files in this folder?\n❯ 1. Yes\n2. No\nEnter to confirm · Esc to cancel", blocker: "menu" },
+    { agent: "claude" as const, screen: "Select model\n❯ Default (recommended)\n  Sonnet\nEnter to set as default · Esc to cancel", blocker: "menu" },
+  ])("retains definitely unsent initial and continuation input for $agent $blocker", async ({ agent, screen, blocker }) => {
+    const f = await fixture(agent); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation()); f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration: { agent, model: null, args: [] }, prompt: "initial" }, operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker, action: "agent.prompt", promptSubmission: "not-submitted" });
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each([
+    { agent: "codex" as const, screen: "Input disabled in this business example; press enter to confirm or esc to cancel." },
+    { agent: "codex" as const, screen: "› Ask any custom question\nGPT-6.1 Terra medium · daynight/task" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› Completely custom current composer" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n›✨Custom current prompt marker" },
+    { agent: "claude" as const, screen: "Business prose says esc to cancel, then enter to confirm the example." },
+    { agent: "claude" as const, screen: "❯ 1. Historical choice\nEnter to confirm · Esc to cancel\n\n❯ Completely custom current composer" },
+    { agent: "claude" as const, screen: "Select model\n❯ Default\nEnter to set as default · Esc to cancel\n\n❯ New placeholder without borders" },
+    { agent: "codex" as const, screen: "" },
+  ])("accepts $agent content without an active explicit blocker: $screen", async ({ agent, screen }) => {
+    const f = await fixture(agent); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation()); f.screen.text = screen;
+    await f.manager.start(f.context, binding, { configuration: { agent, model: null, args: [] }, prompt: "managed" }, operation());
+    expect(f.prompts).toEqual(["managed"]);
+  });
+
+  it.each([{ pane_id: "foreign" }, { workspace_id: "foreign" }, { source: "recent" }, { format: "ansi" }, { text: undefined }, { truncated: undefined }, { truncated: true }])("rejects unusable negative-blocker observations %j", async extra => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.hook(async method => method === "agent.read" ? { type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, source: "visible", format: "text", text: "unknown layout", truncated: false, ...extra } } : undefined);
+    await expect(f.manager.submitPrompt(f.context, binding, "continue", operation())).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted" });
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("retains target changes during visible reads as errors rather than menu waiting", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.hook(async method => {
+      if (method !== "agent.read") return undefined;
+      f.panes[0]!.terminal_id = "replacement";
+      return { type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, source: "visible", format: "text", text: "› 1. GPT\nenter select · esc back", truncated: false } };
+    });
+    const error = await f.manager.submitPrompt(f.context, binding, "continue", operation()).catch(error => error);
+    expect(error).toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted", cause: { message: "The task pane or terminal identity has changed." } });
+    expect(error).not.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("preserves a failed visible read as a protocol error with its original cause", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    const failure = new HerdrRpcError("read connection lost", { method: "agent.read", requestId: "read", submission: "unknown" });
+    f.hook(async method => { if (method === "agent.read") throw failure; return undefined; });
+    const error = await f.manager.submitPrompt(f.context, binding, "continue", operation()).catch(error => error);
+    expect(error).toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted", cause: failure });
+    expect(error).not.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
   });
 
   it("keeps owned input, resource discovery and stopping independent of live cwd metadata", async () => {

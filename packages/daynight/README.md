@@ -1693,7 +1693,8 @@ observation before another decision, without blind replay. Terminal cleanup
 suppresses business pings.
 
 Before a periodic ping reaches the native agent, the worker rereads the task
-from the service after workspace serialization and native readiness checks,
+from the service after workspace serialization, native readiness and known
+input-blocker checks,
 verifies the original active claim, worker and worktree, and checks
 `properties.paused`. A true value skips that input without advancing its
 submission baseline. Setting false or removing the property therefore permits
@@ -1761,8 +1762,17 @@ versions fail explicitly.
 The policy applies only to native invocations and task workspaces. Global native
 configuration, credentials and organization/OS policies keep their existing
 owners; task delivery still follows its business authorization. Automatic input
-uses Herdr's structured agent identity, readiness, launch and blocked states. It
-does not inspect terminal text, status bars, directory displays, borders or menus.
+uses Herdr's structured agent identity, readiness, launch and blocked states.
+For Codex and Claude, it then reads the bound pane's complete visible text only
+to reject explicit known menu or disabled-input patterns. Normal composers,
+status bars, directory displays, placeholders and borders are not required.
+Customized or unknown normal layouts proceed immediately after readiness; there
+is no layout whitelist or unknown-layout wait. Any supplied final task
+authorization guard runs after the read and binding/state recheck. Known blockers retain the
+pending initial input or continuation opportunity without advancing its submitted
+baseline or consuming execution recovery attempts; closing them permits a later
+patrol to continue. Failed, malformed or truncated reads remain unsent errors.
+The blocker set does not claim to recognize every future native screen.
 The worker supplies the initial task cwd at workspace creation and checks the
 original shell cwd only immediately before a fresh native start. Resource
 discovery, live-agent reconnection, input observation and stopping do not require

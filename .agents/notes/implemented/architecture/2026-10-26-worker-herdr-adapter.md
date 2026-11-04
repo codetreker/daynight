@@ -32,9 +32,9 @@ and identity decision](2026-10-28-worker-workspace-names.md) uses task titles as
 mutable display prefixes and four stable UUIDs as owner identity, replacing the
 original origin/project/task/claim/worktree label and whole-label name hash.
 The [structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
-replaces visible-composer parsing and repeated input, discovery and stop cwd
-comparisons with Herdr structured readiness and the original
-workspace/pane/terminal binding. Fresh starts retain one canonical cwd check
+replaces the positive visible-composer layout gate and repeated input, discovery
+and stop cwd comparisons with Herdr structured readiness, explicit known
+menu/disabled-input exclusions and the original workspace/pane/terminal binding. Fresh starts retain one canonical cwd check
 after caller admission and immediately before each `agent.start` attempt.
 Native environment reconnection stays read-only; a separate serialized naming
 operation may update the display prefix. The original receipts,
@@ -134,9 +134,14 @@ screens, as recorded under Alternatives. Custom or cropped footers could not
 satisfy that positive predicate even when Herdr reported a ready agent.
 
 The [structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
-removes that duplicate visible-text admission and repeated cwd metadata
+removes that positive visible-composer whitelist and repeated cwd metadata
 comparison. Current input uses Herdr's structured readiness, launch and blocked
 states after original workspace/pane/terminal and agent identity verification.
+Codex and Claude then read complete bound-pane text solely to reject explicit
+known menus or disabled input; customized and unknown normal layouts proceed
+without waiting for a recognized composer. The final caller guard follows the
+read and binding/state recheck. Known blockers retain pending initial input or a
+continuation opportunity without consuming execution recovery attempts.
 Workspace creation sets the shell's initial directory, and a fresh `agent.start`
 attempt checks the original pane's canonical cwd after caller admission and
 before submission. That launch-only precondition does not apply to a live-agent
@@ -280,8 +285,9 @@ removal still follows confirmed original-agent stop and workspace closure.
 Claude is supported in Herdr mode using its native TUI and exact --resume ID.
 Preflight requires the current official SessionStart hook, its documented
 matcher, effective settings that permit hooks and exact transcript history.
-Automatic input uses the same Herdr structured readiness and binding checks as
-the other native providers, without parsing Claude prompt borders or hints. Parent
+Automatic input uses Herdr structured readiness and binding checks plus explicit
+known native-menu exclusions. It does not require Claude prompt borders or
+shortcut hints to identify a positive composer. Parent
 CLAUDECODE and CLAUDE_CODE_ENTRYPOINT identities are removed with inherited
 Herdr/Codex routing identities. Web Claude uses a separate SDK backend and does
 not pass through this terminal adapter.
@@ -313,8 +319,9 @@ successful native input/history observations remain scoped to the sessions and
 readiness conditions exercised. This motivated the original visible-composer
 guard. Its layout-dependent refusal of already-ready managed input is why the
 [structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
-replaces that additional guard while retaining fixed native startup controls and
-Herdr's blocked state.
+replaces that positive layout requirement while retaining explicit known menu
+and disabled-input exclusions, fixed native startup controls and Herdr's blocked
+state.
 
 **Require a new official session ID before the first input.** Codex 0.164 runs
 SessionStart lazily when preparing the first user turn for both new and resumed

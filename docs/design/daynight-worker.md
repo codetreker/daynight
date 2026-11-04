@@ -226,13 +226,13 @@ Linux/Windows legacy 路径中，NULL 是新 claim 首次启动的正常状态�
 
 暂停使用可写布尔 task property paused。缺席与 false 在周期 ping 决策中均表示未暂停，但存储与通用读取保留两者差别；存在的错误类型必须暴露。该值不复制为 SQLite 状态，也不改变 worker.phase、task 状态或新 claim 资格。Web backend 当前没有周期 continuation ping，解除该属性不发送 Web 原生输入或启动/恢复指令；Web 操作者的暂停展示与解除入口由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
 
-Herdr 适配层为周期 ping 接收独立的发送前检查，在 workspace 串行操作及原生输入界面就绪检查之后、agent.prompt mutation 之前读取服务端当前 task，核验原 active claim、workerId 和 worktreeId，再检查 paused。原库存快照不能授权该次输入。读取失败保持原错误链且不递交，归属不再匹配时不接管新 claim。最终检查之后与原生 mutation 之间没有跨系统原子事务；已发送或已受理的输入不会因随后暂停而撤回。
+Herdr 适配层为周期 ping 接收独立的发送前检查，在 workspace 串行操作、结构化就绪及可见文本的已知阻塞检查之后、agent.prompt mutation 之前读取服务端当前 task，核验原 active claim、workerId 和 worktreeId，再检查 paused。原库存快照不能授权该次输入。读取失败保持原错误链且不递交，归属不再匹配时不接管新 claim。最终检查之后与原生 mutation 之间没有跨系统原子事务；已发送或已受理的输入不会因随后暂停而撤回。
 
 暂停返回明确的未递交结果与当前观察，不作为输入失败或已提交回执，也不更新上次输入基线。解除暂停后，仍然 idle/done 的同一观察可成为新的正常 ping 决策。Legacy 的首次及待递交 assignment、恢复和 cleanup 输入不使用这个周期门禁。macOS durable adapter 在所有自动输入的最终递交边界核对 paused、原 claim、进程身份和 admission；暂停保留观察、原运行停止与人工 attach。取舍由[暂停周期输入决策](../../.agents/notes/implemented/feature/2026-11-02-task-paused-worker-pings.md)拥有。
 
 macOS 由 durable adapter 分离 launch 和 input：先保存 preparation 与 launch_requested，启动后持久保存原 shell/native agent 的出生证明，再开放 active admission。首次输入保存 pending/dispatching/transport_completed 或 unknown；重启遇到未确认提交时阻断重放。Session 注册、同代重连、停止证明与采集段通过独立事务边界恢复，详情由 [Herdr 生命周期设计](herdr-worker-lifecycle.md)拥有。
 
-Legacy 的首次 assignment、上次输入观察与提交回执仍由执行驱动的内存 pendingInput 和基线管理。明确未递交时等待匹配 pane 的输入就绪；成功回执通过 onPromptSubmitted 在后续观察前建立基线。观察未改变时不重复递交；未知结果先观察核对，不盲目重放。这些 legacy 基线不跨进程保存；macOS 的未知输入限制不能被内存基线重建覆盖。巡查选择依据见[agent 巡查决策](../../.agents/notes/implemented/bug-fix/2026-10-27-worker-agent-patrol.md)。
+Legacy 的首次 assignment、上次输入观察与提交回执仍由执行驱动的内存 pendingInput 和基线管理。明确未递交时等待匹配 pane 的输入就绪；已知菜单或禁用输入保留首次输入及 continuation 机会，不推进已提交基线、不增加执行失败次数，关闭后继续巡查。成功回执通过 onPromptSubmitted 在后续观察前建立基线。观察未改变时不重复递交；未知结果先观察核对，不盲目重放。这些 legacy 基线不跨进程保存；macOS 的未知输入限制不能被内存基线重建覆盖。巡查选择依据见[agent 巡查决策](../../.agents/notes/implemented/bug-fix/2026-10-27-worker-agent-patrol.md)。
 
 每次 fresh/resume 启动都由同一个参数构造器施加固定 full access 策略，配置中的 model/args 不能降低权限或重新启用确认。Copilot 在配置参数后追加 `--allow-all --no-ask-user --no-sandbox`；创建该任务 workspace 及运行只读原生探测时，最后覆盖 `COPILOT_ALLOW_ALL=true`、`COPILOT_ASSISTED_APPROVAL=false`。精确的字符串 `true` 同时免除 Copilot 的交互式目录信任；关闭 assisted approval 避免继承环境恢复权限确认。
 
@@ -242,7 +242,7 @@ Codex 保留 `--no-daemon [resume <session_id>]` 前缀，在配置参数后追�
 
 参数校验在启动 RPC 前拒绝 Copilot 的 assisted approval、sandbox、deny/tool restriction，以及 Codex 的 approval/sandbox 控制和重复的系统 bypass 开关。缺少原生能力明确失败。策略只作用于本次命令和任务 workspace，不写全局 native 配置；认证、业务授权及组织/操作系统策略保留各自归属。
 
-所有 provider 的自动输入统一使用 Herdr 结构化观察：核对原 workspace/pane/terminal 和 agent 身份，等待启动结束及所需的 interactive_ready，blocked 状态拒绝输入。Worker 不通过 agent.read 解析界面文案、状态栏、目录、边框或菜单，也不把 pane/agent 的 cwd 元数据相等作为输入条件；目录一致性只在上述新原生启动递交前核对。发送前仍执行调用方的最终授权检查，并核对 agent.prompt 回执。需要业务人工输入时通过 worker attach 在原终端处理。Legacy 的启动回执、输入提交状态和停止观察只留当前调用；macOS 保存原运行和输入结果，未知结果阻断重放，但传输完成也不证明模型恰好处理一次。原生历史可用性由原生命令报告，不额外扫描 provider 数据库或会话 manifest。取舍及原界面检查的历史原因见[结构化输入准入决策](../../.agents/notes/implemented/simplification/2026-11-04-worker-structured-input-readiness.md)。
+所有 provider 的自动输入先使用 Herdr 结构化观察：核对原 workspace/pane/terminal 和 agent 身份，等待启动结束及所需的 interactive_ready，blocked 状态拒绝输入。Codex/Claude 随后通过 agent.read 读取原绑定 pane 的完整可见文本，仅识别明确的菜单或禁用输入。菜单的选中行与对应 Enter/Esc 操作提示、已知禁用输入行构成拒绝条件；正常 composer、状态栏、目录展示、占位文案及边框不构成正向门槛。自定义或未知布局不等待白名单匹配。读取失败、数据畸形或截断保持明确未递交；读取后重新核对绑定与结构化状态，再执行调用方最终授权检查并递交 agent.prompt、核对回执。pane/agent 的 cwd 元数据相等不是输入条件；目录一致性只在上述新原生启动递交前核对。需要业务人工输入时通过 worker attach 在原终端处理。Legacy 的启动回执、输入提交状态和停止观察只留当前调用；macOS 保存原运行和输入结果，未知结果阻断重放，但传输完成也不证明模型恰好处理一次。原生历史可用性由原生命令报告，不额外扫描 provider 数据库或会话 manifest。取舍及原界面检查的历史原因见[结构化输入准入决策](../../.agents/notes/implemented/simplification/2026-11-04-worker-structured-input-readiness.md)。
 
 Herdr 自动恢复计数及超限等待只在当前进程中维护，重启清零。达到 recoveryLimit 后保留 active 与错误，可用人工 retry 或重启重新尝试。Web 使用前述持久恢复暂停，普通重启不提供额外授权。
 

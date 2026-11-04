@@ -81,8 +81,10 @@ delivery authority; managed assignment and task authorization keep their own
 rules. Herdr structured input readiness and original resource identity remain
 in force, and attach supports business input. The
 [structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
-replaces the additional visible-composer parsing and repeated input, discovery
-and stop cwd comparisons. Fresh `agent.start` attempts retain a canonical shell
+replaces the positive visible-composer layout requirement and repeated input,
+discovery and stop cwd comparisons. Explicit known menu and disabled-input
+blockers still prevent submission without requiring a normal-layout whitelist.
+Fresh `agent.start` attempts retain a canonical shell
 cwd check immediately before submission; the `projects` override sets trust,
 not the shell directory. Missing credentials and integration failures remain
 errors.

@@ -11,6 +11,8 @@ import type { ResourceOwner } from "../types.js";
 import { parseResourceOwner, resourceOwnerKey, sameResourceOwner } from "../resource-owner.js";
 import { buildHerdrAgentArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
 import type { HerdrAgentConfiguration } from "./arguments.js";
+import { nativeInputBlocker } from "./input-blockers.js";
+import type { NativeInputBlocker } from "./input-blockers.js";
 import { HerdrRpcError } from "./rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "./rpc.js";
 
@@ -78,6 +80,12 @@ export class HerdrAgentActionError extends Error {
   constructor(message: string, readonly action: string, readonly submission: "not-submitted" | "rejected" | "unknown", options?: ErrorOptions & { promptSubmission?: "not-submitted" | "submitted" | "unknown" }) {
     super(message, options); this.name = "HerdrAgentActionError";
     this.promptSubmission = options?.promptSubmission === undefined ? null : options.promptSubmission;
+  }
+}
+export class HerdrInputBlockedError extends HerdrAgentActionError {
+  constructor(readonly blocker: NativeInputBlocker) {
+    super(`The native agent has ${blocker === "menu" ? "an open menu" : "disabled input"}; use daynight worker attach to resolve it.`, "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
+    this.name = "HerdrInputBlockedError";
   }
 }
 const rejectionCodes: Readonly<Record<string, ReadonlySet<string>>> = {
@@ -251,13 +259,30 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   const submit = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, initialPrompt = false, beforeSubmit?: HerdrPromptGuard): Promise<HerdrPromptResult> => {
     if (typeof prompt !== "string" || prompt.length === 0) throw new HerdrAgentActionError("The caller prompt must be nonempty text.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
     let before: HerdrAgentObservation;
+    const verifyInputAgent = (current: HerdrAgentObservation): void => {
+      const knownAgent = current.kind === context.agent || current.nativeSession?.agent === context.agent || (initialPrompt && current.name === herdrExecutionAgentName(context));
+      if (!knownAgent || current.launchPending || ((initialPrompt || current.nativeSession === null) && !current.interactiveReady) || current.status === "blocked") throw new Error("The original native agent is not ready for input.");
+    };
     try {
       before = await observation(context, binding, operation);
-      const knownAgent = before.kind === context.agent || before.nativeSession?.agent === context.agent || (initialPrompt && before.name === herdrExecutionAgentName(context));
-      if (!knownAgent || before.launchPending || ((initialPrompt || before.nativeSession === null) && !before.interactiveReady) || before.status === "blocked") throw new Error("The original native agent is not ready for input.");
+      verifyInputAgent(before);
+      if (context.agent === "codex" || context.agent === "claude") {
+        const result = expectedResult(await options.rpc.request("agent.read", { target: binding.paneId, source: "visible", format: "text", strip_ansi: true }, operation), "pane_read");
+        const read = object(result.read, "Visible native input");
+        if (read.pane_id !== binding.paneId || read.workspace_id !== binding.workspaceId || read.source !== "visible" || read.format !== "text") throw new Error("The visible native input does not identify the original task pane and requested source.");
+        if (typeof read.text !== "string" || typeof read.truncated !== "boolean") throw new TypeError("The visible native input must contain text and an explicit truncation fact.");
+        if (read.truncated) throw new Error("The visible native input was truncated; an open native menu cannot be ruled out.");
+        const blocker = nativeInputBlocker(context.agent, read.text);
+        before = await observation(context, binding, operation);
+        verifyInputAgent(before);
+        if (blocker !== null) throw new HerdrInputBlockedError(blocker);
+      }
       if (beforeSubmit !== undefined && !await beforeSubmit(operation)) return { submission: "skipped", observation: before };
       operation.check();
-    } catch (cause) { throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The original native agent input readiness could not be verified.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" }); }
+    } catch (cause) {
+      if (cause instanceof HerdrInputBlockedError) throw cause;
+      throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The original native agent input readiness could not be verified.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" });
+    }
     const result = await mutation("agent.prompt", { target: binding.paneId, text: prompt }, "agent_prompted", operation);
     try {
       const returned = object(result.agent, "Prompt agent receipt");
