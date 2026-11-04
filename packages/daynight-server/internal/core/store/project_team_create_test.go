@@ -123,3 +123,45 @@ func TestProjectCreationCommitResponseLoss(t *testing.T) {
 		t.Fatalf("actual committed data: %d %v", count, err)
 	}
 }
+
+func TestExplicitPersonalProjectCreationRejectsOtherOwnerAndCorruptMembership(t *testing.T) {
+	for _, scenario := range []string{"other owner", "missing membership", "wrong role", "extra member"} {
+		t.Run(scenario, func(t *testing.T) {
+			s := isolatedStore(t)
+			owner, actor, _ := testAuthRecords(t, s)
+			other, otherActor, _ := testAuthRecords(t, s)
+			ctx := context.Background()
+			var teamID string
+			if err := s.Pool.QueryRow(ctx, `SELECT id::text FROM teams WHERE personal_user_id=$1`, owner.ID).Scan(&teamID); err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "other owner":
+				actor = otherActor
+			case "missing membership":
+				mustQueryExec(t, s, `DELETE FROM team_members WHERE team_id=$1 AND user_id=$2`, teamID, owner.ID)
+			case "wrong role":
+				mustQueryExec(t, s, `UPDATE team_members SET role='member' WHERE team_id=$1 AND user_id=$2`, teamID, owner.ID)
+			case "extra member":
+				mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, teamID, other.ID)
+			}
+			id := uuid.NewString()
+			project, access, err := s.CreateProjectInTeam(ctx, actor, id, "Rejected", "host:repo", &teamID)
+			var failure *TransactionError
+			if err == nil || project != (core.Project{}) || access.ProjectID != "" || !errors.As(err, &failure) || failure.Outcome != TransactionNotCommitted || failure.CommitAttempted || failure.CleanupFailed {
+				t.Fatalf("failure result %#v %#v %#v %v", project, access, failure, err)
+			}
+			if scenario == "other owner" {
+				if !errors.Is(err, core.ErrNotFound) {
+					t.Fatalf("other Personal owner not hidden: %v", err)
+				}
+			} else if errors.Is(err, core.ErrNotFound) || failure.Cause.Error() != "Personal Team owner membership is invalid" {
+				t.Fatalf("Personal corruption was hidden: %v", err)
+			}
+			var empty bool
+			if err := s.Pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM projects WHERE id=$1) AND NOT EXISTS(SELECT 1 FROM project_ownership WHERE project_id=$1) AND NOT EXISTS(SELECT 1 FROM project_grants WHERE project_id=$1)`, id).Scan(&empty); err != nil || !empty {
+				t.Fatalf("failure left creation rows: %v %v", empty, err)
+			}
+		})
+	}
+}
