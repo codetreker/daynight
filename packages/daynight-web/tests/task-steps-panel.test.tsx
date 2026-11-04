@@ -1,5 +1,4 @@
 import { fireEvent, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/client";
 import type { StepsResource, TaskStep } from "../src/api/task-steps";
@@ -14,24 +13,29 @@ const time = "2026-11-03T12:34:56.123456Z";
 const steps: TaskStep[] = Array.from({ length: 241 }, (_, index) => ({ id: index.toString(16).padStart(8, "0"), title: `Round ${index + 1}`, description: index === 1 ? "" : `Result ${index + 1}`, status: (["todo", "in_progress", "done", "skipped"] as const)[index % 4]!, createdAt: time, updatedAt: time }));
 const resource = (items: readonly TaskStep[] = steps): StepsResource => ({ projectId, taskId, version: 3n, steps: items });
 const panel = (active = true) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} renderMarkdown={(text) => <div data-testid="markdown">{text}</div>} />;
-beforeEach(() => Object.assign(read, { resource: resource(), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn() }));
+beforeEach(() => Object.assign(read, { resource: resource(steps.slice(0, 4)), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn() }));
 
 describe("bounded Steps reading", () => {
-  it("mounts 100/100/41 globally numbered rows with constant-size numeric navigation", async () => {
+  it("mounts 100/100/41 globally numbered rows with numeric navigation and stable expansion", () => {
+    read.resource = resource();
     const view = renderWithLocale(panel(), { locale: "en" });
     expect(view.container.querySelectorAll(".step-row")).toHaveLength(100);
     expect(screen.getByText("1–100 of 241 steps")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    const controls = within(screen.getByRole("navigation", { name: "Steps pages" }));
+    const next = controls.getByRole("button", { name: "Next" });
+    const previous = controls.getByRole("button", { name: "Previous" });
+    expect(previous).toBeDisabled();
+    const disclosure = within(view.container.querySelector(".step-row")!).getByRole("button", { name: "Round 1" });
+    fireEvent.click(disclosure);
+    fireEvent.click(next);
     expect(view.container.querySelector(".step-number")).toHaveTextContent("101");
     expect(view.container.querySelectorAll(".step-row")).toHaveLength(100);
-    const input = screen.getByRole("spinbutton", { name: "Page" });
-    await userEvent.setup().clear(input);
+    const input = controls.getByRole("spinbutton", { name: "Page" });
     fireEvent.change(input, { target: { value: "3" } });
     fireEvent.submit(input.closest("form")!);
     expect(view.container.querySelectorAll(".step-row")).toHaveLength(41);
     expect(view.container.querySelector(".step-number")).toHaveTextContent("201");
-    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(next).toBeDisabled();
     expect(screen.queryByRole("option")).toBeNull();
     fireEvent.change(input, { target: { value: "0" } }); fireEvent.blur(input);
     expect(input).toHaveValue(3);
@@ -39,10 +43,12 @@ describe("bounded Steps reading", () => {
     expect(input).toHaveValue(3);
     fireEvent.change(input, { target: { value: "999" } }); fireEvent.submit(input.closest("form")!);
     expect(input).toHaveValue(3);
-    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
+    fireEvent.click(previous);
     expect(input).toHaveValue(2);
+    fireEvent.click(previous);
+    expect(within(view.container.querySelector(".step-row")!).getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
   });
-  it("retains expansion by stable ID across pages, reorder, refresh and locale changes", () => {
+  it("retains expansion by stable ID across reorder, refresh and locale changes", () => {
     const view = renderWithLocale(panel(), { locale: "en" });
     const disclosure = screen.getByRole("button", { name: "Round 1" });
     fireEvent.click(disclosure);
@@ -50,10 +56,8 @@ describe("bounded Steps reading", () => {
     expect(screen.getByText("No description")).toBeVisible();
     expect(screen.getByText("Result 1")).toBeVisible();
     expect(disclosure).toHaveAttribute("aria-controls", disclosure.closest("li")!.querySelector(".step-detail")!.id);
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
     expect(screen.getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
-    read.resource = resource([steps[1]!, steps[0]!, ...steps.slice(2)]);
+    read.resource = resource([steps[1]!, steps[0]!, steps[2]!, steps[3]!]);
     view.rerender(panel());
     expect(screen.getByRole("button", { name: "Round 1" }).closest("li")!.querySelector(".step-number")).toHaveTextContent("2");
     view.setLocale("zh-CN");
@@ -64,8 +68,11 @@ describe("bounded Steps reading", () => {
     expect(screen.queryByText("Result 1")).toBeNull();
   });
   it("clamps the visible page when a refreshed collection shrinks and omits pagination for <=100", () => {
+    read.resource = resource();
     const view = renderWithLocale(panel(), { locale: "en" });
-    fireEvent.click(screen.getByRole("button", { name: "Next" })); fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    const controls = within(screen.getByRole("navigation", { name: "Steps pages" }));
+    const next = controls.getByRole("button", { name: "Next" });
+    fireEvent.click(next); fireEvent.click(next);
     read.resource = resource(steps.slice(0, 100)); view.rerender(panel());
     expect(view.container.querySelectorAll(".step-row")).toHaveLength(100);
     expect(screen.queryByRole("navigation")).toBeNull();
@@ -89,7 +96,7 @@ describe("Steps read failures", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" })); expect(read.retry).toHaveBeenCalledOnce();
     Object.assign(read, { status: "ready", resource: resource([]), error: null }); view.rerender(panel());
     expect(screen.getByText("No steps yet")).toBeVisible();
-    Object.assign(read, { resource: resource(), error: new ApiError("protocol", 200, "protocol", "steps-123") }); view.rerender(panel());
+    Object.assign(read, { resource: resource(steps.slice(0, 2)), error: new ApiError("protocol", 200, "protocol", "steps-123") }); view.rerender(panel());
     expect(screen.getByRole("alert")).toHaveTextContent("Steps could not be updated.");
     expect(screen.getByRole("alert")).toHaveTextContent("previously loaded");
     expect(screen.getByText("steps-123")).toBeVisible();
