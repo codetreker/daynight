@@ -13,16 +13,16 @@ const apiFailures = (cause: unknown, seen = new Set<unknown>()): ApiError[] => {
 };
 export const classifyThreadPostFailure = (cause: unknown): "confirmed" | "unknown" | "failed" => {
   const failures = apiFailures(cause);
-  return failures.some((error) => error.confirmedMessageId !== undefined) ? "confirmed" : failures.some((error) => error.outcomeUnconfirmed) ? "unknown" : "failed";
+  return failures.some((error) => error.confirmedMutationId !== undefined) ? "confirmed" : failures.some((error) => error.outcomeUnconfirmed) ? "unknown" : "failed";
 };
 
 export class ThreadCommandError extends PublicDiagnosticError {
   constructor(cause: unknown, operation: "read" | "post", phase: "prepare" | "request" | "render" | "output", projectId?: string, taskId?: string) {
     const outcome = operation === "post" ? classifyThreadPostFailure(cause) : "failed";
     const failures = apiFailures(cause);
-    const api = failures.find((error) => error.confirmedMessageId !== undefined) ?? failures.find((error) => error.outcomeUnconfirmed) ?? failures[0];
+    const api = failures.find((error) => error.confirmedMutationId !== undefined) ?? failures.find((error) => error.outcomeUnconfirmed) ?? failures[0];
     const message = cause instanceof UsageError ? `${cause.message} Run ${cause.helpCommand} for usage.`
-      : outcome === "confirmed" ? `Message posted. Id: ${api!.confirmedMessageId!}\nThe message is confirmed, but local response cleanup failed.`
+      : outcome === "confirmed" ? `Message posted. Id: ${api!.confirmedMutationId!}\nThe message is confirmed, but local response cleanup failed.`
       : outcome === "unknown" ? "The posting outcome is unknown.\nRead the thread before sending the message again."
       : phase === "prepare" ? "Could not prepare the Thread request. Check configuration and authentication; run daynight login if needed."
       : `Thread ${operation} failed.`;

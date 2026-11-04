@@ -274,6 +274,17 @@ describe("operation-scoped API access", () => {
     expect(() => disposed.check()).toThrow("disposed");
   });
 
+  it("reports remaining total bytes while permitting a complete response at the exact limit", () => {
+    const op = operation({ limits: { totalBytes: 5 } });
+    expect(op.remainingBytes()).toBe(5);
+    op.consume(3); expect(op.remainingBytes()).toBe(2);
+    op.consume(2); expect(op.remainingBytes()).toBe(0);
+    expect(() => op.check()).not.toThrow(); expect(op.signal.aborted).toBe(false);
+    op.consume(0); expect(op.remainingBytes()).toBe(0);
+    expect(() => op.consume(1)).toThrow("response byte budget");
+    expect(() => op.remainingBytes()).toThrow("response byte budget");
+  });
+
   it("reads nanosecond timestamps and full Go int64 versions without changing numeric JSON wire shape", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...task, version: 9_223_372_036_854_775_807n }));
     const api = client(fetch);

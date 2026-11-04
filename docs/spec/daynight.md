@@ -21,7 +21,7 @@ Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `da
 [补全设计](../design/daynight-completion.md)。公开 skill 的分发、交互安装和任务工作流
 由[Agent skill 需求](daynight-agent-skill.md)拥有；各业务文档明确实际交付状态。
 
-Task Steps 的已交付 CLI 仅提供 `task step list/show` 读取；完整有序资源、短 ID、四状态、共享父版本和严格输出由[Steps 资源契约](daynight-task-steps.md#cli-读取)拥有。
+Task Steps 的已交付 CLI 提供 `task step list/show` 读取与 `task step add`；完整有序资源、短 ID、四状态、共享父版本和严格输出由[Steps 资源契约](daynight-task-steps.md)拥有。
 
 ## 需求
 
@@ -77,6 +77,7 @@ daynight task show <task-id> [--json] [--project <project-id>]
 daynight task step
 daynight task step list <task-id> [--json] [--project <project-id>]
 daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
+daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task attachment
@@ -91,7 +92,7 @@ daynight task attachment remove <task-id> <relative-path> [--project <project-id
 显示各自帮助；裸 `skill`、`project`、`task` 与 `task step` 同样显示组帮助。组和操作在该层唯一参数为 `--help` 或 `-h` 时显示帮助，且不得执行
 该操作。顶层版本与 `--skill` 选项不继承到子命令。`review ls` 是 `review list` 的别名。
 
-`daynight --skill` 与 `dn --skill` 将当前包随版本发布的一份英文 CLI 使用手册原样输出到 stdout 并成功退出，保留 YAML frontmatter、换行和全部字节，不添加包装。手册独立提供 project/task 查询和写入、依赖、精确版本、properties、attachments 与 Step list/show 读取的实际命令用法；其他能力引导通过 `daynight --help` 发现，详细参数通过对应子命令的 `--help` 查询。手册不依赖本地引用文件，不承载 `using-daynight` 的任务编排工作流。
+`daynight --skill` 与 `dn --skill` 将当前包随版本发布的一份英文 CLI 使用手册原样输出到 stdout 并成功退出，保留 YAML frontmatter、换行和全部字节，不添加包装。手册独立提供 project/task 查询和写入、依赖、精确版本、properties、attachments 与 Step list/show 读取与 add 的实际命令用法；其他能力引导通过 `daynight --help` 发现，详细参数通过对应子命令的 `--help` 查询。手册不依赖本地引用文件，不承载 `using-daynight` 的任务编排工作流。
 
 `--skill` 必须是唯一参数；额外参数、其他选项和内联赋值按 usage error 以状态码 2 拒绝，且在读取手册前停止。手册文件缺失、读取失败或非法 UTF-8 以状态码 1 退出并保留原因。读取与校验完成后才输出；输出失败可能留下部分 stdout。
 

@@ -20,6 +20,18 @@ export type StepResource = {
   readonly step: TaskStep;
 };
 
+export type AddTaskStepInput = {
+  readonly version: bigint;
+  readonly id: string;
+  readonly title: string;
+  readonly description?: string;
+  readonly status?: TaskStepStatus;
+  readonly before?: string;
+  readonly after?: string;
+};
+export type TaskStepsReadOptions = { readonly requestId: string };
+export type AddTaskStepOptions = TaskStepsReadOptions & { readonly previous?: StepsResource };
+
 export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskPlatform = "windows" | "linux" | "macos";
 
@@ -269,6 +281,8 @@ export type TaskFilters = {
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
 export type ReadyTaskFilters = Pick<TaskFilters, "allowAgents" | "compatiblePlatform">;
 export type ErrorDetails = {
+  readonly encodedBytes?: number;
+  readonly maxEncodedBytes?: number;
   readonly taskIds?: readonly string[];
   readonly nodeCount?: number;
   readonly edgeCount?: number;

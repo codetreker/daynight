@@ -1,6 +1,6 @@
 import { parseApiJson } from "./json.js";
 import { jsonObjectSources } from "./json-source.js";
-import type { StepResource, StepsResource, TaskStep, TaskStepStatus } from "./types.js";
+import type { AddTaskStepInput, StepResource, StepsResource, TaskStep, TaskStepStatus } from "./types.js";
 import { array, fields, id, malformed, resourceVersion, text, timestamp } from "./validation.js";
 
 export const TASK_STEPS_RESPONSE_BYTES = 64 * 1024 * 1024;
@@ -53,4 +53,27 @@ export const parseStepResource = (value: unknown, projectId: string, taskId: str
   const step = parseTaskStep(data.step);
   if (step.id !== expectedStepId) return malformed();
   return { ...parsed, step };
+};
+
+export const confirmAddedTaskStep = (resource: StepsResource, input: AddTaskStepInput, previous?: StepsResource): string => {
+  const index = resource.steps.findIndex((step) => step.id === input.id);
+  const target = resource.steps[index];
+  const description = input.description === undefined ? "" : input.description;
+  const status = input.status === undefined ? "todo" : input.status;
+  if (resource.version !== input.version + 1n || target === undefined || target.title !== input.title || target.description !== description || target.status !== status || target.createdAt !== target.updatedAt) return malformed();
+  if (input.before !== undefined) {
+    const anchor = resource.steps.findIndex((step) => step.id === input.before);
+    if (anchor < 0 || index + 1 !== anchor) return malformed();
+  } else if (input.after !== undefined) {
+    const anchor = resource.steps.findIndex((step) => step.id === input.after);
+    if (anchor < 0 || index !== anchor + 1) return malformed();
+  } else if (index !== resource.steps.length - 1) return malformed();
+  if (previous !== undefined) {
+    const remaining = resource.steps.filter((step) => step.id !== input.id);
+    if (remaining.length !== previous.steps.length || remaining.some((step, position) => {
+      const old = previous.steps[position]!;
+      return step.id !== old.id || step.title !== old.title || step.description !== old.description || step.status !== old.status || step.createdAt !== old.createdAt || step.updatedAt !== old.updatedAt;
+    })) return malformed();
+  }
+  return input.id;
 };

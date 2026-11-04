@@ -106,7 +106,7 @@ export const taskDefinition: CommandDefinition = {
     },
     {
       name: "step",
-      description: "Read complete task-owned Steps independently from Sessions",
+      description: "Read and add task-owned Steps independently from Sessions",
       options: [helpOption],
       commands: [
         {
@@ -123,8 +123,23 @@ export const taskDefinition: CommandDefinition = {
           options: [projectOption, jsonOption, helpOption],
           details: "Read only the specified Step under this Task. Preserve its full title, description, status and content timestamps; --json returns the complete item resource and exact parent version.",
         },
+        {
+          name: "add",
+          description: "Add one independent Step and return the complete confirmed collection",
+          arguments: [taskArgument],
+          options: [
+            { ...titleOption, description: "Step title, preserving its original text", required: true },
+            { ...descriptionOption, description: "Step Markdown description; omitted means empty" },
+            { names: ["--status"], description: "Initial Step status: todo, in_progress, done or skipped (default: todo)", value: { name: "status", kind: "text", choices: ["todo", "in_progress", "done", "skipped"] } },
+            { names: ["--id"], description: "Task-local eight-hex ID (default: UUIDv4 first segment)", value: { name: "step-id", kind: "text" } },
+            { names: ["--before"], description: "Insert immediately before this Task-local Step", value: { name: "step-id", kind: "text" } },
+            { names: ["--after"], description: "Insert immediately after this Task-local Step", value: { name: "step-id", kind: "text" } },
+            versionOption, projectOption, jsonOption, helpOption,
+          ],
+          details: "Without an anchor, append to the saved order. --before and --after are mutually exclusive. Same titles create independent records; an existing ID is a conflict and is never regenerated or retried. Without --if-version, read the current Steps version before one POST. An explicit project/version performs one POST without parent pre-reads. Unknown results retain the original ID and request UUID; at most one same-operation read observes current facts, never historical attribution or a retry. --json prints only the complete confirmed collection.",
+        },
       ],
-      details: "Without --project, resolve the current Git origin. An explicit project UUID reads directly without project or Task pre-reads and works outside a repository. Step IDs are Task-local eight-character identities, not prefixes or display numbers. Run daynight task step <command> --help for usage.",
+      details: "Without --project, resolve the current Git origin. An explicit project UUID avoids project or Task pre-reads and works outside a repository. Step IDs are Task-local eight-character identities, not prefixes or display numbers. Run daynight task step <command> --help for usage.",
     },
     {
       name: "thread",

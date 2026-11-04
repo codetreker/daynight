@@ -15,11 +15,12 @@ export const DEFAULT_OPERATION_LIMITS: OperationLimits = Object.freeze({
 });
 
 export class OperationError extends Error {
-  constructor(readonly kind: "cancelled" | "deadline" | "request_timeout" | "response_limit" | "total_limit" | "disposed", options?: ErrorOptions) {
+  constructor(readonly kind: "cancelled" | "deadline" | "request_timeout" | "request_limit" | "response_limit" | "total_limit" | "disposed", options?: ErrorOptions) {
     const messages = {
       cancelled: "Operation cancelled.",
       deadline: "Operation deadline exceeded.",
       request_timeout: "HTTP request deadline exceeded.",
+      request_limit: "HTTP request byte limit exceeded.",
       response_limit: "HTTP response byte limit exceeded.",
       total_limit: "Operation response byte budget exceeded.",
       disposed: "Operation has been disposed.",
@@ -34,6 +35,7 @@ export type Operation = {
   readonly limits: OperationLimits;
   check(): void;
   remainingMs(): number;
+  remainingBytes(): number;
   consume(bytes: number): void;
   dispose(): void;
 };
@@ -69,6 +71,7 @@ export const createOperation = (options: {
     limits,
     check,
     remainingMs: () => { check(); return Math.max(0, deadline - performance.now()); },
+    remainingBytes: () => { check(); return limits.totalBytes - consumed; },
     consume: (bytes) => {
       check();
       if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError("Response byte count must be a nonnegative safe integer.");
