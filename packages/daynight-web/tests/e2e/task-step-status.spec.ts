@@ -225,6 +225,9 @@ test('step status writes converge through real service resources', { annotation:
     await root(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
     await page.goto(`/projects/${project.id}/tasks/${raceTask.id}?tab=steps`);
     await expect(trigger(page, raceStepId)).toBeEnabled();
+    const parentUpdatedAt = root(page).locator('.task-detail-metadata > div:nth-child(2) time');
+    const initialParentUpdatedAt = await parentUpdatedAt.getAttribute('datetime');
+    expect(initialParentUpdatedAt).not.toBeNull();
     let releaseRaceSteps!: () => void; let raceStepsEntered!: () => void; let raceStepsDelivered!: () => void;
     let releaseParent!: () => void; let firstParentDelivered!: () => void; let nextParentEntered!: () => void;
     const raceStepsGate = new Promise<void>(resolve => { releaseRaceSteps = resolve; });
@@ -233,7 +236,7 @@ test('step status writes converge through real service resources', { annotation:
     const parentGate = new Promise<void>(resolve => { releaseParent = resolve; });
     const firstParent = new Promise<void>(resolve => { firstParentDelivered = resolve; });
     const nextParent = new Promise<void>(resolve => { nextParentEntered = resolve; });
-    let raceStarted = false; let parentReads = 0; let raceWrites = 0; let deliveredVersion: bigint | null = null; let firstParentVersion: bigint | null = null;
+    let raceStarted = false; let parentReads = 0; let raceWrites = 0; let deliveredVersion: bigint | null = null; let firstParentVersion: bigint | null = null; let firstParentUpdatedAt: string | null = null;
     await page.route(raceCollectionUrl, async route => {
       if (!raceStarted) { await route.continue(); return; }
       raceStepsEntered(); await raceStepsGate;
@@ -248,7 +251,10 @@ test('step status writes converge through real service resources', { annotation:
       if (readNumber > 1) { nextParentEntered(); await parentGate; }
       const response = await authenticatedAPI(page.context().request).fetch(route.request(), { timeout: 15_000, maxRetries: 0 });
       expect(response.status()).toBe(200);
-      if (readNumber === 1) firstParentVersion = (parseApiJson(await response.text()) as { version: bigint }).version;
+      if (readNumber === 1) {
+        const parent = parseApiJson(await response.text()) as { version: bigint; updatedAt: string };
+        firstParentVersion = parent.version; firstParentUpdatedAt = parent.updatedAt;
+      }
       await fulfillAuthenticatedResponse(route, response);
       if (readNumber === 1) firstParentDelivered();
     });
@@ -260,6 +266,9 @@ test('step status writes converge through real service resources', { annotation:
     try {
       await choose(page, raceStepId, 'done');
       await Promise.all([raceStepsWaiting, firstParent]);
+      expect(firstParentUpdatedAt).not.toBeNull();
+      expect(firstParentUpdatedAt).not.toBe(initialParentUpdatedAt);
+      await expect(parentUpdatedAt).toHaveAttribute('datetime', firstParentUpdatedAt!);
       await expect(trigger(page, raceStepId)).toBeDisabled();
       const afterStep = parseApiJson(await (await api.get(`/api/v1/projects/${project.id}/tasks/${raceTask.id}`)).text()) as { version: bigint };
       expect(firstParentVersion).toBe(afterStep.version);
@@ -282,7 +291,7 @@ test('step status writes converge through real service resources', { annotation:
       await expect(trigger(page, raceStepId)).toHaveText(/已完成/);
       await expect(trigger(page, raceStepId)).toBeEnabled();
       await root(page).getByRole('tab', { name: '概览', exact: true }).click();
-      await expect(root(page).locator('.task-detail-description')).toContainText('Parent advanced while Steps read was held.');
+      await expect(root(page).getByRole('region', { name: '描述', exact: true }).getByText('Parent advanced while Steps read was held.', { exact: true })).toBeVisible();
       expect(raceWrites).toBe(1);
       await info.attach('step-version-advance', { contentType: 'application/json', body: Buffer.from(JSON.stringify({ intermediate: String(afterStep.version), advanced: String(advanced.version), parentReads, raceWrites })) });
     } finally {
