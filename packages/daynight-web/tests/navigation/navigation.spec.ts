@@ -343,7 +343,7 @@ for (const width of [1280, 320]) {
     await expect.poll(() => physical(page)).toBe(second);
     await expect(accepted(page)).toHaveText(second);
     await expect(page.getByRole('textbox', { name: 'Draft' })).not.toHaveValue('');
-    await expect(page.getByRole('textbox', { name: 'Draft' })).toBeFocused();
+    await expect(page.getByRole('button', { name: 'Message details', exact: true })).toBeFocused();
     await expect(metadata).toHaveCount(0);
     expect(await counts(page)).toEqual(before);
     expect(await page.evaluate(() => history.length)).toBe(length);
@@ -370,7 +370,7 @@ test('native attachment deletion yields to history confirmation at 320px', async
   await expect.poll(() => physical(page)).toBe(second);
   await expect(accepted(page)).toHaveText(second);
   await expect(page.getByRole('textbox', { name: 'Draft' })).not.toHaveValue('');
-  await expect(page.getByRole('textbox', { name: 'Draft' })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Delete attachment', exact: true })).toBeFocused();
   await expect(deletion).toHaveCount(0);
   expect(await counts(page)).toEqual(before);
   expect(await page.evaluate(() => history.length)).toBe(length);
