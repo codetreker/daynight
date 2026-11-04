@@ -119,6 +119,7 @@ func TestProjectGrantErrorTransactionOutcomes(t *testing.T) {
 		{"unknown commit", &store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: context.DeadlineExceeded}, 503, "write_outcome_unknown"},
 		{"unknown cleanup", &store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: &service.Fault{Code: "version_conflict", Message: "private"}}, 503, "write_outcome_unknown"},
 		{"confirmed rollback", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &service.Fault{Code: "version_conflict", Message: "version conflict"}}, 409, "version_conflict"},
+		{"known rollback with cleanup failure", &store.TransactionError{Phase: "cleanup", CommitAttempted: true, CleanupFailed: true, Outcome: store.TransactionNotCommitted, Cause: &service.Fault{Code: "version_conflict", Message: "private"}}, 500, "internal_error"},
 		{"database failure", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: errors.New("private")}, 500, "internal_error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -176,5 +177,36 @@ func TestProjectGrantResponseWriteFailureIsNotRetried(t *testing.T) {
 		if writer.calls != 1 || writer.Code != 200 || strings.Contains(logs.String(), "private response failure") || !strings.Contains(logs.String(), `"phase":"response"`) || !strings.Contains(logs.String(), `"outcome":"unknown"`) || strings.Count(logs.String(), `"msg":"operation failed"`) != 1 {
 			t.Fatalf("response failure: calls=%d status=%d log=%s", writer.calls, writer.Code, logs.String())
 		}
+	}
+}
+
+// A database timestamp outside JSON's year range makes a committed receipt
+// impossible to encode; this is an unknown client outcome rather than success.
+func TestProjectGrantResponseEncodingFailure(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPut, "/", nil)
+	r.Header.Set("X-Request-ID", "project-test")
+	RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		result := api.ProjectGrantResult{Grant: api.ProjectGrant{CreatedAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}}
+		writeGrantJSON(w, r, logger, time.Now(), result)
+	})).ServeHTTP(w, r)
+	assertProjectError(t, w, http.StatusServiceUnavailable, "write_outcome_unknown")
+	if !strings.Contains(logs.String(), `"outcome":"unknown"`) || !strings.Contains(logs.String(), `"phase":"response"`) {
+		t.Fatalf("missing response classification: %s", logs.String())
+	}
+}
+
+func TestProjectGrantCanceledResponseDoesNotWrite(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := httptest.NewRequest(http.MethodDelete, "/", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+	writeGrantJSON(w, r, logger, time.Now(), api.RemoveProjectGrantResult{Deleted: true})
+	if w.Body.Len() != 0 || w.Header().Get("Content-Type") != "" || !strings.Contains(logs.String(), `"outcome":"unknown"`) {
+		t.Fatalf("canceled response wrote data or lost classification: %s", logs.String())
 	}
 }

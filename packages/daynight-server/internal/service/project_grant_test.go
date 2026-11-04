@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func grantParticipant(t *testing.T, f *membershipFixture, project core.Project, p core.Principal, role core.ProjectRole) {
@@ -175,4 +176,35 @@ func TestGrantSelfDemotionReturnsRemainingMemberAccess(t *testing.T) {
 	}
 	_, err = f.memberships.SetGrant(context.Background(), external, project.ID, owner.UserID, SetProjectGrant{Role: core.ProjectMemberRole, ExpectedUserID: external.UserID})
 	requireFault(t, err, "forbidden")
+}
+
+func TestRemoveGrantRejectsInvalidInputBeforeDomainStore(t *testing.T) {
+	memberships := NewMemberships(nil)
+	principal := core.Principal{Kind: core.SessionCredential, CredentialID: uuid.NewString(), UserID: uuid.NewString()}
+	_, err := memberships.RemoveGrant(context.Background(), core.Principal{}, uuid.NewString(), uuid.NewString(), RemoveProjectMember{Version: 1, ExpectedUserID: principal.UserID})
+	requireFault(t, err, "unauthenticated")
+	_, err = memberships.RemoveGrant(context.Background(), principal, uuid.NewString(), uuid.NewString(), RemoveProjectMember{Version: 0, ExpectedUserID: principal.UserID})
+	requireFault(t, err, "invalid_input")
+	_, err = memberships.RemoveGrant(context.Background(), principal, "invalid project", uuid.NewString(), RemoveProjectMember{Version: 1, ExpectedUserID: principal.UserID})
+	requireFault(t, err, "invalid_input")
+}
+
+func TestRemoveGrantDatabaseFailureRollsBack(t *testing.T) {
+	f := newMembershipFixture(t)
+	owner := f.user(t)
+	project := f.project(t, owner, "Delete failure")
+	before := f.member(t, owner, project.ID).Grant
+	ctx := context.Background()
+	_, err := f.database.Pool.Exec(ctx, `CREATE FUNCTION reject_grant_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected delete failure'; END $$; CREATE TRIGGER reject_grant_delete BEFORE DELETE ON project_grants FOR EACH ROW EXECUTE FUNCTION reject_grant_delete()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.memberships.RemoveGrant(ctx, owner, project.ID, owner.UserID, RemoveProjectMember{Version: before.Version, ExpectedUserID: owner.UserID})
+	var databaseError *pgconn.PgError
+	if !errors.As(err, &databaseError) || databaseError.Code != "P0001" {
+		t.Fatalf("delete failure lost cause: %v", err)
+	}
+	if actual := f.member(t, owner, project.ID).Grant; !reflect.DeepEqual(actual, before) {
+		t.Fatalf("failed delete changed grant: %#v", actual)
+	}
 }

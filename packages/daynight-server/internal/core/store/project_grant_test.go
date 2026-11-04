@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestGrantCommitResponseLostKeepsUnknownAfterRealCommit(t *testing.T) {
@@ -42,6 +43,31 @@ func TestGrantCommitResponseLostKeepsUnknownAfterRealCommit(t *testing.T) {
 		}
 		if member.Grant.Role != core.ProjectAdmin || member.Grant.Version <= 0 {
 			t.Fatalf("committed grant: %#v", member.Grant)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateGrantPropagatesConstraintFailure(t *testing.T) {
+	s, owner, _, project := membershipFixture(t)
+	ctx := context.Background()
+	err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+		_, err := tx.CreateGrant(ctx, owner.UserID, core.ProjectMemberRole)
+		return err
+	})
+	var databaseError *pgconn.PgError
+	if !errors.As(err, &databaseError) || databaseError.Code != "23505" {
+		t.Fatalf("duplicate grant failure lost its cause: %v", err)
+	}
+	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		member, err := snapshot.DirectProjectMember(ctx, owner.UserID, project.ID)
+		if err != nil {
+			return err
+		}
+		if member.Grant.Role != core.ProjectAdmin {
+			t.Fatalf("duplicate changed stored grant: %#v", member.Grant)
 		}
 		return nil
 	}); err != nil {
