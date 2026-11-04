@@ -24,6 +24,19 @@ export type PersonalAccessTokenExpiryUpdate = {
 };
 export type CreatedPersonalAccessToken = PersonalAccessToken & { readonly token: string };
 export type ProjectRole = "admin" | "member";
+export type ProjectGrant = {
+  readonly projectId: string;
+  readonly userId: string;
+  readonly role: ProjectRole;
+  readonly version: bigint;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+export type ProjectAccess = {
+  readonly effectiveRole: ProjectRole;
+  readonly directGrant: ProjectGrant | null;
+};
+
 export type ProjectPerson = {
   readonly userId: string;
   readonly name: string | null;
@@ -37,6 +50,12 @@ export type ProjectPeople = {
 export type ProjectPeopleQuery =
   | { readonly kind: "catalogue" }
   | { readonly kind: "resolve"; readonly userIds: readonly string[] };
+export type ProjectParticipant = {
+  readonly userId: string;
+  readonly profile: { readonly name: string | null; readonly email: string | null; readonly avatarUrl: string | null };
+  readonly effectiveRole: ProjectRole;
+  readonly directGrant: ProjectGrant | null;
+};
 export type ProjectMember = {
   readonly projectId: string;
   readonly userId: string;

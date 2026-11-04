@@ -25,10 +25,11 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Keep the working material with the task.** Upload designs, screenshots and
   other files; read Markdown with Mermaid flowcharts, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
-- **Discuss tasks through the CLI.** Read persistent discussion history, post as
-  your account or an explicitly verified Agent claim, and reply to a message with
-  `daynight task thread`. [Thread commands](packages/daynight/README.md#task-discussion-threads)
-  preserve complete messages and explicit pagination independently of Sessions.
+- **Discuss tasks in the browser or CLI.** Open a task's Discussion tab to read,
+  post and reply as your account, with persistent history independent of Sessions.
+  [Thread commands](packages/daynight/README.md#task-discussion-threads) provide
+  complete messages and explicit pagination, including verified Agent attribution
+  when an Agent explicitly supplies its current claim.
 - **Work with coding agents.** Install the `using-daynight` skill for Codex,
   Copilot CLI or Claude Code to register work, discuss designs, execute specified
   tasks and review handoffs. Ordinary execution handles one specified task.
@@ -51,10 +52,11 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Automate PR review.** Monitor configured GitHub repositories and retain
   per-PR worktrees, Copilot sessions and review state across restarts.
 
-Task Steps have [independent persisted reads and atomic HTTP additions, content updates, status changes and moves](docs/spec/daynight-task-steps.md), with complete ordered content, task-local identities and the shared parent Task version.
+Task Steps have [CLI list/show reads and independent persisted HTTP reads and writes](docs/spec/daynight-task-steps.md), with complete ordered content, task-local identities and the shared parent Task version.
 
 Task creation and general editing use the CLI. The Web app provides project and Worker browsing,
-status and execution-setting controls, task deletion and attachment management.
+status and execution-setting controls, task deletion, attachment management and
+persistent task discussions.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 explains configuration, native prerequisites and explicit
 retry/release/resume controls. Complete platform acceptance remains
@@ -209,18 +211,27 @@ path. Each workspace shows its task title and stable ownership suffix.
 
 Use `daynight worker attach` in another terminal for human input, including for
 paused tasks. On macOS it selects a recorded runtime and verifies the original
-daemon before connecting. Detaching leaves execution running. Ctrl+C in
-`worker run` cancels and joins its jobs, then stops the original execution while
-preserving claims, worktrees, native history and unfinished local rows.
-Unconfirmed stops remain visible and block replacement execution.
+daemon before connecting. Detaching leaves execution running. Ctrl+C cancels
+and joins Worker jobs, then stops the original execution while preserving
+claims, worktrees, native history and unfinished local rows. It sends no cleanup
+prompt and does not wait for a cleanup turn. Unconfirmed stopping retains
+responsibility and blocks replacement; external temporary resources may remain.
 
 Herdr fresh and resumed Copilot/Codex processes use fixed full access and
-folder-trust settings; business delivery remains bounded by task authorization.
-On macOS, a missing native session ID after a possible launch cannot authorize
-a new conversation. Recovery requires the original durable stop and native
-identity. Herdr Session registration currently advertises no preview, control
-or archive capability; stopped worktrees remain until archive finalization is
-available. See the [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+task-folder trust settings; business delivery remains bounded by task
+authorization. Linux and Windows retain process-local Herdr business recovery:
+a NULL native ID permits a fresh conversation, while a known ID selects resume.
+On macOS, durable launch, input and stop evidence protect the original runtime;
+a missing native ID after a possible launch cannot authorize another conversation.
+Session registration advertises no preview, control or archive capability, and
+stopped worktrees remain until archive finalization is available.
+
+Terminal cleanup preserves its original resource identity, deadline and retry
+schedule across restarts; current resource observations determine completion.
+Web retains its original execution evidence and recovery pause across restarts.
+An exhausted or paused Web execution keeps its claim and slot, reports waiting,
+and requires explicit retry with the original native identity and complete stop
+proof. See the [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 and [Herdr lifecycle design](docs/design/herdr-worker-lifecycle.md) for platform,
 recovery and retention boundaries.
 
@@ -267,8 +278,9 @@ upload HTML you trust with that authority.
 
 ## CLI development
 
-Source development uses Node.js 24 LTS and pnpm 11.28.6. The published CLI runs on
-Node.js 22 or newer. From the repository root:
+The CLI supports Linux, Windows and Apple Silicon (ARM64) macOS. Intel macOS
+is unsupported. Source development uses Node.js 24 LTS and pnpm 11.28.6. The
+published CLI runs on Node.js 22 or newer. From the repository root:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -295,19 +307,12 @@ browser acceptance and complete validation commands.
 
 ## Package versions
 
-Release-input changes require a strictly greater SemVer in
-`packages/daynight/package.json`. This includes `packages/daynight/src/`, either
-package manifest, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc`, either
-application TypeScript configuration and the CLI build-cleanup and resource-copy
-scripts. Additions,
-deletions and moves count; build metadata alone does not increase precedence.
-Tests, fixtures, documentation, CI workflows and validation scripts alone do not
-require a version increase.
-
-Check committed revisions with
-`pnpm version:check pull_request <base-sha> <head-sha>` or
-`pnpm version:check push <before-sha> <after-sha>`. The
-[version guide](docs/development.md#package-versions) explains comparison rules.
+Ordinary change PRs leave the version in `packages/daynight/package.json`
+unchanged. Use the repository's
+[release-daynight skill](.agents/skills/release-daynight/SKILL.md) to select a
+release version, deliver any version PR, publish, and verify the npm release.
+The [version guide](docs/development.md#package-versions) describes ownership and
+publication constraints.
 
 ### npm publication
 
@@ -323,19 +328,42 @@ from all changed paths, including deletions and both sides of renames:
 
 | Changed paths | PR application jobs |
 |---|---|
-| `packages/daynight/test/fixtures/installed-cli.ts` | CLI, Go server, Web quality and Web browser acceptance |
-| Other `packages/daynight/` paths | Linux, macOS and Windows CLI, runtime compatibility, plus shell completion |
-| `packages/daynight-server/` | Go server |
-| `packages/daynight-web/`, runtime files under `deployment/`, current Dagre and XYFlow patches | Web quality and Web browser acceptance |
+| `packages/daynight/test/fixtures/installed-cli.ts` | Every module |
+| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI, Go server coverage/E2E, Web quality and Web browser acceptance |
+| Implementation and resources under CLI `commands/worker/`, `controller/`, `review/`, `skill/`, `update/` or `completion/`, except `definition.ts` | CLI |
+| Other `packages/daynight/src/` paths, including command definitions | CLI and Go server coverage/E2E |
+| A PR changing only the CLI `package.json` top-level `version`, with unchanged regular-file mode and other parsed fields | No application jobs |
+| Other CLI `package.json` changes limited to top-level `version`, JSON formatting or object key order | CLI |
+| Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
+| Other `packages/daynight/` paths | Linux, macOS ARM64 and Windows CLI, runtime compatibility, plus shell completion |
+| `packages/daynight-server/` | Go server coverage and E2E |
+| `packages/daynight-web/` and current Dagre and XYFlow patches | Go server coverage/E2E, Web quality and Web browser acceptance |
+| Runtime files under `deployment/` | Web quality and Web browser acceptance |
 | Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` | Every module |
 | Root `.gitignore`, `docs/`, `.agents/`, `.claude/`, files named `README.md`, `AGENTS.md` or `CLAUDE.md`, manual `publish.yml` workflow | No application jobs |
 | CI routing/workflow changes and other unclassified paths | Every module |
 
-Runtime files under `packages/daynight/src/` always select CLI checks, including
-SQL resources and bundled Markdown. Other documentation exclusions apply before module selection;
-changes selecting several modules run their union. The Web selector enables
-parallel quality and browser jobs, each with a 20-minute bound; both are required
-by `checks`. Selected jobs retain their complete integration and coverage gates.
+Every path under `packages/daynight/src/` selects CLI checks, including SQL
+resources and bundled Markdown. The CLI loads the six independent commands above
+only when selected; their implementations and resources do not select Go jobs.
+Their `definition.ts` files are loaded at startup and retain server selection.
+Other CLI source remains a conservative server input. The manifest comparison
+uses committed merge-base and head contents, ignoring only the top-level
+`version` field. Manifest additions, deletions and file-type changes select both
+server jobs; malformed modified manifests fail detection. A PR with exactly one
+modified path skips application jobs only when that path is the CLI manifest,
+its regular-file mode is unchanged, its version string changes, and all other
+parsed fields are equal. Formatting-only changes and any additional changed
+path retain ordinary selection. Version-only PRs run the existing routing
+checks and final gate; version and artifact validation remain in the publication
+workflow. Exact preparation inputs are listed in
+[the selector](.github/scripts/ci-modules.mts).
+
+Documentation exclusions apply after CLI source ownership; changes selecting
+several modules run their union. The Web selector enables parallel quality and
+browser jobs, each with a 20-minute bound. The server selector enables parallel
+coverage and E2E jobs, also bounded to 20 minutes each. All selected jobs are
+required by `checks` and retain their complete integration and coverage gates.
 The final `checks` job uses `always()` and accepts only `success` or `skipped`
 from all preceding jobs. A newer PR run cancels the older run for that PR.
 New `main` pushes queue behind an active `main` run without cancelling it.

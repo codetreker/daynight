@@ -28,7 +28,7 @@ export const taskDefinition: CommandDefinition = {
       name: "create",
       description: "Create a todo task with optional dependencies",
       options: [{ ...titleOption, required: true }, descriptionOption, assignedToOption, requiredPlatformOption, dependencyOption, externalDependencyOption, projectOption, helpOption],
-      details: `New tasks start in todo with automatic execution disabled. Creating a task does not start execution. Without --assigned-to, the task is unassigned; an explicit UUID must identify a project member. Without --required-platform, execution has no platform restriction. Omitting both dependency options creates a task with no prerequisites.\n${dependencyDetails}`,
+      details: `New tasks start in todo with automatic execution disabled. Creating a task does not start execution. Without --assigned-to, the task is assigned to the signed-in account; an explicit UUID overrides this default and must identify a project member. If the current account cannot be read, creation fails without submitting a task. Without --required-platform, execution has no platform restriction. Omitting both dependency options creates a task with no prerequisites.\n${dependencyDetails}`,
     },
     {
       name: "list",
@@ -103,6 +103,28 @@ export const taskDefinition: CommandDefinition = {
       arguments: [taskArgument],
       options: [{ names: ["--depends-only"], description: "Print only task IDs and complete dependency sets" }, projectOption, jsonOption, helpOption],
       details: "Include every task connected through ordinary dependencies, in either direction and in every status, plus the chain members' direct external prerequisites. Do not expand those external tasks or include external dependents.\n--depends-only preserves the same task set and prints only id, dependsOn and externalDependsOn with complete UUIDs and dependency references, including references outside the returned task set. With --json, print an array containing only those three fields; otherwise print three labeled lines per task.",
+    },
+    {
+      name: "step",
+      description: "Read complete task-owned Steps independently from Sessions",
+      options: [helpOption],
+      commands: [
+        {
+          name: "list",
+          description: "Read every Step in its saved order",
+          arguments: [taskArgument],
+          options: [projectOption, jsonOption, helpOption],
+          details: "Display the parent task version, total count, full Step IDs, statuses and titles. --json preserves the complete collection, including every Markdown description and timestamp. No paging or filtering is applied.",
+        },
+        {
+          name: "show",
+          description: "Read one Task-local Step and its complete Markdown description",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }],
+          options: [projectOption, jsonOption, helpOption],
+          details: "Read only the specified Step under this Task. Preserve its full title, description, status and content timestamps; --json returns the complete item resource and exact parent version.",
+        },
+      ],
+      details: "Without --project, resolve the current Git origin. An explicit project UUID reads directly without project or Task pre-reads and works outside a repository. Step IDs are Task-local eight-character identities, not prefixes or display numbers. Run daynight task step <command> --help for usage.",
     },
     {
       name: "thread",

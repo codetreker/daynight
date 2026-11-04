@@ -1,3 +1,25 @@
+export type TaskStepStatus = "todo" | "in_progress" | "done" | "skipped";
+export type TaskStep = {
+  readonly id: string;
+  readonly title: string;
+  readonly description: string;
+  readonly status: TaskStepStatus;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+export type StepsResource = {
+  readonly projectId: string;
+  readonly taskId: string;
+  readonly version: bigint;
+  readonly steps: readonly TaskStep[];
+};
+export type StepResource = {
+  readonly projectId: string;
+  readonly taskId: string;
+  readonly version: bigint;
+  readonly step: TaskStep;
+};
+
 export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskPlatform = "windows" | "linux" | "macos";
 
@@ -38,16 +60,29 @@ export type Project = {
   readonly updatedAt: string;
 };
 
-export type ProjectMember = {
+export type ProjectGrant = {
   readonly projectId: string;
   readonly userId: string;
-  readonly email: string | null;
-  readonly name: string | null;
-  readonly avatarUrl: string | null;
   readonly role: "admin" | "member";
   readonly version: bigint;
   readonly createdAt: string;
   readonly updatedAt: string;
+};
+
+export type ProjectAccess = {
+  readonly effectiveRole: "admin" | "member";
+  readonly directGrant: ProjectGrant | null;
+};
+
+export type ProjectParticipant = {
+  readonly userId: string;
+  readonly profile: {
+    readonly name: string | null;
+    readonly email: string | null;
+    readonly avatarUrl: string | null;
+  };
+  readonly effectiveRole: "admin" | "member";
+  readonly directGrant: ProjectGrant | null;
 };
 
 export type PullRequestProperty = {

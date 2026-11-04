@@ -1,17 +1,18 @@
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
+import { canonicalStepId, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
-import type { ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
+import type { StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
 import { isNonemptyText } from "../platform/text.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseProject, parseProjectMembers, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectMember, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
+import { canonicalId, parsePage, parseProject, parseProjectAccess, parseProjectParticipants, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
+import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
-type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string };
+type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
 
 export class ApiError extends Error {
@@ -19,6 +20,8 @@ export class ApiError extends Error {
   readonly phase: ApiPhase;
   readonly projectId?: string;
   readonly taskId?: string;
+  readonly stepId?: string;
+  readonly serverMessage?: string;
   readonly status?: number;
   readonly code?: string;
   readonly requestId?: string;
@@ -35,7 +38,7 @@ export class ApiError extends Error {
     readonly confirmedRefusal?: boolean;
     readonly confirmedMessageId?: string;
   }) {
-    const target = [context.projectId === undefined ? "" : ` project=${context.projectId}`, context.taskId === undefined ? "" : ` task=${context.taskId}`].join("");
+    const target = [context.projectId === undefined ? "" : ` project=${context.projectId}`, context.taskId === undefined ? "" : ` task=${context.taskId}`, context.stepId === undefined ? "" : ` step=${context.stepId}`].join("");
     const server = options.serverError;
     const reason = server === undefined
       ? options.cause instanceof OperationError ? options.cause.message : phase === "protocol" || phase === "pagination" ? "Invalid server response." : "Local HTTP request failed."
@@ -48,8 +51,9 @@ export class ApiError extends Error {
     this.phase = phase;
     if (context.projectId !== undefined) this.projectId = context.projectId;
     if (context.taskId !== undefined) this.taskId = context.taskId;
+    if (context.stepId !== undefined) this.stepId = context.stepId;
     if (options.status !== undefined) this.status = options.status;
-    if (server !== undefined) { this.code = server.code; this.requestId = server.requestId; }
+    if (server !== undefined) { this.code = server.code; this.requestId = server.requestId; this.serverMessage = server.message; }
     if (details !== undefined) this.details = details;
     this.outcomeUnconfirmed = options.outcomeUnconfirmed === true;
     this.confirmedRefusal = options.confirmedRefusal === true;
@@ -58,14 +62,17 @@ export class ApiError extends Error {
 }
 
 export type ApiClient = {
+  listTaskSteps(projectId: string, taskId: string): Promise<StepsResource>;
+  getTaskStep(projectId: string, taskId: string, stepId: string): Promise<StepResource>;
   readTaskThread(projectId: string, taskId: string, query: ThreadReadQuery): Promise<ThreadPage>;
   postTaskThreadMessage(projectId: string, taskId: string, input: PostThreadMessageInput): Promise<ThreadMessage>;
   getCurrentUser(): Promise<User>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(projectId: string): Promise<Project>;
+  getProjectAccess(projectId: string): Promise<ProjectAccess>;
   listProjects(): Promise<readonly Project[]>;
-  listProjectMembers(projectId: string): Promise<readonly ProjectMember[]>;
+  listProjectMembers(projectId: string): Promise<readonly ProjectParticipant[]>;
   createTask(projectId: string, input: CreateTaskInput): Promise<Task>;
   getTask(projectId: string, taskId: string): Promise<Task>;
   getTaskPropertySchema(): Promise<TaskPropertySchema>;
@@ -419,6 +426,21 @@ export const createApiClient = (options: {
   };
 
   return {
+    listTaskSteps: (projectId, taskId) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      return exchange({ operation: "task.step.list", projectId: project, taskId: task }, resourcePath("projects", project, "tasks", task, "steps"), "GET", {
+        kind: "json", requirePrincipal: true, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
+        parse: (value) => parseStepsResource(value, project, task),
+      }, [200], undefined, true);
+    },
+    getTaskStep: (projectId, taskId, stepId) => {
+      const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
+      if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
+      return exchange({ operation: "task.step.show", projectId: project, taskId: task, stepId: step }, resourcePath("projects", project, "tasks", task, "steps", step), "GET", {
+        kind: "json", requirePrincipal: true, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
+        parse: (value) => parseStepResource(value, project, task, step),
+      }, [200], undefined, true);
+    },
     readTaskThread: (projectId, taskId, query) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       if (!Number.isInteger(query.count) || query.count < 1 || query.count > 100 || typeof query.details !== "boolean" || query.beforeId !== undefined && query.afterId !== undefined) throw new Error("Invalid Thread page query.");
@@ -457,9 +479,13 @@ export const createApiClient = (options: {
       return request({ operation: "project.show", projectId: project }, `/projects/${encodeURIComponent(project)}`, "GET", (value) => parseProject(value, project));
     },
     listProjects: () => list({ operation: "project.list" }, "/projects", (value) => parsePage(value, (item) => parseProject(item), (project) => project.id), (project) => project.id),
+    getProjectAccess: (projectId) => {
+      const project = resourceId(projectId);
+      return exchange({ operation: "project.access", projectId: project }, `/projects/${encodeURIComponent(project)}/access`, "GET", { kind: "json", parse: (value) => parseProjectAccess(value, project, expectedUserId) }, [200], undefined, true);
+    },
     listProjectMembers: (projectId) => {
       const project = resourceId(projectId);
-      return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectMembers(value, project) }, [200], undefined, true);
+      return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectParticipants(value, project) }, [200], undefined, true);
     },
     createTask: (projectId, input) => {
       const project = resourceId(projectId);

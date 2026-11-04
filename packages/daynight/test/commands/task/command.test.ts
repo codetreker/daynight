@@ -12,6 +12,8 @@ const taskId = "abcdefab-2222-4222-8333-123456789abc";
 const dependencyId = "abcdefab-3333-4222-8333-123456789abc";
 const otherDependencyId = "abcdefab-4444-4222-8333-123456789abc";
 const claimId = "abcdefab-5555-4222-8333-123456789abc";
+const accountId = "abcdefab-6666-4222-8333-123456789abc";
+const currentUser = { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null };
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
@@ -23,8 +25,10 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
+    listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),
     readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),
-    getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>(),
+    getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(currentUser),
+    getProjectAccess: vi.fn<ApiClient["getProjectAccess"]>(),
     reportWorker: vi.fn<ApiClient["reportWorker"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),
     getTaskPropertySchema: vi.fn<ApiClient["getTaskPropertySchema"]>().mockResolvedValue(propertySchema),
@@ -288,7 +292,7 @@ describe("task request contracts", () => {
   it.each(["windows", "linux", "macos"] as const)("creates and updates an explicit %s platform requirement", async (requiredPlatform) => {
     const f = fixture();
     await runTaskCommand(["create", "--title", "Platform task", "--required-platform", requiredPlatform, "--project", projectId], f.context, f.dependencies);
-    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Platform task", requiredPlatform });
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Platform task", assignedTo: accountId, requiredPlatform });
     await runTaskCommand(["update", taskId, `--required-platform=${requiredPlatform}`, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
     expect(f.api.getTask).not.toHaveBeenCalled();
     expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { requiredPlatform, version: 9_223_372_036_854_775_807n });
@@ -362,13 +366,13 @@ describe("task request contracts", () => {
   it("omits optional creation fields and preserves a FEFF-only title", async () => {
     const f = fixture();
     await runTaskCommand(["create", "--title", "\ufeff", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "\ufeff" });
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "\ufeff", assignedTo: accountId });
   });
 
   it("normalizes mixed dependency declarations while preserving empty descriptions", async () => {
     const f = fixture();
     await runTaskCommand(["create", "--title=-Title=original", "--description=", "--depends-on", otherDependencyId.toUpperCase(), "--external-depends-on", dependencyId, "--project", projectId], f.context, f.dependencies);
-    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "-Title=original", description: "", dependsOn: [dependencyId, otherDependencyId], externalDependsOn: [dependencyId] });
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "-Title=original", description: "", assignedTo: accountId, dependsOn: [dependencyId, otherDependencyId], externalDependsOn: [dependencyId] });
   });
 
   it.each([
@@ -377,7 +381,7 @@ describe("task request contracts", () => {
   ])("replaces both dependency sets for $name creation and updates", async ({ fields, externalDependsOn }) => {
     const f = fixture();
     await runTaskCommand(["create", "--title", "Title", ...fields, "--project", projectId], f.context, f.dependencies);
-    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Title", dependsOn: [dependencyId], externalDependsOn });
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Title", assignedTo: accountId, dependsOn: [dependencyId], externalDependsOn });
     await runTaskCommand(["update", taskId, ...fields, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
     expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n, dependsOn: [dependencyId], externalDependsOn });
     expect(f.api.getTask).not.toHaveBeenCalled();
@@ -568,6 +572,34 @@ describe("task responsibility options", () => {
     expect(f.dependencies.runServerCommand).not.toHaveBeenCalled();
     expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
     expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("assigns default creation to the authenticated account before submitting", async () => {
+    const f = fixture();
+    await runTaskCommand(["create", "--title", "My task", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.getCurrentUser).toHaveBeenCalledExactlyOnceWith();
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "My task", assignedTo: accountId });
+    expect(f.api.getCurrentUser.mock.invocationCallOrder[0]!).toBeLessThan(f.api.createTask.mock.invocationCallOrder[0]!);
+  });
+
+  it("preserves an identity failure without submitting an unassigned task", async () => {
+    const f = fixture();
+    const failure = new Error("Current account unavailable");
+    f.api.getCurrentUser.mockRejectedValue(failure);
+    await expect(runTaskCommand(["create", "--title", "My task", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
+    expect(f.api.getCurrentUser).toHaveBeenCalledOnce();
+    expect(f.api.createTask).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("stops before creation when cancelled during the identity read", async () => {
+    const cancellation = new AbortController();
+    const f = fixture(createOperation({ signal: cancellation.signal }));
+    f.api.getCurrentUser.mockImplementation(async () => { cancellation.abort(); return currentUser; });
+    await expect(runTaskCommand(["create", "--title", "My task", "--project", projectId], f.context, f.dependencies)).rejects.toThrow("Operation cancelled");
+    expect(f.api.getCurrentUser).toHaveBeenCalledOnce();
+    expect(f.api.createTask).not.toHaveBeenCalled();
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 

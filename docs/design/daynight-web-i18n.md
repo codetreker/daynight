@@ -81,7 +81,7 @@ Provider 使用一份当前 issue 状态，初始值来自 `initial.issue`。选
 
 固定文本使用字符串；动态文本使用带具名参数的函数，返回完整句子，目录负责语序、标点、单位和复数。调用方不拼接零散英语片段，不提供缺失键时使用另一种语言的静默替代。产品计数消息及格式测试覆盖 0、1 与多项；测试专用消息不进入产品目录。
 
-Session 的指定操作和活动标签从已有英语目录导出只读子集，只在[对应组件位置](task-session-protocol.md#session-view-的阅读与输入状态)读取。该映射是显式产品术语规则，不是缺失翻译时的 fallback。组件保留 LocaleProvider 订阅及周围本地化消息，固定文本使用局部 `lang="en"`；不修改语言偏好、整页语言或共享中文消息值。
+Session 的指定操作和活动标签从已有英语目录导出只读子集，只在[对应组件位置](task-session-protocol.md#session-view-的阅读与输入状态)读取。该映射是显式产品术语规则，不是缺失翻译时的 fallback。组件保留 LocaleProvider 订阅及周围本地化消息，固定文本使用局部 `lang="en"`；不修改语言偏好、整页语言或共享中文消息值。`SessionDisplayMenu` 的标题、两个模式名、偏好 issue 和保存重试，以及 Conversation 空态都由 `useSessionMessages` 按当前 locale 提供，不进入固定英语子集。偏好只存 mode 与 issue 类别，错误在 render 时翻译；语言改变不创建偏好 store、Session client 或操作。
 
 `getFormats(locale)` 按两种 locale 缓存 `Intl.DateTimeFormat`、`Intl.NumberFormat` 和 `Intl.PluralRules`，提供 `date`、`time`、`dateTime`、`number`、`bytes` 与 `plural`。日期输入接受 `Date`、字符串或数字，沿用本地时区与 `hour12: false`；格式改变不修改输入时间戳。数字按语言分组；字节以精确值加 `B` 展示，不转换为会丢失精度的近似容量。格式化接口保留原生 `Intl` 的输入语义，不增加替代缺失数据的默认值；日期无效时由原生格式化器抛出错误。Worker 的 presentation helper 独立以当前 locale 的 Intl.NumberFormat 将严格 bytes 输入缩放为 B/KiB/MiB/GiB 等 IEC 读数，保留 API 精确值，不改变 getFormats.bytes 的精确 B 行为；相对上报时间使用服务端锚定时间与 Intl.RelativeTimeFormat。
 

@@ -1,6 +1,6 @@
 import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
-import { taskSyncQuery, taskSyncResponse, viewerHeaders } from './helpers/taskSync';
+import { directAccessFixture, taskSyncQuery, taskSyncResponse, viewerHeaders } from './helpers/taskSync';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { performance as nodePerformance } from 'node:perf_hooks';
 import { openDB } from 'idb';
@@ -35,17 +35,19 @@ const now = "2026-10-22T10:00:00Z";
 const user = (id = userId, name = "Alice") => ({ id, name, email: `${name}@example.com`, emailVerified: true, avatarUrl: null });
 const project = (name = "私有项目") => ({ settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name, repoUrl: "https://github.com/example/repo", createdAt: now, updatedAt: now });
 const member = (id = userId, role = "admin") => ({ projectId, userId: id, name: "Alice", email: "alice@example.com", avatarUrl: null, role, version: 12, createdAt: now, updatedAt: now });
+const participant = (id = userId, role = "admin", name = "Alice") => ({ userId: id, profile: { name, email: "alice@example.com", avatarUrl: null }, effectiveRole: role, directGrant: { projectId, userId: id, role, version: 12, createdAt: now, updatedAt: now } });
 let serverUserId = userId;
 const json = (body: unknown, status = 200, principal = serverUserId) => new Response(stringifyWireJson(body), { status, headers: status === 401 ? { "Content-Type": "application/json" } : viewerHeaders(principal, { "Content-Type": "application/json" }) });
 const isTaskSync = (url: string) => new URL(url, window.location.origin).pathname.endsWith('/task-sync');
-const graphResponse = (value: TaskGraph, url: string, version = 1n) => taskSyncResponse(value, { query: taskSyncQuery(new URL(url, window.location.origin)), versionForTask: () => version, propertiesForTask: () => ({ pullRequests: [] }), viewerId: serverUserId });
+const graphResponse = (value: TaskGraph, url: string, version = 1n) => taskSyncResponse(value, { query: taskSyncQuery(new URL(url, window.location.origin)), versionForTask: () => version, propertiesForTask: () => ({ pullRequests: [] }), viewerId: serverUserId, actorAccess: directAccessFixture(value.project.id, serverUserId, "admin") });
 const withDetailResources = (project: string, task: string, fallback: (url: string, options?: RequestInit) => Response | Promise<Response>) => withTestDetailResources(project, task, fallback, {}, () => serverUserId);
 const fail = (status: number, code: string) => json({ error: { code, message: "hidden server details", requestId: "rq-safe" } }, status);
 const graph = (url: string) => graphResponse({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, url);
 const defaults = (url: string): Response => {
   if (url === "/api/v1/me") return json(user(serverUserId, serverUserId === userId ? "Alice" : "Bob"));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
-  if (url.endsWith("/members")) return json({ items: [member()] });
+  if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
+  if (url.endsWith("/members")) return json({ items: [participant()] });
   if (isTaskSync(url)) return graph(url);
   if (url.startsWith("/api/v1/projects")) return json({ items: [project()], nextCursor: null });
   throw new Error(`Unexpected request ${url}`);
@@ -112,7 +114,8 @@ describe("sidebar integration with the authenticated workspace", () => {
     let removed = false;
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
       if (url === `/api/v1/projects/${projectId}/members/${userId}` && options?.method === "DELETE") { removed = true; return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(serverUserId) })); }
-      if (url.endsWith("/members")) return Promise.resolve(json({ items: [member(), { ...member(otherId), name: "Bob" }] }));
+      if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
+  if (url.endsWith("/members")) return Promise.resolve(json({ items: [participant(), participant(otherId, "admin", "Bob")] }));
       if (url.endsWith("/invitations")) return Promise.resolve(json({ items: [] }));
       if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: removed ? [] : [project()], nextCursor: null }));
       return Promise.resolve(defaults(url));
@@ -121,6 +124,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("button", { name: "移除 Alice" }));
     const dialog = screen.getByRole("dialog", { name: "移除 Alice？" });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "移除成员" })).not.toBeDisabled());
     fireEvent.click(within(dialog).getByRole("button", { name: "移除成员" }));
     await screen.findByRole("heading", { name: "还没有项目" });
     expect(window.location.pathname).toBe("/projects");
@@ -358,7 +362,8 @@ describe("authenticated application shell", () => {
         dispatchedGraphs.push({ cookie: cookieAccount, label: document.querySelector(".account-name")?.textContent ?? null });
         return Promise.resolve(graphResponse({ observedAt: now, project: project(`${cookieAccount} 的项目`), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, url));
       }
-      if (url.endsWith("/members")) return Promise.resolve(json({ items: [member(cookieAccount === "Alice" ? userId : otherId)] }));
+      if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
+  if (url.endsWith("/members")) return Promise.resolve(json({ items: [participant(cookieAccount === "Alice" ? userId : otherId)] }));
       return Promise.resolve(defaults(url));
     });
     vi.stubGlobal("fetch", fetcher);
@@ -426,7 +431,7 @@ describe("authenticated application shell", () => {
         recheckViews.push({ authenticatedShell: document.querySelector('.auth-shell') !== null, privateDetail: document.body.textContent!.includes('Alice-only private detail') });
         return new Promise<Response>((resolve) => { finishIdentity = resolve; });
       }
-      if (url.endsWith('/members')) return Promise.resolve(json({ items: [member(serverUserId)] }));
+      if (url.endsWith('/members')) return Promise.resolve(json({ items: [participant(serverUserId)] }));
       if (isTaskSync(url)) return Promise.resolve(graphResponse(serverUserId === userId ? aliceGraph : { ...aliceGraph, project: project('Bob 的项目'), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, url));
       if (url === `/api/v1/projects/${projectId}/tasks/${taskId}`) return Promise.resolve(json(detail));
       return Promise.resolve(defaults(url));
@@ -965,9 +970,9 @@ describe("authenticated application shell", () => {
     expect(graphReads()).toBe(2);
   });
 
-  it("shows project membership access from the authoritative current membership", async () => {
+  it("shows the authoritative live access independently of the member roster", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
-    install((url) => url.endsWith("/members") ? json({ items: [member(userId, "member")] }) : defaults(url));
+    install((url) => isTaskSync(url) ? taskSyncResponse({ observedAt: now, project: project(), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, { viewerId: userId, versionForTask: () => 1n, actorAccess: directAccessFixture(projectId, userId, "member") }) : defaults(url));
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "私有项目" });
     expect(await screen.findByText("成员", { selector: ".badge" })).toBeInTheDocument();

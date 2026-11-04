@@ -142,15 +142,59 @@ Cookie Origin 准入失败不输出未经准入的用户 ID。该头用于客户
 不增加状态专属角色。生命周期状态、版本和依赖条件由服务需求拥有；项目访问权
 不等同于 Agent 执行或交付的会话授权。
 
-项目/任务 ID、仓库地址与本地绑定不是凭据。成员管理携带所观察到的成员版本，过期
-修改返回 version_conflict；成员版本是独立于 task.version 的不连续正整数观察标识。
-移除后重新加入获得新版本，旧观察仍冲突；无变化角色更新保留版本。最后一位 admin 不能删除或
-降级。旧项目内容、版本、时间、路径和依赖不改变，后续手工添加成员即可使用。
+项目/任务 ID、仓库地址与本地绑定不是凭据。`GET /api/v1/projects/{projectId}/members`
+返回 `{items: ProjectParticipant[]}`。每项包含 `userId`、必填 `profile` 对象、
+`effectiveRole` 和必填可空 `directGrant`；profile 的 name/email/avatarUrl 三个字段必填且可为 null。
+缺少规范用户行是完整性错误，整个读取失败，不能静默删去该来源或伪装成空资料。
+当前直接授权数据返回每人的真实 grant；成员列表中的有效角色不等于可写授权记录。
+
+角色修改与移除读取 `directGrant.role/version`，不使用 effectiveRole 或合成版本。
+grant 版本是独立于 task.version 的不连续正 int64 JSON number；大于 `2^53` 仍须无损。
+`PATCH .../members/{userId}` 接受 `{version,role,expectedUserId}` 并返回真实 ProjectGrant；
+`DELETE` 接受 `{version,expectedUserId}`，成功仍为 204 无正文。服务端在任何领域 SQL 前
+验证 expectedUserId 与实际 principal；错主体返回 409 identity_mismatch，领域行和版本零变化。
+客户端核对成功、拒绝及空响应的 `Daynight-User-ID`，错主体触发现有身份重验，不安装结果。
+未确认的已发送写入保留结果未知与只读核对入口，不自动重放或重新启用原确认；后续读取只证明当前事实。
+
+过期修改返回 version_conflict；移除后重新加入获得新版本，旧观察仍冲突，
+无变化角色更新保留版本。当前最后一位直接 admin 不能删除或降级。
+旧项目内容、版本、时间、路径和依赖不改变，后续手工添加成员即可使用。
 
 邀请固定七天，属于项目，创建者离任不自动撤销。创建时一次显示可复制链接；列表
 只显示元数据和撤销入口。有效期至消费、到期或管理员撤销。接受者必须登录并明确
 确认，GET、链接预览、inspect 和登录跳转不消费。有效邀请只允许查看项目名称等最小
-摘要。接受与消费原子提交，并发只增加一名新成员；已有成员不升级角色且不消费邀请。
+摘要。接受与消费原子提交，并发只增加一名新成员；已有直接成员关系不升级角色且不消费邀请。
+邀请 inspect/accept 保留现有成员结果 DTO，与 participant 名册的读取合同分开。
+
+## 当前主体的项目权限
+
+`GET /api/v1/projects/{projectId}/access` 在当前读取快照内返回本人权限：
+`{effectiveRole,directGrant}` 两个键必填，effectiveRole 为 admin 或 member。
+directGrant 为 null 或完整的 projectId、userId、role、version、createdAt、updatedAt；
+其版本是实际独立授权的正 int64 JSON number，时间为 UTC，不附带姓名、邮箱或头像。
+当前直接授权数据成功读取时返回实际 grant；未准入和缺失项目沿用 not_found，
+真实查询或事务失败不能表现为 null grant 或默认角色。响应保留认证主体头和 no-store。
+
+Web 的项目、设置、成员、Task 弹层及独立 Task/附件页面使用同一份身份/项目绑定的
+内存权限投影控制本人操作；CLI Worker 管理读取当前 access。完整成员资料只承担
+名册和 claim owner 的姓名、邮箱、加载、错误重试与离任展示，不据其推断本人权限。
+TaskSync 成功响应即使没有任务变化也发布本人角色；普通可见图页面沿用五秒同步。
+没有同步刷新时，可见页面在距上次成功观察三十秒后读取 access，隐藏时暂停。
+恢复可见、focus 和打开管理操作时重验，并合并同一作用域的并发读取。
+
+迟到的旧身份、旧项目或较早请求不能替换较新的观察。读取失败保留明确 stale/error
+与重试，管理提交等待当前 access 核验；网络失败不能视作撤权。确认失权沿现有项目
+缓存撤权路径处理，包含只存在持久历史、首次同步仍在途的冷 scope。迟到的旧同步不能
+在已确认失权后恢复私有详情；较早历史的 denial 也不能撤销已验证的新历史。
+生命周期或存储核验失败提供错误与重试，不能授予默认权限。角色及 grant 不写入持久
+任务记录，也不能代替服务端每请求授权。
+
+成员名册、邀请列表和项目设置具有自己的资源读取状态。确认项目失权时，正在进行的
+旧资源读取同步失效，迟到响应不能重新展示姓名、邮箱或设置；私有资源也不能在权限
+unavailable 时渲染。暂时的 access 错误与资源读取结果分别保留：权限恢复后必须能够
+展示已确认的资源，或明确重读缺失资源。资源尚未可用时，其错误与重试入口不能仅因
+access 成功而消失；普通权限刷新保持设置草稿和未知写入的核对约束。已确认写入后的
+较新设置值与成功反馈不能被较早的恢复读取倒退，已有写入也不能被读取失效取消。
 
 ## Web 交互与状态
 
@@ -195,7 +239,7 @@ Cookie Origin 准入失败不输出未经准入的用户 ID。该头用于客户
 结果状态，关闭后重开不能重复批准；身份变化清除旧会话状态，语言切换不重建它。
 成员修改和项目设置分别使用所属资源的完整正 int64 观察版本，前端解码、展示和提交不经过有损 Number。
 设置页按用户/项目隔离，复用同一前台身份检查和请求等待；同用户确认保留草稿，换号使旧读写失效。
-设置不确定写结果须先核对 Project 与成员再允许新写入，核对失败仅提供读取重试，不自动重放 PATCH；
+设置不确定写结果须先核对 Project 与当前 access再允许新写入，核对失败仅提供读取重试，不自动重放 PATCH；
 设置的详细合同由[计时需求](daynight-task-timing.md)拥有。
 邀请 fragment 立即移出地址，以 tab 内临时存储跨登录；inspect 不消费邀请，只有
 明确确认才 accept，结束后清理。PAT 和邀请链接仅在创建时展示，复制失败可恢复，
@@ -261,6 +305,7 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | 缺失、无效、撤销或到期用户凭据 | 401 unauthenticated JSON |
 | 项目不存在或不是成员 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
+| 修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
 | 观察版本过期、最后 admin 条件不满足 | 409 version_conflict / last_admin |
 | 生命周期前态不符或前置未完成 | 409 invalid_transition / dependency_unsatisfied |
 | 邀请已消费、到期或撤销 | 410 invitation_unavailable |

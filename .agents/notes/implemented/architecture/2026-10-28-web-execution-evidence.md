@@ -25,11 +25,23 @@ identity, recovery budget, cleanup operation and deadline. Controller journals
 continue to own native input receipts, projections and the durable outbox.
 
 The [minimal worker record decision](../simplification/2026-10-27-worker-claim-records.md)
-continues to own the shared claim index and legacy Herdr lifecycle. The [mode decision](2026-10-27-task-session-mode-contract.md)
+continues to own the shared claim index and legacy Herdr lifecycle. The
+[cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md)
+adds independent scheduling for both modes. The
+[resource-state decision](2026-11-04-worker-resource-state.md) removes saved
+notification and resource-completion progress: native operation results come
+from the Controller journal, while the Worker keeps only cleanup intent, deadline
+and operation identity. Scheduling and archive/deletion failures remain separate
+from native operation receipts. The macOS Herdr journal separately owns its
+original-process proof and Session ledger acknowledgement.
+The [mode decision](2026-10-27-task-session-mode-contract.md)
 extends the shared index with frozen routing; the [session design](../../../../docs/design/task-session-protocol.md)
 owns Web recovery and operation semantics. Neither backend can reinterpret an
 existing claim using the latest configured mode. Missing Web provenance is a
 visible recovery failure, not proof that no native process was started.
+The [persistent recovery pause decision](../bug-fix/2026-11-04-web-recovery-pause.md)
+uses this Web evidence store to preserve recovery pauses and reconcile waiting
+without allowing ordinary restarts to authorize another attempt.
 
 A new Task Worker native session uses the unattended full-access policy.
 Independent Test Sessions retain native defaults, and native resume preserves
@@ -37,7 +49,9 @@ confirmed settings rather than overwriting later browser choices.
 
 Worker exit directly stops owned agents and preserves unfinished worktrees and
 claims. Normal Web claim-end cleanup retains its original operation and deadline,
-then requires independent native stop proof before deleting the worktree. A
+then reads authoritative native receipts and requires fresh OS process-stop
+proof before deleting the worktree. Endpoint and Git absence are observed even
+when a local record is already done. A
 force withdrawal freezes Session writes in the service transaction and lets the
 worker reconcile the absent claim; it does not assert immediate native shutdown.
 For the first cleanup record, an already elapsed deadline is normalized to its
@@ -77,11 +91,12 @@ A local record deletion cannot authorize replacement or destructive cleanup.
 This decision originally preserved known minimal-index rows and assigned legacy
 Herdr mode during schema upgrades. The
 [SQLite migration decision](2026-10-30-cli-sqlite-migrations.md) gives Web execution
-state its independent version 1 and replaces unversioned adoption: version 0
+state its independent version 1 baseline and replaces unversioned adoption: version 0
 discards the original schema and data after domain admission across all five
 business databases. Valid known nonzero migrations preserve data, and retired
-rich Worker versions 1–4 remain explicitly rejected. Current Web CRUD keeps its
-existing JSON parser and default-field semantics. Resetting the worker index does
+rich Worker versions 1–4 remain explicitly rejected. The resource-state decision
+adds Web version 2, removing obsolete cleanup progress fields in the migration
+and retaining only its current intent representation in the parser. Resetting the worker index does
 not delete separate Controller journals or native history; each journal's own
 version-0 reset remains subject to writer admission. No format transition changes
 the claim or native-call evidence ownership described here.

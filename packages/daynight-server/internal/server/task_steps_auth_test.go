@@ -94,6 +94,20 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	if moved.Version != 6 || moved.Steps[1].ID != "00000000" {
 		t.Fatal("member could not move step")
 	}
+	deleteBody := `{"version":6}`
+	deletePath := integration.server.URL + path + "/ABCDEF01"
+	identityRequest(t, anonymous, "DELETE", deletePath, deleteBody, nil, 401)
+	identityRequest(t, member, "DELETE", deletePath, deleteBody, nil, 403)
+	identityRequest(t, member, "DELETE", deletePath, deleteBody, map[string]string{"Origin": "https://unrelated.invalid"}, 403)
+	_, data = identityRequest(t, outsider, "DELETE", deletePath, deleteBody, origin, 404)
+	if identityDecode[api.ErrorResponse](t, data).Error.Code != "not_found" {
+		t.Fatal("nonmember delete leaked task")
+	}
+	_, data = identityRequest(t, member, "DELETE", deletePath, deleteBody, origin, 200)
+	deleted := identityDecode[api.StepsResource](t, data)
+	if deleted.Version != 7 || len(deleted.Steps) != 1 || deleted.Steps[0].ID != "00000000" {
+		t.Fatal("member could not delete Step")
+	}
 	_, data = identityRequest(t, member, "POST", integration.server.URL+"/api/v1/me/tokens", `{"name":"Steps PAT","expiresAt":null}`, origin, 201)
 	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
 	identityRequest(t, anonymous, "GET", integration.server.URL+path, "", map[string]string{"Authorization": "Bearer " + token.Token}, 200)

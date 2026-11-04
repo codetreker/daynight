@@ -1,5 +1,10 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 const en = {
+  display: 'Display', displayStandard: 'Standard', displayConversation: 'Conversation', displayRetry: 'Retry saving',
+  displayReadError: 'The saved display preference could not be read. The current choice is not saved.',
+  displayInvalidError: 'The saved display preference is invalid. The current choice is not saved.',
+  displayWriteError: 'The current display choice is not saved. You can retry saving it.',
+  conversationEmpty: 'No content in conversation mode.',
   archivePreparing: 'The session is ending. Waiting for its history archive.',
   archived: 'Completed · Read-only history', archiveLoading: 'Loading archived history…', archivePending: 'The session has ended. History is being archived.', archiveFailed: 'History could not be archived or loaded. Refresh to check again.', archiveUnavailable: 'This session has ended, but no archived history is available.',
   model: 'Model', permissions: 'Permissions', modelSettings: 'Model settings', permissionSettings: 'Permission settings', close: 'Close', commands: 'Open chat commands', noCommands: 'No matching native commands.', controlsUnavailable: 'Session controls are not available yet.', noSettings: 'This provider does not expose these settings.', unavailableValue: 'Unavailable', currentValue: 'Current', settingPending: 'Pending provider confirmation.', settingUnknown: 'Change outcome is unknown. Check the original operation.', nextTurnSetting: 'Applies to the next turn.', providerConfirmed: 'Values change after provider confirmation.', refreshControls: 'Refresh controls', executingCommand: 'Executing command', commandUnavailable: 'Unknown or unavailable command. Open / to refresh the command list.', commandFailed: 'Command failed.', nativeCommands: 'Native commands', retryCommands: 'Retry commands', agentActivity: 'Agent activity', elapsedTime: 'Turn elapsed time', startTimeUnknown: 'Start time unavailable', interrupt: 'Interrupt', interrupting: 'Interrupting…', interruptRequested: 'Interrupt requested',
@@ -36,6 +41,11 @@ export const sessionNativeLabels = Object.freeze({
 });
 type SessionMessages = { readonly [K in keyof typeof en]: string };
 const zh: SessionMessages = {
+  display: '显示', displayStandard: '标准', displayConversation: '对话', displayRetry: '重试保存',
+  displayReadError: '无法读取已保存的显示偏好。当前选择尚未保存。',
+  displayInvalidError: '已保存的显示偏好无效。当前选择尚未保存。',
+  displayWriteError: '当前显示选择未保存，可以重试保存。',
+  conversationEmpty: '当前对话模式下暂无内容',
   archivePreparing: '会话正在结束，等待历史归档。',
   archived: '已结束 · 只读历史', archiveLoading: '正在加载归档历史…', archivePending: '会话已结束，正在归档历史。', archiveFailed: '历史归档或加载失败，可刷新重新检查。', archiveUnavailable: '会话已结束，但没有可用的历史归档。',
   model: '模型', permissions: '权限', modelSettings: '模型设置', permissionSettings: '权限设置', close: '关闭', commands: '打开会话命令', noCommands: '没有匹配的原生命令。', controlsUnavailable: '会话控制尚未就绪。', noSettings: '此 Provider 未提供这些设置。', unavailableValue: '未知', currentValue: '当前', settingPending: '等待 Provider 确认。', settingUnknown: '更改结果未知，请核对原操作。', nextTurnSetting: '对下一轮生效。', providerConfirmed: '设置值以 Provider 确认为准。', refreshControls: '刷新设置', executingCommand: '正在执行命令', commandUnavailable: '未知或不可用的命令，请打开 / 刷新命令列表。', commandFailed: '命令执行失败。', nativeCommands: '原生命令', retryCommands: '重试命令加载', agentActivity: 'Agent 状态', elapsedTime: '当前轮次用时', startTimeUnknown: '开始时间未知', interrupt: '中断', interrupting: '正在中断…', interruptRequested: '已请求中断',

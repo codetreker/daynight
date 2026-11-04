@@ -71,14 +71,42 @@ CLI 退出接口仅允许当前 PAT 撤销自身，不提供其他令牌管理�
 ### 项目准入与独立授权
 
 `ProjectGrant` 表达实际存储的 project/user ID、角色、真实版本和加入/更新时间。
-`ProjectMember` 是该 grant 与用户可空姓名、邮箱、头像的联合读取投影，供现有成员、
-邀请和授权修改响应使用；HTTP 仍展平为既有成员 JSON。修改授权只比较真实 grant
-版本，邀请判断已有直接关系也读取这一投影，不用计算的准入结果代替。
+`ProjectParticipant` 是当前名册投影：`{userId,profile,effectiveRole,directGrant}`，
+profile 是必填对象，name/email/avatarUrl 均必填且可为 null；不存在的 grant 明确为 null。
+当前查询保留原始 grant user ID，复用 canonical access relation 的有效角色，再 LEFT JOIN users；
+缺少或不匹配的规范用户行使整个读取成为完整性错误，不能用 INNER JOIN 隐藏来源。
+当前直接来源每人产生一项，包含真实 grant，不生成继承占位行。
 
-`ProjectAccess` 只表达当前主体的 project/user ID 和准入角色，不携带资料、可写版本或
-存储时间。`RequireProjectRead`、`RequireProjectWrite` 及 Worker 的非 claim owner
-管理员检查消费该投影。当前准入与可见项目列表共用 Store 的直接授权关系，列表在
-SQL cursor/LIMIT 前筛选；这种类型分离保持当前直接授权语义。
+`ProjectMember` 仍是 grant 与 nullable 资料的内部直接关系投影，供现有授权目标检查、
+邀请及其他尚未改变的运行时调用使用；邀请 HTTP 结果保留其既有扁平 DTO。
+角色 PATCH 成功直接返回 ProjectGrant，删除保留 204；它们不返回 participant 或有效角色。
+修改授权只比较真实 grant 版本，邀请 no-op 也读取实际直接关系，不以计算的准入结果代替。
+[participant 决策](../../.agents/notes/implemented/architecture/2026-11-04-project-participant-projection.md)
+拥有资料、有效角色与可写记录分离的原因及范围。
+
+`ProjectAccess` 表达当前主体的 project/user ID、有效准入角色和可空 `DirectGrant`。
+它没有独立的可写版本或存储时间；嵌入的 grant 保留自己实际的角色、版本与时间。
+`RequireProjectRead`、`RequireProjectWrite` 及 Worker 的非 claim owner 管理员检查
+消费该投影。Session relay 的共同项目准入也在原 raw transaction 中调用
+`store.ReadProjectAccess`；Session 的归属和持续重验由
+[Session 设计](task-session-protocol.md#relay-与恢复)拥有。
+当前准入与可见项目列表共用 Store 的直接授权关系，列表在 SQL
+cursor/LIMIT 前筛选。单主体查询在同一语句取得有效角色与实际 grant，不额外读取资料。
+
+Thread 写入通过同一存储所有者的 `store.LockProjectAuthorization` 取得强准入。
+调用方先持 Task 与 credential share 锁，再锁实际存在的 direct grant 至事务结束；
+有效角色和真实 grant 均来自等锁后的行，不取得 Project 行锁。该入口不读取人员资料，
+也不把长期 share 锁扩散到普通资源或 Session 准入。[Thread 设计](daynight-task-thread.md#专用写事务)
+拥有完整锁序、存在性分类和提交前凭据重验。
+
+`GET /api/v1/projects/{projectId}/access` 返回当前主体的
+`{effectiveRole,directGrant}`，两个键必填。grant 为 null 或完整的
+`{projectId,userId,role,version,createdAt,updatedAt}`；当前直接授权实现成功时返回
+实际非 null grant，缺失准入按原规则拒绝。版本是正 int64 JSON number，时间为 UTC。
+API 不返回完整名册或个人资料，客户端核对响应 principal 及存在的 grant 归属。
+TaskSync 顶层 `actorAccess` 使用相同 DTO 和同一读取快照，空 delta 也包含它。
+[当前准入投影决策](../../.agents/notes/implemented/architecture/2026-11-03-project-access-projection.md)
+记录内存所有权、刷新与资料读取分离的原因。
 
 读取在原 repeatable-read 快照中计算准入再读取资源；写入取得现有项目行锁后重算
 准入，再校验授权目标的真实版本与领域约束。Tasks.SetStatus(ctx, principal,
@@ -228,14 +256,18 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | POST /api/v1/auth/device/logout | 当前 Bearer PAT 撤销自身，浏览器会话不能调用。 |
 | 现有 project/task/graph/property/attachment API | session 或 PAT；业务 service 检查当前项目成员。 |
 | PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与三状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
-| GET .../projects/{id}/members | 任一成员读取最小资料和角色/version。 |
+| GET .../projects/{id}/access | 当前主体的有效角色和可空独立授权；无资料，要求当前项目准入。 |
+| GET .../projects/{id}/members | 任一有效成员读取 items participant：最小 nullable 资料、有效 role 和可空真实 directGrant。 |
 | PATCH .../projects/{id}/settings | admin，锁后复核角色与精确设置 version，返回完整 Project。 |
-| PATCH/DELETE .../members/{userId} | admin，携带观察到的成员 version。 |
+| PATCH/DELETE .../members/{userId} | admin；携带真实 grant version 与必填 expectedUserId，PATCH 另含存储 role；成功分别返回 ProjectGrant / 204。 |
 | GET/POST .../projects/{id}/invitations、DELETE .../{inviteId} | admin，创建一次显示链接，删除撤销。 |
 | POST /api/v1/invitations/inspect、POST .../accept | 已登录用户，body 携带秘密；明确 accept 才入会。 |
 
-新增 unauthenticated/forbidden/last_admin/invitation_unavailable 错误，保留原 envelope/
-requestId。非成员与不存在项目均 not_found；错误类别不能落入 internal_error。
+unauthenticated/forbidden/last_admin/invitation_unavailable 保留原 envelope/requestId。
+授权修改/移除的 expectedUserId guard 在 Memberships.write 及其 Project 行锁之前执行，
+错主体返回 409 identity_mismatch；认证与独立请求日志不属于领域 SQL。
+该 fault 同时进入 HTTP 409 映射和日志已知类型集合，避免误变为 internal_error。
+非成员与不存在项目均 not_found。
 
 正式 Application 在常驻 LocaleProvider 下组合公开页与 AuthenticatedApp；语言机制和
 认证分支内现有图、任务/附件页签及完整详情的弹窗/独立展示保持同一实例与状态规则。
@@ -256,10 +288,15 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 项目列表增加名称/仓库地址创建表单，复用原 API，成功进入空项目且创建者为 admin。
 账户页管理 PAT，项目管理导航连接成员与 `/projects/:id/settings`。设置页成员可读，角色确认是 admin 后可编辑；
 服务端在项目锁后独立复核角色与设置版本。设置按 user/project 键隔离，草稿不写入权威 Project；
-不确定 PATCH 先重读 Project/成员，核对失败阻止新写入并允许读重试，不把取消或导航视为远端回滚。
-具体数据和读取机制由[计时架构](daynight-task-timing.md)拥有。成员冲突
-重取权威数据。401/换账号使共享请求 generation 失效并卸载旧项目和附件内容，
-失败不伪装成空列表。成员 version 以 bigint 解码及序列化，保留完整正 int64。
+不确定 PATCH 先重读 Project 和当前 access，核对失败阻止新写入并允许读重试，不把取消或导航视为远端回滚。
+仅权限核验失败的重试保留有效资源和设置草稿；完整资源核对仍用于资源错误、缺失及写结果不确定。
+具体数据和读取机制由[计时架构](daynight-task-timing.md)与[Web 架构](daynight-web.md#项目执行提醒设置)拥有。
+成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。
+401/换账号使共享请求 generation 失效并卸载旧项目和附件内容，
+失败不伪装成空列表。participant 的 nested directGrant.version 只在声明的资源路径无损解码，
+角色修改/移除以 bigint 提交真实 grant 观察值。其 JSON 与 204 响应均核对当前请求绑定的 principal；
+身份错配清理旧 scope 并重验。已发送而未确认的授权写入关闭旧确认，保留 unknown 和读取当前状态入口；
+读取失败继续阻止写入，成功读取可建立新观察供重新审阅，不能据此声称找回原提交回执。
 顶层曾离开后重新可见且聚焦时，在后台重新读取 /me。正常等待状态与失败后的
 阻塞恢复状态分别管理：正常等待保留工作空间正文、详情和管理弹窗的可见性与交互，
 不添加隐藏样式、inert 或 aria-hidden，不打开身份模态层，因此输入和 frame

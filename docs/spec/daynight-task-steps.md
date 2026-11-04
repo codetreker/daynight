@@ -1,6 +1,6 @@
 # Task Steps 资源契约
 
-状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新、独立状态设置及位置移动已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
+状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新、独立状态设置、位置移动、记录删除及 CLI list/show 读取已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
 
 ## 所有权与模型
 
@@ -30,8 +30,9 @@ Steps 是父 Task 拥有的有序记录，保留独立名称、Markdown 说明�
 | `PATCH T/steps/{stepId}` | `version`；`title`、`description` 至少提供一个。 | `200`，完整有序 `StepsResource`。 |
 | `PUT T/steps/{stepId}/status` | `version`、`status`。 | `200`，完整有序 `StepsResource`。 |
 | `PUT T/steps/{stepId}/position` | `version`；`before`、`after`、`position` 恰好一个，`position` 为 `first` 或 `last`。 | `200`，完整有序 `StepsResource`。 |
+| `DELETE T/steps/{stepId}` | JSON 正文仅含必填 `version`。 | `200`，删除后的完整有序 `StepsResource`，末项删除返回 `steps: []`。 |
 
-所有 Steps 请求均不接受 query，包括尾部空 `?`。集合的其他方法返回认证后的 `405` 和 `Allow: GET, HEAD, POST`；单项的其他方法返回认证后的 `405` 和 `Allow: GET, HEAD, PATCH`；状态与位置子路径只接受 `PUT`，其他方法（包括 `HEAD`）返回认证后的 `405` 和 `Allow: PUT`。所有响应使用 `Cache-Control: no-store`，沿用认证、Cookie 写请求的 Origin 检查、principal 回执及 request ID。
+所有 Steps 请求均不接受 query，包括尾部空 `?`。集合的其他方法返回认证后的 `405` 和 `Allow: GET, HEAD, POST`；单项的其他方法返回认证后的 `405` 和 `Allow: GET, HEAD, PATCH, DELETE`；状态与位置子路径只接受 `PUT`，其他方法（包括 `HEAD`）返回认证后的 `405` 和 `Allow: PUT`。所有响应使用 `Cache-Control: no-store`，沿用认证、Cookie 写请求的 Origin 检查、principal 回执及 request ID。
 
 完整集合如下，`version` 是父 Task 的正 int64 精确十进制整数，不能转为丢失精度的浮点数：
 
@@ -54,6 +55,21 @@ Steps 是父 Task 拥有的有序记录，保留独立名称、Markdown 说明�
 ```
 
 单项结果具有相同 `projectId`、`taskId` 和 `version`，以 `step` 字段返回一个完整记录。空集合必须为 `steps: []`，不能为 `null`、缺失或读取失败的替代结果。Task 的 show/list/ready/graph/task-sync 不内嵌完整 Steps。
+
+## CLI 读取
+
+```text
+daynight task step list <task-id> [--json] [--project <project-id>]
+daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
+```
+
+`daynight` 与 `dn` 使用相同入口。Task 与 Project 为完整 UUID；Step 是恰好 8 位十六进制 ID，输入大小写统一为小写，不接受完整 UUID、短前缀或展示编号。显式 `--project` 可在 Git 仓库外直接读取指定资源，不增加隐藏的项目 GET；省略时复用当前仓库的项目发现：完整发现后无匹配报告 `Project does not exist`，多匹配列出全部规范项目 ID 并提示显式 `--project <id>`；两者均终止读取，不把未选定的候选当作当前项目。诊断保留这些预期恢复结果，同时隐藏任意配置、Git、网络或清理原因文本。组与操作帮助先于配置、Git 和网络执行；参数错误使用退出码 `2`，读取或协议失败使用 `1`，成功使用 `0`。
+
+`list` 读取一次完整集合并保留服务数组顺序，可读输出包含父 Task 版本、总数，以及每项的展示编号、完整 ID、四状态和完整标题；空集合明确显示零项。`show` 读取 Task 内指定 Step，完整显示标题、说明、状态、创建/更新时间及父作用域与版本，不截断说明。可读字段将终端控制字符和 bidi 控制符转义为可见文本，JSON 保留原字符串、字段和精确 int64 数值；`list --json` 输出完整 `StepsResource`，`show --json` 输出完整 `StepResource`，不是裸数组或正文片段。
+
+读取结果拒绝未知或重复字段，必须具有完整的必填字段、正确的 Project/Task/Step 作用域、正 int64 父版本、唯一且已规范为小写的短 ID、合法状态、原值文本与 UTC 微秒时间字符串；不能将坏响应修成合法资源、跳过条目、重排集合或将失败显示为空集合。成功时 JSON stdout 仅包含一个完整值并以换行结束；错误写 stderr，`401` 提示 `daynight login`，不自动登录或重放。读取继承共享取消、期限与响应字节预算，单次 Steps 响应正文另受 64 MiB 资源上限约束；有效上限取配置的单响应预算与该资源上限的较小值，恰好达到上限允许，更严格的配置限制继续生效，共享默认预算不变。在完整校验与渲染成功前不输出部分资源；输出本身失败可能留下部分 stdout，必须同时非零退出并报告错误。
+
+帮助、Bash/zsh 补全及独立 CLI 手册仅列出 `list` 与 `show` 读取能力。完整项目选择、错误和输出约定由[客户端要求](daynight-project-task.md)拥有，命令实现与验证入口由[CLI 说明](../../packages/daynight/README.md#task-steps)拥有。
 
 ## 写入输入与添加结果
 
@@ -93,15 +109,25 @@ Steps 是父 Task 拥有的有序记录，保留独立名称、Markdown 说明�
 
 目标已在首项或末项、已紧邻指定锚点，或单项集合中的有效首尾移动均为 no-op：返回原完整资源并保留父版本和全部时间，不采样时钟、修改位置或 touch 父任务，最大正 int64 父版本仍可成功。陈旧版本仍先冲突；缺失目标或锚点不能作为 no-op。真实移动仅将父版本推进一次并更新父 `updatedAt`，先完成完整候选的精确容量预检，随后才修改受影响位置及父任务。
 
+## 删除当前记录
+
+`DELETE T/steps/{stepId}` 仅接受一个 JSON 对象，必填字段为 `version`；不接受 query、目标 ID 副本、状态或其他操作字段。目标以路径中的 Task 内规范化 ID 定位，所有四种 Step 状态均可删除。成功返回 `200` 和删除后的完整 `StepsResource`；删除最后一个记录时明确返回 `steps: []`，不使用 `204`、`null` 或省略集合，也不返回新增 `Location`。
+
+删除移除当前行，并将其后仍存在的记录位置压紧为稠密顺序。所有其他 Step 的身份、标题、Markdown、状态、创建/更新时间及相对顺序保持；父 Task 业务字段、计时、依赖、属性、许可及 Worker/Session 归属保持，引用的附件、PR 和 Session 均不被删除。真实删除只将父版本推进一次并更新父 `updatedAt`。
+
+当前目标不存在时，读取或重复删除均返回子项 `404 not_found`，不作为成功 no-op；陈旧版本仍先返回版本冲突，当前版本的目标缺失先于版本耗尽拒绝。存在目标的删除总是实际变化，父版本已达最大正 int64 时返回 `409 version_exhausted`。完整剩余候选在任何删除、位置压紧或父 touch 前通过同一公共 codec 的容量预检；预检拒绝或事务确认回滚时，完整前后状态保持。
+
+删除结束该记录的身份存续期，并释放该 Task 内的短 ID 占用。后续可用 POST 明确创建相同 ID 的新记录，按添加规则生成新的创建与更新时间，不恢复已删内容。系统不提供已删 Step 的历史读取、恢复或批量删除接口；当前集合只表达保留下来的记录。未知删除按原 Project、Task、Step ID 只读核对当前集合或单项，当前缺失不能证明由某次未知操作造成，当前同 ID 存在也不能证明是原记录；不得自动重放删除。
+
 ## 权限、快照与原子写入
 
-admin 与 member 具有相同读取、添加、内容更新、状态设置和移动能力；Task 的 `todo`、`in_progress`、`done`，自动执行许可关闭、无 Session 或有效 Worker/Session 归属均不增加 Steps 门槛。访问首先检查正常项目成员关系和父资源可见性，再检查父墓碑。Steps 写入不读取 Worker 属性来决定可写性，不改变执行归属，也不冻结 Session。
+admin 与 member 具有相同读取、添加、内容更新、状态设置、移动和删除能力；Task 的 `todo`、`in_progress`、`done`，自动执行许可关闭、无 Session 或有效 Worker/Session 归属均不增加 Steps 门槛。访问首先检查正常项目成员关系和父资源可见性，再检查父墓碑。Steps 写入不读取 Worker 属性来决定可写性，不改变执行归属，也不冻结 Session。
 
 读取在同一个 `REPEATABLE READ` 快照中检查项目成员关系、父资源存在性与软删除，再读取父版本及目标内容。父版本、完整内容及顺序必须属于一个一致状态；读取不改变父版本、更新时间、执行计时、状态、依赖、属性或执行归属。
 
-写入复用项目写事务，依次完成项目锁、成员准入、窄父任务头锁及墓碑检查，随后比较精确父版本。读取并验证当前集合后，添加先检查重复 ID，再解析锚点并构造不修改原集合的完整候选；内容与状态更新按同一现存目标变更路径查找目标、构造候选并比较语义值；移动先解析目标和相对锚点，再构造保持原内容与时间的最终顺序。合法 no-op 直接编码原资源，不进入版本耗尽、时钟或数据修改阶段。
+写入复用项目写事务，依次完成项目锁、成员准入、窄父任务头锁及墓碑检查，随后比较精确父版本。读取并验证当前集合后，添加先检查重复 ID，再解析锚点并构造不修改原集合的完整候选；内容与状态更新按同一现存目标变更路径查找目标、构造候选并比较语义值；移动先解析目标和相对锚点，再构造保持原内容与时间的最终顺序；删除先解析现存目标，再构造保留其他记录原内容和时间的剩余集合。合法 no-op 直接编码原资源，不进入版本耗尽、时钟或数据修改阶段。
 
-真实变化检查版本耗尽、取得数据库 UTC 微秒时间后，使用新父版本和实际时间编码候选。通过容量预检后，添加才平移位置并插入新行，内容或状态修改才 UPDATE 唯一目标行，移动才更新受影响区间的位置；随后均仅 touch 父任务一次。内容与状态更新不重排集合，移动不更改任何 Step 时间。位置始终稠密为 `0..n-1`，唯一约束在提交时验证最终顺序。
+真实变化检查版本耗尽、取得数据库 UTC 微秒时间后，使用新父版本和实际时间编码候选。通过容量预检后，添加才平移位置并插入新行，内容或状态修改才 UPDATE 唯一目标行，移动才更新受影响区间的位置，删除才移除目标行并压紧后续位置；随后均仅 touch 父任务一次。内容与状态更新不重排集合，移动不更改任何 Step 时间。位置始终稠密为 `0..n-1`，唯一约束在提交时验证最终顺序。
 
 Task 元数据与 Steps 共享 `Task.version`。成功的真实 Steps 变化只推进父版本一次，并只改变父 `updatedAt`；Task 标题、说明、整体状态、负责人、平台、许可、属性、依赖、执行起止时间及 Worker/Session 归属保持。相同观察版本的 Steps 与 Task 元数据竞争最多一个实际变更成功；即使修改不同字段，陈旧版本也冲突。无变化请求先完成时可与后续真实变化分别成功，但只有真实变化推进版本；真实变化先完成时，旧版本 no-op 冲突。拒绝在数据修改前决定；行写入或父 touch 后的故障经确认回滚时，完整集合、排列、父版本和全部时间均零变更。
 
@@ -131,9 +157,9 @@ Task 元数据与 Steps 共享 `Task.version`。成功的真实 Steps 变化只�
 
 业务拒绝与事务 cleanup 故障同时出现时，整体按内部故障处理，保留两条错误原因。事务完成事实分别为 `committed`、`not_committed` 或 `unknown`：确认提交成功后，响应失败仍属已提交；明确提交回滚或提交前确认回滚为未提交；未确认的 Commit 错误为未知。失败 Commit 后的 `ErrTxClosed` cleanup 不能证明该操作已回滚，取消或 HTTP 状态也不能代替提交事实。
 
-响应使用独立的 `written`、`failed` 或 `canceled_before_body` 结果，并记录已写字节；写入网络不等于客户端确认收到。未知写入按原 Project、Task、Step ID 只读核对当前集合或单项，不自动重放 POST、PATCH 或 PUT，不为未知新增换 ID。当前存在、缺失或版本只表达当前事实，不能归因于某次未知操作。
+响应使用独立的 `written`、`failed` 或 `canceled_before_body` 结果，并记录已写字节；写入网络不等于客户端确认收到。未知写入按原 Project、Task、Step ID 只读核对当前集合或单项，不自动重放 POST、PATCH、PUT 或 DELETE，不为未知新增换 ID。当前存在、缺失或版本只表达当前事实，不能归因于某次未知操作。
 
-沿用 `X-Request-ID`。恢复 GET 可使用原请求 ID 加 `.r1`、`.r2` 等后缀关联诊断，记录 `read_kind=reconcile`、当前版本及 `found`、`absent` 或 `current_state`。该约定不参与授权、版本、身份或幂等判断。日志由 handler 记录 `add`、`update`、`set_status` 或 `move` 操作、`changed`/`unchanged` 业务结果、prepare/persist/commit/response 阶段、独立事务/响应结果、安全原因类别和必要 SQLSTATE。no-op 不记录数据写入的 persist 阶段；业务 `unchanged` 可与事务 `committed` 同时成立，二者含义独立；固定诊断不输出标题、Markdown、URL、令牌、任意 Fault message 或数据库消息。
+沿用 `X-Request-ID`。恢复 GET 可使用原请求 ID 加 `.r1`、`.r2` 等后缀关联诊断，记录 `read_kind=reconcile`、当前版本及 `found`、`absent` 或 `current_state`。该约定不参与授权、版本、身份或幂等判断。日志由 handler 记录 `add`、`update`、`set_status`、`move` 或 `delete` 操作、`changed`/`unchanged` 业务结果、prepare/persist/commit/response 阶段、独立事务/响应结果、安全原因类别和必要 SQLSTATE。no-op 不记录数据写入的 persist 阶段；业务 `unchanged` 可与事务 `committed` 同时成立，二者含义独立；固定诊断不输出标题、Markdown、URL、令牌、任意 Fault message 或数据库消息。
 
 ## 验证要求
 
@@ -160,5 +186,12 @@ Task 元数据与 Steps 共享 `Task.version`。成功的真实 Steps 变化只�
 | ST-M2 | 移动保留所有 Step 身份、内容和创建/更新时间；当前相邻、首尾及单项 no-op 保留完整资源与全部时间，最大版本 no-op 无时钟、位置 UPDATE 或父 touch。 |
 | ST-M3 | 严格位置输入、自引用、缺失目标/锚点、陈旧同值、权限与版本耗尽按检查顺序拒绝；同版本移动及 Task 写入最多一次实际变化。 |
 | ST-M4 | 真实 PostgreSQL 的受影响位置写入和父 touch 后失败均确认回滚，完整前后状态相同；实际 HTTP 的最大合法资源移动与 no-op 使用同一完整 codec，压力案例独立于日常 CI。 |
+| ST-D1 | 任意状态的指定 Step 均可删除，返回完整剩余集合，末项删除得到显式空数组；读取或当前版本重复删除目标为子项 404。 |
+| ST-D2 | 删除仅推进一次父版本/时间，压紧后续位置并保留其他 Step 的身份、内容、全部时间和相对顺序，以及父业务、附件、PR、Session 和 Worker 归属。 |
+| ST-D3 | 当前缺失目标先于版本耗尽，陈旧版本先于目标缺失；同版本删除及其他 Task/Steps 写入最多一次实际变化，删除和压紧或父 touch 后失败均经真实事务确认回滚。 |
+| ST-D4 | 删除释放 Task 内 ID，后续 POST 相同 ID 生成新记录；丢响应只读核对当前事实，不进行重放或推断历史归因。完整剩余候选在写前通过同一 codec，最大资源删除的实际 HTTP 验证独立于日常 CI。 |
+| ST-L1 | 安装后的 CLI 连接真实服务，完整读取非空、空集合和单项说明，保留保存顺序、规范短 ID、原值文本、全部字段与大于 2^53 的精确版本。 |
+| ST-L2 | 显式 project 在仓库外直接读取，帮助先于配置/Git/网络；坏字段、scope、重复或非规范 ID、读取失败和未支持入口明确非零退出，不伪造空态或部分成功。 |
+| ST-L3 | 可读安全转义、单个完整 JSON stdout、0/1/2 退出码、401 登录指导、共享取消/预算及仅 list/show 的帮助、补全和独立手册与安装产物一致。 |
 
 [服务验证说明](../../packages/daynight-server/README.md#task-steps-api)拥有测试与独立压力验证命令；实际产物及运行结果随对应源码和 PR 保存。

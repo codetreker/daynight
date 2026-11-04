@@ -21,15 +21,17 @@ Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `da
 [补全设计](../design/daynight-completion.md)。公开 skill 的分发、交互安装和任务工作流
 由[Agent skill 需求](daynight-agent-skill.md)拥有；各业务文档明确实际交付状态。
 
+Task Steps 的已交付 CLI 仅提供 `task step list/show` 读取；完整有序资源、短 ID、四状态、共享父版本和严格输出由[Steps 资源契约](daynight-task-steps.md#cli-读取)拥有。
+
 ## 需求
 
 ### C1. 包与平台
 
 npm 包名为 `@codetreker/daynight`，可执行命令为 `daynight` 和 `dn`，TypeScript 应用代码放在
 `packages/daynight/`。两个名称均由包的 `bin` 声明指向 `dist/main.js`，安装后可直接使用，无需手动设置 shell alias。
-它们共享全部命令、参数、配置、副作用、输出和退出码；帮助及诊断使用规范名称 `daynight`。Linux、macOS 和 Windows
-必须支持同一组命令和对应的业务保证；平台相关的命令执行、输出处理和退出行为必须
-经过原生验证。发布包的 Node.js 要求为 `>=22`，不限制主版本上限；运行时依赖必须
+它们共享全部命令、参数、配置、副作用、输出和退出码；帮助及诊断使用规范名称 `daynight`。支持 Linux、Windows 和 Apple Silicon（ARM64）macOS，不支持 Intel macOS。
+CLI、Worker、Controller、Review 与原生验收沿用这一支持范围，必须支持同一组命令和对应的业务保证；
+平台相关的命令执行、输出处理和退出行为必须经过对应支持平台的原生验证。发布包的 Node.js 要求为 `>=22`，不限制主版本上限；运行时依赖必须
 允许 Node.js 22 的当前 LTS patch，使严格 engine 校验下的安装和运行均可用。Node.js 22.14
 之前的旧小版本不具备 SQLite 二进制需要的 Node-API 10；安装指引建议使用当前 patch。源码开发和发布工具链的要求由
 [开发指南](../development.md#cli-development)维护。shell 补全的运行环境由 C5 单独约束。
@@ -72,6 +74,9 @@ daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--allow-agents true|false] [--assigned-to <assignee>] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--allow-agents true|false] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
+daynight task step
+daynight task step list <task-id> [--json] [--project <project-id>]
+daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task attachment
@@ -83,10 +88,10 @@ daynight task attachment remove <task-id> <relative-path> [--project <project-id
 
 无参数、`--help` 或 `-h` 显示顶层帮助并成功退出；帮助列出 `worker`、`review`、`update`、`login`、`logout`、
 `completion`、`skill`、`project` 和 `task`。`--version` 与 `-v` 输出当前包版本。裸 `worker`、裸 `review` 和裸 `completion`
-显示各自帮助；裸 `skill`、`project` 与 `task` 同样显示组帮助。组和操作在该层唯一参数为 `--help` 或 `-h` 时显示帮助，且不得执行
+显示各自帮助；裸 `skill`、`project`、`task` 与 `task step` 同样显示组帮助。组和操作在该层唯一参数为 `--help` 或 `-h` 时显示帮助，且不得执行
 该操作。顶层版本与 `--skill` 选项不继承到子命令。`review ls` 是 `review list` 的别名。
 
-`daynight --skill` 与 `dn --skill` 将当前包随版本发布的一份英文 CLI 使用手册原样输出到 stdout 并成功退出，保留 YAML frontmatter、换行和全部字节，不添加包装。手册独立提供 project/task 查询和写入、依赖、精确版本、properties 与 attachments 的实际命令用法；其他能力引导通过 `daynight --help` 发现，详细参数通过对应子命令的 `--help` 查询。手册不依赖本地引用文件，不承载 `using-daynight` 的任务编排工作流。
+`daynight --skill` 与 `dn --skill` 将当前包随版本发布的一份英文 CLI 使用手册原样输出到 stdout 并成功退出，保留 YAML frontmatter、换行和全部字节，不添加包装。手册独立提供 project/task 查询和写入、依赖、精确版本、properties、attachments 与 Step list/show 读取的实际命令用法；其他能力引导通过 `daynight --help` 发现，详细参数通过对应子命令的 `--help` 查询。手册不依赖本地引用文件，不承载 `using-daynight` 的任务编排工作流。
 
 `--skill` 必须是唯一参数；额外参数、其他选项和内联赋值按 usage error 以状态码 2 拒绝，且在读取手册前停止。手册文件缺失、读取失败或非法 UTF-8 以状态码 1 退出并保留原因。读取与校验完成后才输出；输出失败可能留下部分 stdout。
 
@@ -138,7 +143,7 @@ review 的目录 `--path` 保留原有拒绝规则。`project create` 接受一�
 `--status` 调整所选状态；`--ready` 与所选状态取交集。列表按 `in_progress`、ready、
 其余 `todo`、`done` 稳定分组。文本列表省略描述、版本和时间；所有筛选形式的 JSON
 列表仅省略 `description`，保留其余 API 字段、原始 PR 字符串、精确版本和时间戳。
-详情、ready、创建和更新结果仍保留完整 task 资源。Task和graph必填nullable assignedTo，文本显示当前ID或unassigned；create/update的--assigned-to及update的--clear-assigned-to负责设置/清空。list的UUID/me/unassigned筛选可组合--ready并保留到每页；ready命令和worker自动调用不增加该参数。me以成功响应身份校验全部页，不额外查询身份。
+详情、ready、创建和更新结果仍保留完整 task 资源。Task和graph必填nullable assignedTo，文本显示当前ID或unassigned；create/update的--assigned-to及update的--clear-assigned-to负责设置/清空。CLI 创建省略 --assigned-to 时读取当前认证账号并提交其 UUID，身份读取失败或取消时不创建；显式负责人跳过身份查询。list的UUID/me/unassigned筛选可组合--ready并保留到每页；ready命令和worker自动调用不增加该参数。me以成功响应身份校验全部页，不额外查询身份。
 `ready` 的参数、服务排序及响应校验
 由[project/task 需求](daynight-project-task.md#pt7-task-命令与更新语义)拥有。`task` 显式指定 project
 时只需要 server 配置和 HTTP；自动选择时才加载 Git 与仓库关联模块。任务写入必须晚于本地

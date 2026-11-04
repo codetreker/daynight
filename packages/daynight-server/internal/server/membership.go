@@ -54,6 +54,16 @@ func memberResponse(member core.ProjectMember) api.ProjectMember {
 		CreatedAt: member.Grant.CreatedAt.UTC(), UpdatedAt: member.Grant.UpdatedAt.UTC()}
 }
 
+func participantResponse(participant core.ProjectParticipant) api.ProjectParticipant {
+	var direct *api.ProjectGrant
+	if grant := participant.DirectGrant; grant != nil {
+		response := projectGrantResponse(*grant)
+		direct = &response
+	}
+	return api.ProjectParticipant{UserID: participant.UserID, EffectiveRole: string(participant.EffectiveRole), DirectGrant: direct,
+		Profile: api.ProjectParticipantProfile{Name: participant.Profile.Name, Email: participant.Profile.Email, AvatarURL: participant.Profile.AvatarURL}}
+}
+
 func invitationResponse(invitation core.ProjectInvitation) api.ProjectInvitation {
 	return api.ProjectInvitation{ID: invitation.ID, ProjectID: invitation.ProjectID, CreatedBy: invitation.CreatedBy,
 		CreatedAt: invitation.CreatedAt.UTC(), ExpiresAt: invitation.ExpiresAt.UTC(), ConsumedBy: invitation.ConsumedBy,
@@ -92,9 +102,9 @@ func (h *MembershipRoutes) listMembers(w http.ResponseWriter, request *http.Requ
 		writeError(w, request, logger, "membership", "list", err)
 		return
 	}
-	response := api.ProjectMemberList{Items: make([]api.ProjectMember, 0, len(members))}
+	response := api.ProjectParticipantList{Items: make([]api.ProjectParticipant, 0, len(members))}
 	for _, member := range members {
-		response.Items = append(response.Items, memberResponse(member))
+		response.Items = append(response.Items, participantResponse(member))
 	}
 	membershipCompleted(request, logger, "list")
 	writeJSON(w, request, logger, http.StatusOK, response)
@@ -104,7 +114,7 @@ func (h *MembershipRoutes) setRole(w http.ResponseWriter, request *http.Request,
 	logger, projectID, err := h.scoped(request, principal)
 	var fields map[string]json.RawMessage
 	if err == nil {
-		fields, err = decodeObject(w, request, "version", "role")
+		fields, err = decodeObject(w, request, "version", "role", "expectedUserId")
 	}
 	var version int64
 	if err == nil {
@@ -114,31 +124,39 @@ func (h *MembershipRoutes) setRole(w http.ResponseWriter, request *http.Request,
 	if err == nil {
 		role, err = requiredString(fields, "role")
 	}
+	var expectedUserID string
+	if err == nil {
+		expectedUserID, err = requiredString(fields, "expectedUserId")
+	}
 	if err != nil {
 		writeError(w, request, logger, "membership", "set_role", err)
 		return
 	}
-	member, err := h.memberships.SetRole(request.Context(), principal, projectID, request.PathValue("userId"), version, core.ProjectRole(role))
+	grant, err := h.memberships.SetRole(request.Context(), principal, projectID, request.PathValue("userId"), service.SetProjectMemberRole{Version: version, Role: core.ProjectRole(role), ExpectedUserID: expectedUserID})
 	if err != nil {
 		writeError(w, request, logger, "membership", "set_role", err)
 		return
 	}
 	membershipCompleted(request, logger, "set_role")
-	writeJSON(w, request, logger, http.StatusOK, memberResponse(member))
+	writeJSON(w, request, logger, http.StatusOK, projectGrantResponse(grant))
 }
 
 func (h *MembershipRoutes) removeMember(w http.ResponseWriter, request *http.Request, principal core.Principal) {
 	logger, projectID, err := h.scoped(request, principal)
 	var fields map[string]json.RawMessage
 	if err == nil {
-		fields, err = decodeObject(w, request, "version")
+		fields, err = decodeObject(w, request, "version", "expectedUserId")
 	}
 	var version int64
 	if err == nil {
 		version, err = membershipVersion(fields)
 	}
+	var expectedUserID string
 	if err == nil {
-		err = h.memberships.Remove(request.Context(), principal, projectID, request.PathValue("userId"), version)
+		expectedUserID, err = requiredString(fields, "expectedUserId")
+	}
+	if err == nil {
+		err = h.memberships.Remove(request.Context(), principal, projectID, request.PathValue("userId"), service.RemoveProjectMember{Version: version, ExpectedUserID: expectedUserID})
 	}
 	if err != nil {
 		writeError(w, request, logger, "membership", "remove", err)

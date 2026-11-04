@@ -17,8 +17,10 @@ and [design](../../docs/design/daynight-task-properties.md) own PR associations.
 The [attachment requirements](../../docs/spec/daynight-task-attachments.md) and
 [architecture](../../docs/design/daynight-task-attachments.md) own single-file
 management, previews and their independent state; the
-[Web decision](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)
-records the original choices.
+[attachment decision](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)
+records their original choices. [Thread requirements](../../docs/spec/daynight-task-thread.md)
+and the [Discussion design](../../docs/design/task-thread-web.md) own persistent
+messages, replies, page memory and incremental continuity.
 
 The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define login, private
@@ -597,6 +599,69 @@ index. Overview positioning can clear a filter that hides its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
+## Session display
+
+Task, Test and readable archived Sessions share the Display menu beside Refresh.
+Conversation is the default and keeps messages, plans, interactions and real
+errors; Standard preserves the complete activity view. The authenticated account
+and verified Session ID select a shared page preference, persisted independently
+from drafts and execution identity. Storage failures retain the current choice
+and expose retry only inside the menu. Both modes and all menu text follow the
+page language. Changing mode preserves the client, channel, Composer, retained
+entries and reading intent without replaying operations or altering pagination.
+The [requirements](../../docs/spec/task-sessions.md#session-显示模式) own the
+display rules; the [Session design](../../docs/design/task-session-protocol.md#session-显示菜单与入口绑定)
+owns identity binding, menu behavior and preference integration.
+
+## Task discussions
+
+Task details always provide Overview, Attachments and Discussion tabs, followed
+by Session when native execution content is available. Discussion works before
+execution starts, after completion and while an execution environment is offline.
+It reads and posts directly to the task Thread resource; ordinary browser posts
+use the current authenticated account without a claimId and do not change Task
+status, version, properties, dependencies, task-sync or worker control.
+
+Each open task owns a controller scoped by user, project and task. Messages,
+drafts, references and the continuously consumed message ID stay in bounded page
+memory, without IndexedDB, TaskCache, BroadcastChannel or browser persistence.
+Same-task tab changes retain them; closing or leaving the task and confirmed
+access loss clear them. The authenticated shell supplies its existing account
+context, and the controller reuses account admission and revocation signals.
+It does not request another current-user or member list for message authors.
+
+An active, visible Discussion reads new messages every five seconds after a
+successful read and immediately catches up complete pages. Hidden tabs and pages
+pause reads. History, references and post receipts never advance the independent
+consumed-after ID. Visible and incoming count/byte caps retain complete bodies;
+explicit navigation can replace displayed history, which remains reachable by
+before/after ID paging. Only a reading anchor, the latest confirmed receipt and
+one pending POST reservation can be fixed, so repeated own posts cannot prevent
+older unseen messages from progressing. The new-message count describes retained
+incoming messages rather than the service's total backlog.
+
+All Web reads request details=true. Author names and Agent provider badges use
+immutable message snapshots; missing or blank names use a separate full account
+ID label, and current worker settings never rewrite history. Safe Markdown keeps
+line breaks and local code/table scrolling without raw HTML or remote image
+loads. Reply previews use a known parent directly; an out-of-window parent loads
+only on demand with at most two bounded list reads and an exact target check.
+Message details use a nested native dialog that owns Escape/Tab and restores
+focus within page, modal and fullscreen task details.
+
+The composer preserves original whitespace and code indentation. Ctrl/Command+
+Enter sends outside IME composition. A valid 201 confirms the remote message and
+ends its response timer before same-account authentication re-admission; later
+local failure cannot turn that confirmation into an unknown result. Only the
+submitted draft/reply revisions clear on success. Explicit refusals and unknown
+outcomes preserve draft content, and refresh never repeats a POST. Equal body
+text is not a submission identity. Validated parent access errors clear the
+scope; a missing reply or pagination message is a local error that retains data.
+
+The [design](../../docs/design/task-thread-web.md) and
+[decision](../../.agents/notes/implemented/architecture/2026-11-03-task-thread-web.md)
+own the full decoder, capacity, lifecycle, keyboard and verification rules.
+
 ## Task execution time and possible stalls
 
 A local-only snapshot has revision zero and no server clock or successful receipt.
@@ -875,7 +940,7 @@ copy icon immediately to its right. The ID and its copy control belong to Overvi
 The three-item status menu begins the shared state row beside the assignee
 control, followed by platform and readiness, with automatic execution at the right.
 Status, assignee and platform controls share a compact 24px height; the left group can wrap
-on narrow screens. The menu remains available on both tabs, marks the current
+on narrow screens. The menu remains available on every content tab, marks the current
 item and permits selecting it. Arrow/Home/End, activation and
 Escape preserve keyboard access and focus. Confirmation shows the full task name,
 current/target states and timing consequences. Cancel is initially focused;
@@ -912,8 +977,11 @@ database and persistence behavior.
 Task details share claim display and force withdrawal across the dialog,
 standalone page and fullscreen. Active claims show the user, machine, agent and
 phase; released claims are labeled, while completed history is not a current
-claim. Project membership supplies user names/accounts; a former member remains
-identified by its real user ID, and membership-read errors remain visible. The
+claim. Project participant profiles supply nullable names and email addresses,
+independently of the current-access owner that authorizes controls. The profile
+reader retains loading, request errors and retry; a former participant remains
+identified by its real user ID. A missing canonical profile is a roster error,
+not a fabricated former participant or an empty profile. The
 claimed heading has a bounded, focusable scroll region so full names, accounts,
 machine names and member errors remain readable without consuming the tabs and
 reading panels. This applies to dialog and standalone entries in normal and
@@ -1328,7 +1396,7 @@ does not implement reconciliation or rollback.
 The default graph/list entry still opens the centered `TaskDetailDialog`. Its
 title-bar More task actions menu has a real Open in new tab anchor with
 `target="_blank"` and `rel="noopener noreferrer"`, preserving the current task,
-Overview/Attachments tab and selected attachment. The source dialog remains open with its local
+current tab and selected attachment. The source dialog remains open with its local
 state. A preview's neighboring Open in new tab action enters the same complete
 task details at that file, even while preview content is loading.
 
@@ -1359,8 +1427,9 @@ and explicit exit/return controls remain available.
 
 `/projects/{projectId}/tasks/{taskId}` defaults to Overview. The existing
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` defaults to
-Attachments with that exact file selected. `tab=overview|attachments` can
-explicitly select a tab. With no file selected, Attachments uses the base task
+Attachments with that exact file selected.
+`tab=overview|attachments|discussion|session` can explicitly select a tab;
+Session falls back to Overview when no Session panel is available. With no file selected, Attachments uses the base task
 URL with `?tab=attachments`; a hidden file selection can remain in an attachment
 path with `?tab=overview`. `taskDetailUrl` builds those URLs from
 `TaskDetailNavigation`. The app observes both pathname and search, and login
@@ -1505,7 +1574,7 @@ acceptance keeps its preinstalled-browser behavior.
 The CI command wrapper requires its owned process group to stop after settlement,
 not merely its leader to exit. Command, cancellation and cleanup failures remain
 failures, including combined errors. The container browser keeps its 900-second
-permission wait and source/run-bound release. The normal dev-ci runner continues
+permission wait and source/run-bound release after native preparation. The normal dev-ci runner continues
 to own the built/running image identity and full stack cleanup. The
 [quality isolation decision](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
 owns the responsibility split and evidence limits. The browser job selects the
@@ -1513,12 +1582,19 @@ official Ubuntu archives before installation, as delivered in
 [PR #148](https://github.com/codetreker/daynight/pull/148).
 
 Native functional checks start after the native process and browser are ready.
-Their browser cleanup must pass before an atomic, run/source-bound permission
-releases the container's thirty-one functional checks. Ordinary acceptance
-finishes after those functional targets, combined authentication and cleanup.
-When explicitly requested locally, capacity runs last after all its preparation
-commands, container checks, full dev-ci cleanup and container browser recovery. Every browser phase retains one
-worker and zero retries. Browser CI runs controlled deployment fixtures before
+Native preparation installs the shared CLI before an atomic, run/source-bound
+permission releases the container's thirty-two functional checks. Native and
+container functional browsers then overlap against independent service,
+database, authentication and storage resources. Each phase has a separate
+private Chromium profile root. Run-wide CLI recovery waits until both targets
+have drained; combined CLI commands receive cancellation without terminating
+commands in the other target. Ordinary acceptance finishes after both functional
+targets, combined authentication, browser recovery, container cleanup and shared
+CLI recovery. When explicitly requested locally, capacity runs last after those
+barriers and all its preparation commands. Every browser phase retains one
+worker and zero retries. The
+[functional target decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
+records the scheduling constraints. Browser CI runs controlled deployment fixtures before
 core acceptance and keys outer recovery and its acceptance artifact upload to
 that attempt. The quality artifact upload follows the quality command attempt.
 After core acceptance and recorded recovery, the Ubuntu browser job runs `node deployment/dev-ci/tests/attachments.mts` once for real
@@ -1551,8 +1627,8 @@ pnpm web:acceptance
 pnpm web:acceptance:stress
 ```
 
-The ordinary command and CI require thirty-one functional scenarios on each
-native/container target, sixty-two in total. The explicit local stress command adds five native
+The ordinary command and CI require thirty-two functional scenarios on each
+native/container target, sixty-four in total. The explicit local stress command adds five native
 capacity/limit scenarios and their performance receipt. From this package, use
 `pnpm test:stress:browser`, or invoke `node scripts/acceptance.mts --stress`;
 `--apfs --stress` combines the local capacity matrix with explicit APFS storage.
@@ -1595,7 +1671,7 @@ ownership revalidation. Uncertain ownership fails without recursive removal.
 Existing recovery commands remain available without opting into new attachment.
 
 The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same sixty-two functional scenarios and
+macOS local acceptance runs the same sixty-four functional scenarios and
 additional combined authentication checks, with native filesystem coverage
 qualified by its recorded capability. Explicit local stress acceptance adds the
 same five capacity/limit scenarios and fixed performance budgets on Linux and
@@ -1610,8 +1686,8 @@ npm registry unless the build variable is explicitly supplied.
 The command builds real embedded assets and a new Go executable and owns a
 separate PostgreSQL container/volume and ephemeral loopback listener. In parallel,
 the normal dev-ci runner builds and starts the actual production image. Browser
-execution proceeds through thirty-one native functional scenarios and the same
-thirty-one functional scenarios through the production image's stream gateway.
+execution overlaps thirty-two native functional scenarios with the same
+thirty-two scenarios through the production image's stream gateway.
 Explicit local stress mode then runs five native capacity/limit scenarios. In
 that mode, the native process and PostgreSQL remain alive through capacity;
 other preparation commands and the complete container stack finish before it
@@ -1648,6 +1724,13 @@ loss and GET-only recovery with preserved task materials. The
 long/null names, avatar failure, popup/focus/scroll/fullscreen behavior, former
 members, read-only browsing, local filters and complete progress with hidden
 siblings.
+
+The `task-pause` journey verifies pause discovery in the project overview,
+standalone and chain lists, dependency graph and common detail heading. It admits
+only registered exact-version Unpause PATCHes, checks preserved task materials,
+pending protection, stale conflicts and committed-response-loss GET-only
+reconciliation, and covers English/Chinese narrow layouts. Pause counts retain
+their complete project/component scope independently of status and list filters.
 
 The [status journeys](tests/e2e/status.spec.ts) reuse the packed CLI and each
 target's authenticated service with the same Alice identity. Origin, method,
@@ -1696,7 +1779,7 @@ records the original data-sharing, rendering and independent-reading proof choic
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
 requires a separate eleven-check receipt on each runtime target, alongside the
-62 ordinary Playwright cases or 67 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
+64 ordinary Playwright cases or 69 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
 identities, records their initial project sets, and crosses browser and CLI data
 through shared/private projects, original-credential service restart, logout/PAT
 independence, revocation, admitted upload, real socket interruption and normally
@@ -1802,8 +1885,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (62 ordinary cases; local stress adds five native cases
-for 36 native / 31 container, 67 total), current manual/periodic refresh,
+The selected inventory (64 ordinary cases; local stress adds five native cases
+for 37 native / 32 container, 69 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -1816,13 +1899,14 @@ The [graph functional scenarios](tests/e2e/workflow.spec.ts),
 [authentication journeys](tests/e2e/auth.spec.ts),
 [status journeys](tests/e2e/status.spec.ts),
 [permission journey](tests/e2e/task-agent-permission.spec.ts),
+[pause journey](tests/e2e/task-pause.spec.ts),
 [platform journey](tests/e2e/task-platform.spec.ts),
 [standalone-detail journey](tests/e2e/task-detail-page.spec.ts),
 [project-settings journey](tests/e2e/project-settings.spec.ts),
 [execution-time journey](tests/e2e/task-execution-time.spec.ts),
 [capacity scenarios](tests/e2e/capacity.spec.ts) and
 [acceptance runner](scripts/acceptance.mts) map to the
-[W1–W15 requirements](../../docs/spec/daynight-web.md) and
+[Web requirements](../../docs/spec/daynight-web.md) and
 [language requirements](../../docs/spec/daynight-web-i18n.md) and
 [execution-timing requirements](../../docs/spec/daynight-task-timing.md) as follows. Names are stable
 scenario annotations validated in each target's report. `capacity-*` annotations
@@ -1842,6 +1926,7 @@ the remaining functional scenarios.
 | W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |
 | W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
 | W20 | `task-assignment`, `task-assignment-layout`: native field propagation, real exact-version assignment/clear PATCHes, same-value zero writes, conflict and committed-response-loss GET-only recovery, people identity/access presentation, local filters with full-chain facts, bilingual desktop/narrow menu, focus, scroll and fullscreen behavior |
+| W21 | `task-pause`: project/list/chain/graph pause discovery, complete-scope counts, common heading and Unpause, exact-version property PATCH with preserved task materials, duplicate protection, conflict and committed-response-loss GET-only recovery, bilingual narrow layouts |
 | W15 | `task-platform`: status-row selection and confirmation, zero-write dismissal and select-focus restoration, set/clear, shared status/permission gate, exact versions, stale/unknown GET-only recovery, cross-task late ownership, manual-start lock, field propagation and bilingual narrow layouts |
 | TT3 | `project-settings`: real-service direct entry/reload, administrator save and independent member read, project isolation, exact settings versions above 2^53, stale conflict and demotion, read-only member recovery, actual commit with lost response and failed-read retry without PATCH replay, bilingual 320px/390px form/control/navigation containment and unclipped text |
 | TT1–TT2, TT4–TT6 | `task-execution-time`: real PostgreSQL crossing with graph deliveries held and an incorrect client wall clock, one-second local progress, stable focus/DOM/geometry/edges/viewport, real saved-threshold changes, installed-CLI completion and frozen polling, unknown legacy starts, sub-minute/multi-day/shared/external cards and standalone rows, bilingual 320px/390px layout; browser GET/HEAD only, with fixture mutations through authenticated API or installed CLI |
@@ -1880,10 +1965,10 @@ retries; skipped, flaky, duplicate/missing or incomplete scenarios fail validati
 When selected, the web CI job archives `daynight-web-acceptance` separately from raw
 coverage for 30 days. Inspect the artifact from the exact workflow run and its
 tested checkout identity, which is normally a merge revision for PR runs. A pass
-requires exactly thirty-one native and thirty-one container functional
+requires exactly thirty-two native and thirty-two container functional
 scenarios. Explicit local stress mode requires the strict native union of those
-thirty-one functional and five capacity/limit scenarios, plus the same
-thirty-one container scenarios. Every phase and target rejects missing, extra
+thirty-two functional and five capacity/limit scenarios, plus the same
+thirty-two container scenarios. Every phase and target rejects missing, extra
 or duplicate scenarios and skipped/flaky/retried results.
 Installed-CLI handoff, container callbacks and recovery require matching source
 commit/tree/dirty state as well as existing package/artifact ownership. A missing
@@ -1899,6 +1984,17 @@ Local receipts retain their source and browser identity; they do not establish
 clean hosted delivery results. The
 [paint decision](../../.agents/notes/archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
 retains raster evidence and visual tolerances needed to assess that mechanism.
+
+Functional `playwright.json` reports retain named body steps for attachment
+fixture uploads, preview/deletion matrices, task-page reading layouts and
+execution-time synchronization. Compare each test's total with its sibling step
+durations; a parent duration already includes its nested steps. The remaining time includes
+fixture/authentication setup, unwrapped actions, screenshots outside the named
+blocks and teardown; it is not pure fixture time. The pinned JSON reporter omits
+steps nested under fixture hooks. These wall-time observations do not alter
+assertions, deadlines or acceptance thresholds and do not establish CPU or I/O
+causality. The [journey timing decision](../../.agents/notes/implemented/testing/2026-11-04-web-journey-timing.md)
+records the reporting and privacy limits.
 
 Capacity receipts also retain per-interaction `feedbackDiagnostics`: input,
 capture, first ready condition, first/second frame and final end timestamps,
@@ -1931,13 +2027,20 @@ native process. Timeouts and cancellation stop owned command groups; browser
 receipts identify the detached Chromium group and project-local profile as well.
 A passing run requires confirmed native, browser/profile and dev-ci cleanup.
 Each phase verifies its Playwright group has stopped and recovers owned browser
-resources immediately. After the native functional phase, an atomically written
-`container/container-permission.json` binds its completed cleanup to the exact
+resources immediately. Profile roots are derived from the validated phase
+location under `acceptance-private/<run>/`, outside the uploaded acceptance
+artifacts. Playwright allocates profiles there; Chromium keeps the short relative
+`.tmp` directory for Unix sockets so the private path does not exceed socket
+path limits. Inventory and recovery inspect only that phase's root, preserving
+unknown-startup and process-identity failures without touching another target.
+After native preparation, an atomically written
+`container/container-permission.json` binds completed preparation to the exact
 acceptance run ID, dev-ci run ID and source SHA. The container callback records
 its identity before waiting, and inventories browsers only after permission;
-its `ready.json` is diagnostic timing, not browser permission. Any stage failure
-or unexpected native-server exit cancels sibling work, drains started tasks and
-preserves failures before final cleanup.
+its `ready.json` is diagnostic timing, not browser permission. Both functional
+targets drain before run-wide CLI recovery and optional local capacity. Any stage
+failure or unexpected native-server exit cancels sibling work, drains started
+tasks and preserves failures before unconditional final cleanup.
 
 After the original runner, callback/Playwright processes and their owned groups
 have stopped, run

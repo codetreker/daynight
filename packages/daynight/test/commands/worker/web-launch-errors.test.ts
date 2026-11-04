@@ -6,7 +6,7 @@ import { afterEach, expect, test, vi } from "vitest";
 const native = vi.hoisted(() => ({ spawn: vi.fn(), observe: vi.fn(), capture: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: native.spawn }));
 vi.mock("../../../src/commands/controller/local-client.js", () => ({ requestController: native.observe }));
-vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: native.capture }));
+vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: native.capture, confirmControllerProcessesStopped: vi.fn() }));
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import { openWebExecutionStore, type WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";

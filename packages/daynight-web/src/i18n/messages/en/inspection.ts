@@ -1,11 +1,31 @@
+import { pause } from "./pause";
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  pause,
+  discussion: {
+    title: "Discussion", empty: "No discussion yet", loading: "Loading discussion", refresh: "Refresh discussion",
+    loadOlder: "Load older messages", loadNewer: "Load newer messages", viewLatest: "View new messages",
+    loadedCount: (count) => `${count} messages`, newCount: (count) => `${count} new messages`,
+    participants: "Loaded participants", timeline: "Discussion messages", composer: "Discussion message", placeholder: "Share your thoughts…",
+    accountName: (id) => `Account ${id}`, agentName: (name) => `${name}'s Agent`, reply: (name) => `Reply to ${name}`,
+    cancelReply: "Cancel reply", send: "Send", resend: "Send again", viewReference: "View referenced message", referenceLoading: "Loading referenced message",
+    codeSnippet: "Code snippet", messageDetails: "Message details", messageAt: (name, time) => `View ${name}'s message details, ${time}`, closeDetails: "Close message details",
+    messageId: "Message Id", author: "Author", accountId: "Account Id", source: "Source", human: "Project member", agent: "Agent",
+    createdAt: "Created at", replyTo: "Reply to", claimId: "Claim Id", workerId: "Worker Id", body: "Message",
+    readFailed: "Discussion could not be updated.", historyFailed: "Messages could not be loaded.", referenceFailed: "The referenced message could not be loaded.",
+    postFailed: "Message was not sent.", postUnknown: "The send outcome is unknown.", denied: "This task is unavailable", deniedExplanation: "You can no longer access this task.",
+    retry: "Retry", table: "Table", imageUnavailable: "Image unavailable", errorDetails: "Error details",
+    dismissFeedback: "Dismiss sending message", invalidBody: "Use valid Unicode text up to 64 KiB.", capacity: "View new messages to make room before sending.", markdown: "Markdown",
+  },
   claim: {
     controls: "Task settings and claim",
     active: "Claimed by", released: "Released claim", machine: "Machine", agent: "Agent",
     phase: { preparing: "Preparing", executing: "Executing", verifying: "Verifying", completing: "Completing", waiting: "Waiting", paused: "Paused" },
-    membersLoading: "Loading claim owner and permissions…", membersError: "Claim owner details and withdrawal permissions could not be loaded.", retryMembers: "Retry member details", formerMember: "Former project member",
+    membersLoading: "Loading claim owner details…", membersError: "Claim owner details could not be loaded.", retryMembers: "Retry member details", formerMember: "Former project member",
+    membersProtocolError: "The claim owner response cannot be read by this page. The page and service versions may be incompatible.",
+    membersRecovery: "Open the task again to load the current page. Your drafts stay in this tab; copy them before closing it. If the error persists, report it with the request ID when available.",
+    openFreshPage: "Open task in a new tab",
     withdraw: "Force withdraw", title: "Force withdraw this task?", question: "Clear this execution claim and return the task to To do?",
     explanation: "This clears the claim and execution times and disables automatic execution. The worker starts cleaning up the previous execution after its next successful sync. The remote agent may continue running until that cleanup stops it; this action cannot guarantee an immediate stop.",
     pending: "Withdrawing the execution claim. You can close these details while the request completes.",

@@ -37,6 +37,12 @@ export const runCli = async (
       context.stderr(`${formatError(diagnostic)}\n`);
       return diagnostic.exitCode;
     }
+    const step = definition.commands?.find((command) => command.name === "task")?.commands?.find((command) => command.name === "step");
+    if (error instanceof UsageError && error.grammar !== undefined && step !== undefined && (error.grammar.definition === step || step.commands?.includes(error.grammar.definition))) {
+      const diagnostic = new PublicDiagnosticError(`Invalid Step command arguments. Run ${error.helpCommand} for usage.`, 2, { cause: error });
+      context.stderr(`${formatError(diagnostic)}\n`);
+      return diagnostic.exitCode;
+    }
     if (error instanceof PublicDiagnosticError) {
       context.stderr(`${formatError(error)}\n`);
       return error.exitCode;

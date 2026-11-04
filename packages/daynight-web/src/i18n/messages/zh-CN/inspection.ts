@@ -1,11 +1,31 @@
+import { pause } from "./pause";
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  pause,
+  discussion: {
+    title: "讨论", empty: "还没有讨论", loading: "正在加载讨论", refresh: "刷新讨论",
+    loadOlder: "加载较早的消息", loadNewer: "加载较新的消息", viewLatest: "查看新消息",
+    loadedCount: (count) => `${count} 条消息`, newCount: (count) => `${count} 条新消息`,
+    participants: "已加载的参与者", timeline: "讨论消息列表", composer: "讨论消息", placeholder: "写下你的想法…",
+    accountName: (id) => `账号 ${id}`, agentName: (name) => `${name} 的 Agent`, reply: (name) => `回复 ${name}`,
+    cancelReply: "取消回复", send: "发送", resend: "重新发送", viewReference: "查看引用消息", referenceLoading: "正在加载引用消息",
+    codeSnippet: "代码片段", messageDetails: "消息详情", messageAt: (name, time) => `查看 ${name} 消息详情，${time}`, closeDetails: "关闭消息详情",
+    messageId: "消息 Id", author: "作者", accountId: "账号 Id", source: "来源", human: "项目成员", agent: "Agent",
+    createdAt: "创建时间", replyTo: "引用消息", claimId: "Claim Id", workerId: "Worker Id", body: "消息正文",
+    readFailed: "讨论更新失败。", historyFailed: "消息加载失败。", referenceFailed: "引用消息加载失败。",
+    postFailed: "消息未发送。", postUnknown: "发送结果未知。", denied: "无法访问此任务", deniedExplanation: "你已无法访问该任务。",
+    retry: "重试", table: "表格", imageUnavailable: "图片不可用", errorDetails: "错误详情",
+    dismissFeedback: "关闭发送提示", invalidBody: "正文需要有效字符，且不能超过 64 KiB。", capacity: "查看新消息以腾出空间后再发送。", markdown: "Markdown",
+  },
   claim: {
     controls: "任务设置与认领",
     active: "当前认领", released: "已释放的认领", machine: "机器", agent: "Agent",
     phase: { preparing: "准备中", executing: "执行中", verifying: "验证中", completing: "完成中", waiting: "等待中", paused: "已暂停" },
-    membersLoading: "正在读取认领用户与操作权限…", membersError: "无法读取认领用户资料与撤回权限。", retryMembers: "重试成员资料", formerMember: "原项目成员",
+    membersLoading: "正在读取认领用户资料…", membersError: "无法读取认领用户资料。", retryMembers: "重试成员资料", formerMember: "原项目成员",
+    membersProtocolError: "当前页面无法读取认领用户资料。页面与服务版本可能不兼容。",
+    membersRecovery: "重新打开任务可加载当前页面。草稿保留在此标签页，关闭前请复制；若仍失败，请反馈问题并附上可用的请求 ID。",
+    openFreshPage: "在新标签页打开任务",
     withdraw: "强制撤回", title: "强制撤回这个任务？", question: "确认清除本次执行归属，并将任务退回待处理吗？",
     explanation: "将清除认领和执行起止时间，并关闭自动执行。Worker 下次成功同步后开始清理原执行；远端 agent 在清理停止它之前仍可能继续运行，此操作无法保证立即停止。",
     pending: "正在撤回执行归属。可以关闭详情，结果会保留。",

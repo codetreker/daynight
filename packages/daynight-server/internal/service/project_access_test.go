@@ -1,0 +1,77 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/google/uuid"
+)
+
+func TestProjectAccessProjectionAndAuthorization(t *testing.T) {
+	f := newMembershipFixture(t)
+	admin, member, outsider := f.user(t), f.user(t), f.user(t)
+	project := f.project(t, admin, "Access projection")
+	joined := f.join(t, admin, member, project.ID)
+	ctx := context.Background()
+	if _, err := f.database.Pool.Exec(ctx, `UPDATE project_members SET version=9007199254740993 WHERE project_id=$1 AND user_id=$2`, project.ID, member.UserID); err != nil {
+		t.Fatal(err)
+	}
+	joined.Grant.Version = 9007199254740993
+	for _, test := range []struct {
+		principal core.Principal
+		grant     core.ProjectGrant
+	}{
+		{admin, f.member(t, admin, project.ID).Grant},
+		{member, joined.Grant},
+	} {
+		access, err := f.projects.Access(ctx, test.principal, strings.ToUpper(project.ID))
+		if err != nil || !reflect.DeepEqual(access, core.ProjectAccess{ProjectID: project.ID, UserID: test.principal.UserID, Role: test.grant.Role, DirectGrant: &test.grant}) {
+			t.Fatalf("current actor access: %#v %v", access, err)
+		}
+	}
+	for _, test := range []struct {
+		principal core.Principal
+		projectID string
+	}{
+		{outsider, project.ID},
+		{admin, uuid.NewString()},
+	} {
+		access, err := f.projects.Access(ctx, test.principal, test.projectID)
+		requireFault(t, err, "not_found")
+		if !reflect.DeepEqual(access, core.ProjectAccess{}) {
+			t.Fatal("inaccessible project returned actor data")
+		}
+	}
+}
+
+func TestProjectAccessValidationAndCompletionFailures(t *testing.T) {
+	ctx := context.Background()
+	_, err := NewProjects(nil).Access(ctx, core.Principal{}, uuid.NewString())
+	requireFault(t, err, "unauthenticated")
+	principal := core.Principal{Kind: core.SessionCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	_, err = NewProjects(nil).Access(ctx, principal, "invalid")
+	requireFault(t, err, "invalid_input")
+	projects, database, databaseURL, admin := projectService(t)
+	project, err := projects.Create(ctx, admin, CreateProject{Name: "Completion precedence", RepoURL: "host:repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsider := servicePrincipal(t, database)
+	for _, actor := range []core.Principal{admin, outsider} {
+		canceled, cancel := context.WithCancel(ctx)
+		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_members") }, end: cancel})
+		access, err := NewProjects(traced.store).Access(canceled, actor, project.ID)
+		cancel()
+		assertOperational(t, err)
+		if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(access, core.ProjectAccess{}) {
+			t.Fatalf("completion failure masked by actor result: %#v %v", access, err)
+		}
+	}
+	database.Close()
+	_, err = projects.Access(ctx, admin, project.ID)
+	assertOperational(t, err)
+}

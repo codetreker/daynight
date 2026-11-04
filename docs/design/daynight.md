@@ -1,7 +1,7 @@
 # Daynight 客户端架构设计
 
 状态：`packages/daynight/` 是通过 `@codetreker/daynight` 分发的 TypeScript 客户端
-命令工具包，支持 Linux、macOS 和 Windows。`review` 提供 GitHub PR 审查，`worker` 提供前台任务认领与资源对账，`update`
+命令工具包，支持 Linux、Windows 和 Apple Silicon（ARM64）macOS，不支持 Intel macOS。`review` 提供 GitHub PR 审查，`worker` 提供前台任务认领与资源对账，`update`
 管理当前 npm 全局安装，`login/logout` 管理 CLI 凭据，review 拥有仓库配置和首次引导，`completion` 生成 Bash 和 zsh
 的原生补全脚本并安装启动配置；`--skill` 输出独立的 CLI 使用手册，`skill` 提供公开 `using-daynight` skill 的交互安装。project/task
 CLI 的共享配置、HTTP、仓库关联基础及 project/task 命令已完成，安装产物、真实服务
@@ -45,6 +45,9 @@ daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--allow-agents true|false] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--allow-agents true|false] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
+daynight task step
+daynight task step list <task-id> [--json] [--project <project-id>]
+daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task attachment
@@ -95,12 +98,14 @@ src/
     operation.ts
     json.ts
     parse.ts
+    task-steps.ts
     client.ts
   repository/
     index.ts
     identity.ts
     git.ts
     binding.ts
+    discovery-error.ts
     context.ts
   commands/
     skill/
@@ -125,6 +130,9 @@ src/
       definition.ts
       command.ts
       rendering.ts
+      step.ts
+      step-rendering.ts
+      step-diagnostics.ts
       attachment.ts
       attachment-rendering.ts
     project/
@@ -305,6 +313,19 @@ Task 的 definition、command 和 rendering 分别拥有共享语法、操作组
 操作在返回前验证数量不超限、每项确为 ready 且 task ID 不重复。`list` 仍使用完整
 分页。完整的请求、排序和输出机制见
 [project/task 设计](daynight-project-task.md#api-映射与更新机制)。
+
+`task step` 在普通 Task 操作前分派至独立 `step.ts`，仅组合 list/show 读取；
+`step-rendering.ts` 保留服务顺序和全部展示内容，JSON 使用精确 bigint codec，
+文本将控制字符与 bidi 控制符转义为可见文本。`step-diagnostics.ts` 仅输出安全的
+公开服务错误、结构化的项目发现失败及资源/阶段上下文，原始内部原因通过 cause 保留。
+`repository/discovery-error.ts` 只携带不存在/歧义类别与经验证的规范项目 ID；Step
+诊断从该类型生成恢复文本，不公开任意配置、Git、网络或清理错误的消息。
+`api/task-steps.ts` 拥有独立四状态 DTO 的严格资源解析和短 ID 输入正规化；
+客户端直接读取指定 Steps 路径，复用同一 server 操作的配置、认证、取消及字节/期限预算。
+显式 project 不触发项目发现或父 Task GET，帮助在加载这些依赖前完成。
+完整资源解析和渲染后才经 stdoutBytes 在同一取消信号下输出；输出失败可能留下
+部分 stdout，不能据此把不完整 JSON 当作成功资源。
+当前读契约与输出由[Steps 要求](../spec/daynight-task-steps.md#cli-读取)拥有。
 
 Task 的 `attachment.ts` 单独组合单文件上传、完整分页列表、原始读取和删除。
 API 客户端分别消费 JSON、字节流与 204 空响应，字节流不经过 UTF-8/JSON 解析或
@@ -523,8 +544,10 @@ project/task 安装 suite 以受控 HTTP 和真实 Git 证明三个原生平台�
 文件行为；真实 Go/PostgreSQL 流程复用独立 Go 测试包 `cmd/e2e_tests` 的 fresh
 race binary。该包集中拥有跨进程验收、`TestMain` 和资源清理；服务主命令包保留
 直接调用内部函数的测试，两边各自管理测试辅助设施。
-服务验证的编排层只安装一次 CLI，执行 Go 覆盖率 gate，再在 Go 默认 10 分钟
-计时器之外运行所选预算套件。常规 CI 运行两个期限场景，通过测试侧 preload 使用
+服务验证分为并行的覆盖率与 E2E 作业，各自准备安装后的 CLI；本地完整入口依次运行
+两部分。覆盖率作业保留生产包的 build/vet/race 与严格 coverage gate，随后在 Go 默认
+10 分钟计时器之外运行预算套件；E2E 作业独立执行完整 `cmd/e2e_tests`。常规 CI
+运行两个期限场景，通过测试侧 preload 使用
 1 秒单次、3 秒总期限，生产默认 30 秒/5 分钟单独断言；四个完整字节场景通过
 显式本地 `pnpm test:stress:budgets` 运行，保留真实 128/256 MiB 边界和 +1 字节拒绝，
 并在 CI 环境中拒绝。职责与证据见

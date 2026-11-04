@@ -84,9 +84,16 @@ and the rationale needed to understand them. Notes hold detailed alternatives
 and decision history. Create documents when needed and link to their owners
 without duplicating explanations.
 
-Do not commit UI mockups, `mockui` pages, their resource bundles, or tests that
-target them. This includes interactive previews composed from production
-components. Keep local prototypes in the task worktree's Git-ignored `.tmp/`
+Ship ordinary documentation with its corresponding implementation code in the
+same PR. Open a standalone documentation PR only with explicit user permission;
+permission for one document does not authorize publishing other documents.
+
+Mock UI and interactive prototype artifacts belong in the owning Daynight task
+attachments. Never commit or push UI mockups, `mockui` pages, their resource
+bundles, generated previews, or tests that target them; never include them in a
+repository PR or place them in product or source directories. This includes
+interactive previews composed from production components. Keep local inspection
+copies only in the task worktree's Git-ignored `.tmp/`, remove them after use,
 and save reviewable prototypes as attachments of their owning Daynight task.
 
 Rewrite edited documents as coherent wholes and synchronize related active
@@ -157,6 +164,11 @@ investigations stay read-only unless recording a proposal is authorized.
   accumulate unrelated cleanup.
 
 ## Validation and delivery
+
+Ordinary change PRs must leave `packages/daynight/package.json` version unchanged.
+Use the [release-daynight skill](.agents/skills/release-daynight/SKILL.md) for
+version selection, any version PR, and the complete CLI publication and
+verification workflow.
 
 Choose checks from the actual files and tooling involved. For skill and document
 changes, validate frontmatter, local links, lifecycle/path agreement, mandatory

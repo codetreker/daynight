@@ -7,7 +7,7 @@ import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
 import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { requestController } from "../../controller/local-client.js";
-import { captureProcessProof } from "../../controller/process-proof.js";
+import { captureProcessProof, confirmControllerProcessesStopped } from "../../controller/process-proof.js";
 import type { WebExecutionStore } from "./web-store.js";
 import type { LocalTask } from "./web-types.js";
 import type { WorkerSessionApi } from "./session-api.js";
@@ -22,6 +22,14 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
     const tail = previous.then(() => gate);
     tails.set(key, tail); await previous;
     try { return await action(); } finally { release(); if (tails.get(key) === tail) tails.delete(key); }
+  };
+  const cleanupStopped = async (task: LocalTask): Promise<boolean> => {
+    if (task.cleanup === null) return false;
+    const execution = task.webExecution!;
+    const saved = readControllerSnapshot(path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"));
+    if (saved !== null && (saved.executionId !== execution.executionId || saved.claimId !== task.claimId || saved.executionGeneration !== execution.executionGeneration || saved.controllerInstanceId !== execution.controllerInstanceId)) throw new Error("Controller credential renewal has conflicting cleanup evidence.");
+    const proof = saved?.controllerProcess ?? execution.controllerProcess;
+    return proof !== null && await confirmControllerProcessesStopped(proof, saved?.nativeProcesses ?? execution.nativeProcesses);
   };
   const methods = {
     prepare: async (input: LocalTask, prompt: string, signal: AbortSignal): Promise<ControllerLaunchTicket> => {
@@ -84,13 +92,13 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
     },
     refreshGrant: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
       const task = current(input);
-      if (task.webExecution!.launchId !== ticket.launchId || task.cleanup?.agentStopped) return;
+      if (task.webExecution!.launchId !== ticket.launchId || await cleanupStopped(task)) return;
       let expiresAt: unknown; try { expiresAt = (JSON.parse(await readFile(ticket.credentialFile, "utf8")) as { expiresAt: unknown }).expiresAt; } catch { throw new Error("Controller credential state is unavailable; it cannot be silently replaced."); }
       if (typeof expiresAt !== "string" || !Number.isFinite(Date.parse(expiresAt))) throw new Error("Controller credential expiry is invalid.");
       if (Date.parse(expiresAt) - options.now() > 120_000) return;
       const grant = await options.sessionApi.grant(task, task.webExecution!, signal);
       const latest = current(task);
-      if (latest.webExecution!.launchId !== ticket.launchId || latest.cleanup?.agentStopped) return;
+      if (latest.webExecution!.launchId !== ticket.launchId || await cleanupStopped(latest)) return;
       signal.throwIfAborted();
       await writeControllerCredential(ticket.credentialFile, grant);
     },

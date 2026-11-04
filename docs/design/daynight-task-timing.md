@@ -139,8 +139,9 @@ API 读取沿既有前台身份 guard、AbortController 和 generation，旧响�
 `/projects/:id/settings` 与成员页为同级路由，支持 GET/HEAD 深链接，复用项目导航、面板、表单、错误和权限展示模式。
 ProjectSettingsPanel 按 user/project 键隔离，成员查看权威值，管理员可编辑分钟、保存或取消。保存期间禁用相应写操作。
 草稿与已保存 Project 分开；成功 PATCH 返回完整 Project 后更新权威值，确认的 4xx 拒绝不应用草稿。
-409/403 重新读取 Project 和成员，冲突后展示当前设置与角色，不重发 PATCH；404 或自身成员消失清除私有 Project 和草稿。
-网络、协议或 5xx 错误代表未确认写入，先进入 uncertain 并核对 Project/成员；核对成功后才能再次保存，
+本人角色由共享内存 access 提供，权限刷新保持设置草稿。409/403 重新读取 Project
+和 access，冲突后展示当前设置与角色，不重发 PATCH；确认失权时清除私有 Project 和草稿。
+网络、协议或 5xx 错误代表未确认写入，先进入 uncertain 并核对 Project/access；核对成功后才能再次保存，
 失败保留明确错误、阻止 Save 并提供只读重试。路由离开或 abort 仅取消旧客户端工作，不能证明远端未提交。
 共享 foreground request guard 保留同用户表单与焦点，换号 generation 使旧读写失效。
 

@@ -1,6 +1,25 @@
+import type { PauseMessages } from "./pause";
 import type { WorkerPhase } from '../../api/types';
 
 export type InspectionMessages = {
+  readonly pause: PauseMessages;
+  readonly discussion: {
+    readonly title: string; readonly empty: string; readonly loading: string; readonly refresh: string;
+    readonly loadOlder: string; readonly loadNewer: string; readonly viewLatest: string;
+    readonly loadedCount: (count: string) => string; readonly newCount: (count: string) => string;
+    readonly participants: string; readonly timeline: string; readonly composer: string; readonly placeholder: string;
+    readonly accountName: (id: string) => string; readonly agentName: (name: string) => string;
+    readonly reply: (name: string) => string; readonly cancelReply: string; readonly send: string; readonly resend: string;
+    readonly viewReference: string; readonly referenceLoading: string; readonly codeSnippet: string;
+    readonly messageDetails: string; readonly messageAt: (name: string, time: string) => string; readonly closeDetails: string;
+    readonly messageId: string; readonly author: string; readonly accountId: string; readonly source: string;
+    readonly human: string; readonly agent: string; readonly createdAt: string; readonly replyTo: string;
+    readonly claimId: string; readonly workerId: string; readonly body: string;
+    readonly readFailed: string; readonly historyFailed: string; readonly referenceFailed: string;
+    readonly postFailed: string; readonly postUnknown: string; readonly denied: string; readonly deniedExplanation: string;
+    readonly retry: string; readonly table: string; readonly imageUnavailable: string; readonly errorDetails: string;
+    readonly capacity: string; readonly invalidBody: string; readonly markdown: string; readonly dismissFeedback: string;
+  };
   readonly claim: {
     readonly controls: string;
     readonly active: string;
@@ -10,6 +29,9 @@ export type InspectionMessages = {
     readonly phase: Readonly<Record<WorkerPhase, string>>;
     readonly membersLoading: string;
     readonly membersError: string;
+    readonly membersProtocolError: string;
+    readonly membersRecovery: string;
+    readonly openFreshPage: string;
     readonly retryMembers: string;
     readonly formerMember: string;
     readonly withdraw: string;

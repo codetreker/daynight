@@ -1,3 +1,5 @@
+import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
+import { stringifyApiJson } from "../../src/api/json";
 import { selectTaskList } from './project-view';
 import { randomUUID } from 'node:crypto';
 import type { Page, Route, TestInfo } from '@playwright/test';
@@ -33,10 +35,10 @@ const invitation = async (request: AuthenticatedAPI, projectId: string): Promise
   const value = await response.json() as { id: string; link: string };
   return { id: value.id, token: new URL(value.link).hash.slice(1) };
 };
-const memberList = async (request: AuthenticatedAPI, projectId: string): Promise<{ userId: string; role: string; version: number }[]> => {
+const memberList = async (request: AuthenticatedAPI, projectId: string) => {
   const response = await request.get(`/api/v1/projects/${projectId}/members`);
   expect(response.status()).toBe(200);
-  return (await response.json() as { items: { userId: string; role: string; version: number }[] }).items;
+  return parseMembers(await decodeMembersJson(new Response(await response.text())), projectId);
 };
 
 test.use({ trace: 'off', screenshot: 'off' });
@@ -260,12 +262,10 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(originalFrame).not.toBeNull();
     const identityRequests: string[] = [];
     const graphRequests: string[] = [];
-    const membershipRequests: string[] = [];
     const graphResponses: { readonly number: number; readonly status: number; readonly principal: string | null }[] = [];
     const requestOrder: string[] = [];
     const identityRequestNumbers = new WeakMap<object, number>();
     const graphRequestNumbers = new WeakMap<object, number>();
-    const membershipRequestNumbers = new WeakMap<object, number>();
     const pendingGraphWindows: { readonly identity: 'same-user' | 'changed-user'; readonly baseline: number; readonly beforeRelease: number }[] = [];
     page.on('request', (request) => {
       const pathname = new URL(request.url()).pathname;
@@ -277,10 +277,6 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
         graphRequests.push(request.method());
         graphRequestNumbers.set(request, graphRequests.length);
         requestOrder.push(`graph-request:${graphRequests.length}`);
-      } else if (pathname === `/api/v1/projects/${own.id}/members`) {
-        membershipRequests.push(request.method());
-        membershipRequestNumbers.set(request, membershipRequests.length);
-        requestOrder.push(`membership-request:${membershipRequests.length}`);
       }
     });
     page.on('response', (response) => {
@@ -447,16 +443,15 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await expect(page.getByRole('link', { name: '账户设置：Alice', exact: true })).toBeVisible();
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
     pendingGraphWindows.push({ identity: 'changed-user', baseline: changedUserGraphBaseline, beforeRelease: graphRequests.length });
-    const changedUserMembershipBaseline = membershipRequests.length;
-    const deniedMembership = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${own.id}/members`
-      && membershipRequestNumbers.get(response.request())! > changedUserMembershipBaseline);
+    const deniedGraph = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${own.id}/task-sync`
+      && graphRequestNumbers.get(response.request())! > changedUserGraphBaseline);
     heldChecks[2]!.release();
     await heldChecks[2]!.completed;
-    const membershipRefusal = await deniedMembership;
-    expect(membershipRefusal.request().method()).toBe('GET');
-    expect(membershipRefusal.status()).toBe(404);
-    expect(membershipRefusal.headers()['daynight-user-id']).toBe(bobUser.id);
-    expect((await membershipRefusal.json() as { error: { code: string } }).error.code).toBe('not_found');
+    const graphRefusal = await deniedGraph;
+    expect(graphRefusal.request().method()).toBe('GET');
+    expect(graphRefusal.status()).toBe(404);
+    expect(graphRefusal.headers()['daynight-user-id']).toBe(bobUser.id);
+    expect((await graphRefusal.json() as { error: { code: string } }).error.code).toBe('not_found');
     await expect(page.getByRole('link', { name: '账户设置：Bob', exact: true })).toBeVisible();
     await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
@@ -468,7 +463,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(identityRequests).toEqual(['GET', 'GET', 'GET']);
     expect(requestOrder).toContain('identity-response:3');
     const identityConfirmedAt = requestOrder.indexOf('identity-response:3');
-    expect(requestOrder.indexOf(`membership-request:${membershipRequestNumbers.get(membershipRefusal.request())!}`)).toBeGreaterThan(identityConfirmedAt);
+    expect(requestOrder.indexOf(`graph-request:${graphRequestNumbers.get(graphRefusal.request())!}`)).toBeGreaterThan(identityConfirmedAt);
     for (let number = changedUserGraphBaseline + 1; number <= graphRequests.length; number++) {
       expect(requestOrder.indexOf(`graph-request:${number}`)).toBeGreaterThan(identityConfirmedAt);
     }
@@ -484,8 +479,8 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await expect.poll(async () => { cacheAfterAccountChange = await cachePrivacy(); return cacheAfterAccountChange; }, {
       message: 'Changing accounts purges the old cache namespace and never authorizes its project for the new account',
     }).toEqual({ aliceActiveProjects: 0, aliceSummaries: 0, aliceDetails: 0, bobOwnProjectActive: false, bobSummaries: 0, bobDetails: 0 });
-    const membershipDenial = { status: membershipRefusal.status(), principal: membershipRefusal.headers()['daynight-user-id'] };
-    await info.attach('auth-real-tab-return', { body: Buffer.from(JSON.stringify({ identityRequests, graphRequests, graphResponses, membershipRequests, membershipDenial, pendingGraphWindows, requestOrder, continuity, cacheBeforeAccountChange, cacheAfterAccountChange })), contentType: 'application/json' });
+    const accessDenial = { status: graphRefusal.status(), principal: graphRefusal.headers()['daynight-user-id'] };
+    await info.attach('auth-real-tab-return', { body: Buffer.from(JSON.stringify({ identityRequests, graphRequests, graphResponses, accessDenial, pendingGraphWindows, requestOrder, continuity, cacheBeforeAccountChange, cacheAfterAccountChange })), contentType: 'application/json' });
     await picture(page, info, 'auth-account-return');
   } finally {
     for (const check of heldChecks) check.release();
@@ -510,7 +505,7 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     await expect(bobRole).toHaveValue('member');
     await expect(page.getByRole('combobox', { name: `${alice.name} 的项目角色`, exact: true })).toBeDisabled();
     const observed = (await memberList(request, project.id)).find((member) => member.userId === bobUser.id)!;
-    expect((await request.patch(target, { data: { version: observed.version, role: 'admin' } })).status()).toBe(200);
+    expect((await request.patch(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: observed.directGrant!.version, role: 'admin', expectedUserId: alice.id }) })).status()).toBe(200);
     await bobRole.selectOption('admin');
     await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
     await expect(page.getByRole('status').filter({ hasText: '成员状态已变化' })).toBeVisible();
@@ -519,22 +514,22 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
     await expect(bobRole).toHaveValue('member');
     const current = (await memberList(request, project.id)).find((member) => member.userId === bobUser.id)!;
-    expect(current.version).not.toBe(observed.version);
-    expect((await bob.patch(target, { data: { version: current.version, role: 'admin' } })).status()).toBe(403);
+    expect(current.directGrant!.version).not.toBe(observed.directGrant!.version);
+    expect((await bob.patch(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.directGrant!.version, role: 'admin', expectedUserId: bobUser.id }) })).status()).toBe(403);
     const collaborative = await createTask(bob, project.id, { title: 'Member can write project tasks' });
     await executeTask(bob, project.id, collaborative);
     const memberFile = attachmentDownloadUrl(project.id, collaborative.id, 'member.txt');
     expect((await bob.put(memberFile, { headers: { 'Content-Type': 'text/plain' }, data: 'Member attachment write' })).status()).toBe(201);
     expect((await bob.get(memberFile)).status()).toBe(200);
     const administrator = (await memberList(request, project.id)).find((member) => member.userId === alice.id)!;
-    expect((await request.delete(`/api/v1/projects/${project.id}/members/${alice.id}`, { data: { version: administrator.version } })).status()).toBe(409);
+    expect((await request.delete(`/api/v1/projects/${project.id}/members/${alice.id}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: administrator.directGrant!.version, expectedUserId: alice.id }) })).status()).toBe(409);
     await browserAuthentication(context, baseURL, 'bob');
     await page.reload();
     await expect(page.getByRole('heading', { name: '项目成员', exact: true })).toBeVisible();
     await expect(page.getByText('你可以读写项目中的任务和附件。成员与邀请由项目管理员管理。')).toBeVisible();
     await expect(page.getByRole('button', { name: '邀请成员', exact: true })).toHaveCount(0);
     await picture(page, info, 'auth-project-members');
-    expect((await request.delete(target, { data: { version: current.version } })).status()).toBe(204);
+    expect((await request.delete(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.directGrant!.version, expectedUserId: alice.id }) })).status()).toBe(204);
     expect((await bob.get(memberFile)).status()).toBe(404);
     expect((await bob.get(`/api/v1/projects/${project.id}/tasks/${collaborative.id}`)).status()).toBe(404);
     await page.goto(`/projects/${project.id}`);
@@ -613,7 +608,7 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   const bob = await bearerContext(playwright.request, baseURL, 'bob');
   try {
     const identity = await user(bob);
-    expect((await memberList(request, project.id)).find((member) => member.userId === identity.id)?.role).toBe('member');
+    expect((await memberList(request, project.id)).find((member) => member.userId === identity.id)?.directGrant?.role).toBe('member');
     expect((await bob.post('/api/v1/invitations/inspect', { data: { token: new URL(metadata.link).hash.slice(1) } })).status()).toBe(410);
     const revoked = await invitation(request, project.id);
     expect((await request.delete(`/api/v1/projects/${project.id}/invitations/${revoked.id}`)).status()).toBe(204);

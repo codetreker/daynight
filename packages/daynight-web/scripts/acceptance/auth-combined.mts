@@ -1,3 +1,4 @@
+import type { ProjectParticipant } from "../../src/api/auth-types";
 import { selectTaskList } from '../../tests/e2e/project-view.ts';
 import { attachmentFileButton, attachmentFileActions } from '../../tests/e2e/attachment-tree.ts';
 import { createHash, randomUUID } from 'node:crypto';
@@ -7,8 +8,8 @@ import { chromium, expect, request as playwrightRequest, type Browser, type Brow
 import { authenticatedAPI, browserFetch, tokenContext, type AuthenticatedAPI } from '../../tests/e2e/authentication.ts';
 import { stringifyApiJson } from '../../src/api/json.ts';
 import { login } from './auth-fixture.mts';
-import { browserInventory, recordBrowserOwnership, recoverBrowsers, type BrowserInventory } from './browser.mts';
-import { createAcceptanceCli, recoverCliProcesses, validateInstalledCli } from './installed-cli.mts';
+import { browserInventory, browserTemporaryRoot, recordBrowserOwnership, recoverBrowsers, type BrowserInventory } from './browser.mts';
+import { createAcceptanceCli, validateInstalledCli } from './installed-cli.mts';
 import { command } from './process.mts';
 import { processIdentity, requireGroupStopped, type ProcessIdentity } from './identity.mts';
 import { createAuthCombinedTarget, type CombinedCommand, type CombinedTarget, type UploadObservation } from './auth-combined-target.mts';
@@ -99,7 +100,7 @@ const previewUrl = (project: string, task: string, path: string): string => `/ap
 type User = { id: string; name: string; email: string };
 type Project = { id: string; name: string };
 type Task = { id: string; title: string; version: bigint; properties: { pullRequests: { url: string; title: string }[] }; updatedAt: string };
-type Member = { userId: string; role: string; version: bigint };
+type Member = ProjectParticipant;
 type Token = { id: string; token: string };
 type Invitation = { id: string; link: string };
 type Cli = Awaited<ReturnType<typeof createAcceptanceCli>>;
@@ -428,7 +429,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   };
   const cli = async (token: string, name: string): Promise<Cli> => {
     secrets.add(token);
-    const client = await createAcceptanceCli(options.target.baseUrl, join(options.directory, name), token, options.installedReceiptPath);
+    const client = await createAcceptanceCli(options.target.baseUrl, join(options.directory, name), token, options.installedReceiptPath, signal);
     clients.push(client); return client;
   };
   const pat = async (api: AuthenticatedAPI, name: string): Promise<Token> => {
@@ -438,24 +439,19 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   const origin = options.target.baseUrl;
   let failure: unknown;
   let abortClose: Promise<void> | undefined;
-  let abortCliRecovery: Promise<void> | undefined;
   const closeOnAbort = (): void => {
     abortClose = browser?.close(); void abortClose?.catch(() => {});
-    if (clients.length > 0) {
-      abortCliRecovery = recoverCliProcesses(options.target.acceptanceDirectory, options.installedReceiptPath, installed);
-      void abortCliRecovery.catch(() => {});
-    }
   };
   signal.addEventListener('abort', closeOnAbort, { once: true });
   try {
     await save();
     signal.throwIfAborted();
     const controls = createAuthCombinedTarget(options.target, run);
-    receipt.browserInventory = await browserInventory(); receipt.browserCleanup = 'pending'; await save();
-    // Playwright creates profiles from the parent os.tmpdir(), while launch env
-    // configures only Chromium. The preceding browser/CLI phase has drained;
-    // concurrent container preparation already runs in a separate process.
-    browser = await launchAuthCombinedBrowser(join(options.target.acceptanceDirectory, '../..'), async () => chromium.launch({
+    receipt.browserInventory = await browserInventory(options.directory); receipt.browserCleanup = 'pending'; await save();
+    // Playwright allocates private profiles from the parent's os.tmpdir().
+    // Chromium's separate socket directory keeps a short relative path for AF_UNIX.
+    const temporaryRoot = browserTemporaryRoot(options.directory);
+    browser = await launchAuthCombinedBrowser(temporaryRoot, async () => chromium.launch({
       headless: true, channel: 'chromium', env: { ...process.env, TMPDIR: '.tmp', DAYNIGHT_ACCEPTANCE_DIRECTORY: options.directory },
       ...(process.env.DAYNIGHT_BROWSER_EXECUTABLE === undefined ? {} : { executablePath: process.env.DAYNIGHT_BROWSER_EXECUTABLE }) }));
     await recordBrowserOwnership(browser, options.directory);
@@ -487,14 +483,14 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await request(alice, origin, 'GET', `/api/v1/projects/${privateProject.id}`, 404);
     const members = await request<{ items: Member[] }>(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200);
     const bobMember = members.items.find((member) => member.userId === bobUser.id);
-    check(bobMember?.role === 'member', 'Invitation did not create a normal member.');
+    check(bobMember?.directGrant?.role === 'member', 'Invitation did not create a normal member.');
     await record('partial-sharing', { aliceId: aliceUser.id, bobId: bobUser.id, sharedProject: shared.id, privateProject: privateProject.id, baselineAlice: a0, baselineBob: b0, pageLimit: 1 });
     const reading = `# Fullscreen reading\n\n${'Browser and installed CLI share this long reading task.\n\n'.repeat(120)}`;
     const task = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${shared.id}/tasks`, 201, { title: 'Combined member task', description: reading });
     const privateTask = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${privateProject.id}/tasks`, 201, { title: 'Private authority control' });
     await request(bob, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 403, {});
-    await request(bob, origin, 'PATCH', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 403, { version: bobMember.version, role: 'admin' });
-    await record('normal-member-writes', { taskId: task.id, privateTaskId: privateTask.id, memberVersion: bobMember.version.toString(), administratorDenial: 403 });
+    await request(bob, origin, 'PATCH', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 403, { version: bobMember.directGrant.version, role: 'admin', expectedUserId: bobUser.id });
+    await record('normal-member-writes', { taskId: task.id, privateTaskId: privateTask.id, memberVersion: bobMember.directGrant.version.toString(), administratorDenial: 403 });
     const originalToken = await bilingualToken(bobPage, bobContext, origin, secrets, signal);
     await screenshots(bobPage, 'account-english-after-secret-close');
     await record('bilingual-token', { tokenId: originalToken.id, requests: 1, pendingInputRetained: true, revealedElementRetained: true, locales: ['en', 'zh-CN', 'en'] });
@@ -602,9 +598,9 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await waitFor(async () => incomplete(await controls.observeUpload(probe(admittedPath)), 1), signal, 'real upload admission');
     check(!admitted.completed && admitted.sentBytes === prefixBytes, 'Admitted upload body was not incomplete.');
     const currentMembers = await request<{ items: Member[] }>(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200);
-    const currentMember = currentMembers.items.find((member) => member.userId === bobUser.id); check(currentMember !== undefined, 'Current member is missing before removal.');
+    const currentMember = currentMembers.items.find((member) => member.userId === bobUser.id); check(currentMember !== undefined && currentMember.directGrant !== null, 'Current direct grant is missing before removal.');
     const removalStarted = performance.now();
-    await request(alice, origin, 'DELETE', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 204, { version: currentMember.version });
+    await request(alice, origin, 'DELETE', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 204, { version: currentMember.directGrant.version, expectedUserId: aliceUser.id });
     const removalMs = performance.now() - removalStarted;
     check(removalMs < 5_000 && !admitted.completed && admitted.sentBytes === prefixBytes, 'Member removal waited for the held upload IO.');
     const removedDuringIO = await controls.observeUpload(probe(admittedPath));
@@ -660,14 +656,12 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   } finally {
     signal.removeEventListener('abort', closeOnAbort);
     const cleanupErrors: string[] = [];
-    try { await abortCliRecovery; } catch { cleanupErrors.push('Cancelled CLI recovery failed.'); }
     for (const upload of uploads) { try { await upload.close(); } catch { cleanupErrors.push('HTTP transfer cleanup failed.'); } }
     for (const client of tokenClients) { try { await client.dispose(); } catch { cleanupErrors.push('API context cleanup failed.'); } }
     for (const context of contexts) { try { await context.close(); } catch { cleanupErrors.push('Browser context cleanup failed.'); } }
     try { await browser?.close(); } catch { cleanupErrors.push('Browser close failed.'); }
     try { await abortClose; } catch { cleanupErrors.push('Cancelled browser close failed.'); }
     for (const client of clients) { try { await client.close(); } catch { cleanupErrors.push('CLI private-home cleanup failed.'); } }
-    try { await recoverCliProcesses(options.target.acceptanceDirectory, options.installedReceiptPath, installed); } catch { cleanupErrors.push('CLI process recovery failed.'); }
     if (receipt.browserInventory !== undefined) {
       try { await recoverBrowsers(options.directory, receipt.browserInventory); receipt.browserCleanup = 'passed'; }
       catch { receipt.browserCleanup = 'failed'; cleanupErrors.push('Browser process/profile recovery failed.'); }

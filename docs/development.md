@@ -66,7 +66,27 @@ that normal chain. The package's existing `files: ["dist"]` rule publishes these
 [SQLite design](design/cli-sqlite-migrations.md#sql-资源与参考结构) owns SQL loading,
 reference metadata and execution ordering.
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
-ownership, with build and version-policy tests in `test/tooling/`.
+ownership, with build and version-policy tests in `test/tooling/`. Large binary
+payload and copied-resource assertions use `Buffer.equals` to check every byte
+and the total length.
+Controller IPC admission tests keep real sockets, assert the production timeout
+and its cancellation, and accelerate the incomplete socket's native expiry;
+virtual time separately exercises the authenticated response wait. The
+[test timing decision](../.agents/notes/implemented/testing/2026-11-04-cli-test-time-and-bytes.md)
+explains the distinction between Node socket timers and global fake timers.
+Controller and Worker lifecycle fixtures record production poll requests while
+using short native promise-timer ticks for their controlled resource states.
+Their tests retain exact cadence, deadline clipping and cancellation assertions;
+the [coordinator polling decision](../.agents/notes/implemented/testing/2026-11-04-coordinator-test-polling.md)
+owns that test boundary.
+Native supervisor fixtures use production observation budgets and a controlled
+parent clock only after a real TERM receipt and native signal-observation window.
+The [native fixture decision](../.agents/notes/implemented/testing/2026-11-04-native-supervisor-fixture-clock.md)
+records the real-process proof and cleanup requirements.
+The native fsmonitor regression uses a real hook's invocation marker to qualify
+ordinary Git and verify protected-query suppression. Its
+[fixture decision](../.agents/notes/implemented/testing/2026-11-04-fsmonitor-fixture-marker.md)
+records why no idle delay is required after that marker is written.
 The pnpm dependency store is local to `.tmp/pnpm-store`. Native skill terminal
 acceptance uses the development-only `node-pty` dependency, including Windows
 ConPTY. The workspace build policy permits only the pinned node-pty hook and
@@ -85,7 +105,20 @@ executables with real Git and SQLite. The self-update suite uses real npm and an
 isolated, task-local global prefix with a controlled HTTP registry. Neither suite
 changes the operator's installed CLI or requires live review credentials.
 Project/task acceptance is a third native installed suite using a reusable
-pack/install fixture, real Git and controlled HTTP.
+pack/install fixture, real Git and controlled HTTP. Repeated private consumers
+use PNPM's supported POSIX executable-link preference; the independent e2e
+consumer still exercises default PNPM shims, and npm global updates remain real.
+
+Project/task installation preparation and self-update's initial package/global
+installation belong to case-owned setup hooks. The complete ordered business
+scenarios remain in their callbacks. Both use the existing 180-second hook and
+180-second callback limits, while the native job keeps its 10-minute limit.
+Separating these allowances changes budget ownership; it does not mean the old
+scenario-total allowance or total runtime is unchanged. Teardown aborts and
+awaits pending preparation/behavior, reaps owned processes, closes registries
+and removes private trees before publishing successful cleanup receipts. The
+[hosted-runner and preparation decision](../.agents/notes/implemented/testing/2026-11-03-macos-hosted-runner-capacity.md)
+records the platform, linking and lifecycle rationale.
 
 Shell completion has a separate real-shell acceptance command. It requires
 Python 3 on a POSIX host, Bash 4.2, a modern Bash, and zsh. Linux hosts can prepare
@@ -119,8 +152,14 @@ matrix; its result belongs to the tested revision. The
 [completion design](../docs/design/daynight-completion.md) owns its coverage and
 loading guarantees.
 
-GitHub Actions runs type checking, build, and tests on native Linux, macOS, and
-Windows runners. Each native job resolves the latest available Node.js 24 patch.
+Native development and validation support Linux, Windows and Apple Silicon
+(ARM64) macOS. Intel macOS is unsupported. GitHub Actions runs type checking,
+build and tests on native Linux, macOS 26 ARM64 and Windows runners. The macOS
+job uses the standard `macos-26` label and verifies Darwin ARM64 before validation;
+the [platform decision](../.agents/notes/implemented/testing/2026-11-04-macos-arm64-support.md)
+records the support boundary and runner selection. Hosted capacity failures
+require diagnosis within this ARM64 runner policy.
+Each native job resolves the latest available Node.js 24 patch.
 A separate runtime matrix builds the package with Node.js 24 and checks the packed
 artifact with Node.js `22.14.0`, the latest `22` and `24` releases, and current
 `node`. Each runtime installs it in a fresh npm consumer with `--engine-strict`
@@ -131,9 +170,6 @@ PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
 documentation and repository metadata. A selected CLI runs every native platform,
 the runtime compatibility matrix and the dedicated Linux shell completion job.
-On PRs, the Linux job also enforces package version increases before ordinary
-validation. It compares the PR's complete source changes with
-its merge base and its package version with the event's target-branch revision.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
@@ -174,10 +210,10 @@ captured targets, disposable review artifacts, shared refs, and isolation betwee
 PR worktrees. Independent Git suites run in separate Vitest workers. Each suite
 copies its immutable bare-origin seed into private test directories; refs,
 SQLite databases, clones and worktrees remain separate for every case. Sparse
-suites prepare their shared source graph before copying, and version-gate tests
-reuse only immutable default-base objects; scenario observations and mutations
-remain private. Source snapshots are prepared through batched native Git imports,
-while real clone/fetch/worktree operations remain the test subjects. Tests within
+suites prepare their shared source graph before copying; scenario observations
+and mutations remain private. Source snapshots are prepared through batched
+native Git imports, while real clone/fetch/worktree operations remain the test
+subjects. Tests within
 a file stay sequential so environment changes and cleanup have one owner.
 The [Git test decision](../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)
 records the isolation rules, and the
@@ -337,28 +373,42 @@ PostgreSQL database, then run:
 bash scripts/check.sh
 ```
 
-This first runs the shared `pnpm web:build` to publish real embedded assets, then
-builds the binary, runs vet and race-enabled `go-cov`, and enforces total
-statement coverage strictly greater than 90%, package coverage of at least 85%,
-and function coverage of at least 80%, with critical-block checks enabled. The
-same raw coverage profile supplies an exact strict comparison; exactly 90%
-fails, independently of display rounding. No product files or functions are
-excluded. When [CI selection](#ci-selection) selects the server, the complete
-Go job contributes its result to the final `checks` job. PostgreSQL absence is a
-failure, not a skipped test. The gate includes an installed-CLI service path and
-resource-budget probes. A Node orchestrator shares one real installation across
-the Go command scenarios and, after the unchanged go-cov/strict-profile checks,
-public-command deadline probes outside Go's default ten-minute timer. Test-only
-mocks use a 1-second request and 3-second operation budget while separately
-asserting the installed production defaults of 30 seconds and five minutes.
-The four 128 MiB single-response and 256 MiB cumulative decoded-byte probes run
-only through the explicit local stress entrypoint, preserving real exact-limit
-and +1-byte tests. Each receipt identifies actual deadlines and mock status. The
-Go job retains its 20-minute bound, race checks and strict coverage gates. The [acceptance design](../docs/design/daynight-project-task.md#验证与交付证据)
-owns the mechanism and source-bound evidence. The
-[server validation guide](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence) maps
-requirements to tests and describes the CI receipt containing tested source and
-binary identity, scenario results and resource cleanup.
+The complete entrypoint prepares real embedded Web assets and the pinned UniAuth
+fixture, then runs coverage and E2E validation in sequence. Select either
+responsibility independently with `bash scripts/check.sh --coverage` or
+`bash scripts/check.sh --e2e`; each prepares its own required inputs and installed
+CLI. Both require PostgreSQL, whose absence fails validation.
+
+Coverage validation builds the binary, runs vet and race-enabled `go-cov`, and
+enforces total statement coverage strictly greater than 90%, package coverage of
+at least 85%, and function coverage of at least 80%, with critical-block checks
+enabled. The raw profile supplies an exact strict comparison; exactly 90% fails
+independently of display rounding. No production files or functions are excluded.
+Only the test-only `cmd/e2e_tests` package is removed from coverage execution;
+a recursive source check rejects non-test Go files there before validation.
+
+The coverage installation supports the authentication package's installed-CLI
+assertions and its normally issued PAT handoff to two public-command deadline
+probes. These probes run outside Go's ten-minute timer. Test-only mocks use a
+1-second request and 3-second operation budget while separately asserting the
+installed production defaults of 30 seconds and five minutes. The four 128 MiB
+single-response and 256 MiB cumulative decoded-byte probes run only through the
+explicit local stress entrypoint, preserving real exact-limit and +1-byte tests.
+Each receipt identifies actual deadlines and mock status.
+
+E2E validation runs the complete `cmd/e2e_tests` package with race detection,
+`-count=1` and a ten-minute timeout, including its freshly built race-enabled
+server and independent installed CLI. It owns built-process scenarios and
+source/artifact provenance, concurrency, refusal and cleanup assertions. It does
+not consume the coverage installation or run deadline probes.
+
+When [CI selection](#ci-selection) selects the server, `verify-server` and
+`verify-server-e2e` run concurrently on separate runners, each with its own
+PostgreSQL and a 20-minute bound; both contribute to the final `checks` job.
+The [server validation guide](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
+owns receipt paths, resource ownership and requirement-to-test mappings, and the
+[CI split decision](../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)
+records the execution boundary and retained gates.
 
 ## Web development
 
@@ -420,8 +470,9 @@ and records cleanup failures.
 
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. It runs thirty-one native functional workflows, then the same
-container workflows and complete container cleanup. The explicit local
+parallel. After shared CLI preparation, it overlaps thirty-two native functional
+workflows with the same container workflows, then requires complete target and
+shared CLI cleanup. The explicit local
 `pnpm web:acceptance:stress` command adds the fixed native capacity cases after
 those phases. Both modes require Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and
 Playwright Chromium. The
@@ -449,14 +500,14 @@ omits files with the `stress` build tag; ordinary Vitest discovery omits
 The package-local commands are documented by their owners. From the server
 module, `bash scripts/stress.sh` runs its query, archive and repeated-write
 workloads; `bash scripts/check.sh --stress-budgets` selects the installed CLI's
-four full-byte probes after the usual Go gate.
+four full-byte probes in coverage validation and then runs the complete E2E suite.
 
 Default CLI service acceptance retains two bounded deadline probes and
 `.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
 the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
 claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
-functional mode requires thirty-one scenarios per target (62 total); stress mode
-adds five native capacity scenarios (36 native / 31 container, 67 total) and
+functional mode requires thirty-two scenarios per target (64 total); stress mode
+adds five native capacity scenarios (37 native / 32 container, 69 total) and
 `native/capacity/performance.json`. Both
 modes retain strict source/browser identity, combined authentication and owned
 resource cleanup. Local measurements prove only their recorded source and host;
@@ -467,24 +518,24 @@ records the workload split and retained correctness guarantees.
 
 ## Package versions
 
-Changes to `packages/daynight/src/`, either package manifest, `pnpm-lock.yaml`,
-`pnpm-workspace.yaml`, `.npmrc`, either application TypeScript configuration, or
-the package's build-cleanup and resource-copy scripts require a strictly greater
-SemVer in `packages/daynight/package.json`. Source
-additions, deletions and moves all count. Unchanged versions, downgrades and
-build-metadata-only changes fail. Tests, fixtures, documentation, CI workflows
-and validation scripts alone do not require a version increase. CI enforces this
-policy in the PR's Linux CLI job using the event's explicit base and head commits.
+Ordinary change PRs keep `packages/daynight/package.json` version unchanged.
+PR and main CI validate affected code without comparing versions between Git
+revisions.
+Version selection and complete CLI publication belong to the repository's
+[release-daynight skill](../.agents/skills/release-daynight/SKILL.md). It analyzes
+CLI changes since the public npm `latest` source, selects patch or minor unless
+an explicit version is supplied, and retains an already prepared version when
+it meets the release requirements. The skill owns the classification rules,
+version PR delivery, release completion evidence, and interrupted-release
+reconciliation.
 
-Update the version in the same PR as the code. To check committed revisions
-locally, run `pnpm version:check pull_request <base-sha> <head-sha>` or
-`pnpm version:check push <before-sha> <after-sha>`. The command reads versions
-from those commits; uncommitted files do not affect the result. The local push
-mode compares the complete before/after range; an all-zero before SHA validates
-the starting version without a predecessor comparison. Missing history,
-unreadable manifests and invalid versions fail visibly. The
-[toolchain decision](../.agents/notes/archived/process/2026-10-16-typescript-cli-toolchain.md)
-records the original comparison and CI ownership choices.
+Publication accepts stable `x.y.z` versions. A new release must advance public
+npm `latest`; existing npm versions and release tags are immutable. The
+[publication procedure](#npm-publication) describes the workflow's admission,
+validation, and existing-version skips. A successful skip alone does not prove
+that the requested source was published. The
+[version policy decision](../.agents/notes/implemented/simplification/2026-11-04-release-time-versioning.md)
+records why version selection belongs to release preparation.
 
 ## npm publication
 
@@ -506,7 +557,10 @@ successful publication within two days; npm requires an expired configuration
 to be recreated. These settings belong to npmjs and are not configured by the
 repository. See npm's [trusted publishing documentation](https://docs.npmjs.com/trusted-publishers).
 
-After merging a stable package version to `main`, run:
+For an authorized release, use the
+[release-daynight skill](../.agents/skills/release-daynight/SKILL.md) to select the
+version and complete any protected version PR. Its publication step dispatches
+the following workflow after the stable version is on `main`:
 
 ```bash
 gh workflow run publish.yml --ref main
@@ -590,19 +644,58 @@ The [root README routing table](../README.md#ci-selection) owns path selection.
 
 Every path under `packages/daynight/src/` selects CLI validation, including
 runtime Markdown such as the bundled review skill's `SKILL.md` or `README.md`.
-Other documentation exclusions apply before module selection. The `.gitignore`
-exclusion matches only the repository root; nested ignore files retain their
-module ownership or the unclassified-path fallback. An excluded path does not
-suppress jobs selected by other changed files. New modules and unclassified
-patches select all jobs until their consumers are explicitly assigned.
+The CLI command registry loads the implementations of `worker`, `controller`,
+`review`, `skill`, `update` and `completion` only when selected. Implementation
+and resource changes within those command directories select only CLI checks;
+their `definition.ts` files remain server inputs because the registry imports
+definitions at startup. Other CLI source conservatively selects both Go jobs,
+including the shared startup code and project/task/authentication commands used
+by installed-CLI acceptance. The browser-consumed `src/api/` and `src/session/`
+trees and exact `src/platform/text.ts` path additionally select Web quality and
+browser validation. Changes to these command-loading or shared-code relationships
+must keep the selector's ownership rules aligned with the actual imports.
+
+For a modified CLI `package.json`, detection reads the committed merge-base and
+PR head blobs, parses both JSON objects and compares them after removing only
+the top-level `version` field. Equality omits server jobs. Any other semantic
+difference, including dependency versions, scripts, package contents or nested
+`version` fields, retains server selection; array order remains significant.
+Additions, deletions and file-type changes select server jobs conservatively.
+Invalid modified manifests and Git read failures fail detection. The checkout
+contents and changes made only on the target branch do not determine this
+comparison. Root manifests, the lockfile and workspace inputs keep all-module
+selection.
+
+When the complete PR diff contains exactly one modified path, that path is the
+CLI manifest, its regular-file mode is unchanged, its version string changes,
+and all other parsed fields remain equal, detection selects no application
+jobs. The existing routing checks and final gate still run. Formatting-only
+changes, executable-bit changes and any additional changed path retain ordinary
+path selection, including excluded documentation paths alongside a version
+change. This distinction keeps the exception tied to a complete version-only
+PR rather than an individual file. Version validity, packaging and installed
+artifact validation remain in the existing publication workflow. The
+[version-only PR decision](../.agents/notes/implemented/testing/2026-11-04-version-only-pr-ci.md)
+records the rationale and retained publication responsibilities.
+
+The exact build/configuration and acceptance-script inputs in
+[the selector](../.github/scripts/ci-modules.mts) select CLI and both server jobs.
+Web source and its Dagre/XYFlow patches select both server jobs because those jobs
+build embedded Web assets. Documentation exclusions apply after CLI source
+ownership. The `.gitignore` exclusion matches only the repository root; nested
+ignore files retain their module ownership or the unclassified-path fallback.
+An excluded path does not suppress jobs selected by other changed files. New
+modules and unclassified patches select all jobs until their consumers are
+explicitly assigned. The [server input decision](../.agents/notes/implemented/testing/2026-11-04-server-ci-input-selection.md)
+records the dependency boundary and its maintenance cost.
 
 Selected jobs keep their ordinary functional checks, coverage thresholds,
 timeouts and cleanup requirements. Stress workloads have explicit local-only
-entrypoints and are excluded from routine CI selection. The Go job still builds real web assets and
-exercises the installed CLI; the web job still builds and exercises the Go
-service and production deployment. Selecting one module does not split these
-existing integration suites. The same Web selector enables quality and browser
-jobs; both are required by the final gate. The Ubuntu shell-completion and Web
+entrypoints and are excluded from routine CI selection. The Go coverage and E2E
+jobs each build real Web assets and install the CLI; the Web browser job builds
+and exercises the Go service and production deployment. Both server jobs use the
+same server selector and prepare independent PostgreSQL and UniAuth resources.
+The same Web selector enables quality and browser jobs; both are required by the final gate. The Ubuntu shell-completion and Web
 browser jobs select the
 official HTTPS Ubuntu archive and security services before package preparation.
 Their shared command changes only the runner's referenced mirror list; signed
@@ -630,20 +723,31 @@ group stopped after settlement, preserving both command and cleanup failures.
 
 The core has no quality/browser preparation callbacks or readiness-admission
 observer. Local acceptance uses its existing installed browser. Native and
-container preparation still overlap; native functional checks and browser cleanup
-precede the container browser permission release. The permission wait remains
-900 seconds. Ordinary CI completes after both functional targets, combined
-authentication, full container cleanup and browser recovery. Explicit local
+container preparation overlap. Once native preparation has installed the shared
+CLI, an atomic source/run-bound permission releases the container functional
+browser alongside the native functional browser. Each target retains one worker,
+zero retries and its complete inventory. The permission wait remains 900 seconds.
+Each browser phase uses a separate private profile root outside uploaded
+artifacts. Run-wide CLI recovery waits until both targets have drained, preserving
+active commands and credentials in the other target. Combined CLI commands
+receive cancellation and retain individual process-group checks.
+Ordinary CI completes after both functional targets, combined authentication,
+full container cleanup, browser recovery and shared CLI recovery. Explicit local
 stress acceptance adds native capacity only after those phases finish.
 Independent quality checks run on their own runner and do not add empty core
-phases or split functional browser scenarios.
+phases or split functional browser scenarios. The
+[functional target decision](../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
+records the isolation and scheduling constraints.
 The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
 records the responsibility and budget boundaries without claiming a measured
-CPU/I/O cause or guaranteed hosted speedup.
-Both Go-consuming jobs restore module and compiler caches keyed by the server
-`go.sum`, while the server check expires test results before database/race/
-coverage validation. The web pipeline retains the full production build and
-unique image identity check. One packed/installed CLI is reused by the native
+CPU/I/O cause or guaranteed hosted speedup. The existing functional Playwright
+JSON reports also expose named phases for the largest journeys; the
+[Web validation guide](../packages/daynight-web/README.md#production-browser-acceptance)
+explains their wall-time and residual interpretation limits.
+The Go coverage, Go E2E and Web browser jobs restore module and compiler caches
+keyed by the server `go.sum`. Coverage validation expires Go test results before
+database/race/coverage checks; E2E uses `-count=1` to require fresh observations.
+The web pipeline retains the full production build and unique image identity check. One packed/installed CLI is reused by the native
 and container browser attachment journeys. After the web pipeline and recorded
 resource recovery, Ubuntu web CI runs the existing real-container attachment
 persistence and paired-backup check once; its `.tmp/attachment-deployment-*/`
@@ -667,13 +771,14 @@ records the concurrency and aggregation policy.
 Documentation-only PRs run routing tests and this final gate
 without installing application dependencies or running application tests. Every
 `main` push retains full application validation. npm publication runs its own
-CLI validation at the frozen release commit. Package-version enforcement belongs
-to PR validation. The
+CLI validation at the frozen release commit. Version-only PRs skip application
+checks; publication retains its version and artifact validation as described
+under [package versions](#package-versions). The
 [selection decision](../.agents/notes/archived/process/2026-10-21-module-scoped-pr-ci.md)
 records the routing alternatives and maintenance costs; the
 [CI simplification decision](../.agents/notes/archived/simplification/2026-10-21-ci-gate-simplification.md)
-records the version-check timing and final job-result gate choices. The
-[cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
+records the earlier PR version-check timing and the retained final job-result
+gate choices. The [cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
 preserves the earlier rationale for stopping aggregation during cancellation.
 
 To validate the routing rules locally without application dependencies, run:

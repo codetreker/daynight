@@ -1,3 +1,4 @@
+import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import type { Page, TestInfo } from '@playwright/test';
@@ -27,7 +28,7 @@ const save = async (request: AuthenticatedAPI, id: string, version: bigint, minu
 const memberList = async (request: AuthenticatedAPI, id: string) => {
   const response = await request.get(`/api/v1/projects/${id}/members`);
   expect(response.status()).toBe(200);
-  return (await response.json() as { items: { userId: string; role: string; version: number }[] }).items;
+  return parseMembers(await decodeMembersJson(new Response(await response.text())), id);
 };
 const userId = async (request: AuthenticatedAPI): Promise<string> => {
   const response = await request.get('/api/v1/me'); expect(response.status()).toBe(200);
@@ -152,9 +153,9 @@ test('project-settings', { annotation: { type: 'scenario', description: 'project
     await expect(threshold).toHaveValue('100'); await expect(threshold).toBeEnabled(); expect(browserWrites).toHaveLength(3);
 
     const bobMember = (await memberList(api, own.id)).find((member) => member.userId === bobId)!;
-    expect((await api.patch(`${projectPath}/members/${bobId}`, { data: { version: bobMember.version, role: 'admin' } })).status()).toBe(200);
+    expect((await api.patch(`${projectPath}/members/${bobId}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: bobMember.directGrant!.version, role: 'admin', expectedUserId: aliceId }) })).status()).toBe(200);
     const aliceMember = (await memberList(bob, own.id)).find((member) => member.userId === aliceId)!;
-    expect((await bob.patch(`${projectPath}/members/${aliceId}`, { data: { version: aliceMember.version, role: 'member' } })).status()).toBe(200);
+    expect((await bob.patch(`${projectPath}/members/${aliceId}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: aliceMember.directGrant!.version, role: 'member', expectedUserId: bobId }) })).status()).toBe(200);
     await threshold.fill('110'); await submit.click();
     await expect(page.getByRole('status').filter({ hasText: '项目权限已变化' })).toBeVisible();
     await expect(page.getByText('你可以查看此设置，只有项目管理员可以修改。', { exact: true })).toBeVisible();

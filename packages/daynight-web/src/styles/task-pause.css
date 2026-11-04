@@ -1,0 +1,12 @@
+.task-paused-badge,.task-pause-count{display:inline-flex;align-items:center;gap:4px;flex-shrink:0;border:1px solid #e7cc8d;background:#fff7e2;color:#8a621f;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:600;line-height:1.4;white-space:nowrap}
+.task-paused-badge svg,.task-pause-count svg,.task-pause-label svg{width:14px;height:14px;flex:none}
+.task-paused-badge.compact{font-size:8px;gap:2px;padding:1px 3px}.task-paused-badge.compact svg{width:9px;height:9px}
+.task-pause-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #dcbf7a;border-left:3px solid #b98a34;background:#fff9e9;border-radius:7px;padding:10px 12px;color:#7e5a1f;margin-top:12px;min-width:0}
+.task-pause-label{display:flex;align-items:center;gap:8px;flex:1;min-width:0;font-size:12px;font-weight:600;white-space:nowrap}
+.task-pause-strip .button{border-color:#cdb47c;color:#7e5a1f;padding:6px 10px;font-size:11px}
+.task-pause-strip .button .spinner{width:12px;height:12px}
+.task-pause-strip .button:disabled{opacity:.65}
+.project-section-heading .task-pause-count{margin-left:auto}
+button.task-pause-count{cursor:pointer}
+button.task-pause-count:hover{border-color:#b98a34;background:#fff0c8}
+.task-node.task-node-paused{border-color:#d6b46e}

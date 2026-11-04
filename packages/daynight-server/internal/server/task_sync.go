@@ -50,7 +50,7 @@ func taskSyncRequest(request *http.Request) (service.TaskSyncRequest, error) {
 }
 
 func taskSyncResponse(sync core.TaskSync) api.TaskSync {
-	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projectResponse(sync.Project), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks))}
+	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projectResponse(sync.Project), ActorAccess: projectAccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks))}
 	for _, task := range sync.Tasks {
 		result.Tasks = append(result.Tasks, api.TaskViewRecord{
 			Properties: propertiesResponse(task.Properties),

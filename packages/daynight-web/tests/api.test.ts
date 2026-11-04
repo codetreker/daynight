@@ -28,7 +28,7 @@ const sync = taskSyncFixture(parseTaskGraph(graph, projectId), { versionForTask:
 const parsedSync = taskSyncFromGraph(parseTaskGraph(graph, projectId), { versionForTask: () => 1n });
 const rawProject = (version: string): string => `${JSON.stringify({ ...project, settings: undefined }).slice(0, -1)},"settings":{"version":${version},"executionWarningMinutes":60}}`;
 const rawGraph = (projectSource: string): string => `${JSON.stringify({ ...graph, project: undefined }).slice(0, -1)},"project":${projectSource}}`;
-const rawSync = (projectSource: string): string => `${JSON.stringify({ ...sync, project: undefined }).slice(0, -1)},"project":${projectSource}}`;
+const rawSync = (projectSource: string): string => `${stringifyWireJson({ ...sync, project: undefined }).slice(0, -1)},"project":${projectSource}}`;
 const signal = (): AbortSignal => new AbortController().signal;
 const response = (value: unknown, status = 200): Response => new Response(stringifyWireJson(value), {
   status, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json; charset=utf-8" }),

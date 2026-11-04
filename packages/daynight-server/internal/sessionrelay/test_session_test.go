@@ -64,10 +64,9 @@ func TestTestSessionUsesSharedRelayAndOwnerScope(t *testing.T) {
 	if _, e = f.s.TestSnapshot(ctx, f.p, taskV.SessionID); e == nil {
 		t.Fatal("task via test path")
 	}
-	outsider := f.p
-	outsider.UserID = uuid.NewString()
+	outsider := addMember(t, f, "admin")
 	if _, e = f.s.TestSnapshot(ctx, outsider, v.SessionID); e == nil {
-		t.Fatal("outsider read")
+		t.Fatal("project admin read another user's test session")
 	}
 	cmd := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "one", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"first input"}],"expectedTurnId":null}`)}
 	if _, e = f.s.Submit(ctx, f.p, "", "", v.SessionID, cmd); e == nil {

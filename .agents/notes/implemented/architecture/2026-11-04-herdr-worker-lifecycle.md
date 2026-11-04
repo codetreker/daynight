@@ -46,6 +46,9 @@ This partially supersedes the [minimal claim record decision](../simplification/
 [Herdr adapter decision](2026-10-26-worker-herdr-adapter.md), and
 [Web evidence separation decision](2026-10-28-web-execution-evidence.md).
 Their shared index, native integration and Web ownership decisions remain.
+The [resource-state cleanup decision](2026-11-04-worker-resource-state.md)
+continues to own shared scheduling and legacy cleanup; macOS uses the original
+instance journal for its stop and Session publication responsibility.
 
 ## Alternatives
 

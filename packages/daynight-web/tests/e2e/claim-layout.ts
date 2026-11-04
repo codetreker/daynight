@@ -1,8 +1,9 @@
+import { stringifyWireJson } from "../helpers/wireJson";
 import { randomUUID } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { readWorkerClaim } from '../../src/api/task-properties';
 import { attachmentDownloadUrl } from '../../src/api/client';
-import { parseUser } from '../../src/api/auth-parse';
+import { parseUser, decodeMembersJson, parseMembers } from '../../src/api/auth-parse';
 import { attachmentFileButton } from './attachment-tree';
 import type { AuthenticatedAPI } from './authentication';
 import { createProject, createTask, expect, type Task } from './fixtures';
@@ -68,9 +69,9 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
   const membersURL = `**/api/v1/projects/${project.id}/members`;
   await page.route(membersURL, async (route) => {
     const response = await api.get(`/api/v1/projects/${project.id}/members`);
-    const body = await response.json() as { items: { userId: string; name: string | null; email: string | null }[] };
+    const body = { items: parseMembers(await decodeMembersJson(new Response(await response.text())), project.id) };
     const headers = { ...response.headers() }; delete headers['content-length'];
-    await route.fulfill({ status: response.status(), headers, json: { ...body, items: body.items.map((member) => member.userId === readWorkerClaim(current.properties)!.userId ? { ...member, name: ownerName, email: account } : member) } });
+    await route.fulfill({ status: response.status(), headers, body: stringifyWireJson({ ...body, items: body.items.map((member) => member.userId === readWorkerClaim(current.properties)!.userId ? { ...member, profile: { ...member.profile, name: ownerName, email: account } } : member) }) });
   });
   const layouts: unknown[] = [];
   try {

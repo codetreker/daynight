@@ -24,7 +24,11 @@ Web producer 和既有 v1 archive 继续使用原协议与读取路径。
 ## API
 
 以下路径均以 `/api/v1/projects/{projectId}/tasks/{taskId}/sessions` 为前缀，
-且要求 v2 选择。所有 ID 按路由与协议严格核对；所有读取重新检查凭据和成员身份。
+且要求 v2 选择。所有 ID 按路由与协议严格核对；所有读取重新检查凭据和项目准入。
+Web 与 Herdr 共用 [Session 项目准入](task-session-protocol.md#relay-与恢复)，
+在原事务中读取 canonical `ProjectAccess`，不长期锁定授权来源。
+Herdr 的状态、历史、归档、capability 与派发沿用此入口；浏览器 channel 每 250ms
+重验。项目角色不替代原 owner、当前 claim、控制租约或 connection epoch 检查。
 
 | 方法与相对路径 | 输入与结果 |
 |---|---|

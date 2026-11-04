@@ -4,7 +4,7 @@ import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { workerStoreFormat } from "./store-format.js";
 import { canonicalId } from "../../api/parse.js";
 import type { AgentControlMode, WorkerAgent } from "../../api/types.js";
-import type { ClaimIdentity, LocalTask, ProjectIdentity, WorkerProject } from "./types.js";
+import type { ClaimIdentity, CleanupSchedule, CleanupScheduleRecord, LocalTask, ProjectIdentity, ResourceOwner, WorkerProject } from "./types.js";
 
 const text = (value: unknown, name: string): string => {
   if (typeof value !== "string" || value.trim().length === 0) throw new TypeError(`${name} must be a nonempty string.`);
@@ -29,6 +29,18 @@ const projectKey = (value: ProjectIdentity): ProjectIdentity => ({ projectId: id
 const claimKey = (value: ClaimIdentity): ClaimIdentity => ({ ...projectKey(value), taskId: id(value.taskId, "Task ID"), claimId: id(value.claimId, "Claim ID") });
 const projectColumns = "project_id AS projectId, repo_url AS repoUrl, local_path AS localPath";
 const taskColumns = "project_id AS projectId, task_id AS taskId, claim_id AS claimId, status, agent, session_id AS sessionId, agent_control_mode AS agentControlMode";
+const cleanupColumns = "project_id AS projectId, task_id AS taskId, claim_id AS claimId, worktree_id AS worktreeId, deadline, failures, next_attempt_at AS nextAttemptAt, stage, last_error AS lastError";
+const nonnegativeInteger = (value: number, name: string): number => {
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a nonnegative safe integer.`);
+  return value;
+};
+const asCleanupState = (value: CleanupSchedule): CleanupSchedule => {
+  return { deadline: nonnegativeInteger(value.deadline, "Cleanup deadline"), failures: nonnegativeInteger(value.failures, "Cleanup failures"), nextAttemptAt: nonnegativeInteger(value.nextAttemptAt, "Cleanup next attempt"),
+    stage: text(value.stage, "Cleanup stage"), lastError: value.lastError === null ? null : text(value.lastError, "Cleanup scheduling error") };
+};
+const asCleanupRecord = (row: CleanupScheduleRecord): CleanupScheduleRecord => ({
+  ...claimKey(row), worktreeId: id(row.worktreeId, "Worktree ID"), ...asCleanupState(row),
+});
 const asProject = (row: WorkerProject): WorkerProject => ({ ...projectKey(row), repoUrl: text(row.repoUrl, "Repository URL"), localPath: absolutePath(row.localPath, "Project local path") });
 const asTask = (row: LocalTask): LocalTask => {
   if (row.status !== "pending" && row.status !== "active" && row.status !== "done") throw new TypeError("Worker task status must be pending, active or done.");
@@ -65,6 +77,10 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     const row = db.prepare(`SELECT ${taskColumns} FROM tasks WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).get(claimKey(identity)) as LocalTask | undefined;
     return row === undefined ? null : asTask(row);
   });
+  const getCleanupSchedule = (identity: ClaimIdentity): CleanupScheduleRecord | null => read(() => {
+    const row = db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).get(claimKey(identity)) as CleanupScheduleRecord | undefined;
+    return row === undefined ? null : asCleanupRecord(row);
+  });
   const needTask = (identity: ClaimIdentity): LocalTask => {
     const task = getTask(identity);
     if (task === null) throw new Error("The claimed task is not registered.");
@@ -80,10 +96,30 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       if (existing !== null && (existing.repoUrl !== project.repoUrl || existing.localPath !== project.localPath)) {
         const unfinished = db.prepare("SELECT 1 FROM tasks WHERE project_id = @projectId AND status <> 'done' LIMIT 1").get(project);
         if (unfinished !== undefined) throw new Error("An unfinished execution prevents changing its project repository binding.");
+        if (db.prepare("SELECT 1 FROM cleanup_schedules WHERE project_id = @projectId LIMIT 1").get(project) !== undefined) throw new Error("Outstanding cleanup prevents changing its project repository binding.");
       }
       db.prepare(`INSERT INTO projects(project_id, repo_url, local_path) VALUES (@projectId, @repoUrl, @localPath)
         ON CONFLICT(project_id) DO UPDATE SET repo_url = excluded.repo_url, local_path = excluded.local_path`).run(project);
       return getProject(project)!;
+    }),
+    getCleanupSchedule,
+    listCleanupSchedules: (): CleanupScheduleRecord[] => read(() => (db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules ORDER BY project_id, task_id, claim_id`).all() as CleanupScheduleRecord[]).map(asCleanupRecord)),
+    saveCleanupSchedule: (owner: ResourceOwner, state: CleanupSchedule): CleanupScheduleRecord => atomic(() => {
+      const record = { ...claimKey(owner), worktreeId: id(owner.worktreeId, "Worktree ID"), ...asCleanupState(state) };
+      if (getProject(record) === null) throw new Error("The project repository binding must be registered before cleanup.");
+      const previous = getCleanupSchedule(record);
+      if (previous !== null) {
+        if (previous.worktreeId !== record.worktreeId) throw new Error("The cleanup claim is already bound to a different worktree.");
+        if (previous.deadline !== record.deadline) throw new Error("The original cleanup deadline cannot change.");
+      }
+      db.prepare(`INSERT INTO cleanup_schedules(project_id, task_id, claim_id, worktree_id, deadline, failures, next_attempt_at, stage, last_error)
+        VALUES (@projectId, @taskId, @claimId, @worktreeId, @deadline, @failures, @nextAttemptAt, @stage, @lastError)
+        ON CONFLICT(project_id, task_id, claim_id) DO UPDATE SET failures = excluded.failures, next_attempt_at = excluded.next_attempt_at, stage = excluded.stage, last_error = excluded.last_error`)
+        .run(record);
+      return getCleanupSchedule(record)!;
+    }),
+    deleteCleanupSchedule: (identity: ClaimIdentity): void => atomic(() => {
+      db.prepare("DELETE FROM cleanup_schedules WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId").run(claimKey(identity));
     }),
     getTask,
     listTasks: (): LocalTask[] => read(() => (db.prepare(`SELECT ${taskColumns} FROM tasks ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask)),

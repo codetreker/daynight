@@ -123,6 +123,10 @@ Web 将 setting intent 按用户、执行与 operationId 保存，展示 pending
 
 ## Relay 与恢复
 
+Task Session 的 current/history、归档、capability、Controller grant、排队命令和浏览器 channel 共用 `sessionrelay.member()`：先核验当前凭据，再在调用方现有 raw transaction 中调用 `store.ReadProjectAccess`。canonical 单语句读取当前有效角色和真实 direct grant；当前权限来源仍为直接授权，不读取用户展示资料。无准入返回既有 forbidden，其他数据库错误保留错误链。项目准入不持有跨到事务提交的授权来源行 share 锁，也不引入 Thread 的长期 ownership 锁；Task、Session 和凭据的原有锁序保持。admin 或 Session owner 的控制资格、Controller owner 限制和独立 Test Session 的本人边界仍分别检查。
+
+派发前按原始 requester 重新准入，不借用 Controller 的角色。在线内容在网络等待前后重验；浏览器 channel 每 250ms 重新检查项目准入与执行身份，失权后关闭连接。准入不缓存到 capability、Session 身份或归档索引中。
+
 Controller 以短期 grant 建立 WebSocket，浏览器通过项目会话权限建立另一条 WebSocket；命令和历史也有 HTTP 接口。bootstrap grant 有效期 120 秒，reconnect grant 为 15 分钟；launcher 在首次 spawn 前将 bootstrap 换成可复连凭据，避免首次连接后短暂断网必须等待续签；grant 冻结签发凭据归属，撤销父凭据会使现有连接失效。服务端每次操作核验项目权限、claim、executionGeneration 和连接 fencing，不将浏览器传入的 native ID 当作授权。Controller 在 WebSocket 升级前先验证 grant、父凭据与 active scope，收到 hello 后在 Connect 事务中重复验证并消费凭据；握手预检不能替代原子 fence 校验。连接配额包含正在升级的请求，失败升级释放预留名额，伪造或失效 token 不能先占用 WebSocket。
 
 Task Worker 的 grant 维护每 30 秒独立扫描当前服务的未完成 Web 执行，在凭据剩余不超过 120 秒时续签，不受 claim 发现的 pollIntervalMs 影响。维护过程验证 launch ticket 与原 claim、Controller、execution generation 一致；prepare、launch 和续签按执行串行，读取最新执行记录后才写入凭据。退出先取消并等待维护结束，再关闭执行存储，避免后台续签访问已关闭的数据库。续签失败保留原执行和凭据事实，并通过 worker diagnostic 暴露。
@@ -175,6 +179,16 @@ PostgreSQL 保存 Session 归属、注册身份、授权、原生与连接代次
 
 响应操作按 interactionId 与 interactionRevision 限制同一交互的重复提交，不能按整个 turn 或 interaction_response 类型互斥。工具审批等待 tool_result 确认期间，同一工具提出的新 MCP form 必须可独立响应。浏览器只持久保存 operation 与交互身份的关联，不保存答案；缺少旧缓存时，服务端当前在线交互校验和 Controller 原生校验仍决定能否响应。
 
+## 原生正文的显示转换
+
+Controller 的 `ProviderOptions.onTimeline` 在调用 `journal.projectTimeline` 前通过 `providerDisplayEntry` 生成显示副本。Codex、Claude、Copilot 的实时事件和原生历史重放均经过这个入口；转换位于 `parseSourceEvent` 之前，既有 `sessionDisplayEntry` 整条 wire 预算降级继续位于持久化投影之后。
+
+转换仅遍历非交互正文的明确字段：user/assistant `content[].text`、`reasoning.text`、`tool_call.input` 与 `output[].text`、`error.message`、`compaction.summary`、`todo.items[].text`。条目、text part 和 todo item 按需复制，资源、身份、名称、状态、错误 code 和整个 interaction 保留原值。原生发送与响应参数不经过该转换。正常良构且无 NUL 的正文原样返回；异常段标注转义说明，将 NUL 与孤立 surrogate 写为字面 `\u0000` / `\uXXXX`，同段反斜线也转义，保留合法 Unicode pair、中文、换行和 tab。消息与 reasoning 的异常正文置于 fenced code block 内，确保 Markdown 消费者按字面渲染；正常正文继续使用原有 Markdown。围栏字符与长度根据保留内容中的 backtick/tilde 连续段选择，不能被正文提前闭合。
+
+转义说明、转换正文和所需 Markdown 围栏合计最多 200,000 个 UTF-16 code units；无法容纳下一个完整 token 时追加既有 `[Output truncated at 200000 characters]` 提示，不能切断 escape token 或 Unicode pair；`tool.truncated` 合并原截断状态和新增截断。显示仍满足协议单文本 1 MiB 字节/字符约束，整条事件沿用 1,400,000 serialized bytes 的 wire fallback。显示转换不把成功工具改为失败；只有既有整条 wire 超限降级可以替换展示条目。
+
+Provider 增量缓存保留未经此次转义的累计值，因此一个孤立高 surrogate 可暂时显示为 escape，后续低 surrogate 到达后重新从累计原值产生合法字符。转换后的副本落入 journal 和待归档文件，原生完整历史不变；恢复时可重新投影原先在持久化前被拒绝的条目，无需修改生产 journal。协议版本与存储格式不变，旧合法 journal 和 archive 沿用原读取路径。决策取舍见[原生显示文本决策](../../.agents/notes/implemented/bug-fix/2026-11-04-native-display-text.md)。
+
 ## Session View 的阅读与输入状态
 
 浏览器将 scope/current 失效与 auth 暂停分开。身份待复核时最多保留 WebSocket 60 秒；新帧保存在最多 1000 条、合计 4 MiB 的内存缓冲中，不推进已消费 cursor 或发布新内容。HTTP 在途结果也等待复核，负面授权结果仍立即失效。确认同一身份后按原序消费缓冲，并继续原连接与历史；到期、缓存超限或真实断线则关闭连接，使用最后已消费 cursor 恢复。scope 撤销、principal 不符和执行失效不享受此宽限。Chatbox 与审批暂时禁用操作，但保留输入、阅读位置和连接呈现；只有实际失去同步才显示恢复提示。该策略继承[前台身份核验](daynight-auth.md)的账号隔离规则，不停止或重新创建原生 Agent。
@@ -185,9 +199,17 @@ Task 与 Test 共用 `SessionView`、Session client、timeline 和 composer。`S
 
 `SessionView` 顶部及 `SessionActivity` 底部状态、composer 的权限入口和主发送/中断按钮、timeline 内建工具类型只读取消息模块导出的英语标签子集，固定文本局部标为 `lang="en"`。同一消息键在其他位置仍可本地化，例如操作回执中的 unknown、归档正文和交互卡 pending。组件不替换整份消息目录或重建语言 Provider，状态选择及操作 gating 沿用既有逻辑。具体语言取舍见[Session 英语操作标签决策](../../.agents/notes/implemented/bug-fix/2026-11-04-english-session-operation-labels.md)。
 
-Codex 的 `subAgentActivity` 投影为 `tool_call`，以启动、交互、中断的操作名称和子代理路径呈现，保留原生 item 身份与子代理 thread ID。状态跟随父会话 item 生命周期，不表示子代理任务结果。浏览器对旧 `unsupported_native_item` 条目验证精确前缀与 JSON 中的类型、非空 item ID 后，以相同操作名称和折叠元数据显示；旧错误没有完整 item 生命周期，因此不显示推断状态。该兼容仅影响渲染，不改写日志、归档或游标，也不读取子代理会话。选择理由见[子代理活动决策](../../.agents/notes/implemented/bug-fix/2026-11-03-codex-subagent-activity.md)。
+Codex 的 `subAgentActivity` 投影为 `tool_call`，以启动、交互、中断的操作名称和子代理路径呈现，保留原生 item 身份与子代理 thread ID。状态跟随父会话 item 生命周期，不表示子代理任务结果。浏览器通过共享纯函数 `legacySubagentActivity` 对旧 `unsupported_native_item` 条目验证精确前缀与 JSON 中的类型、非空 item ID 后，以相同操作名称和折叠元数据显示；旧错误没有完整 item 生命周期，因此不显示推断状态。解析失败或缺少必要字段的条目仍作为原始错误呈现。该兼容仅影响显示分类与渲染，不改写日志、归档或游标，也不读取子代理会话。选择理由见[子代理活动决策](../../.agents/notes/implemented/bug-fix/2026-11-03-codex-subagent-activity.md)。
 
-滚动状态区分跟随和阅读。触摸起点仅用于检测上读方向，轻点不改变模式；非编辑控件的上读按键、旧内容焦点和脚注跳转可暂停跟随。宽度变化后优先按可见文本位置恢复，找不到该文本时退回稳定条目锚点。分页、inactive 页面和返回最新沿用同一滚动状态，不能用布局变化推断用户恢复跟随。
+`task-agent-session/display-mode.ts` 提供独立的 `SessionDisplayMode`（`standard | conversation`）、`DEFAULT_SESSION_DISPLAY_MODE`（`conversation`）和 `selectSessionDisplayEntries(entries, mode)`。selector 接受只读条目数组，按原顺序返回原条目引用，不修改消息 parts、修订、资源或 Session 状态，也不触发资源读取、网络及 Provider 操作。Standard 仅排除正文为空或全空白的 reasoning。Conversation 保留用户/助手消息的完整 parts、todo、所有状态的 interaction、真实 error（包括取消和中断）及计划工具；隐藏 reasoning、compaction、普通工具和被共享函数确认为合法旧格式子代理活动的 error。失败的普通工具仍按工具分类。
+
+计划工具只按名称最后一个 `.` 分段精确匹配 `update_plan`、`TodoWrite`、`todo_write`、`EnterPlanMode`、`ExitPlanMode`、`enter_plan_mode`、`exit_plan_mode`、`TaskCreate`、`TaskUpdate`、`TaskList`、`TaskGet`；不忽略大小写、不去除空白，也不从参数或输出推断类型。所有 timeline kind 均显式分类，新增 kind 必须补充分类决定。分类理由见[显示分类决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-classification.md)。
+
+`SessionTimeline` 的可选 `displayMode` 使用该 selector 派生可见列表；省略时保持 Standard 内部兼容行为。共享 `SessionView` 总是显式传入当前偏好，Task、Test 和可读归档的产品默认均为 Conversation，已有有效保存值优先。渲染仅挂载可见条目，隐藏工具及其输出资源组件卸载；保留消息、计划和交互使用稳定 entry key，资源索引、响应 gating、pendingResponse 与完整 SessionState 不变。切回 Standard 从已有条目恢复显示，不派发工具操作；资源仍按既有读取规则加载。
+
+Conversation 无可见条目时显示“当前对话模式下暂无内容”或“No content in conversation mode.”，Standard 保留原空态。`hasOlder`、加载中和历史错误独立于可见列表，连续隐藏页仍可手动加载，过滤不会自动请求下一页，也不改写 cursor 或实时归并位置。
+
+滚动状态区分跟随和阅读。触摸起点仅用于检测上读方向，轻点不改变模式；非编辑控件的上读按键、旧内容焦点和脚注跳转可暂停跟随。宽度变化后优先按可见文本位置恢复，找不到该文本时退回稳定条目锚点。`SessionTimeline` 向共享 `useTimelineScroll` 提供 Session/history 身份、active、完整条目修订，以及独立的原始 key 顺序、可见 key 顺序和 mode。mode 不属于重置身份；切换保留跟随或暂停意图。锚点记录捕获时的原始顺序，条目被过滤后按原始时间顺序找最近前一可见项，无前项则找后一项，并定位其顶部；仍可见时优先恢复文字及相对位置。无可见项时保留暂停锚点，inactive 时不操作 viewport，恢复 active 后按当前可见顺序恢复。分页、ResizeObserver、流式内容和返回最新沿用同一滚动状态，不能用布局变化推断用户恢复跟随。共享 hook 的显示顺序参数可选，其他时间线调用方沿用既有接口。理由与限制见[显示过滤与阅读位置决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-reading.md)。
 
 Session View 在选择最近 12 条可见回执前过滤无错误的成功操作：`confirmed`，以及 `send_message` / `execute_command` 的 `provider_accepted`。其他类型的 `provider_accepted` 仍等待最终确认，保留展示；任何携带 error 的回执均保留。没有可见回执时不挂载回执区域。过滤仅作用于渲染，client 的操作账本、原操作核对和草稿受理逻辑保持独立。展示取舍见[成功回执展示决策](../../.agents/notes/implemented/bug-fix/2026-11-03-quiet-session-receipts.md)。
 
@@ -198,6 +220,29 @@ composer 通过实际 scrollHeight 与宽度变化调整高度并遵守最大高
 composer 的表单保留提交、快捷键和设置面板的所有权；内部共同容器提供输入区、设置入口、活动状态、操作按钮的统一边框；快捷键说明作为发送操作的可访问提示，不占常驻布局行。textarea 使用透明背景且不单独绘制边框，焦点样式由共同容器与各可聚焦控件承担。底部布局按可用容器宽度允许设置、状态和动作分组换行，不使用视觉重排改变键盘顺序。设置与命令面板继续使用原有生命周期和关闭逻辑。选择理由见[统一 Chatbox 分组决策](../../.agents/notes/implemented/bug-fix/2026-11-04-unified-session-chatbox.md)。
 
 阅读与草稿决策的替代方案和限制见[Session 阅读与草稿决策](../../.agents/notes/implemented/bug-fix/2026-10-28-session-reading-and-draft-ownership.md)。
+
+### Session 显示偏好模块
+
+`task-agent-session/display-preference.ts` 的 `createSessionDisplayPreferenceStore(getStorage?)` 创建页面级共享缓存，`get(binding)` 返回具有 `getSnapshot`、`subscribe`、`setMode` 和 `retrySave` 的独立偏好。`useSessionDisplayPreference(binding, preferences?)` 默认使用同一页面缓存，返回 `{ mode, issue, setMode, retrySave }`，由共享 `SessionView` 消费。第二个参数用于注入独立 store；调用方应保持该 store 实例稳定。
+
+`binding` 为 `{ userId, sessionId } | null`，必须来自已认证账号与匹配的已验证 Session 快照。hook 在 render 中按身份选择 store，再使用 `useSyncExternalStore` 订阅，因此身份变化的首帧不会使用上一身份的值。`null` 返回 Conversation 和空 issue，订阅、设置、重试均无操作，连 Storage getter 也不调用。claim、fence、historyEpoch、连接或归档状态不参与身份；同一账号和 Session 的多个消费者共享选择。
+
+存储键为 `daynight.web.session.display.v1:` 加 `JSON.stringify([userId, sessionId])`，值只能是 JSON 字符串 `"standard"` 或 `"conversation"`。JSON 数组编码避免身份分隔符歧义，浏览器 origin 提供站点隔离。首次缺省返回 Conversation，不写默认值；已有有效值立即生效。getter/getItem 抛错返回 `{ kind: 'read' }`，无效 JSON 或枚举返回 `{ kind: 'invalid' }`，均使用 Conversation。issue 只保留错误类别，不缓存异常 payload 或凭据。
+
+`setMode` 在保存前更新内存；保存失败保留新 mode，issue 为 `{ kind: 'write' }`。成功保存清除 issue。同值选择不写入、不通知、不更换 snapshot，调用方无需重置阅读位置。`retrySave` 仅在有 issue 时保存当前内存值，不回读旧值；重复失败保持稳定 snapshot，成功清除 issue，无错误时是无操作。
+
+解绑会移除订阅回调；页面缓存保留身份键、mode 和错误类别，使保存失败后的重新挂载仍能恢复当前选择。缓存生命周期是页面生命周期，刷新时重新读取持久值；不监听跨标签变更，也不提供跨设备同步。缓存不持有 Session client、原文、草稿或操作账本。存储与 React hook 使用可注入的 Storage/getStorage 验证失败路径，测试不接触真实用户偏好。取舍见[显示偏好决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-preferences.md)。
+
+### Session 显示菜单与入口绑定
+
+`TaskAgentSession` 与 `TestSessionPage` 向 `SessionView` 传递已认证 scope 的 `userId`；只有属于当前 scope 和目标的 client 才能进入共享视图。入口保存 client 的创建身份，并在 render 时核对 scope 和 Task 的 project/task/claim 或 Test 的 sessionId。切换账号或目标后、effect 创建替代 client 前显示加载状态，避免把新账号与旧快照拼成偏好键。`SessionView` 使用匹配的已验证 `snapshot.sessionId` 绑定偏好；缺少快照、不可用或身份未确定时绑定 null，不读取另一身份的偏好。
+
+`SessionDisplayMenu` 位于顶部刷新按钮旁，接收当前 mode、issue、选择和保存重试操作。菜单仅提供两个 `menuitemradio`：Standard/标准、Conversation/对话；`aria-checked` 由共享 store 的当前值决定。打开状态独立于 client 和 timeline identity；切换偏好只更新可见列表，不参与 client effect 依赖、Composer 的执行 key 或条目 key。
+
+菜单在顶层浮层中定位，按触发器定位，并以 Session 容器与 viewport 的水平交集约束宽度和横向位置；纵向位置受 viewport 限制。浮层不被容器裁剪，也不向窄 Session 两侧越界；监听容器尺寸变化，标题区按实际容器宽度换行。键盘可进入选项并导航，Escape 阻止向外传播、关闭菜单并恢复触发器焦点；外部 pointer 或焦点离开关闭。Display 打开时协调 Chatbox 快捷键提示的可见状态与 Escape 监听，防止提示抢先消费关闭菜单的按键。保存重试后的焦点保留在仍存在的控件上，不落到已移除的重试按钮。
+
+read、invalid、write issue 只在打开的菜单内按当前语言映射说明和重试。选择失败后 mode 保留，菜单仍能展示未保存状态；重试调用同一偏好的 `retrySave`，成功去掉错误而不改写模式。正常状态不增加说明行。菜单文案使用 `useSessionMessages` 的本地化目录，不读取原生操作的固定英语标签子集；语言切换保持 client、输入、操作和偏好身份。入口、菜单与提示层的选择理由见[显示菜单集成决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-integration.md)。
+
 
 ## 关闭与清理
 

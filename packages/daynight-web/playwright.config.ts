@@ -32,6 +32,9 @@ export default defineConfig({
     screenshot: "only-on-failure",
     actionTimeout: 15_000,
     navigationTimeout: 30_000,
-    ...(executable === undefined ? {} : { launchOptions: { executablePath: executable } }),
+    launchOptions: {
+      env: { ...process.env, TMPDIR: '.tmp' },
+      ...(executable === undefined ? {} : { executablePath: executable }),
+    },
   },
 });

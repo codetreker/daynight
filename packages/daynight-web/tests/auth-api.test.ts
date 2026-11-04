@@ -11,6 +11,8 @@ const time = "2026-10-22T12:34:56.123456789Z";
 const user = { id: userId, email: null, emailVerified: false, name: "Member", avatarUrl: null };
 const pat = { id: tokenId, name: "Developer machine", createdAt: time, expiresAt: time };
 const member = { projectId, userId, email: null, name: "Member", avatarUrl: null, role: "admin", version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time };
+const { email: memberEmail, name: memberName, avatarUrl: memberAvatar, ...grant } = member;
+const participant = { userId, profile: { email: memberEmail, name: memberName, avatarUrl: memberAvatar }, effectiveRole: member.role, directGrant: grant };
 const invitation = { id: inviteId, projectId, createdBy: userId, createdAt: time, expiresAt: time, consumedBy: null, consumedAt: null, revokedAt: null };
 const project = { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "New project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
 const signal = () => new AbortController().signal;
@@ -199,41 +201,41 @@ describe("private project and membership API", () => {
 
   it("preserves full int64 member observations in responses and PATCH/DELETE numeric bodies", async () => {
     const maximum = 9_223_372_036_854_775_807n;
-    const fetcher = mock(response({ items: [member] }));
-    expect(await listMembers(projectId.toUpperCase(), signal())).toEqual([member]);
+    const fetcher = mock(response({ items: [participant] }));
+    expect(await listMembers(projectId.toUpperCase(), signal())).toEqual([participant]);
     expect(fetcher.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/members`);
-    fetcher.mockResolvedValue(response({ ...member, role: "member", version: maximum }));
-    expect(await setMemberRole(projectId, userId.toUpperCase(), { version: member.version, role: "member" }, signal())).toEqual({ ...member, role: "member", version: maximum });
-    expect(fetcher.mock.calls[1]?.[1].body).toBe('{"version":9007199254740993,"role":"member"}');
-    fetcher.mockResolvedValue(new Response(null, { status: 204 }));
-    await removeMember(projectId, userId, maximum, signal());
-    expect(fetcher.mock.calls[2]).toEqual([`/api/v1/projects/${projectId}/members/${userId}`, expect.objectContaining({ method: "DELETE", body: '{"version":9223372036854775807}', headers: { "Content-Type": "application/json" } })]);
+    fetcher.mockResolvedValue(response({ ...grant, role: "member", version: maximum }));
+    expect(await setMemberRole(projectId, userId.toUpperCase(), { version: member.version, role: "member", expectedUserId: userId }, signal(), vi.fn())).toEqual({ ...grant, role: "member", version: maximum });
+    expect(fetcher.mock.calls[1]?.[1].body).toBe(`{"version":9007199254740993,"role":"member","expectedUserId":"${userId}"}`);
+    fetcher.mockResolvedValue(new Response(null, { status: 204, headers: { "Daynight-User-ID": userId } }));
+    await removeMember(projectId, userId, { version: maximum, expectedUserId: userId }, signal(), vi.fn());
+    expect(fetcher.mock.calls[2]).toEqual([`/api/v1/projects/${projectId}/members/${userId}`, expect.objectContaining({ method: "DELETE", body: `{"version":9223372036854775807,"expectedUserId":"${userId}"}`, headers: { Accept: "application/json", "Content-Type": "application/json" } })]);
   });
 
   it.each(["9007199254740993", "9223372036854775807"])("parses the original numeric member version lexeme %s", async (version) => {
-    const text = JSON.stringify({ items: [{ ...member, version: 1 }] }).replace('"version":1', `"version":${version}`);
+    const text = JSON.stringify({ items: [{ ...participant, directGrant: { ...grant, version: 1 } }] }).replace('"version":1', `"version":${version}`);
     mock(new Response(text, { headers: { "Content-Type": "application/json" } }));
-    expect((await listMembers(projectId, signal()))[0]?.version).toBe(BigInt(version));
+    expect((await listMembers(projectId, signal()))[0]?.directGrant?.version).toBe(BigInt(version));
   });
 
   it.each(["0", "-1", "1.5", "1e3", "9223372036854775808", '"9007199254740993"'])("rejects invalid membership numeric representations %s", async (version) => {
-    const text = JSON.stringify({ items: [{ ...member, version: 1 }] }).replace('"version":1', `"version":${version}`);
+    const text = JSON.stringify({ items: [{ ...participant, directGrant: { ...grant, version: 1 } }] }).replace('"version":1', `"version":${version}`);
     mock(new Response(text, { headers: { "Content-Type": "application/json" } }));
     await expect(listMembers(projectId, signal())).rejects.toMatchObject({ kind: "protocol", status: 200 });
   });
 
   it("binds membership responses to both requested IDs", async () => {
-    const fetcher = mock(response({ items: [{ ...member, projectId: otherId }] }));
+    const fetcher = mock(response({ items: [{ ...participant, directGrant: { ...grant, projectId: otherId } }] }));
     await expect(listMembers(projectId, signal())).rejects.toMatchObject({ kind: "protocol" });
-    fetcher.mockResolvedValue(response({ ...member, userId: otherId }));
-    await expect(setMemberRole(projectId, userId, { version: 1n, role: "admin" }, signal())).rejects.toMatchObject({ kind: "protocol" });
+    fetcher.mockResolvedValue(response({ ...grant, userId: otherId }));
+    await expect(setMemberRole(projectId, userId, { version: 1n, role: "admin", expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
   });
 
   it.each([0n, -1n, 9_223_372_036_854_775_808n])("rejects invalid observed versions before writes %s", (version) => {
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
-    expect(() => setMemberRole(projectId, userId, { version, role: "member" }, signal())).toThrow();
-    expect(() => removeMember(projectId, userId, version, signal())).toThrow();
+    expect(() => setMemberRole(projectId, userId, { version, role: "member", expectedUserId: userId }, signal(), vi.fn())).toThrow();
+    expect(() => removeMember(projectId, userId, { version, expectedUserId: userId }, signal(), vi.fn())).toThrow();
     expect(fetcher).not.toHaveBeenCalled();
   });
 });
@@ -283,7 +285,7 @@ describe("auth API failures", () => {
 
   it.each([[401, "unauthenticated"], [403, "forbidden"], [404, "not_found"], [409, "version_conflict"], [409, "last_admin"], [410, "invitation_unavailable"]] as const)("preserves %i/%s without retaining raw server messages or retrying writes", async (status, code) => {
     const fetcher = mock(refusal(status, code));
-    const failure = await setMemberRole(projectId, userId, { version: 1n, role: "member" }, signal()).catch((error: unknown) => error);
+    const failure = await setMemberRole(projectId, userId, { version: 1n, role: "member", expectedUserId: userId }, signal(), vi.fn()).catch((error: unknown) => error);
     expect(failure).toMatchObject({ kind: "server", status, code, requestId: "auth-1" });
     expect(String(failure)).not.toContain("sensitive-token-must-not-escape");
     expect(failure).not.toHaveProperty("cause");
@@ -366,5 +368,30 @@ describe("shared unauthorized notifications", () => {
     fetcher.mockRejectedValue(new Error("401 secret"));
     await expect(listProjects({}, signal())).rejects.toMatchObject({ kind: "network" });
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+describe("identity-bound grant mutation responses", () => {
+  it.each(["role", "remove"] as const)("checks principal before reading %s success or refusal", async (operation) => {
+    for (const status of operation === "role" ? [200, 409] : [204, 409]) {
+      const body = status === 204 ? new Response(null, { status }) : response(status === 200 ? grant : { error: { code: "version_conflict", message: "Refused", requestId: "safe-id" } }, status);
+      body.headers.set("Daynight-User-ID", otherId);
+      const text = vi.spyOn(body, "text"), mismatch = vi.fn();
+      const fetcher = mock(body);
+      const pending = operation === "role" ? setMemberRole(projectId, userId, { version: 1n, role: "admin", expectedUserId: userId }, signal(), mismatch)
+        : removeMember(projectId, userId, { version: 1n, expectedUserId: userId }, signal(), mismatch);
+      await expect(pending).rejects.toMatchObject({ kind: "protocol", code: "principal_mismatch" });
+      expect(mismatch).toHaveBeenCalledOnce(); expect(text).not.toHaveBeenCalled(); expect(fetcher).toHaveBeenCalledOnce();
+    }
+  });
+  it("routes a declared identity mismatch separately from grant version conflict", async () => {
+    const mismatch = vi.fn(), fetcher = mock(refusal(409, "identity_mismatch"));
+    await expect(setMemberRole(projectId, userId, { version: 1n, role: "member", expectedUserId: userId }, signal(), mismatch)).rejects.toMatchObject({ kind: "server", code: "identity_mismatch" });
+    expect(mismatch).toHaveBeenCalledOnce(); expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it("rejects flat legacy mutation success and malformed grant observations without replay", async () => {
+    const fetcher = mock(response(member));
+    await expect(setMemberRole(projectId, userId, { version: 1n, role: "member", expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol", status: 200 });
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 });

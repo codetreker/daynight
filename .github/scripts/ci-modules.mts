@@ -1,23 +1,42 @@
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 
 type Module = "cli" | "server" | "web";
 export type ModuleSelection = Record<Module, boolean>;
 
 const allModules: ModuleSelection = { cli: true, server: true, web: true };
 const sharedInputs = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"]);
+const cliManifestPath = "packages/daynight/package.json";
+const lazyCliCommands = ["worker", "controller", "review", "skill", "update", "completion"]
+  .map((command) => `packages/daynight/src/commands/${command}/`);
+const serverCliInputs = new Set([
+  cliManifestPath,
+  "packages/daynight/tsconfig.json",
+  "packages/daynight/tsconfig.build.json",
+  "packages/daynight/config.example.yml",
+  "packages/daynight/scripts/clean-dist.ts",
+  "packages/daynight/scripts/copy-resources.ts",
+  "packages/daynight/scripts/project-task-acceptance.ts",
+  "packages/daynight/scripts/project-task-budgets.ts",
+  "packages/daynight/test/fixtures/installed-operation-limits.ts",
+]);
 const webPatches = new Set([
   "patches/@dagrejs__dagre@3.1.1.patch",
   "patches/@xyflow__system@0.0.83.patch",
 ]);
 
-export const selectModules = (paths: readonly string[]): ModuleSelection => {
+export const selectModules = (paths: readonly string[], cliManifestRequiresServer = true): ModuleSelection => {
   const selected = { cli: false, server: false, web: false };
   for (const path of paths) {
     if (sharedInputs.has(path)) return { ...allModules };
     if (path === "packages/daynight/test/fixtures/installed-cli.ts") return { ...allModules };
     if (path.startsWith("packages/daynight/src/")) {
       selected.cli = true;
+      // Command definitions load at startup; their implementations load only when selected.
+      if (path.endsWith("/definition.ts") || !lazyCliCommands.some((prefix) => path.startsWith(prefix))) selected.server = true;
+      if (path.startsWith("packages/daynight/src/api/") || path.startsWith("packages/daynight/src/session/") ||
+        path === "packages/daynight/src/platform/text.ts") selected.web = true;
       continue;
     }
     if (
@@ -25,9 +44,13 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
       /(^|\/)(README|AGENTS|CLAUDE)\.md$/.test(path) || path === ".gitignore" ||
       path === ".github/workflows/publish.yml"
     ) continue;
+    if (serverCliInputs.has(path) && (path !== cliManifestPath || cliManifestRequiresServer)) selected.server = true;
     if (path.startsWith("packages/daynight/") || path === "scripts/dev-install.mjs" || path === "scripts/dev-install.test.mjs") selected.cli = true;
     else if (path.startsWith("packages/daynight-server/")) selected.server = true;
-    else if (path.startsWith("packages/daynight-web/") || path.startsWith("deployment/") || webPatches.has(path)) selected.web = true;
+    else if (path.startsWith("packages/daynight-web/") || webPatches.has(path)) {
+      selected.web = true;
+      selected.server = true;
+    } else if (path.startsWith("deployment/")) selected.web = true;
     else return { ...allModules };
   }
   return selected;
@@ -46,7 +69,7 @@ const git = (cwd: string, args: readonly string[]): Promise<string> => new Promi
   });
 });
 
-export const pullRequestPaths = async (cwd: string, base: string | undefined, head: string | undefined): Promise<string[]> => {
+const pullRequestDiff = async (cwd: string, base: string | undefined, head: string | undefined) => {
   const verifyCommit = async (sha: string | undefined): Promise<string> => {
     if (typeof sha !== "string" || !/^[0-9a-f]{40}$/i.test(sha) || /^0+$/.test(sha)) {
       throw new Error("PR change detection requires existing full 40-character base and head commit SHAs.");
@@ -58,17 +81,52 @@ export const pullRequestPaths = async (cwd: string, base: string | undefined, he
   const headCommit = await verifyCommit(head);
   const comparisonBase = (await git(cwd, ["merge-base", baseCommit, headCommit])).trim();
   // Both sides of a rename must retain their module ownership, including moves into documentation.
-  const changed = await git(cwd, ["diff", "--name-only", "-z", "--no-renames", comparisonBase, headCommit, "--"]);
-  if (changed === "") return [];
-  if (!changed.endsWith("\0")) throw new Error("Git returned an incomplete NUL-delimited path list.");
-  return changed.slice(0, -1).split("\0");
+  const changed = await git(cwd, ["diff", "--name-status", "-z", "--no-renames", comparisonBase, headCommit, "--"]);
+  if (changed !== "" && !changed.endsWith("\0")) throw new Error("Git returned an incomplete NUL-delimited change list.");
+  const fields = changed === "" ? [] : changed.slice(0, -1).split("\0");
+  if (fields.length % 2 !== 0) throw new Error("Git returned an incomplete status/path pair.");
+  const changes = fields.filter((_, index) => index % 2 === 0).map((status, index) => ({ status, path: fields[index * 2 + 1]! }));
+  return { changes, comparisonBase, head: headCommit };
+};
+
+export const pullRequestPaths = async (cwd: string, base: string | undefined, head: string | undefined): Promise<string[]> =>
+  (await pullRequestDiff(cwd, base, head)).changes.map(({ path }) => path);
+
+const parseManifest = (source: string): { version: string; inputs: Record<string, unknown> } => {
+  const manifest: unknown = JSON.parse(source);
+  if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest) ||
+    !("version" in manifest) || typeof manifest.version !== "string") {
+    throw new Error("CLI package manifest must be a JSON object with a string version.");
+  }
+  const { version, ...inputs } = manifest;
+  return { version, inputs };
 };
 
 export const detectModules = async ({ event, base, head, cwd }: { event: string | undefined; base?: string | undefined; head?: string | undefined; cwd?: string }): Promise<ModuleSelection> => {
   if (event === "push") return { ...allModules };
   if (event !== "pull_request") throw new Error(`Unsupported CI event: ${event}.`);
   if (cwd === undefined) throw new Error("PR change detection requires a repository directory.");
-  return selectModules(await pullRequestPaths(cwd, base, head));
+  const diff = await pullRequestDiff(cwd, base, head);
+  const manifestChange = diff.changes.find(({ path }) => path === cliManifestPath);
+  let cliManifestRequiresServer = true;
+  if (manifestChange?.status === "M") {
+    const [beforeSource, afterSource, beforeMode, afterMode] = await Promise.all([
+      git(cwd, ["show", `${diff.comparisonBase}:${cliManifestPath}`]),
+      git(cwd, ["show", `${diff.head}:${cliManifestPath}`]),
+      git(cwd, ["ls-tree", "--format=%(objectmode)", diff.comparisonBase, "--", cliManifestPath]),
+      git(cwd, ["ls-tree", "--format=%(objectmode)", diff.head, "--", cliManifestPath]),
+    ]);
+    const regularFile = (mode: string) => mode.trim() === "100644" || mode.trim() === "100755";
+    if (regularFile(beforeMode) && regularFile(afterMode)) {
+      const before = parseManifest(beforeSource);
+      const after = parseManifest(afterSource);
+      cliManifestRequiresServer = beforeMode !== afterMode || !isDeepStrictEqual(before.inputs, after.inputs);
+      if (diff.changes.length === 1 && !cliManifestRequiresServer && before.version !== after.version) {
+        return { cli: false, server: false, web: false };
+      }
+    }
+  }
+  return selectModules(diff.changes.map(({ path }) => path), cliManifestRequiresServer);
 };
 
 if (import.meta.main) {

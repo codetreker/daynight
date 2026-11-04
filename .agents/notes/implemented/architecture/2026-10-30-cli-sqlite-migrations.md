@@ -24,14 +24,19 @@ locks and uncertainty about surviving native agents.
 ## Decision
 
 Each store explicitly selects its format and SQL directory, with an independent
-`user_version` sequence: Review 2, Worker 5, Web execution state 1, Controller
+`user_version` sequence: Review 2, Worker 7, Web execution state 2, Controller
 journal 6 and native resume lease 1. Review and journal retain their existing
 nonzero conversions; retired detailed Worker versions 1–4 remain unsupported.
-The minimal Worker index gains no business columns, identity marker, history or
-recovery ledger. There is no global version, database-family identifier or
+The minimal Worker task index gains no business columns, identity marker or
+execution history. The [cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md)
+adds a separate terminal-cleanup schedule in Worker version 6, preserving
+existing project and task rows. The
+[resource-state decision](2026-11-04-worker-resource-state.md) adds Worker 7 and
+Web 2 migrations that remove cleanup progress fields while preserving identity,
+intent, deadlines and retry policy. There is no global version, database-family identifier or
 migration ledger.
 
-Five baselines and six upgrades are independent `.sql` resources. Top-level
+Five baselines and their numbered upgrades are independent `.sql` resources. Top-level
 filenames alone define each owner's baseline, versions and execution order;
 TypeScript has no per-step registry or second sequence. A valid next numbered
 file automatically enters its owner's chain. Strict discovery rejects malformed
@@ -61,7 +66,8 @@ this rule; `allowCreate` controls only missing-file creation. There is no
 unversioned source-schema validator, JSON admission model, adoption callback or
 source-only SQL. Known valid nonzero migrations preserve their existing data
 semantics; unknown, future or unsupported nonzero formats are refused without
-reset. Current Web CRUD retains its JSON parsing and default-field rules.
+reset. Web version 2 removes obsolete cleanup JSON fields in its SQL migration;
+current CRUD reads the resulting intent representation without old-field fallbacks.
 
 Version and nonzero source-structure inspection share one snapshot, including a
 writable opener's short preflight before WAL/FULL configuration. The IMMEDIATE

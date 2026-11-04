@@ -1,3 +1,4 @@
+import { CLEANUP_OPERATION_MS } from "../cleanup-operation.js";
 import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
 import { readAgentCliAliases } from "../../config/agent-cli-aliases.js";
 import { resolveConfigurationPaths } from "../../config/paths.js";
@@ -11,6 +12,7 @@ import { openControllerLifecycleStore, type ControllerOperation } from "./lifecy
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
 import { captureProcessProof, captureControllerProcessProof } from "./process-proof.js";
 import { createControllerRelay } from "./relay.js";
+import { providerDisplayEntry } from "./provider-display.js";
 import { isCleaningGeneration, observeNativeInput, observeNativeInteraction } from "./recovery.js";
 import { NativeRpcError } from "./providers/native-rpc.js";
 import type { NativeProvider, ProviderOptions } from "./providers/types.js";
@@ -206,7 +208,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
                 if (!receipt.turnId) throw new Error("Native cleanup turn identity is unknown.");
                 await provider!.waitForTurn(receipt.turnId, action.deadline);
                 return receipt;
-              }), Math.max(1, Math.min(30_000, action.deadline - Date.now())));
+              }), Math.max(1, Math.min(CLEANUP_OPERATION_MS, action.deadline - Date.now())));
               if (operation === null) return;
             }
           }
@@ -267,7 +269,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
         publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
       }),
       onTimeline: entry => nativeEvent(() => {
-        journal.projectTimeline(entry);
+        journal.projectTimeline(providerDisplayEntry(entry));
         if (entry.kind === "interaction") {
           const id = entry.interaction.interactionId;
           if (cleaning && cleanupInputStarted && !knownInteractions.has(id) && entry.interaction.state === "pending") cleanupInteractions.add(id);

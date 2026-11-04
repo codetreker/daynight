@@ -1,5 +1,5 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ProjectMember, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, User, WorkerReportReceipt } from "./types.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
@@ -69,22 +69,43 @@ export const parseUser = (value: unknown): User => {
     name: data.name === null ? null : text(data.name), avatarUrl: data.avatarUrl === null ? null : text(data.avatarUrl),
   };
 };
-export const parseProjectMembers = (value: unknown, projectId: string): readonly ProjectMember[] => {
+const projectRole = (value: unknown): ProjectAccess["effectiveRole"] => value === "admin" || value === "member" ? value : malformed();
+const parseProjectGrant = (value: unknown, projectId: string, userId?: string): ProjectGrant => {
+  const grant = fields(value, ["projectId", "userId", "role", "version", "createdAt", "updatedAt"]);
+  const parsed: ProjectGrant = {
+    projectId: id(grant.projectId), userId: id(grant.userId),
+    role: projectRole(grant.role),
+    version: resourceVersion(grant.version), createdAt: timestamp(grant.createdAt), updatedAt: timestamp(grant.updatedAt),
+  };
+  if (parsed.projectId !== projectId || userId !== undefined && parsed.userId !== userId) return malformed();
+  return parsed;
+};
+export const parseProjectAccess = (value: unknown, projectId: string, userId?: string): ProjectAccess => {
+  const data = fields(value, ["effectiveRole", "directGrant"]);
+  return {
+    effectiveRole: projectRole(data.effectiveRole),
+    directGrant: data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId),
+  };
+};
+export const parseProjectParticipants = (value: unknown, projectId: string): readonly ProjectParticipant[] => {
   const data = fields(value, ["items"]);
-  const members = array(data.items, (value): ProjectMember => {
-    const member = fields(value, ["projectId", "userId", "email", "name", "avatarUrl", "role", "version", "createdAt", "updatedAt"]);
-    const parsed: ProjectMember = {
-      projectId: id(member.projectId), userId: id(member.userId),
-      email: member.email === null ? null : text(member.email), name: member.name === null ? null : text(member.name),
-      avatarUrl: member.avatarUrl === null ? null : text(member.avatarUrl),
-      role: member.role === "admin" || member.role === "member" ? member.role : malformed(),
-      version: resourceVersion(member.version), createdAt: timestamp(member.createdAt), updatedAt: timestamp(member.updatedAt),
+  const participants = array(data.items, (value): ProjectParticipant => {
+    const participant = fields(value, ["userId", "profile", "effectiveRole", "directGrant"]);
+    const userId = id(participant.userId);
+    const profile = fields(participant.profile, ["name", "email", "avatarUrl"]);
+    return {
+      userId,
+      profile: {
+        name: profile.name === null ? null : text(profile.name),
+        email: profile.email === null ? null : text(profile.email),
+        avatarUrl: profile.avatarUrl === null ? null : text(profile.avatarUrl),
+      },
+      effectiveRole: projectRole(participant.effectiveRole),
+      directGrant: participant.directGrant === null ? null : parseProjectGrant(participant.directGrant, projectId, userId),
     };
-    if (parsed.projectId !== projectId) return malformed();
-    return parsed;
   });
-  if (new Set(members.map(({ userId }) => userId)).size !== members.length) return malformed();
-  return members;
+  if (new Set(participants.map(({ userId }) => userId)).size !== participants.length) return malformed();
+  return participants;
 };
 export const parseTask = (value: unknown, projectId: string, taskId?: string): Task => {
   const data = record(value);

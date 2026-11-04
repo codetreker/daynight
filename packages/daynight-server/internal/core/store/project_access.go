@@ -7,15 +7,44 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// projectAccessRelation returns one effective role per project/user and retains
+// raw user IDs so profile consumers can detect missing users.
 const projectAccessRelation = `SELECT project_id,user_id,role FROM project_members`
 
 // ReadProjectAccess evaluates access in the caller's transaction without acquiring row locks.
 func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string) (core.ProjectAccess, error) {
 	var access core.ProjectAccess
-	err := tx.QueryRow(ctx, `SELECT a.project_id::text,a.user_id::text,a.role FROM (`+projectAccessRelation+`) a
+	var grant core.ProjectGrant
+	err := tx.QueryRow(ctx, `SELECT a.project_id::text,a.user_id::text,a.role,
+        g.project_id::text,g.user_id::text,g.role,g.version,g.created_at,g.updated_at FROM (`+projectAccessRelation+`) a
         JOIN users u ON u.id=a.user_id JOIN projects p ON p.id=a.project_id
-        WHERE a.project_id=$1 AND a.user_id=$2`, projectID, userID).Scan(&access.ProjectID, &access.UserID, &access.Role)
-	return access, authQueryError("read project access", err)
+        JOIN project_members g ON g.project_id=a.project_id AND g.user_id=a.user_id
+        WHERE a.project_id=$1 AND a.user_id=$2`, projectID, userID).Scan(&access.ProjectID, &access.UserID, &access.Role,
+		&grant.ProjectID, &grant.UserID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt)
+	if err != nil {
+		return core.ProjectAccess{}, authQueryError("read project access", err)
+	}
+	access.DirectGrant = &grant
+	return access, nil
+}
+
+// LockProjectAuthorization retains the actual positive grant through commit.
+// Callers acquire Task and credential share locks first; this query must never
+// lock Project because ordinary project writes acquire Project before Task.
+func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID string) (core.ProjectAccess, error) {
+	var grant core.ProjectGrant
+	err := tx.QueryRow(ctx, `SELECT m.project_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at
+        FROM project_members m JOIN users u ON u.id=m.user_id JOIN projects p ON p.id=m.project_id
+        WHERE m.project_id=$1 AND m.user_id=$2 FOR SHARE OF m`, projectID, userID).Scan(
+		&grant.ProjectID, &grant.UserID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt)
+	if err != nil {
+		return core.ProjectAccess{}, queryError("lock project authorization", err)
+	}
+	return core.ProjectAccess{ProjectID: grant.ProjectID, UserID: grant.UserID, Role: grant.Role, DirectGrant: &grant}, nil
+}
+
+func (tx *ThreadTx) LockProjectAuthorization(ctx context.Context, principal core.Principal, projectID string) (core.ProjectAccess, error) {
+	return LockProjectAuthorization(ctx, tx.tx, principal.UserID, projectID)
 }
 
 func (s *Snapshot) ProjectAccess(ctx context.Context, principal core.Principal, projectID string) (core.ProjectAccess, error) {

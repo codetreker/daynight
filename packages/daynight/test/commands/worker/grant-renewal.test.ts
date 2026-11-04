@@ -43,15 +43,22 @@ it("retries renewal failure without replaying native work and suppresses repeate
   f.cancellation.abort(); await running;
 });
 
-it("does not renew another origin, an unsubmitted launch, or a stopped native execution", async () => {
+it("does not renew another origin, or an unsubmitted launch", async () => {
   const f = fixture();
   f.store.listUnfinishedTasks.mockReturnValue([
     { ...f.task, serverOrigin: "https://other.example" },
     { ...f.task, webExecution: { ...f.task.webExecution!, launchSubmission: "not-submitted" } },
-    { ...f.task, cleanup: { agentStopped: true } as LocalTask["cleanup"] },
   ]);
   const running = f.run(); await vi.advanceTimersByTimeAsync(60_000);
   expect(f.refreshGrant).not.toHaveBeenCalled(); expect(f.readTicket).not.toHaveBeenCalled();
+  f.cancellation.abort(); await running;
+});
+
+it("keeps grant maintenance eligible while cooperative cleanup observes a live controller", async () => {
+  const f = fixture();
+  f.task.cleanup = { kind: "terminal", startedAt: 1, deadline: 600_001 };
+  const running = f.run(); await vi.advanceTimersByTimeAsync(0);
+  expect(f.refreshGrant).toHaveBeenCalledOnce();
   f.cancellation.abort(); await running;
 });
 

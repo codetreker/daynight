@@ -1,0 +1,145 @@
+.task-detail-panel-discussion { display: flex; flex-direction: column; overflow: hidden; }
+.task-discussion { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; background: #fff; }
+.thread-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; position: relative; }
+.thread-bar { padding: 14px 30px 9px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex: none; }
+.thread-summary { display: flex; align-items: center; gap: 12px; color: #8a93a3; font-size: 11px; min-width: 0; }
+.thread-participants { display: flex; padding-left: 0; }
+.thread-participant { width: 23px; height: 23px; border: 2px solid #fff; margin-left: -5px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; }
+.thread-participant:first-child { margin-left: 0; }
+.thread-participant.purple, .thread-avatar.purple { background: #eaeafa; color: #6664ad; }
+.thread-participant.green, .thread-avatar.green { background: #e9f4ee; color: #4d8c6b; }
+.thread-participant.amber, .thread-avatar.amber { background: #faf0df; color: #a27e43; }
+.thread-icon-button { width: 30px; height: 30px; padding: 0; display: inline-flex; justify-content: center; align-items: center; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #7a8497; flex: none; cursor: pointer; }
+.thread-icon-button:hover { background: #f2f2fc; color: #5c5cbd; }
+.thread-icon-button:disabled { opacity: .45; cursor: default; }
+.thread-bar .thread-icon-button { border-color: #e6e8ef; width: 29px; height: 29px; }
+.thread-spin { animation: thread-spin .85s linear infinite; }
+@keyframes thread-spin { to { transform: rotate(360deg); } }
+.thread-timeline { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 30px 28px; scroll-behavior: auto; scrollbar-color: #dbe0e9 transparent; position: relative; }
+.thread-timeline-content { max-width: 1080px; width: 100%; min-height: 100%; margin: 0 auto; }
+.thread-timeline-empty { height: 100%; }
+.thread-load-older { display: flex; justify-content: center; padding: 4px 0 18px; }
+.thread-quiet-button { border: 1px solid #e3e5ee; border-radius: 5px; background: #fff; padding: 6px 12px; color: #6d7298; font-size: 11px; display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.thread-quiet-button:hover { background: #f7f7fd; border-color: #d0d0e7; }
+.thread-quiet-button:disabled { color: #a1a7b3; background: #fafbfc; cursor: default; }
+.thread-day-divider { display: flex; align-items: center; gap: 13px; font-size: 10px; color: #9aa2b1; margin: 7px 0 21px; }
+.thread-day-divider::before, .thread-day-divider::after { content: ''; height: 1px; background: #edf0f4; flex: 1; }
+.thread-message { display: flex; gap: 12px; margin: 0 0 24px; min-width: 0; border-radius: 6px; scroll-margin: 20px; transition: background .3s; }
+.thread-message.flash { background: #f1f0ff; box-shadow: 0 0 0 9px #f1f0ff; }
+.thread-avatar { height: 30px; width: 30px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 550; background: #eaeafa; color: #6664ad; margin-top: 1px; }
+.thread-avatar.agent { border-radius: 8px; background: #efeffb; color: #6664ad; }
+.thread-message-main { min-width: 0; flex: 1; }
+.thread-message-header { display: flex; align-items: center; gap: 8px; min-height: 25px; flex-wrap: wrap; }
+.thread-author { color: #3d4860; font-weight: 550; font-size: 12px; overflow-wrap: anywhere; }
+.thread-agent-badge { font-size: 9px; font-weight: 500; line-height: 1.4; padding: 1px 5px; border-radius: 3px; color: #7773a4; border: 1px solid #e6e4f4; background: #f7f6fc; display: inline-flex; align-items: center; gap: 3px; }
+.thread-message-time { border: 0; background: transparent; color: #9aa3b3; font-size: 10px; padding: 2px 0; cursor: pointer; }
+.thread-message-time:hover { color: #6664ad; }
+.thread-message-actions { margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
+.thread-message:hover .thread-message-actions, .thread-message:focus-within .thread-message-actions { opacity: 1; }
+.thread-message-actions .thread-icon-button { width: 25px; height: 25px; border-radius: 4px; }
+.thread-message-markdown { font-size: 12px; line-height: 1.85; color: #45516a; overflow-wrap: anywhere; min-width: 0; }
+.thread-message-markdown p { margin: 5px 0; }
+.thread-message-markdown p:first-child { margin-top: 2px; }
+.thread-message-markdown code { font: 10px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; background: #f2f3f7; border-radius: 3px; padding: 2px 4px; color: #5e587c; }
+.thread-message-markdown pre { max-width: 100%; background: #f7f8fa; border: 1px solid #edf0f4; border-radius: 6px; padding: 12px; overflow-x: auto; margin: 10px 0; color: #45516a; tab-size: 2; }
+.thread-message-markdown pre code { background: none; padding: 0; color: inherit; white-space: pre; }
+.thread-message-markdown ul { padding-left: 19px; margin: 5px 0; }
+.thread-message-markdown li { margin: 2px 0; }
+.thread-message-markdown strong { font-weight: 600; color: #37445b; }
+.thread-message-markdown .markdown-table { overflow-x: auto; max-width: 100%; }
+.thread-reply-quote { display: block; width: 100%; max-width: 710px; text-align: left; border: 0; border-left: 2px solid #d7d6ef; border-radius: 0 4px 4px 0; background: #f8f8fc; padding: 7px 10px; margin: 4px 0 8px; color: #8890a0; font-size: 11px; overflow: hidden; cursor: pointer; }
+.thread-reply-quote:hover { background: #f1f1fc; }
+.thread-reply-quote strong { font-weight: 550; color: #7771a4; margin-right: 6px; }
+.thread-reply-quote span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; line-height: 1.6; }
+.thread-new-jump { position: absolute; bottom: 15px; left: 50%; transform: translateX(-50%); z-index: 4; border: 1px solid #dcdcf0; border-radius: 20px; background: #fff; color: #625fa9; font-size: 11px; padding: 7px 13px; box-shadow: 0 5px 18px #17244714; display: flex; align-items: center; gap: 7px; max-width: calc(100% - 24px); white-space: nowrap; cursor: pointer; }
+.thread-composer-wrap { flex: none; padding: 0 30px 24px; background: #fff; z-index: 5; }
+.thread-composer-inner { max-width: 1080px; margin: 0 auto; }
+.thread-composer { border: 1px solid #dfe3ed; border-radius: 8px; background: #fff; box-shadow: 0 2px 5px #17244703; transition: border-color .15s, box-shadow .15s; }
+.thread-composer:focus-within { border-color: #aaa8dd; box-shadow: 0 0 0 2px #5c5ce009; }
+.thread-composer.disabled { background: #fafbfc; }
+.thread-composer textarea { display: block; width: 100%; min-height: 73px; max-height: 180px; resize: vertical; border: 0; outline: 0; background: transparent; padding: 12px 14px; color: #45516a; font-size: 12px; line-height: 1.8; box-shadow: none; overflow-wrap: anywhere; }
+.thread-composer textarea::placeholder { color: #a0a8b6; }
+.thread-composer textarea:disabled { cursor: not-allowed; }
+.thread-composer-bottom { display: flex; align-items: center; justify-content: space-between; padding: 0 10px 9px 13px; gap: 10px; }
+.thread-composer-context { display: flex; align-items: center; gap: 6px; color: #a0a7b6; font-size: 10px; min-width: 0; }
+.thread-composer-context .thread-avatar { width: 18px; height: 18px; font-size: 8px; margin: 0; }
+.thread-composer-name { color: #7d8799; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-discussion .button { border: 1px solid #dce0e8; border-radius: 6px; background: #fff; padding: 7px 11px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 11px; white-space: nowrap; box-shadow: 0 1px 2px #1c285803; cursor: pointer; }
+.task-discussion .button:hover { background: #f5f5fd; border-color: #c9c9ec; }
+.task-discussion .button.primary { background: #5c5ce0; border-color: #5c5ce0; color: #fff; }
+.task-discussion .button.primary:hover { background: #5151ca; }
+.task-discussion .button:disabled { background: #f1f2f7; border-color: #e5e7ee; color: #a2a9b8; box-shadow: none; cursor: default; }
+.task-discussion .button.primary:disabled { background: #a7a5e5; border-color: #a7a5e5; color: #fff; }
+.thread-send-button { min-width: 75px; min-height: 31px; }
+.thread-reply-preview { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #edeef5; padding: 8px 10px 8px 13px; gap: 12px; background: #fafafe; border-radius: 8px 8px 0 0; font-size: 11px; color: #858ca0; }
+.thread-reply-preview-text { min-width: 0; overflow: hidden; }
+.thread-reply-preview strong { font-weight: 550; color: #706caa; }
+.thread-reply-preview p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 760px; margin: 1px 0 0; font-size: 10px; }
+.thread-reply-preview .thread-icon-button { width: 24px; height: 24px; }
+.thread-send-feedback { display: flex; gap: 8px; align-items: flex-start; margin: 9px 2px 0; font-size: 11px; line-height: 1.7; color: #a05252; }
+.thread-send-feedback.warning { color: #987442; }
+.thread-send-feedback svg { margin-top: 2px; flex: none; }
+.thread-send-feedback-main { flex: 1; min-width: 0; }
+.thread-read-error { margin: 0 30px 8px; padding: 10px 12px; border: 1px solid #eadbd2; border-radius: 6px; background: #fffaf6; color: #936e51; font-size: 11px; display: flex; justify-content: space-between; align-items: center; gap: 15px; }
+.thread-read-error .button { font-size: 10px; padding: 5px 9px; }
+.thread-error-details code { display: block; overflow-wrap: anywhere; }
+.thread-capacity { margin: 8px 2px 0; color: #936e51; font-size: 11px; }
+.thread-empty { height: 100%; min-height: 200px; display: flex; align-items: center; justify-content: center; flex-direction: column; color: #8d97a9; gap: 13px; text-align: center; padding: 30px; }
+.thread-empty-symbol { height: 48px; width: 48px; border-radius: 13px; background: #f4f4fc; color: #9c99c8; display: flex; align-items: center; justify-content: center; }
+.thread-empty h2 { font-size: 13px; font-weight: 500; color: #78849a; margin: 0; }
+.thread-empty p { font-size: 11px; max-width: 340px; color: #8e97a7; line-height: 1.8; margin: 0; }
+.thread-empty.denied { gap: 10px; }
+.thread-skeleton-message { display: flex; gap: 12px; margin: 20px 0 32px; }
+.thread-skeleton-avatar { width: 30px; height: 30px; border-radius: 50%; background: #eff1f5; flex: none; }
+.thread-skeleton-lines { flex: 1; max-width: 650px; }
+.thread-skeleton-line { height: 9px; border-radius: 4px; background: #f0f2f6; margin: 7px 0 11px; animation: thread-pulse 1.5s ease-in-out infinite; }
+.thread-skeleton-line.title { width: 100px; height: 8px; background: #e9ecf2; }
+.thread-skeleton-line.short { width: 63%; }
+@keyframes thread-pulse { 50% { opacity: .45; } }
+.thread-metadata-dialog { width: 540px; max-width: calc(100vw - 28px); max-height: calc(100dvh - 48px); border: 1px solid #e1e5ed; border-radius: 10px; padding: 0; box-shadow: 0 24px 80px #17244733; color: #637087; background: #fff; overflow: auto; }
+.thread-metadata-dialog::backdrop { background: #19233566; backdrop-filter: blur(2px); }
+.thread-metadata-header { display: flex; align-items: center; justify-content: space-between; padding: 15px 19px; border-bottom: 1px solid #e8ebf2; }
+.thread-metadata-header h2 { font-size: 13px; font-weight: 550; color: #46526b; margin: 0; }
+.thread-metadata-body { padding: 17px 20px 22px; }
+.thread-metadata-body dl { margin: 0; }
+.thread-metadata-field { margin: 0 0 13px; display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 10px; font-size: 11px; line-height: 1.8; }
+.thread-metadata-field dt { color: #929aab; }
+.thread-metadata-field dd { margin: 0; color: #5c6a83; overflow-wrap: anywhere; }
+.thread-metadata-field code { font: 10px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; user-select: all; }
+.thread-metadata-message { border-top: 1px solid #edf0f4; padding-top: 13px; font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; color: #53617a; }
+.thread-metadata-dialog .thread-icon-button { width: 26px; height: 26px; }
+@media (min-width: 1450px) {
+  .thread-bar, .thread-timeline, .thread-composer-wrap { padding-left: max(30px, calc((100% - 1280px) / 2)); padding-right: max(30px, calc((100% - 1280px) / 2)); }
+  .thread-timeline-content, .thread-composer-inner { max-width: none; }
+}
+@media (max-width: 600px) {
+  .thread-bar { padding: 11px 17px 7px; }
+  .thread-summary { gap: 9px; font-size: 10px; }
+  .thread-timeline { padding: 0 17px 20px; }
+  .thread-day-divider { margin: 6px 0 18px; font-size: 9px; }
+  .thread-message { gap: 9px; margin-bottom: 23px; }
+  .thread-avatar { width: 27px; height: 27px; font-size: 10px; }
+  .thread-message-header { gap: 6px; min-height: 24px; }
+  .thread-author { font-size: 11px; }
+  .thread-message-time { font-size: 9px; }
+  .thread-agent-badge { font-size: 8px; }
+  .thread-message-actions { opacity: 1; gap: 0; }
+  .thread-message-actions .thread-icon-button { width: 22px; height: 22px; }
+  .thread-message-markdown { font-size: 12px; line-height: 1.85; }
+  .thread-message-markdown pre { padding: 9px; }
+  .thread-reply-quote { padding: 6px 8px; font-size: 10px; }
+  .thread-composer-wrap { padding: 0 13px 13px; }
+  .thread-composer textarea { min-height: 69px; padding: 10px 12px; font-size: 12px; }
+  .thread-composer-context { font-size: 9px; }
+  .thread-composer-bottom { padding: 0 8px 8px 11px; }
+  .task-discussion .thread-send-button { min-width: 66px; min-height: 30px; font-size: 10px; }
+  .thread-reply-preview { padding: 7px 8px 7px 11px; }
+  .thread-reply-preview p { max-width: 230px; }
+  .thread-read-error { margin: 0 17px 9px; padding: 9px 10px; font-size: 10px; }
+  .thread-metadata-field { grid-template-columns: 72px minmax(0, 1fr); gap: 8px; font-size: 10px; }
+  .thread-metadata-header { padding: 13px 16px; }
+  .thread-metadata-body { padding: 15px 16px; }
+  .thread-new-jump { font-size: 10px; padding: 6px 11px; }
+}
+@media (max-height: 700px) { .thread-bar { padding-top: 9px; padding-bottom: 5px; } .thread-composer textarea { min-height: 59px; } .thread-composer-wrap { padding-bottom: 12px; } .thread-message { margin-bottom: 19px; } }
+@media (prefers-reduced-motion: reduce) { .task-discussion *, .thread-metadata-dialog * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

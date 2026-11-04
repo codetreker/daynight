@@ -93,7 +93,7 @@ activeTaskCount 是当前有权限访问的快照任务数。它不是实时任�
 
 详情 worker 在摘要字段之外包含 telemetry、inventoryObservedAt、tasks。telemetry 使用报告中的结构，tasks 始终为数组；每项为 `{projectId,taskId,claimId,title,projectName,status,phase,agent}`。status 和 phase 是上报时的规范化值；agent 沿用当前 claim 枚举，包含 codex、copilot、claude。
 
-每次读取都按当前项目成员关系和 task 未删除状态过滤保存的任务，摘要计数与详情数组使用同一可见性规则。当前 claim 后续完成或转交不会抹掉仍有权限访问的旧观测；被删除或失去项目权限的任务及其旧标题不再返回。任务链接读取的当前详情与历史观测各有其时间含义。
+每次读取都按当前项目准入和 task 未删除状态过滤保存的任务，摘要计数与详情数组使用同一可见性规则。当前 claim 后续完成或转交不会抹掉仍有权限访问的旧观测；被删除或失去项目权限的任务及其旧标题不再返回。过滤不改写保存的快照；重新获得项目权限后，仍未删除的历史观测可再次返回。任务链接读取的当前详情与历史观测各有其时间含义。
 
 分页使用不可变 `(created_at,worker_id)` 位置，cursor 绑定资源类型和认证账号。持续更新的 lastReportedAt 不作为位置；换账号或不匹配的 cursor 返回输入错误。每页是各自一致的读取快照，跨页期间的新注册或重新活跃记录可在下一轮遍历出现。
 

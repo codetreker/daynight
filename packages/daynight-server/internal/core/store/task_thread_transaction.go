@@ -29,7 +29,8 @@ type ThreadTx struct {
 // WriteThread commits only a successful callback with a live context. Callback
 // failures roll back using a fresh bounded cleanup context; ThreadTransactionError
 // distinguishes cleanup failures from an unconfirmed COMMIT. Callers must acquire
-// task, credential, membership and head locks in that order, without a project lock.
+// Task, credential, project authorization and head locks in that order, without
+// a Project lock.
 func (s *Store) WriteThread(ctx context.Context, operation func(*ThreadTx) error) error {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {

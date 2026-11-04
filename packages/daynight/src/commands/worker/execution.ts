@@ -55,11 +55,11 @@ export const liveAgent = (pane: { kind: string | null; launchPending: boolean; i
 export const executionContext = (input: Pick<ExecutionInput, "owner" | "project"> & { task: Pick<LocalTask, "agent"> }): HerdrExecutionContext => ({
   ...input.owner, cwd: path.join(input.project.localPath, ".worktrees", "daynight", input.owner.taskId), agent: input.task.agent,
 });
-export const settleWorkerStops = async (deps: Pick<ExecutionDependencies, "herdr">, owner: ResourceOwner, signal?: AbortSignal): Promise<boolean> => {
+export const settleWorkerStops = async (deps: Pick<ExecutionDependencies, "herdr">, owner: ResourceOwner, signal?: AbortSignal, runOperation = workerOperation): Promise<boolean> => {
   const pending = deps.herdr.tasks.pendingStops().filter((stop) => sameClaim(stop.context, owner));
   for (const stop of pending) {
     if (stop.context.worktreeId !== owner.worktreeId) throw new Error("The claim has conflicting pending Herdr stop identities.");
-    await workerOperation((operation) => deps.herdr.tasks.stopAndClose(stop.context, stop.binding, operation), signal);
+    await runOperation((operation) => deps.herdr.tasks.stopAndClose(stop.context, stop.binding, operation), signal);
   }
   return pending.length > 0;
 };

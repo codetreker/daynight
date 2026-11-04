@@ -52,6 +52,11 @@ export const runTaskCommand = async (
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
+  if (command.path[2] === "step") {
+    const { runTaskStepCommand } = await import("./step.js");
+    await runTaskStepCommand(command, context, dependencies);
+    return;
+  }
   if (command.path[2] === "thread") {
     const { runTaskThreadCommand } = await import("./thread.js");
     await runTaskThreadCommand(command, context, dependencies);
@@ -156,7 +161,9 @@ export const runTaskCommand = async (
     const { renderTask, renderTaskGraph, renderTaskGraphDependencies, renderTaskJson, renderTaskList, renderTaskListJson, renderTaskSummaryList } = await import("./rendering.js");
     operation.check();
     if (command.command.name === "create") {
-      const input: CreateTaskInput = { title: title!, ...(description === undefined ? {} : { description }), ...assignmentFields, ...platformFields, ...dependencyFields };
+      const createAssignedTo = assignedTo === undefined ? (await api.getCurrentUser()).id : assignedTo;
+      operation.check();
+      const input: CreateTaskInput = { title: title!, ...(description === undefined ? {} : { description }), assignedTo: createAssignedTo, ...platformFields, ...dependencyFields };
       const task = await api.createTask(project.id, input);
       operation.check();
       return `Task created.\n${renderTask(task)}`;

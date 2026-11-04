@@ -1,4 +1,4 @@
-import { readWorkerClaim } from "./task-properties";
+import { readTaskPaused, readWorkerClaim } from "./task-properties";
 import mime from "mime";
 import { parseTaskSync } from "./task-sync";
 import { timestamp } from "./parse";
@@ -110,7 +110,7 @@ export const assertResponsePrincipal = (response: Response, expectedUserId: stri
   }
 };
 
-export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}): Promise<Response> => {
+export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}, onDispatch?: () => void): Promise<Response> => {
   signal.throwIfAborted();
   const generation = authGeneration;
   if (url !== "/api/v1/me" && url !== "/api/v1/auth/logout") {
@@ -121,6 +121,8 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
     }
   }
   let response: Response;
+  // Identity waits must not start a caller's network deadline.
+  onDispatch?.();
   try {
     const workerProtocol = /^\/api\/v1\/projects\/[^/]+\/(?:tasks|task-sync|task-graph)(?:[/?]|$)/.test(url) && !/\/(?:attachments|preview|sessions)(?:[/?]|$)/.test(url);
     const headers = workerProtocol ? { ...(init.headers instanceof Headers || Array.isArray(init.headers) ? Object.fromEntries(new Headers(init.headers)) : init.headers), "Daynight-Worker-Protocol": "2" } : init.headers;
@@ -198,7 +200,7 @@ export const getTaskSync = async (
   const suffix = parameters.size === 0 ? "" : `?${parameters}`;
   const response = await request(`/api/v1/projects/${project}/task-sync${suffix}`, signal, { headers: { Accept: "application/json" } });
   assertResponsePrincipal(response, expectedUserId, onPrincipalMismatch);
-  return json(response, signal, (value) => parseTaskSync(value, project), decodeTaskGraphJson);
+  return json(response, signal, (value) => parseTaskSync(value, project, expectedUserId), decodeTaskGraphJson);
 };
 
 export type TaskResponseAdmission = {
@@ -288,6 +290,27 @@ export const setTaskAgentPermission = async (
   return json(response, signal, (data) => {
     const result = parseTaskDetail(data, project, task);
     if (response.status !== 200 || result.allowAgents !== allowAgents || result.version !== exactVersion && result.version !== exactVersion + 1n) {
+      throw new ApiError("protocol", response.status);
+    }
+    return result;
+  });
+};
+
+export const unpauseTask = async (
+  projectId: string, taskId: string, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
+): Promise<TaskDetail> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  if (!isTaskVersion(exactVersion)) throw new ApiError("protocol");
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
+    method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: stringifyApiJson({ version: exactVersion, properties: { paused: false } }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
+  return json(response, signal, (data) => {
+    const result = parseTaskDetail(data, project, task);
+    if (response.status !== 200 || readTaskPaused(result.properties) !== false || result.version !== exactVersion && result.version !== exactVersion + 1n) {
       throw new ApiError("protocol", response.status);
     }
     return result;

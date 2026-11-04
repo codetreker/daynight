@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
@@ -54,22 +55,33 @@ func (s *Store) CreatePrivateProject(ctx context.Context, principal core.Princip
 	return project, authQueryError("create private project", err)
 }
 
-func (s *Snapshot) ProjectMembers(ctx context.Context, projectID string) ([]core.ProjectMember, error) {
-	rows, err := s.tx.Query(ctx, `SELECT `+memberProjection+` FROM project_members m
-        JOIN users u ON u.id=m.user_id WHERE m.project_id=$1 ORDER BY m.created_at,m.user_id`, projectID)
+func (s *Snapshot) ProjectParticipants(ctx context.Context, projectID string) ([]core.ProjectParticipant, error) {
+	rows, err := s.tx.Query(ctx, `SELECT m.user_id::text,u.id::text,u.name,u.email,u.avatar_url,a.role,
+        m.project_id::text,m.role,m.version,m.created_at,m.updated_at FROM project_members m
+        JOIN (`+projectAccessRelation+`) a ON a.project_id=m.project_id AND a.user_id=m.user_id
+        LEFT JOIN users u ON u.id=m.user_id
+        WHERE m.project_id=$1 ORDER BY m.created_at,m.user_id`, projectID)
 	if err != nil {
-		return nil, queryError("list project members", err)
+		return nil, queryError("list project participants", err)
 	}
 	defer rows.Close()
-	members := []core.ProjectMember{}
+	participants := []core.ProjectParticipant{}
 	for rows.Next() {
-		member, err := scanMember(rows)
-		if err != nil {
-			return nil, queryError("list project members", err)
+		var participant core.ProjectParticipant
+		var profileID *string
+		var grant core.ProjectGrant
+		if err := rows.Scan(&participant.UserID, &profileID, &participant.Profile.Name, &participant.Profile.Email, &participant.Profile.AvatarURL,
+			&participant.EffectiveRole, &grant.ProjectID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt); err != nil {
+			return nil, queryError("list project participants", err)
 		}
-		members = append(members, member)
+		if profileID == nil || *profileID != participant.UserID {
+			return nil, queryError("list project participants", fmt.Errorf("project participant profile is missing or inconsistent"))
+		}
+		grant.UserID = participant.UserID
+		participant.DirectGrant = &grant
+		participants = append(participants, participant)
 	}
-	return members, authQueryError("list project members", rows.Err())
+	return participants, authQueryError("list project participants", rows.Err())
 }
 
 func (tx *ProjectTx) AdminCount(ctx context.Context) (int64, error) {

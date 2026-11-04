@@ -9,15 +9,6 @@ export type CleanupState = {
   kind: "terminal" | "shutdown";
   startedAt: number;
   deadline: number;
-  input: "not-submitted" | "unknown" | "submitted" | "rejected" | "unavailable";
-  baseline: { stateChangeSeq: number; completionSeq: number } | null;
-  result: "completed" | "timed-out" | "failed" | "unavailable" | null;
-  error: string | null;
-  agentStopped: boolean;
-  workspaceClosed: boolean | null;
-  mode?: "web";
-  backendResourcesClosed?: boolean;
-  worktreeDeleted: boolean;
 };
 export type WebExecutionState = {
   executionId: string; registrationId: string; controllerId: string; controllerInstanceId: string; launchId: string;
@@ -38,4 +29,3 @@ export type LocalTask = ResourceOwner & {
 };
 export type { ClaimIdentity, WorktreeBinding };
 export const taskAgentControlMode = (_task: LocalTask): "web" => "web";
-export const backendResourcesClosed = (cleanup: CleanupState): boolean => cleanup.backendResourcesClosed === true;

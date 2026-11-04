@@ -38,9 +38,20 @@ needed.
 
 This decision partially supersedes the worker-exit use of bounded cleanup in the
 [agent patrol decision](2026-10-27-worker-agent-patrol.md). Its fresh idle signal
-still completes a notified terminal-cleanup turn during normal reconciliation.
+still permits stopping a notified terminal-cleanup turn during normal
+reconciliation; actual absence establishes cleanup completion.
 The [claim record decision](../simplification/2026-10-27-worker-claim-records.md)
-still owns the local index and process-local cleanup progress. The
+still owns the local index. The [cleanup retry decision](2026-11-04-worker-cleanup-retry.md)
+partially supersedes its process-local cleanup progress and preserves the
+original deadline and retry policy across restart. The
+[resource-state decision](../architecture/2026-11-04-worker-resource-state.md)
+removes notification progress storage and requires fresh resource observations.
+The retry decision also removes Git
+inventory from shutdown: archive and deletion failures cannot replace native
+stop proof. Confirmed native stop with unconfirmed backend closure remains a
+distinct shutdown error. A completed Web row still requires fresh original-process
+and endpoint observations during shutdown, while Git cleanup remains pending
+for normal reconciliation. The
 [worker design](../../../../docs/design/daynight-worker.md#结束清理与退出)
 owns the exit mechanism.
 
@@ -66,7 +77,11 @@ interruption may leave external temporary files, services or processes behind;
 closing a workspace does not prove those resources were removed. Cancelling a
 current cleanup job preserves its remaining worktree and unfinished row for the
 next reconciliation, even when its claim has ended. Already completed deletions
-are not reversed. Restart can issue another normal terminal-cleanup notification
-to any surviving agent; it does not reconstruct the interrupted job's deadline
-or create an agent solely for cleanup. Stop confirmation remains necessary, so
+are not reversed. This decision originally accepted another cleanup notification
+and a new deadline after restart, following the small claim index in use then.
+The cleanup retry decision later retained notification state and the original
+deadline. The resource-state decision removes that ledger and preserves the
+deadline: an interrupted Herdr call can notify the still-live original agent
+again, while restart never creates an agent solely for cleanup. Fresh stop
+confirmation remains necessary, so
 uncertain stopping can leave the private daemon running with a visible error.
