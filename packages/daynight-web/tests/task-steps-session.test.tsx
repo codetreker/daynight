@@ -133,6 +133,32 @@ it.each([true, false])("cleans a confirmed delete draft after admission with the
   expect(fetcher.mock.calls.filter(([, options]) => options.method === "DELETE")).toHaveLength(1);
 });
 
+it("recovers a completed deletion after project access is revoked and restored without replay", async () => {
+  const scope = await seed(); const session = await open(scope); let deleted = false; let restored = false;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "DELETE") { deleted = true; return Promise.resolve(resourceResponse(resource(6n, []), TEST_VIEWER_ID)); }
+    const version = restored ? 7n : deleted ? 6n : 5n;
+    return Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource(version, deleted ? [] : [item]) : body(version), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session);
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.deleteStep(projectId, taskId, item.id, 5n);
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("confirmed"));
+  await apply(scope, body(6n)); session.observe(projectId, taskId, node(scope));
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "confirmed", reconciling: false }));
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  const ticket = await scope.beginSync(projectId, signal()); await scope.revokeProject(ticket, scope.signal);
+  session.observe(projectId, taskId, undefined, false);
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: null, mutation: { phase: "unknown", reconciling: false } });
+  expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull();
+  restored = true; await apply(scope, body(7n), true); session.observe(projectId, taskId, node(scope));
+  session.load(projectId, taskId, 2, "open");
+  await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { version: 7n }, requiresFreshRead: false, mutation: { phase: "reconciled", reconciledFrom: "unknown", reconciling: false } }));
+  expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ stale: false, resource: { version: 7n, steps: [] } });
+  expect(session.canSetStepStatus(projectId, taskId)).toBe(true);
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "DELETE")).toHaveLength(1);
+});
+
 it("keeps the original status until a confirmed result and three-resource convergence, including equal clock timestamps", async () => {
   const scope = await seed(); const session = await open(scope); const write = deferred<Response>(); let updated = false;
   const changed = { ...item, status: "done" as const };

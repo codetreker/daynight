@@ -20,6 +20,9 @@ the panel stores no independent confirmation latch. Generation replacement
 revokes the old delete confirmation before admitting new reads. The canceled
 parent read's reservation and retry state are released so the shared read-only
 recovery can admit the new history while the old receipt admission remains held.
+Project revocation pauses recovery and clears private resources. Reauthorization
+restarts read-only recovery for the now-unknown deletion in the new generation,
+without replaying DELETE; writes resume after the three resources converge.
 The workspace clears only that target draft and locates the next or previous Step by ID, or the add control
 for an empty collection. Unknown outcomes retain the draft and use the shared
 read-only recovery, without attributing observed state to the
