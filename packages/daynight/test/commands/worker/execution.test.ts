@@ -117,6 +117,39 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
 };
 
 describe("execution from current Herdr resources", () => {
+  it("refuses worktree and native mutations when durable launch provenance is unknown", async () => {
+    const f = await fixture("codex", null);
+    Object.assign(f.dependencies.herdr, { lifecycle: { assertCanAdvance: () => { throw new Error("Original run is stop_unknown"); } } });
+    await expect(f.driver.advance(f.input)).rejects.toThrow("stop_unknown");
+    expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
+    expect(f.dependencies.git.verifyWorktree).not.toHaveBeenCalled();
+    expect(f.calls).toEqual([]);
+  });
+
+  it("finishes a pending durable stop before applying replacement admission", async () => {
+    const f = await fixture("codex", null);
+    let settled = false;
+    vi.spyOn(f.manager, "pendingStops").mockImplementation(() => settled ? [] : [{ context: f.context, binding: f.binding }]);
+    vi.spyOn(f.manager, "stopAndClose").mockImplementation(async () => {
+      expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
+      settled = true;
+    });
+    Object.assign(f.dependencies.herdr, { lifecycle: { assertCanAdvance: () => { if (!settled) throw new Error("Original stop_intent must finish first"); }, hasPreparedRun: () => true } });
+    await f.driver.advance(f.input);
+    expect(settled).toBe(true); expect(f.launches).toHaveLength(1);
+  });
+
+  it("resumes a durably prepared shell without requiring nonexistent agent stop proof", async () => {
+    const f = await fixture("codex", null);
+    const stop = vi.fn(async () => { throw new Error("A prepared run has not launched an agent"); });
+    Object.assign(f.dependencies.herdr, { lifecycle: { assertCanAdvance: () => {}, hasPreparedRun: () => true, stop } });
+    const result = await f.driver.advance(f.input);
+    expect(result.binding).toEqual(f.binding);
+    expect(f.launches).toHaveLength(1);
+    expect(stop).not.toHaveBeenCalled();
+    expect(f.calls.some(call => call.method === "workspace.close")).toBe(false);
+    expect(f.calls.some(call => call.method === "workspace.create")).toBe(false);
+  });
   it.each(["codex", "copilot"] as const)("replaces a cold inactive %s pane before a NULL-session fresh launch", async (agent) => {
     const f = await fixture(agent, null);
     const result = await f.driver.advance(f.input);

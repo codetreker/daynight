@@ -118,6 +118,45 @@ const addOrphan = (f: Awaited<ReturnType<typeof fixture>>, taskId = uuid(900)) =
 };
 
 describe("worker report publication boundaries", () => {
+  it("persists a new Herdr claim before activating or preparing its execution", async () => {
+    const f = await fixture();
+    const registerClaim = vi.fn((context: HerdrExecutionContext, userId: string) => {
+      expect(f.store.getTask(context)?.status).toBe("pending");
+      expect(f.git.prepareWorktree).not.toHaveBeenCalled();
+      expect(userId).toBe(uuid(2));
+      expect(context).toMatchObject({ agent: "codex", cwd: f.bind(context).worktreePath });
+    });
+    Object.assign(f.herdr, { lifecycle: { registerClaim, responsibilities: () => [], isStopped: () => false, assertCanAdvance: () => {}, hasPreparedRun: () => false, stop: async () => {} } });
+    await f.coordinator.tick();
+    expect(registerClaim).toHaveBeenCalledOnce();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    await f.coordinator.shutdown();
+  });
+
+  it("keeps a confirmed grant pending when durable claim registration fails", async () => {
+    const f = await fixture();
+    const registerClaim = vi.fn(() => { throw new Error("Durable registration unavailable"); });
+    Object.assign(f.herdr, { lifecycle: { registerClaim, responsibilities: () => [], isStopped: () => false } });
+    await f.coordinator.tick();
+    expect(registerClaim).toHaveBeenCalledOnce();
+    expect(f.store.listUnfinishedTasks()[0]?.status).toBe("pending");
+    expect(f.git.prepareWorktree).not.toHaveBeenCalled();
+    expect(f.tasks.start).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a recovered uncertain grant into fresh launch provenance", async () => {
+    const f = await fixture();
+    const registerClaim = vi.fn();
+    Object.assign(f.herdr, { lifecycle: { registerClaim, responsibilities: () => [], isStopped: () => false, assertCanAdvance: () => { throw new Error("Missing durable provenance"); } } });
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { f.grant(candidate, descriptor); throw new Error("Response lost"); });
+    await f.coordinator.tick();
+    f.candidates.splice(0);
+    await f.coordinator.tick();
+    expect(registerClaim).not.toHaveBeenCalled();
+    expect(f.tasks.start).not.toHaveBeenCalled();
+    await f.coordinator.shutdown();
+  });
+
   it("publishes a complete inventory before native resource discovery can fail", async () => {
     const f = await fixture();
     const reference = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(400) };
@@ -169,6 +208,83 @@ describe("worker report publication boundaries", () => {
 });
 
 describe("minimal worker resource reconciliation", () => {
+  it("retains an ended Herdr claim when its durable evidence is missing", async () => {
+    const f = await fixture(); f.candidates.splice(0);
+    const owner = { projectId: f.project.projectId, taskId: uuid(910), claimId: uuid(911), worktreeId: uuid(912) };
+    f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    Object.assign(f.herdr, { lifecycle: { responsibilities: () => [], isStopped: () => false } });
+    await f.coordinator.tick();
+    expect(f.store.getTask(owner)?.status).toBe("active");
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "stop-unknown" }));
+  });
+
+  it("stops a durable responsibility during shutdown even after all panes disappear", async () => {
+    const f = await fixture();
+    const owner = { projectId: f.project.projectId, taskId: uuid(920), claimId: uuid(921), worktreeId: uuid(922) };
+    f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    const stopped: ResourceOwner[] = [];
+    Object.assign(f.herdr, { lifecycle: { responsibilities: () => [owner], isStopped: () => stopped.length > 0, stop: async (target: ResourceOwner, reason: string) => { expect(reason).toBe("shutdown"); stopped.push(target); } } });
+    expect(await f.coordinator.shutdown()).toBe(true);
+    expect(stopped).toEqual([owner]);
+    expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+    expect(f.store.getTask(owner)?.status).toBe("active");
+  });
+
+  it("keeps retained journal responsibility visible after losing the primary index and selecting Web", async () => {
+    const f = await fixture();
+    const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(961), worktreeId: uuid(962) };
+    Object.assign(f.herdr, { lifecycle: { responsibilities: () => [owner] } });
+    const web = { ...configuration, agentControlMode: "web" as const };
+    const coordinator = createWorkerCoordinator({ ...f.options, hasHerdrJournal: true, globalConfiguration: web, repositories: [{ project: f.project, configuration: web }] });
+    expect(() => coordinator.assertCanAcquire({ projectId: owner.projectId, taskId: owner.taskId })).toThrow(/archive/);
+  });
+
+  it("does not acquire over a retained Git worktree even without durable Herdr ownership", async () => {
+    const f = await fixture();
+    const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(971), worktreeId: uuid(972) };
+    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    await f.coordinator.tick();
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([f.candidates[1]!.id]);
+    expect(f.worktrees.has(owner.claimId)).toBe(true);
+    await f.coordinator.shutdown();
+  });
+
+  it("skips a new remote claim while the same task retains durable archive responsibility", async () => {
+    const f = await fixture();
+    const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(951), worktreeId: uuid(952) };
+    f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    Object.assign(f.herdr, { lifecycle: { registerClaim: () => {}, responsibilities: () => [owner], isStopped: () => true, assertCanAdvance: () => {} } });
+    await f.coordinator.tick();
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([f.candidates[1]!.id]);
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "warning", message: expect.stringMatching(/archive.*worktree|worktree.*archive/i) }));
+    expect(f.worktrees.has(owner.claimId)).toBe(true);
+    await f.coordinator.shutdown();
+  });
+
+  it("releases a proven stopped run's slot while preserving its worktree reservation", async () => {
+    const f = await fixture();
+    const owner = { projectId: f.project.projectId, taskId: uuid(930), claimId: uuid(931), worktreeId: uuid(932) };
+    f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    Object.assign(f.herdr, { lifecycle: { responsibilities: () => [owner], isStopped: (target: ResourceOwner) => target.claimId === owner.claimId, assertCanAdvance: () => {}, stop: async () => { throw new Error("An already stopped run must not be stopped again"); } } });
+    await f.coordinator.tick();
+    await eventually(() => expect(f.grants.size).toBe(1));
+    expect(f.worktrees.has(owner.claimId)).toBe(true);
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    expect(f.events.some(event => event.kind === "cleanup-error")).toBe(false);
+  });
+
+  it("reserves a stopped run's slot while its active claim is resuming", async () => {
+    const f = await fixture();
+    const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(941), worktreeId: uuid(942) };
+    f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    f.grant(f.candidates[0]!, { claimId: owner.claimId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: owner.worktreeId });
+    Object.assign(f.herdr, { lifecycle: { responsibilities: () => [owner], isStopped: () => true, assertCanAdvance: () => {}, stop: async () => {} } });
+    await f.coordinator.tick();
+    expect(f.grants.size).toBe(1);
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+  });
   it("commits active before startup, saves the native ID and reconnects without replay", async () => {
     const f = await fixture(); await f.coordinator.tick();
     await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());

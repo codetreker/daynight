@@ -25,8 +25,11 @@ and use pending/active/done. One Project/task can have at most one active claim.
 Agent is copilot, codex or claude; session_id is a nullable native conversation ID.
 The [Web execution evidence decision](../architecture/2026-10-28-web-execution-evidence.md)
 adds claim-frozen mode routing and a separate Web-only evidence store. The
-resource-derived recovery and process-local execution rules below apply to Herdr;
-they do not replace the Controller journal or authorize uncertain Web replay.
+resource-derived recovery and process-local execution rules below apply to legacy
+Herdr on platforms other than macOS. The [macOS Herdr lifecycle decision](../architecture/2026-11-04-herdr-worker-lifecycle.md)
+adds separate durable run evidence, prohibits fresh replacement when the native
+identity is unknown, and retains worktrees pending archive acceptance. Neither
+path replaces the Controller journal or authorizes uncertain Web replay.
 The [SQLite format migration decision](../architecture/2026-10-30-cli-sqlite-migrations.md)
 versions this same index independently without adding business columns or another
 recovery ledger.
@@ -175,19 +178,24 @@ registration failures, but couples an unrelated checkout to the target agent's
 termination. Direct target observation and deletion validation retain safety
 while keeping failures local to their actual resource.
 
-**Move the removed state into another file or remote ledger.** That keeps the
-same synchronization and recovery protocol while hiding it from the table
-shape. There is one business index and no alternate execution journal.
+**Move the removed state into another file or remote ledger.** At the time,
+that would have retained the same synchronization and recovery protocol while
+hiding it from the table shape. The minimal shared index remained sufficient
+for the accepted resource-based behavior. The later macOS lifecycle journal
+serves stronger original-process and Session v2 guarantees; it does not enlarge
+the shared claim index.
 
 ## Consequences
 
-SQLite, resource interfaces and recovery share a small business model. The
+The shared SQLite index retains a small business model. Legacy Herdr resource
+reconciliation uses that model directly; macOS Herdr and Web keep separate
+evidence stores. The
 worker retains static ownership, real stop-before-delete checks, exact remote
 versions and errors. A failed or partial read is not an empty resource set.
 Old claim resources still block the same task's new execution and retain
 capacity until actual cleanup completes.
 
-Restart does not preserve the first cleanup deadline, accumulated recovery
+Legacy Herdr restart does not preserve the first cleanup deadline, accumulated recovery
 budget, old model/args or an interrupted management decision. A NULL native ID
 starts a fresh conversation with an `info` event; if a prior conversation existed,
 its continuity can be lost. Management takes the runner offline. The state

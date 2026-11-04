@@ -6,7 +6,7 @@
 
 Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领取配置仓库中允许 Agent 执行的 ready task，在系统管理的 Git worktree 中按冻结的 herdr/web 模式运行 Copilot、Codex 或 Claude。服务端拥有资格、权限、唯一 claim 和完成操作；worker 拥有调度、资源、对账和清理；agent 拥有业务交付、验收、证据及最后一次 claim-bound done。
 
-本机主索引承担项目映射、认领、模式和原生会话身份。Herdr 重启通过服务端、SQLite、Git、Herdr 的当前事实重新对账，执行计时与进度保留在进程内。Web 必须另保留原生操作回执、执行配置、恢复与停止证据，以满足[Task Session 需求](task-sessions.md)的未知结果不重放及单 writer 要求。
+本机主索引承担项目映射、认领、模式和原生会话身份。macOS Herdr 另以独立持久 journal 保存原运行、输入准入、Session 连接与停止证据；Linux/Windows 保留共享私有 Herdr 及进程内运行进度。具体机制由 [Herdr 生命周期设计](../design/herdr-worker-lifecycle.md)拥有。Web 必须另保留原生操作回执、执行配置、恢复与停止证据，以满足[Task Session 需求](task-sessions.md)的未知结果不重放及单 writer 要求。
 
 ## 必须满足的行为
 
@@ -21,7 +21,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 - 同 agent 类型逐字段继承；切换类型清除未显式给出的 model/args。Args 整体替换，不允许覆盖 worker 拥有的 cwd/session/model/mode 位置或固定 full access 策略；冲突参数在启动前明确拒绝。配置在启动/重启读取，不热重载；已认领执行保留 agent 和原生 session ID，重新启动使用当前适用的 model/args，不把另一工具的参数套到原工具。
 - `worker repo list [--json]` 读取本地选择；add/remove 选择远端现存可访问 Project。省略 --project 时多选显示名称、完整 UUID、repoUrl，至少选一项；显式 --project 支持非交互。新增保存 projectId、原 repoUrl、绝对 path；匹配既有注册保留传输 URL、路径和覆盖，remote-only 项只补 projectId。Remove 只改变后续领取范围，保留 clone、claim、worktree 和原生历史。
 - worker.repositoryRoot 独立于 review，只在新增注册时展开，改变根不移动已有路径。Repo 操作拥有 worker.repositories 及保留条目的 projectId；setup 另拥有全局 agent/model/args 及确认重置的仓库原生字段。所有写入锁内重读并拒绝相关服务/凭据、根和仓库变动，保护其他解码值及保留条目的未知字段；显式删除拥有整个所选条目。共享 alias 影响非归属值时拒绝保存，保持原文件；无关字段、注释和安全 alias 保留。网络与提示不持配置锁。
-- 空配置的交互式 run 先引导选择，非交互给出 repo add --project 指引。选择使用同一份捕获的服务凭据及 worker 设置；取消、失败或不完整选择不能启动任务资源。持久恢复动作从本次成功项目映射及完整清单开始，不承诺离线延续上个进程的计时或操作意图。
+- 空配置的交互式 run 先引导选择，非交互给出 repo add --project 指引。选择使用同一份捕获的服务凭据及 worker 设置；取消、失败或不完整选择不能启动任务资源。持久恢复动作从本次成功项目映射及完整清单开始，不承诺离线延续通用管理意图或 legacy 清理计时；macOS 原运行的持久停止责任必须保留。
 - 首次启动随机生成稳定 workerId，复用配置锁与原子替换保存到配置根下的 config.yml（DN_CONFIG_DIR，缺省 ~/.daynight）。身份创建只拥有根字段 workerId；根循环 alias 等使未知或其他非归属解码值变化时拒绝保存并保留原文件。合法值只读复用，非法值拒绝，身份持久化后才可 claim。每个配置根只有一个 worker 实例，其 worker/ 保存 SQLite、实例锁、日志、Herdr 和临时资源；同根第二实例拒绝，端点路径不合法明确失败。DN_CONFIG_DIR 必须是绝对路径；未配置时保持原目录。根选择同时覆盖 Controller 与 Review 状态，不改变真实 HOME、Provider 登录及项目 worktree。不同根不得独立管理同一个任务 worktree。
 - 一个状态目录用于当前配置的单一服务、账号和 workerId。切换前先结束旧执行，再重建本机状态；不提供跨服务或跨账号的旧执行自动接续。
 
@@ -49,7 +49,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 
 自动领取同时要求 assignedTo 等于当前认证账号的本地 userId、allowAgents=true、ready、平台兼容及没有 active claim。自己指登录账号，不是 workerId；未分配或分配给他人的任务不能自动领取。服务端在同一项目事务中重验成员、精确版本、负责人、许可、平台、依赖和归属，直接调用 claim 接口同样受此限制。同 task 跨机器和 worker 只有一个有效 claim，竞争失败方不得启动资源。既有 active claim 的恢复和完整库存仍按原执行归属核对，不因本规则自动撤回；显式人工 resume 保持原 owner/admin 权限。
 
-- 每次取得新的执行使用 fresh claimId/worktreeId；稳定 workerId 和项目映射先保存，实际授予后登记本机 pending。请求标识和版本只留当前进程；未知响应记录 Warning，不创建资源、不重发原请求，通过后续完整自有清单找回实际授予。
+- 自动领取必须在远端写入前跳过仍有同 task 旧资源的候选。每次取得新的执行使用 fresh claimId/worktreeId；稳定 workerId 和项目映射先保存，实际授予后登记本机 pending。请求标识和版本只留当前进程；未知响应记录 Warning，不创建资源、不重发原请求，通过后续完整自有清单找回实际授予。macOS 仅在本次明确确认的新 grant 后登记 fresh launch provenance；旧库存和空摘要不能补建该证明。
 - Task properties 保存受保护的最新 worker 归属、实际平台、agent 和已知会话摘要。普通 create/PATCH 拒绝写 worker，即使 null 或原值；PR 与 worker 更新相互保留。完整 DTO 中 worker 缺失表示没有保留归属，存在时为合法对象；读取不注入 null 默认值。
 - 会话摘要、释放、撤回与完成核对当前 claim 和精确版本，旧执行不能覆盖新归属。服务端验证当前成员与 owner/admin 权限，不远程证明机器进程或 Git 内容。
 - Worker 直接调用进程内 typed ApiClient，不启动 daynight 子进程。HTTP 独立有界；未知写入只读取核对，不自动重放。远端 phase、Herdr 和 nativeSessionId 是展示投影，不替代本机实际资源观察。
@@ -57,7 +57,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 ### W-05：调度与全局并发
 
 - 配置仓库轮流获得领取机会；新候选保持服务端 ready 顺序。已有 pending 优先，项目内按稳定 task_id 顺序选择。Pending 和新领取都在每成功分配一个名额后轮转到下一个项目，持续繁忙的项目不能一次占满所有空闲名额。
-- Active 从启动前资源预留到收尾完成占用名额。等待 CI/review、人工输入、恢复超限及清理仍占用。容量是 active 行、实际归属资源、已确认收尾责任及适配器待确认停止责任按 claim 去重的并集；没有本机行的孤立执行也须在全部清理完成后才释放名额和同 task 启动屏障。
+- Active 从启动前资源预留到收尾完成占用名额。等待 CI/review、人工输入、恢复超限及清理仍占用。容量是 active 行、实际归属资源、已确认收尾责任及适配器待确认停止责任按 claim 去重的并集；没有本机行的孤立执行也须保留责任。macOS Herdr 原运行停止、封段和 ledger 确认后可释放执行槽，但保留工作区继续维持同 task 屏障；已排队恢复仍占名额。
 - Pending 在没有实际运行资源时不占名额；同 task 旧执行停止、关闭 workspace 并删除 worktree 后，新 claim 才能 active。降低上限不抢占已有任务。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。
 - 空或不兼容仓库不占名额。同仓库不同 task 可以并发；各 task 的操作串行，不同任务的有界等待和清理互不阻塞。
 - 本机已有 active 且仍归属的任务先排队恢复，在任务串行操作内读取当前 Herdr；其他工作区的全局 Git 发现错误不阻塞已有名额。新的 pending 启动和新 claim 分配继续要求完整全局资源发现成功。
@@ -65,44 +65,46 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 ### W-06：稳定的 task worktree
 
 - 分支为 daynight/<taskId>，目录为 .worktrees/daynight/<taskId>。首次分支从仓库 HEAD 创建，保留分支从原 tip 使用；仍有效 claim 正常复用 dirty worktree，不 reset/clean。普通退出、失败和崩溃保留其 worktree 与原生历史。
-- 创建、复用和删除核对实际仓库、Git 注册、静态 projectId/taskId/claimId/worktreeId、分支及精确 .git 指针。资源身份仅含这四项 canonical UUID，Herdr 与 Git 标记一致；服务地址是连接配置，不进入本地资源身份。符号链接、外来路径、缺指针和歧义注册不能授权破坏性动作。Device/inode 仅为辅助，refs backend 通过 Git 核对，支持 reftable。
+- 创建、复用和删除核对实际仓库、Git 注册、静态 projectId/taskId/claimId/worktreeId、分支及精确 .git 指针。静态标签身份包含这四项 canonical UUID，Herdr 与 Git 标记一致；macOS 持久 owner 还必须绑定服务、Worker、认证 owner 与 provider。符号链接、外来路径、缺指针和歧义注册不能授权破坏性动作。Device/inode 仅为辅助，refs backend 通过 Git 核对，支持 reftable。
 - 发现资源时，Git 注册的 marker 或 Herdr workspace label 不符合当前格式即静默跳过并保留，不阻塞其他资源；成功解析后的受管资源仍严格校验实际身份和完整性。
 - 原生会话已知而原 worktree 意外丢失时报告错误并保留 active；尚无原会话的新执行可以按规则准备工作区。异常既有路径保留并报告，不用空目录掩盖旧成果丢失。
 - Git 静态标记没有 workerId，须关联本机行、专用 Herdr 或当前自有 claim 才能证明属于本 worker。没有这种关联的 Git-only 遗留资源报告并保留，不因自有清单缺席删除。
-- 终止删除前确认当前受管进程停止、workspace 关闭。保留 .git 指针至内容移除完成，最后删除目录和注册；中断后仍存在但缺指针的路径保留错误。结束后保留分支、提交历史和交付引用，新 claim 使用新工作区身份及原生会话。
+- 终止删除前确认原受管进程停止、workspace 关闭及 backend 必需的归档；macOS Herdr 当前未提供最终归档，因此保留工作区。保留 .git 指针至内容移除完成，最后删除目录和注册；中断后仍存在但缺指针的路径保留错误。结束后保留分支、提交历史和交付引用，新 claim 使用新工作区身份及原生会话。
 
 ### W-07：执行模式与 agent 执行
 
 - 模式在服务端 claim 和本机索引中冻结。默认 herdr 经 Herdr 运行原生终端；web 直接启动 Controller，通过 Daynight relay 提供 Task Session，其执行不得探测或依赖 Herdr。独立运行快照只读观察私有端点，不启动 daemon 或初始化 Herdr backend。同一 claim 不切换模式，不因连接错误降级。两模式支持 Codex、Claude、Copilot。
-- Web 的初始输入、恢复、原生能力与清理遵守 [Task Session 需求](task-sessions.md)。缺失原生 ID、journal 或停止证明不能套用 Herdr 的 NULL 新建分支。以下 Herdr 原生运行规则继续独立适用。
+- Web 的初始输入、恢复、原生能力与清理遵守 [Task Session 需求](task-sessions.md)。缺失原生 ID、journal 或停止证明不能套用 legacy Herdr 的 NULL 新建分支；macOS Herdr 同样禁止这种替代。以下 Herdr 原生运行规则继续独立适用。
 
-- Worker 自动管理专用 Herdr，每 task/claim 一个 workspace/pane/agent，不干扰人工实例。保持 resume_agents_on_restore=false，由 worker 唯一决定启动或恢复。
+- Worker 自动管理专用 Herdr，每 task/claim 一个 workspace/pane/agent，不干扰人工实例。macOS 每个实际运行代次独占现有 Herdr daemon，其他平台保留共享私有 daemon；不要求修改、发布或替换 Herdr。保持 resume_agents_on_restore=false，由 worker 唯一决定启动或恢复。
 - Workspace 显示名称以当前 task title 开头，后接 ` | daynight:` 与 projectId/taskId/claimId/worktreeId 的完整 canonical JSON。标题只作展示，所有权匹配、恢复、停止、清理及 agent name 哈希只使用四项稳定身份。中文、emoji、长标题、同名标题及包含分隔符的标题均可处理；换行、终端和双向显示控制字符编码为可见转义，不截断身份 JSON。
 - 下一轮成功完整自有清单提供最新 title，仅名称变化时调用 Herdr rename；已存在的活 workspace 与恢复超限任务也能同步。改名保留 claim、worktree、native session 和 agent name。命名 RPC 失败报告 `workspace-name-error`，不消耗执行恢复预算或中断健康执行；未知结果先重新观察。身份或 binding 冲突及取消继续按生命周期失败处理。名称同步与执行/清理共享 task 串行化，失去 claim 后不调度新的命名操作。
 - Herdr 私有 XDG 与端点隔离；task native 环境保留调用方原 XDG set/unset 和认证目录。Bash/Zsh HISTFILE 使用私有文件；自定义 rc 和其他 shell 不在通用历史隔离保证内。
-- 存活 agent 保持原连接；重新启动前停止并关闭已存在的 inactive workspace，以当前 native 环境重建，并清空该 pane 遗留的原生引用。会话选择只使用本机保存的 session_id；不把 inactive pane 的旧引用当作新 ID，不增加历史扫描或持久回执。
-- 活 agent 直接连接并观察；需要启动且 session_id 有值则使用记录的 agent 和原生 ID resume；session_id=NULL 时记录 info 并启动全新原生会话，成功取得 ID 写回原行，沿用 task/claim/worktree。NULL 是新 claim 首次启动的正常状态，也覆盖启动成功但 ID 尚未保存的崩溃窗口，不增加历史反查、暂停或人工确认门槛。
-- 本机 session_id 非空时，启动、重连和延后输入前观察到的原生引用必须与其一致；不同 ID 是可见错误，保留原记录并停止该次输入。session_id 为空时可采纳实际存活 agent 的真实 ID，仍不采纳 inactive pane 的旧引用；需要启动的 NULL 分支记录 info 后新建会话。
-- 首次启动和明确恢复使用完整 prompt，显式声明 worker-managed、using-daynight、autopilot-managed-task，提供 project/task/claim/worktree 身份、实际路径/branch 和本次配置。Prompt 明确这是后台任务，任务范围及已有授权内的决定自行处理；确需人类介入时，按 managed 流程先将自己的 task 设为 paused=true 并核验后等待，问题解决且授权允许后解除暂停并核验再继续；等待 review 或 CI 时自行等待、定期检查并继续交付，不因此结束当前轮执行或退出。适配层递交不透明 prompt；重连活 agent 不重发启动输入。普通技能不推断 managed 模式或加载其详细指令，缺失 assignment 保持等待。
+- Legacy 存活 agent 保持原连接；重新启动前停止并关闭已存在的 inactive workspace，以当前 native 环境重建，并清空该 pane 遗留的原生引用。会话选择只使用本机保存的 session_id；不把 inactive pane 的旧引用当作新 ID，不增加历史扫描或持久回执。
+- Legacy 活 agent 直接连接并观察；需要启动且 session_id 有值则使用记录的 agent 和原生 ID resume；session_id=NULL 时记录 info 并启动全新原生会话，成功取得 ID 写回原行，沿用 task/claim/worktree。NULL 是新 claim 首次启动的正常状态，也覆盖启动成功但 ID 尚未保存的崩溃窗口，不增加历史反查、暂停或人工确认门槛。
+- 本机 session_id 非空时，启动、重连和延后输入前观察到的原生引用必须与其一致；不同 ID 是可见错误，保留原记录并停止该次输入。session_id 为空时可采纳实际存活 agent 的真实 ID，仍不采纳 inactive pane 的旧引用；只有具有新启动来源的首次执行或 legacy NULL 路径可以新建；macOS 可能已经启动的原运行缺 ID 时保持未知。
+- 首次启动和 legacy 明确恢复使用完整 prompt，显式声明 worker-managed、using-daynight、autopilot-managed-task，提供 project/task/claim/worktree 身份、实际路径/branch 和本次配置。Prompt 明确这是后台任务，任务范围及已有授权内的决定自行处理；确需人类介入时，按 managed 流程先将自己的 task 设为 paused=true 并核验后等待，问题解决且授权允许后解除暂停并核验再继续；等待 review 或 CI 时自行等待、定期检查并继续交付，不因此结束当前轮执行或退出。适配层递交不透明 prompt；重连活 agent 不重发启动输入。macOS 已确认首次传输后的恢复只继续原任务，不重放原 assignment。普通技能不推断 managed 模式或加载其详细指令，缺失 assignment 保持等待。
 - 定时巡查在原 claim 仍有效时读取当前 agent 状态。已就绪、未在启动的存活 agent 处于 idle 或 done 且当前任务未暂停周期输入时发送继续原任务的 ping；working、blocked、unknown、未就绪及尚有首次输入待递交时继续观察。Ping 完整正文使用字面量 `<system remider>` 与 `</system remider>` 标签包裹，保留原任务、claim、worktree 和授权，提醒自行等待 review/CI，不能把 agent 的 idle/done 当作业务完成。进程内保留上次输入对应的观察，观察未改变时不重复递交；未知输入结果先观察核对，不盲目重放。进入终止清理后不再发送业务 ping。
-- task property paused:true 抑制周期 continuation ping，false 或缺席适用原策略。实际发送前，在 workspace 串行化及原生界面等待完成后重新读取服务端 task，核验原 active claim、worker 和 worktree 归属；读取失败、归属失效或暂停时均不发送。暂停跳过不记录为已递交、不改变输入基线，因此解除暂停后即使原生观察未改变也可正常 ping。标记不改变 Task 状态或 worker.phase、领取资格、原会话、观察、首次及待递交 assignment、恢复、人工输入或终止清理。
+- task property paused:true 抑制周期 continuation ping，false 或缺席适用原策略。实际发送前，在 workspace 串行化及原生界面等待完成后重新读取服务端 task，核验原 active claim、worker 和 worktree 归属；读取失败、归属失效或暂停时均不发送。暂停跳过不记录为已递交、不改变输入基线，因此解除暂停后即使原生观察未改变也可正常 ping。标记不改变 Task 状态或 worker.phase、领取资格、原会话、观察、人工输入或原运行停止。Legacy 的首次、待递交和恢复输入不使用周期门禁；macOS 在全部自动输入的最终递交边界检查暂停。
 - Copilot 与 Codex 的每次 fresh/resume 启动固定使用 full access，并为本次任务目录启用信任，免除原生工具权限、目录信任及 hook trust 确认。Copilot 使用 `--allow-all --no-ask-user --no-sandbox`，并覆盖本次 workspace 环境为 `COPILOT_ALLOW_ALL=true`、`COPILOT_ASSISTED_APPROVAL=false`；Codex 使用 `--no-daemon`、`--dangerously-bypass-approvals-and-sandbox`、`--dangerously-bypass-hook-trust` 及当前真实任务路径的调用级 trusted 配置。该策略不是可选配置；不能通过 args 降低权限或恢复确认。
 - Codex 每次 fresh/resume 启动在配置参数之后以两个独立 argv 传入 `-c`、`check_for_update_on_startup=false`，覆盖同名配置，关闭本次启动的更新检查和交互提示，使任务能够进入正常输入流程。该设置通过 Herdr 启动选项传递，任务 prompt 保持独立；Copilot 启动方式不变。
 - 固定策略只作用于本次原生命令及任务 workspace，不改写全局 native 配置（包括用户 `config.toml`）、凭据或组织/操作系统策略。业务执行和交付仍遵循任务授权；缺失认证、集成或能力明确报错，不降级为等待权限确认。
 - 保留官方 native/Herdr 集成、当前参数和 composer readiness 校验。原生历史可用性由原生命令报告，不扫描 provider 数据库或会话 manifest。已知 ID 恢复失败保持可见，不静默清除 ID。启动输入只提交到可用的业务 composer。
-- 进程中的启动回执、输入提交和停止观察只保留内存，重启不承诺启动输入恰好一次。业务所需的人工输入通过原 worker attach 操作。
+- macOS 必须将原生启动与首次输入分离，可靠保存原 daemon/shell/native agent 的 boot、出生标识及资源绑定后才开放输入。nativeSessionId 可在首次输入后补齐；已知值不可更换。首次输入 pending/dispatching/transport_completed/unknown 跨重启保存，未知结果阻断自动重放，传输成功不等于业务处理恰好一次。
+- macOS 普通重连保持同一 Session 和 executionGeneration，只提升 connectionEpoch；只有原运行已确认停止、claim 有效、native ID 与首次输入结果可用于恢复，才增加实际运行 generation。每次启动或重连产生段边界并显式记录间断，不推算停机期间录制内容。
+- Herdr Session v2 必须沿用原 Worker 身份，不使用 Web Controller ticket；observe/control/archive 能力均为 false，不宣称网页控制、终端录制或最终归档可用。Legacy 启动回执和输入基线仍只在当前进程，人工输入通过 worker attach。
 
 ### W-08：人工介入与强制撤回
 
 Web 人工输入通过 Task Session，Herdr 使用 attach。Retry/release/resume 的 runner 互斥、权限及版本规则相同；具体恢复与停止证据由原模式的 backend 提供。
 
-- 等待人工时保留 claim、worktree、原会话和名额，显示 worker attach。Attach 只连接既有私有 Herdr，要求交互式终端，不读 Daynight 凭据/SQLite、不取 worker 锁、不启动 daemon 或 agent。Detach 保留执行；不可用或非零退出明确报错。
+- 等待人工时保留 claim、worktree、原会话和名额，显示 worker attach。Attach 只连接既有私有 Herdr，要求交互式终端，不读 Daynight 凭据、不取 worker 锁、不启动 daemon 或 agent。macOS 有 lifecycle journal 时只读校验当前版本并选择未停止原运行，核对原 daemon 与两个端点；不迁移、恢复或提升 epoch，暂停任务仍可接入。不可读 journal 不回退未知实例；无 journal 保留 legacy attach。Detach 保留执行；不可用或非零退出明确报错。
 - retry/release/resume 先停止 runner，再取得同一实例锁同步处理指定 claim。锁占用时明确提示停止 runner；没有持久管理意图或后台管理队列。
 - Retry 核验仍属于本 worker 的 active claim，尝试一次重连或恢复，保持 claim/agent/worktree。Pending 由 run 经正常名额与旧执行门槛启动。计数和额外尝试只在当前调用或进程内，重启不保留累计预算。
-- Release 先核验原 owner/admin、当前项目权限、原 claim 和指定版本。通知并停止 agent、关闭 workspace 后提交远端变更，确认源归属结束后才删 worktree 和置本机 done。远端拒绝时保留工作区供原执行恢复。Release 回到 todo、清空任务计时，保留 released 历史。
+- Release 先核验原 owner/admin、当前项目权限、原 claim 和指定版本。按 backend 停止原运行后提交远端变更；legacy 通知、关闭并删除，Web 遵守归档门槛，macOS Herdr 不发送 cleanup prompt 且停止、封段及同步确认后可结束本机执行行，但归档条件满足前保留工作区与独立 archive 责任。远端拒绝时保留工作区供原执行恢复。Release 回到 todo、清空任务计时，保留 released 历史。
 - Web 详情显示当前 active claim 的用户、机器、agent 和阶段，released 明确标识；completed 不表示当前认领。成员资料缺失时保留真实 userId，读取失败显示错误。原 owner/admin 可确认“强制撤回”：提交 active/released 的 claimId 和精确版本，同一事务清除 worker、返回 todo、清空任务起止时间、设置 allowAgents=false，其他资料保持。completed 或缺失 worker 不提供该操作。
 - 撤回确认说明所有重置结果以及远端 agent 不保证立即停止，取消不写入，冲突重新审阅，未知结果只读核对。撤回无需 stoppedConfirmed 或源机器在线，不撤销外部凭据；原 worker 下次成功完整自有清单发现原 claim 缺席后进入既有终止清理。自动再次领取需要明确重新开启许可。
-- Resume 核验 released previousClaimId、ready、原 owner/admin 和精确版本，保留明确人工安排的自动许可/平台例外，取得 fresh claimId/worktreeId 后登记 pending、session_id=NULL。普通 daemon 跳过 released 并继续分页。
+- Resume 核验 released previousClaimId、ready、原 owner/admin 和精确版本，保留明确人工安排的自动许可/平台例外，取得 fresh claimId/worktreeId 后登记 pending、session_id=NULL，macOS 同时保存该确认 grant 的新启动来源；存在旧 Herdr archive/worktree 责任时须在申请前拒绝。普通 daemon 跳过 released 并继续分页。
 - 用户给定 --if-version 不替换。请求前生成并输出 fresh ID；未知结果只 GET 核对、不重放。仍未知或命令中断时，操作者先核对远端结果，再启动 runner。命令不承诺跨进程续接原管理意图。
 - Transfer API、typed operation、CLI 命令及 target descriptor 已移除；没有目标执行移交。服务端继续保留 release 的 stoppedConfirmed、resume 的资格检查、唯一归属、权限及旧 claim fencing。
 
@@ -111,20 +113,21 @@ Web 人工输入通过 Task Session，Herdr 使用 attach。Retry/release/resume
 - 业务表精确为 projects(project_id,repo_url,local_path) 与 tasks(project_id,task_id,claim_id,status,agent,session_id,agent_control_mode)。Task 主键为 project/task/claim；status 为 pending/active/done，agent 为 copilot/codex/claude，session_id nullable；agent_control_mode 为 herdr/web，来自实际 claim。同 project/task 至多一个 active；结束行保留。
 - 项目映射在 claim 前保存。首次与空库启动先解析并登记配置项目，再查询配置与持久映射并集的自有 claim。映射有未结束任务或实际受管资源时不能改变；移出配置只停止新领取，原映射继续对账。
 - 完整 workerId-only 查询穷尽相关项目及分页，固定当前认证 principal。失败、部分查询或未查询项目不能授权缺席清理。Herdr/Git 读取失败不作为空资源；未知项目的遗留资源保留并报告。
-- 远端实际 claim 缺少本机行时补 pending；确认可以启动先提交 active 后建资源；成功完整清单缺少原 claim 时统一清理。资源发现覆盖历史 done 行及遗留受管资源，旧资源未收尾前同 task 新 claim 等待。清理或退出关闭已验证归属的 Herdr workspace 前，缺失本机行的 claim 必须以实际观察的 agent 类型登记 pending，存活 agent 的已知原生会话 ID 一并保存；重启后继续清理保留的 worktree，再允许同 task 后继执行。无法确认原 agent 类型时保留 workspace 并报告错误，不从当前配置猜测。未证明归属的 Git-only 资源不得据此登记。
-- Herdr 的配置、启动/输入回执、PID 观察、恢复次数、清理进度、原期限和管理意图不持久保存或转存其他台账。日志不作为恢复输入。恢复使用当前适用设置；计数和超限等待只在当前进程内，重启清零。
-- Ctrl+C 的根取消信号同步停止报告触发、新领取和调度，并取消报告及所有运行中的 job（包括终止清理 job），在等待报告收尾前完成取消。等待报告期间终止清理不能继续删除 worktree 或把未完成行置 done；报告与 job 全部收尾后直接中断并停止受管 agent、关闭 workspace。进程退出不发送清理 prompt，也不等待 agent 清理轮；工作区外临时资源可能遗留。保留 claim、worktree、原生 session ID 与所有未完成 active/pending 行，包括归属已经结束的任务；退出不删除 worktree、不把未完成行置 done。重启后按正常完整清单对账，为已结束归属的剩余资源重新进入终止清理。待确认的停止操作收尾后才停止私有实例；停止错误保持可见，无法确认停止时保留私有 Herdr 与相关资源。正常完成、release、强制撤回和人工管理仍使用原有通知及清理时序。
-- 主索引独立记录 `user_version=5`，Web 执行状态库独立使用版本 1，Controller journal 使用版本 6。五个业务库的版本 0 均在既有准入后丢弃原 schema 和数据，并通过基线与编号升级重建；已有空文件和查询访问同样适用。有效非零迁移保留数据，旧详细状态库 1–4 明确拒绝并保留原库；操作者停止旧 worker 后自行移除该旧库再启动。各库分别保证单库原子性，任何所需库打开失败都不启动协调业务。[SQLite 升级需求](cli-sqlite-migrations.md)定义共同的版本、查询、准入和错误约束。原生历史与 workerId 保留原有位置。
+- 远端实际 claim 缺少本机行时补 pending；确认可以启动先提交 active 后建资源；成功完整清单缺少原 claim 时统一清理。资源发现覆盖历史 done 行及遗留受管资源，旧资源未收尾前同 task 新 claim 等待。Legacy 清理或退出关闭已验证归属的 Herdr workspace 前，缺失本机行的 claim 必须以实际观察的 agent 类型登记 pending，存活 agent 的已知原生会话 ID 一并保存；重启后继续清理保留的 worktree，再允许同 task 后继执行。无法确认原 agent 类型时保留 workspace 并报告错误，不从当前配置猜测。未证明归属的 Git-only 资源不得据此登记。
+- macOS Herdr 独立 lifecycle SQLite 必须可靠保存原 owner、preparation、每代 binding/原进程身份、输入准入与结果、停止 journal、段边界及已确认 ledger。原证据不可用当前 foreground 覆盖。缺失或不兼容 journal 保留错误和责任；legacy 运行进度、恢复计数及通用人工管理意图仍为进程内语义。恢复使用当前适用设置，重启不绕过持久 unknown。
+- macOS 停止须先保存 stop_intent、再保存 close_requested，确认原进程实例和范围停止后才能保存 stopped_confirmed，随后封段与确认 ledger。替代实例、探测失败、无法证明的资源保持 stop_unknown；不停止替代、不删除工作区、不启动替代运行。journal 写失败只能尽力停止；同一 boot 中无持久 intent 的 daemon 消失不能在重启后追认为成功。pane 消失、内存空、PID 或命令行变化均不能单独证明停止。
+- Ctrl+C 的根取消信号同步停止报告触发、新领取和调度，并取消报告及所有运行中的 job（包括终止清理 job），在等待报告收尾前完成取消。等待报告期间终止清理不能继续删除 worktree 或把未完成行置 done；报告与 job 全部收尾后直接中断并停止受管 agent、关闭 workspace。进程退出不发送清理 prompt，也不等待 agent 清理轮；工作区外临时资源可能遗留。保留 claim、worktree、原生 session ID 与所有未完成 active/pending 行，包括归属已经结束的任务；退出不删除 worktree、不把未完成行置 done。重启后按正常完整清单对账，为已结束归属的剩余资源重新进入终止清理。Legacy 待确认的停止操作收尾后才停止共享私有实例；macOS 使用原出生身份与资源范围先停止独占 daemon 再停止原进程；停止错误保持可见，无法确认停止时保留私有 Herdr 与相关资源。macOS 仅关闭原运行与段，不发布最终 ready；legacy 保留原通知与清理时序。
+- 主索引独立记录 `user_version=5`，Web 执行状态库独立使用版本 1，Controller journal 使用版本 6。五个既有非 lifecycle 业务库的版本 0 均在既有准入后丢弃原 schema 和数据，并通过基线与编号升级重建；已有空文件和查询访问同样适用。有效非零迁移保留数据，旧详细状态库 1–4 明确拒绝并保留原库；操作者停止旧 worker 后自行移除该旧库再启动。各库分别保证单库原子性，任何所需库打开失败都不启动协调业务。[SQLite 升级需求](cli-sqlite-migrations.md)定义共同的版本、查询、准入和错误约束。独立 Herdr lifecycle 库不得丢弃无版本或不兼容的原执行证据。原生历史与 workerId 保留原有位置。
 
 ### W-10：Agent 完成与资源清理
 
-Web 与 Herdr 共用 claim 结束和工作区删除门槛。下述按 native idle 推进及重启重新计时的规则属于 Herdr；Web 使用同一清理操作的持久回执和原期限，确认原生停止后才能删除 worktree。进程退出直接停止所拥有执行，不重新派发清理 prompt。
+Web 与 Herdr 共用 claim 结束和工作区删除门槛。下述按 native idle 推进及重启重新计时的规则属于 Linux/Windows legacy Herdr；macOS 使用持久原身份停止，不发送 cleanup prompt，终态停止、封段与同步确认后可结束本机执行行，最终归档未接入前保留 worktree 与独立 archive 责任；Web 使用同一清理操作的持久回执和原期限，确认原生停止后才能删除 worktree。进程退出直接停止所拥有执行，不重新派发清理 prompt。
 
 - Agent 完成全部要求、验收和证据后，最后使用原 claimId 与观察版本通过 task set-status done 提交已有完成操作。必要 PR、授权合并和人工验收未完成时保持任务未完成；worker 不重复解释或提交业务 done。
-- 正常对账发现原 claim 不在成功完整清单时通知 agent 清理可归属的工作区外临时资源，最多等待本次尝试的 10 分钟，再停止进程、关闭 workspace、删除 worktree，最后本机 done。Web 模式在确认停止后上传只读 Session 文件归档，ready 前保留 worktree 与待归档源；上传失败只重试归档，不重启 Agent 或重跑任务。Done/release/强制撤回后的本地结束规则一致，分支与历史保留。
+- Legacy 正常对账发现原 claim 不在成功完整清单时通知 agent 清理可归属的工作区外临时资源，最多等待本次尝试的 10 分钟，再停止进程、关闭 workspace、删除 worktree，最后本机 done。Web 模式在确认停止后上传只读 Session 文件归档，ready 前保留 worktree 与待归档源；上传失败只重试归档，不重启 Agent 或重跑任务。Done/release/强制撤回后的本地结束规则一致，分支与历史保留。
 - 清理消息成功递交后，由后续巡查读取 agent 状态；观察到 idle 即视为该清理轮完成，可以停止 agent 并关闭 workspace，不要求序列计数递增或 interactiveReady。通知前的 idle 和递交回执本身不替代后续巡查；消息失败或结果未知时保留错误，按本次既定期限等待，不自动重发。该 idle 只表示终止清理轮完成，不提交业务 done；worker 进程退出遵循 W-09 的直接停止规则。
 - 同进程内的清理 job 保留自己的期限，轮询不重置。重启后按剩余实际资源重新进入清理并重新计时，通知可重复；不为清理新建 agent。已确认归属结束的内存 job 可在后续服务轮询失败时继续；各任务独立有界。
-- 失败保留错误与收尾责任，已不存在的资源可完成对应步骤。读取失败或无法确认停止时不能删除工作区或标 done，清理不影响其他任务与人工 Herdr。
+- 失败保留错误与收尾责任，Legacy 已不存在的资源可完成对应步骤；macOS 必须持有原实例停止证明，单纯缺席不完成。读取失败或无法确认停止时不能删除工作区或标 done，清理不影响其他任务与人工 Herdr。
 - 已知目标的清理或退出按对应 Herdr 执行推进，删除仅验证该目标的 Git 工作区。其他仓库或同项目其他 worktree 的注册错误单独报告，不阻塞健康 agent 停止或正常退出。
 
 ### W-11：可观察性与交付验收
@@ -143,10 +146,10 @@ Web 与 Herdr 共用 claim 结束和工作区删除门槛。下述按 native idl
 | W-02、W-03 | 默认许可、双向确认、平台清除、未知结果及候选组合过滤成立；assignedTo=me 贯穿全部候选页，他人和未分配任务不遮挡本人合格候选。 |
 | W-04、W-05 | 本人可领取，他人和未分配任务的直接 claim 拒绝且保持数据；负责人变更与 claim 竞争遵循项目锁及精确版本；既有库存和人工 resume 保留原执行权限；同 task 竞争单赢家；未知 claim 不启动资源或重放；多项目公平调度，等待与收尾占容量，同 task 旧资源形成启动屏障；撤回只允许原 owner/admin，原子重置归属/状态/计时并关闭许可。 |
 | W-06 | Dirty worktree 复用，静态归属、注册、指针与删除核对成立；缺失原成果和外来路径保持可见错误。 |
-| W-07、W-09 | 活进程重连不重发启动 prompt；idle/done 且就绪、未暂停时 ping；暂停期间多轮零 ping，改为 false 或移除后同一观察恢复 ping；排队或界面等待期间设置暂停时，最终递交边界使用当前服务端值；读取失败及原 claim 换代不递交；首次和待递交 assignment、观察、恢复及清理不受标记拦截。working/blocked/unknown 保持观察，未改变观察和未知回执不触发重复输入；已知原生 ID resume；首次启动与恢复中的 NULL 分支记录 info 后新建并保存 ID；空库先建项目映射再找回已有 claim。标题首先可见，改名按需同步且不改变执行身份，含控制字符/分隔符/长标题；命名故障和未知回执不消耗恢复预算。 |
+| W-07、W-09 | 活进程重连不重发启动 prompt；idle/done 且就绪、未暂停时 ping；暂停期间多轮零 ping，改为 false 或移除后同一观察恢复 ping；排队或界面等待期间设置暂停时，最终递交边界使用当前服务端值；读取失败及原 claim 换代不递交；legacy 首次和待递交 assignment 不受周期门禁拦截，macOS 全部自动输入经过最终暂停与持久准入；观察和原运行停止保留。working/blocked/unknown 保持观察，未改变观察和未知回执不触发重复输入；已知原生 ID resume；legacy NULL 分支记录 info 后新建并保存 ID；macOS 无启动来源或原 ID 未知不新开，先持久身份后输入，重连只改 epoch，确认停止后同 Session 换代并标记段间断；空库先建项目映射再找回已有 claim。标题首先可见，改名按需同步且不改变执行身份，含控制字符/分隔符/长标题；命名故障和未知回执不消耗恢复预算。 |
 | W-08 | 人工操作与 run 互斥；远端拒绝保留 worktree；成功后本机删除失败可由下次对账收尾；未知结果不重放；Web 强制撤回不声明远端已停，原 worker 下次对账收尾。 |
-| W-09 | 主索引字段及冻结模式正确，三态/唯一 active；退出取消并等待所有 job 收尾，含正在等待通知、清理轮或停止确认的终止清理 job，随后直接停止并关闭 workspace，不发送清理 prompt、不等待清理轮、不删除 worktree、不把未完成行置 done；归属已结束及原本缺失本机行的任务也保留 worktree、有效 session ID 与未完成行，重启按完整清单重新进入终止清理并解除同 task 后继的启动屏障；停止错误可见，停止不确定时私有 Herdr 保留。 |
-| W-10 | 正常完整清单缺席统一清理，正常完成、release、强制撤回及人工管理的清理语义不变；清理消息成功递交后的巡查观察到 idle 即推进关闭，缺失或不变计数不阻塞；本次十分钟上限、失败保留责任及重启重新计时成立。 |
-| W-11 | 独立报告覆盖空闲、满并发与长操作，清单未知/空/旧及部分字段错误保持区分；采集、单飞、期限、取消与关停满足[上报需求](daynight-worker-reporting.md#验证)。关联日志、Warning、原错误链和脱敏成立；终端上下文、消息及错误链中的完整连字符 GUID 在脱敏后显示首段 8 位，保留大小写且不改变非 GUID 文本，JSONL 各字段、消息与错误仍含完整 ID；attach 只连接并保持既有执行；验证关联实际源码、平台和环境。 |
+| W-09 | 主索引字段及冻结模式正确，三态/唯一 active；退出取消并等待所有 job 收尾，含正在等待通知、清理轮或停止确认的终止清理 job，随后直接停止并关闭 workspace，不发送清理 prompt、不等待清理轮、不删除 worktree、不把未完成行置 done；归属已结束及原本缺失本机行的任务也保留 worktree、有效 session ID 与未完成行，重启按完整清单重新进入终止收尾，macOS 归档前仍保留工作区与同 task 屏障；停止错误可见，停止不确定时私有 Herdr 保留。 |
+| W-10 | 正常完整清单缺席统一清理，按 backend 的停止与归档要求收尾，macOS 停止、封段及同步后可释放执行槽，可标本机 done，但不删除工作区或清除 archive 责任；legacy 清理消息成功递交后的巡查观察到 idle 即推进关闭，缺失或不变计数不阻塞；本次十分钟上限、失败保留责任及重启重新计时成立。 |
+| W-11 | 独立报告覆盖空闲、满并发与长操作，清单未知/空/旧及部分字段错误保持区分；采集、单飞、期限、取消与关停满足[上报需求](daynight-worker-reporting.md#验证)。关联日志、Warning、原错误链和脱敏成立；终端上下文、消息及错误链中的完整连字符 GUID 在脱敏后显示首段 8 位，保留大小写且不改变非 GUID 文本，JSONL 各字段、消息与错误仍含完整 ID；attach 只连接并保持既有执行，macOS journal只读、不迁移或升epoch，替代端点与不可读证据必须拒绝；验证关联实际源码、平台和环境。 |
 
 完整平台运行验收要求其实际门禁与端到端结果，组件检查和 schema 验证不能替代。

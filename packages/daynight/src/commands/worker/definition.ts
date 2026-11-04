@@ -22,9 +22,9 @@ export const workerDefinition: CommandDefinition = {
     details: "Read worker settings from DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml) at startup.\nWith no configured repositories, select existing remote Projects interactively before startup.\nFor noninteractive configuration, run daynight worker repo add --project <project-id>.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
   }, {
     name: "attach",
-    description: "Attach an interactive terminal to the running worker's Herdr session",
+    description: "Attach an interactive terminal to an existing task runtime",
     options: [help],
-    details: "Connect to the existing private worker Herdr session. Start it with daynight worker run first. Requires an interactive terminal. Detaching leaves the worker and its agents running.",
+    details: "Connect to an existing private Herdr runtime without starting a daemon. On macOS, select a task when multiple recorded runtimes exist; the original daemon identity must be verified. Paused tasks remain available for human input. Installations without a lifecycle journal use the existing shared worker session. Requires an interactive terminal. Detaching leaves the worker and its agents running.",
   }, {
     name: "repo",
     description: "Manage repositories selected from existing Daynight Projects",

@@ -1,11 +1,27 @@
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { HerdrLifecycleRecord, MacProcessIdentity } from "../../../src/commands/worker/herdr/lifecycle-types.js";
 import { attachWorker } from "../../../src/commands/worker/attach.js";
 
-const mocks = vi.hoisted(() => ({ connect: vi.fn(), instance: vi.fn(), spawn: vi.fn() }));
+const mocks = vi.hoisted(() => ({ connect: vi.fn(), instance: vi.fn(), spawn: vi.fn(), stat: vi.fn(), records: vi.fn(), peer: vi.fn(), observe: vi.fn(), select: vi.fn() }));
 vi.mock("../../../src/commands/worker/herdr/instance.js", () => ({ createHerdrInstance: mocks.instance }));
 vi.mock("../../../src/commands/worker/herdr/command.js", () => ({ spawnHerdrProcess: mocks.spawn }));
+vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>(), statSync: mocks.stat }));
+vi.mock("../../../src/commands/worker/herdr/lifecycle-store.js", () => ({ readHerdrLifecycleRecords: mocks.records }));
+vi.mock("../../../src/commands/worker/herdr/native-macos.js", () => ({ createMacProcessControl: () => ({ peer: mocks.peer, observe: mocks.observe }) }));
+vi.mock("@inquirer/prompts", () => ({ select: mocks.select }));
+const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const proof: MacProcessIdentity = { role: "daemon", pid: 123, birthToken: "birth", bootId: "boot", auditToken: [0, 0, 0, 0, 0, 123, 0, 5], ppid: 1, pgid: 123, sid: 123 };
+const record = (suffix = "one"): HerdrLifecycleRecord => ({
+  owner: { projectId: "project", taskId: `task-${suffix}`, workerId: "worker", worktreeId: "worktree", ownerUserId: "owner", serverOrigin: "https://daynight.example", provider: "codex" },
+  claimId: `claim-${suffix}`, cwd: "/worktree", sessionId: `session-${suffix}`, registrationId: "registration", connectionEpoch: "1", registrationRequest: null, ledgerRequest: null, publishedLedgerHash: null, controlEpoch: "3", initialAssignment: "transport_completed", initialPrompt: "assignment", automationBlocked: true, preparation: null, segments: [], version: 3,
+  runs: [{ run: { executionGeneration: "1", owner: { projectId: "project", taskId: `task-${suffix}`, workerId: "worker", worktreeId: "worktree", ownerUserId: "owner", serverOrigin: "https://daynight.example", provider: "codex" }, binding: { instanceId: suffix, sessionId: "w", workspaceId: "workspace", paneId: "1", terminalId: "terminal", nativeSessionId: "native" }, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "active", instanceDirectory: `/worker/h/r/${suffix}`, daemon: proof, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null }],
+});
+const durableRecords = (...records: HerdrLifecycleRecord[]): void => {
+  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+  mocks.stat.mockReturnValue({}); mocks.records.mockReturnValue(records);
+};
 
 const stdinTty = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
@@ -20,14 +36,16 @@ const attachment = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.stat.mockImplementation(() => { throw Object.assign(new Error("Missing journal"), { code: "ENOENT" }); }); mocks.records.mockReturnValue([]); mocks.peer.mockResolvedValue(proof); mocks.observe.mockResolvedValue("same");
   Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
   Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
   client = child();
   mocks.connect.mockResolvedValue({ reconnected: true });
-  mocks.instance.mockReturnValue({ connect: mocks.connect, attachment });
+  mocks.instance.mockReturnValue({ connect: mocks.connect, attachment, paths: { apiEndpoint: "/run/api.sock", clientEndpoint: "/run/client.sock" } });
   mocks.spawn.mockReturnValue(client as unknown as ChildProcess);
 });
 afterEach(() => {
+  Object.defineProperty(process, "platform", originalPlatform);
   if (stdinTty === undefined) Reflect.deleteProperty(process.stdin, "isTTY"); else Object.defineProperty(process.stdin, "isTTY", stdinTty);
   if (stdoutTty === undefined) Reflect.deleteProperty(process.stdout, "isTTY"); else Object.defineProperty(process.stdout, "isTTY", stdoutTty);
   vi.unstubAllEnvs();
@@ -36,6 +54,58 @@ afterEach(() => {
 const spawned = async (): Promise<void> => { await vi.waitFor(() => expect(mocks.spawn).toHaveBeenCalledOnce()); };
 
 describe("worker terminal attachment", () => {
+  it("attaches to the recorded isolated runtime even when automatic input is blocked", async () => {
+    durableRecords(record());
+    const pending = attachWorker({ homeDirectory: "/worker" }); await spawned();
+    expect(mocks.instance).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ isolatedRun: true, paths: expect.objectContaining({ herdrDirectory: "/worker/h/r/one", logsDirectory: "/worker/h/r/one/logs" }) }));
+    expect(mocks.records).toHaveBeenCalledOnce(); expect(mocks.select).not.toHaveBeenCalled();
+    expect(mocks.peer).toHaveBeenCalledWith("/run/api.sock"); expect(mocks.peer).toHaveBeenCalledWith("/run/client.sock");
+    expect(mocks.observe).toHaveBeenCalledWith(proof);
+    client.emit("close", 0, null); await pending;
+  });
+
+  it("selects among unfinished original runtimes without offering confirmed stopped runs", async () => {
+    const one = record("one"), two = record("two"), stopped = record("stopped"); stopped.runs[0]!.phase = "stopped_confirmed";
+    durableRecords(one, stopped, two); mocks.select.mockResolvedValue(two);
+    const pending = attachWorker({ homeDirectory: "/worker" }); await spawned();
+    const prompt = mocks.select.mock.calls[0]![0];
+    expect(prompt.choices).toHaveLength(2); expect(prompt.choices[1]).toMatchObject({ name: expect.stringMatching(/task-two.*claim-two.*codex/), value: two });
+    expect(mocks.instance.mock.calls[0]![0].paths.herdrDirectory).toBe("/worker/h/r/two");
+    client.emit("close", 0, null); await pending;
+  });
+
+  it("does not fall back to an unknown shared daemon when the journal has no unfinished run", async () => {
+    durableRecords();
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toThrow(/recorded.*runtime/i);
+    expect(mocks.instance).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it("does not treat an inaccessible journal as a legacy installation", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    const failure = Object.assign(new Error("Lifecycle journal access denied"), { code: "EACCES" }); mocks.stat.mockImplementation(() => { throw failure; });
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toBe(failure);
+    expect(mocks.instance).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it("preserves unreadable journal failures without accessing the legacy daemon", async () => {
+    durableRecords(); const failure = new Error("Unsupported lifecycle version"); mocks.records.mockImplementationOnce(() => { throw failure; });
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toBe(failure);
+    expect(mocks.instance).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it.each(["api", "client"])("refuses a replaced %s endpoint before connecting the interactive client", async endpoint => {
+    durableRecords(record());
+    mocks.peer.mockImplementation(async (name: string) => name.includes(endpoint) ? { ...proof, birthToken: "replacement" } : proof);
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toThrow(/original.*daemon/i);
+    expect(mocks.connect).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects an original daemon whose native identity can no longer be proved", async () => {
+    durableRecords(record()); mocks.observe.mockResolvedValue("unknown");
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toThrow(/original.*daemon/i);
+    expect(mocks.connect).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
   it("connects to the existing private session with inherited terminal IO and cleaned routing identities", async () => {
     vi.stubEnv("HERDR_SESSION", "human"); vi.stubEnv("HERDR_SOCKET_PATH", "/human.sock"); vi.stubEnv("CODEX_THREAD_ID", "parent"); vi.stubEnv("CODEX_HOME", "/native-home");
     const pending = attachWorker({ homeDirectory: "/worker" });

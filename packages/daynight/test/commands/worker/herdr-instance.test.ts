@@ -80,6 +80,15 @@ afterEach(async () => {
 });
 
 describe("private Herdr instance", () => {
+  it("waits for durable daemon registration before observing readiness", async () => {
+    const setup = await fixture();
+    let captured = 0;
+    const instance = createHerdrInstance({ paths: setup.worker, environment: setup.environment, spawnProcess: setup.start,
+      onDaemonSpawn: async pid => { captured = pid; throw new Error("journal refused"); }, retainOnStartupFailure: true });
+    await expect(instance.ensure(operation())).rejects.toThrow("journal refused");
+    expect(captured).toBeGreaterThan(0);
+    expect(children.at(-1)!.signalCode).toBeNull();
+  });
   it("observes absence without creating private paths or starting a daemon", async () => {
     const setup = await fixture();
     const absent = { herdrDirectory: path.join(setup.root, "a"), logsDirectory: setup.worker.logsDirectory };

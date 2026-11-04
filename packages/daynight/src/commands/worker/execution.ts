@@ -124,6 +124,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       const identity = key(task);
       const context = executionContext({ ...input, task });
       await settleWorkerStops(deps, input.owner, signal);
+      deps.herdr.lifecycle?.assertCanAdvance(context);
       const resources = await workerOperation((operation) => deps.herdr.tasks.listResources(operation), signal);
       const actual = actualTaskPane(input.owner, resources);
       const worktree = task.sessionId === null
@@ -153,12 +154,14 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         reportObservation(task, observed);
         return observed;
       }
-      if (actual !== undefined) {
+      if (actual !== undefined && !deps.herdr.lifecycle?.hasPreparedRun(input.owner)) {
         // Cold restore drops workspace environment overrides and retains the old native reference.
         // A fresh workspace restores native XDG settings and observes only the new launch's SessionStart.
         // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/persist/restore.rs#L568-L580
         // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/persist/restore.rs#L687-L713
-        await workerOperation((operation) => deps.herdr.tasks.stopAndClose(context, actual.binding, operation), signal);
+        await workerOperation((operation) => deps.herdr.lifecycle
+          ? deps.herdr.lifecycle.stop(input.owner, "shutdown", operation)
+          : deps.herdr.tasks.stopAndClose(context, actual.binding, operation), signal);
       }
       const binding = await workerOperation((operation) => deps.herdr.tasks.prepareWorkspace(context, input.title, operation), signal);
       if (task.sessionId === null) deps.emit({ kind: "info", task, message: "Starting a new native conversation in the task worktree." });

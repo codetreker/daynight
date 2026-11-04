@@ -39,7 +39,8 @@ or run your own service. The interface supports English and Simplified Chinese.
   agent permission, and view elapsed time and possible-stall warnings.
 - **Run ready tasks continuously.** Use `daynight worker run` to claim eligible
   tasks across configured repositories, preserve ongoing work through restarts
-  and clean resources when the original claim leaves the worker's inventory.
+  and stop ended executions while retaining resources until their cleanup
+  and archive requirements are satisfied.
 - **Observe your Workers.** Open My Workers alongside My projects to see the
   current account's recent Workers, online/offline state, resource and software
   observations, and authorized task snapshots. Detail keeps the last report time
@@ -199,29 +200,29 @@ keep existing paths when the root changes. Review's clone-root setting is
 independent. Projects must already exist, and their tasks need automatic
 execution permission before the worker can acquire them.
 
-The worker runs in the foreground with one execution slot by default. It uses
-state under `DN_CONFIG_DIR/worker/` (default `~/.daynight/worker/`). In Herdr mode, run `daynight worker attach` in another
-terminal to open its private Herdr session for human input. Each task workspace
-starts with its current task title, followed by its stable Project/task/claim/worktree
-identity. The next successful inventory updates changed titles without replacing
-the native conversation. Detaching the client leaves ongoing worker tasks running.
-Ctrl+C in `worker run` cancels and joins
-all running jobs, then directly stops agents and closes their workspaces without
-sending a cleanup prompt or waiting for a cleanup turn. Claims, worktrees, native
-history and unfinished local rows remain, including for ended claims; restart
-reconciles them normally. Stop failures remain visible and retain the private
-Herdr instance when stopping is uncertain. External temporary resources may
-remain. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
-covers defaults, repository overrides, recovery, attachment and manual management.
+The worker runs in the foreground with one execution slot by default and stores
+state under `DN_CONFIG_DIR/worker/` (default `~/.daynight/worker/`). On macOS,
+each Herdr run owns a separate daemon. A durable lifecycle journal binds the
+original claim, worktree, Session, terminal and process birth identities before
+automatic input is allowed. Linux and Windows retain the shared private Herdr
+path. Each workspace shows its task title and stable ownership suffix.
 
-Herdr fresh and resumed Copilot/Codex processes use fixed full access and task-folder
-trust settings without native permission prompts. Business input remains
-available through `daynight worker attach`. The local task record retains only
-Project/task/claim, pending/active/done, frozen mode, agent type and native
-session ID. A NULL session ID produces an informational message and a fresh
-conversation in the same worktree; a known ID uses native resume. Cleanup timers
-and recovery counts are process-local, and restarted agents use current applicable
-settings.
+Use `daynight worker attach` in another terminal for human input, including for
+paused tasks. On macOS it selects a recorded runtime and verifies the original
+daemon before connecting. Detaching leaves execution running. Ctrl+C in
+`worker run` cancels and joins its jobs, then stops the original execution while
+preserving claims, worktrees, native history and unfinished local rows.
+Unconfirmed stops remain visible and block replacement execution.
+
+Herdr fresh and resumed Copilot/Codex processes use fixed full access and
+folder-trust settings; business delivery remains bounded by task authorization.
+On macOS, a missing native session ID after a possible launch cannot authorize
+a new conversation. Recovery requires the original durable stop and native
+identity. Herdr Session registration currently advertises no preview, control
+or archive capability; stopped worktrees remain until archive finalization is
+available. See the [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+and [Herdr lifecycle design](docs/design/herdr-worker-lifecycle.md) for platform,
+recovery and retention boundaries.
 
 Stop the runner before `worker retry/release/resume`; the commands use
 its same instance lock. The [worker guide](packages/daynight/README.md#worker-manual-management)

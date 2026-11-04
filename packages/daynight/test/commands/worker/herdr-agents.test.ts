@@ -157,6 +157,55 @@ describe("native argument ownership", () => {
 });
 
 describe("direct task resource management", () => {
+  it("returns a launched process before its first input or native SessionStart", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.hook(async (method, params) => {
+      if (method !== "agent.start") return undefined;
+      const agent = f.launch(params); delete agent.agent_session;
+      return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] };
+    });
+    const result = await f.manager.launch(f.context, binding, { configuration }, operation());
+    expect(result).toMatchObject({ interactiveReady: true, nativeSession: null });
+    expect(f.prompts).toEqual([]);
+    expect(await f.manager.processInfo(f.context, binding, operation())).toEqual({ shellPid: 100, foregroundPids: [100, 200] });
+    await f.manager.submitInitialPrompt(f.context, binding, "assignment after durable identity", operation());
+    expect(f.prompts).toEqual(["assignment after durable identity"]);
+  });
+
+  it("returns a blocked launch for identity capture without attempting its first input", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.hook(async (method, params) => {
+      if (method !== "agent.start") return undefined;
+      const agent = f.launch(params); agent.agent_status = "blocked";
+      return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] };
+    });
+    expect(await f.manager.launch(f.context, binding, { configuration }, operation())).toMatchObject({ status: "blocked" });
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("rechecks first-input admission after readiness and skips revoked input", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    await f.manager.launch(f.context, binding, { configuration }, operation());
+    const result = await f.manager.submitInitialPrompt(f.context, binding, "revoked assignment", operation(), async () => false);
+    expect(result.submission).toBe("skipped");
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("rejects process discovery when the original terminal changes during the query", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    f.hook(async (method) => {
+      if (method === "pane.process_info") f.panes[0]!.terminal_id = "replacement";
+      return undefined;
+    });
+    await expect(f.manager.processInfo(f.context, binding, operation())).rejects.toThrow("terminal identity has changed");
+  });
+
+  it("rejects process discovery from another pane", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    f.hook(async (method) => method === "pane.process_info" ? { type: "pane_process_info", process_info: { pane_id: "replacement", shell_pid: 100, foreground_processes: [] } } : undefined);
+    await expect(f.manager.processInfo(f.context, binding, operation())).rejects.toThrow("another pane");
+  });
+
   const visible = (f: Awaited<ReturnType<typeof fixture>>, binding: HerdrTaskBinding, screen: string, extra: Entry = {}): HerdrRpcResult => ({ type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, tab_id: f.panes.find((pane) => pane.pane_id === binding.paneId)!.tab_id, source: "visible", format: "text", text: screen, revision: 0, truncated: false, ...extra } });
 
   it("creates one workspace with native XDG settings and rediscovers it without receipts", async () => {

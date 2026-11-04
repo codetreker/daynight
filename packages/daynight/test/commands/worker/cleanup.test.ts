@@ -36,10 +36,28 @@ const fixture = () => {
   const deps: Parameters<typeof createCleanupDriver>[0] = { store, git, herdr, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(6), buildPrompt: () => "managed", emit: (event) => events.push(event), now: () => time };
   const driver = createCleanupDriver(deps);
   const advance = (current: HerdrAgentObservation) => driver.advance({ owner, project, task }, resources(current), true);
-  return { store, task, owner, driver, advance, observation, submitPrompt, stopAndClose, removeWorktree, order, events, clock: (value: number) => { time = value; } };
+  return { store, task, owner, herdr, driver, advance, observation, submitPrompt, stopAndClose, removeWorktree, order, events, clock: (value: number) => { time = value; } };
 };
 
 describe("cleanup polling after notification", () => {
+  it.each([true, false])("requires durable stop proof without a pane and retains the worktree (terminal %s)", async terminal => {
+    const f = fixture(); const reasons: string[] = []; let stopped = false;
+    Object.assign(f.herdr, { lifecycle: { stop: async (_owner: ResourceOwner, reason: string) => { reasons.push(reason); stopped = true; }, isStopped: () => stopped } });
+    expect(await f.driver.advance({ owner: f.owner, project: f.store.getProject(f.owner)!, task: f.task }, [], terminal)).toBe(true);
+    expect(reasons).toEqual([terminal ? "terminal" : "shutdown"]);
+    expect(f.removeWorktree).not.toHaveBeenCalled();
+    expect(f.stopAndClose).not.toHaveBeenCalled();
+    expect(f.submitPrompt).not.toHaveBeenCalled();
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "agent-stopped" }));
+  });
+
+  it("does not treat an unconfirmed durable stop as permission to delete or finish", async () => {
+    const f = fixture();
+    Object.assign(f.herdr, { lifecycle: { stop: async () => {}, isStopped: () => false } });
+    await expect(f.driver.advance({ owner: f.owner, project: f.store.getProject(f.owner)!, task: f.task }, [], true)).rejects.toThrow("not confirmed");
+    expect(f.removeWorktree).not.toHaveBeenCalled();
+    expect(f.events.some(event => event.kind === "agent-stopped" || event.kind === "cleaned")).toBe(false);
+  });
   it("waits for a later patrol even when the pre-submit snapshot was already idle", async () => {
     const f = fixture();
     expect(await f.advance(f.observation("idle", 11, 5))).toBe(false);

@@ -20,6 +20,7 @@ import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, W
 
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
 export type WorkerCoordinatorOptions = {
+  hasHerdrJournal?: boolean;
   webBackend?: WebExecutionBackend; webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
   serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
@@ -81,9 +82,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const current = options.repositories.find((repository) => repository.project.projectId === task.projectId)?.configuration ?? options.globalConfiguration;
     return current.agent === task.agent ? { ...current, agentControlMode: task.agentControlMode ?? "herdr" } : { agent: task.agent, agentControlMode: task.agentControlMode ?? "herdr", model: null, args: [], recoveryLimit: current.recoveryLimit };
   };
-  const needsHerdr = (): boolean => options.globalConfiguration.agentControlMode !== "web"
+  const needsHerdr = (): boolean => options.hasHerdrJournal === true || options.globalConfiguration.agentControlMode !== "web"
     || options.repositories.some(repository => repository.configuration.agentControlMode !== "web")
-    || options.store.listUnfinishedTasks().some(task => task.agentControlMode !== "web");
+    || options.store.listTasks().some(task => task.agentControlMode !== "web" && (task.status !== "done" || options.platform === "macos"));
+  const lifecycle = () => needsHerdr() ? options.herdr.lifecycle : undefined;
+  const responsibilities = (): ResourceOwner[] => lifecycle()?.responsibilities() ?? [];
+  const isStopped = (owner: ResourceOwner): boolean => lifecycle()?.isStopped(owner) === true;
   const pendingStops = () => needsHerdr() ? options.herdr.tasks.pendingStops() : [];
   const ensureHerdr = async (signal?: AbortSignal): Promise<void> => { if (needsHerdr()) await workerOperation(operation => options.herdr.ensureInstance(operation), signal); };
   const listHerdr = async (signal?: AbortSignal): Promise<HerdrOwnedWorkspace[]> => needsHerdr() ? workerOperation(operation => options.herdr.tasks.listResources(operation), signal) : [];
@@ -99,6 +103,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (previous !== undefined && previous.worktreeId !== owner.worktreeId) throw new Error("The same claim has conflicting resource identities.");
       owners.set(key(owner), owner);
     };
+    for (const owner of responsibilities()) {
+      if (scope === undefined || owner.projectId === scope.projectId) { observe(owner); proven.add(key(owner)); }
+    }
     for (const workspace of herdr) { observe(workspace.owner); proven.add(key(workspace.owner)); }
     for (const task of options.webStore?.listUnfinishedTasks() ?? []) { if (scope === undefined || task.projectId === scope.projectId) { observe(task); proven.add(key(task)); } }
     for (const project of scope === undefined ? options.store.listProjects() : [scope]) {
@@ -260,10 +267,14 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const latest = options.store.getTask(task)!;
     await publishSummary(latest, observed, remoteTask, signal);
   };
-  const capacity = (resources: Snapshot): number => new Set([
-    ...options.store.listUnfinishedTasks().filter((task) => task.status === "active").map(key), ...[...resources.owners.keys()].filter((identity) => resources.proven.has(identity)),
-    ...ending.keys(), ...pendingStops().map((stop) => key(stop.context)),
-  ]).size;
+  const capacity = (resources: Snapshot): number => {
+    const stopped = new Set(responsibilities().filter(isStopped).map(key));
+    return new Set([
+      ...options.store.listUnfinishedTasks().filter(task => task.status === "active").map(key),
+      ...[...resources.owners.keys()].filter(identity => resources.proven.has(identity)),
+      ...ending.keys(), ...pendingStops().map(stop => key(stop.context)),
+    ].filter(identity => !stopped.has(identity) || controllers.get(identity)?.terminal === false)).size;
+  };
   const blockedByOldClaim = (task: LocalTask, owners: Iterable<ResourceOwner>): boolean =>
     options.store.listUnfinishedTasks().some((other) => other.projectId === task.projectId && other.taskId === task.taskId && other.claimId !== task.claimId && other.status === "active")
     || [...owners, ...ending.values(), ...pendingStops().map((stop) => stop.context)].some((owner) => owner.projectId === task.projectId && owner.taskId === task.taskId && owner.claimId !== task.claimId);
@@ -286,9 +297,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     await ensureHerdr(normalSignal);
     const observed = await listHerdr(normalSignal);
-    const knownOwners = [...observed.map((workspace) => workspace.owner), ...pendingStops().map((stop) => stop.context), ...(options.webStore?.listUnfinishedTasks() ?? [])];
+    const knownOwners = [...responsibilities(), ...observed.map((workspace) => workspace.owner), ...pendingStops().map((stop) => stop.context), ...(options.webStore?.listUnfinishedTasks() ?? [])];
     for (const owner of knownOwners) {
-      if (options.store.getProject(owner) === null || inventory.has(key(owner))) continue;
+      if (options.store.getProject(owner) === null || inventory.has(key(owner)) || isStopped(owner)) continue;
       ending.set(key(owner), owner);
     }
     launchCleanups();
@@ -298,13 +309,21 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     const resources = await snapshot(normalSignal, undefined, [...inventory.values()].map((task) => remoteOwner(task)));
     for (const [identityKey, owner] of resources.owners) {
-      if (resources.proven.has(identityKey) && !inventory.has(identityKey)) ending.set(identityKey, owner);
+      if (resources.proven.has(identityKey) && !inventory.has(identityKey) && !isStopped(owner)) ending.set(identityKey, owner);
     }
     for (const local of options.store.listUnfinishedTasks()) {
       if (inventory.has(key(local))) continue;
       const owner = resources.owners.get(key(local));
-      if (owner !== undefined) ending.set(key(local), owner);
-      else if (!jobs.has(key(local))) {
+      if (owner !== undefined) {
+        if (isStopped(owner)) {
+          ending.delete(key(local));
+          if (!jobs.has(key(local))) options.store.completeTask(local);
+        } else ending.set(key(local), owner);
+      } else if (!jobs.has(key(local))) {
+        if (local.agentControlMode !== "web" && lifecycle() !== undefined) {
+          options.emit({ kind: "stop-unknown", task: local, message: "The ended Herdr claim has no durable run evidence; its ownership record and resources are retained." });
+          continue;
+        }
         if (local.agentControlMode === "web") {
           if (!options.verifyWebUnregistered || local.sessionId !== null) throw new Error("The ended Web claim has no original resource evidence; its ownership record is retained.");
           await options.verifyWebUnregistered(local, normalSignal);
@@ -352,6 +371,14 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const next = await page.next();
         if (next.done) { exhausted.add(index); continue; }
         const candidate = next.value;
+        try {
+          assertCanAcquire({ projectId: candidate.projectId, taskId: candidate.id });
+          if ([...resources.owners.values()].some(owner => owner.projectId === candidate.projectId && owner.taskId === candidate.id)) throw new Error("An original task resource still reserves its worktree; a new claim cannot be acquired.");
+        }
+        catch (error) {
+          options.emit({ kind: "warning", message: `Skipping ${candidate.projectId}/${candidate.id}: its original archive responsibility and worktree reservation prevent a new claim.`, error });
+          continue;
+        }
         requireImplementedWorkerBackend(repository.configuration);
         if (repository.configuration.agentControlMode === "web") await options.verifyWebServer?.(repository.configuration.agent, normalSignal);
         const claimId = randomUUID();
@@ -359,6 +386,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: repository.configuration.agent, ...(repository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
           const owner = remoteOwner(granted);
           const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode });
+          registerClaim(granted);
           options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
           if (!blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted);
         } catch (error) {
@@ -371,6 +399,18 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await Promise.all([...candidates.values()].map((page) => page.return(undefined)));
     }
   };
+  const assertCanAcquire = (target: Pick<ClaimIdentity, "projectId" | "taskId">): void => {
+    const retained = responsibilities();
+    if (retained.some(owner => owner.projectId === target.projectId && owner.taskId === target.taskId)) throw new Error("The original Herdr worktree remains reserved until archive finalization; a new claim cannot be acquired.");
+  };
+  const registerClaim = (task: Task): void => {
+    const claim = readWorkerClaim(task.properties);
+    if (task.status !== "in_progress" || claim?.state !== "active" || claim.workerId !== options.workerId) throw new Error("Fresh claim registration requires an active grant on this worker.");
+    const owner = remoteOwner(task);
+    const local = options.store.getTask(owner);
+    if (local?.status !== "pending" || local.agent !== claim.agent || (local.agentControlMode ?? "herdr") !== claim.agentControlMode) throw new Error("Fresh claim registration requires its matching pending local task.");
+    if (claim.agentControlMode === "herdr") options.herdr.lifecycle?.registerClaim(executionContext({ task: local, owner, project: projectFor(task) }), claim.userId);
+  };
   const readSource = async (identity: ClaimIdentity): Promise<{ task: LocalTask; owner: ResourceOwner; remoteTask: Task }> => {
     const task = options.store.getTask(identity);
     if (task === null || task.status === "done") throw new Error("The original unfinished local claim is missing.");
@@ -380,6 +420,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     return { task, owner: remoteOwner(remoteTask), remoteTask };
   };
   return {
+    assertCanAcquire,
+    registerClaim,
     tick: async (): Promise<void> => {
       if (shuttingDown || ticking) return;
       ticking = true;
@@ -417,6 +459,19 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         options.emit({ kind: "shutdown-error", task, message: "The original Web execution evidence is missing; complete native stop cannot be confirmed." });
       }
       const owners = new Map(ending);
+      for (const owner of responsibilities()) {
+        if (options.store.getProject(owner) === null) {
+          complete = false;
+          options.emit({ kind: "shutdown-error", message: `Retained durable Herdr responsibility for an unmapped project: ${key(owner)}.` });
+        } else owners.set(key(owner), owner);
+      }
+      if (lifecycle() !== undefined) {
+        const registered = new Set(responsibilities().map(key));
+        for (const local of options.store.listUnfinishedTasks()) if (local.agentControlMode !== "web" && local.status === "active" && !registered.has(key(local))) {
+          complete = false;
+          options.emit({ kind: "shutdown-error", task: local, message: "The original Herdr execution evidence is missing; complete native stop cannot be confirmed." });
+        }
+      }
       for (const { context } of pendingStops()) {
         if (options.store.getProject(context) === null) {
           complete = false;
@@ -454,6 +509,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
               return;
             }
             if (options.store.getTask(owner)?.agentControlMode === "web") return;
+            const durable = lifecycle();
+            if (durable !== undefined) {
+              if (durable.isStopped(owner)) return;
+              await workerOperation(operation => durable.stop(owner, "shutdown", operation));
+              if (!durable.isStopped(owner)) throw new Error("The original Herdr run stop is not confirmed.");
+              return;
+            }
             if (options.store.getTask(owner) === null) {
               const observed = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
               recordMissingClaim(owner, actualTaskPane(owner, observed));
