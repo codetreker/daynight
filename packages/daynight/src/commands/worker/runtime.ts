@@ -13,7 +13,7 @@ import type { WorkerPaths } from "./paths.js";
 import { createHash } from "node:crypto";
 import { statfsSync } from "node:fs";
 import type { WorkerResourceCommandRequest } from "./resource-disposal.js";
-import { assertHerdrDisposalTarget } from "./resource-disposal.js";
+import { assertHerdrDisposalTarget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
 import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -391,6 +391,7 @@ export const runWorkerResources = async (options: {
       await git!.removeWorktree(project, request, operation);
       if (await git!.findWorktree(project, request, operation) !== null) throw new Error("The original worktree remains after explicit deletion.");
     });
+    reconcileDeletedHerdrResource(store, result);
     options.output(`${JSON.stringify(result, null, 2)}\n`);
   } finally {
     operation.dispose();

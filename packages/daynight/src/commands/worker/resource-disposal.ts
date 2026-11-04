@@ -4,6 +4,7 @@ import { createOperation } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
 import { removeWorktreeContents } from "./remove-worktree-contents.js";
+import type { WorkerStore } from "./store.js";
 import type { HerdrDisposalRequest, HerdrResourceTarget, HerdrRetainedResource } from "./herdr/resource-types.js";
 
 export type WorkerResourceCommandRequest = { kind: "list" } | ({ kind: "retry" } & HerdrResourceTarget) | ({ kind: "dispose" } & HerdrDisposalRequest);
@@ -37,6 +38,29 @@ export const assertHerdrDisposalTarget = (resource: HerdrRetainedResource, reque
   if (!resource.stopped || resource.stopEvidence.length === 0 || resource.stopEvidence.some(proof => proof.terminalStopped !== true)) throw new Error("The original execution stop is unconfirmed; disposal is prohibited.");
   if (!resource.terminal) throw new Error("The original claim is not terminal; disposal is prohibited while recovery remains possible.");
   if (resource.disposition !== null && (resource.disposition.operationId !== request.operationId || resource.disposition.action !== request.action)) throw new Error("Another original disposal decision already owns these resources.");
+};
+
+/** Reconcile the original claim after deletion has already been durably recorded.
+ * Never inspect or delete its path again: a later claim may now own that path.
+ */
+export const reconcileDeletedHerdrResource = (store: WorkerStore, resource: HerdrRetainedResource): boolean => {
+  if (!resource.worktreeDeleted) return false;
+  const owner = resource.owner;
+  for (const field of ["projectId", "taskId", "claimId", "worktreeId"] as const) {
+    if (canonicalId(owner[field]) !== owner[field]) throw new Error("Deleted-resource reconciliation requires the canonical original owner.");
+  }
+  if (!resource.stopped || resource.stopEvidence.length === 0 || resource.stopEvidence.some(proof => proof.terminalStopped !== true)) throw new Error("The original execution stop remains unconfirmed after resource deletion.");
+  const explicitlyDeleted = resource.disposition?.action === "delete" && resource.disposition.completed;
+  if (!resource.terminal || !(resource.state === "ready" || resource.state === "unavailable" || explicitlyDeleted)) throw new Error("Resource deletion has no confirmed original archive or disposal decision.");
+  const project = store.getProject(owner), schedule = store.getCleanupSchedule(owner), task = store.getTask(owner);
+  if (!project || path.join(project.localPath, ".worktrees", "daynight", owner.taskId) !== resource.worktreePath) throw new Error("Deleted-resource reconciliation has no matching original project path.");
+  if (schedule !== null && schedule.worktreeId !== owner.worktreeId) throw new Error("The cleanup schedule belongs to another original worktree.");
+  if (task?.agentControlMode === "web") throw new Error("Herdr deletion cannot complete a Web execution.");
+  // Each SQLite write is idempotent. Keep the durable deletion record as the
+  // recovery authority if either write fails or the process exits between them.
+  if (task !== null && task.status !== "done") store.completeTask(owner);
+  if (schedule !== null) store.deleteCleanupSchedule(owner);
+  return true;
 };
 
 /** Delete one explicitly selected source after the caller records authorization.

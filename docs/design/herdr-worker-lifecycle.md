@@ -39,7 +39,7 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 
 首次 assignment 保存为 `pending`，递交前写 `dispatching` 和本次 admission。`submitInitialPrompt`、后续 `submitPrompt`、网页输入和 cleanup 进入同一持久仲裁器；`durable.ts` 不使用 legacy `agent.prompt` 递交正文。严格 terminal 输入每帧之前再次核对原 claim、paused、运行身份、服务端控制状态和 admission。明确未发送可回到 pending；成功传输保存为 `transport_completed`；未知结果保存为 unknown 并阻断重放。独立人工处置可以授权继续，但不会改写原始 unknown。这里的成功仅表示输入传输完成，不证明业务完成或模型已处理正文。
 
-`nativeSessionId` 可以在首次输入之后补齐，但已知值不可更换。重连不重发 assignment；恢复已确认停止的运行时仍使用原 native conversation；只有原自动状态安全且身份有效时才发送 continuation，人工状态继续 suspended。自动输入未知、原生 ID 未知或原运行未确认停止，都不能通过新开对话规避。
+`nativeSessionId` 可以在首次输入之后补齐，但已知值不可更换。输入后的观察与普通轮询负责同步补齐后的完整 ledger，未确认请求继续读回对账；确认后恢复同段缓存画面的投递。快照的 ledger hash 与 fence 校验始终保留，已传输输入不因 ledger 同步失败而重发。重连不重发 assignment；恢复已确认停止的运行时仍使用原 native conversation；只有原自动状态安全且身份有效时才发送 continuation，人工状态继续 suspended。自动输入未知、原生 ID 未知或原运行未确认停止，都不能通过新开对话规避。
 
 ## Session 连接与采集段
 
@@ -74,7 +74,7 @@ Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdow
 
 共享清理操作的单次预算为 5 分钟，内部 RPC、HTTP 和原生停止继续受外层取消与期限约束；原生停止的信号升级间隔保持自身语义。Session HTTP 使用当前 `Operation.limits.requestMs`：普通操作为 30 秒，清理操作为 5 分钟，外层 `Operation.signal` 仍可提前取消。macOS 终态 cleanup 先持久撤销旧输入；仅此前安全 automation 且界面可用时，通过同一仲裁器发送一次有界 cleanup prompt。人工草稿或未知输入时跳过提示并受控停止，不以通知回执或 native idle 代替原进程停止证明。封段或 ledger 失败只补对应收尾，不重新停止已确认的原运行、不启动新业务执行。未确认的 ledger 请求仍只允许读回，退避到期不会赋予重发权限。Linux/Windows legacy Herdr 的建议性通知、原十分钟期限和 Git 删除规则由 [Worker 架构](daynight-worker.md#结束清理与退出)拥有。
 
-Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止与本地封段后可以结束本机执行行并释放槽；独立归档队列继续保存源、冻结最终 ledger、核对不可变回执后才删除原 worktree。失败保留资源责任。
+Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止与本地封段后可以结束本机执行行并释放槽；独立归档队列继续保存源、冻结最终 ledger、核对不可变回执后才删除原 worktree。失败保留资源责任。正常归档删除和显式 delete 都必须从原持久删除记录收敛对应本机任务与清理计划；崩溃在删除确认与 SQLite 更新之间时，调度恢复继续该收敛，不将已删除资源变成永久占槽或缺失原始证据。
 
 `worker attach` 在 macOS 有 lifecycle journal 时只读校验当前 schema 并读取未停止的原运行；多个候选交互显示 task、claim 和 provider。连接前后核对原 daemon 以及 API/client 两个端点，再使用原实例目录打开 Herdr client。不恢复数据库、不迁移、不增加 epoch、不请求服务端放行，也不需要解除任务暂停。journal 不可读或没有候选时拒绝，不转接未知旧 daemon；没有 journal 的安装保留 legacy attach。
 

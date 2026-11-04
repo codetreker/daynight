@@ -18,7 +18,7 @@
 
 metadata 准入使用与最终包相同的 canonical JSON 计算 owner、运行、段、gap、unavailable 说明和外层字段的 UTF-8 字节数；已完成的运行与停止证明按实际值精确计数。尚未形成的停止证明预留每代最多 1000 个进程身份，未知 native 字符串按 256 字节及其最大 JSON 转义开销预留；已知进程与 boot 身份使用实际值。未结束段的时长按 19 位整数预留，未知 nativeSessionId、全部剩余 gap 槽及候选新段同时计入；新运行的未分配绑定也按协议上限预留。该准入值包含保守预留，不等于最终包实测大小。最终封存仍对实际 JSON 严格检查 60 MiB、4 MiB 和 64 MiB 三个上限，不能只检查段与 gap 而遗漏运行停止证明。
 
-实时完整帧允许覆盖一个尚未发送的旧帧，发送无进展达到 10 秒终止该投递；采样和落盘不等待 viewer。重连可以发布当前完整画面，但不重放未知输入。live 的 `recorded=false` 不证明该画面已落盘。历史保存不因慢 viewer 丢弃登记内容。
+实时完整帧允许覆盖一个尚未发送的旧帧，发送无进展达到 10 秒终止该投递；采样和落盘不等待 viewer。快照只在当前 binding、fence 与服务端已确认的完整 ledger 一致时发送。首次输入后的 nativeSessionId 补齐也会改变 ledger；输入后观察和普通轮询必须同步这一变化，未知结果继续对账原请求，确认后补发当前完整缓存帧。画面没有变化也能恢复投递，无需重启 Worker。已成功传输的输入 receipt 先通知执行层，再等待 ledger 同步；同步错误继续暴露并保留待对账请求，不能使原 assignment 回到待发送状态。重连可以发布当前完整画面，但不重放未知输入。live 的 `recorded=false` 不证明该画面已落盘。历史保存不因慢 viewer 丢弃登记内容。
 
 ## 不可变归档
 
@@ -36,7 +36,7 @@ metadata 准入使用与最终包相同的 canonical JSON 计算 owner、运行�
 
 保留资源最多 20 个 worktree、待归档源共 2 GiB；实际可用磁盘低于 1 GiB 阻止新 claim。ready 源仍影响实际磁盘可用量。同 task 的旧 worktree 仍预留原路径，不能被新 claim 覆盖。stop_unknown 保留执行槽；已运行的其他任务不因资源门槛被停止。
 
-正常 worktree 删除要求先持久保存 ready/unavailable receipt，再复用原 Git 身份、占用检查和安全删除机制；中断后只继续该删除，不改变历史归档。人工 `worker resources` 入口列出原 claim/Session、停止证据、源与工作区、归档状态和处置结果。命令格式由 [CLI 手册](../../packages/daynight/README.md)拥有。
+正常 worktree 删除要求先持久保存 ready/unavailable receipt，再复用原 Git 身份、占用检查和安全删除机制；中断后只继续该删除，不改变历史归档。持久删除记录还承担本地调度收敛责任：核对原 owner、worktree、停止证明与回执或已完成的显式 delete 后，幂等结束对应本机任务并删除其清理计划，再移除内存中的收尾占位。SQLite 写失败保留删除记录，重启继续收敛；不能仅因资源不再列入保留集合就丢弃该责任，也不能影响同 task 的其他 claim。人工 `worker resources` 入口列出原 claim/Session、停止证据、源与工作区、归档状态和处置结果。命令格式由 [CLI 手册](../../packages/daynight/README.md)拥有。
 
 显式处置要求匹配原 project/task/claim/session/worktree、已确认停止、当前原 owner 身份与终态 claim，以及操作 ID、动作和确认。abandon 停止重试并保留资源；delete 先持久处置意图，核对源目录 inode 身份，复用安全 Git 删除并删除所选源。未知停止、错身份、仍可恢复的 active claim 和未确认请求均拒绝。处置记录与归档真相分开，不能伪造 ready 或 unavailable；不提供自动过期删除。
 

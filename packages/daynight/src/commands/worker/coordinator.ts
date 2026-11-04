@@ -12,7 +12,7 @@ import type { Task, TaskPlatform, WorkerMachine, WorkerTaskInventory, WorkerTask
 import { ensureCleanupSchedule } from "./cleanup-schedule.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
 import { createCleanupDriver } from "./cleanup.js";
-import { assertHerdrResourceBudget } from "./resource-disposal.js";
+import { assertHerdrResourceBudget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
 import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "./execution.js";
 import { HerdrAgentActionError, HerdrRpcError } from "./herdr.js";
@@ -404,6 +404,21 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const count = failures.get(key(task)) ?? 0;
     startJob(task, (signal) => ensure(task, remoteTask, signal, count <= configurationFor(task).recoveryLimit), false);
   };
+  const reconcileDeletedArchives = (): void => {
+    for (const resource of lifecycle()?.archive?.resources() ?? []) {
+      const identity = key(resource.owner);
+      if (!resource.worktreeDeleted || jobs.has(identity)) continue;
+      try {
+        const pending = ending.get(identity);
+        if (pending && hasWorktreeIdentity(pending) && pending.worktreeId !== resource.owner.worktreeId) throw new Error("The pending cleanup belongs to another original worktree.");
+        reconcileDeletedHerdrResource(options.store, resource);
+        ending.delete(identity); cleanupRetries.delete(identity);
+        const task = options.store.getTask(resource.owner); if (task !== null) execution.forget(task);
+      } catch (error) {
+        options.emit({ kind: "cleanup-error", message: `Herdr deleted-resource reconciliation for ${identity} remains incomplete; the original deletion evidence is retained for retry.`, error });
+      }
+    }
+  };
   const advanceArchive = (inventory: ReadonlyMap<string, Task>): void => {
     const archive = lifecycle()?.archive;
     if (!archive || archiveJob !== null || shuttingDown) return;
@@ -426,7 +441,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         await cleanupOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), normalSignal);
         if (await cleanupOperation(operation => options.git.findWorktree(projectFor(owner), owner, operation), normalSignal) !== null) throw new Error("The original archived worktree still exists after cleanup.");
         archive.cleaned(owner);
-        options.store.deleteCleanupSchedule(owner);
+        const deleted = archive.resources().find(resource => resource.sessionId === selected.sessionId && sameClaim(resource.owner, owner) && resource.owner.worktreeId === owner.worktreeId);
+        if (!deleted || !reconcileDeletedHerdrResource(options.store, deleted)) throw new Error("The original archive deletion has no durable readback.");
         ending.delete(key(owner));
         cleanupRetries.delete(key(owner));
       } catch (error) {
@@ -440,6 +456,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     archiveJob = job;
   };
   const reconcile = async (): Promise<void> => {
+    reconcileDeletedArchives();
     launchCleanups();
     await options.remote.currentUserId(normalSignal);
     const inventory = await ownInventory(normalSignal);

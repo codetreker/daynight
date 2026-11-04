@@ -10,7 +10,7 @@ import { canonicalSessionJson, SessionV2Error, SESSION_V2_PROTOCOL } from "../..
 import type { SessionV2Message, SessionV2Payloads, TerminalBinding } from "../../../session/v2/types.js";
 import { createWorkerHerdr, HerdrAgentActionError } from "../herdr.js";
 import type { WorkerHerdrAdapter } from "../herdr.js";
-import type { HerdrAgentObservation, HerdrExecutionContext, HerdrExecutionOwner, HerdrTaskBinding } from "./agents.js";
+import type { HerdrAgentObservation, HerdrExecutionContext, HerdrExecutionOwner, HerdrPromptReceipt, HerdrTaskBinding } from "./agents.js";
 import { openHerdrLifecycleStore, herdrLedgerHash } from "./lifecycle-store.js";
 import { connectHerdrSession, publishHerdrLedger } from "./session-connection.js";
 import type { HerdrLifecycleRecord, HerdrLocalRun, HerdrRunPhase } from "./lifecycle-types.js";
@@ -340,7 +340,17 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     const input = arbiters.get(need(owner).sessionId);
     if (input && need(owner).segments.at(-1)?.endedAt === null) input.bind(inputTarget(need(owner)));
   };
-  const send = async (context: HerdrExecutionContext, prompt: string, operation: Operation, guard?: (operation: Operation) => Promise<boolean>) => {
+  const publishObservedLedger = async (owner: Identity, operation: Operation): Promise<void> => {
+    const record = need(owner);
+    // Native identity can appear after the first input. A later unchanged
+    // observation must also reconcile an earlier publication's unknown outcome.
+    if (current(record).phase === "active" && (record.registrationRequest !== null || record.ledgerRequest !== null || record.publishedLedgerHash !== herdrLedgerHash(record))) await publish(owner, operation);
+  };
+  const publishObservedIdentity = async (owner: Identity, observed: HerdrAgentObservation, operation: Operation): Promise<void> => {
+    enrich(owner, observed);
+    await publishObservedLedger(owner, operation);
+  };
+  const send = async (context: HerdrExecutionContext, prompt: string, operation: Operation, guard?: (operation: Operation) => Promise<boolean>, onSubmitted?: (receipt: HerdrPromptReceipt) => void) => {
     const record = need(context), run = current(record), arbiter = getInput(context);
     if (run.phase !== "active" || arbiter.state().state !== "automation" || arbiter.record().unknownInput) throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
     await verifyClaim(context, operation, true); await verifyRuntime(record);
@@ -359,7 +369,12 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     });
     if (result.state !== "transport_completed") throw new HerdrAgentActionError(`The original input admission returned ${result.state}: ${result.errorCode ?? "input_unknown"}.`, "agent.prompt", result.state === "rejected" ? "not-submitted" : "unknown", { promptSubmission: result.state === "rejected" ? "not-submitted" : "unknown" });
     const observed = await adapter(need(context)).tasks.observe(context, bindingFor(run), operation); enrich(context, observed);
-    return { submission: "submitted" as const, observation: observed };
+    const receipt: HerdrPromptReceipt = { submission: "submitted", observation: observed };
+    // Delivery is already durable. A later ledger failure must not leave the
+    // execution driver holding the accepted assignment as pending input.
+    onSubmitted?.(receipt);
+    await publishObservedLedger(context, operation);
+    return receipt;
   };
   const finishStop = async (owner: Identity, operation: Operation): Promise<void> => {
     await stopRecording(owner);
@@ -636,11 +651,10 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       attachedRuns.add(`${record.sessionId}/${run.run.executionGeneration}`);
       if (observed.status === "blocked") throw new HerdrAgentActionError("The native agent requires operator action before input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
       if (getInput(context).state().state !== "automation") return observed;
-      const receipt = await send(context, need(context).initialAssignment === "pending" ? input.prompt : "Continue the original assigned task under its existing authorization.", operation);
-      if (receipt.submission === "submitted") input.onPromptSubmitted?.(receipt);
-      const after = await manager.observe(context, binding, operation); enrich(context, after); return after;
+      await send(context, need(context).initialAssignment === "pending" ? input.prompt : "Continue the original assigned task under its existing authorization.", operation, undefined, input.onPromptSubmitted);
+      const after = await manager.observe(context, binding, operation); await publishObservedIdentity(context, after, operation); return after;
     }),
-    observe: (context, binding, operation) => serialize(context, async () => { await attachRun(context, operation); const record = need(context); const observed = await adapter(record).tasks.observe(context, binding, operation); enrich(context, observed); return observed; }),
+    observe: (context, binding, operation) => serialize(context, async () => { await attachRun(context, operation); const record = need(context); const observed = await adapter(record).tasks.observe(context, binding, operation); await publishObservedIdentity(context, observed, operation); return observed; }),
     submitPrompt: (context, binding, prompt, operation, guard) => serialize(context, () => { if (canonicalSessionJson(binding) !== canonicalSessionJson(bindingFor(current(need(context))))) throw new SessionV2Error("target_changed"); return send(context, prompt, operation, guard); }),
     submitInitialPrompt: (context, binding, prompt, operation, guard) => serialize(context, () => { if (canonicalSessionJson(binding) !== canonicalSessionJson(bindingFor(current(need(context))))) throw new SessionV2Error("target_changed"); return send(context, prompt, operation, guard); }),
     launch: async () => { throw new Error("Native launch must pass the durable Herdr admission path."); },

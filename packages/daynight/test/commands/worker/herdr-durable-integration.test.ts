@@ -14,6 +14,8 @@ import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { Task } from "../../../src/api/types.js";
 import { cleanupOperation } from "../../../src/commands/cleanup-operation.js";
+import { createExecutionDriver, type WorkerGitManager } from "../../../src/commands/worker/execution.js";
+import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { createHerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
@@ -40,9 +42,10 @@ afterEach(() => {
 });
 type Registration = Extract<SessionV2Message, { type: "registration" }>;
 type Ledger = Extract<SessionV2Message, { type: "generation_ledger" }>;
-const fixture = (realInspector = false) => {
+const fixture = (realInspector = false, driverResources = false) => {
   mkdirSync(root, { recursive: true }); const directory = mkdtempSync(path.join(root, "run-")); directories.push(directory);
-  const context: HerdrExecutionContext = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), cwd: directory, agent: "codex" };
+  const context: HerdrExecutionContext = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), cwd: driverResources ? path.join(directory, "repo", ".worktrees", "daynight", uuid(2)) : directory, agent: "codex" };
+  mkdirSync(context.cwd, { recursive: true });
   const ownerId = uuid(5), workerId = uuid(6), nativeId = uuid(7), serverOrigin = "https://daynight.example";
   const paths: WorkerPaths = { stateDirectory: directory, workerDirectory: path.join(directory, "worker"), configFile: path.join(directory, "config.yml"), databaseFile: path.join(directory, "worker.sqlite"), lockFile: path.join(directory, "worker.lock"), herdrDirectory: path.resolve("/state/h"), logsDirectory: path.resolve("/state/logs"), temporaryDirectory: path.join(directory, "tmp") };
   let task: Task = { id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
@@ -168,7 +171,7 @@ const fixture = (realInspector = false) => {
       ensureInstance: async () => { if (!state.started) { events.push("daemon-launch"); expect(read().preparation?.phase).toBe("launch_requested"); await options.onDaemonSpawn?.(state.daemonPid); state.started = true; } return { reconnected: false, version: "0.9.5", protocol: 22, snapshot: {} }; },
       stopInstance: async () => { throw new Error("Unsafe daemon close must not be used"); },
       tasks: {
-        pendingStops: () => [], listResources: async () => [],
+        pendingStops: () => [], listResources: async () => driverResources && state.launched ? [{ owner: context, workspaceId: state.binding.workspaceId, panes: [{ ...observation(), kind: "codex" as const, cwd: context.cwd }] }] : [],
         prepareWorkspace: async () => { events.push("workspace"); return state.binding; },
         syncWorkspaceName: async () => {}, observe: async () => observation(),
         processInfo: async () => ({ shellPid: state.shellPid, foregroundPids: state.launched ? [state.agentPid] : [state.shellPid] }),
@@ -229,7 +232,10 @@ const fixture = (realInspector = false) => {
   const register = () => facade.lifecycle!.registerClaim(context, ownerId);
   const prepare = () => facade.tasks.prepareWorkspace(context, task.title, operation());
   const start = (binding: HerdrTaskBinding) => facade.tasks.start(context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, operation());
-  return { context, paths, events, registrations, ledgers, inputs, launches, settings, observed, nativeId, read, stateView, register, prepare, start, reopen, get facade() { return facade; }, adjustControlRead: (hook: NonNullable<typeof adjustControlRead>) => { adjustControlRead = hook; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
+  return { context, paths, events, registrations, ledgers, inputs, launches, settings, observed, nativeId, api, read, stateView, register, prepare, start, reopen, readTask: async () => task,
+    revealNative: () => { for (const local of instances.values()) if (local.launched) local.nativeVisible = true; },
+    mutateRecord: (change: Parameters<HerdrLifecycleStore["update"]>[1]) => { const record = read(); return reader!.update(record, change); },
+    get facade() { return facade; }, adjustControlRead: (hook: NonNullable<typeof adjustControlRead>) => { adjustControlRead = hook; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
 };
 
 describe("durable Herdr facade with real SQLite", () => {
@@ -343,7 +349,7 @@ describe("durable Herdr facade with real SQLite", () => {
   });
   it.each([true, false])("prepares recovery with gated presentation and native identity known at launch %s", async nativeAtLaunch => {
     const f = fixture(); f.settings.nativeAtLaunch = nativeAtLaunch; f.register(); const binding = await f.prepare(); await f.start(binding);
-    expect(f.stateView().binding.nativeSessionId).toBe(nativeAtLaunch ? f.nativeId : null);
+    expect(f.stateView().binding.nativeSessionId).toBe(f.nativeId);
     await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
     expect(f.stateView().control?.availableActions).toEqual([]);
     expect(f.events).toContain("recovery-prepared");
@@ -354,24 +360,31 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(f.inputs.filter(value => !value.initial)).toHaveLength(1);
   });
   it.each(["before", "after"] as const)("observes an enriched ledger lost %s commit without replaying it", async boundary => {
-    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
-    expect(f.stateView().binding.nativeSessionId).toBeNull();
-    f.settings.ledgerFailure = boundary;
-    const stopped = f.facade.lifecycle!.stop(f.context, "shutdown", operation());
-    if (boundary === "before") await expect(stopped).rejects.toThrow(/unconfirmed|conflicts/);
-    else await stopped;
-    expect(f.events).toContain("stop"); expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
+    const f = fixture(); f.register(); const binding = await f.prepare();
+    const ledger = f.api.ledger;
+    f.api.ledger = (...args) => { if (args[0].payload.runs.at(-1)!.binding.nativeSessionId !== null) f.settings.ledgerFailure = boundary; return ledger(...args); };
+    const started = f.start(binding);
+    if (boundary === "before") await expect(started).rejects.toThrow(/unconfirmed|conflicts/);
+    else await started;
+    expect(f.read().initialAssignment).toBe("transport_completed");
     const enrichmentPosts = () => f.ledgers.filter(message => message.payload.runs.at(-1)?.binding.nativeSessionId === f.nativeId && message.payload.runs.at(-1)?.stoppedAt === null);
     expect(enrichmentPosts()).toHaveLength(1);
-    expect(f.events.filter(value => value === "prepare-post")).toHaveLength(boundary === "after" ? 1 : 0);
-    f.settings.ledgerFailure = "none"; f.reopen();
+    f.api.ledger = ledger; f.settings.ledgerFailure = "none";
     if (boundary === "before") {
+      await expect(f.facade.tasks.observe(f.context, binding, operation())).rejects.toThrow(/unconfirmed|conflicts/);
       await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow(/unconfirmed|conflicts/);
       expect(enrichmentPosts()).toHaveLength(1);
     } else {
+      await f.facade.tasks.observe(f.context, binding, operation());
+      expect(enrichmentPosts()).toHaveLength(1);
+      await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+      f.reopen();
       const next = await f.prepare(); await f.start(next);
       expect(f.inputs.filter(value => !value.initial)).toHaveLength(1);
     }
+    expect(f.inputs.filter(value => value.initial)).toHaveLength(1);
+    expect(f.events).toContain("stop"); expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
+    expect(f.events.filter(value => value === "prepare-post")).toHaveLength(boundary === "after" ? 1 : 0);
   });
   it.each(["connectionEpoch", "controlEpoch", "state", "lease", "initialAssignment", "unavailableReason"] as const)("does not ignore differing recovery authority field %s", async field => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
@@ -650,4 +663,81 @@ it("publishes a stable recovered screen after its new segment ledger is confirme
   expect(record.segments).toHaveLength(2);
   expect(record.publishedLedgerHash).toBe(herdrLedgerHash(record));
   expect(delivered.mock.calls.at(-1)).toMatchObject([record.sessionId, { segmentId: record.segments[1]!.segmentId, recorded: true }]);
+});
+
+it.each(["initial input", "ordinary observation"] as const)("publishes the enriched ledger and cached screen after native identity appears during %s without restarting", async discovery => {
+  const create = inputSessionModule.createHerdrInputSession, delivered = vi.fn(async () => {});
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => ({ ...create(options), publishSnapshot: delivered }));
+  const f = fixture(); f.settings.nativeAfterInput = discovery === "initial input"; f.register(); const binding = await f.prepare();
+  expect(f.stateView().binding.nativeSessionId).toBeNull();
+  await f.start(binding);
+  if (discovery === "ordinary observation") {
+    expect(f.stateView().binding.nativeSessionId).toBeNull(); delivered.mockClear(); f.revealNative();
+    await f.facade.tasks.observe(f.context, binding, operation());
+  }
+  expect(f.stateView().binding.nativeSessionId).toBe(f.nativeId);
+  const record = f.read();
+  expect(record.publishedLedgerHash).toBe(herdrLedgerHash(record)); expect(record.ledgerRequest).toBeNull();
+  await vi.waitFor(() => expect(delivered.mock.calls.at(-1)).toMatchObject([record.sessionId, { binding: { nativeSessionId: f.nativeId }, segmentId: record.segments[0]!.segmentId, recorded: true }]));
+  expect(f.launches).toHaveLength(1); expect(record.segments).toHaveLength(1); expect(f.inputs).toHaveLength(1);
+});
+
+it("reconciles an unknown enrichment publication on later observation without replaying the initial input or ledger", async () => {
+  const create = inputSessionModule.createHerdrInputSession, delivered = vi.fn(async () => {});
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => ({ ...create(options), publishSnapshot: delivered }));
+  const f = fixture(); f.register(); const binding = await f.prepare();
+  const ledger = f.api.ledger, state = f.api.state; let unavailable = false;
+  f.api.ledger = async (...args) => { const result = await ledger(...args); if (args[0].payload.runs.at(-1)!.binding.nativeSessionId !== null) { unavailable = true; throw new Error("lost enrichment response"); } return result; };
+  f.api.state = (...args) => { if (unavailable) return Promise.reject(new Error("enrichment readback unavailable")); return state(...args); };
+  await expect(f.start(binding)).rejects.toThrow("enrichment readback unavailable");
+  const pending = f.read(); expect(pending.initialAssignment).toBe("transport_completed"); expect(pending.ledgerRequest).not.toBeNull();
+  expect(pending.publishedLedgerHash).not.toBe(herdrLedgerHash(pending));
+  expect(delivered.mock.calls.some(call => (call as unknown as [string, { binding: { nativeSessionId: string | null } }])[1].binding.nativeSessionId === f.nativeId)).toBe(false);
+  const count = f.ledgers.length; unavailable = false;
+  await f.facade.tasks.observe(f.context, binding, operation());
+  expect(f.ledgers).toHaveLength(count); expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+  expect(f.read().ledgerRequest).toBeNull(); expect(f.read().publishedLedgerHash).toBe(herdrLedgerHash(f.read()));
+  await vi.waitFor(() => expect(delivered.mock.calls.at(-1)).toMatchObject([pending.sessionId, { binding: { nativeSessionId: f.nativeId } }]));
+});
+
+it("keeps frames fenced when an enrichment ACK races a newer local lifecycle version", async () => {
+  const create = inputSessionModule.createHerdrInputSession, delivered = vi.fn(async () => {});
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => ({ ...create(options), publishSnapshot: delivered }));
+  const f = fixture(); f.register(); const binding = await f.prepare();
+  const ledger = f.api.ledger;
+  f.api.ledger = async (...args) => {
+    const result = await ledger(...args);
+    if (args[0].payload.runs.at(-1)!.binding.nativeSessionId !== null) f.mutateRecord(draft => { draft.automationBlocked = true; });
+    return result;
+  };
+  await expect(f.start(binding)).rejects.toThrow(/changed|version|conflict/i);
+  expect(f.read().ledgerRequest).not.toBeNull(); expect(f.read().publishedLedgerHash).not.toBe(herdrLedgerHash(f.read()));
+  expect(delivered.mock.calls.some(call => (call as unknown as [string, { binding: { nativeSessionId: string | null } }])[1].binding.nativeSessionId === f.nativeId)).toBe(false);
+  const count = f.ledgers.length;
+  await f.facade.tasks.observe(f.context, binding, operation());
+  expect(f.ledgers).toHaveLength(count); expect(f.inputs).toHaveLength(1); expect(f.read().automationBlocked).toBe(true);
+  await vi.waitFor(() => expect(delivered.mock.calls.at(-1)).toMatchObject([f.read().sessionId, { binding: { nativeSessionId: f.nativeId } }]));
+});
+
+it("does not replay the accepted assignment through the execution driver after enrichment response loss", async () => {
+  const f = fixture(false, true); f.register();
+  const store = openWorkerStore(f.paths.databaseFile);
+  try {
+    const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+    store.registerProject(project); store.registerPending({ ...f.context, agent: "codex" }); const task = store.activateTask(f.context);
+    const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: f.context.cwd, branch: `daynight/${f.context.taskId}` };
+    const driver = createExecutionDriver({ store, git: { prepareWorktree: async () => worktree, verifyWorktree: async () => worktree } as unknown as WorkerGitManager,
+      herdr: f.facade, readTask: f.readTask, platform: "macos", workerId: uuid(6), serverOrigin: "https://daynight.example", buildPrompt: () => "Original managed assignment", emit: () => {}, now: Date.now });
+    const input = { task, project, owner: f.context, title: "Original assignment", configuration: { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 } };
+    const ledger = f.api.ledger, state = f.api.state; let unavailable = false;
+    f.api.ledger = async (...args) => { const result = await ledger(...args); if (args[0].payload.runs.at(-1)!.binding.nativeSessionId !== null) { unavailable = true; throw new Error("lost enrichment response"); } return result; };
+    f.api.state = (...args) => unavailable ? Promise.reject(new Error("enrichment readback unavailable")) : state(...args);
+    await expect(driver.advance(input)).rejects.toThrow("enrichment readback unavailable");
+    expect(f.read().initialAssignment).toBe("transport_completed"); expect(f.read().ledgerRequest).not.toBeNull();
+    f.api.ledger = ledger; unavailable = false;
+    await driver.advance(input);
+    expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+    expect(f.launches).toHaveLength(1); expect(f.read().ledgerRequest).toBeNull();
+    expect(store.getTask(task)?.sessionId).toBe(f.nativeId);
+  } finally { store.close(); }
 });

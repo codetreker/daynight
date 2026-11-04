@@ -27,7 +27,9 @@ const fixture = () => {
   const localPath = path.join(homeDirectory, "repo"), cwd = path.join(localPath, ".worktrees", "daynight", doc.owner.taskId);
   mkdirSync(cwd, { recursive: true });
   const store = openWorkerStore(paths.databaseFile);
-  store.registerProject({ projectId: doc.owner.projectId, repoUrl: "https://example.test/org/repo.git", localPath }); store.close();
+  store.registerProject({ projectId: doc.owner.projectId, repoUrl: "https://example.test/org/repo.git", localPath });
+  store.activateTask(store.registerPending({ ...doc.owner, claimId: doc.claimId, agent: "codex" }));
+  store.saveCleanupSchedule({ ...doc.owner, claimId: doc.claimId }, { deadline: 10000, failures: 0, nextAttemptAt: 0, stage: "worktree-removal", lastError: null }); store.close();
   const directory = path.join(paths.workerDirectory, "recordings"), source = path.join(directory, doc.sessionId);
   mkdirSync(source, { recursive: true });
   writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ schemaVersion: 1, owner: doc.owner, sessionId: doc.sessionId, claimId: doc.claimId }));
@@ -53,6 +55,11 @@ describe.skipIf(process.platform !== "darwin")("retained-resource runtime author
     expect(f.readTask).toHaveBeenCalledOnce();
     expect(JSON.parse(output[0]!)).toMatchObject({ disposition: { operationId: f.request.operationId, action, completed: true } });
     expect(f.removeWorktree).toHaveBeenCalledTimes(action === "delete" ? 1 : 0);
+    const store = openWorkerStore(resolveWorkerPaths(f.homeDirectory).databaseFile);
+    try {
+      expect(store.getTask(f.request)?.status).toBe(action === "delete" ? "done" : "active");
+      expect(store.getCleanupSchedule(f.request) === null).toBe(action === "delete");
+    } finally { store.close(); }
   });
   it("retains shutdown resources while the same original claim remains active", async () => {
     const f = fixture(); f.active();

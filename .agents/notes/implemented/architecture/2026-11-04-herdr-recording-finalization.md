@@ -17,6 +17,11 @@ and index journal surrounds atomic frame-file publication. Deduplicated observat
 intervals have durable checkpoints; recovery preserves gaps instead of extending
 an old screen through downtime. Native identity enrichment changes identity only,
 including already closed capture segments, without changing their observations.
+Post-input observation and ordinary polling reconcile the enriched ledger before
+republishing the current complete frame. The snapshot fence and acknowledged
+ledger hash remain mandatory. The execution driver receives the successful input
+receipt before ledger reconciliation can fail, so a failed publication remains
+visible without returning an already transmitted assignment to its pending queue.
 
 The original Session registers recording responsibility before native launch.
 After stopping it publishes closed evidence, then freezes one finalization
@@ -35,6 +40,10 @@ archive queue and count/byte/free-disk gates retain resource accountability afte
 that slot is released. Explicit identity-checked operator disposition has its own
 journal and cannot manufacture archive success. Ready local sources are retained;
 there is no automatic expiration or garbage collection.
+Durable deletion records remain available to reconcile the original local task
+and cleanup schedule before releasing their scheduling entries. This closes the
+crash window between filesystem cleanup and SQLite updates without completing a
+different claim or treating missing execution evidence as proof of deletion.
 
 The [recording design](../../../../docs/design/herdr-recording.md) owns mechanisms
 and limits. This extends [durable lifecycle ownership](2026-11-04-herdr-worker-lifecycle.md)
