@@ -1,5 +1,6 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 const en = {
+  enterFullscreen: 'Enter Session fullscreen', exitFullscreen: 'Exit Session fullscreen',
   display: 'Display', displayStandard: 'Standard', displayConversation: 'Conversation', displayRetry: 'Retry saving',
   displayReadError: 'The saved display preference could not be read. The current choice is not saved.',
   displayInvalidError: 'The saved display preference is invalid. The current choice is not saved.',
@@ -41,6 +42,7 @@ export const sessionNativeLabels = Object.freeze({
 });
 type SessionMessages = { readonly [K in keyof typeof en]: string };
 const zh: SessionMessages = {
+  enterFullscreen: '会话全屏', exitFullscreen: '退出会话全屏',
   display: '显示', displayStandard: '标准', displayConversation: '对话', displayRetry: '重试保存',
   displayReadError: '无法读取已保存的显示偏好。当前选择尚未保存。',
   displayInvalidError: '已保存的显示偏好无效。当前选择尚未保存。',

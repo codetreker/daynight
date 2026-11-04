@@ -294,3 +294,24 @@
 .task-status-option:hover, .task-status-option:focus-visible { background: #f2f2fd; outline: 2px solid #8c8cf0; outline-offset: -2px; }
 .task-status-option[aria-checked=true] { color: #5555ad; background: #f6f6fd; }
 @media (max-width: 600px) { .task-status-option { padding: 11px; } }
+
+/* The existing surface expands without changing either Session or task identity. */
+.task-detail-dialog.task-detail-session-fullscreen, .task-detail-page.task-detail-session-fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: 100dvh;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+}
+.task-detail-page.task-detail-session-fullscreen { z-index: 30; }
+.task-detail-session-fullscreen > .task-detail-header,
+.task-detail-session-fullscreen > .task-detail-footer,
+.task-detail-session-fullscreen > div:has(> .task-detail-page-topbar),
+.task-detail-session-fullscreen .task-detail-heading,
+.task-detail-session-fullscreen .task-detail-tabs,
+.task-detail-session-fullscreen .task-detail-notifications { display: none; }
