@@ -27,8 +27,8 @@ partially supersedes that routing choice: lazy command implementations and
 resources outside server acceptance, and CLI manifest changes limited to version
 or JSON representation, omit server jobs. Independent command changes retain
 complete CLI validation; the later
-[version-only PR decision](2026-11-04-version-only-pr-ci.md) gives strict
-whole-PR version changes a single release smoke check. Both server jobs keep one
+[version-only PR decision](2026-11-04-version-only-pr-ci.md) skips application
+checks for strict whole-PR version changes. Both server jobs keep one
 selector covering their actual CLI, preparation and embedded Web inputs.
 Documentation exclusions and unaffected-module skipping retain their existing
 semantics.

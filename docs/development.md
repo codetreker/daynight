@@ -668,17 +668,14 @@ selection.
 
 When the complete PR diff contains exactly one modified path, that path is the
 CLI manifest, its regular-file mode is unchanged, its version string changes,
-and all other parsed fields remain equal, detection selects only
-`verify-release`. This Ubuntu/Node.js 24 job uses the existing publication
-preparation command to validate stable version syntax and pack the built CLI.
-It installs that tarball into an isolated consumer, requires both `daynight` and
-`dn` to report the manifest version, and executes both aliases' `--help`.
-The ordinary CLI platform, Node compatibility and completion matrices are
-skipped for this case. Formatting-only changes, executable-bit changes and any
-additional changed path retain ordinary path selection, including excluded
-documentation paths alongside a version change. This distinction keeps the
-exception tied to a complete version-only PR rather than an individual file.
-The [release-only validation decision](../.agents/notes/implemented/testing/2026-11-04-version-only-pr-ci.md)
+and all other parsed fields remain equal, detection selects no application
+jobs. The existing routing checks and final gate still run. Formatting-only
+changes, executable-bit changes and any additional changed path retain ordinary
+path selection, including excluded documentation paths alongside a version
+change. This distinction keeps the exception tied to a complete version-only
+PR rather than an individual file. Version validity, packaging and installed
+artifact validation remain in the existing publication workflow. The
+[version-only PR decision](../.agents/notes/implemented/testing/2026-11-04-version-only-pr-ci.md)
 records the rationale and retained publication responsibilities.
 
 The exact build/configuration and acceptance-script inputs in
@@ -709,8 +706,8 @@ Native CLI jobs typecheck and build once before running ordinary and installed
 tests against the same output. The separate runtime compatibility matrix checks
 the packed CLI installation across the supported Node.js range. Web quality and
 browser acceptance run in parallel jobs, `verify-web-quality` and `verify-web`, each with a 20-minute bound. The final
-`checks` job requires both and every other selected job, including the release
-smoke check; shared workflow changes retain all-module selection.
+`checks` job requires both and every other selected module; shared workflow
+changes retain all-module selection.
 
 The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness
 and the ordinary Vitest/V8 suite with its strict statement checker serially,
@@ -771,9 +768,9 @@ records the concurrency and aggregation policy.
 Documentation-only PRs run routing tests and this final gate
 without installing application dependencies or running application tests. Every
 `main` push retains full application validation. npm publication runs its own
-CLI validation at the frozen release commit. The version-only PR smoke check
-does not publish or query npm; publication retains its independent version and
-artifact checks as described under [package versions](#package-versions). The
+CLI validation at the frozen release commit. Version-only PRs skip application
+checks; publication retains its version and artifact validation as described
+under [package versions](#package-versions). The
 [selection decision](../.agents/notes/archived/process/2026-10-21-module-scoped-pr-ci.md)
 records the routing alternatives and maintenance costs; the
 [CI simplification decision](../.agents/notes/archived/simplification/2026-10-21-ci-gate-simplification.md)

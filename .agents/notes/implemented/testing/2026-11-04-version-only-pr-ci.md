@@ -1,4 +1,4 @@
-# Agent Note: Version-Only PR Validation
+# Agent Note: Version-Only PR CI Selection
 
 Status: implemented
 
@@ -7,9 +7,8 @@ Status: implemented
 A CLI release can change only the package version after its application changes
 have already passed their own checks. The module selector still runs three
 platform suites, four Node compatibility jobs and shell completion for that
-metadata change. Those suites repeat application validation while the version
-change directly affects the manifest and the installed package's reported
-version. Skipping every check would leave that artifact behavior unverified.
+metadata change. Those suites repeat application validation, and the publication
+workflow already validates the frozen release source and installed artifact.
 
 ## Decision
 
@@ -23,21 +22,16 @@ significant. Additional paths, including documentation exclusions, formatting
 alone, mode changes, additions, deletions and type changes retain ordinary
 selection. Invalid modified manifests and Git read failures fail detection.
 
-The [checks workflow](../../../../.github/workflows/checks.yml) selects one
-Ubuntu/Node.js 24 release job for that case, replacing the ordinary CLI matrices
-and leaving Go and Web unselected. It builds the CLI and reuses the publication
-preparation command to validate existing stable-version syntax and produce a
-source-bound tarball. An isolated consumer installs the tarball; both `daynight`
-and `dn` must report the manifest version and execute `--help` successfully.
-The final required `checks` job includes the release job and rejects failure or
-cancellation. Main pushes retain complete application validation.
+A proven version-only PR selects no application jobs. The existing routing
+checks and final required `checks` gate still run, and the gate continues to
+reject failed or cancelled checks. Main pushes retain complete application
+validation. Version validity, packaging and installed artifact validation remain
+in the existing manual publication workflow; no PR validation job is added.
 
 This partially supersedes the [server input-selection decision](2026-11-04-server-ci-input-selection.md),
 which omitted server work for semantic manifest equality but retained the full
 CLI suite. Ordinary CLI routing and every selected job's acceptance criteria
-remain intact. The manual publication workflow independently validates the
-frozen release source and artifact; the PR job performs no registry lookup or
-publication and does not replace those checks.
+remain intact.
 
 ## Alternatives
 
@@ -46,17 +40,17 @@ already provides conservative validation. It also reruns application tests
 across platforms and Node versions without changes to their inputs beyond the
 reported version; publication independently repeats CLI validation.
 
-**Check only manifest syntax.** This avoids a build and package installation,
-but cannot show that the packed CLI contains its manifest or that both installed
-command aliases expose the intended version and remain runnable. The single
-build-and-install smoke check verifies the behavior that changes.
+**Add a separate release build-and-install job.** A dedicated job can verify
+the new package version before merge, but adds dependency installation, building
+and packing for metadata-only PRs. The existing publication workflow already
+owns version and artifact validation at the actual frozen release source.
 
 ## Consequences
 
-Strict version-only PRs run one application validation job instead of eight.
-Routing and the final required gate still run. Dependency installation, building
-and packing remain necessary, so the change does not promise a fixed elapsed
-time. Mixed changes and main pushes retain their existing workloads.
+Strict version-only PRs skip the eight ordinary CLI verification jobs and retain
+only routing and final aggregation. Mixed changes and main pushes retain their
+existing workloads. A version rejected by publication validation remains a
+publication failure; this exception adds no earlier version-admission policy.
 
 The exception depends on whole-PR evidence rather than a path exclusion. New
 manifest fields automatically participate in semantic comparison, and the

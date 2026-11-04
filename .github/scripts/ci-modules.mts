@@ -4,7 +4,6 @@ import { isDeepStrictEqual } from "node:util";
 
 type Module = "cli" | "server" | "web";
 export type ModuleSelection = Record<Module, boolean>;
-export type CheckSelection = ModuleSelection & { release: boolean };
 
 const allModules: ModuleSelection = { cli: true, server: true, web: true };
 const sharedInputs = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"]);
@@ -103,8 +102,8 @@ const parseManifest = (source: string): { version: string; inputs: Record<string
   return { version, inputs };
 };
 
-export const detectModules = async ({ event, base, head, cwd }: { event: string | undefined; base?: string | undefined; head?: string | undefined; cwd?: string }): Promise<CheckSelection> => {
-  if (event === "push") return { ...allModules, release: false };
+export const detectModules = async ({ event, base, head, cwd }: { event: string | undefined; base?: string | undefined; head?: string | undefined; cwd?: string }): Promise<ModuleSelection> => {
+  if (event === "push") return { ...allModules };
   if (event !== "pull_request") throw new Error(`Unsupported CI event: ${event}.`);
   if (cwd === undefined) throw new Error("PR change detection requires a repository directory.");
   const diff = await pullRequestDiff(cwd, base, head);
@@ -123,11 +122,11 @@ export const detectModules = async ({ event, base, head, cwd }: { event: string 
       const after = parseManifest(afterSource);
       cliManifestRequiresServer = beforeMode !== afterMode || !isDeepStrictEqual(before.inputs, after.inputs);
       if (diff.changes.length === 1 && !cliManifestRequiresServer && before.version !== after.version) {
-        return { cli: false, server: false, web: false, release: true };
+        return { cli: false, server: false, web: false };
       }
     }
   }
-  return { ...selectModules(diff.changes.map(({ path }) => path), cliManifestRequiresServer), release: false };
+  return selectModules(diff.changes.map(({ path }) => path), cliManifestRequiresServer);
 };
 
 if (import.meta.main) {
