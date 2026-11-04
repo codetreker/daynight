@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/google/uuid"
 )
 
 func TestInstalledCLIProjectParticipantsAcceptance(t *testing.T) {
@@ -25,17 +26,43 @@ func TestInstalledCLIProjectParticipantsAcceptance(t *testing.T) {
 		if err := os.WriteFile(program, []byte(projectParticipantsAcceptanceProgram), 0o600); err != nil {
 			t.Fatal("cannot write the installed participant API caller")
 		}
-		for _, name := range []string{"canonical_profile", "nullable_profile"} {
+		ownerTeam := user.PersonalTeam
+		ownership := project.Ownership
+		profile := api.ProjectParticipantProfile{Name: user.Name, Email: user.Email, AvatarURL: user.AvatarURL}
+		ordinaryID := uuid.NewString()
+		for _, name := range []string{"canonical_profile", "nullable_profile", "direct_only", "inherited_only", "mixed_sources"} {
 			t.Run(name, func(t *testing.T) {
-				profile := api.ProjectParticipantProfile{Name: user.Name, Email: user.Email, AvatarURL: user.AvatarURL}
 				if name == "nullable_profile" {
 					fixture.exec(t, "UPDATE users SET name=NULL,email=NULL,avatar_url=NULL WHERE id=$1", user.ID)
 					profile = api.ProjectParticipantProfile{}
+				}
+				var directRole any = "admin"
+				var teamRole any = "admin"
+				switch name {
+				case "direct_only":
+					fixture.exec(t, "INSERT INTO teams(id,name) VALUES($1,'Installed owner')", ordinaryID)
+					fixture.exec(t, "UPDATE project_ownership SET team_id=$2,version=version+1 WHERE project_id=$1", project.ID, ordinaryID)
+					ownerTeam = api.TeamRef{ID: ordinaryID, Kind: "ordinary", Name: new("Installed owner")}
+					ownership = api.ProjectOwnership{TeamID: ordinaryID, Version: 2}
+					teamRole = nil
+				case "inherited_only":
+					fixture.exec(t, "INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')", ordinaryID, user.ID)
+					fixture.exec(t, "DELETE FROM project_grants WHERE project_id=$1", project.ID)
+					directRole = nil
+				case "mixed_sources":
+					fixture.exec(t, "INSERT INTO project_grants(project_id,user_id,role,version) VALUES($1,$2,'member',$3)", project.ID, user.ID, int64(9007199254740993))
+					directRole = "member"
+				}
+				var inheritedFrom any
+				if teamRole != nil {
+					inheritedFrom = map[string]any{"team": ownerTeam, "role": teamRole}
 				}
 				input, err := json.Marshal(map[string]any{
 					"serverUrl": process.origin, "serverToken": process.token,
 					"projectId": project.ID, "userId": user.ID,
 					"profile": profile, "version": "9007199254740993",
+					"ownerTeam": ownerTeam, "ownership": ownership,
+					"inheritedFrom": inheritedFrom, "directRole": directRole, "teamRole": teamRole,
 				})
 				if err != nil {
 					t.Fatal("cannot encode private participant API input")
@@ -74,24 +101,40 @@ try {
   assert.equal(requests, 1);
   assert.equal(participants.length, 1);
   const participant = participants[0];
-  assert.deepEqual(Object.keys(participant).sort(), ["directGrant", "effectiveRole", "profile", "userId"]);
+  assert.deepEqual(Object.keys(participant).sort(), ["directGrant", "effectiveRole", "inheritedFrom", "profile", "userId"]);
   assert.equal(participant.userId, config.userId);
   assert.equal(participant.effectiveRole, "admin");
+  assert.deepEqual(participant.inheritedFrom, config.inheritedFrom);
   assert.deepEqual(participant.profile, config.profile);
   assert.deepEqual(Object.keys(participant.profile).sort(), ["avatarUrl", "email", "name"]);
-  assert.notEqual(participant.directGrant, null);
-  assert.deepEqual(Object.keys(participant.directGrant).sort(), ["createdAt", "projectId", "role", "updatedAt", "userId", "version"]);
-  assert.equal(participant.directGrant.projectId, config.projectId);
-  assert.equal(participant.directGrant.userId, config.userId);
-  assert.equal(participant.directGrant.role, "admin");
-  assert.equal(participant.directGrant.version, BigInt(config.version));
+  if (config.directRole === null) {
+    assert.equal(participant.directGrant, null);
+  } else {
+    assert.notEqual(participant.directGrant, null);
+    assert.deepEqual(Object.keys(participant.directGrant).sort(), ["createdAt", "projectId", "role", "updatedAt", "userId", "version"]);
+    assert.equal(participant.directGrant.projectId, config.projectId);
+    assert.equal(participant.directGrant.userId, config.userId);
+    assert.equal(participant.directGrant.role, config.directRole);
+    assert.equal(participant.directGrant.version, BigInt(config.version));
+  }
   const raw = JSON.parse(wire);
-  assert.deepEqual(Object.keys(raw), ["items"]);
-  assert.deepEqual(Object.keys(raw.items[0]).sort(), ["directGrant", "effectiveRole", "profile", "userId"]);
+  assert.deepEqual(Object.keys(raw).sort(), ["actorAccess", "items"]);
+  assert.deepEqual(Object.keys(raw.actorAccess).sort(), ["canTransfer", "directGrant", "effectiveRole", "ownerTeam", "ownership", "projectId", "teamRole"]);
+  assert.equal(raw.actorAccess.projectId, config.projectId);
+  assert.deepEqual(raw.actorAccess.ownerTeam, config.ownerTeam);
+  assert.deepEqual(raw.actorAccess.ownership, config.ownership);
+  assert.equal(raw.actorAccess.effectiveRole, "admin");
+  assert.equal(raw.actorAccess.teamRole, config.teamRole);
+  assert.equal(raw.actorAccess.canTransfer, config.teamRole === "admin");
+  assert.equal(raw.actorAccess.directGrant?.role ?? null, config.directRole);
+  assert.deepEqual(raw.items[0].inheritedFrom, participant.inheritedFrom);
+  assert.deepEqual(Object.keys(raw.items[0]).sort(), ["directGrant", "effectiveRole", "inheritedFrom", "profile", "userId"]);
   assert.deepEqual(raw.items[0].profile, config.profile);
-  assert.match(wire, new RegExp('"version"\\s*:\\s*' + config.version + '(?=[,}])'));
-  assert.equal(participant.directGrant.createdAt, raw.items[0].directGrant.createdAt);
-  assert.equal(participant.directGrant.updatedAt, raw.items[0].directGrant.updatedAt);
+  if (config.directRole !== null) {
+    assert.match(wire, new RegExp('"version"\\s*:\\s*' + config.version + '(?=[,}])'));
+    assert.equal(participant.directGrant.createdAt, raw.items[0].directGrant.createdAt);
+    assert.equal(participant.directGrant.updatedAt, raw.items[0].directGrant.updatedAt);
+  }
 } finally {
   operation.dispose();
 }
