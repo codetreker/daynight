@@ -131,15 +131,23 @@ const nextAutomaticRefresh = async (page: Page, projectId: string): Promise<numb
   return (await response).status();
 };
 
-test('project-list', scenario('project-list'), async ({ page, api: request }, info) => {
+test('project-list', scenario('project-list'), async ({ page, api: request, allowBrowserWrites }, info) => {
   const prefix = `Pagination ${randomUUID()}`;
-  const projects = [];
+  const projects: Awaited<ReturnType<typeof createProject>>[] = [];
   for (let index = 0; index < 51; index++) {
     projects.push(await createProject(request, { name: `${prefix} ${String(index).padStart(2, '0')}` }));
   }
   const profileResponse = await request.get('/api/v1/me');
   expect(profileResponse.status()).toBe(200);
-  const profile = await profileResponse.json() as { personalTeam: { id: string } };
+  const profile = await profileResponse.json() as { id: string; personalTeam: { id: string } };
+  const teamName = `  Browser Team ${randomUUID()}  `;
+  const teamResponse = await request.post('/api/v1/teams', { data: { name: teamName, expectedUserId: profile.id } });
+  expect(teamResponse.status()).toBe(201);
+  const team = await teamResponse.json() as { id: string; name: string };
+  expect(team.name).toBe(teamName);
+  const baseURL = info.project.use.baseURL;
+  if (typeof baseURL !== 'string') throw new Error('Project acceptance requires the service origin.');
+  allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 1 }]);
   const listRequests: string[] = [];
   page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/v1/projects') listRequests.push(request.url()); });
   await page.goto('/projects');
@@ -190,6 +198,75 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
   await expect(page.getByRole('main').getByRole('heading', { name: projects[50]!.name, exact: true })).toBeVisible();
   await expect(page.getByRole('main').getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(stat(page, '任务总数')).toHaveText('0');
+
+  await test.step('browses a Team and creates a project in its captured context', async () => {
+    const selector = page.locator('details.team-selector');
+    await selector.locator('summary').click();
+    await expect(selector.getByRole('status')).toHaveCount(0);
+    const teamLink = selector.locator(`a[href="/teams/${team.id}"]`);
+    for (let count = 0; count < 200 && !await teamLink.isVisible(); count++) {
+      const more = selector.getByRole('button', { name: '加载更多 Team', exact: true });
+      await expect(more).toBeVisible();
+      await more.click();
+      await expect(selector.getByRole('status')).toHaveCount(0);
+    }
+    await expect(teamLink).toBeVisible();
+    expect(await teamLink.textContent()).toBe(teamName);
+    await teamLink.click();
+    await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
+    const teamHeading = page.getByRole('main').locator('h1');
+    await expect(teamHeading).toHaveText(teamName);
+    expect(await teamHeading.textContent()).toBe(teamName);
+    await expect(page.locator('a.project-card')).toHaveCount(0);
+    const rawName = `  Team project ${randomUUID()}  `;
+    const rawRepo = `git@example.org:group/${randomUUID()}.git`;
+    await page.getByRole('button', { name: '＋ 创建项目', exact: true }).click();
+    const creation = page.getByRole('dialog', { name: '创建项目', exact: true });
+    await expect(creation).toContainText(teamName.trim());
+    await creation.getByLabel('项目名称').fill(rawName);
+    await creation.getByLabel('仓库地址').fill(rawRepo);
+    const pending = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects` && response.request().method() === 'POST');
+    await creation.getByRole('button', { name: '创建项目', exact: true }).click();
+    const createdResponse = await pending;
+    expect(createdResponse.status()).toBe(201);
+    expect(createdResponse.request().postDataJSON()).toEqual({ name: rawName, repoUrl: rawRepo, teamId: team.id, expectedUserId: profile.id });
+    const created = await createdResponse.json() as { id: string; name: string; repoUrl: string; ownership: { teamId: string } };
+    expect(created).toMatchObject({ name: rawName, repoUrl: rawRepo, ownership: { teamId: team.id } });
+    await expect(page).toHaveURL(`${baseURL}/projects/${created.id}`);
+    await expect(page.getByRole('main').locator('h1')).toHaveText(rawName);
+    await page.goto(`/teams/${team.id}`);
+    const projectCard = page.locator(`a.project-card[href="/projects/${created.id}"]`);
+    await expect(projectCard).toBeVisible();
+    expect(await projectCard.locator('.project-name').textContent()).toBe(rawName);
+    expect(await projectCard.locator('.repo span').textContent()).toBe(rawRepo);
+    await expect(page.locator(`a.project-card[href="/projects/${projects[0]!.id}"]`)).toHaveCount(0);
+  });
+
+  await test.step('supports shared links and narrow bilingual navigation', async () => {
+    const shared = page.getByRole('link', { name: '与我共享', exact: true });
+    await expect(shared).toHaveAttribute('href', '/shared-projects');
+    const opened = page.context().waitForEvent('page');
+    await shared.click({ modifiers: ['Control'] });
+    const tab = await opened;
+    try {
+      await expect(tab).toHaveURL(`${baseURL}/shared-projects`);
+      await expect(tab.getByRole('heading', { name: '与我共享的项目', exact: true })).toBeVisible();
+      await expect(tab.getByRole('button', { name: '＋ 创建项目', exact: true })).toHaveCount(0);
+      await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
+    } finally { await tab.close(); }
+    await page.setViewportSize({ width: 320, height: 700 });
+    await page.getByRole('button', { name: /切换 Team/ }).click();
+    const drawer = page.getByRole('dialog', { name: '工作空间导航', exact: true });
+    await expect(drawer.getByRole('link', { name: '与我共享', exact: true })).toBeVisible();
+    await drawer.getByRole('link', { name: '与我共享', exact: true }).click();
+    await expect(page).toHaveURL(`${baseURL}/shared-projects`);
+    await expect(page.getByRole('heading', { name: '与我共享的项目', exact: true })).toBeVisible();
+    await expect(drawer).toHaveCount(0);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+    await expect(page.getByRole('heading', { name: 'Projects shared with me', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Shared with me', exact: true })).toHaveAttribute('href', '/shared-projects');
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
 });
 
 test('project-graph', scenario('project-graph'), async ({ page, api: request, baseURL }, info) => {

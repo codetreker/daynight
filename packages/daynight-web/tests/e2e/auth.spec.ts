@@ -209,12 +209,12 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     const createdResponse = await responsePromise;
     expect(createdResponse.status()).toBe(201);
     expect(createdResponse.headers()['daynight-user-id']).toBe(aliceUser.id);
-    expect(createdResponse.request().postDataJSON()).toEqual({ name: rawName, repoUrl: rawRepo, expectedUserId: aliceUser.id });
+    const profile = await (await request.get('/api/v1/me')).json() as { personalTeam: { id: string } };
+    expect(createdResponse.request().postDataJSON()).toEqual({ name: rawName, repoUrl: rawRepo, expectedUserId: aliceUser.id, teamId: profile.personalTeam.id });
     const created = await createdResponse.json() as { id: string; name: string; repoUrl: string; ownership: { teamId: string }; access: { directGrant: { role: string } } };
     expect(created.name).toBe(rawName);
     expect(created.repoUrl).toBe(rawRepo);
     expect(created.access.directGrant.role).toBe('admin');
-    const profile = await (await request.get('/api/v1/me')).json() as { personalTeam: { id: string } };
     expect(created.ownership.teamId).toBe(profile.personalTeam.id);
     await expect(page).toHaveURL(`${baseURL}/projects/${created.id}`);
     const task = await createTask(request, own.id, { title: 'Private resource boundary', description: 'Visible only to project members.', assignedTo: aliceUser.id });
