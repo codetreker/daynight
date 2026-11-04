@@ -155,8 +155,8 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	ctx := context.Background()
 	userID, workerID := queryID(1), queryID(2)
 	project, revoked := queryProject(t, database, 10), queryProject(t, database, 11)
-	for _, id := range []string{project.ID, revoked.ID} {
-		mustQueryExec(t, database, `INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'member')`, id, userID)
+	for id, role := range map[string]string{project.ID: "admin", revoked.ID: "member"} {
+		mustQueryExec(t, database, `INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,$3)`, id, userID, role)
 	}
 	active := setSnapshotTaskClaim(t, database, project.ID, 20, userID, workerID)
 	removed := setSnapshotTaskClaim(t, database, project.ID, 21, userID, workerID)
@@ -176,6 +176,9 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(worker.TaskSnapshot.Items) != 3 {
+		t.Fatalf("report omitted tasks accessible through different roles: %#v", worker.TaskSnapshot.Items)
+	}
 	mustQueryExec(t, database, `UPDATE tasks SET status='done',title='Current title' WHERE id=$1`, active.TaskID)
 	mustQueryExec(t, database, `DELETE FROM task_properties WHERE task_id=$1 AND name='worker'`, active.TaskID)
 	putTaskPropertyFixture(t, database, active.TaskID, "pullRequests", []byte(`[]`))
@@ -194,9 +197,32 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], read) {
 		t.Fatalf("list/detail visibility differs: %#v %v", page, err)
 	}
-	var count int
-	if err := database.Pool.QueryRow(ctx, `SELECT jsonb_array_length(task_snapshot->'items') FROM workers WHERE user_id=$1 AND worker_id=$2`, userID, workerID).Scan(&count); err != nil || count != 3 {
-		t.Fatalf("GET changed retained source snapshot: count %d, %v", count, err)
+	before := currentTaskFactsFixture(t, database)
+	err = database.WriteWorker(ctx, func(tx *WorkerTx) error {
+		items, err := tx.ReportTaskSnapshots(ctx, userID, workerID, core.WorkerTaskInventory{Claims: []core.WorkerTaskReference{private}})
+		if err == nil && len(items) != 0 {
+			t.Errorf("report retained a revoked project's task: %#v", items)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustQueryExec(t, database, `INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'member')`, revoked.ID, userID)
+	restored := readWorkerSnapshot(t, database, userID, workerID, stamp.Add(time.Hour))
+	if len(restored.TaskSnapshot.Items) != 2 || !reflect.DeepEqual(restored.TaskSnapshot.Items[1], worker.TaskSnapshot.Items[2]) {
+		t.Fatalf("regrant did not restore the historical observation: %#v", restored.TaskSnapshot)
+	}
+	var saved core.WorkerSnapshot
+	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		var err error
+		saved, err = scanWorkerSnapshot(snapshot.tx.QueryRow(ctx, `SELECT `+workerSnapshotProjection+` FROM workers WHERE user_id=$1 AND worker_id=$2`, userID, workerID))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(saved, worker) || !reflect.DeepEqual(currentTaskFactsFixture(t, database), before) {
+		t.Fatal("visibility checks changed the saved snapshot or task facts")
 	}
 }
 

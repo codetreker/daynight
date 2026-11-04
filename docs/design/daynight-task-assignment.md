@@ -32,9 +32,9 @@ flowchart TD
 
 Tasks.write 在明确 no-op/删除路径之后，只对真正 create/update 的完整候选执行负责人策略。等值状态和 worker 摘要可能没有候选 values，不能把零值解释成清空负责人。
 
-策略只在负责人实际变化时检查执行状态和新目标资格，然后强制关闭许可；同一 SQL 写 assigned_to、allow_agents、版本与更新时间。赋值相同则保留其他合法修改，历史目标即使失权也不阻止无关操作。状态不变使既有 SQL 计时 CASE 保留原区间。
+策略只在负责人实际变化时检查执行状态和新目标资格，然后强制关闭许可；同一 SQL 写 assigned_to、allow_agents、版本与更新时间。新目标通过当前 ProjectTx 的 ProjectAccess 判定有效访问，不以独立授权记录或用户资料作为资格所有者。赋值相同则保留其他合法修改，历史目标即使失权也不阻止无关操作。状态不变使既有 SQL 计时 CASE 保留原区间。
 
-策略拒绝和候选准备拒绝使用同一错误分类。目标 Member 不存在明确转为 invalid_input，避免被外层误译为项目不存在；Fault 暂存，在事务正常完成后返回。事务提交、回滚、取消或存储失败优先于暂存拒绝并保留错误链。
+策略拒绝和候选准备拒绝使用同一错误分类。目标 ProjectAccess 不存在明确转为 invalid_input，避免被外层误译为项目不存在；Fault 暂存，在事务正常完成后返回。事务提交、回滚、取消或存储失败优先于暂存拒绝并保留错误链。
 
 ## 一致读取与执行边界
 
@@ -56,17 +56,19 @@ Tasks 服务和 taskHandler 复用既有项目读取组合，专用 core/API 条
 
 HTTP 以局部 query 解析只允许重复 userId，不放宽共用 queryValues 的单值规则。省略参数是完整目录；明确的限定模式先校验非空、最多 100 个互异规范 UUID。service 同样验证直接调用，避免空数组被当作完整模式。两个模式均在一次 ReadSnapshot 内先 RequireProjectRead，再读资格和资料。
 
+store/project_access.go 拥有单主体准入和批量查询共用的 projectAccessRelation；当前关系仅使用真实 direct 授权，为每个 project/user 返回一条有效角色及原始用户 ID。负责人目录、限定解析和 hasProjectAccess 复用该关系，不另写 direct 资格 SQL；用户资料由各自读取路径单独投影。
+
 ### 完整目录
 
-从原始 project_members.user_id 与当前项目未软删除 tasks 的 DISTINCT assigned_to 做 UNION，再 LEFT JOIN users，并读取原始候选 ID 与 nullable users.id。这样仍有原始关联但用户行缺失时可以报告完整性错误，不会被 INNER JOIN 静默删去。成员存在性给出 hasProjectAccess；只有软删除任务的引用不保留资格。结果按 UUID 排序，unresolvedUserIds 为空。
+从 projectAccessRelation 的原始 user_id 与当前项目未软删除 tasks 的 DISTINCT assigned_to 做 UNION，再 LEFT JOIN users，并读取原始候选 ID 与 nullable users.id。这样仍有原始关联但用户行缺失时可以报告完整性错误，不会被 INNER JOIN 静默删去。访问关系存在性给出 hasProjectAccess；失权但仍被任务引用的人保留为 false，只有软删除任务的引用不保留资格。结果按 UUID 排序，unresolvedUserIds 为空。
 
 ### 限定解析
 
-从最多 100 项的 unnest(requested UUID array) 出发，以成员主键及项目内 assigned_to 索引的 LATERAL LIMIT 1 探测资格，再按资格 LEFT JOIN users。限定模式不先枚举全项目负责人，工作集合只来自请求 ID。
+从最多 100 项的 unnest(requested UUID array) 出发，将项目和请求用户 ID 限定到 projectAccessRelation，并以项目内 assigned_to 索引的 LATERAL LIMIT 1 探测保留资格，再按资格 LEFT JOIN users。当前 direct 来源按成员主键探测。限定模式不先枚举全项目负责人，工作集合只来自请求 ID；未请求的坏用户引用不影响本次解析。
 
 | 资格与资料 | 组装结果 |
 |---|---|
-| 无成员与当前保留任务资格 | unresolved；不暴露全局 users 是否存在 |
+| 无项目访问与当前保留任务资格 | unresolved；不暴露全局 users 是否存在 |
 | 有资格且 users 行存在 | 最小资料，保留 nullable name/avatarUrl，明确访问状态 |
 | 有原始资格但 users 行缺失 | 内部完整性错误，整个读取失败 |
 

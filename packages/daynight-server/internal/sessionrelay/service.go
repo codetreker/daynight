@@ -135,12 +135,11 @@ func member(ctx context.Context, tx pgx.Tx, p core.Principal, project string, no
 	if err := credential(ctx, tx, p, now); err != nil {
 		return false, err
 	}
-	var role string
-	err := tx.QueryRow(ctx, `SELECT role FROM project_members WHERE project_id=$1 AND user_id=$2 FOR SHARE`, project, p.UserID).Scan(&role)
+	access, err := store.ReadProjectAccess(ctx, tx, p.UserID, project)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, denied()
 	}
-	return role == "admin", err
+	return access.Role == core.ProjectAdmin, err
 }
 
 type task struct {

@@ -676,9 +676,11 @@ not refresh liveness. Unknown, other-account and expired detail reads return 404
 
 Reports use closed Probe states, explicit unknown inventory and a full task
 reference array. A known empty array is distinct from inventory that has never
-been synchronized. Task titles, status and phase come from current owned claims;
-subsequent reads preserve those observations while applying current membership
-and undeleted-task filtering to both rows and counts. Completion or reassignment
+been synchronized. Task titles, status and phase come from current owned claims.
+Reports and reads use the store's canonical project access relation for the
+authenticated user, currently backed by direct grants. Subsequent reads preserve
+saved observations while applying current access and undeleted-task filtering
+to both rows and counts. Completion or reassignment
 does not erase an otherwise visible historical observation. Liveness and recent
 visibility do not control claims or task state.
 

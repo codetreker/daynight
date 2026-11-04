@@ -26,6 +26,12 @@ AllowAgents false in the same update. Equal assignment causes no permission
 reset and does not revalidate a retained former assignee; other supplied fields
 retain their ordinary mutation rules.
 
+New target eligibility consumes ProjectAccess in that project transaction.
+The canonical projectAccessRelation in store/project_access.go also owns the
+access candidates and hasProjectAccess calculation for both people-read modes.
+It currently represents real direct authorization only, with one effective role
+per project/user and raw identities retained independently of profile presence.
+
 Migration 028 adds the column and project/assignment/keyset index. Historical
 and soft-deleted tasks receive NULL without rewriting versions, business times,
 properties or execution identities. The model never persisted Task creator
@@ -46,10 +52,12 @@ retaining original claim authority for inventory and manual control.
 A project-scoped people read separates canonical profile and access facts from
 Task versions. It offers complete candidate/retained-assignee enumeration and
 resolution from at most 100 requested IDs. Both authenticate within one read
-snapshot and use raw membership or live-task references before a LEFT JOIN to
+snapshot and use raw access or live-task references before a LEFT JOIN to
 profiles. A qualified reference without a user row is an internal integrity
 failure; a request with no scoped qualification is explicitly unresolved without
 revealing a global profile. Nullable names and avatars remain actual data.
+Bounded resolution probes only requested identities; an unrequested missing
+profile cannot fail that read, while complete enumeration still exposes it.
 
 Web Task/detail/summary/graph consumers require the nullable field, and schema 4
 rebuilds old task material from versions 1, 2 and 3. The detail session owns one
@@ -120,6 +128,12 @@ presentation without rewriting or contradicting same-version Task data.
 reads depend on total project membership and historical assignments. Requested
 UUIDs, native membership keys and indexed task probes keep the bounded mode tied
 to the requested set; full enumeration remains an explicit catalogue operation.
+
+**Keep assignment eligibility and directory access in private direct queries.**
+Their current results agree with resource admission, but separate SQL owners
+would require coordinated policy changes in every caller. Reusing the canonical
+actor/batch access source preserves the distinct profile and retention rules
+without duplicating authorization semantics.
 
 **Use an INNER JOIN for profile lookup.** Missing users would silently remove
 qualified references. Retaining raw candidate IDs and nullable joined user IDs
