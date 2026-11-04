@@ -2,6 +2,8 @@
 
 [需求规格](../spec/assistant.md)拥有当前支持的行为。管理定义由 `core.Bot`、PostgreSQL store、`service.Bots` 和 HTTP 投影负责；`sessionrelay` 在原有独立 Session 协议上负责绑定、grant 和同步结果准入，不借用项目或 Task 生命周期。
 
+网页选择、详情与全屏组合由[助手管理页面设计](bot-management-web.md)拥有；[助手 Session 设计](bot-session-view.md)拥有共享视图绑定与缓存，不复制本文的服务端生命周期。
+
 ## 数据拥有者
 
 追加迁移 `033_bots.sql` 创建 `bots`。主键为调用方生成的 UUID；`owner_user_id` 引用用户，`(owner_user_id,worker_id)` 引用现有 Worker 组合主键。数据库 identity 生成独立 `creation_order`，它用于按服务端创建顺序提交偏好，不依赖用户时钟或请求结束时间。

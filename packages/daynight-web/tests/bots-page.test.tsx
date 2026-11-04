@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BotsPage } from '../src/features/bots/BotsPage';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
@@ -28,6 +28,23 @@ it('registers guarded direct Bot routes without accepting malformed IDs',()=>{
  expect(parseAuthRoute(`/bots/${botId()}`)).toEqual({kind:'bot',botId:botId()});
  expect(parseAuthRoute('/bots/not-an-id')).toEqual({kind:'notFound'});
 });
+it('opens details from the name, follows selection and returns focus without replacing the session host',async()=>{
+ const f=fixture(); f.bots[1]!.resolvedConfiguration.cwd='/second/directory';
+ const view=mount(botId(1)); const opener=await screen.findByRole('button',{name:'Assistant 1'});
+ const host=screen.getByTestId('host'); expect(screen.queryByRole('complementary',{name:'Assistant details'})).toBeNull();
+ fireEvent.click(opener);
+ const panel=screen.getByRole('complementary',{name:'Assistant details'});
+ expect(within(panel).getByText('/ordinary/directory')).toBeVisible();
+ expect(within(panel).getByText('Machine 20')).toBeVisible();
+ expect(within(panel).queryByRole('switch')).toBeNull();
+ view.select(botId(2)); await screen.findByRole('button',{name:'Assistant 2'});
+ expect(within(panel).getByText('/second/directory')).toBeVisible();
+ expect(within(panel).queryByText('Assistant 1')).toBeNull();
+ fireEvent.keyDown(within(panel).getByRole('button',{name:'Close assistant details'}),{key:'Escape'});
+ expect(screen.queryByRole('complementary',{name:'Assistant details'})).toBeNull();
+ expect(screen.getByRole('button',{name:'Assistant 2'})).toHaveFocus();
+ expect(screen.getByTestId('host')).toBe(host);
+});
 it('loads every page for search and keeps the selected shell stable when closing and reopening',async()=>{
  const f=fixture(); const second=botDefinition(2);
  f.fetch.mockImplementation(async url=>String(url).includes('/defaults')?botResponse(botDefaults()):String(url).includes('cursor=next')?botResponse({items:[second],nextCursor:null}):String(url).includes('?')?botResponse({items:[f.bots[0]],nextCursor:'next'}):botResponse(f.bots.find(b=>String(url).endsWith(b.id))));
@@ -44,6 +61,20 @@ it('fences late selected reads and invalidates access loss without showing old c
  const view=mount(botId(1)); await waitFor(()=>expect(resolve).toBeDefined()); view.select(botId(2));
  await screen.findByRole('alert'); await act(async()=>resolve(botResponse(f.bots[0])));
  expect(screen.queryByRole('heading',{name:'Assistant 1'})).toBeNull(); expect(cache.invalidateBot).toHaveBeenCalledWith(botId(2));
+});
+it('clears open details while the next selection loads and dismisses them on access loss',async()=>{
+ const f=fixture(); const view=mount(botId(1));
+ fireEvent.click(await screen.findByRole('button',{name:'Assistant 1'}));
+ let resolve!:(r:Response)=>void;
+ f.fetch.mockImplementation(async url=>String(url).includes('/defaults')?botResponse(botDefaults()):String(url).includes('?')?botResponse({items:f.bots,nextCursor:null}):await new Promise(r=>resolve=r));
+ view.select(botId(2));
+ const panel=screen.getByRole('complementary',{name:'Assistant details'});
+ expect(within(panel).queryByText('/ordinary/directory')).toBeNull();
+ expect(within(panel).queryByText('Assistant 1')).toBeNull();
+ expect(screen.getByTestId('host')).toHaveTextContent('no binding');
+ await waitFor(()=>expect(resolve).toBeDefined()); await act(async()=>resolve(botError(403,'forbidden')));
+ expect(screen.queryByRole('complementary',{name:'Assistant details'})).toBeNull();
+ expect(cache.invalidateBot).toHaveBeenCalledWith(botId(2));
 });
 it('shows pending, startup failure and offline observations without inventing ready status',async()=>{
  const f=fixture(); f.bots[1]!.startupResult={state:'failed',code:'invalid_cwd'};

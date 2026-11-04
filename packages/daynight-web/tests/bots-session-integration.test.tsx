@@ -18,6 +18,21 @@ it('keeps real shared Session nodes and drafts across list selection and close/r
  try{
   const a=await screen.findByRole('textbox',{name:'Message'});await waitFor(()=>expect(a).toBeEnabled());fireEvent.change(a,{target:{value:'draft A'}});
   const host=view.container.querySelector('.bot-session-host');
+  const session=a.closest('.task-agent-session'), channels=vi.mocked(fixtures[0]!.api.channel).mock.calls.length;
+  fireEvent.click(screen.getByRole('button',{name:'Assistant 1'}));
+  expect(screen.getByRole('complementary',{name:'Assistant details'})).toBeVisible();
+  fireEvent.keyDown(screen.getByRole('button',{name:'Close assistant details'}),{key:'Escape'});
+  expect(screen.getByRole('textbox',{name:'Message'})).toBe(a);
+  expect(a.closest('.task-agent-session')).toBe(session);
+  expect(vi.mocked(fixtures[0]!.api.channel).mock.calls.length).toBe(channels);
+  fireEvent.click(screen.getByRole('button',{name:'Enter Session fullscreen'}));
+  expect(view.container.querySelector('.bot-conversation')).toHaveAttribute('data-session-fullscreen','true');
+  fireEvent.click(screen.getByRole('button',{name:'Assistant 1'}));
+  fireEvent.keyDown(screen.getByRole('button',{name:'Close assistant details'}),{key:'Escape'});
+  expect(view.container.querySelector('.bot-conversation')).toHaveAttribute('data-session-fullscreen','true');
+  fireEvent.keyDown(screen.getByRole('button',{name:'Assistant 1'}),{key:'Escape'});
+  expect(view.container.querySelector('.bot-conversation')).not.toHaveAttribute('data-session-fullscreen');
+  expect(screen.getByRole('textbox',{name:'Message'})).toBe(a);
   view.rerender(node(definitions[1]!.id));await waitFor(()=>expect(screen.getByRole('textbox',{name:'Message'})).not.toBe(a));
   fireEvent.change(screen.getByRole('textbox',{name:'Message'}),{target:{value:'draft B'}});
   view.rerender(node(null));expect(screen.queryByRole('textbox',{name:'Message'})).toBeNull();

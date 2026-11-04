@@ -6,6 +6,8 @@ Bot 是当前用户拥有、绑定已有 Worker 的独立定义，不属于项�
 
 公开 `POST /api/v1/me/bots` 接受调用方先生成的 ID 和名字，可选显式 Worker、目录和 Provider；服务端解析并冻结配置。不能通过管理接口传入 model、args 或 resolvedConfiguration。Worker 的实际目录访问与 CLI/Provider 启动仍需执行前预检，服务端接受普通绝对目录不证明其存在。
 
+网页的列表、创建、详情侧栏和全屏协同行为由[助手管理页面规格](bot-management-web.md)拥有，稳定 Session 绑定与页面缓存由[助手共享会话规格](bot-session-view.md)拥有。
+
 ## 定义与身份
 
 - Bot ID 由调用方在提交前生成。名字去除首尾空白后须为 1–40 个 Unicode 字符，拒绝控制字符及非良构 Unicode。

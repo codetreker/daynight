@@ -26,3 +26,12 @@
   .bot-conversation-heading { align-items: flex-start; }
   .bot-conversation-heading .button { flex-shrink: 0; }
 }
+
+.bot-conversation-body { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.bot-conversation-content { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.bot-details-toggle { display: inline-flex; align-items: center; gap: 10px; padding: 4px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.bot-details-toggle:focus-visible { outline: 2px solid var(--indigo); outline-offset: 4px; }
+.bot-details-toggle:disabled { cursor: default; }
+.bot-details-toggle span { color: var(--muted); }
+.bot-conversation[data-session-fullscreen="true"] { position: fixed; z-index: 40; top: var(--session-viewport-top, 0px); left: var(--session-viewport-left, 0px); width: var(--session-viewport-width, 100%); height: var(--session-viewport-height, 100dvh); padding: 16px; overflow: hidden; background: var(--bg, #fff); }
+.bot-conversation[data-session-fullscreen="true"] .bot-conversation-heading { margin-bottom: 12px; }
