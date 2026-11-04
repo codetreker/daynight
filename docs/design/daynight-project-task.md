@@ -79,7 +79,7 @@ src/
   commands/
     server/                # 共享配置、操作与信号生命周期
     project/               # 参数、帮助、project 操作及渲染
-    team/                  # Team 命令、上下文与渲染
+    team/                  # Team 命令、上下文、确认与渲染
     invitation/            # 邀请接收语法、操作与渲染
     task/                  # task、Step 读取与附件的参数、帮助、操作及渲染
     review/                # review 配置投影和既有行为
@@ -360,6 +360,8 @@ flowchart TD
 | `team show`、`team default show` | `GET /api/v1/me`，再按选定 ID 读取 `GET /api/v1/teams/{id}` |
 | `team create` | `GET /api/v1/me`，确认后 `POST /api/v1/teams`，提交原始名称与 `expectedUserId` |
 | `team rename`、`team delete` | `GET /api/v1/me` 和目标 Team，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}`，提交名称、精确 version 和 `expectedUserId` |
+| `team member list` | `GET /api/v1/me`，再读取所选 Team 的完整 `GET /api/v1/teams/{id}/members` 目录 |
+| `team member set-role`、`team member remove`、`team leave` | `GET /api/v1/me` 与目标成员快照，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}/members/{userId}`，提交真实成员版本与 `expectedUserId` |
 | `team projects` | `GET /api/v1/me`，再读取全部 `GET /api/v1/projects?teamId=...` 页 |
 | `invitation inspect`、`invitation accept` | 读取当前主体，按同服务链接路径向 Project 或 Team invitation 的 inspect/accept 发送 POST body；accept 携带 `expectedUserId` |
 | `task create [--required-platform <platform>] [--assigned-to <user-uuid>]` | 省略负责人先 `GET /api/v1/me`，再 `POST /api/v1/projects/{projectId}/tasks`，携带 assignedTo 和可选 requiredPlatform |
@@ -404,6 +406,13 @@ Team 生命周期写入复用当前用户和目标解析，确认阶段不持配
 typed mutation API 绑定 `/me` 主体并校验响应主体、资源与删除回执；已确认成功直接
 消费回执，不追加读取判断提交。拒绝、取消和未知提交保留各自结果；网络中断、取消
 等待、无效成功响应或未知提交不能证明回滚，也不能自动重发。后续读取只描述当前事实。
+
+成员目录解析验证每项 Team、用户身份、角色、精确关系版本、时间及 nullable 资料，完整
+验证后才输出。成员变更使用该关系的版本而非 Team 元数据或 Project grant 版本；`leave`
+以当前用户为目标。typed mutation API 验证响应主体及目标，消费服务返回的成员关系或
+移除回执与 actor role。自行退出后 actor role 为 null，直接输出回执，避免权限已失效时的
+后续 GET 将成功误报为失败。确认、冲突、取消和未知提交遵循同一 Team 写入规则；配置
+默认值与独立 Project grant 均不因成员变化而改写。
 
 邀请接收入口从隐藏提示或 `--stdin` 取得链接；后者读取至 EOF，最多 4096 字节，
 允许末尾一个 LF 或 CRLF。入口验证服务 origin、路径与秘密后

@@ -28,6 +28,7 @@ Do not treat this skill's workflow names as CLI commands or infer commands from 
 | Read Team context and projects | `team list`, `team show`, `team projects`, `team default show` | [Project management](project-management.md#team-context) |
 | Transfer a Project | `project transfer` | [Project management](project-management.md#team-context), [write safety](write-safety.md#project-transfers) |
 | Manage ordinary Teams | `team create`, `team rename`, `team delete` | [Project management](project-management.md#team-context), [write safety](write-safety.md#team-writes) |
+| Read and manage Team members | `team member list`, `team member set-role`, `team member remove`, `team leave` | [Project management](project-management.md#team-context), [write safety](write-safety.md#team-writes) |
 | Preview or accept a Project or Team invitation | `invitation inspect`, `invitation accept` | [Write safety](write-safety.md#invitation-acceptance) |
 | Query tasks | `task list`, `task ready`, `task show` | [Task management](task-management.md#task-queries) |
 | Read or maintain Task Steps | `task step list/show/add/update/set-status/move/delete` | [Task Steps](task-management.md#task-steps) |
