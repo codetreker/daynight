@@ -3,7 +3,7 @@ import { createOperation, type Operation } from "../../../api/operation.js";
 import { parseServerError, ProtocolError } from "../../../api/parse.js";
 import { validateServerToken, validateTokenTransport } from "../../../config/server-token.js";
 import { isNonemptyText } from "../../../platform/text.js";
-import { parseControllerGrantResponse, type ControllerGrantResponse } from "../../../session/controller-protocol.js";
+import { parseControllerGrantResponse, parseRegistrationResponse, type ControllerGrantResponse } from "../../../session/controller-protocol.js";
 import { parseSessionSnapshot, SESSION_PROTOCOL, sessionFence, type SessionSnapshot } from "../../../session/protocol.js";
 import { controllerPayloadHash } from "../../controller/launch-ticket.js";
 import { parseBot, parseBotOwner, parseBotRole, type BotDefinition, type BotOwner, type BotRecord } from "./types.js";
@@ -91,7 +91,8 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
   const read = async (record: BotRecord, operation: Operation): Promise<SessionSnapshot> => {
     const bot = active(record), intent = intentOf(record), sessionId = intent.sessionId ?? bot.sessionId;
     if (sessionId === null) throw new Error("Bot Session has not been registered.");
-    return checkedSnapshot(await request(`/api/v1/test-sessions/${sessionId}`, operation), record, sessionId);
+    const response = parseRegistrationResponse(await request(`/api/v1/test-sessions/${sessionId}`, operation));
+    return checkedSnapshot(response.session, record, sessionId);
   };
   return {
     register: (record: BotRecord, signal: AbortSignal): Promise<{ bot: BotDefinition; snapshot: SessionSnapshot }> => run(signal, async operation => {

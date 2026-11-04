@@ -53,11 +53,46 @@ describe("Bot lifecycle HTTP client", () => {
     await expect(fixture.api.register(fixture.record, signal())).rejects.toThrow();
   });
 
+  it("reads the service Session envelope before checking the original execution", async () => {
+    const fixture = await listen((request, response) => {
+      expect(request.url).toBe(`/api/v1/test-sessions/${id(4)}`);
+      response.end(JSON.stringify({ session: snapshot() }));
+    });
+    expect(await fixture.api.readSession(fixture.record, signal())).toEqual(snapshot());
+  });
+
+  it.each([null, [], {}, snapshot(), { session: null }, { session: snapshot(), unexpected: true }])("rejects malformed Session envelopes before requesting a grant (%#)", async envelope => {
+    let posts = 0;
+    const fixture = await listen((request, response) => {
+      if (request.method === "POST") posts++;
+      response.end(JSON.stringify(envelope));
+    });
+    await expect(fixture.api.grant(fixture.record, signal())).rejects.toThrow();
+    expect(posts).toBe(0);
+  });
+
+  it.each(["owner", "execution", "generation", "session", "controller", "native"])("rejects a Session envelope with conflicting %s before requesting a grant", async mismatch => {
+    const session = { ...snapshot() };
+    if (mismatch === "owner") session.identity = { ownerUserId: id(90), controllerId: id(7), controllerInstanceId: id(8), agentControlMode: "web", provider: "codex", nativeSessionId: id(11) };
+    if (mismatch === "execution") session.testExecutionId = id(90);
+    if (mismatch === "generation") session.executionGeneration = "2";
+    if (mismatch === "session") session.sessionId = id(90);
+    if (mismatch === "controller") session.identity = { ...session.identity, controllerId: id(90) };
+    let posts = 0;
+    const fixture = await listen((request, response) => {
+      if (request.method === "POST") posts++;
+      response.end(JSON.stringify({ session }));
+    });
+    if (mismatch === "native") fixture.record.intent!.nativeSessionId = id(90);
+    await expect(fixture.api.grant(fixture.record, signal())).rejects.toThrow();
+    expect(posts).toBe(0);
+  });
+
   it("uses current Bot version and observed native identity for a reconnect grant", async () => {
     const requests: { method: string; url: string; body: unknown }[] = [];
     const fixture = await listen((request, response, body) => {
       requests.push({ method: request.method!, url: request.url!, body });
-      response.end(JSON.stringify(request.method === "GET" ? snapshot() : credential()));
+      response.end(JSON.stringify(request.method === "GET" ? { session: snapshot() } : credential()));
     });
     expect(await fixture.api.grant(fixture.record, signal())).toEqual(credential());
     expect(requests.map(request => request.method)).toEqual(["GET", "POST"]);
@@ -70,14 +105,14 @@ describe("Bot lifecycle HTTP client", () => {
     if (mismatch === "expired") grant.expiresAt = "2000-01-01T00:00:00Z";
     if (mismatch === "execution") grant.testExecutionId = id(90);
     if (mismatch === "controller") grant.controllerId = id(90);
-    const fixture = await listen((request, response) => response.end(JSON.stringify(request.method === "GET" ? snapshot() : grant)));
+    const fixture = await listen((request, response) => response.end(JSON.stringify(request.method === "GET" ? { session: snapshot() } : grant)));
     await expect(fixture.api.grant(fixture.record, signal())).rejects.toThrow();
   });
 
   it("reports ready only with the current synchronized Session fence and exact native identity", async () => {
     let payload: unknown;
     const fixture = await listen((request, response, body) => {
-      payload = body; response.end(JSON.stringify(request.method === "GET" ? snapshot() : { ...definition(), version: "9007199254740994", startupResult: { state: "ready", code: null } }));
+      payload = body; response.end(JSON.stringify(request.method === "GET" ? { session: snapshot() } : { ...definition(), version: "9007199254740994", startupResult: { state: "ready", code: null } }));
     });
     const result = await fixture.api.report(fixture.record, { state: "ready", nativeSessionId: id(11) }, signal());
     expect(payload).toEqual({ botVersion: "9007199254740993", fence: { sessionId: id(4), testExecutionId: id(5), executionGeneration: "1", connectionEpoch: "2" }, controllerId: id(7), controllerInstanceId: id(8), nativeSessionId: id(11), result: { state: "ready", code: null } });
@@ -88,7 +123,7 @@ describe("Bot lifecycle HTTP client", () => {
     let posts = 0;
     const session = { ...snapshot() };
     if (mismatch === "unsynchronized") { session.synchronized = false; session.operations = { canSend: false, canCancel: false, canRespond: false }; }
-    const fixture = await listen((request, response) => { if (request.method === "POST") posts++; response.end(JSON.stringify(session)); });
+    const fixture = await listen((request, response) => { if (request.method === "POST") posts++; response.end(JSON.stringify({ session })); });
     await expect(fixture.api.report(fixture.record, { state: "ready", nativeSessionId: mismatch === "native" ? id(99) : id(11) }, signal())).rejects.toThrow();
     expect(posts).toBe(0);
   });
@@ -116,7 +151,7 @@ describe("Bot lifecycle HTTP client", () => {
       if (mismatch === "principal") response.setHeader("Daynight-User-ID", id(99));
       if (mismatch === "redirect") { response.statusCode = 302; response.setHeader("Location", "/other"); }
       if (mismatch === "status") response.statusCode = 503;
-      response.end(mismatch === "oversize" ? JSON.stringify("x".repeat(2 * 1024 * 1024)) : mismatch === "json" ? "broken" : mismatch === "utf8" ? Buffer.from([0xff]) : JSON.stringify(snapshot()));
+      response.end(mismatch === "oversize" ? JSON.stringify("x".repeat(2 * 1024 * 1024)) : mismatch === "json" ? "broken" : mismatch === "utf8" ? Buffer.from([0xff]) : JSON.stringify({ session: snapshot() }));
     });
     await expect(fixture.api.readSession(fixture.record, signal())).rejects.toThrow();
     expect(requests).toBe(1);
@@ -124,7 +159,7 @@ describe("Bot lifecycle HTTP client", () => {
 
   it("rejects canceled calls and mismatched local ownership before HTTP", async () => {
     let requests = 0;
-    const fixture = await listen((_request, response) => { requests++; response.end(JSON.stringify(snapshot())); });
+    const fixture = await listen((_request, response) => { requests++; response.end(JSON.stringify({ session: snapshot() })); });
     await expect(fixture.api.readSession(fixture.record, AbortSignal.abort())).rejects.toThrow();
     fixture.record.owner = { ...fixture.record.owner, ownerUserId: id(99) };
     await expect(fixture.api.register(fixture.record, signal())).rejects.toThrow();
