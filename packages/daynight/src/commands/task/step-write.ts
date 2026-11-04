@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { AddTaskStepInput, MoveTaskStepInput, StepsResource } from "../../api/types.js";
+import type { AddTaskStepInput, UpdateTaskStepInput, SetTaskStepStatusInput, MoveTaskStepInput, StepsResource } from "../../api/types.js";
 import { OperationError } from "../../api/operation.js";
 import type { ServerSession } from "../server/runtime.js";
 import { StepWriteFailure, stepApiFailures } from "./step-write-errors.js";
-import type { StepAddAttempt, StepDeleteAttempt, StepMoveAttempt, StepWriteAttempt, StepCurrentObservation } from "./step-write-errors.js";
+import type { StepAddAttempt, StepDeleteAttempt, StepMoveAttempt, StepUpdateAttempt, StepStatusAttempt, StepWriteAttempt, StepCurrentObservation } from "./step-write-errors.js";
 
 export type StepAddDraft = Omit<AddTaskStepInput, "version"> & { readonly version?: bigint };
 export type StepAddResult = { readonly attempt: StepAddAttempt; readonly resource: StepsResource };
@@ -32,6 +32,26 @@ export const deleteStep = async (session: ServerSession, projectId: string, task
   const payload = Object.freeze({ version });
   const attempt = Object.freeze({ operation: "delete" as const, projectId, taskId, stepId, requestId, payload });
   return performStepWrite(session, attempt, () => session.api.deleteTaskStep(projectId, taskId, stepId, payload, { requestId, ...(previous === undefined ? {} : { previous }) }));
+};
+
+export type StepUpdateDraft = Omit<UpdateTaskStepInput, "version"> & { readonly version?: bigint };
+export type StepStatusDraft = Omit<SetTaskStepStatusInput, "version"> & { readonly version?: bigint };
+
+export const updateStep = async (session: ServerSession, projectId: string, taskId: string, stepId: string, draft: StepUpdateDraft) => {
+  const { previous, version, requestId } = await prepareStepWrite(session, projectId, taskId, draft.version);
+  const payload: UpdateTaskStepInput = Object.freeze({ version,
+    ...(draft.title === undefined ? {} : { title: draft.title }),
+    ...(draft.description === undefined ? {} : { description: draft.description }),
+  });
+  const attempt: StepUpdateAttempt = Object.freeze({ operation: "update", projectId, taskId, stepId, requestId, payload });
+  return performStepWrite(session, attempt, () => session.api.updateTaskStep(projectId, taskId, stepId, payload, { requestId, ...(previous === undefined ? {} : { previous }) }));
+};
+
+export const setStepStatus = async (session: ServerSession, projectId: string, taskId: string, stepId: string, draft: StepStatusDraft) => {
+  const { previous, version, requestId } = await prepareStepWrite(session, projectId, taskId, draft.version);
+  const payload: SetTaskStepStatusInput = Object.freeze({ version, status: draft.status });
+  const attempt: StepStatusAttempt = Object.freeze({ operation: "set-status", projectId, taskId, stepId, requestId, payload });
+  return performStepWrite(session, attempt, () => session.api.setTaskStepStatus(projectId, taskId, stepId, payload, { requestId, ...(previous === undefined ? {} : { previous }) }));
 };
 
 export type StepMoveDraft = Omit<MoveTaskStepInput, "version"> & { readonly version?: bigint };

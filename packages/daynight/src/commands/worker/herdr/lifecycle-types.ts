@@ -1,0 +1,56 @@
+import type { SessionV2BoundaryGap, SessionV2Message, SessionV2Owner, SessionV2Run, TerminalBinding } from "../../../session/v2/types.js";
+
+/** Birth identity survives exec; audit identity additionally fences the execution image. */
+export type MacProcessIdentity = {
+  role: "daemon" | "shell" | "agent";
+  pid: number;
+  birthToken: string;
+  bootId: string;
+  auditToken: number[];
+  ppid: number;
+  pgid: number;
+  sid: number;
+};
+export type HerdrRunPhase = "prepared" | "launch_requested" | "active" | "stop_intent" | "close_requested" | "stopped_confirmed" | "stop_unknown";
+export type HerdrLocalRun = {
+  run: SessionV2Run;
+  phase: HerdrRunPhase;
+  instanceDirectory: string;
+  daemon: MacProcessIdentity | null;
+  processes: MacProcessIdentity[];
+  stopOperationId: string | null;
+  stopReason: "shutdown" | "terminal" | null;
+  error: string | null;
+  admission: string | null;
+};
+export type HerdrLocalSegment = {
+  segmentId: string;
+  segmentOrdinal: string;
+  executionGeneration: string;
+  binding: TerminalBinding;
+  startedAt: string;
+  endedAt: string | null;
+  durationMs: string | null;
+  gap: SessionV2BoundaryGap | null;
+};
+export type HerdrPreparation = { instanceId: string; instanceDirectory: string; phase: "prepared" | "launch_requested"; daemon: MacProcessIdentity | null };
+export type HerdrLedgerRequest = { message: Extract<SessionV2Message, { type: "generation_ledger" }>; connectionEpoch: string };
+export type HerdrLifecycleRecord = {
+  owner: SessionV2Owner;
+  claimId: string;
+  cwd: string;
+  sessionId: string;
+  registrationId: string;
+  connectionEpoch: string | null;
+  registrationRequest: Extract<SessionV2Message, { type: "registration" }> | null;
+  ledgerRequest: HerdrLedgerRequest | null;
+  publishedLedgerHash: string | null;
+  controlEpoch: string;
+  initialAssignment: "pending" | "dispatching" | "transport_completed" | "unknown" | "unconfirmed";
+  initialPrompt: string | null;
+  automationBlocked: boolean;
+  preparation: HerdrPreparation | null;
+  runs: HerdrLocalRun[];
+  segments: HerdrLocalSegment[];
+  version: number;
+};

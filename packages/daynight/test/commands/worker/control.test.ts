@@ -36,6 +36,8 @@ const fixture = (local = true) => {
   const order: string[] = [];
   const events: WorkerEvent[] = [];
   const coordinator = {
+    assertCanAcquire: vi.fn(),
+    registerClaim: vi.fn((granted: Task) => { const grantedClaim = readWorkerClaim(granted.properties)!; expect(store.getTask({ projectId: granted.projectId, taskId: granted.id, claimId: grantedClaim.claimId })?.status).toBe("pending"); }),
     advanceRetry: vi.fn(async () => { order.push("retry"); store.setSessionId(identity, uuid(40)); }),
     cleanupSource: vi.fn(async (_identity: typeof identity, settings: { deleteWorktree?: boolean }) => { expect(settings.deleteWorktree).toBe(false); order.push("stop-close"); return resourceOwner; }),
     completeSource: vi.fn(async (actualOwner: ResourceOwner) => { expect(actualOwner).toBe(resourceOwner); order.push("delete-done"); const worker = readWorkerClaim(observed.properties); expect(worker?.claimId !== claimId || worker.state !== "active").toBe(true); store.completeTask(identity); }),
@@ -66,6 +68,15 @@ describe("synchronous worker source management", () => {
     expect(result.task).toMatchObject({ status: "done", claimId, agent: "copilot", sessionId: null });
     const input = vi.mocked(f.remote.release).mock.calls[0]![2];
     expect(input).toMatchObject({ claimId, version: 8n, stoppedConfirmed: true });
+  });
+
+  it("does not claim worktree deletion when release retains archive responsibility", async () => {
+    const f = fixture();
+    f.coordinator.completeSource.mockImplementationOnce(async () => {});
+    const result = await f.submit(release);
+    expect(result.task?.status).toBe("active");
+    expect(result.message).not.toMatch(/resources were removed|worktree.*delet/i);
+    expect(result.message).toMatch(/retained|cleanup/i);
   });
 
   it.each([release])("checks source permission before any $kind resource changes", async (request) => {
@@ -170,6 +181,15 @@ describe("synchronous worker source management", () => {
 });
 
 describe("worker explicit resume grants", () => {
+  it("rejects retained archive responsibility before submitting a fresh resume claim", async () => {
+    const f = fixture(false); f.observe(remoteTask({ ...claim, state: "released" }));
+    const failure = new Error("Original worktree remains reserved until archive finalization");
+    f.coordinator.assertCanAcquire.mockImplementation(() => { throw failure; });
+    await expect(f.submit({ kind: "resume", taskId, claimId, version: 8n })).rejects.toBe(failure);
+    expect(f.remote.resume).not.toHaveBeenCalled(); expect(f.store.listTasks()).toEqual([]);
+    expect(f.coordinator.assertCanAcquire).toHaveBeenCalledExactlyOnceWith({ projectId, taskId });
+  });
+
   it("uses fresh printed identities and current agent settings without inheriting old native history", async () => {
     const f = fixture(); f.store.setSessionId(f.identity, uuid(50)); f.store.completeTask(f.identity);
     f.observe(remoteTask({ ...claim, state: "released", nativeSessionId: uuid(50) }));
@@ -185,6 +205,8 @@ describe("worker explicit resume grants", () => {
     const result = await f.submit({ kind: "resume", taskId, claimId, version: 8n });
     expect(vi.mocked(f.remote.resume).mock.calls[0]![2]).not.toHaveProperty("agentControlMode");
     expect(result.task).toMatchObject({ projectId, taskId, status: "pending", agent: "codex", sessionId: null });
+    expect(f.coordinator.registerClaim).toHaveBeenCalledOnce();
+    expect(readWorkerClaim(f.coordinator.registerClaim.mock.calls[0]![0].properties)?.claimId).toBe(result.task?.claimId);
     expect(f.current()).toMatchObject({ status: "done", sessionId: uuid(50), agent: "copilot" });
     expect(f.store.listTasks()).toHaveLength(2); expect(f.coordinator.cleanupSource).not.toHaveBeenCalled();
   });
@@ -195,6 +217,7 @@ describe("worker explicit resume grants", () => {
     vi.mocked(f.remote.resume).mockImplementationOnce(async (...args) => { await original(...args); throw new Error("Resume response lost"); });
     const result = await f.submit({ kind: "resume", taskId, claimId, version: 8n });
     expect(result.task?.status).toBe("pending"); expect(f.remote.resume).toHaveBeenCalledOnce(); expect(f.remote.readTask).toHaveBeenCalledTimes(2);
+    expect(f.coordinator.registerClaim).toHaveBeenCalledOnce();
   });
 
   it("keeps unknown resume unregistered and refuses a grant for another principal", async () => {
@@ -203,6 +226,7 @@ describe("worker explicit resume grants", () => {
     vi.mocked(f.remote.resume).mockImplementationOnce(async (...args) => { const granted = await original(...args); const other = { ...granted, properties: { ...granted.properties, worker: { ...readWorkerClaim(granted.properties)!, userId: uuid(90) } } }; f.observe(other); return other; });
     await expect(f.submit({ kind: "resume", taskId, claimId, version: 8n })).rejects.toThrow("result is unknown");
     expect(f.store.listTasks()).toEqual([]); expect(f.remote.resume).toHaveBeenCalledOnce();
+    expect(f.coordinator.registerClaim).not.toHaveBeenCalled();
   });
 
   it("rejects stale versions and wrong released claims before issuing new grants", async () => {

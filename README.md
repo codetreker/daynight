@@ -40,7 +40,8 @@ or run your own service. The interface supports English and Simplified Chinese.
   agent permission, and view elapsed time and possible-stall warnings.
 - **Run ready tasks continuously.** Use `daynight worker run` to claim eligible
   tasks across configured repositories, preserve ongoing work through restarts
-  and clean resources when the original claim leaves the worker's inventory.
+  and stop ended executions while retaining resources until their cleanup
+  and archive requirements are satisfied.
 - **Observe your Workers.** Open My Workers alongside My projects to see the
   current account's recent Workers, online/offline state, resource and software
   observations, and authorized task snapshots. Detail keeps the last report time
@@ -201,34 +202,38 @@ keep existing paths when the root changes. Review's clone-root setting is
 independent. Projects must already exist, and their tasks need automatic
 execution permission before the worker can acquire them.
 
-The worker runs in the foreground with one execution slot by default. It uses
-state under `DN_CONFIG_DIR/worker/` (default `~/.daynight/worker/`). In Herdr mode, run `daynight worker attach` in another
-terminal to open its private Herdr session for human input. Each task workspace
-starts with its current task title, followed by its stable Project/task/claim/worktree
-identity. The next successful inventory updates changed titles without replacing
-the native conversation. Detaching the client leaves ongoing worker tasks running.
-Ctrl+C in `worker run` cancels and joins
-all running jobs, then directly stops agents and closes their workspaces without
-sending a cleanup prompt or waiting for a cleanup turn. Claims, worktrees, native
-history and unfinished local rows remain, including for ended claims; restart
-reconciles them normally. Stop failures remain visible and retain the private
-Herdr instance when stopping is uncertain. External temporary resources may
-remain. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
-covers defaults, repository overrides, recovery, attachment and manual management.
+The worker runs in the foreground with one execution slot by default and stores
+state under `DN_CONFIG_DIR/worker/` (default `~/.daynight/worker/`). On macOS,
+each Herdr run owns a separate daemon. A durable lifecycle journal binds the
+original claim, worktree, Session, terminal and process birth identities before
+automatic input is allowed. Linux and Windows retain the shared private Herdr
+path. Each workspace shows its task title and stable ownership suffix.
 
-Herdr fresh and resumed Copilot/Codex processes use fixed full access and task-folder
-trust settings without native permission prompts. Business input remains
-available through `daynight worker attach`. The local task record retains only
-Project/task/claim, pending/active/done, frozen mode, agent type and native
-session ID. In Herdr mode, a NULL session ID produces an informational message and a fresh
-conversation in the same worktree; a known ID uses native resume. Herdr execution
-recovery counts are process-local, and restarted Herdr agents use current
-applicable settings. Both modes persist terminal cleanup responsibility, its
-original deadline, notification state and retry schedule across restarts. Web
-retains its original execution evidence and recovery pause across restarts.
-An exhausted or paused Web execution keeps its
-claim and slot, reports waiting, and requires explicit retry with the original
-native identity and complete stop proof.
+Use `daynight worker attach` in another terminal for human input, including for
+paused tasks. On macOS it selects a recorded runtime and verifies the original
+daemon before connecting. Detaching leaves execution running. Ctrl+C cancels
+and joins Worker jobs, then stops the original execution while preserving
+claims, worktrees, native history and unfinished local rows. It sends no cleanup
+prompt and does not wait for a cleanup turn. Unconfirmed stopping retains
+responsibility and blocks replacement; external temporary resources may remain.
+
+Herdr fresh and resumed Copilot/Codex processes use fixed full access and
+task-folder trust settings; business delivery remains bounded by task
+authorization. Linux and Windows retain process-local Herdr business recovery:
+a NULL native ID permits a fresh conversation, while a known ID selects resume.
+On macOS, durable launch, input and stop evidence protect the original runtime;
+a missing native ID after a possible launch cannot authorize another conversation.
+Session registration advertises no preview, control or archive capability, and
+stopped worktrees remain until archive finalization is available.
+
+Terminal cleanup preserves its original resource identity, deadline and retry
+schedule across restarts; current resource observations determine completion.
+Web retains its original execution evidence and recovery pause across restarts.
+An exhausted or paused Web execution keeps its claim and slot, reports waiting,
+and requires explicit retry with the original native identity and complete stop
+proof. See the [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+and [Herdr lifecycle design](docs/design/herdr-worker-lifecycle.md) for platform,
+recovery and retention boundaries.
 
 Stop the runner before `worker retry/release/resume`; the commands use
 its same instance lock. The [worker guide](packages/daynight/README.md#worker-manual-management)

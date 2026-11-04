@@ -25,6 +25,8 @@ import type { WorkerControlRequest } from "./control.js";
 import { createWorkerDiagnostics, workerSqliteMigrationEvent } from "./diagnostics.js";
 import { isWorkerCancellation } from "./execution.js";
 import { createWorkerHerdr } from "./herdr.js";
+import type { WorkerHerdrAdapter } from "./herdr.js";
+import { createDurableWorkerHerdr } from "./herdr/durable.js";
 import { ensureWorkerIdentity } from "./identity.js";
 import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { resolveWorkerPaths } from "./paths.js";
@@ -34,6 +36,12 @@ import { createWorkerReporter } from "./reporter.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
 import { createWorkerGitManager } from "./worktrees.js";
+
+const hasHerdrJournal = async (paths: WorkerPaths, platform: TaskPlatform): Promise<boolean> => {
+  if (platform !== "macos") return false;
+  try { await lstat(path.join(paths.workerDirectory, "herdr-executions.sqlite")); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+};
 
 export const currentWorkerPlatform = (platform: NodeJS.Platform = process.platform): TaskPlatform => {
   switch (platform) {
@@ -158,7 +166,7 @@ export const runWorker = async (options: {
   let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
-  let herdr: ReturnType<typeof createWorkerHerdr> | undefined;
+  let herdr: WorkerHerdrAdapter | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   const failures: unknown[] = [];
   let renewal: Promise<void> | undefined;
@@ -192,8 +200,8 @@ export const runWorker = async (options: {
     reporter = createWorkerReporter({ signal, collect: operation => telemetry.collect(operation), send: (report, operation) => remote.report(workerId, report, operation), emit: diagnostics.emit });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
     const agentEnvironment = await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal);
-    const lazyHerdr = new Proxy({} as ReturnType<typeof createWorkerHerdr>, { get: (_target, property) => {
-      herdr ??= createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(herdr, property);
+    const lazyHerdr = new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => {
+      herdr ??= platform === "macos" ? createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask }) : createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(herdr, property);
     } });
     web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit);
     renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
@@ -217,7 +225,7 @@ export const runWorker = async (options: {
     }
     coordinator = createWorkerCoordinator({
       store, git, herdr: lazyHerdr, ...web, remote, serverOrigin: serverUrl, workerId, platform,
-      machine, repositories,
+      machine, repositories, hasHerdrJournal: await hasHerdrJournal(paths, platform),
       onInventory: reporter.publishInventory, onClaim: reporter.recordClaim,
       maxConcurrent: configuration.maxConcurrent, globalConfiguration: configuration,
       buildPrompt: await createWorkerPromptBuilder(options.packageDirectory),
@@ -254,12 +262,13 @@ export const runWorker = async (options: {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });
         if (!await coordinator.shutdown()) throw new Error("Some task resources could not be confirmed stopped and closed; the private Herdr instance was retained.");
         const operation = createOperation({ limits: { totalMs: 30_000 } });
-        try { await herdr?.stopInstance(operation); }
+        try { if (herdr !== undefined && herdr.lifecycle === undefined) await herdr.stopInstance(operation); }
         finally { operation.dispose(); }
       } catch (error) { failures.push(error); }
     }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webStore.close(); } catch (error) { failures.push(error); }
+    try { herdr?.lifecycle?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.flush(); } catch (error) { failures.push(error); }
     try { await lock?.release(); } catch (error) { failures.push(error); }
@@ -281,6 +290,7 @@ export const runWorkerControl = async (options: {
   let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
+  let actualHerdr: WorkerHerdrAdapter | undefined;
   const failures: unknown[] = [];
   try {
     signal.throwIfAborted();
@@ -303,12 +313,12 @@ export const runWorkerControl = async (options: {
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
     const agentEnvironment = options.request.kind === "retry" ? await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal) : {};
-    let actualHerdr: ReturnType<typeof createWorkerHerdr> | undefined;
-    const herdr = new Proxy({} as ReturnType<typeof createWorkerHerdr>, { get: (_target, property) => { actualHerdr ??= createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(actualHerdr, property); } });
+    const herdr = new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => { actualHerdr ??= platform === "macos" ? createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask }) : createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(actualHerdr, property); } });
     web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit);
     const machine = machineDescription(platform);
     const coordinator = createWorkerCoordinator({
       store, git, herdr, ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, repositories,
+      hasHerdrJournal: await hasHerdrJournal(paths, platform),
       maxConcurrent: configuration.maxConcurrent, globalConfiguration: configuration,
       buildPrompt: await createWorkerPromptBuilder(options.packageDirectory), emit: diagnostics.emit, signal,
     });
@@ -322,6 +332,7 @@ export const runWorkerControl = async (options: {
   finally {
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webStore.close(); } catch (error) { failures.push(error); }
+    try { actualHerdr?.lifecycle?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.flush(); } catch (error) { failures.push(error); }
     try { await lock?.release(); } catch (error) { failures.push(error); }

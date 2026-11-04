@@ -1,6 +1,7 @@
 import { ApiError } from "../../api/client.js";
-import type { AddTaskStepInput, DeleteTaskStepInput, MoveTaskStepInput } from "../../api/types.js";
+import type { AddTaskStepInput, UpdateTaskStepInput, SetTaskStepStatusInput, MoveTaskStepInput, DeleteTaskStepInput } from "../../api/types.js";
 
+export type StepWriteOperation = "add" | "update" | "set-status" | "move" | "delete";
 type StepAttemptIdentity = {
   readonly projectId: string;
   readonly taskId: string;
@@ -8,9 +9,11 @@ type StepAttemptIdentity = {
   readonly requestId: string;
 };
 export type StepAddAttempt = StepAttemptIdentity & { readonly operation: "add"; readonly payload: AddTaskStepInput };
-export type StepDeleteAttempt = StepAttemptIdentity & { readonly operation: "delete"; readonly payload: DeleteTaskStepInput };
+export type StepUpdateAttempt = StepAttemptIdentity & { readonly operation: "update"; readonly payload: UpdateTaskStepInput };
+export type StepStatusAttempt = StepAttemptIdentity & { readonly operation: "set-status"; readonly payload: SetTaskStepStatusInput };
 export type StepMoveAttempt = StepAttemptIdentity & { readonly operation: "move"; readonly payload: MoveTaskStepInput };
-export type StepWriteAttempt = StepAddAttempt | StepDeleteAttempt | StepMoveAttempt;
+export type StepDeleteAttempt = StepAttemptIdentity & { readonly operation: "delete"; readonly payload: DeleteTaskStepInput };
+export type StepWriteAttempt = StepAddAttempt | StepUpdateAttempt | StepStatusAttempt | StepMoveAttempt | StepDeleteAttempt;
 export type StepCurrentObservation = { readonly version: bigint; readonly found: boolean };
 export type StepWriteOutcome = "failed" | "refused" | "unknown" | "confirmed";
 
