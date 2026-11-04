@@ -13,15 +13,16 @@ afterEach(() => { clients.splice(0).forEach(client => client.close()); vi.useRea
 function fixture() {
   const s: TaskSessionSnapshot = { ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), executionGeneration: '1', connectionEpoch: '1', lastEventSeq: '0' };
   let receive!: (message: BrowserMessage) => void;
+  let disconnect!: (error?: unknown) => void;
   let current: CurrentSessionResponse = { status: 'registered', session: s };
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' };
   const api: SessionApi = {
     current: vi.fn(async () => current), timeline: vi.fn(async () => page), archive: vi.fn(), archiveContent: vi.fn(), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/unused',
-    channel: vi.fn((_id, _after, onMessage) => { receive = onMessage; return { close: vi.fn() }; }),
+    channel: vi.fn((_id, _after, onMessage, onClose) => { receive = onMessage; disconnect = onClose; return { close: vi.fn() }; }),
   };
   const client = new TaskSessionClient({ api, userId, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn() });
   clients.push(client);
-  return { s, page, api, client, current: (value: CurrentSessionResponse) => { current = value; }, receive: (snapshot: TaskSessionSnapshot) => receive({ protocol: s.protocol, type: 'snapshot', userId, snapshot, cursor: 'zero' }), event: (snapshot: TaskSessionSnapshot, eventSeq: string) => receive({ protocol: s.protocol, type: 'event', cursor: eventSeq, event: { protocol: s.protocol, sessionId: s.sessionId, claimId: s.claimId, executionGeneration: snapshot.executionGeneration, connectionEpoch: snapshot.connectionEpoch, historyEpoch: snapshot.historyEpoch, eventSeq, kind: 'snapshot', payload: snapshot } }) };
+  return { s, page, api, client, disconnect: (error?: unknown) => disconnect(error), current: (value: CurrentSessionResponse) => { current = value; }, receive: (snapshot: TaskSessionSnapshot) => receive({ protocol: s.protocol, type: 'snapshot', userId, snapshot, cursor: 'zero' }), event: (snapshot: TaskSessionSnapshot, eventSeq: string) => receive({ protocol: s.protocol, type: 'event', cursor: eventSeq, event: { protocol: s.protocol, sessionId: s.sessionId, claimId: s.claimId, executionGeneration: snapshot.executionGeneration, connectionEpoch: snapshot.connectionEpoch, historyEpoch: snapshot.historyEpoch, eventSeq, kind: 'snapshot', payload: snapshot } }) };
 }
 function report(s: TaskSessionSnapshot, revision = '1'): SessionStartupReport {
   return { schemaVersion: 1, source: 'worker', sessionId: s.sessionId, claimId: s.claimId, executionGeneration: s.executionGeneration, controllerInstanceId: s.identity.controllerInstanceId, revision, observedAt: new Date().toISOString(), startup: { state: 'unknown', reasonCode: 'native_timeout' }, recovery: { state: 'blocked', reasonCode: 'native_identity_missing' } };
@@ -238,4 +239,58 @@ it('withdraws an old public report when an explicit current refresh fails', asyn
   vi.mocked(f.api.current).mockRejectedValueOnce(new ApiError('network'));
   await f.client.start();
   expect(f.client.snapshot()).toMatchObject({ status: 'error', startupReport: null, errorCode: 'network' });
+});
+
+it('clears consecutive current-read failures after success without requiring another channel event', async () => {
+  vi.useFakeTimers();
+  const f = fixture(); await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
+  expect(f.client.snapshot().historyReady).toBe(true);
+  f.client.setDraft('preserve the idle draft');
+  vi.mocked(f.api.current).mockRejectedValueOnce(new ApiError('network')).mockRejectedValueOnce(new ApiError('server', 500));
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(f.client.snapshot()).toMatchObject({ connected: false, status: 'error', errorCode: 'network' });
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(f.client.snapshot().connected).toBe(false);
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(f.client.snapshot()).toMatchObject({ connected: true, status: 'ready', historyReady: true, error: null, errorCode: null, draft: { text: 'preserve the idle draft' } });
+  expect(f.api.channel).toHaveBeenCalledOnce(); expect(f.api.timeline).toHaveBeenCalledOnce(); expect(f.api.command).not.toHaveBeenCalled();
+});
+
+it('retains an independent history failure through consecutive current-read failures and recovery', async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  vi.mocked(f.api.timeline).mockResolvedValue({ ...f.page, hasMoreBefore: true, beforeCursor: null });
+  await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
+  const historyError = f.client.snapshot().error;
+  expect(historyError).toContain('empty pagination cursor');
+  vi.mocked(f.api.current).mockRejectedValueOnce(new ApiError('network')).mockRejectedValueOnce(new ApiError('server', 500));
+  await vi.advanceTimersByTimeAsync(9000);
+  expect(f.client.snapshot()).toMatchObject({ connected: false, status: 'error', historyReady: false, error: historyError });
+  expect(f.api.timeline).toHaveBeenCalledOnce(); expect(f.api.command).not.toHaveBeenCalled();
+});
+
+
+it('keeps current-read error ownership when an offline fallback finishes before current recovers', async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  let finish!: (page: TimelinePage) => void;
+  vi.mocked(f.api.timeline)
+    .mockRejectedValueOnce(new ApiError('network'))
+    .mockRejectedValueOnce(new ApiError('network'))
+    .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await f.client.start(); f.disconnect(); await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(f.api.channel).toHaveBeenCalledTimes(2);
+  f.disconnect(); await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(8000);
+  expect(f.api.channel).toHaveBeenCalledTimes(3);
+  f.disconnect();
+  vi.mocked(f.api.current).mockRejectedValueOnce(new ApiError('network'));
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(f.client.snapshot()).toMatchObject({ errorCode: 'network', connected: false });
+  finish(f.page); await vi.advanceTimersByTimeAsync(0);
+  expect(f.client.snapshot().errorCode).toBe('network');
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(f.client.snapshot()).toMatchObject({ error: null, errorCode: null, status: 'ready', connected: false });
+  expect(f.api.channel).toHaveBeenCalledTimes(3); expect(f.api.timeline).toHaveBeenCalledTimes(3); expect(f.api.command).not.toHaveBeenCalled();
 });
