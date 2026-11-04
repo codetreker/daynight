@@ -13,6 +13,23 @@ If there is no match or the match is ambiguous, confirm the repository, service,
 Do not guess IDs or create projects merely to make a query succeed.
 See the relevant `--help` for details.
 
+## Team context
+
+Use `team list` to read joined Teams, `team show` to inspect one, and `team
+projects` to list its projects. `--team <uuid|personal>` selects an explicit
+target. Without it, the CLI reads the default for the current normalized service
+origin and account, or uses the account's Personal Team when no entry exists.
+`team default show` validates and displays the resolved target. Invalid or
+inaccessible defaults fail explicitly; listing Teams and using an explicit target
+do not depend on the old default. These commands only read. Team defaults do not
+change project discovery or explicit project and task identity.
+
+With authorization, `team create` creates an ordinary Team, `team rename` changes
+its name, and `team delete` removes an empty ordinary Team. Rename and delete use
+the explicit or default Team. Their confirmation, version and uncertain-result
+rules are in [write safety](write-safety.md#team-writes); use the commands' help
+for exact syntax.
+
 ## Register a project
 
 With authorization, use `project create` to register the repository as a project.

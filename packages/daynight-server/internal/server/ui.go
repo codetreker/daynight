@@ -14,9 +14,9 @@ func uiRoutes(mux *http.ServeMux, logger *slog.Logger) {
 	page := uiHandler(logger, ui.Page)
 	asset := uiHandler(logger, ui.Asset)
 	for _, pattern := range []string{
-		"/{$}", "/login", "/projects", "/projects/{projectId}", "/projects/{projectId}/members", "/projects/{projectId}/settings",
+		"/{$}", "/login", "/projects", "/teams/{teamId}", "/shared-projects", "/projects/{projectId}", "/projects/{projectId}/members", "/projects/{projectId}/settings",
 		"/projects/{projectId}/tasks/{taskId}", "/test-sessions", "/test-sessions/{sessionId}", "/workers", "/workers/{workerId}",
-		"/projects/{projectId}/tasks/{taskId}/attachments/{path...}", "/account", "/invitations", "/device", "/setup",
+		"/projects/{projectId}/tasks/{taskId}/attachments/{path...}", "/account", "/invitations", "/team-invitations", "/device", "/setup",
 	} {
 		mux.HandleFunc("GET "+pattern, page)
 		mux.HandleFunc(pattern, methodNotAllowed(logger, "GET, HEAD"))

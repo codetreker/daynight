@@ -19,8 +19,10 @@ type Projects struct {
 func NewProjects(database *store.Store) *Projects { return &Projects{store: database} }
 
 type CreateProject struct {
-	Name    string
-	RepoURL string
+	Name           string
+	RepoURL        string
+	TeamID         *string
+	ExpectedUserID string
 }
 
 type PageRequest struct {
@@ -40,24 +42,34 @@ type ProjectPage struct {
 }
 
 func (s *Projects) Create(ctx context.Context, principal core.Principal, input CreateProject) (core.Project, error) {
-	if err := requirePrincipal(principal); err != nil {
-		return core.Project{}, err
+	project, _, err := s.CreateWithAccess(ctx, principal, input)
+	return project, err
+}
+
+func (s *Projects) CreateWithAccess(ctx context.Context, principal core.Principal, input CreateProject) (core.Project, core.ProjectAccess, error) {
+	if err := requireTeamActor(principal, input.ExpectedUserID); err != nil {
+		return core.Project{}, core.ProjectAccess{}, err
+	}
+	if input.TeamID != nil {
+		if _, err := canonicalTeamID(*input.TeamID); err != nil {
+			return core.Project{}, core.ProjectAccess{}, err
+		}
 	}
 	if strings.TrimSpace(input.Name) == "" || !utf8.ValidString(input.Name) || strings.ContainsRune(input.Name, 0) {
-		return core.Project{}, invalidInput("Project name must be nonempty UTF-8 text without NUL characters.")
+		return core.Project{}, core.ProjectAccess{}, invalidInput("Project name must be nonempty UTF-8 text without NUL characters.")
 	}
 	if err := validateRepoURL(input.RepoURL); err != nil {
-		return core.Project{}, err
+		return core.Project{}, core.ProjectAccess{}, err
 	}
 	id, err := uuid.NewRandom()
 	if err != nil {
-		return core.Project{}, fmt.Errorf("generate project ID: %w", err)
+		return core.Project{}, core.ProjectAccess{}, fmt.Errorf("generate project ID: %w", err)
 	}
-	project, err := s.store.CreatePrivateProject(ctx, principal, id.String(), input.Name, input.RepoURL)
+	project, access, err := s.store.CreateProjectInTeam(ctx, principal, id.String(), input.Name, input.RepoURL, input.TeamID)
 	if err != nil {
-		return core.Project{}, fmt.Errorf("create project: %w", err)
+		return core.Project{}, core.ProjectAccess{}, fmt.Errorf("create project: %w", err)
 	}
-	return project, nil
+	return project, access, nil
 }
 
 func (s *Projects) Get(ctx context.Context, principal core.Principal, id string) (core.Project, error) {

@@ -624,11 +624,17 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
                 raise AssertionError(f"{label}: {name}: expected unchanged {line!r}, received {actual!r}, terminal={output!r}")
             print(f"PASS {label}: {name}", flush=True)
         for name, line, candidates in [
-            ("empty root prefix", "daynight ", ["login", "logout", "review", "worker", "update", "completion", "project", "task"]),
-            ("empty short root prefix", "dn ", ["login", "logout", "review", "worker", "update", "completion", "project", "task"]),
+            ("empty root prefix", "daynight ", ["login", "logout", "review", "worker", "update", "completion", "project", "task", "team"]),
+            ("empty short root prefix", "dn ", ["login", "logout", "review", "worker", "update", "completion", "project", "task", "team"]),
             ("empty review prefix", "daynight review ", ["run", "list", "ls", "add-repo"]),
             ("empty project prefix", "daynight project ", ["create", "list", "show"]),
             ("empty project create prefix", "daynight project create ", ["--repo"]),
+            ("empty team prefix", "daynight team ", ["create", "rename", "delete", "list", "show", "projects", "default"]),
+            ("short command empty team prefix", "dn team ", ["create", "rename", "delete", "list", "show", "projects", "default"]),
+            ("empty team default prefix", "daynight team default ", ["show"]),
+            ("empty team delete options", "daynight team delete ", ["--team", "--if-version", "--confirm", "--json"]),
+            ("empty team show options", "daynight team show ", ["--team", "--json"]),
+            ("empty team projects options", "daynight team projects ", ["--team", "--json"]),
             ("empty task prefix", "daynight task ", ["create", "list", "ready", "show", "update", "set-status", "delete", "graph", "attachment"]),
             ("empty task Step prefix", "daynight task step ", ["list", "show", "add", "update", "set-status", "move", "delete"]),
             ("empty task Step move options", "daynight task step move task-id 00000000 ", ["--before", "--after", "--first", "--last", "--if-version", "--project", "--json"]),

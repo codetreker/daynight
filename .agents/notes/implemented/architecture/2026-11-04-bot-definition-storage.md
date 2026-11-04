@@ -25,21 +25,26 @@ as first creation. Version and creation order cross HTTP as decimal strings.
 Deletion records an original request ID/version and separate pending Worker and
 server obligations. Normal lists omit the row; detail exposes only minimal
 responsibility. No Task relationship or mutation is introduced. A bound Session
-is refused until deletion can install its barrier atomically in Bot-before-Session
-lock order. The [specification](../../../../docs/spec/assistant.md) and
+remains refused until the complete stopping and history-cleanup flow is available.
+The [Session admission decision](2026-11-04-bot-session-admission.md) supplies
+persistent Bot checks in Bot-before-Session lock order without treating admission
+as proof of cleanup. The [specification](../../../../docs/spec/assistant.md) and
 [design](../../../../docs/design/assistant.md) own behavior and mechanism.
 
 ## Alternatives
 
 **Expose an explicit-configuration create endpoint immediately.** This would
 make the storage kernel callable but establish a public contract requiring
-settings that name-only creation must resolve. Creation remains an internal
-service entry until default resolution can supply the confirmed public contract.
+settings that name-only creation must resolve. The definition-only delivery therefore kept creation internal.
+The [default-resolution decision](2026-11-04-bot-default-resolution.md) adds the
+name-only public entry without exposing that explicit-configuration kernel.
 
-**Let deletion intent accept a bound Session immediately.** Recording only the
-Bot marker would leave ordinary Session paths able to read or write history.
-Rejecting bound definitions preserves the later atomic deletion barrier without
-claiming that hidden rows have completed cleanup.
+**Let deletion intent accept a bound Session immediately.** At the definition
+kernel's introduction, recording only the Bot marker would have left ordinary
+Session paths able to read or write history. Rejecting bound definitions preserved
+the later atomic deletion barrier without claiming that hidden rows had completed
+cleanup. Persistent Session admission now checks the marker, while the public
+delete still waits for the full cleanup flow.
 
 ## Consequences
 
@@ -49,7 +54,10 @@ Task. Exact duplicate requests retain the original frozen configuration and
 cleanup identity. Sequence gaps after rollback or conflicting insertion are
 acceptable; creation order promises ordering, not consecutive numbering.
 
-Default resolution, native execution, Session registration and actual history
+Default resolution now composes with the definition kernel through the
+[default-resolution decision](2026-11-04-bot-default-resolution.md).
+[Session registration and admission](2026-11-04-bot-session-admission.md) bind that
+definition to its stable conversation. Native execution and actual history
 cleanup remain separate capabilities. Pending deletion can persist indefinitely
 until cleanup consumers are available. Those consumers must preserve credential
 checks, Bot-before-Session locking and original-request reconciliation; they

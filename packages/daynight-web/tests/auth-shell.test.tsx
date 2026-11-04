@@ -15,9 +15,10 @@ import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
 import { navigate, parseRoute } from "../src/app/router";
 import userEvent from "@testing-library/user-event";
 import { createLocaleRender } from "./helpers/renderWithLocale";
-import { invitationStorageKey } from "../src/features/auth/invitation";
+import { invitationStorageKey, teamInvitationStorageKey } from "../src/features/auth/invitation";
 import { SIDEBAR_STORAGE_KEY } from "../src/app/useSidebarPreference";
 import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
+import { personalTeamPage } from "./helpers/team";
 
 const render = createLocaleRender("zh-CN");
 let topLevelFocused = true;
@@ -35,6 +36,7 @@ const projectId = "00000000-0000-4000-8000-000000000003";
 const now = "2026-10-22T10:00:00Z";
 const user = (id = userId, name = "Alice") => ({ personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id, name, email: `${name}@example.com`, emailVerified: true, avatarUrl: null });
 const project = (name = "私有项目") => ({ ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name, repoUrl: "https://github.com/example/repo", createdAt: now, updatedAt: now });
+const createdProject = (name = "私有项目", repoUrl = "https://github.com/example/repo") => ({ ...project(name), repoUrl, access: { ...directAccessFixture(projectId, userId, "admin"), teamRole: "admin", canTransfer: true } });
 const member = (id = userId, role = "admin") => ({ projectId, userId: id, name: "Alice", email: "alice@example.com", avatarUrl: null, role, version: 12, createdAt: now, updatedAt: now });
 const participant = (id = userId, role = "admin", name = "Alice") => ({ inheritedFrom: null, userId: id, profile: { name, email: "alice@example.com", avatarUrl: null }, effectiveRole: role, directGrant: { projectId, userId: id, role, version: 12, createdAt: now, updatedAt: now } });
 let serverUserId = userId;
@@ -46,6 +48,7 @@ const fail = (status: number, code: string) => json({ error: { code, message: "h
 const graph = (url: string) => graphResponse({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, url);
 const defaults = (url: string): Response => {
   if (url === "/api/v1/me") return json(user(serverUserId, serverUserId === userId ? "Alice" : "Bob"));
+  if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(serverUserId));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
   if (url.endsWith("/members")) return json({ actorAccess: directAccessFixture(projectId, serverUserId, "admin"), items: [participant()] });
@@ -94,7 +97,7 @@ describe("sidebar integration with the authenticated workspace", () => {
   it("refreshes the shared navigation after creating a project", async () => {
     let created = false;
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
-      if (url === "/api/v1/projects" && options?.method === "POST") { created = true; return Promise.resolve(json(project("New project"), 201)); }
+      if (url === "/api/v1/projects" && options?.method === "POST") { created = true; return Promise.resolve(json(createdProject("New project", "https://github.com/example/new-project"), 201)); }
       if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: created ? [project("New project")] : [], nextCursor: null }));
       return Promise.resolve(defaults(url));
     });
@@ -966,7 +969,7 @@ describe("authenticated application shell", () => {
     await waitFor(() => expect(meCalls).toBe(3));
     await waitFor(() => expect(document.body).not.toHaveClass("auth-session-checking"));
     expect(screen.getByRole("dialog", { name: "创建私有项目" })).toBe(dialog);
-    await act(async () => complete(json(project(), 201)));
+    await act(async () => complete(json(createdProject("Pending", "git@github.com:example/repo.git"), 201)));
     await screen.findByRole("heading", { name: "私有项目" });
   });
 
@@ -1023,21 +1026,23 @@ describe("authenticated application shell", () => {
   });
 
   it("clears the workspace and stops automatic graph reads after a resource401", async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     window.history.replaceState(null, "", `/projects/${projectId}`);
     let expired = false;
     const fetcher = install((url) => expired && isTaskSync(url) ? fail(401, "unauthenticated") : defaults(url));
-    await act(async () => { render(<AuthenticatedApp />); });
-    await vi.waitFor(async () => {
-      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-      expect(screen.getByRole("heading", { name: "私有项目" })).toBeInTheDocument();
+    const initialSync = Promise.withResolvers<void>();
+    const applySync = TaskCacheScope.prototype.applySync;
+    vi.spyOn(TaskCacheScope.prototype, "applySync").mockImplementation(function (this: TaskCacheScope, ...args) {
+      const result = applySync.apply(this, args);
+      void result.then(() => initialSync.resolve(), initialSync.reject);
+      return result;
     });
+    await act(async () => { render(<AuthenticatedApp />); });
+    await act(async () => initialSync.promise);
+    expect(screen.getByRole("heading", { name: "私有项目" })).toBeInTheDocument();
     expired = true;
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-    await vi.waitFor(async () => {
-      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-      expect(screen.getByRole("heading", { name: "登录你的工作空间" })).toBeInTheDocument();
-    });
+    await screen.findByRole("heading", { name: "登录你的工作空间" });
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
     const graphReads = () => fetcher.mock.calls.filter(([url]) => isTaskSync(url)).length;
     expect(graphReads()).toBe(2);
@@ -1230,8 +1235,8 @@ describe("invitation handoff", () => {
     let finishCheck!: (response: Response) => void;
     const fetcher = vi.fn((url: string) => {
       if (url === "/api/v1/me") return ++meCalls === 1 ? Promise.resolve(json(user())) : new Promise<Response>((done) => { finishCheck = done; });
-      if (url === "/api/v1/invitations/inspect") return Promise.resolve(json({ projectId, projectName: "受邀项目" }));
-      if (url === "/api/v1/invitations/accept") return Promise.resolve(json(member()));
+      if (url === "/api/v1/invitations/inspect") return Promise.resolve(json({ projectId, projectName: "受邀项目", directGrant: null, access: null }));
+      if (url === "/api/v1/invitations/accept") return Promise.resolve(json({ projectId, directGrant: directAccessFixture(projectId, userId).directGrant, access: directAccessFixture(projectId, userId), joined: true, consumed: true }));
       return Promise.resolve(defaults(url));
     });
     vi.stubGlobal("fetch", fetcher);
@@ -1250,13 +1255,13 @@ describe("invitation handoff", () => {
       expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(1);
     } else {
       if (outcome === "changed") {
-        await screen.findByText("Bob", { selector: ".person-name" });
-        expect(screen.getByRole("button", { name: "接受邀请并加入" })).not.toBeDisabled();
+        await screen.findByRole("heading", { name: "邀请已不可用" });
+        expect(screen.queryByText("Bob", { selector: ".person-name" })).toBeNull();
       } else await screen.findByRole("heading", { name: "登录你的工作空间" });
       expect(window.location.pathname).toBe(outcome === "expired" ? "/login" : "/invitations");
       if (outcome === "expired") expect(new URLSearchParams(window.location.search).get("returnPath")).toBe("/invitations");
       expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
-      expect(window.sessionStorage.getItem(invitationStorageKey)).toBe("pending-account-secret");
+      expect(window.sessionStorage.getItem(invitationStorageKey)).toBe(outcome === "expired" ? "pending-account-secret" : null);
     }
   });
 
@@ -1264,19 +1269,19 @@ describe("invitation handoff", () => {
     window.history.replaceState(null, "", "/invitations#secret-one");
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
       expect(window.location.hash).toBe("");
-      if (url === "/api/v1/invitations/inspect") return Promise.resolve(json({ projectId, projectName: "受邀项目" }));
-      if (url === "/api/v1/invitations/accept") return Promise.resolve(json(member()));
+      if (url === "/api/v1/invitations/inspect") return Promise.resolve(json({ projectId, projectName: "受邀项目", directGrant: null, access: null }));
+      if (url === "/api/v1/invitations/accept") return Promise.resolve(json({ projectId, directGrant: directAccessFixture(projectId, userId).directGrant, access: directAccessFixture(projectId, userId), joined: true, consumed: true }));
       return Promise.resolve(defaults(url));
     });
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "受邀项目" });
-    expect(window.sessionStorage.getItem(invitationStorageKey)).toBe("secret-one");
+    expect(window.sessionStorage.getItem(invitationStorageKey)).toBeNull();
     expect(fetcher.mock.calls.some(([url]) => url.includes("accept"))).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "接受邀请并加入" }));
     await screen.findByRole("heading", { name: "私有项目" });
     const accept = fetcher.mock.calls.find(([url]) => url.endsWith("/accept"))!;
-    expect(accept[1]?.body).toBe('{"token":"secret-one"}');
+    expect(accept[1]?.body).toBe(JSON.stringify({ token: 'secret-one', expectedUserId: userId }));
     expect(window.location.pathname).toBe(`/projects/${projectId}`);
     expect(window.sessionStorage.getItem(invitationStorageKey)).toBeNull();
     expect(document.body.textContent).not.toContain("secret-one");
@@ -1287,8 +1292,8 @@ describe("invitation handoff", () => {
     let finishOld!: (response: Response) => void;
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
       const body = options?.body === undefined ? null : JSON.parse(String(options.body)) as { token: string };
-      if (url.endsWith("/inspect")) return Promise.resolve(json({ projectId, projectName: body?.token === "first-secret" ? "第一个项目" : "第二个项目" }));
-      if (url.endsWith("/accept")) return body?.token === "first-secret" ? new Promise<Response>((done) => { finishOld = done; }) : Promise.resolve(json(member()));
+      if (url.endsWith("/inspect")) return Promise.resolve(json({ projectId, projectName: body?.token === "first-secret" ? "第一个项目" : "第二个项目", directGrant: null, access: null }));
+      if (url.endsWith("/accept")) return body?.token === "first-secret" ? new Promise<Response>((done) => { finishOld = done; }) : Promise.resolve(json({ projectId, directGrant: directAccessFixture(projectId, userId).directGrant, access: directAccessFixture(projectId, userId), joined: true, consumed: true }));
       return Promise.resolve(defaults(url));
     });
     vi.stubGlobal("fetch", fetcher);
@@ -1302,18 +1307,67 @@ describe("invitation handoff", () => {
     expect(window.location.hash).toBe("");
     expect(previousSignal.aborted).toBe(true);
     await screen.findByRole("heading", { name: "第二个项目" });
-    await act(async () => finishOld(json(member())));
+    await act(async () => finishOld(json({ projectId, directGrant: directAccessFixture(projectId, userId).directGrant, access: directAccessFixture(projectId, userId), joined: true, consumed: true })));
     expect(window.location.pathname).toBe("/invitations");
     expect(screen.getByRole("heading", { name: "第二个项目" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "接受邀请并加入" }));
     await screen.findByRole("heading", { name: "私有项目" });
-    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept")).map(([, options]) => options?.body)).toEqual(['{"token":"first-secret"}', '{"token":"second-secret"}']);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept")).map(([, options]) => options?.body)).toEqual([JSON.stringify({ token: 'first-secret', expectedUserId: userId }), JSON.stringify({ token: 'second-secret', expectedUserId: userId })]);
+  });
+
+  it("keeps an unknown acceptance result visible after reading current access without replaying it", async () => {
+    window.history.replaceState(null, "", "/invitations#unknown-secret");
+    const fetcher = vi.fn((url: string) => {
+      if (url === "/api/v1/invitations/inspect") return Promise.resolve(json({ projectId, projectName: "受邀项目", directGrant: null, access: null }));
+      if (url === "/api/v1/invitations/accept") return Promise.reject(new Error("unknown-secret"));
+      if (url.endsWith("/access")) return Promise.resolve(json(directAccessFixture(projectId, userId)));
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AuthenticatedApp />);
+    fireEvent.click(await screen.findByRole("button", { name: "接受邀请并加入" }));
+    await screen.findByText(/尚未确认加入结果/);
+    expect(screen.getByRole("button", { name: "接受邀请并加入" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "检查项目访问权限" }));
+    await screen.findByRole("button", { name: "打开项目" });
+    expect(screen.getByText(/尚未确认加入结果/)).toBeVisible();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(1);
+    expect(document.body.textContent).not.toContain("unknown-secret");
+  });
+
+  it("retains an unknown result when access and invitation are now unavailable", async () => {
+    window.history.replaceState(null, "", "/invitations#unknown-unavailable");
+    let inspections = 0;
+    const fetcher = vi.fn((url: string) => {
+      if (url === "/api/v1/invitations/inspect") return Promise.resolve(++inspections === 1 ? json({ projectId, projectName: "受邀项目", directGrant: null, access: null }) : fail(404, "invitation_unavailable"));
+      if (url === "/api/v1/invitations/accept") return Promise.reject(new Error("network"));
+      if (url.endsWith("/access")) return Promise.resolve(fail(404, "not_found"));
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AuthenticatedApp />);
+    fireEvent.click(await screen.findByRole("button", { name: "接受邀请并加入" }));
+    await screen.findByText(/尚未确认加入结果/);
+    fireEvent.click(screen.getByRole("button", { name: "检查项目访问权限" }));
+    await screen.findByText(/邀请目前不可用；原操作结果仍未确认/);
+    expect(screen.getByText(/尚未确认加入结果/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "接受邀请并加入" })).toBeDisabled();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(1);
+    expect(window.sessionStorage.getItem(invitationStorageKey)).toBeNull();
+  });
+
+  it("does not discard a secret for an untrusted 404 response", async () => {
+    window.history.replaceState(null, "", "/invitations#untrusted-secret");
+    install((url) => url.endsWith("/inspect") ? new Response(JSON.stringify({ error: { code: "invitation_unavailable", message: "hidden", requestId: "safe" } }), { status: 404, headers: { "Content-Type": "application/json" } }) : defaults(url));
+    render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "邀请暂时无法加载" });
+    expect(window.sessionStorage.getItem(invitationStorageKey)).toBeNull();
   });
 
   it("restores the tab invitation after login, supports cancellation, and drops unavailable secrets", async () => {
     window.sessionStorage.setItem(invitationStorageKey, "secret-persisted");
     window.history.replaceState(null, "", "/invitations");
-    install((url) => url.endsWith("/inspect") ? json({ projectId, projectName: "待确认项目" }) : defaults(url));
+    install((url) => url.endsWith("/inspect") ? json({ projectId, projectName: "待确认项目", directGrant: null, access: null }) : defaults(url));
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "待确认项目" });
     fireEvent.click(screen.getByRole("button", { name: "暂不加入" }));
@@ -1333,7 +1387,7 @@ describe("invitation handoff", () => {
 
   it("does not consume an invitation for an existing member", async () => {
     window.history.replaceState(null, "", "/invitations#existing-secret");
-    const fetcher = install((url) => url.endsWith("/inspect") ? json({ projectId, projectName: "受邀项目", member: member() }) : defaults(url));
+    const fetcher = install((url) => url.endsWith("/inspect") ? json({ projectId, projectName: "受邀项目", directGrant: directAccessFixture(projectId, userId).directGrant, access: directAccessFixture(projectId, userId) }) : defaults(url));
     render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("button", { name: "打开项目" }));
     await screen.findByRole("heading", { name: "私有项目" });
@@ -1342,7 +1396,7 @@ describe("invitation handoff", () => {
 
   it("erases a retained invitation value when removeItem is unavailable", async () => {
     window.history.replaceState(null, "", "/invitations#cleanup-secret");
-    install((url) => url.endsWith("/inspect") ? json({ projectId, projectName: "受邀项目" }) : defaults(url));
+    install((url) => url.endsWith("/inspect") ? json({ projectId, projectName: "受邀项目", directGrant: null, access: null }) : defaults(url));
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "受邀项目" });
     vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => { throw new DOMException("blocked removal"); });
@@ -1354,7 +1408,7 @@ describe("invitation handoff", () => {
 
   it("exposes a blocked terminal cleanup while clearing the in-memory invitation", async () => {
     window.history.replaceState(null, "", "/invitations#blocked-secret");
-    install((url) => url.endsWith("/inspect") ? json({ projectId, projectName: "受邀项目" }) : defaults(url));
+    install((url) => url.endsWith("/inspect") ? json({ projectId, projectName: "受邀项目", directGrant: null, access: null }) : defaults(url));
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "受邀项目" });
     vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => { throw new DOMException("blocked removal"); });
@@ -1378,9 +1432,135 @@ describe("invitation handoff", () => {
   });
 });
 
+describe("Team invitation handoff", () => {
+  const teamId = "00000000-0000-4000-8000-000000000004";
+  const team = { id: teamId, kind: "ordinary", name: "协作团队" };
+  const membership = { teamId, userId, role: "member", version: 9_007_199_254_740_993n, createdAt: now, updatedAt: now };
+
+  it("captures a Team secret, confirms the current account and retains the actual acceptance receipt", async () => {
+    window.history.replaceState(null, "", "/team-invitations#dnteam_secret");
+    const fetcher = vi.fn((url: string, options?: RequestInit) => {
+      expect(window.location.hash).toBe("");
+      if (url === "/api/v1/team-invitations/inspect") return Promise.resolve(json({ team, membership: null }));
+      if (url === "/api/v1/team-invitations/accept") return Promise.resolve(json({ team, membership, joined: true, consumed: true }));
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "协作团队" });
+    expect(screen.getByText("Alice", { selector: ".person-name" })).toBeVisible();
+    expect(window.sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "接受邀请并加入" }));
+    await screen.findByRole("heading", { name: "你已加入此 Team" });
+    expect(screen.getByText(`Team ID: ${teamId}`)).toBeVisible();
+    expect(fetcher.mock.calls.find(([url]) => url.endsWith("/accept"))?.[1]?.body).toBe(JSON.stringify({ token: "dnteam_secret", expectedUserId: userId }));
+    expect(window.location.pathname).toBe("/team-invitations");
+    expect(window.sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
+    expect(document.body.textContent).not.toContain("dnteam_secret");
+    expect(document.querySelector(`a[href^="/teams/"]`)).toBeNull();
+  });
+
+  it("preserves an existing admin role in the confirmed no-consume receipt", async () => {
+    window.history.replaceState(null, "", "/team-invitations#dnteam_existing");
+    const admin = { ...membership, role: "admin" };
+    install((url) => url.endsWith("/inspect") ? json({ team, membership: admin }) : url.endsWith("/accept") ? json({ team, membership: admin, joined: false, consumed: false }) : defaults(url));
+    render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "你已经是 Team 成员" });
+    fireEvent.click(screen.getByRole("button", { name: "接受邀请并加入" }));
+    await screen.findByRole("heading", { name: "你已经是此 Team 的成员" });
+    expect(screen.getByText("当前角色: 管理员")).toBeVisible();
+  });
+
+  it("keeps an uncertain result and never replays or presents a success", async () => {
+    window.history.replaceState(null, "", "/team-invitations#dnteam_unknown");
+    let inspections = 0;
+    const fetcher = install((url) => url.endsWith("/inspect") ? ++inspections === 1 ? json({ team, membership: null }) : json({ team, membership }) : url.endsWith("/accept") ? Promise.reject(new Error("dnteam_unknown")) : defaults(url));
+    render(<AuthenticatedApp />);
+    fireEvent.click(await screen.findByRole("button", { name: "接受邀请并加入" }));
+    await screen.findByText(/加入结果尚未确认/);
+    fireEvent.click(screen.getByRole("button", { name: "查看邀请状态" }));
+    await screen.findByRole("heading", { name: "你已经是 Team 成员" });
+    expect(screen.getByText(/加入结果尚未确认/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "接受邀请并加入" })).toBeDisabled();
+    expect(screen.queryByRole("heading", { name: "你已加入此 Team" })).toBeNull();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(1);
+  });
+
+  it("discards a Team invitation when foreground identity revalidation finds another user", async () => {
+    window.history.replaceState(null, "", "/team-invitations#dnteam_changed");
+    let meCount = 0;
+    const fetcher = vi.fn((url: string) => {
+      if (url === "/api/v1/me") return Promise.resolve(json(++meCount === 1 ? user() : user(otherId, "Bob")));
+      if (url === "/api/v1/team-invitations/inspect") return Promise.resolve(json({ team, membership: null }));
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "协作团队" });
+    returnFromAnotherWindow();
+    await screen.findByRole("heading", { name: "邀请已不可用" });
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/inspect"))).toHaveLength(1);
+    expect(window.sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
+    expect(document.body.textContent).not.toContain("dnteam_changed");
+  });
+
+  it("discards the Team secret when an inspection proves a different response principal", async () => {
+    window.history.replaceState(null, "", "/team-invitations#dnteam_identity");
+    let meCount = 0;
+    const fetcher = vi.fn((url: string) => {
+      if (url === "/api/v1/me") return Promise.resolve(json(++meCount === 1 ? user() : user(otherId, "Bob")));
+      if (url === "/api/v1/team-invitations/inspect") return Promise.resolve(json({ team, membership: null }, 200, otherId));
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "邀请已不可用" });
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/inspect"))).toHaveLength(1);
+    expect(window.sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
+    expect(document.body.textContent).not.toContain("dnteam_identity");
+  });
+
+  it("retains a Team invitation across account switching and clears the login copy on return", async () => {
+    window.history.replaceState(null, "", "/team-invitations#dnteam_switch");
+    const fetcher = vi.fn((url: string) => {
+      if (url === "/api/v1/team-invitations/inspect") return Promise.resolve(json({ team, membership: null }));
+      if (url === "/api/v1/auth/logout") return Promise.resolve(new Response(null, { status: 204 }));
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const view = render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "协作团队" });
+    expect(window.sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "切换账户" }));
+    await screen.findByRole("heading", { name: "登录你的工作空间" });
+    expect(window.sessionStorage.getItem(teamInvitationStorageKey)).toBe("dnteam_switch");
+    view.unmount();
+    window.history.replaceState(null, "", "/team-invitations");
+    serverUserId = otherId;
+    render(<AuthenticatedApp />);
+    await screen.findByText("Bob", { selector: ".person-name" });
+    expect(window.sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
+  });
+
+  it("retains the Team secret through an anonymous login return without mixing project secrets", async () => {
+    window.sessionStorage.setItem(invitationStorageKey, "project-secret");
+    window.history.replaceState(null, "", "/team-invitations#dnteam_login");
+    install((url) => url === "/api/v1/me" ? fail(401, "unauthenticated") : defaults(url));
+    const login = vi.fn();
+    render(<AuthenticatedApp navigateToLogin={login} />);
+    fireEvent.click(await screen.findByRole("button", { name: "使用 GitHub 登录" }));
+    expect(login).toHaveBeenCalledWith("/api/v1/auth/login?provider=github&returnPath=%2Fteam-invitations");
+    expect(window.sessionStorage.getItem(teamInvitationStorageKey)).toBe("dnteam_login");
+    expect(window.sessionStorage.getItem(invitationStorageKey)).toBeNull();
+    expect(window.location.hash).toBe("");
+  });
+});
+
 describe("private project creation", () => {
   it("submits required fields, navigates to the created project, and restores native dialog cancellation", async () => {
-    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v1/projects" && options?.method === "POST" ? json(project("新项目"), 201) : defaults(url)));
+    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v1/projects" && options?.method === "POST" ? json(createdProject("  新项目  ", "git@github.com:example/repo.git"), 201) : defaults(url)));
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("button", { name: "＋ 创建项目" }));
@@ -1396,7 +1576,7 @@ describe("private project creation", () => {
     expect(repository.checkValidity()).toBe(true);
     fireEvent.submit(screen.getByRole("button", { name: "创建项目" }).closest("form")!);
     await waitFor(() => expect(window.location.pathname).toBe(`/projects/${projectId}`));
-    expect(fetcher.mock.calls.find(([, options]) => options?.method === "POST")?.[1]?.body).toBe('{"name":"新项目","repoUrl":"git@github.com:example/repo.git"}');
+    expect(fetcher.mock.calls.find(([, options]) => options?.method === "POST")?.[1]?.body).toBe(JSON.stringify({ name: "  新项目  ", repoUrl: "git@github.com:example/repo.git", expectedUserId: userId, teamId: user().personalTeam.id }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 

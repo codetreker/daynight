@@ -90,7 +90,7 @@ describe('project assignee filtering', () => {
     expect(children).toHaveTextContent('1 个匹配子任务');
     expect(children.querySelectorAll('.goal-task-row')).toHaveLength(1);
     const child = document.getElementById(`chain-task-${id(1)}-${id(3)}`)!;
-    expect(child).toHaveTextContent('被阻塞');
+    expect(child.closest('.goal-task-row')).toHaveTextContent('被阻塞');
     fireEvent.click(child);
     const detail = screen.getByRole('dialog');
     await within(detail).findByRole('heading', { name: 'Task 3' });

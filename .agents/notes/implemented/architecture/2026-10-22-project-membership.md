@@ -24,8 +24,8 @@ owns public roster values: a canonical user ID, required profile object with
 nullable fields, effective role and optional real direct grant. Role PATCH
 returns the stored grant; deletion retains its empty success. `ProjectMember`
 remains the joined direct-relation read used by versioned target checks and
-existing invitation/runtime callers. Invitation HTTP results preserve their
-current flat member DTO. These readers do not replace computed admission.
+existing invitation/runtime callers. The [invitation result decision](2026-11-04-project-invitation-results.md)
+separates public direct grant and computed access. These readers do not replace computed admission.
 
 Read admission returns `ProjectAccess` within the existing read snapshot. This
 computed projection has project/user IDs, the current role and an optional actual
@@ -73,7 +73,10 @@ creation commits real Personal ownership and its first direct admin grant
 together. The original foundation kept direct-only policy and last-administrator
 protection while consumers were prepared; the Personal ownership decision
 replaces those policies and renames the original table and sequence in place.
-Invitation responses retain their current contract.
+Invitation writes also bind the reviewed principal before domain SQL. The
+[grant management decision](2026-11-04-project-grant-management.md) adds explicit
+creation preconditions and post-mutation actor receipts while preserving the
+legacy role and removal responses.
 
 Member observation versions come from one PostgreSQL bigint sequence on insertion
 and real role changes. They are opaque, positive and noncontiguous; a no-op keeps
@@ -85,7 +88,7 @@ a hash of a random secret. They belong to the project; the creator's later role
 change does not revoke them. Admins can revoke pending invitations. Inspection
 reveals only minimal project information to an authenticated holder. Acceptance
 locks the project then the invitation, inserts membership and consumes the invite
-atomically. Existing members neither upgrade nor consume an available invite.
+atomically. Existing direct grants neither change role nor consume an available invite; inherited-only access still receives a direct grant.
 Expired, consumed and revoked invitations share one unavailable response.
 
 `RequireProjectRead` and `RequireProjectWrite` compose inside the caller's snapshot

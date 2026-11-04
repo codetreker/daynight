@@ -25,35 +25,52 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil || count != len(schemaMigrations) {
 		t.Fatalf("versions: %d, %v", count, err)
 	}
-	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND contype = 'f' AND conrelid <> 'bots'::regclass`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
+	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND contype = 'f'
+	 AND conrelid NOT IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass)
+	 AND NOT (conrelid='task_sessions'::regclass AND conname='session_bot_owner')`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
 		t.Fatalf("legacy tables gained foreign keys: %d, %v", foreignKeys, err)
 	}
-	wantedBotKeys := map[string]bool{
-		"FOREIGN KEY (owner_user_id) REFERENCES users(id)":                              true,
-		"FOREIGN KEY (owner_user_id, worker_id) REFERENCES workers(user_id, worker_id)": true,
+	wantedBotKeys := map[string]map[string]bool{
+		"bots": {
+			"FOREIGN KEY (owner_user_id) REFERENCES users(id)":                              true,
+			"FOREIGN KEY (owner_user_id, worker_id) REFERENCES workers(user_id, worker_id)": true,
+		},
+		"bot_worker_preferences": {
+			"FOREIGN KEY (user_id) REFERENCES users(id)":                              true,
+			"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id)": true,
+		},
+		"bot_configuration_preferences": {
+			"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id)": true,
+		},
+		"task_sessions": {
+			"FOREIGN KEY (bot_id, owner_user_id) REFERENCES bots(id, owner_user_id)": true,
+		},
 	}
-	rows, err := database.Pool.Query(ctx, `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='bots'::regclass AND contype='f'`)
+	rows, err := database.Pool.Query(ctx, `SELECT conrelid::regclass::text,pg_get_constraintdef(oid) FROM pg_constraint
+ WHERE conrelid IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'task_sessions'::regclass) AND contype='f'`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for rows.Next() {
-		var definition string
-		if err := rows.Scan(&definition); err != nil {
+		var table, definition string
+		if err := rows.Scan(&table, &definition); err != nil {
 			rows.Close()
 			t.Fatal(err)
 		}
-		if !wantedBotKeys[definition] {
+		if !wantedBotKeys[table][definition] {
 			rows.Close()
-			t.Fatalf("unexpected Bot foreign key: %s", definition)
+			t.Fatalf("unexpected Bot foreign key on %s: %s", table, definition)
 		}
-		delete(wantedBotKeys, definition)
+		delete(wantedBotKeys[table], definition)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(wantedBotKeys) != 0 {
-		t.Fatalf("missing Bot ownership constraints: %v", wantedBotKeys)
+	for table, constraints := range wantedBotKeys {
+		if len(constraints) != 0 {
+			t.Fatalf("missing Bot ownership constraints on %s: %v", table, constraints)
+		}
 	}
 	for _, sql := range []string{
 		`INSERT INTO projects (id, name, repo_url) VALUES ('00000000-0000-0000-0000-000000000001', '  ', 'https://example.com/repo')`,

@@ -166,7 +166,8 @@ daynight project show <project-id> --json
 作为名称无效。名称和详情 UUID 的参数错误必须在配置读取及网络访问之前拒绝。
 
 创建在写入前必须读取配置 server 的全部 project 分页，将选定 repo 地址与每个
-`repoUrl` 按 PT3 的同一规则比较。零匹配时提交原始名称与所选原始地址；唯一匹配
+`repoUrl` 按 PT3 的同一规则比较。零匹配时读取当前用户并提交其真实 `expectedUserId`、
+原始名称与所选原始地址，未指定 Team 时在 Personal 创建；核对响应主体且不自动重放未知写入。唯一匹配
 时成功输出 `Project already exists.` 和既有 project，不发送创建或修改请求，保留
 其名称与地址。多个匹配时报告歧义及全部匹配 ID，不创建。任一分页、响应验证、
 Git、取消或期限错误均按实际原因失败，不得把查询失败视为零匹配；完整预检成功
@@ -184,6 +185,54 @@ Project 创建、详情、分页条目及图中的 Project 必须包含 `ownersh
 前者为完整正 int64，后者为 `1..2147483647` 的整数分钟，初始分别为 `1` 和 `60`。
 缺失或不合法字段是协议错误，不能由 CLI 补默认值；JSON 必须无损保留超过 `2^53` 的嵌套版本。
 可读 Project 输出保留既有字段，当前没有新增设置修改命令，设置通过 Web 或既有服务 API 修改。
+
+## Team 读取与上下文
+
+```bash
+daynight team list [--json]
+daynight team show [--team <uuid|personal>] [--json]
+daynight team create <name> [--confirm] [--json]
+daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team projects [--team <uuid|personal>] [--json]
+daynight team default show [--json]
+```
+
+`team list` 读取当前用户加入的全部 Team；`show` 读取目标 Team 与本人角色，
+`projects` 读取目标 Team 的全部项目。显式 `--team` 优先；否则按规范服务 origin
+和当前 `/me` 用户 ID 读取配置 `teamDefaults`，当前 pair 缺失时使用 `/me` 的真实
+Personal Team ID。配置值无效、目标不存在或无权时明确失败，不静默切换 Personal。
+`default show` 验证配置目标，失效时失败；`team list` 和显式目标不依赖旧默认，
+因此仍可用于检查和修复失效配置。读取不写配置或远程资源。默认只影响 Team 上下文，
+不改变显式 Project、Task 或现有仓库发现，`project list` 仍读取全部可访问项目。
+
+Team 与项目列表完整读取并验证全部页面后才输出；重复 ID、游标循环、预算或任何一页
+失败都不能输出部分成功结果。Team 资源及响应主体必须与当前用户和目标一致，项目列表
+必须属于所选 Team。`--json` 保留完整资源与精确版本；`default show` 返回 `configured`
+（配置 ID 或 `null`）和已验证的 `team`。可读文本遵守终端转义规则。
+帮助及参数校验先于配置与网络读取。
+
+## Team 生命周期
+
+`team create` 创建普通 Team，创建者成为 admin；`rename` 修改普通 Team 原始名称，
+`delete` 删除没有项目的普通 Team。名称保留原始文字与空白，允许重复，必须是合法
+Unicode、不能包含 NUL 或全为 Unicode `White_Space`。Personal Team 不可改名或删除，
+非 admin、非空 Team 和版本冲突由服务明确拒绝。改名和删除使用显式 Team 或上述默认
+上下文，读取当前目标；`--if-version` 接受完整正 int64，与读取版本不符时在本地
+拒绝提交，不自动替换指定版本。
+
+三个写命令的 `--confirm` 是无值布尔开关；重复或 `--confirm=false` 是参数错误。
+没有该开关时，非交互终端在写入前拒绝；交互时显示操作对象，创建和改名接受 `y`
+或 `yes` 确认（不区分大小写），删除要求输入展示的 JSON string literal，解码后
+与原名称逐字匹配，不 trim。取消、
+否定或名称不符不提交。`--confirm` 跳过人工确认，删除仍提交读取到的真实名称与
+精确版本；确认不代替服务端的身份、权限、名称和版本检查。提示与网络等待期间不持
+配置锁，旧 Task 命令的确认行为不变。
+
+写入携带当前真实用户 ID，并验证响应主体、目标和回执；成功直接使用已确认回执。
+冲突须重新读取并重新确认，未知结果不得自动重放。读取当前事实不能证明丢失的
+回执，未知结果须以非零退出报告，并在可用时提供安全请求标识。`--json` 输出已确认的
+资源或删除回执。回执已确认后，即使本地输出或清理失败也保留该确认事实。
 
 ## PT7. Task 命令与更新语义
 

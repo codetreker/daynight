@@ -156,6 +156,13 @@ daynight project
 daynight project create <name> [--repo <repo>]
 daynight project list [--json]
 daynight project show <project-id> [--json]
+daynight team list [--json]
+daynight team show [--team <uuid|personal>] [--json]
+daynight team create <name> [--confirm] [--json]
+daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team projects [--team <uuid|personal>] [--json]
+daynight team default show [--json]
 daynight task
 daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
@@ -541,7 +548,9 @@ option before the terminator: `daynight project create --repo <repo> -- -name`.
 The name is sent unchanged.
 
 Creation first scans every project page and compares canonical repository
-identities. With no match it registers the original name and repository address.
+identities. With no match it reads the current user, binds the request and response
+to that identity, and registers the original name and repository address in the
+Personal Team. An unknown write is not automatically replayed.
 With one match it reports `Project already exists.` and the existing project,
 leaving that project's name and address unchanged. Multiple matches fail with
 their IDs; lookup failures and exhausted command budgets stop before creation.
@@ -553,6 +562,50 @@ terminal-control escapes. JSON preserves resource fields and nanosecond timestam
 strings; a later-page failure produces an error with empty stdout. The
 [project/task requirements](../../docs/spec/daynight-project-task.md) own the complete
 behavior and remaining task-command scope.
+
+## Team context
+
+`team list` reads all Teams joined by the current account. `team show` and
+`team projects` use `--team <uuid|personal>` when supplied; otherwise they use
+the configured `teamDefaults` entry for the normalized service origin and current
+account, or the account's Personal Team when that entry is absent. `team default
+show` verifies and displays the resolved target. An invalid or inaccessible
+configured target fails explicitly; `team list` and an explicit `--team` remain
+available. These commands do not change configuration or remote resources.
+Lists finish and validate every page before producing output. Use `--json` for
+complete resources. Project discovery and `project list` still use all accessible
+projects, independently of this default.
+
+An externally provisioned default uses canonical UUIDs and the normalized
+service origin as keys:
+
+```yaml
+teamDefaults:
+  https://daynight.cc:
+    80be22c3-96d8-4ed1-bcd3-b820f2508c62: b95baeff-1522-4d99-a9b4-dfcb58392eca
+```
+
+`team default show --json` returns `configured` (the saved ID or `null`) and
+the verified `team` resource.
+
+`team create` creates an ordinary Team, `team rename` changes its name, and
+`team delete` removes an empty ordinary Team. Names preserve their original
+characters and whitespace and may be duplicated. Rename and delete resolve the
+explicit or default Team and use an observed version; `--if-version` retains the
+specified positive int64 version, rejecting a mismatch with the observed version
+before submission. Personal Teams cannot be renamed or deleted.
+
+Each write requires interactive confirmation or the boolean `--confirm` flag.
+Without it, non-interactive calls fail before writing. Delete prompts for the
+displayed JSON string literal and compares its decoded value exactly with the
+raw Team name; create and rename accept `y` or `yes` case-insensitively.
+Cancellation, refusal or a mismatch does not submit. Even with
+`--confirm`, delete sends the real name and version; the service still checks
+identity, authority and preconditions. Success uses the validated receipt;
+conflicts require a fresh decision, and unknown outcomes are never replayed.
+Reading current facts does not recover a lost receipt. A later output or cleanup
+failure retains a confirmed receipt. Use `--json` for the confirmed resource or
+deletion receipt.
 
 ## Task management
 
@@ -1638,9 +1691,17 @@ shell without its extra launch environment. The saved SQLite session_id selects
 resume or fresh startup; an inactive pane's retained reference is not saved as a
 newly observed session ID. A live agent keeps its current connection.
 
+Workspace creation supplies the shell's initial cwd. Before every fresh
+`agent.start` attempt, after caller admission, the original pane's current cwd
+must canonical-match the task worktree. Herdr writes argv into the existing
+shell, whose startup scripts may have changed directories; native trust
+arguments do not set cwd. A mismatch fails as definitely not-submitted without
+starting the native agent. Reconnecting to an existing live agent returns
+before this launch-only check.
+
 A replacement shell can still be initializing when Herdr rejects `agent.start`
 with `agent_pane_busy`. The adapter retries this explicit rejection for at most
-two seconds while the original workspace, pane, terminal and cwd remain owned,
+two seconds while the original workspace, pane and terminal remain owned,
 no Agent has appeared, and foreground process evidence confirms shell
 initialization. Cancellation and the original operation deadline still apply.
 Recovery within that call does not consume an execution failure attempt. Busy
@@ -1685,7 +1746,8 @@ observation before another decision, without blind replay. Terminal cleanup
 suppresses business pings.
 
 Before a periodic ping reaches the native agent, the worker rereads the task
-from the service after workspace serialization and native readiness checks,
+from the service after workspace serialization, native readiness and known
+input-blocker checks,
 verifies the original active claim, worker and worktree, and checks
 `properties.paused`. A true value skips that input without advancing its
 submission baseline. Setting false or removing the property therefore permits
@@ -1752,11 +1814,40 @@ versions fail explicitly.
 
 The policy applies only to native invocations and task workspaces. Global native
 configuration, credentials and organization/OS policies keep their existing
-owners; task delivery still follows its business authorization. Input-readiness
-and supported Codex composer checks remain. Unknown layouts, missing credentials,
-integration failures and launch errors stay visible. Use attach for business
-input. Reconnecting an already alive agent does not promise to resend an input
-lost across a process interruption.
+owners; task delivery still follows its business authorization. Automatic input
+uses Herdr's structured agent identity, readiness, launch and blocked states.
+For Codex and Claude, it then reads the bound pane's complete visible text only
+to reject explicit known menu or disabled-input patterns. Normal composers,
+status bars, directory displays, placeholders and borders are not required.
+Customized or unknown normal layouts proceed immediately after readiness; there
+is no layout whitelist or unknown-layout wait. Any supplied final task
+authorization guard runs after the read and binding/state recheck. Known blockers retain the
+pending initial input or continuation opportunity without advancing its submitted
+baseline or consuming execution recovery attempts; closing them permits a later
+patrol to continue. Failed, malformed or truncated reads remain unsent errors.
+The blocker set does not claim to recognize every future native screen. On macOS,
+`automatic` and `cleanup` inspection report composer evidence as unavailable;
+`manual` permits its lease holder to operate menus. Explicit handback and clean
+orderly recovery use the separate `resume` purpose: Codex and Claude require
+ANSI-preserved empty-field evidence without optional model, cwd or status-bar
+requirements. Codex placeholder words alone are insufficient: DIM renderer
+attributes and current field geometry distinguish them from literal or multiline
+drafts. Claude accepts a genuinely blank bordered field, not ambiguous Try text.
+Unknown or unsupported styles cannot become empty. Copilot retains
+unavailable composer evidence and its explicit handback responsibility. Durable
+leases, fences, draft dispositions, cleanup priority and unknown-input results
+retain their existing guarantees. A typed known blocker before any native write
+remains waiting after journal serialization and lifecycle pending projection;
+a possible write still produces an unknown outcome on failure.
+The worker supplies the initial task cwd at workspace creation and checks the
+original shell cwd only immediately before a fresh native start. Resource
+discovery, live-agent reconnection, input observation and stopping do not require
+pane and agent cwd metadata to agree. A human workspace at the same cwd does not prevent creation
+of a separately owned task workspace. Actual creation errors come from
+`workspace.create`. Original workspace/pane/terminal binding, final task
+authorization, process-stop evidence and prompt receipts remain checked. Missing credentials, integration failures and launch errors
+stay visible. Use attach for business input. Reconnecting an already alive agent
+does not promise to resend an input lost across a process interruption.
 
 When the original claim is absent from a successful complete inventory, the
 backend owns terminal resource cleanup. macOS Herdr writes its stop intent and
@@ -1770,8 +1861,11 @@ pane disappearance cannot prove success after restart.
 Herdr lifecycle registration advertises `observe=false`, `control=false` and
 `archive=false`. Terminal recording, browser control and archive finalization
 are not enabled. Consequently macOS Herdr terminal cleanup retains its worktree
-and separate archive responsibility even after confirmed stopping. It does not
-send a cleanup prompt or claim a final ready archive. A terminal run can mark
+and separate archive responsibility even after confirmed stopping. A durable
+input arbiter revokes control before cleanup; it sends one bounded advisory
+prompt only from safe automation with no manual draft or unknown input. Other
+states skip the prompt and proceed with controlled stopping. No final ready
+archive is claimed. A terminal run can mark
 its local execution row done and release its slot after segment and ledger
 confirmation, while
 the retained worktree continues to block another claim for the same task.
@@ -1854,6 +1948,13 @@ then remove its retained worktree and unblock a later claim for the same task.
 An unknown original agent type retains the workspace with a visible error;
 current configuration does not establish that historical type. Unproven Git-only
 resources remain untouched.
+
+The [Herdr input design](../../docs/design/herdr-input-arbitration.md) defines
+`worker/herdr-inputs.sqlite`, strict terminal transport, retained operation IDs,
+manual leases and explicit handback. Native idle and Detach do not resume
+automation. Unknown inputs are never automatically replayed; an explicit initial
+delivery disposition remains distinct from a provider acknowledgement. Strict
+input currently requires the validated Herdr 0.9.5 protocol profile.
 
 The [Herdr lifecycle design](../../docs/design/herdr-worker-lifecycle.md) defines
 the persisted identities, crash boundaries and supported macOS process scope;

@@ -79,6 +79,7 @@ src/
   commands/
     server/                # 共享配置、操作与信号生命周期
     project/               # 参数、帮助、project 操作及渲染
+    team/                  # Team 只读命令、上下文与渲染
     task/                  # task、Step 读取与附件的参数、帮助、操作及渲染
     review/                # review 配置投影和既有行为
     update/                # 既有 npm 安装生命周期
@@ -350,9 +351,14 @@ flowchart TD
 
 | CLI 操作 | API |
 |---|---|
-| `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时 `POST /api/v1/projects`，提交原始 `name`、`repoUrl` |
+| `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时读取 `/me`，再提交真实 `expectedUserId` 和原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
+| `team list` | `GET /api/v1/me`，再读取全部 `GET /api/v1/teams` 页 |
+| `team show`、`team default show` | `GET /api/v1/me`，再按选定 ID 读取 `GET /api/v1/teams/{id}` |
+| `team create` | `GET /api/v1/me`，确认后 `POST /api/v1/teams`，提交原始名称与 `expectedUserId` |
+| `team rename`、`team delete` | `GET /api/v1/me` 和目标 Team，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}`，提交名称、精确 version 和 `expectedUserId` |
+| `team projects` | `GET /api/v1/me`，再读取全部 `GET /api/v1/projects?teamId=...` 页 |
 | `task create [--required-platform <platform>] [--assigned-to <user-uuid>]` | 省略负责人先 `GET /api/v1/me`，再 `POST /api/v1/projects/{projectId}/tasks`，携带 assignedTo 和可选 requiredPlatform |
 | `task list` | `GET /api/v1/projects/{projectId}/tasks`，保留相同筛选遍历 cursor |
 | `task ready [--limit <N>] [--allow-agents true\|false] [--compatible-platform <platform>]` | 单次 `GET /api/v1/projects/{projectId}/tasks?ready=true&limit=N`，可带 allowAgents、compatiblePlatform，不提交 cursor |
@@ -377,6 +383,24 @@ flowchart TD
 或重建。每页验证后累积结果，末页才渲染；重复 cursor 或不前进的循环响应作为
 协议错误终止，不能无限请求。多页读取继承服务不提供跨请求快照的边界，CLI 不
 宣称列表是同一时间点的完整快照。
+
+Team 读取先以 `/me` 确定真实用户和 Personal Team，并核对响应主体；后续每个响应
+绑定同一用户。显式目标绕过默认配置，否则只读取规范 origin 与用户 ID 对应的
+`teamDefaults` 值，缺失使用真实 Personal ID。详情验证返回 ID 与 membership 的 Team、
+用户身份；项目页验证 ownership 属于目标 Team。列表复用有界分页，拒绝重复 ID、游标
+循环及超额，完整验证后统一渲染。`default show` 对已配置目标执行详情读取，避免把
+失效配置显示成可用；`team list` 不解析默认，显式目标也不受其影响。该读取路径不写
+配置，既有全范围 Project 发现继续使用原列表方法。
+
+Team 生命周期写入复用当前用户和目标解析，确认阶段不持配置锁。普通确认展示操作及
+目标；删除将名称编码为 JSON string literal，让换行、控制符、反斜线和空白可见，
+再将输入解码并精确比较原文。非 TTY 且无 `--confirm` 时不写入；显式布尔确认只
+跳过提示，删除仍提交真实目标名称和版本。`--if-version` 与读取版本不符时本地拒绝，
+不在冲突后自动刷新或重放。
+
+typed mutation API 绑定 `/me` 主体并校验响应主体、资源与删除回执；已确认成功直接
+消费回执，不追加读取判断提交。拒绝、取消和未知提交保留各自结果；网络中断、取消
+等待、无效成功响应或未知提交不能证明回滚，也不能自动重发。后续读取只描述当前事实。
 
 Steps typed GET 复用 `exchange` 的认证、no-store、取消、期限与响应预算。显式 project
 直接访问所选路径，不增加项目发现、父 Task GET 或子项 404 后的隐藏核验。
@@ -459,7 +483,8 @@ create/update 的 --required-platform 设置枚举，update --clear-required-pla
 创建先确定 repo：显式 `--repo` 直接使用原值，并跳过工作目录查询及 Git；省略时
 直接复用 `repository/git.ts` 的 `discoverRepository`，读取当前 worktree 有效
 `origin`，包含 `insteadOf` 展开。随后将该地址及全部列表结果的 `repoUrl` 交给
-`repository/identity.ts` 的同一正规化器比较。零匹配才 POST 原始名称和原始地址；
+`repository/identity.ts` 的同一正规化器比较。零匹配时读取当前用户并绑定创建请求与响应主体，
+再 POST 原始名称和原始地址；
 唯一匹配通过既有资源渲染器输出 `Project already exists.` 及完整 project，不改名
 或更新 repo；多匹配列出 ID 并失败。此路径不调用 task 的 `resolveProject`，因此
 不读取或保存 `.daynight/project.yml`，也不写 ignore 规则。

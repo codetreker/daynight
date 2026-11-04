@@ -1,5 +1,5 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, TeamRef, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
@@ -45,6 +45,23 @@ const parseTeamRef = (value: unknown): TeamRef => {
   const team: TeamRef = { id: id(data.id), kind: data.kind === "personal" || data.kind === "ordinary" ? data.kind : malformed(), name: data.name === null ? null : text(data.name, true) };
   if ((team.kind === "personal") !== (team.name === null)) return malformed();
   return team;
+};
+export const parseTeam = (value: unknown, userId: string, teamId?: string): Team => {
+  const data = fields(value, ["id", "kind", "name", "version", "createdAt", "updatedAt", "membership"]);
+  const ref = parseTeamRef({ id: data.id, kind: data.kind, name: data.name });
+  const member = fields(data.membership, ["teamId", "userId", "role", "version", "createdAt", "updatedAt"]);
+  const membership: Team["membership"] = {
+    teamId: id(member.teamId), userId: id(member.userId),
+    role: member.role === "member" || member.role === "admin" ? member.role : malformed(),
+    version: resourceVersion(member.version), createdAt: timestamp(member.createdAt), updatedAt: timestamp(member.updatedAt),
+  };
+  if (membership.teamId !== ref.id || membership.userId !== userId || teamId !== undefined && ref.id !== teamId || ref.kind === "personal" && membership.role !== "admin") return malformed();
+  return { ...ref, version: resourceVersion(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt), membership };
+};
+export const parseTeamDeleteReceipt = (value: unknown, teamId: string): { readonly teamId: string; readonly deleted: true } => {
+  const data = fields(value, ["teamId", "deleted"]);
+  if (id(data.teamId) !== teamId || data.deleted !== true) return malformed();
+  return { teamId, deleted: true };
 };
 const parseOwnership = (value: unknown): ProjectOwnership => {
   const data = fields(value, ["teamId", "version"]);
@@ -107,6 +124,13 @@ export const parseProjectAccess = (value: unknown, projectId: string, userId?: s
   };
   if (access.projectId !== projectId || access.ownerTeam.id !== access.ownership.teamId || access.canTransfer !== (access.teamRole === "admin") || access.effectiveRole !== effectiveRole(access.teamRole, access.directGrant)) return malformed();
   return access;
+};
+export const parseCreatedProject = (value: unknown, userId: string, teamId?: string): Project => {
+  const data = fields(value, ["id", "name", "repoUrl", "settings", "ownership", "createdAt", "updatedAt", "access"]);
+  const project = parseProject(data);
+  const access = parseProjectAccess(data.access, project.id, userId);
+  if (teamId !== undefined && teamId !== project.ownership.teamId || access.ownership.teamId !== project.ownership.teamId || access.ownership.version !== project.ownership.version || access.directGrant?.role !== "admin" || access.teamRole === null) return malformed();
+  return project;
 };
 export const parseProjectParticipants = (value: unknown, projectId: string, actorUserId?: string): readonly ProjectParticipant[] => {
   const data = fields(value, ["items", "actorAccess"]);
