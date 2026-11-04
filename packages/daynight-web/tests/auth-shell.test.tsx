@@ -1518,3 +1518,16 @@ describe("private project creation", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
+
+it('clears cold Bot draft and receipt namespaces on an account change outside the Bot page', async () => {
+  install(); render(<AuthenticatedApp />);
+  await screen.findByRole('complementary', { name: '工作空间导航' });
+  const key = `daynight:bot-session:${JSON.stringify([userId, 'bot', 'session', 'execution'])}:draft`;
+  window.sessionStorage.setItem(key, 'private draft');
+  const displayKey = `daynight.web.session.display.v1:${JSON.stringify([userId, 'session'])}`;
+  window.localStorage.setItem(displayKey, '"standard"');
+  serverUserId = otherId; returnFromAnotherWindow();
+  await screen.findByText('Bob');
+  await waitFor(() => expect(window.sessionStorage.getItem(key)).toBeNull());
+  expect(window.localStorage.getItem(displayKey)).toBeNull();
+});
