@@ -58,15 +58,16 @@ For PR delivery, sustain the following workflow:
 
 ## Ongoing waits
 
-Pending CI and reviews are part of continued execution.
+Pending CI, PR reviews and required reviewer approvals are part of continued execution, including reviews performed by a person.
+Do not set `properties.paused=true` or request user intervention because these results are pending or a polling wait times out. Keep the task `in_progress` and continue monitoring and delivery; honor any independent user pause, restriction or revocation.
 Use bounded listeners or reasonable polling that yields execution; one wait timing out does not end the task.
 Prefer the worker's existing continuation mechanism, without creating another scheduling service or claiming continued monitoring after it has stopped.
 Inspect new results and handle failures, feedback, and conflicts; ordinary waits do not end the task.
 
 ## Request user interaction
 
-Request user intervention when a goal, architecture, execution plan, or acceptance criteria necessary to complete the task are missing, when a problem is not covered by the design, or when another blocker arises.
-Do not invent missing decisions or treat the problem as completion. Ordinary CI and review waits remain [ongoing execution](#ongoing-waits); a polling timeout does not require human intervention.
+Request user intervention only when completing the task requires specific information, a decision, authorization or an action that you cannot supply within the task scope and existing authority. This includes missing necessary goals, architecture, execution plans or acceptance criteria, and problems outside the design that require a user decision or action.
+Do not invent missing decisions or treat the problem as completion. Pending PR review, required reviewer approval and CI remain [ongoing execution](#ongoing-waits), even when a reviewer is human or a polling wait times out; they do not justify pausing the task.
 
 Before waiting for human intervention, read the complete task and verify the original active claim, worker and worktree. Use the exact version from that decision to pause your own assigned task:
 
