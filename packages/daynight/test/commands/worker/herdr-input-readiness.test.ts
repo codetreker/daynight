@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { inspectHerdrInput } from "../../../src/commands/worker/herdr/input-readiness.js";
+import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrAgentObservation, HerdrTaskBinding } from "../../../src/commands/worker/herdr.js";
 
 const binding: HerdrTaskBinding = { session: "w", workspaceId: "ws", paneId: "pane", terminalId: "terminal" };
@@ -11,7 +12,7 @@ const fixture = () => {
   let visible = "";
   const operation = createOperation();
   const inspect = (purpose: "automatic" | "manual" | "resume" | "cleanup" = "automatic") => inspectHerdrInput({ binding, provider: observation.kind as "codex" | "claude" | "copilot", purpose, operation, observe: async () => observation, readSize: async () => ({ width: 97, height: 23 }),
-    rpc: { request: async method => { calls.push(method); if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: "pane", shell_pid: 123, tty: "/dev/ttys001" } }; if (method === "ping") return { type: "pong", version: "0.9.5" }; if (method === "session.snapshot") return { type: "session_snapshot", snapshot }; return { type: "pane_read", read: { pane_id: "pane", workspace_id: "ws", tab_id: "tab", source: "visible", format: "text", text: visible, truncated: false, revision: 0 } }; } } });
+    rpc: { request: async (method, params) => { calls.push(method); if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: "pane", shell_pid: 123, tty: "/dev/ttys001" } }; if (method === "ping") return { type: "pong", version: "0.9.5" }; if (method === "session.snapshot") return { type: "session_snapshot", snapshot }; return { type: "pane_read", read: { pane_id: "pane", workspace_id: "ws", tab_id: "tab", source: "visible", format: params.format, text: visible, truncated: false, revision: 0 } }; } } });
   return { observation, snapshot, calls, operation, inspect, text: (text: string) => { visible = text; } };
 };
 describe("Herdr original input readiness", () => {
@@ -25,27 +26,87 @@ describe("Herdr original input readiness", () => {
     const f = fixture(); try { f.observation.status = "blocked"; await expect(f.inspect("manual")).resolves.toBeDefined(); await expect(f.inspect()).rejects.toThrow(); f.observation.launchPending = true; await expect(f.inspect("manual")).rejects.toThrow(); } finally { f.operation.dispose(); }
   });
   it("requires a recognized empty composer for available provider checks", async () => {
-    const f = fixture(); f.observation.kind = "codex"; try { f.text("› a pending draft"); await expect(f.inspect("resume")).rejects.toThrow(); f.text("› Ask Codex to do anything\n gpt · /tmp/project"); expect((await f.inspect("resume")).composer).toBe("empty"); } finally { f.operation.dispose(); }
+    const f = fixture(); f.observation.kind = "codex"; try { f.text("› a pending draft"); await expect(f.inspect("resume")).rejects.toThrow(); f.text("› \x1b[2mAsk Codex to do anything\x1b[0m\n\n ? for shortcuts"); expect((await f.inspect("resume")).composer).toBe("empty"); } finally { f.operation.dispose(); }
   });
 });
 
 const readyComposer = {
-  codex: "› Ask Codex to do anything\n gpt · /tmp/project",
+  codex: "› \x1b[2mAsk Codex to do anything\x1b[0m\n\n ? for shortcuts",
   claude: "────────\n❯\n────────\n ? for shortcuts",
   copilot: "",
 } as const;
 
-it.each(["codex", "claude", "copilot"] as const)("accepts an interactive %s completion while preserving automatic composer checks", async provider => {
+it.each(["codex", "claude", "copilot"] as const)("accepts an interactive %s completion without claiming automatic empty-composer proof", async provider => {
   const f = fixture(); f.observation.kind = provider; f.text(readyComposer[provider]);
   try {
     f.observation.status = "working"; await expect(f.inspect()).rejects.toMatchObject({ code: "automation_suspended" });
     f.observation.status = "done";
-    await expect(f.inspect()).resolves.toMatchObject({ width: 97, height: 23, composer: provider === "copilot" ? "unavailable" : "empty" });
+    await expect(f.inspect()).resolves.toMatchObject({ width: 97, height: 23, composer: "unavailable" });
     if (provider !== "copilot") {
       f.text(provider === "codex" ? "› a pending draft" : "────────\n❯ a pending draft\n────────\n ? for shortcuts");
-      await expect(f.inspect()).rejects.toMatchObject({ code: "automation_suspended" });
+      await expect(f.inspect()).resolves.toMatchObject({ composer: "unavailable" });
+      await expect(f.inspect("resume")).rejects.toMatchObject({ code: "automation_suspended" });
     }
   } finally { f.operation.dispose(); }
+});
+
+it.each(["automatic", "cleanup"] as const)("uses only known blockers for %s input", async purpose => {
+  for (const provider of ["codex", "claude"] as const) {
+    const f = fixture(); f.observation.kind = provider;
+    try {
+      for (const screen of ["Unrecognized normal layout", readyComposer[provider], "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts"]) {
+        f.text(screen); await expect(f.inspect(purpose)).resolves.toMatchObject({ composer: "unavailable" });
+      }
+      f.text(provider === "codex" ? "› 1. GPT-6.1 Terra\nenter default · s session · esc back" : "❯ 1. Yes\nEnter to confirm · Esc to cancel");
+      await expect(f.inspect(purpose)).rejects.toBeInstanceOf(HerdrInputBlockedError);
+      f.calls.splice(0); await expect(f.inspect("manual")).resolves.toMatchObject({ composer: "unavailable" });
+      expect(f.calls).not.toContain("pane.read");
+    } finally { f.operation.dispose(); }
+  }
+});
+
+it.each(["codex", "claude"] as const)("requires honest current %s empty-input evidence only for resume", async provider => {
+  const f = fixture(); f.observation.kind = provider;
+  try {
+    f.text(readyComposer[provider]); await expect(f.inspect("resume")).resolves.toMatchObject({ composer: "empty" });
+    if (provider === "codex") {
+      f.text("› \x1b[2mAsk Codex to do anything\x1b[0m\n\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts");
+      await expect(f.inspect("resume")).resolves.toMatchObject({ composer: "empty" });
+    }
+    for (const screen of ["Unknown layout", provider === "codex" ? "› Ask Codex to do anything" : "❯", `${readyComposer[provider]}\n${provider === "codex" ? "›" : "❯"} current draft`, provider === "codex" ? "› 1. Model\nenter select · esc back" : "❯ 1. Yes\nEnter to confirm · Esc to cancel"]) {
+      f.text(screen); await expect(f.inspect("resume")).rejects.toMatchObject({ code: "automation_suspended" });
+    }
+  } finally { f.operation.dispose(); }
+});
+
+it.each([
+  "› Ask Codex to do anything\n\n ? for shortcuts",
+  "› Ask Codex to do anything\nsecond line of an actual multiline draft\n ? for shortcuts",
+  "› \x1b[2mAsk Codex to do anything\x1b[0m\nsecond line of a draft\n ? for shortcuts",
+  "› \x1b[38;2;2;4;6mAsk Codex to do anything\x1b[0m\n\n ? for shortcuts",
+  "› \x1b[38;5;2mAsk Codex to do anything\x1b[0m\n\n ? for shortcuts",
+  "› \x1b[38;2;;4;6;2mAsk Codex to do anything\x1b[0m\n\n ? for shortcuts",
+  "› \x1b[2mAsk Codex to do anything\x1b[0m\x1b[H\n\n ? for shortcuts",
+])("does not label an ambiguous, nonempty or unsupported Codex field empty: %j", async screen => {
+  const f = fixture(); f.observation.kind = "codex"; f.text(screen);
+  try { await expect(f.inspect("resume")).rejects.toMatchObject({ code: "automation_suspended" }); }
+  finally { f.operation.dispose(); }
+});
+
+it("keeps actual DIM evidence distinct from RGB/indexed channel values", async () => {
+  const f = fixture(); f.observation.kind = "codex";
+  try {
+    f.text("\x1b[1m› \x1b[0;2;38;2;2;4;6mAsk Codex to do anything\x1b[0m\n\n ? for shortcuts");
+    await expect(f.inspect("resume")).resolves.toMatchObject({ composer: "empty" });
+    f.text("› \x1b[2;38;5;2mAsk Codex to do anything\x1b[22m\n\n ? for shortcuts");
+    await expect(f.inspect("resume")).resolves.toMatchObject({ composer: "empty" });
+  } finally { f.operation.dispose(); }
+});
+
+it.each(["────────\n❯ Try \"explain this repository\"\n────────\n ? for shortcuts", "────────\n❯\nactual multiline draft\n────────\n ? for shortcuts"])("does not label ambiguous Claude placeholder or multiline draft empty: %j", async screen => {
+  const f = fixture(); f.observation.kind = "claude"; f.text(screen);
+  try { await expect(f.inspect("resume")).rejects.toMatchObject({ code: "automation_suspended" }); }
+  finally { f.operation.dispose(); }
 });
 
 it.each(["automatic", "manual", "resume", "cleanup"] as const)("requires readiness for done input in %s mode", async purpose => {
