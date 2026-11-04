@@ -13,7 +13,8 @@ Worker's process-local execution recovery budget without resuming the task.
 ## Decision
 
 The Herdr adapter handles shell initialization within the serialized native
-startup operation. It retries only the explicit `agent_pane_busy` rejection for
+`HerdrAgentManager.launch` operation, also used by the legacy `start` path.
+It retries only the explicit `agent_pane_busy` rejection for
 at most two seconds, with the original operation's cancellation and deadline.
 Before each retry it verifies the owned workspace, pane, terminal and cwd,
 requires that no Agent has appeared, and reads current `pane.process_info`.
@@ -31,11 +32,16 @@ can reject a shell while its startup subprocesses remain in the foreground
 group. A snapshot with no Agent alone does not establish shell availability.
 
 The [claim/session decision](../simplification/2026-10-27-worker-claim-records.md)
-continues to own recovery identity: stop/close an inactive workspace, recreate
-the native environment, and resume the saved session ID, or start fresh when
-that ID is NULL. Shell waiting adds no persistent state and does not replace
-that lifecycle. Unknown launch outcomes retain their existing observation
-requirement. The [Worker design](../../../../docs/design/daynight-worker.md#herdr-与原生会话)
+owns legacy Linux/Windows recovery identity: stop/close an inactive workspace,
+recreate the native environment, and resume the saved session ID, or start fresh
+when that ID is NULL. On macOS, the
+[durable lifecycle](../../../../docs/design/herdr-worker-lifecycle.md) requires
+the original stop proof and native conversation identity before a new generation.
+Its launch intent is committed before this bounded retry loop; successful launch
+still requires persistent native process proof before assignment delivery.
+Shell waiting adds no persistent retry permit, changes no generation and sends
+no assignment. An unknown launch outcome or a crash cannot authorize replay.
+The [Worker design](../../../../docs/design/daynight-worker.md#herdr-与原生会话)
 owns the current startup mechanism.
 
 ## Alternatives
