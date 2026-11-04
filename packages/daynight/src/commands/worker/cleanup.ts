@@ -1,9 +1,10 @@
 import path from "node:path";
+import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
 import { ensureCleanupSchedule } from "./cleanup-schedule.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
 import type { WorkerAgent } from "../../api/types.js";
 import type { HerdrOwnedWorkspace } from "./herdr.js";
-import { actualTaskPane, executionContext, liveAgent, settleWorkerStops, workerOperation } from "./execution.js";
+import { actualTaskPane, executionContext, liveAgent, settleWorkerStops } from "./execution.js";
 import type { ExecutionDependencies } from "./execution.js";
 import { workerCleanupPrompt } from "./prompts.js";
 import type { LocalTask, ResourceOwner, WorkerProject } from "./types.js";
@@ -29,19 +30,19 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
       let stage: "agent-stop" | "worktree-removal" = "agent-stop";
       try {
         const stopContext = { ...input.owner, cwd: path.join(input.project.localPath, ".worktrees", "daynight", input.owner.taskId) };
-        const stopped = await settleWorkerStops(deps, input.owner, signal);
+        const stopped = await settleWorkerStops(deps, input.owner, signal, cleanupOperation);
         const pane = stopped ? undefined : actualTaskPane(input.owner, resources);
         if (pane !== undefined) {
           const agent: WorkerAgent | undefined = input.task?.agent ?? pane.kind ?? pane.nativeSession?.agent;
           if (agent === undefined) {
-            await workerOperation((operation) => deps.herdr.tasks.stopAndClose(stopContext, pane.binding, operation), signal);
+            await cleanupOperation((operation) => deps.herdr.tasks.stopAndClose(stopContext, pane.binding, operation), signal);
           } else {
             const context = executionContext({ ...input, task: { agent } });
             if (liveAgent(pane) && !attempt.notified && deps.now() < attempt.deadline) {
               attempt.notified = true;
               saveAttempt();
               try {
-                await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, pane.binding, workerCleanupPrompt(input.owner, attempt!.deadline), operation), signal, Math.max(1, Math.min(30_000, attempt.deadline - deps.now())));
+                await cleanupOperation((operation) => deps.herdr.tasks.submitPrompt(context, pane.binding, workerCleanupPrompt(input.owner, attempt!.deadline), operation), signal, Math.max(1, Math.min(CLEANUP_OPERATION_MS, attempt.deadline - deps.now())));
                 attempt.submitted = true;
                 saveAttempt();
               } catch (error) {
@@ -51,11 +52,11 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
             }
             const completed = attempt.submitted && pane.status === "idle";
             if (liveAgent(pane) && !completed && deps.now() < attempt.deadline) return false;
-            await workerOperation((operation) => deps.herdr.tasks.stopAndClose(context, pane.binding, operation), signal);
+            await cleanupOperation((operation) => deps.herdr.tasks.stopAndClose(context, pane.binding, operation), signal);
           }
         }
         stage = "worktree-removal";
-        if (deleteWorktree) await workerOperation((operation) => deps.git.removeWorktree(input.project, input.owner, operation), signal, 180_000);
+        if (deleteWorktree) await cleanupOperation((operation) => deps.git.removeWorktree(input.project, input.owner, operation), signal);
         attempts.delete(identity);
         deps.emit({ kind: deleteWorktree ? "cleaned" : "agent-stopped", ...(input.task === undefined ? {} : { task: input.task }), message: deleteWorktree ? "Stopped the task resources and deleted its worktree; the branch remains." : "Stopped the task resources and preserved its worktree." });
         return true;

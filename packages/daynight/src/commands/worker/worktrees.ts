@@ -81,7 +81,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       const key = name.toUpperCase();
       if (["GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CURL_VERBOSE"].includes(key) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(key) || key.startsWith("GIT_TRACE")) environment[name] = undefined;
     }
-    const result = await runGit(cwd, ["-c", `core.hooksPath=${await hookDirectory()}`, "-c", "submodule.recurse=false", ...args], operation, { environment, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+    const result = await runGit(cwd, ["-c", `core.hooksPath=${await hookDirectory()}`, "-c", "submodule.recurse=false", ...args], operation, { environment, timeoutMs: timeoutMs === undefined ? operation.limits.requestMs : timeoutMs });
     return line(result.stdout);
   };
   const validateOrigin = async (root: string, repoUrl: string, operation: Operation): Promise<void> => {

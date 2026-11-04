@@ -1,3 +1,4 @@
+import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
 import { readWorkerClaim } from "../../api/task-properties.js";
 import type { WebExecutionBackend } from "./backends/web.js";
 import type { WebExecutionStore } from "./backends/web-store.js";
@@ -205,8 +206,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         // Registration precedes every native launch. Missing local evidence alone proves nothing.
         if (local?.sessionId !== null && local?.sessionId !== undefined) throw new Error("The original native identity has no local Web stop evidence.");
         if (!options.verifyWebUnregistered) throw new Error("Web launch provenance cannot be verified.");
-        await options.verifyWebUnregistered(owner, signal ?? new AbortController().signal);
-        if (deleteWorktree) { await workerOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), signal); if (local) options.store.completeTask(owner); }
+        await options.verifyWebUnregistered(owner, signal ?? new AbortController().signal, CLEANUP_OPERATION_MS);
+        if (deleteWorktree) { await cleanupOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), signal); if (local) options.store.completeTask(owner); }
         return;
       }
       if (webRecord.status === "done") {
@@ -214,7 +215,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         // Completed stop evidence is reusable, but present Git resources still require attention.
         if (!webRecord.cleanup?.agentStopped || !webRecord.cleanup.backendResourcesClosed || !webRecord.cleanup.worktreeDeleted) throw new Error("The completed Web execution has incomplete cleanup evidence.");
         if (deleteWorktree) {
-          const retained = await workerOperation(operation => options.git.findWorktree(projectFor(owner), owner, operation), signal);
+          const retained = await cleanupOperation(operation => options.git.findWorktree(projectFor(owner), owner, operation), signal);
           if (retained !== null) throw new Error("The completed Web execution still has a worktree; its resources were retained.");
           if (local !== null && local.status !== "done") options.store.completeTask(owner);
         }
@@ -229,9 +230,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         await delay(1000, undefined, signal === undefined ? {} : { signal });
       }
     }
-    await workerOperation(operation => options.herdr.ensureInstance(operation), signal);
+    await cleanupOperation(operation => options.herdr.ensureInstance(operation), signal);
     while (true) {
-      const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), signal);
+      const resources = await cleanupOperation((operation) => options.herdr.tasks.listResources(operation), signal);
       const task = recordMissingClaim(owner, actualTaskPane(owner, resources));
       const completed = await cleanup.advance({ owner, project: projectFor(owner), ...(task === null ? {} : { task }) }, resources, deleteWorktree, signal);
       if (completed) {
@@ -384,7 +385,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       else if (!jobs.has(key(local)) && !ending.has(key(local))) {
         if (local.agentControlMode === "web") {
           if (!options.verifyWebUnregistered || local.sessionId !== null) throw new Error("The ended Web claim has no original resource evidence; its ownership record is retained.");
-          await options.verifyWebUnregistered(local, normalSignal);
+          await options.verifyWebUnregistered(local, normalSignal, CLEANUP_OPERATION_MS);
         }
         options.store.completeTask(local);
       }
@@ -506,7 +507,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       let complete = true;
       for (const task of options.store.listUnfinishedTasks()) if (task.agentControlMode === "web" && options.webStore?.getTask(task) == null) {
         if (task.status === "pending" && task.sessionId === null && options.verifyWebUnregistered) {
-          try { await options.verifyWebUnregistered(task, new AbortController().signal); continue; }
+          try { await options.verifyWebUnregistered(task, new AbortController().signal, CLEANUP_OPERATION_MS); continue; }
           catch { /* Missing launch evidence must not be interpreted as a confirmed native stop. */ }
         }
         complete = false;
@@ -522,8 +523,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       try {
         let workspaces: HerdrOwnedWorkspace[] = [];
         if (needsHerdr() || hasHerdrCleanup()) {
-          await workerOperation(operation => options.herdr.ensureInstance(operation));
-          workspaces = await workerOperation(operation => options.herdr.tasks.listResources(operation));
+          await cleanupOperation(operation => options.herdr.ensureInstance(operation));
+          workspaces = await cleanupOperation(operation => options.herdr.tasks.listResources(operation));
         }
         for (const workspace of workspaces) {
           if (options.store.getProject(workspace.owner) === null) {
@@ -553,15 +554,15 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             }
             if (options.store.getTask(owner)?.agentControlMode === "web") return;
             if (options.store.getTask(owner) === null) {
-              const observed = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
+              const observed = await cleanupOperation((operation) => options.herdr.tasks.listResources(operation));
               recordMissingClaim(owner, actualTaskPane(owner, observed));
             }
-            await settleWorkerStops(deps, owner);
-            const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
+            await settleWorkerStops(deps, owner, undefined, cleanupOperation);
+            const resources = await cleanupOperation((operation) => options.herdr.tasks.listResources(operation));
             const pane = actualTaskPane(owner, resources);
             if (pane === undefined) return;
             const context = { ...owner, cwd: path.join(projectFor(owner).localPath, ".worktrees", "daynight", owner.taskId) };
-            await workerOperation((operation) => options.herdr.tasks.stopAndClose(context, pane.binding, operation));
+            await cleanupOperation((operation) => options.herdr.tasks.stopAndClose(context, pane.binding, operation));
           });
         }
         catch (error) { complete = false; options.emit({ kind: "shutdown-error", ...(options.store.getTask(owner) === null ? {} : { task: options.store.getTask(owner)! }), message: error instanceof WorkerCleanupError && error.stage === "backend-close" ? "The original Agent is stopped, but backend resource closure is unconfirmed." : "Could not confirm the original task resources stopped and closed.", error }); }

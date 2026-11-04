@@ -165,6 +165,11 @@ investigations stay read-only unless recording a proposal is authorized.
 
 ## Validation and delivery
 
+Ordinary change PRs must leave `packages/daynight/package.json` version unchanged.
+Use the [release-daynight skill](.agents/skills/release-daynight/SKILL.md) for
+version selection, any version PR, and the complete CLI publication and
+verification workflow.
+
 Choose checks from the actual files and tooling involved. For skill and document
 changes, validate frontmatter, local links, lifecycle/path agreement, mandatory
 note sections, and skill discovery. Check newly created files as well as

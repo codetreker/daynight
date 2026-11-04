@@ -166,9 +166,6 @@ PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
 documentation and repository metadata. A selected CLI runs every native platform,
 the runtime compatibility matrix and the dedicated Linux shell completion job.
-On PRs, the Linux job also enforces package version increases before ordinary
-validation. It compares the PR's complete source changes with
-its merge base and its package version with the event's target-branch revision.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
@@ -209,10 +206,10 @@ captured targets, disposable review artifacts, shared refs, and isolation betwee
 PR worktrees. Independent Git suites run in separate Vitest workers. Each suite
 copies its immutable bare-origin seed into private test directories; refs,
 SQLite databases, clones and worktrees remain separate for every case. Sparse
-suites prepare their shared source graph before copying, and version-gate tests
-reuse only immutable default-base objects; scenario observations and mutations
-remain private. Source snapshots are prepared through batched native Git imports,
-while real clone/fetch/worktree operations remain the test subjects. Tests within
+suites prepare their shared source graph before copying; scenario observations
+and mutations remain private. Source snapshots are prepared through batched
+native Git imports, while real clone/fetch/worktree operations remain the test
+subjects. Tests within
 a file stay sequential so environment changes and cleanup have one owner.
 The [Git test decision](../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)
 records the isolation rules, and the
@@ -516,24 +513,24 @@ records the workload split and retained correctness guarantees.
 
 ## Package versions
 
-Changes to `packages/daynight/src/`, either package manifest, `pnpm-lock.yaml`,
-`pnpm-workspace.yaml`, `.npmrc`, either application TypeScript configuration, or
-the package's build-cleanup and resource-copy scripts require a strictly greater
-SemVer in `packages/daynight/package.json`. Source
-additions, deletions and moves all count. Unchanged versions, downgrades and
-build-metadata-only changes fail. Tests, fixtures, documentation, CI workflows
-and validation scripts alone do not require a version increase. CI enforces this
-policy in the PR's Linux CLI job using the event's explicit base and head commits.
+Ordinary change PRs keep `packages/daynight/package.json` version unchanged.
+PR and main CI validate affected code without comparing versions between Git
+revisions.
+Version selection and complete CLI publication belong to the repository's
+[release-daynight skill](../.agents/skills/release-daynight/SKILL.md). It analyzes
+CLI changes since the public npm `latest` source, selects patch or minor unless
+an explicit version is supplied, and retains an already prepared version when
+it meets the release requirements. The skill owns the classification rules,
+version PR delivery, release completion evidence, and interrupted-release
+reconciliation.
 
-Update the version in the same PR as the code. To check committed revisions
-locally, run `pnpm version:check pull_request <base-sha> <head-sha>` or
-`pnpm version:check push <before-sha> <after-sha>`. The command reads versions
-from those commits; uncommitted files do not affect the result. The local push
-mode compares the complete before/after range; an all-zero before SHA validates
-the starting version without a predecessor comparison. Missing history,
-unreadable manifests and invalid versions fail visibly. The
-[toolchain decision](../.agents/notes/archived/process/2026-10-16-typescript-cli-toolchain.md)
-records the original comparison and CI ownership choices.
+Publication accepts stable `x.y.z` versions. A new release must advance public
+npm `latest`; existing npm versions and release tags are immutable. The
+[publication procedure](#npm-publication) describes the workflow's admission,
+validation, and existing-version skips. A successful skip alone does not prove
+that the requested source was published. The
+[version policy decision](../.agents/notes/implemented/simplification/2026-11-04-release-time-versioning.md)
+records why version selection belongs to release preparation.
 
 ## npm publication
 
@@ -555,7 +552,10 @@ successful publication within two days; npm requires an expired configuration
 to be recreated. These settings belong to npmjs and are not configured by the
 repository. See npm's [trusted publishing documentation](https://docs.npmjs.com/trusted-publishers).
 
-After merging a stable package version to `main`, run:
+For an authorized release, use the
+[release-daynight skill](../.agents/skills/release-daynight/SKILL.md) to select the
+version and complete any protected version PR. Its publication step dispatches
+the following workflow after the stable version is on `main`:
 
 ```bash
 gh workflow run publish.yml --ref main
@@ -639,18 +639,38 @@ The [root README routing table](../README.md#ci-selection) owns path selection.
 
 Every path under `packages/daynight/src/` selects CLI validation, including
 runtime Markdown such as the bundled review skill's `SKILL.md` or `README.md`.
-Every CLI source change also selects both Go server jobs, which install the CLI.
-The browser-consumed `src/api/` and `src/session/` trees and exact
-`src/platform/text.ts` path additionally select Web quality and browser validation.
-The exact manifest, build/configuration and acceptance-script inputs in
+The CLI command registry loads the implementations of `worker`, `controller`,
+`review`, `skill`, `update` and `completion` only when selected. Implementation
+and resource changes within those command directories select only CLI checks;
+their `definition.ts` files remain server inputs because the registry imports
+definitions at startup. Other CLI source conservatively selects both Go jobs,
+including the shared startup code and project/task/authentication commands used
+by installed-CLI acceptance. The browser-consumed `src/api/` and `src/session/`
+trees and exact `src/platform/text.ts` path additionally select Web quality and
+browser validation. Changes to these command-loading or shared-code relationships
+must keep the selector's ownership rules aligned with the actual imports.
+
+For a modified CLI `package.json`, detection reads the committed merge-base and
+PR head blobs, parses both JSON objects and compares them after removing only
+the top-level `version` field. Version, formatting and object-key-order changes
+select CLI checks without selecting server jobs. Any other semantic difference,
+including dependency versions, scripts, package contents or nested `version`
+fields, retains server selection; array order remains significant. Additions,
+deletions and file-type changes select server jobs conservatively. Invalid
+modified manifests and Git read failures fail detection. The checkout contents
+and changes made only on the target branch do not determine this comparison.
+Root manifests, the lockfile and workspace inputs keep all-module selection.
+
+The exact build/configuration and acceptance-script inputs in
 [the selector](../.github/scripts/ci-modules.mts) select CLI and both server jobs.
 Web source and its Dagre/XYFlow patches select both server jobs because those jobs
-build embedded Web assets.
-Other documentation exclusions apply before module selection. The `.gitignore`
-exclusion matches only the repository root; nested ignore files retain their
-module ownership or the unclassified-path fallback. An excluded path does not
-suppress jobs selected by other changed files. New modules and unclassified
-patches select all jobs until their consumers are explicitly assigned.
+build embedded Web assets. Documentation exclusions apply after CLI source
+ownership. The `.gitignore` exclusion matches only the repository root; nested
+ignore files retain their module ownership or the unclassified-path fallback.
+An excluded path does not suppress jobs selected by other changed files. New
+modules and unclassified patches select all jobs until their consumers are
+explicitly assigned. The [server input decision](../.agents/notes/implemented/testing/2026-11-04-server-ci-input-selection.md)
+records the dependency boundary and its maintenance cost.
 
 Selected jobs keep their ordinary functional checks, coverage thresholds,
 timeouts and cleanup requirements. Stress workloads have explicit local-only
@@ -723,13 +743,13 @@ records the concurrency and aggregation policy.
 Documentation-only PRs run routing tests and this final gate
 without installing application dependencies or running application tests. Every
 `main` push retains full application validation. npm publication runs its own
-CLI validation at the frozen release commit. Package-version enforcement belongs
-to PR validation. The
+CLI validation at the frozen release commit. Version checks apply at publication
+as described under [package versions](#package-versions). The
 [selection decision](../.agents/notes/archived/process/2026-10-21-module-scoped-pr-ci.md)
 records the routing alternatives and maintenance costs; the
 [CI simplification decision](../.agents/notes/archived/simplification/2026-10-21-ci-gate-simplification.md)
-records the version-check timing and final job-result gate choices. The
-[cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
+records the earlier PR version-check timing and the retained final job-result
+gate choices. The [cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
 preserves the earlier rationale for stopping aggregation during cancellation.
 
 To validate the routing rules locally without application dependencies, run:

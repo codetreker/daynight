@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest';
 import { SessionTimeline } from '../src/features/task-agent-session/SessionTimeline';
 import { emptySessionState } from '../src/features/task-agent-session/state';
 import { createLocaleRender } from './helpers/renderWithLocale';
+import { useTimelineScroll } from '../src/ui/useTimelineScroll';
 const render = createLocaleRender('en');
 const props = { active: true, canRespond: false, onRespond: async () => {}, hasOlder: false, loadingOlder: false, onLoadOlder: async () => {}, onLoadResource: async () => new Blob() };
 function setup(text = '[Link](https://example.com)\n\n' + 'reading '.repeat(200)) {
@@ -56,4 +57,103 @@ it('resumes following only after the user scrolls down to the latest content', (
 it('pauses following when a footnote is used to navigate within a long message', () => {
   const { box, entry, update } = setup('Footnote[^1]\n\n[^1]: note'); const link = entry.querySelector('a[data-footnote-ref]')!;
   fireEvent.click(link); box.scrollTop = 400; fireEvent.scroll(box); update(1200); expect(box.scrollTop).toBe(400);
+});
+
+// JSDOM cannot lay out rows or clamp scroll offsets. This models those browser
+// primitives while exercising the real hook, DOM replacement and event paths.
+function displayScroll(original = ['a', 'b', 'c', 'd', 'e', 'f']) {
+  let visible = original, mode = 'standard', active = true, identity = 'session/history', scrollTop = 0;
+  let scroll!: ReturnType<typeof useTimelineScroll>;
+  const intent = vi.fn();
+  const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 400, width: 400, height, x: 0, y: top, toJSON() {} });
+  function Timeline() {
+    scroll = useTimelineScroll(identity, active, original, intent, { originalKeys: original, visibleKeys: visible, mode });
+    return <div ref={(node) => {
+      scroll.viewport.current = node;
+      if (!node) return;
+      Object.defineProperties(node, {
+        clientHeight: { configurable: true, value: 200 },
+        scrollHeight: { configurable: true, get: () => 40 + visible.length * 300 },
+        scrollTop: { configurable: true, get: () => scrollTop, set: (top: number) => { scrollTop = Math.max(0, Math.min(top, 40 + visible.length * 300 - 200)); } },
+      });
+      node.getBoundingClientRect = () => rect(0, 200);
+    }} onScroll={scroll.onScroll} onWheel={scroll.onWheel}>
+      <div ref={scroll.content}>{visible.map((key, index) => <article key={key} data-entry-key={key} ref={(node) => {
+        if (node) node.getBoundingClientRect = () => rect(40 + index * 300 - scrollTop, 300);
+      }}>{`${key} `.repeat(600)}</article>)}</div>
+    </div>;
+  }
+  const view = render(<Timeline />);
+  const box = view.container.firstElementChild as HTMLElement;
+  return {
+    box, intent, following: () => scroll.isFollowing(),
+    read: (top: number) => { fireEvent.wheel(box, { deltaY: -10 }); box.scrollTop = top; fireEvent.scroll(box); },
+    update: (keys: string[], nextMode = mode, nextActive = active, nextIdentity = identity, nextOriginal = original) => {
+      visible = keys; mode = nextMode; active = nextActive; identity = nextIdentity; original = nextOriginal; view.rerender(<Timeline />);
+    },
+  };
+}
+it('retains the relative position of a surviving reading anchor on a display change', () => {
+  const view = displayScroll(); view.read(950);
+  view.update(['b', 'd', 'f'], 'conversation');
+  expect(view.box.scrollTop).toBe(350); expect(view.following()).toBe(false);
+});
+it('moves a hidden reading anchor to the nearest preceding visible entry top', () => {
+  const view = displayScroll(); view.read(650);
+  view.update(['b', 'd', 'f'], 'conversation');
+  expect(view.box.scrollTop).toBe(40); expect(view.following()).toBe(false);
+  expect(view.intent).toHaveBeenLastCalledWith(false, 'b');
+});
+it('uses the following visible entry when no preceding entry survives', () => {
+  const view = displayScroll(); view.read(60);
+  view.update(['b', 'd', 'f'], 'conversation');
+  expect(view.box.scrollTop).toBe(40); expect(view.following()).toBe(false);
+});
+it('preserves paused reading through an empty display and restores its original anchor', () => {
+  const view = displayScroll(); view.read(650);
+  view.update([], 'conversation'); fireEvent.scroll(view.box);
+  expect(view.following()).toBe(false);
+  view.update(['a', 'b', 'c', 'd', 'e', 'f'], 'standard');
+  expect(view.box.scrollTop).toBe(650); expect(view.following()).toBe(false);
+});
+it('defers filtered anchor restoration while inactive and applies it on activation', () => {
+  const view = displayScroll(); view.read(650);
+  view.update(['a', 'b', 'c', 'd', 'e', 'f'], 'standard', false);
+  view.update(['b', 'd', 'f'], 'conversation', false);
+  expect(view.box.scrollTop).toBe(650);
+  view.update(['b', 'd', 'f'], 'conversation', true);
+  expect(view.box.scrollTop).toBe(40); expect(view.following()).toBe(false);
+});
+it('preserves following across display changes and resets paused reading only for identity changes', () => {
+  const view = displayScroll(); view.update(['b', 'd', 'f'], 'conversation');
+  expect(view.box.scrollTop).toBe(740); expect(view.following()).toBe(true);
+  view.read(350); view.update(['b', 'd', 'f'], 'conversation', true, 'other/history');
+  expect(view.box.scrollTop).toBe(740); expect(view.following()).toBe(true);
+});
+it('retains the captured original order when the anchored entry also leaves current input', () => {
+  const view = displayScroll(); view.read(650);
+  view.update(['b', 'd', 'f'], 'conversation', true, 'session/history', ['b', 'd', 'f']);
+  expect(view.box.scrollTop).toBe(40); expect(view.following()).toBe(false);
+});
+it('preserves the visible anchor when older entries are prepended in the current mode', () => {
+  const view = displayScroll(); view.update(['b', 'd', 'f'], 'conversation'); view.read(350);
+  view.update(['older', 'b', 'd', 'f'], 'conversation', true, 'session/history', ['older', 'a', 'b', 'c', 'd', 'e', 'f']);
+  expect(view.box.scrollTop).toBe(650); expect(view.following()).toBe(false);
+});
+it('preserves a visible text line across filtering and subsequent width reflow', () => {
+  const view = displayScroll(); let charsPerLine = 80;
+  vi.spyOn(document, 'createRange').mockImplementation(() => {
+    let node: Node, start = 0;
+    return {
+      setStart: (nextNode: Node, offset: number) => { node = nextNode; start = offset; }, setEnd: () => {},
+      getBoundingClientRect: () => {
+        const top = node.parentElement!.getBoundingClientRect().top + Math.floor(start / charsPerLine) * 20;
+        return { top, bottom: top + 20, height: 20 } as DOMRect;
+      },
+    } as unknown as Range;
+  });
+  view.read(1045); view.update(['b', 'd', 'f'], 'conversation');
+  expect(view.box.scrollTop).toBe(445);
+  charsPerLine = 40; act(() => { window.dispatchEvent(new Event('resize')); });
+  expect(view.box.scrollTop).toBe(545); expect(view.following()).toBe(false);
 });

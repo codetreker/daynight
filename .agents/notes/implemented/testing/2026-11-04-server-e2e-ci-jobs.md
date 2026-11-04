@@ -20,9 +20,15 @@ The server selector enables two independent jobs in
 `verify-server-e2e` runs `bash scripts/check.sh --e2e`. Both have a 20-minute bound
 and prepare their own PostgreSQL, pinned UniAuth, embedded Web build and installed
 CLI. The final `checks` job waits for both and rejects failed or cancelled jobs.
-The shared selector includes the CLI source, packaging/preparation inputs and Web
-build inputs actually consumed by both jobs. Documentation exclusions and
-unaffected-module skipping retain their existing semantics.
+The initial split conservatively treated all CLI source and packaging inputs as
+shared server dependencies because both jobs build and install the CLI. The
+[server input-selection decision](2026-11-04-server-ci-input-selection.md)
+partially supersedes that routing choice: lazy command implementations and
+resources outside server acceptance, and CLI manifest version-only changes,
+retain CLI validation without selecting the server jobs. Both jobs keep one
+server selector covering their actual CLI, preparation and embedded Web inputs.
+Documentation exclusions and unaffected-module skipping retain their existing
+semantics.
 
 The complete local `bash scripts/check.sh` entrypoint runs coverage followed by
 E2E. Coverage owns build, vet, race-enabled `go-cov`, critical-block enforcement,
