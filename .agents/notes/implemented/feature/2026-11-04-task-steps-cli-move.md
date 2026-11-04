@@ -25,7 +25,7 @@ surviving relative order and the actual target index. Unchanged index requires
 the same version; a different index requires +1. Explicit versions preserve the
 single PUT budget and cannot compare content against an unobserved baseline.
 
-Move and [Add](2026-11-04-task-steps-cli-add.md) share `executeStepWrite`,
+Move and [Add](2026-11-04-task-steps-cli-add.md) share `performStepWrite`,
 operation-tagged attempts, factual recovery and safe diagnostics. Each retains
 its actual target and request UUID; an eligible unknown result gets at most one
 same-operation `.r1` GET, never a repeated write. The existing transport and

@@ -712,9 +712,13 @@ the packed CLI installation across the supported Node.js range. The Web selector
 enables `verify-web-quality` and two `verify-web` matrix entries, each with a
 20-minute bound. Shared workflow changes retain all-module selection.
 
-The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness
-and the ordinary Vitest/V8 suite with its strict statement checker serially,
-each with a 180-second deadline. Only the coverage subprocess uses four workers
+The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness,
+the ordinary Vitest/V8 suite and the strict statement checker serially. Harness
+has a 180-second deadline and collection has a 300-second deadline; final source-inventory and
+coverage verification has an independent 60-second deadline. The
+[stage budget decision](../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)
+keeps a completed collection from consuming its final verification budget.
+Only the Vitest/V8 subprocess uses four workers
 through its copied environment, retaining the `forks` pool and file isolation.
 The [worker capacity decision](../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
 calibrates that setting for the dedicated public standard Linux runner's four

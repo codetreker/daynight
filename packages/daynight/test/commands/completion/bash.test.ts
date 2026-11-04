@@ -70,7 +70,7 @@ describe("Bash completion rendering", () => {
   it("discovers delivered Step commands with separate operation options", () => {
     const step = taskDefinition.commands!.find(({ name }) => name === "step")!;
     const script = renderBashCompletion(step);
-    expect(script).toContain("dn_children=('list' 'show' 'add' 'update' 'set-status' 'move')");
+    expect(script).toContain("dn_children=('list' 'show' 'add' 'update' 'set-status' 'move' 'delete')");
     const list = renderBashCompletion(step.commands!.find(({ name }) => name === "list")!);
     expect(list).toContain("dn_options=('--project' '--json' '-h' '--help')");
     expect(list).not.toContain("'--if-version'");
@@ -84,7 +84,11 @@ describe("Bash completion rendering", () => {
     expect(update).not.toContain("'--status'");
     const move = renderBashCompletion(step.commands!.find(({ name }) => name === "move")!);
     expect(move).toContain("'--before' '--after' '--first' '--last' '--if-version'");
-    expect(script).not.toContain("'delete'");
+    const remove = renderBashCompletion(step.commands!.find(({ name }) => name === "delete")!);
+    expect(remove).toContain("'--if-version'");
+    expect(remove).toContain("'--project'");
+    expect(remove).toContain("'--json'");
+    expect(remove).not.toContain("'--title'");
   });
 
   it("discovers Thread read/post options through the registered command tree", () => {

@@ -96,6 +96,17 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
           await page.setViewportSize(viewport);
           for (const fullscreen of [false, true]) {
             if (fullscreen) await root.locator('.task-detail-fullscreen-toggle').click();
+            await root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }).focus();
+            await page.keyboard.press('End');
+            const lastTab = root.locator('.task-detail-tabs').getByRole('tab').last();
+            await expect(lastTab).toHaveAttribute('aria-selected', 'true');
+            await expect(lastTab).toBeFocused();
+            await expect.poll(() => lastTab.evaluate((element) => {
+              const tab = element.getBoundingClientRect();
+              const list = element.closest('[role=tablist]')!.getBoundingClientRect();
+              return tab.left >= list.left - 1 && tab.right <= list.right + 1;
+            })).toBe(true);
+            await page.keyboard.press('Home');
             await root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }).click();
             const overview = root.locator('.task-detail-panel-overview');
             await expect.poll(async () => (await overview.boundingBox())!.height).toBeGreaterThanOrEqual(32);

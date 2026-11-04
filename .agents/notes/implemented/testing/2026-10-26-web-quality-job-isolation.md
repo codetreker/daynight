@@ -27,8 +27,11 @@ the complete shard union. Shared workflow changes retain all-module selection.
 
 `scripts/ci.mts` exports `runCi(mode, cancellation, operations?, shard?)` for explicit
 internal `quality` and `browser` modes. Quality runs
-the canonical Node harness and complete Vitest/V8 plus strict statement checker
-serially, with a separate 180-second deadline for each command. Only the coverage
+the canonical Node harness, complete Vitest/V8 collection and strict statement
+checker serially. Harness has a 180-second deadline and collection has a 300-second deadline; the
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) gives
+final inventory and coverage verification an independent 60-second deadline.
+Only the Vitest/V8
 child receives `VITEST_MAX_WORKERS=4`, calibrated for its dedicated public
 standard Linux runner by the [worker capacity
 decision](2026-10-28-web-quality-worker-capacity.md); its `forks` pool, file
@@ -88,8 +91,10 @@ that ordinary acceptance does not need. Separate jobs remove that coupling;
 the selected core has no such gate or reader.
 
 **Increase the job or command allowance.** Larger budgets change the validation
-contract without separating the competing responsibilities. Both jobs retain
-20 minutes, and all existing command and functional deadlines remain in force.
+contract without separating the competing responsibilities. The isolation decision kept both jobs at
+20 minutes and preserved their command and functional deadlines. The later
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) separately
+bounds final verification and calibrates collection for the larger suite.
 
 **Shard browser scenarios across runners.** At the time of this choice, shards
 would duplicate target preparation and require scenario/artifact aggregation,

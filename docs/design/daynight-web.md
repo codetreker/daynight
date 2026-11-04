@@ -785,12 +785,16 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 质量与矩阵实际成功，再验证两份分片摘要。路由和 main push 全量规则由
 [仓库 CI 路由](../../README.md#ci-selection)拥有。
 
-质量 job 通过 `scripts/ci.mts quality` 串行执行 `test:harness` 与 `test:coverage`，
-每个命令分别限时 180 秒。后者运行普通 Vitest/V8 文件并保留完整产品源码清单与严格
-语句覆盖率；只有该子进程的复制环境设置 `VITEST_MAX_WORKERS=4`，`forks` pool 与
-文件隔离不变。并发数按公开标准 Linux 独立 runner 的四 CPU 校准，依据及历史竞争
-条件见[worker 容量决策](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)。
-质量产物保留原始覆盖率与完整源码清单；测试文件逐项通过不能替代 V8 报告及 checker 完成。
+质量 job 通过 `scripts/ci.mts quality` 串行执行 `test:harness`、完整 Vitest/V8 采集与
+`scripts/coverage.mts`。harness 限时 180 秒，采集限时 300 秒，最终源码清单与严格
+覆盖率校验独立限时 60 秒；已完成的采集不能耗尽最终 checker 的预算。阶段归属见
+[预算决策](../../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)。
+完整产品源码清单与严格语句覆盖率保持；只有 Vitest/V8 子进程的复制环境设置
+`VITEST_MAX_WORKERS=4`，`forks` pool 与文件隔离不变。并发数按公开标准 Linux 独立
+质量 runner 的四 CPU 校准，依据及历史竞争条件见
+[worker 容量决策](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)。
+质量产物保留原始覆盖率与完整源码清单摘要；测试文件逐项通过不能替代 V8 报告及
+严格 checker 完成。
 
 两个浏览器 job 分别调用 `scripts/ci.mts browser --shard=1/2` 与 `--shard=2/2`。
 固定 Chromium/Linux 依赖安装保留 600 秒上限，Node/pnpm 与冻结锁文件安装保持。

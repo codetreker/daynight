@@ -13,6 +13,7 @@ type TaskDetailReadingProps = {
   readonly projectId: string;
   readonly taskId: string;
   readonly description: string;
+  readonly steps?: (active: boolean, renderMarkdown: (text: string) => ReactNode) => ReactNode;
   readonly discussion?: ReactNode | ((active: boolean) => ReactNode);
   readonly session?: ReactNode | ((active: boolean) => ReactNode);
   readonly overview: (description: ReactNode) => ReactNode;
@@ -24,7 +25,7 @@ type TaskDetailReadingProps = {
   readonly urls?: AttachmentUrls;
 };
 
-export const TaskDetailReading = ({ projectId, taskId, description, overview, discussion, session, keyboardOwner, api, urls, selection: controlledSelection, onSelectionChange, requireCompleteInventory = false }: TaskDetailReadingProps) => {
+export const TaskDetailReading = ({ projectId, taskId, description, overview, steps, discussion, session, keyboardOwner, api, urls, selection: controlledSelection, onSelectionChange, requireCompleteInventory = false }: TaskDetailReadingProps) => {
   const { messages } = useI18n();
   const attachments = useAttachments(projectId, taskId, api, { requireCompleteInventory });
   const [localSelection, setLocalSelection] = useState<TaskDetailNavigation>({ tab: 'overview', path: null });
@@ -50,9 +51,7 @@ export const TaskDetailReading = ({ projectId, taskId, description, overview, di
   const previewRoot = urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot;
   const base = { kind: 'root' } as const;
 
-  return <TaskDetailPanels {...(discussion === undefined ? {} : { discussion })} {...(session === undefined ? {} : { session })} active={selection.tab} onChange={(tab) => select({ ...selection, tab })} overview={() => overview(description === ''
-    ? <p className="task-detail-description">{messages.inspection.detail.noDescription}</p>
-    : <MarkdownContent className="task-description" text={description} resolveUrl={(value) => resolveMarkdownAttachmentUrl(value, base, previewRoot)} onLinkClick={(value, event) => {
+  const renderMarkdown = (text: string): ReactNode => <MarkdownContent className="task-description" text={text} resolveUrl={(value) => resolveMarkdownAttachmentUrl(value, base, previewRoot)} onLinkClick={(value, event) => {
       if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.currentTarget.hasAttribute('download') || event.currentTarget.target !== '' || /[?#]/.test(value)) return;
       const resolved = resolveAttachmentReference(value, base);
       if (resolved.kind === 'native') return;
@@ -63,5 +62,9 @@ export const TaskDetailReading = ({ projectId, taskId, description, overview, di
       select(next);
       setReveal({ path });
       setReference({ invalid: resolved.kind !== 'relative', selection: next });
-    }} />)} attachments={(active) => <TaskAttachmentsPanel active={active} projectId={projectId} taskId={taskId} attachments={attachments} reveal={reveal} navigation={ownsReference ? reference : null} onInteract={() => setReference(null)} onSelect={(path) => select({ tab: 'attachments', path })} onRemove={(path) => { if (!requireCompleteInventory && currentSelection.current.path === path) select({ ...currentSelection.current, path: null }); }} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} {...(urls === undefined ? {} : { urls })} />} />;
+    }} />;
+
+  return <TaskDetailPanels {...(steps === undefined ? {} : { steps: (active: boolean) => steps(active, renderMarkdown) })} {...(discussion === undefined ? {} : { discussion })} {...(session === undefined ? {} : { session })} active={selection.tab} onChange={(tab) => select({ ...selection, tab })} overview={() => overview(description === ''
+    ? <p className="task-detail-description">{messages.inspection.detail.noDescription}</p>
+    : renderMarkdown(description))} attachments={(active) => <TaskAttachmentsPanel active={active} projectId={projectId} taskId={taskId} attachments={attachments} reveal={reveal} navigation={ownsReference ? reference : null} onInteract={() => setReference(null)} onSelect={(path) => select({ tab: 'attachments', path })} onRemove={(path) => { if (!requireCompleteInventory && currentSelection.current.path === path) select({ ...currentSelection.current, path: null }); }} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} {...(urls === undefined ? {} : { urls })} />} />;
 };
