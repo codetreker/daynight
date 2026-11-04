@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -23,6 +23,42 @@ const waitForFile = async (file: string): Promise<string> => {
     await new Promise((resolve) => { setTimeout(resolve, 20); });
   }
   throw new Error(`Fixture did not create ${file}.`);
+};
+type StopState = { status: "pending" } | { status: "stopped" } | { status: "failed"; cause: unknown };
+const beginStop = (supervisor: ReturnType<typeof createProcessSupervisor>, child: ChildProcess) => {
+  let state: StopState = { status: "pending" };
+  const settled = supervisor.stop(child, { reviewId: "review", attempt: 1 }).then(
+    () => { state = { status: "stopped" }; },
+    (cause: unknown) => { state = { status: "failed", cause }; },
+  );
+  return {
+    get state(): StopState { return state; },
+    settled,
+    finish: async (): Promise<void> => { await settled; if (state.status === "failed") throw state.cause; },
+  };
+};
+// We observe a real cooperative interval after the child acknowledges TERM before advancing the supervisor clock into escalation.
+const observeIgnoredTerm = async (child: ChildProcess, marker: string, stopping: ReturnType<typeof beginStop>): Promise<void> => {
+  const requireRunning = (): void => {
+    if (stopping.state.status === "failed") throw stopping.state.cause;
+    expect(stopping.state.status).toBe("pending");
+    expect(child.exitCode).toBe(null);
+    expect(child.signalCode).toBe(null);
+  };
+  const markerDeadline = performance.now() + 10_000;
+  while (true) {
+    requireRunning();
+    try { await readFile(marker, "utf8"); break; }
+    catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+    if (performance.now() >= markerDeadline) throw new Error(`Fixture did not receive TERM at ${marker}.`);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+  const observationDeadline = performance.now() + 300;
+  while (performance.now() < observationDeadline) {
+    requireRunning();
+    await new Promise((resolve) => { setTimeout(resolve, Math.ceil(observationDeadline - performance.now())); });
+  }
+  requireRunning();
 };
 const kill = process.kill.bind(process);
 const killPosixFixture = async (pid: number, closed: Promise<unknown[]>): Promise<void> => {
@@ -148,35 +184,51 @@ describe("current-run process supervision", () => {
   });
 
   it.each([false, true])("terminates a managed native wrapper tree (ignore TERM=%s)", async (ignoreTerm) => {
-    const { child, closed, marker } = await nativeTree(ignoreTerm, `tree-${ignoreTerm}`);
-    const supervisor = createProcessSupervisor({ graceMs: process.platform === "win32" ? 3_000 : 300 });
+    const { child, closed, marker, termMarker } = await nativeTree(ignoreTerm, `tree-${ignoreTerm}`);
+    const supervisor = process.platform === "win32" ? createProcessSupervisor({ graceMs: 3_000 }) : createProcessSupervisor();
     supervisor.onProcess(child, { reviewId: "review", attempt: 1 });
-    let stopped = false;
+    const originalNow = Date.now.bind(Date);
+    let offset = 0;
+    const clock = process.platform !== "win32" && ignoreTerm ? vi.spyOn(Date, "now").mockImplementation(() => originalNow() + offset) : undefined;
+    let stopping: ReturnType<typeof beginStop> | undefined;
     try {
       await waitForFile(marker);
-      await supervisor.stop(child, { reviewId: "review", attempt: 1 });
-      stopped = true;
+      stopping = beginStop(supervisor, child);
+      if (process.platform !== "win32" && ignoreTerm) {
+        await observeIgnoredTerm(child, termMarker, stopping);
+        offset += 5_000;
+      }
+      await stopping.finish();
       await closed;
+      if (process.platform !== "win32") expect(await readFile(termMarker, "utf8")).toBe("received");
       await expectHeartbeatStopped(marker);
       await expect(supervisor.exclude(review(child.pid!))).resolves.toEqual({ processesExcluded: true });
     } finally {
-      if (process.platform !== "win32" && !stopped) await killPosixFixture(child.pid!, closed);
-      else if (!stopped && child.exitCode === null && child.signalCode === null) await supervisor.stop(child, { reviewId: "review", attempt: 1 });
-      await closed;
+      try {
+        if (stopping?.state.status !== "stopped") {
+          if (process.platform !== "win32") await killPosixFixture(child.pid!, closed);
+          else if (child.exitCode === null && child.signalCode === null) await supervisor.stop(child, { reviewId: "review", attempt: 1 });
+        }
+        await stopping?.settled;
+        await closed;
+      } finally { clock?.mockRestore(); }
     }
   }, 15_000);
 
-  it("inspects a real POSIX process group beyond its short termination grace", async () => {
+  it("inspects a real POSIX process group with production termination defaults", async () => {
     if (process.platform === "win32") return;
     const realPs = await which("ps");
     const proxyDirectory = await mkdtemp(path.join(directory, "delayed-ps-"));
     const invocation = path.join(proxyDirectory, "invocation.json");
     const result = path.join(proxyDirectory, "result.json");
     const { child, closed, marker, termMarker } = await nativeTree(true, "delayed-inspection");
-    const supervisor = createProcessSupervisor({ graceMs: 300 });
+    const supervisor = createProcessSupervisor();
     supervisor.onProcess(child, { reviewId: "review", attempt: 1 });
     const previousPath = process.env.PATH;
-    let stopped = false;
+    const originalNow = Date.now.bind(Date);
+    let offset = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => originalNow() + offset);
+    let stopping: ReturnType<typeof beginStop> | undefined;
     try {
       await writeFile(path.join(proxyDirectory, "ps"), `#!/usr/bin/env node
 import { execFileSync } from "node:child_process";
@@ -193,8 +245,10 @@ setTimeout(() => {
 `, { mode: 0o755 });
       process.env.PATH = `${proxyDirectory}${path.delimiter}${previousPath}`;
       await waitForFile(marker);
-      await supervisor.stop(child, { reviewId: "review", attempt: 1 });
-      stopped = true;
+      stopping = beginStop(supervisor, child);
+      await observeIgnoredTerm(child, termMarker, stopping);
+      offset += 5_000;
+      await stopping.finish();
       await closed;
       const firstInvocation = JSON.parse(await readFile(invocation, "utf8")) as { args: string[]; pid: number };
       expect(firstInvocation.args).toEqual(["-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="]);
@@ -210,9 +264,14 @@ setTimeout(() => {
       await expect(supervisor.exclude(review(child.pid!))).resolves.toEqual({ processesExcluded: true });
       expect(supervisor.safeToReleaseLock).toBe(true);
     } finally {
-      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
-      if (!stopped) await killPosixFixture(child.pid!, closed);
-      await closed;
+      try {
+        if (stopping?.state.status !== "stopped") await killPosixFixture(child.pid!, closed);
+        await stopping?.settled;
+        await closed;
+      } finally {
+        clock.mockRestore();
+        if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      }
     }
   }, 15_000);
 
@@ -220,15 +279,17 @@ setTimeout(() => {
     if (process.platform === "win32") return;
     const proxyDirectory = await mkdtemp(path.join(directory, "failed-ps-"));
     const { child, closed, marker } = await nativeTree(false, "failed-inspection");
-    const supervisor = createProcessSupervisor({ graceMs: 300 });
+    const supervisor = createProcessSupervisor();
     const attempt = { reviewId: "review", attempt: 1 };
     supervisor.onProcess(child, attempt);
     const previousPath = process.env.PATH;
+    let stopping: ReturnType<typeof beginStop> | undefined;
     try {
       await writeFile(path.join(proxyDirectory, "ps"), "#!/usr/bin/env node\nprocess.stderr.write('inspection fixture failed'); process.exitCode = 7;\n", { mode: 0o755 });
       process.env.PATH = `${proxyDirectory}${path.delimiter}${previousPath}`;
       await waitForFile(marker);
-      const failure: unknown = await supervisor.stop(child, attempt).catch((error: unknown) => error);
+      stopping = beginStop(supervisor, child);
+      const failure: unknown = await stopping.finish().catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(Error);
       expect(failure).toMatchObject({ cause: { code: 7, killed: false, signal: null } });
       expect(formatError(failure)).toContain("Caused by: Command failed: ps -A -o pid= -o pgid= -o stat=");
@@ -238,8 +299,13 @@ setTimeout(() => {
       expect(child.exitCode).toBe(null);
       expect(child.signalCode).toBe(null);
     } finally {
-      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
-      await killPosixFixture(child.pid!, closed);
+      try {
+        await killPosixFixture(child.pid!, closed);
+        await stopping?.settled;
+        await closed;
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      }
     }
   }, 15_000);
 

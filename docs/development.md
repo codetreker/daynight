@@ -79,6 +79,10 @@ using short native promise-timer ticks for their controlled resource states.
 Their tests retain exact cadence, deadline clipping and cancellation assertions;
 the [coordinator polling decision](../.agents/notes/implemented/testing/2026-11-04-coordinator-test-polling.md)
 owns that test boundary.
+Native supervisor fixtures use production observation budgets and a controlled
+parent clock only after a real TERM receipt and native signal-observation window.
+The [native fixture decision](../.agents/notes/implemented/testing/2026-11-04-native-supervisor-fixture-clock.md)
+records the real-process proof and cleanup requirements.
 The pnpm dependency store is local to `.tmp/pnpm-store`. Native skill terminal
 acceptance uses the development-only `node-pty` dependency, including Windows
 ConPTY. The workspace build policy permits only the pinned node-pty hook and

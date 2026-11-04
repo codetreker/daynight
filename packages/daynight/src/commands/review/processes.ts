@@ -3,7 +3,6 @@ import type { ChildProcess } from "node:child_process";
 import type { CopilotProcessOutcome } from "./adapters/copilot.js";
 import type { AttemptIdentity, ReviewState } from "./model.js";
 
-const inspectionTimeoutMs = 5_000;
 const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, milliseconds); });
 const command = (file: string, args: string[], timeout: number): Promise<string> => new Promise((resolve, reject) => {
   execFile(file, args, { encoding: "utf8", windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
@@ -69,7 +68,7 @@ export const createProcessSupervisor = (options: { graceMs?: number; previousPro
   };
   const liveGroup = (pid: number): Promise<boolean> => processGroupIsExecuting(pid, {
     probe: (group) => { process.kill(-group, 0); },
-    readStatus: () => command("ps", ["-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="], inspectionTimeoutMs),
+    readStatus: () => command("ps", ["-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="], grace),
   });
   const signalGroup = (pid: number, signal: NodeJS.Signals): void => {
     try { process.kill(-pid, signal); }
