@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, createElement, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError } from "../../api/client";
 import { canonicalId } from "../../api/validation";
 import type { TeamRef } from "../../api/auth-types";
@@ -9,6 +9,17 @@ import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
 type Detail = { readonly id: string; readonly status: "loading" | "ready" | "error"; readonly team?: TeamRef; readonly error?: unknown; readonly storageError?: boolean };
 type State = { readonly key: string | null; readonly detail: Detail };
 export type TeamPreference = ReturnType<typeof useTeamPreference>;
+const PreferenceContext = createContext<TeamPreference | null>(null);
+
+export const TeamPreferenceProvider = ({ personal, routeKey, admission, blocked, children }: { readonly personal: TeamRef; readonly routeKey: string | null; readonly admission: TaskCacheScope; readonly blocked: boolean; readonly children: ReactNode }) => {
+  const preference = useTeamPreference(personal, routeKey, admission, blocked);
+  return createElement(PreferenceContext.Provider, { value: preference }, children);
+};
+export const useCurrentTeamPreference = () => {
+  const preference = useContext(PreferenceContext);
+  if (preference === null) throw new Error("Team preference requires a TeamPreferenceProvider.");
+  return preference;
+};
 
 // The key is scoped to the authenticated user; localStorage is already origin-scoped.
 export const teamPreferenceKey = (userId: string) => `daynight.selectedTeam:${userId}`;

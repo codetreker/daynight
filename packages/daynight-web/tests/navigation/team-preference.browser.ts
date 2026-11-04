@@ -151,3 +151,41 @@ for (const path of [`/projects/${project}`, `/projects/${project}/tasks/${task}`
     expect(await selected(page, alice)).toBe(alpha);
   });
 }
+
+for (const path of [`/projects/${project}/tasks/${task}`, `/projects/${project}/tasks/${task}/attachments/readme.md`]) {
+  test(`retains an unsaved Team across same-page navigation to ${path}`, async ({ page }) => {
+    await install(page);
+    await page.addInitScript(() => {
+      const originalSet = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key.startsWith('daynight.selectedTeam:') && (window as unknown as { failTeamWrite?: boolean }).failTeamWrite) throw new DOMException('write failed', 'QuotaExceededError');
+        return originalSet.call(this, key, value);
+      };
+      (window as unknown as { failTeamWrite: boolean; samePage: string }).failTeamWrite = false;
+      (window as unknown as { failTeamWrite: boolean; samePage: string }).samePage = 'original';
+    });
+    await page.goto('/projects'); await expect(heading(page, 'Personal')).toBeVisible();
+    await put(page, bob, beta);
+    await page.evaluate(() => { (window as unknown as { failTeamWrite: boolean }).failTeamWrite = true; });
+    await openPicker(page); await page.locator(`a[href="/teams/${alpha}"]`).click();
+    await expect(heading(page, 'Alpha')).toBeVisible();
+    await expect(page.getByRole('alert')).toBeVisible();
+    expect(await selected(page, alice)).toBeNull();
+    const traverse = async (target: string) => {
+      await page.evaluate((url) => { history.pushState(null, '', url); dispatchEvent(new PopStateEvent('popstate', { state: null })); }, target);
+      await expect.poll(() => new URL(page.url()).pathname).toBe(target);
+    };
+    await traverse(path);
+    await expect(page.locator('main.task-detail-page')).toBeVisible();
+    await traverse('/projects');
+    await expect(heading(page, 'Alpha')).toBeVisible();
+    const alert = page.getByRole('alert'); await expect(alert).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { samePage: string }).samePage)).toBe('original');
+    expect(await selected(page, alice)).toBeNull(); expect(await selected(page, bob)).toBe(beta);
+    await page.evaluate(() => { (window as unknown as { failTeamWrite: boolean }).failTeamWrite = false; });
+    await alert.getByRole('button', { name: /retry/i }).click();
+    await expect.poll(() => selected(page, alice)).toBe(alpha);
+    expect(await selected(page, bob)).toBe(beta);
+    await expect(alert).toHaveCount(0);
+  });
+}
