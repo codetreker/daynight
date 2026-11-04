@@ -23,7 +23,7 @@ export type Bot = BotDefinition | BotDeleted;
 export type BotLaunchIntent = {
   botVersion: string;
   registration: { protocol: "daynight.session.v1"; schemaVersion: 1; projectionVersion: 1; registrationId: string; testExecutionId: string; controllerId: string; controllerInstanceId: string; provider: WorkerAgent; initialInput: "none" };
-  launchId: string; executionId: string; initialOperationId: string;
+  launchId: string; executionId: string; initialOperationId: string; controllerInstanceId: string;
   sessionId: string | null; executionGeneration: string; nativeSessionId: string | null;
   ticketPath: string; journalPath: string; credentialFile: string;
   recoveryLimit: number; roleConfiguration: BotRoleConfiguration | null;

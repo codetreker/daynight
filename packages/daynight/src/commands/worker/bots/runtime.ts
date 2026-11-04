@@ -10,8 +10,8 @@ import { parseBotOwner, type BotOwner, type BotRecord } from "./types.js";
 
 /**
  * Owns discovery and credential maintenance alongside the Task coordinator.
- * The caller owns the Worker lock, cancellation, stores and shutdown policy.
- * Cancellation joins work; it neither archives Sessions nor proves writers stopped.
+ * The caller owns the Worker lock and stores. Cancellation joins management work
+ * and stops each original writer; shutdown errors retain all recovery evidence.
  */
 export const createManagedAssistantRuntime = (options: {
   owner: BotOwner; store: BotStore; remote: BotRemote; process: BotProcess; sessionApi: BotSessionApi;
@@ -23,7 +23,18 @@ export const createManagedAssistantRuntime = (options: {
   const interval = Math.min(options.pollIntervalMs, 5000);
   const inventory = options.inventory ?? createBotInventory({ owner, store: options.store, remote: options.remote, now });
   const jobs = new Map<string, Promise<void>>(), errors = new Map<string, string>();
-  let running = false;
+  let running = false, closing = false;
+  const shutdownCancellation = new AbortController();
+  const ticks = new Set<Promise<void>>();
+  let runWork: Promise<void> | null = null, stopping: Promise<void> | null = null;
+  const stopAll = (): Promise<void> => stopping ??= (async () => {
+    const results = await Promise.allSettled(options.store.list(owner).map(async record => {
+      try { await options.process.shutdown(record, AbortSignal.timeout(30_000)); }
+      catch (cause) { error(record.botId, cause); throw cause; }
+    }));
+    const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+    if (failures.length) throw new AggregateError(failures, "Bot shutdown could not confirm every original writer stopped; evidence is retained.");
+  })();
   const error = (botId: string | null, cause: unknown): void => {
     const message = cause instanceof Error ? cause.message : "Bot execution is unavailable.";
     if (errors.get(botId ?? "inventory") !== message) options.onError(message, botId);
@@ -84,12 +95,25 @@ export const createManagedAssistantRuntime = (options: {
   };
   return {
     /** A bounded caller-controlled reconciliation, useful before entering steady state. */
-    tick: async (signal: AbortSignal): Promise<void> => { await Promise.all(await discover(signal)); },
+    tick: async (signal: AbortSignal): Promise<void> => {
+      if (closing) throw new Error("Bot runtime is closing.");
+      const combined = AbortSignal.any([signal, shutdownCancellation.signal]);
+      const work = (async () => { await Promise.all(await discover(combined)); })();
+      ticks.add(work);
+      try { await work; } finally { ticks.delete(work); }
+    },
+    /** Stop scheduling, join submitted work, then prove each writer stopped. */
+    shutdown: async (): Promise<void> => {
+      closing = true; shutdownCancellation.abort();
+      if (runWork !== null) await runWork;
+      else { await Promise.allSettled([...ticks, ...jobs.values()]); await stopAll(); }
+    },
     run: async (signal: AbortSignal): Promise<void> => {
+      if (closing) throw new Error("Bot runtime is closing.");
       if (running) throw new Error("This Bot runtime is already running.");
       running = true;
       const cancellation = new AbortController();
-      const combined = AbortSignal.any([signal, cancellation.signal]);
+      const combined = AbortSignal.any([signal, cancellation.signal, shutdownCancellation.signal]);
       const discovery = async () => {
         while (!combined.aborted) {
           try { await discover(combined); errors.delete("inventory"); }
@@ -102,12 +126,19 @@ export const createManagedAssistantRuntime = (options: {
         refresh: async (record, grantSignal) => { const latest = await refresh(record, grantSignal); if (latest !== null) await options.process.refreshGrant(latest, grantSignal); },
         signal: combined, onError: (message, botId) => error(botId, new Error(message)) });
       const discoveryWork = discovery();
-      try { await Promise.all([discoveryWork, grants]); }
-      finally {
-        cancellation.abort();
-        await Promise.allSettled([discoveryWork, grants, ...jobs.values()]);
-        running = false;
-      }
+      runWork = (async () => {
+        const failures: unknown[] = [];
+        try { await Promise.all([discoveryWork, grants]); } catch (cause) { failures.push(cause); }
+        finally {
+          closing = true; cancellation.abort(); shutdownCancellation.abort();
+          await Promise.allSettled([discoveryWork, grants, ...ticks, ...jobs.values()]);
+          try { await stopAll(); } catch (cause) { failures.push(cause); }
+          running = false;
+        }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length) throw new AggregateError(failures, "Bot runtime and shutdown failed.");
+      })();
+      await runWork;
     },
   };
 };

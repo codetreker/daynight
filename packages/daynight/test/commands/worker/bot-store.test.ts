@@ -104,10 +104,10 @@ describe("durable Bot inventory", () => {
       expect(() => f.store.observe(owner, { ...bot(), ...changed } as Bot, 2)).toThrow();
       expect(f.store.get(owner, id(3))).toEqual(before);
     }
-    const db = new Database(f.file); handles.push(db); db.pragma("user_version = 10");
+    const db = new Database(f.file); handles.push(db); db.pragma("user_version = 11");
     expect(() => f.store.observe(owner, { ...bot(), version: "2" }, 2)).toThrow(/unsupported-version/);
     expect(() => f.store.list(owner)).toThrow(/unsupported-version/);
-    db.pragma("user_version = 9"); expect(f.store.get(owner, id(3))).toEqual(before);
+    db.pragma("user_version = 10"); expect(f.store.get(owner, id(3))).toEqual(before);
   });
 
   it("rolls back the Bot migration atomically without changing old task records", () => {

@@ -1,21 +1,26 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { closeSqliteDatabase, openSqliteDatabase, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import { parseStartupObservation, type StartupObservation } from "../../../session/startup.js";
-import { controllerPayloadHash } from "../../controller/launch-ticket.js";
+import { controllerPayloadHash, controllerTicketPath } from "../../controller/launch-ticket.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { ProcessProof } from "../../controller/process-proof.js";
 import { workerStoreFormat } from "../store-format.js";
 import { botUUID, botVersion, parseBotOwner, type BotRecord } from "./types.js";
 
+export type BotPreviousGeneration = { launchId: string; generation: string; instanceId: string; recordId: string; stoppedAt: string };
 export type BotExecution = {
   launchId: string; executionId: string; executionGeneration: string;
   launchSubmission: "not-submitted" | "unknown" | "acknowledged";
   controllerProcess: ProcessProof | null; snapshot: ControllerSnapshot | null;
   aliasDirectory: string | null; lastError: string | null; startup: StartupObservation | null;
+  recoveryCount: number; restartAfterShutdown: boolean; recoveryBlocked: string | null;
+  previous: BotPreviousGeneration | null; retainedLaunchIds: string[]; retainedAliasDirectories: string[];
 };
-export type BotExecutionPatch = Partial<Omit<BotExecution, "launchId" | "executionId" | "executionGeneration">>;
+export type BotExecutionPatch = Partial<Pick<BotExecution, "launchSubmission" | "controllerProcess" | "snapshot" | "aliasDirectory" | "lastError" | "startup">>;
 const fields = ["launchSubmission", "controllerProcess", "snapshot", "aliasDirectory", "lastError", "startup"];
+const recoveryFields = ["recoveryCount", "restartAfterShutdown", "recoveryBlocked", "previous", "retainedLaunchIds", "retainedAliasDirectories"];
 const submissions = ["not-submitted", "unknown", "acknowledged"];
 const predicate = "server_origin = @serverOrigin AND owner_user_id = @ownerUserId AND worker_id = @workerId AND bot_id = @botId";
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
@@ -42,7 +47,7 @@ const checkSnapshot = (record: BotRecord, snapshot: ControllerSnapshot): void =>
   if (snapshot === null || typeof snapshot !== "object" || snapshot.executionId !== intent.executionId
     || snapshot.testExecutionId !== intent.registration.testExecutionId || snapshot.claimId !== undefined
     || snapshot.sessionId !== intent.sessionId || intent.sessionId === null
-    || snapshot.executionGeneration !== intent.executionGeneration || snapshot.controllerInstanceId !== intent.registration.controllerInstanceId
+    || snapshot.executionGeneration !== intent.executionGeneration || snapshot.controllerInstanceId !== intent.controllerInstanceId
     || snapshot.initialInputState !== "not_required") throw new Error("Bot snapshot does not match the original execution fence or input intent.");
   if (snapshot.nativeSessionId !== null) botUUID(snapshot.nativeSessionId, "Bot native session ID");
   if (intent.nativeSessionId !== null && snapshot.nativeSessionId !== intent.nativeSessionId) throw new Error("Bot snapshot cannot replace the original native session.");
@@ -56,9 +61,23 @@ const checkSnapshot = (record: BotRecord, snapshot: ControllerSnapshot): void =>
 };
 const check = (record: BotRecord, value: BotExecution): BotExecution => {
   const intent = record.intent!;
-  if (value === null || typeof value !== "object" || Object.keys(value).sort().join() !== [...fields, "launchId", "executionId", "executionGeneration"].sort().join()
+  if (value === null || typeof value !== "object" || Object.keys(value).sort().join() !== [...fields, ...recoveryFields, "launchId", "executionId", "executionGeneration"].sort().join()
     || value.launchId !== intent.launchId || value.executionId !== intent.executionId || value.executionGeneration !== intent.executionGeneration) throw new Error("Bot execution identity differs from its durable launch intent.");
   botUUID(value.launchId, "Bot launch ID"); botUUID(value.executionId, "Bot execution ID"); botVersion(value.executionGeneration);
+  if (!Number.isSafeInteger(value.recoveryCount) || value.recoveryCount < 0 || typeof value.restartAfterShutdown !== "boolean"
+    || !(value.recoveryBlocked === null || typeof value.recoveryBlocked === "string" && value.recoveryBlocked.trim() !== "" && value.recoveryBlocked.isWellFormed())) throw new Error("Bot recovery evidence is invalid.");
+  if (!Array.isArray(value.retainedLaunchIds) || new Set(value.retainedLaunchIds).size !== value.retainedLaunchIds.length) throw new Error("Bot retained launch ownership is invalid.");
+  for (const launchId of value.retainedLaunchIds) { botUUID(launchId, "Retained Bot launch ID"); if (launchId === value.launchId) throw new Error("The current Bot launch cannot be retained as a previous launch."); }
+  if (!Array.isArray(value.retainedAliasDirectories) || new Set(value.retainedAliasDirectories).size !== value.retainedAliasDirectories.length
+    || value.retainedAliasDirectories.some(directory => typeof directory !== "string" || !path.isAbsolute(directory) || /[\0\r\n]/.test(directory))) throw new Error("Bot retained alias ownership is invalid.");
+  if (value.previous !== null) {
+    const previous = value.previous;
+    if (typeof previous !== "object" || Object.keys(previous).sort().join() !== "generation,instanceId,launchId,recordId,stoppedAt") throw new Error("Bot previous generation evidence is invalid.");
+    for (const id of [previous.launchId, previous.instanceId, previous.recordId]) botUUID(id, "Bot previous generation identity");
+    botVersion(previous.generation);
+    if (BigInt(previous.generation) + 1n !== BigInt(value.executionGeneration) || previous.instanceId === intent.controllerInstanceId
+      || !value.retainedLaunchIds.includes(previous.launchId) || typeof previous.stoppedAt !== "string" || !Number.isFinite(Date.parse(previous.stoppedAt))) throw new Error("Bot previous generation fence is invalid.");
+  } else if (value.executionGeneration !== "1") throw new Error("A recovered Bot requires the preceding stopped generation.");
   if (!submissions.includes(value.launchSubmission)) throw new Error("Bot launch submission evidence is invalid.");
   if (value.startup !== null) parseStartupObservation(value.startup);
   if (value.controllerProcess !== null) checkProcess(value.controllerProcess);
@@ -107,7 +126,7 @@ export const openBotExecutionStore = (file: string, options: { busyTimeoutMs?: n
       const existing = get(saved); if (existing !== null) return existing;
       const intent = saved.intent!;
       return put(saved, { launchId: intent.launchId, executionId: intent.executionId, executionGeneration: intent.executionGeneration,
-        launchSubmission: "not-submitted", controllerProcess: null, snapshot: null, aliasDirectory: null, lastError: null, startup: null });
+        launchSubmission: "not-submitted", controllerProcess: null, snapshot: null, aliasDirectory: null, lastError: null, startup: null, recoveryCount: 0, restartAfterShutdown: false, recoveryBlocked: null, previous: null, retainedLaunchIds: [], retainedAliasDirectories: [] });
     }),
     update: (record: BotRecord, patch: BotExecutionPatch): BotExecution => atomic(() => {
       if (patch === null || typeof patch !== "object" || Object.keys(patch).some(field => !fields.includes(field))) throw new Error("Bot execution patch cannot change identity fields.");
@@ -127,6 +146,61 @@ export const openBotExecutionStore = (file: string, options: { busyTimeoutMs?: n
       }
       if (previous.launchSubmission !== "not-submitted" && previous.aliasDirectory !== next.aliasDirectory) throw new Error("Bot aliases remain owned by the submitted execution.");
       return put(saved, next);
+    }),
+    /** Capture orderly provenance before stopping; cancellation cannot erase an earlier failure. */
+    markShutdown: (record: BotRecord, eligible: boolean): BotExecution => atomic(() => {
+      const saved = current(record), previous = get(saved);
+      if (previous === null) throw new Error("Bot execution evidence has not been prepared.");
+      const observed = previous.snapshot;
+      const healthy = observed !== null && ["ready", "working"].includes(observed.lifecycle)
+        && observed.error === null && !observed.nativeStopped && previous.startup?.state !== "failed";
+      return put(saved, { ...previous, restartAfterShutdown: previous.recoveryBlocked === null
+        && (previous.restartAfterShutdown || eligible && healthy) });
+    }),
+    /** A surviving writer has resumed normal management, ending a failed shutdown attempt. */
+    resumeObserved: (record: BotRecord): BotExecution => atomic(() => {
+      const saved = current(record), previous = get(saved), observed = previous?.snapshot;
+      if (previous === null || observed == null || !["starting", "ready", "working"].includes(observed.lifecycle) || observed.nativeStopped) {
+        throw new Error("Bot reattachment requires a live original writer observation.");
+      }
+      return put(saved, { ...previous, restartAfterShutdown: false });
+    }),
+    blockRecovery: (record: BotRecord, reason: string): BotExecution => atomic(() => {
+      const saved = current(record), previous = get(saved);
+      if (previous === null) throw new Error("Bot execution evidence has not been prepared.");
+      if (typeof reason !== "string" || reason.trim() === "" || !reason.isWellFormed()) throw new Error("Bot recovery block requires a nonempty reason.");
+      return put(saved, { ...previous, recoveryBlocked: previous.recoveryBlocked ?? reason, restartAfterShutdown: false });
+    }),
+    /** The caller first proves process-tree stop and commits the matching journal snapshot. */
+    beginRecovery: (record: BotRecord, stopped: ControllerSnapshot, homeDirectory: string): BotRecord => atomic(() => {
+      const saved = current(record), previous = get(saved), intent = saved.intent!;
+      if (saved.observed.deletion !== null) throw new Error("A deleting Bot cannot recover execution.");
+      if (previous === null || previous.launchSubmission === "not-submitted") throw new Error("Bot recovery requires the original submitted generation.");
+      checkSnapshot(saved, stopped);
+      if (stopped.lifecycle !== "stopped" || !stopped.nativeStopped || stopped.stoppedAt === null || stopped.nativeSessionId === null || stopped.controllerProcess === null
+        || previous.snapshot?.nativeSessionId !== stopped.nativeSessionId
+        || previous.controllerProcess !== null && !sameProcess(previous.controllerProcess, stopped.controllerProcess)
+        || previous.snapshot?.controllerProcess != null && !sameProcess(previous.snapshot.controllerProcess, stopped.controllerProcess)) throw new Error("Bot recovery requires complete original process stop and native identity evidence.");
+      if (previous.recoveryBlocked !== null) throw new Error(previous.recoveryBlocked);
+      const orderly = previous.restartAfterShutdown && stopped.error === null;
+      if (!orderly && previous.recoveryCount >= intent.recoveryLimit) throw new Error("The Bot execution recovery budget is exhausted.");
+      if (!path.isAbsolute(homeDirectory) || /[\0\r\n]/.test(homeDirectory) || controllerTicketPath(homeDirectory, intent.launchId) !== intent.ticketPath) throw new Error("Bot recovery requires the original private execution home.");
+      const generation = botVersion(String(BigInt(intent.executionGeneration) + 1n));
+      const launchId = randomUUID(), controllerInstanceId = randomUUID();
+      const next: BotRecord = { ...saved, intent: { ...intent, executionGeneration: generation, launchId, controllerInstanceId,
+        ticketPath: controllerTicketPath(homeDirectory, launchId), nativeSessionId: stopped.nativeSessionId } };
+      const recoveryCount = previous.recoveryCount + (orderly ? 0 : 1);
+      if (!Number.isSafeInteger(recoveryCount)) throw new Error("Bot recovery count is exhausted.");
+      // Both rows share the Worker database and transaction; interruption cannot
+      // expose a replacement intent paired with the old generation's evidence.
+      db.prepare(`UPDATE bots SET record=@record WHERE ${predicate}`).run({ ...identity(saved), record: JSON.stringify(next) });
+      put(next, { launchId, executionId: intent.executionId, executionGeneration: generation,
+        launchSubmission: "not-submitted", controllerProcess: null, snapshot: null, aliasDirectory: null, lastError: null, startup: null,
+        recoveryCount, restartAfterShutdown: false, recoveryBlocked: null,
+        previous: { launchId: intent.launchId, generation: intent.executionGeneration, instanceId: intent.controllerInstanceId, recordId: launchId, stoppedAt: stopped.stoppedAt },
+        retainedLaunchIds: [...previous.retainedLaunchIds, intent.launchId],
+        retainedAliasDirectories: [...new Set([...previous.retainedAliasDirectories, ...(previous.aliasDirectory === null ? [] : [previous.aliasDirectory])])] });
+      return next;
     }),
     close: (): void => closeSqliteDatabase(db, { file, format: workerStoreFormat }),
   };

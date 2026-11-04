@@ -8,7 +8,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 
 Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端完整自有 claim 清单，实际资源状态分别来自 Herdr、Controller journal、操作系统、Git 和文件系统；归档完成来自服务端回执。本机主索引只承担项目映射、认领、模式和原生会话身份，清理记录只保存资源身份、控制意图、期限和重试策略，不能用操作完成标记替代重新观察。macOS Herdr 另以独立持久 journal 保存原运行、输入准入、Session 连接与停止证据；[Herdr 生命周期设计](../design/herdr-worker-lifecycle.md)拥有该机制。Linux/Windows Herdr 的执行计时与业务输入观察保留在进程内；Web 保留执行配置、恢复预算和原生操作身份，并从 Controller 拥有的回执与进程实例证明读取原生事实，以满足[Task Session 需求](task-sessions.md)的未知结果不重放及单 writer 要求。
 
-独立 Bot 的本地库存与启动意图由[Bot 库存需求](worker-bot-inventory.md)拥有，使用相同 Worker 锁和 SQLite 格式，不参与 Task 容量计算。
+独立 Bot 的本地库存与启动意图由[Bot 库存需求](worker-bot-inventory.md)拥有，使用相同 Worker 锁和 SQLite 格式，不参与 Task 容量计算。[Bot 运行需求](worker-bot-runtime.md)拥有原会话恢复和退出停证：取消管理工作后逐项停止并汇总错误，保留 Bot、原 Session 和私有恢复资料，不调用 StopTest 或归档作为退出前置。正式 `runWorker` Bot 调度与能力广告尚未启用。
 
 ## 必须满足的行为
 
@@ -126,7 +126,7 @@ Web 人工输入通过 Task Session，Herdr 使用 attach。Retry/release/resume
 - 升级前次数已耗尽、缺少暂停原因且没有正常关停来源的 Web 停止记录，必须在启动前根据原 journal 和完整停止证明识别并补齐暂停，不能先启动旧 generation。停止证明不足时保留责任并显示可诊断等待，不启动替代运行。
 - Web 执行被阻止后仍对账远端摘要，发布 waiting、原 nativeSessionId 和 herdr:null，保留 active claim。发布失败不消耗原生恢复预算、不清除本地暂停；后续轮次读取新 task 版本后重试，摘要一致后不重复写。暂停不释放名额、不删除资源、不写业务 done，也不改变 task.properties.paused 的 Herdr 周期 ping 语义。
 - Ctrl+C 的根取消信号同步停止报告触发、新领取和调度，并取消报告及所有运行中的 job（包括终止清理 job），在等待报告收尾前完成取消。等待报告期间终止清理不能继续删除 worktree 或把未完成行置 done；报告与 job 全部收尾后直接中断并停止受管 agent、关闭 workspace。进程退出不发送清理 prompt，也不等待 agent 清理轮；工作区外临时资源可能遗留。保留 claim、worktree、原生 session ID 与所有未完成 active/pending 行，包括归属已经结束的任务；退出不删除 worktree、不把未完成行置 done。重启恢复已有终态清理责任并核对实际资源，包括本机行已 done 而调度记录尚未删除的窗口；当前配置改为 Web 不能使原 Herdr 清理责任失去后端核验能力，也不能据此提前释放容量；该清理后端不可用时，其初始化与重试仍按原 claim 退避，不得阻塞无关的健康 Web 执行。新的归属结束判断仍要求成功完整清单。待确认的停止操作收尾后才停止私有实例；停止错误保持可见，无法确认停止时保留私有 Herdr 与相关资源。正常完成、release、强制撤回和人工管理按 W-10 的通知与资源清理规则执行。
-- 主索引与独立清理调度表共同使用 `user_version=7`，版本 6→7 删除清理通知步骤字段并保留身份、期限及重试调度；版本 5 原索引升级时保留项目和任务行。Web 执行状态库独立使用版本 2，版本 1→2 删除重复的 cleanup 输入、结果和资源完成字段，保留控制意图、期限和操作身份。Controller journal 使用版本 6。五个业务库的版本 0 均在既有准入后丢弃原 schema 和数据，并通过基线与编号升级重建；已有空文件和查询访问同样适用。有效非零迁移保留数据，旧详细状态库 1–4 明确拒绝并保留原库；操作者停止旧 worker 后自行移除该旧库再启动。独立 Herdr lifecycle 库的现存无版本或不兼容数据必须保留并拒绝，不能按上述五库规则重置。各库分别保证单库原子性，任何所需库打开失败都不启动协调业务。[SQLite 升级需求](cli-sqlite-migrations.md)定义共同的版本、查询、准入和错误约束。原生历史与 workerId 保留原有位置。
+- 主索引、独立清理调度及 Bot 库存/执行表共同使用 `user_version=10`；版本 8 增加 Bot 库存，版本 9 增加 Bot 执行证据，版本 10 保存当前 Controller instance 与跨代恢复来源和停证。版本 6→7 删除清理通知步骤字段并保留身份、期限及重试调度；版本 5 原索引升级时保留项目和任务行。Web 执行状态库独立使用版本 2，版本 1→2 删除重复的 cleanup 输入、结果和资源完成字段，保留控制意图、期限和操作身份。Controller journal 使用版本 6。五个业务库的版本 0 均在既有准入后丢弃原 schema 和数据，并通过基线与编号升级重建；已有空文件和查询访问同样适用。有效非零迁移保留数据，旧详细状态库 1–4 明确拒绝并保留原库；操作者停止旧 worker 后自行移除该旧库再启动。独立 Herdr lifecycle 库的现存无版本或不兼容数据必须保留并拒绝，不能按上述五库规则重置。各库分别保证单库原子性，任何所需库打开失败都不启动协调业务。[SQLite 升级需求](cli-sqlite-migrations.md)定义共同的版本、查询、准入和错误约束。原生历史与 workerId 保留原有位置。
 
 ### W-10：Agent 完成与资源清理
 

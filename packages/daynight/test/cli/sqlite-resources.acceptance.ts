@@ -52,7 +52,7 @@ const load = relative => import(pathToFileURL(path.join(installed, "dist", relat
 const { openSqliteDatabase } = await load("platform/sqlite-access.js");
 const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
-  ["commands/worker/store-format.js", "workerStoreFormat", 9, ["bot_executions", "bots", "cleanup_schedules", "projects", "tasks"]],
+  ["commands/worker/store-format.js", "workerStoreFormat", 10, ["bot_executions", "bots", "cleanup_schedules", "projects", "tasks"]],
   ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 2, ["executions"]],
   ["commands/controller/journal-format.js", "controllerJournalFormat", 6, ["content_index", "execution", "operations", "outbox"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
@@ -81,7 +81,7 @@ for (const [module, name, version, tables] of owners) {
 console.log(JSON.stringify(versions));
 `, [installed, databases], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, 9, 2, 6, 1]);
+  expect(JSON.parse(result.stdout)).toEqual([2, 10, 2, 6, 1]);
 });
 
 it("rejects a missing installed SQL resource without repository fallback or retained-data changes", () => {
