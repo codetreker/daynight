@@ -635,18 +635,38 @@ The [root README routing table](../README.md#ci-selection) owns path selection.
 
 Every path under `packages/daynight/src/` selects CLI validation, including
 runtime Markdown such as the bundled review skill's `SKILL.md` or `README.md`.
-Every CLI source change also selects both Go server jobs, which install the CLI.
-The browser-consumed `src/api/` and `src/session/` trees and exact
-`src/platform/text.ts` path additionally select Web quality and browser validation.
-The exact manifest, build/configuration and acceptance-script inputs in
+The CLI command registry loads the implementations of `worker`, `controller`,
+`review`, `skill`, `update` and `completion` only when selected. Implementation
+and resource changes within those command directories select only CLI checks;
+their `definition.ts` files remain server inputs because the registry imports
+definitions at startup. Other CLI source conservatively selects both Go jobs,
+including the shared startup code and project/task/authentication commands used
+by installed-CLI acceptance. The browser-consumed `src/api/` and `src/session/`
+trees and exact `src/platform/text.ts` path additionally select Web quality and
+browser validation. Changes to these command-loading or shared-code relationships
+must keep the selector's ownership rules aligned with the actual imports.
+
+For a modified CLI `package.json`, detection reads the committed merge-base and
+PR head blobs, parses both JSON objects and compares them after removing only
+the top-level `version` field. Version, formatting and object-key-order changes
+select CLI checks without selecting server jobs. Any other semantic difference,
+including dependency versions, scripts, package contents or nested `version`
+fields, retains server selection; array order remains significant. Additions,
+deletions and file-type changes select server jobs conservatively. Invalid
+modified manifests and Git read failures fail detection. The checkout contents
+and changes made only on the target branch do not determine this comparison.
+Root manifests, the lockfile and workspace inputs keep all-module selection.
+
+The exact build/configuration and acceptance-script inputs in
 [the selector](../.github/scripts/ci-modules.mts) select CLI and both server jobs.
 Web source and its Dagre/XYFlow patches select both server jobs because those jobs
-build embedded Web assets.
-Other documentation exclusions apply before module selection. The `.gitignore`
-exclusion matches only the repository root; nested ignore files retain their
-module ownership or the unclassified-path fallback. An excluded path does not
-suppress jobs selected by other changed files. New modules and unclassified
-patches select all jobs until their consumers are explicitly assigned.
+build embedded Web assets. Documentation exclusions apply after CLI source
+ownership. The `.gitignore` exclusion matches only the repository root; nested
+ignore files retain their module ownership or the unclassified-path fallback.
+An excluded path does not suppress jobs selected by other changed files. New
+modules and unclassified patches select all jobs until their consumers are
+explicitly assigned. The [server input decision](../.agents/notes/implemented/testing/2026-11-04-server-ci-input-selection.md)
+records the dependency boundary and its maintenance cost.
 
 Selected jobs keep their ordinary functional checks, coverage thresholds,
 timeouts and cleanup requirements. Stress workloads have explicit local-only
