@@ -402,12 +402,15 @@ export class TaskDetailSessions {
     const lifecycleChanged = entry.observedGeneration !== cacheGeneration;
     const restored = entry.state.status === "deleted" && admitted && cacheGeneration !== null &&
       cacheGeneration !== entry.deletedGeneration && version !== null && task !== undefined;
-    const removed = admitted && cacheGeneration !== null && entry.observedVersion !== null && version === null && task === undefined;
+    // The rendered graph can lag the already committed cache generation.
+    const removed = admitted && cacheGeneration !== null && entry.observedVersion !== null && version === null &&
+      this.scope.getAuthorizedProject(projectId)?.index.nodes.has(taskId) === false;
     if (removed && entry.state.status !== "deleted") {
       this.markDeleted(projectId, taskId, cacheGeneration, null, "reconciled");
     }
     if (entry.state.status === "deleted" && !restored) {
       entry.observedGeneration = cacheGeneration; entry.observedVersion = version; entry.observedTask = task; entry.admitted = admitted;
+      if (lifecycleChanged) this.publish(entry, { ...entry.state });
       return false;
     }
     if (lifecycleChanged || restored) {

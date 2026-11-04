@@ -9,6 +9,7 @@ import { TaskCacheProvider } from "../src/features/task-cache/TaskCacheProvider"
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { canSetStatus, TaskDetailSessionProvider, TaskDetailSessions, useTaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
 import { useTaskSteps } from "../src/features/task-detail/useTaskSteps";
+import { useTaskDetail } from "../src/features/task-detail/useTaskDetail";
 import { detailFixture, graphFixture, resourceResponse } from "./helpers/taskDetail";
 import { taskSyncFromGraph, TEST_VIEWER_ID, viewerHeaders } from "./helpers/taskSync";
 
@@ -24,6 +25,13 @@ const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = n
 const apply = async (scope: TaskCacheScope, detail: TaskDetail, snapshot = false) => {
   const ticket = await scope.beginSync(projectId, signal());
   return scope.applySync(ticket, taskSyncFromGraph(graphFixture([detail]), { query: snapshot || ticket.epoch === null ? {} : { epoch: ticket.epoch }, ...(snapshot ? { epoch: "30000000-0000-4000-8000-000000000002" } : {}), versionForTask: () => detail.version, propertiesForTask: () => detail.properties }), signal());
+};
+const applyAbsentSnapshot = async (scope: TaskCacheScope, withSurvivor = false) => {
+  const graph = graphFixture([body()]);
+  const empty = withSurvivor ? graphFixture([detailFixture(projectId, "20000000-0000-4000-8000-000000000002")])
+    : { ...graph, tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } };
+  const ticket = await scope.beginSync(projectId, signal());
+  return scope.applySync(ticket, taskSyncFromGraph(empty, { epoch: "30000000-0000-4000-8000-000000000003", versionForTask: () => 1n }), signal());
 };
 const seed = async () => { const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope); await apply(scope, body()); return scope; };
 const node = (scope: TaskCacheScope) => scope.getAuthorizedProject(projectId)!.index.nodes.get(taskId)!;
@@ -222,6 +230,38 @@ it.each([403, 410])("handles a Step write %s without inferring the wrong access 
   vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true)); session.setStepStatus(projectId, taskId, item.id, "done", 5n);
   if (status === 403) { await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "refused", error: { status: 403 } })); expect(scope.getAuthorizedProject(projectId)).not.toBeNull(); }
   else { await waitFor(() => expect(session.snapshot(projectId, taskId).status).toBe("deleted")); expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull(); }
+});
+
+it.each([
+  { order: "receipt-first", withSurvivor: false }, { order: "receipt-first", withSurvivor: true },
+  { order: "snapshot-first", withSurvivor: false }, { order: "snapshot-first", withSurvivor: true },
+] as const)("shows parent deletion when a Step 410 races a replacement snapshot ($order, survivor=$withSurvivor)", async ({ order, withSurvivor }) => {
+  const scope = await seed(); const write = deferred<Response>();
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => options.method === "PUT" ? write.promise : Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource() : body(), TEST_VIEWER_ID)));
+  vi.stubGlobal("fetch", fetcher);
+  const wrapper = ({ children }: { readonly children: ReactNode }) => <TaskCacheProvider scope={scope}><TaskDetailSessionProvider>{children}</TaskDetailSessionProvider></TaskCacheProvider>;
+  const hook = renderHook(({ revision, observed }) => ({ detail: useTaskDetail(projectId, taskId, revision, observed), steps: useTaskSteps(projectId, taskId, true), sessions: useTaskDetailSessions() }), { wrapper, initialProps: { revision: 1, observed: node(scope) as ReturnType<typeof node> | undefined } });
+  await waitFor(() => expect(hook.result.current.steps.canSetStatus).toBe(true));
+  act(() => hook.result.current.steps.setStatus(item.id, "done", 5n)); await waitFor(() => expect(fetcher.mock.calls.some(([, options]) => options.method === "PUT")).toBe(true));
+  if (order === "receipt-first") { await act(async () => { write.resolve(failure(410, "task_deleted")); }); await waitFor(() => expect(hook.result.current.detail.status).toBe("deleted")); }
+  await act(async () => { await applyAbsentSnapshot(scope, withSurvivor); });
+  if (order === "receipt-first") await waitFor(() => expect(hook.result.current.detail).toMatchObject({ status: "deleted", detail: null }));
+  hook.rerender({ revision: 2, observed: undefined });
+  if (order === "snapshot-first") await act(async () => { write.resolve(failure(410, "task_deleted")); });
+  expect(hook.result.current.sessions.snapshot(projectId, taskId).status).toBe("deleted");
+  expect(hook.result.current.sessions.hasCurrentGeneration(projectId, taskId)).toBe(true);
+  await waitFor(() => expect(hook.result.current.detail).toMatchObject({ status: "deleted", detail: null }));
+  expect(hook.result.current.steps.resource).toBeNull();
+});
+
+it("keeps removed Steps private when an old successful write receipt arrives after a replacement snapshot", async () => {
+  const scope = await seed(); const session = await open(scope); const write = deferred<Response>();
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => options.method === "PUT" ? write.promise : Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource() : body(), TEST_VIEWER_ID)));
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.setStepStatus(projectId, taskId, item.id, "done", 5n); await waitFor(() => expect(fetcher.mock.calls.some(([, options]) => options.method === "PUT")).toBe(true));
+  await applyAbsentSnapshot(scope); session.observe(projectId, taskId, undefined);
+  write.resolve(resourceResponse(resource(6n, [{ ...item, status: "done", updatedAt: "2026-10-22T10:00:06Z" }]), TEST_VIEWER_ID)); await drainReads(scope);
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ status: "deleted", detail: null }); expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull();
 });
 
 it("rejects a late Step receipt after project retirement", async () => {

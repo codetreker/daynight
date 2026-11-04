@@ -24,7 +24,9 @@ instead of leaving an unbounded retry or a permanently busy gate.
 A conflict, malformed success or uncertain transport result is reconciled by
 reading current resources under the original identity, without replay. A failed
 readback keeps recovery available and the gate closed. A child 404 checks the
-parent before retiring access. Request IDs correlate recovery reads with their
+parent before retiring access. A confirmed parent deletion remains visible across
+a cache generation replacement; the authorized cache index, rather than a
+lagging rendered graph, establishes removal. Request IDs correlate recovery reads with their
 write without asserting what caused the current state. The four-state menu
 retains the confirmed state until validation and uses a browser top-layer
 popover so the detail surface cannot clip its keyboard-accessible options.
