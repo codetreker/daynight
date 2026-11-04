@@ -126,7 +126,7 @@ describe("compiled project commands", () => {
       git(root, ["remote", "set-url", "origin", "invalid-origin"]);
       const explicit = await f.invoke(["project", "create", "Explicit", "--repo", "https://git.example/Explicit/Repo"], ["/repository/git.js", "/repository/binding.js", "node:child_process"], { cwd: root });
       expect(explicit.code, explicit.stderr).toBe(0);
-      expect(requests.at(-1)!.body).toEqual({ name: "Explicit", repoUrl: "https://git.example/Explicit/Repo" });
+      expect(requests.at(-1)!.body).toEqual({ name: "Explicit", repoUrl: "https://git.example/Explicit/Repo", expectedUserId: userId });
       for (const [cwd, diagnostic] of [[path.parse(f.root).root, "Cannot locate a Git repository"], [await initialize("no origin"), "origin fetch address"], [root, "Invalid repository address"]] as const) {
         const before = requests.length;
         const result = await f.invoke(["project", "create", "Cannot create"], blocked, { cwd, nativeGit: true });
