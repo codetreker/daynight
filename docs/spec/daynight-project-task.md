@@ -269,6 +269,21 @@ grant，也不修改配置的默认 Team。
 读取失权后的敏感 Team 数据。未知结果以错误报告，不自动重放；后来读取只能说明当前事实，
 不能证明原写入成功。`--json` 保留完整目录或已确认回执及精确版本，可读文本安全转义。
 
+## 邀请接收
+
+`daynight invitation inspect [--stdin] [--json]` 预览同服务 Project 或 Team
+邀请，不消费邀请；`daynight invitation accept [--stdin] [--confirm] [--json]`
+由当前登录账号明确接受。两者不读取默认 Team，不支持代接受。链接和 token 不作为
+位置参数或 flag 值；交互输入隐藏，`--stdin` 读取至 EOF，最多 4096 字节，允许末尾
+一个 LF 或 CRLF。秘密不进入配置、日志、
+命令行或递归错误 cause。只接受同服务的规定路径和 fragment。
+
+accept 显示目标与当前账号并要求确认，非 TTY 且无 `--confirm` 时不得写入。
+布尔 `--confirm` 无值，重复或 `--confirm=false` 是参数错误。已有 direct Project
+grant 或 Team membership 保持角色且不消费；只有继承权限的 Project 接收者获得 direct
+member grant。失效、到期、撤销、已消费或目标删除的邀请不可用。客户端校验响应主体，
+错主体和未知提交不重放；无法从后续读取恢复丢失的回执，未知结果以非零退出报告。
+
 ## PT7. Task 命令与更新语义
 
 ```bash

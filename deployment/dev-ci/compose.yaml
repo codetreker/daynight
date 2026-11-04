@@ -13,6 +13,7 @@ services:
       timeout: 5s
       retries: 30
       start_period: 5s
+      start_interval: 250ms
 
   gateway:
     image: nginx:1.30.6-alpine3.24
@@ -27,6 +28,7 @@ services:
       timeout: 5s
       retries: 60
       start_period: 10s
+      start_interval: 250ms
 
   server:
     image: ${DAYNIGHT_DEV_CI_IMAGE:?Use deployment/dev-ci/run.sh}
@@ -56,6 +58,7 @@ services:
       timeout: 5s
       retries: 30
       start_period: 5s
+      start_interval: 250ms
     stop_grace_period: 20s
 
   uniauth:

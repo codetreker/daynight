@@ -1,6 +1,7 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
@@ -32,6 +33,14 @@ const fixture = async () => {
   await writeFile(path.join(target, ".git"), "gitdir: retained\n");
   return { root, target, identity: await identity(target) };
 };
+const renameReadOnlyFixtureDirectory = async (source: string, destination: string, changeMode: FileHandle["chmod"]): Promise<void> => {
+  // Darwin requires directory write permission even when a rename keeps the same parent.
+  // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/rename.2.html
+  await changeMode(0o755);
+  try { await rename(source, destination); }
+  finally { await changeMode(0o555); }
+};
+
 const deferred = () => {
   let resolve!: () => void;
   const promise = new Promise<void>(done => { resolve = done; });
@@ -113,7 +122,7 @@ describe("owned worktree content removal", () => {
       const handle = await actualFs.open(filename, flags, mode);
       try {
         if (String(filename) === nested) {
-          await rename(nested, moved);
+          await renameReadOnlyFixtureDirectory(nested, moved, handle.chmod.bind(handle));
           if (replacement === "symlink") await symlink(outside, nested);
           else { await mkdir(nested); await writeFile(path.join(nested, "foreign"), "keep replacement"); await chmod(nested, 0o555); }
         }
@@ -138,7 +147,12 @@ describe("owned worktree content removal", () => {
       const handle = await actualFs.open(filename, flags, mode);
       if (String(filename) === nested) {
         const changeMode = handle.chmod.bind(handle);
-        handle.chmod = async desired => { await rename(nested, moved); await symlink(outside, nested); return changeMode(desired); };
+        handle.chmod = async desired => {
+          await renameReadOnlyFixtureDirectory(nested, moved, changeMode);
+          await symlink(outside, nested);
+          expect((await handle.stat()).mode & 0o777).toBe(0o555);
+          return changeMode(desired);
+        };
       }
       return handle;
     });

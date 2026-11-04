@@ -124,4 +124,4 @@ task-sync 的 snapshot/delta 使用共同批量读取器，在父任务的同一
 
 每属性一行对应设置/删除单位，付出的成本是批量装配；整任务 JSON 行仍耦合写入单位，继续拆 PR 项又会引入独立项身份和顺序机制。文本值保留既有字符语义，当前没有任意 JSON 内容 SQL 查询需求。静态 native validator 明确业务规则，schema 只负责发现；对动态属性、全文查询或属性级版本的支持需要独立契约。
 
-验证由需求 TP-V1–TP-V9 约束，覆盖真实 PostgreSQL 的迁移、快照、并发与回滚，HTTP 的 schema/版本/严格值/400 与 500，CLI/Web 的完整对象和缺失读取，Worker inventory/reporting 与 Session 锁交错。保留现有 Go build/vet/race/go-cov、CLI typecheck/test/build 和 Web 覆盖/生产浏览器门禁，不以绿灯代替生命周期证据。文档验证包括本地链接、当前事实/历史记录的界限和新文件。
+验证由需求 TP-V1–TP-V9 约束，覆盖真实 PostgreSQL 的迁移、快照、并发与回滚，HTTP 的 schema/版本/严格值/400 与 500，CLI/Web 的完整对象和缺失读取，Worker inventory/reporting 与 Session 锁交错。保留现有 Go build/vet/go-cov、CLI typecheck/test/build 和 Web 覆盖/生产浏览器门禁，Go race 采用[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)的本地默认/main 开启、PR 关闭，不以绿灯代替生命周期证据。文档验证包括本地链接、当前事实/历史记录的界限和新文件。

@@ -4,6 +4,7 @@ import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGran
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
 import { parseTaskProperties, readWorkerClaim } from "./task-properties.js";
+import type { ProjectInvitationInspection, ProjectInvitationAcceptance, TeamInvitationInspection, TeamInvitationAcceptance, TeamInvitationMember } from "./types.js";
 
 const ids = (value: unknown): string[] => {
   const parsed = array(value, id);
@@ -137,6 +138,38 @@ const parseProjectGrant = (value: unknown, projectId: string, userId?: string): 
   };
   if (parsed.projectId !== projectId || userId !== undefined && parsed.userId !== userId) return malformed();
   return parsed;
+};
+const sameGrant = (a: ProjectGrant | null, b: ProjectGrant | null): boolean => a === null || b === null ? a === b : a.projectId === b.projectId && a.userId === b.userId && a.role === b.role && a.version === b.version && a.createdAt === b.createdAt && a.updatedAt === b.updatedAt;
+export const parseProjectInvitationInspection = (value: unknown, userId: string): ProjectInvitationInspection => {
+  const data = fields(value, ["projectId", "projectName", "directGrant", "access"]), projectId = id(data.projectId);
+  const directGrant = data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId);
+  const access = data.access === null ? null : parseProjectAccess(data.access, projectId, userId);
+  if (!sameGrant(directGrant, access?.directGrant ?? null)) return malformed();
+  return { projectId, projectName: text(data.projectName, true), directGrant, access };
+};
+export const parseProjectInvitationAcceptance = (value: unknown, userId: string, targetId: string): ProjectInvitationAcceptance => {
+  const data = fields(value, ["projectId", "directGrant", "access", "joined", "consumed"]), projectId = id(data.projectId);
+  const directGrant = parseProjectGrant(data.directGrant, projectId, userId), access = parseProjectAccess(data.access, projectId, userId);
+  const joined = bool(data.joined), consumed = bool(data.consumed);
+  if (projectId !== targetId || !sameGrant(directGrant, access.directGrant) || joined !== consumed || joined && directGrant.role !== "member") return malformed();
+  return { projectId, directGrant, access, joined, consumed };
+};
+const parseInvitationMember = (value: unknown, teamId: string, userId: string): TeamInvitationMember => {
+  const data = fields(value, ["teamId", "userId", "role", "version", "createdAt", "updatedAt"]);
+  const member = { teamId: id(data.teamId), userId: id(data.userId), role: projectRole(data.role), version: resourceVersion(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
+  if (member.teamId !== teamId || member.userId !== userId) return malformed();
+  return member;
+};
+export const parseTeamInvitationInspection = (value: unknown, userId: string): TeamInvitationInspection => {
+  const data = fields(value, ["team", "membership"]), team = parseTeamRef(data.team);
+  if (team.kind !== "ordinary") return malformed();
+  return { team, membership: data.membership === null ? null : parseInvitationMember(data.membership, team.id, userId) };
+};
+export const parseTeamInvitationAcceptance = (value: unknown, userId: string, targetId: string): TeamInvitationAcceptance => {
+  const data = fields(value, ["team", "membership", "joined", "consumed"]), team = parseTeamRef(data.team);
+  const membership = parseInvitationMember(data.membership, team.id, userId), joined = bool(data.joined), consumed = bool(data.consumed);
+  if (team.kind !== "ordinary" || team.id !== targetId || joined !== consumed || joined && membership.role !== "member") return malformed();
+  return { team, membership, joined, consumed };
 };
 const effectiveRole = (teamRole: ProjectAccess["teamRole"], directGrant: ProjectGrant | null): ProjectAccess["effectiveRole"] => {
   if (teamRole === "admin" || directGrant?.role === "admin") return "admin";

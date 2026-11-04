@@ -57,6 +57,23 @@ write automatically. Read current facts before another decision, but do not
 claim the original operation succeeded merely because current state matches;
 Team names can be duplicated and a read cannot restore a lost receipt.
 
+## Invitation acceptance
+
+Use `invitation inspect` to preview a same-service Project or Team link for the
+current account without consuming it. Enter the link at the hidden terminal
+prompt or use `--stdin` (up to 4096 bytes, read to EOF, with at most one
+trailing LF or CRLF); never place the link or token in arguments,
+flags, shell history, task content or logs. These commands do not resolve the
+configured default Team and cannot accept for another account.
+
+Accept only with authorization and explicit confirmation. Non-interactive
+`invitation accept` requires the boolean `--confirm`; without it no write is
+sent. An existing direct relationship preserves its role without consuming the
+invitation; inherited-only Project access still receives a direct member grant.
+A lost, cancelled or malformed acceptance response can follow a commit. Do not
+replay it automatically or claim success from a later membership read: current
+facts cannot recover the original receipt.
+
 ## Project transfers
 
 With authorization, use `project transfer` with a target Team UUID or an exact

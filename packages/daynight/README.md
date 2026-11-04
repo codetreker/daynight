@@ -172,6 +172,8 @@ daynight team member remove <user-id> [--team <uuid|personal>] [--if-version <ve
 daynight team leave [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
+daynight invitation inspect [--stdin] [--json]
+daynight invitation accept [--stdin] [--confirm] [--json]
 daynight bot list [--json]
 daynight bot show <bot-id> [--json]
 daynight bot create --name <name> [--worker <worker-id>] [--cwd <path>] [--agent <codex|claude|copilot>] [--request-id <uuid>] [--json]
@@ -576,6 +578,17 @@ strings; a later-page failure produces an error with empty stdout. The
 [project/task requirements](../../docs/spec/daynight-project-task.md) own the complete
 behavior and remaining task-command scope.
 
+`project transfer` moves a Project to a Team identified by UUID or a same-service
+`/teams/<uuid>` link. It resolves the explicit Project or current repository
+without changing its binding or default Team. Only the current owner Team admin
+can transfer; destination membership is not required. The preview identifies the
+source, destination and expected access before confirmation. `--confirm` skips
+the prompt but retains the preview's exact versions and identity checks. An
+optional `--if-version` rejects a preview with a different ownership version.
+A successful receipt may report no remaining access. Conflicts require a fresh
+preview and decision; a lost receipt remains unknown even if a later read is 404.
+Project grants and invitations are preserved.
+
 ## Team context
 
 `team list` reads all Teams joined by the current account. `team show` and
@@ -638,16 +651,28 @@ a successful self-exit uses that receipt without a follow-up Team read. Unknown
 outcomes are not automatically replayed. A later read only establishes current
 facts and cannot recover a lost receipt.
 
-`project transfer` moves a Project to a Team identified by UUID or a same-service
-`/teams/<uuid>` link. It resolves the explicit Project or current repository
-without changing its binding or default Team. Only the current owner Team admin
-can transfer; destination membership is not required. The preview identifies the
-source, destination and expected access before confirmation. `--confirm` skips
-the prompt but retains the preview's exact versions and identity checks. An
-optional `--if-version` rejects a preview with a different ownership version.
-A successful receipt may report no remaining access. Conflicts require a fresh
-preview and decision; a lost receipt remains unknown even if a later read is 404.
-Project grants and invitations are preserved.
+## Accept an invitation
+
+Use `invitation inspect` to preview a Project or Team invitation without
+consuming it. Use `invitation accept` to accept for the currently signed-in
+account; neither command resolves the configured default Team. Supply the
+same-service invitation link through the hidden terminal prompt, or through
+standard input with `--stdin`. Standard input is read to EOF, accepts up to
+4096 bytes and may end in one LF or CRLF. Do not put links or tokens in
+arguments, flags, shell history, or logs. The CLI does not persist the secret.
+The link fragment is sent only in the request body.
+
+Acceptance displays the target and current account for confirmation. A
+non-interactive acceptance requires `--confirm`; without confirmation it does
+not write. An existing direct Project grant or Team membership retains its
+role and does not consume the invitation. Inherited-only Project access does
+not replace a direct grant: accepting creates a direct member grant. Invalid,
+expired, revoked, consumed or deleted-target invitations are unavailable.
+
+Identity mismatch is a refusal. A lost or malformed acceptance response may
+follow a commit and is reported as an unknown outcome; the CLI does not replay
+it automatically. Reading current membership cannot recover the original
+receipt. Use `--json` for the validated preview or acceptance receipt.
 
 ## Task management
 
