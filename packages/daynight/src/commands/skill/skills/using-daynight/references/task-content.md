@@ -23,6 +23,20 @@ User-requested migration designs, test strategies, and operating manuals can be 
 Do not invent delivery requirements to justify uploading execution logs.
 Operational authorization still constrains current behavior, but does not become task content merely because a later session needs it.
 
+## Task Steps and Session content
+
+A Step is a durable, ordered record of work within one Task. Its description can
+hold that work's objective, completion conditions, result and references to its
+materials. The Task description and attachments remain the owners of the overall
+requirements and formal deliverables; a Step may reference them. Steps persist
+across Sessions and can be empty; do not infer them from Task descriptions,
+Session todos or execution logs.
+
+Session owns execution plans, commands, tool activity, logs and operational
+authorization. Do not copy the Session timeline into Steps or treat a Step as
+permission to execute, deliver, communicate externally or merge. Project rules
+own how Steps are divided and maintained; see [task execution](task-execution.md#maintain-steps).
+
 ## Definitions and results
 
 The description and readable references together provide the following information, without mandatory headings or empty templates:

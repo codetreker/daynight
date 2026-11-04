@@ -24,6 +24,27 @@ If verification is impossible, report the actual error and unconfirmed items wit
 Even if the expected value is readable, an unconfirmed response does not establish that this operation caused the change.
 See [task management](task-management.md#task-deletion) and [managed task execution](autopilot-managed-task.md#complete-the-original-claim) for reconciliation specific to deletion and worker completion.
 
+## Task Step writes
+
+Read `task step list <task-id> --json` for the complete current collection and
+parent Task `version` used for a decision. Steps share that exact positive int64
+version with versioned Task metadata, status and property writes. Supply its
+unrounded digits via `--if-version`;
+the default pre-submit Steps read cannot protect an earlier decision. A real
+change increments the parent version once; a no-op preserves version and times,
+but a stale same-value write still conflicts. On conflict, reread the collection
+and reassess under project rules instead of replacing the version and replaying.
+
+A lost, cancelled or malformed write response can follow a commit. Keep the
+original Project, Task, Step ID and request UUID; read current facts under that
+same scope before deciding again. For an unknown add, do not choose a replacement
+ID or retry automatically. Same title, present ID or current absence cannot prove
+which historical operation occurred. The CLI may make at most one read in the
+still-live operation; it reports current facts only, and the write remains
+unknown. If no observation is available, use explicit-project list/show with
+the original ID. Never automatically replay a mutation or claim rollback from
+an unknown result.
+
 ## Thread posts
 
 A post appends one immutable message without a task version or client message

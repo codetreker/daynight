@@ -26,6 +26,7 @@ Do not treat this skill's workflow names as CLI commands or infer commands from 
 | Shell completion | `completion setup` | [Setup](setup.md) |
 | Create, list, or inspect projects | `project create`, `project list`, `project show` | [Project management](project-management.md) |
 | Query tasks | `task list`, `task ready`, `task show` | [Task management](task-management.md#task-queries) |
+| Read or maintain Task Steps | `task step list/show/add/update/set-status/move/delete` | [Task Steps](task-management.md#task-steps) |
 | Read task dependency graphs | `task graph <task-id>` | [Verify dependency changes](task-management.md#verify-dependency-changes) |
 | Create tasks | `task create` | [Create task](create-task.md) |
 | Change metadata or human responsibility | `task update` (`--assigned-to`, `--clear-assigned-to`) | [Task management](task-management.md#metadata) |
