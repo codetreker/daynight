@@ -214,6 +214,84 @@ func TestProjectPagination(t *testing.T) {
 	}
 }
 
+func TestProjectScopedPaginationAndValidation(t *testing.T) {
+	projects, database, _, owner := projectService(t)
+	ctx := context.Background()
+	outsider := servicePrincipal(t, database)
+	var created []core.Project
+	for i := 0; i < 3; i++ {
+		project, err := projects.Create(ctx, owner, CreateProject{Name: fmt.Sprintf("Project %d", i), RepoURL: "https://example.com/repo"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, project)
+		if _, err := database.Pool.Exec(ctx, `UPDATE projects SET created_at='2024-01-01 00:00:00+00'::timestamptz + $2::int * interval '1 second' WHERE id=$1`, project.ID, i); err != nil {
+			t.Fatal(err)
+		}
+		if i < 2 {
+			if _, err := database.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'member')`, project.ID, outsider.UserID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	teamID := created[0].Ownership.TeamID
+	upperTeamID := strings.ToUpper(teamID)
+	team := ProjectListRequest{Page: PageRequest{Limit: 1}, TeamID: &upperTeamID}
+	first, err := projects.ListScoped(ctx, owner, team)
+	if err != nil || len(first.Items) != 1 || first.Items[0].ID != created[0].ID || first.NextCursor == nil {
+		t.Fatalf("first Team page: %#v %v", first, err)
+	}
+	team.TeamID = &teamID
+	team.Page.Cursor = first.NextCursor
+	second, err := projects.ListScoped(ctx, owner, team)
+	if err != nil || len(second.Items) != 1 || second.Items[0].ID != created[1].ID || second.NextCursor == nil {
+		t.Fatalf("second Team page: %#v %v", second, err)
+	}
+	team.Page.Cursor = second.NextCursor
+	last, err := projects.ListScoped(ctx, owner, team)
+	if err != nil || len(last.Items) != 1 || last.Items[0].ID != created[2].ID || last.NextCursor != nil {
+		t.Fatalf("last Team page: %#v %v", last, err)
+	}
+	shared := ProjectListRequest{Page: PageRequest{Limit: 1}, Shared: true}
+	sharedFirst, err := projects.ListScoped(ctx, outsider, shared)
+	if err != nil || len(sharedFirst.Items) != 1 || sharedFirst.Items[0].ID != created[0].ID || sharedFirst.NextCursor == nil {
+		t.Fatalf("first shared page: %#v %v", sharedFirst, err)
+	}
+	shared.Page.Cursor = sharedFirst.NextCursor
+	sharedLast, err := projects.ListScoped(ctx, outsider, shared)
+	if err != nil || len(sharedLast.Items) != 1 || sharedLast.Items[0].ID != created[1].ID || sharedLast.NextCursor != nil {
+		t.Fatalf("last shared page: %#v %v", sharedLast, err)
+	}
+
+	for _, request := range []ProjectListRequest{
+		{Page: PageRequest{Limit: 1, Cursor: first.NextCursor}},
+		{Page: PageRequest{Limit: 1, Cursor: first.NextCursor}, Shared: true},
+		{Page: PageRequest{Limit: 1, Cursor: sharedFirst.NextCursor}, TeamID: &teamID},
+		{Page: PageRequest{Limit: 1}, TeamID: &teamID, Shared: true},
+		{Page: PageRequest{Limit: 1}, TeamID: pointer("")},
+		{Page: PageRequest{Limit: 1}, TeamID: pointer("not-a-uuid")},
+	} {
+		_, err := projects.ListScoped(ctx, owner, request)
+		requireFault(t, err, "invalid_input")
+	}
+	_, err = projects.ListScoped(ctx, outsider, ProjectListRequest{Page: PageRequest{Limit: 1, Cursor: first.NextCursor}, TeamID: &teamID})
+	requireFault(t, err, "invalid_input")
+	_, err = projects.ListScoped(ctx, outsider, ProjectListRequest{Page: PageRequest{Limit: 1}, TeamID: &teamID})
+	fault := requireFault(t, err, "not_found")
+	if !errors.Is(fault, core.ErrNotFound) {
+		t.Fatalf("Team refusal must retain cause: %v", fault)
+	}
+	if _, err := database.Pool.Exec(ctx, "DROP TABLE team_members"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = projects.ListScoped(ctx, owner, ProjectListRequest{Page: PageRequest{Limit: 1}, TeamID: &teamID})
+	var operational *store.Error
+	var domain *Fault
+	if err == nil || !errors.As(err, &operational) || errors.As(err, &domain) {
+		t.Fatalf("Team membership query failure must remain operational: %v", err)
+	}
+}
+
 func TestProjectCursorEncodingFailureIsOperational(t *testing.T) {
 	projects, database, _, principal := projectService(t)
 	for _, number := range []int{1, 2} {
