@@ -1,3 +1,4 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { readWorkerClaim } from "../../src/api/task-properties.js";
 import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -15,7 +16,7 @@ import { expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 import type { Project, Task, UpdateWorkerClaimInput, WorkerClaimDescriptor, WorkerReport } from "../../src/api/types.js";
 import { codexProjectTrustArguments } from "../../src/commands/worker/herdr/arguments.js";
-import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
+import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const primary = path.basename(path.dirname(workspace)) === ".worktrees" ? path.resolve(workspace, "../..") : workspace;
@@ -197,7 +198,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
   const reports: { workerId: string; input: WorkerReport }[] = [];
   const inventoryResponses: { projectId: string; itemCount: number; status: number; mappedProjectCount: number }[] = [];
   const children = new Map<ChildProcess, Promise<unknown>>();
-  let installed: Awaited<ReturnType<typeof createInstalledCli>> | undefined;
+  let installed: Awaited<ReturnType<typeof createAcceptanceCli>> | undefined;
   let failure: unknown;
   let failInventory = false;
   const projects: Project[] = [1, 2].map((number) => ({ id: uuid(number), name: `Repo ${number}`, repoUrl: `https://git.example/worker/repo-${number}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }));
@@ -296,7 +297,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     task.properties = { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } };
   };
   try {
-    installed = await createInstalledCli();
+    installed = await createAcceptanceCli();
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     if (address === null || typeof address === "string") throw new Error("Missing worker fixture address.");
@@ -536,7 +537,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     try { await installed?.cleanup(); } catch (error) { cleanupErrors.push(error); }
     try { await rm(home, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); }
     await mkdir(path.dirname(cleanupEvidenceFile), { recursive: true });
-    await writeFile(cleanupEvidenceFile, JSON.stringify({ outcome: cleanupErrors.length === 0 ? "passed" : "failed", scenario, homeRemoved: !existsSync(home), installedArtifactRemoved: installed === undefined ? null : !existsSync(installed.receipt.root), processes, errors: cleanupErrors.map((error) => error instanceof Error ? error.message : String(error)) }, null, 2));
+    await writeFile(cleanupEvidenceFile, JSON.stringify({ outcome: cleanupErrors.length === 0 ? "passed" : "failed", scenario, homeRemoved: !existsSync(home), runtimeRemoved: installed === undefined ? null : !existsSync(installed.receipt.root), processes, errors: cleanupErrors.map((error) => error instanceof Error ? error.message : String(error)) }, null, 2));
     if (cleanupErrors.length !== 0) throw new AggregateError(failure === undefined ? cleanupErrors : [failure, ...cleanupErrors], "Installed worker fixture or cleanup failed.");
   }
 });

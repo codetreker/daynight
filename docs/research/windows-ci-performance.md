@@ -6,7 +6,12 @@ The baseline is main revision `8a8f3c41ccec94783141cc05e9a42d3b39d2e658`.
 Measurements use completed successful GitHub Actions runs, step timestamps from
 the jobs API and per-file durations from Vitest logs. Job time excludes queue
 delay; it includes runner setup, post steps and inter-step gaps. All table values
-are seconds. Separate runs have different runner load, so historical variation
+are seconds. The historical measurements below describe the Git fixture split.
+Current installed acceptance prepares one canonical default-shim installation
+per platform invocation, with private runtime state and writable package views;
+the [shared preparation decision](../../.agents/notes/implemented/testing/2026-11-04-shared-installed-cli-preparation.md)
+owns that separate optimization. Preparation command, source and cleanup evidence
+is retained in `.tmp/installed-cli-preparation.json`. Separate runs have different runner load, so historical variation
 is included rather than treating one measurement as a stable benchmark.
 
 ## Baseline

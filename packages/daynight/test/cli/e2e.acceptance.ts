@@ -1,7 +1,8 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
@@ -25,7 +26,8 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
   const temporary = path.join(workspace, ".tmp");
   mkdirSync(temporary, { recursive: true });
   rmSync(path.join(temporary, "e2e-evidence.json"), { force: true });
-  const directory = mkdtempSync(path.join(temporary, "Installed CLI 中文 "));
+  const installedFixture = await createAcceptanceCli({ writablePackage: true });
+  const directory = installedFixture.receipt.root;
   try {
     const home = path.join(directory, "home, 中文");
     const stateDirectory = path.join(home, ".daynight");
@@ -119,20 +121,9 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
     };
-    const pnpm = (args: string[], cwd: string): void => {
-      const result = crossSpawn.sync("pnpm", args, { cwd, stdio: "inherit", env: { ...process.env, NO_COLOR: "1", XDG_CACHE_HOME: path.join(temporary, "cache") }, timeout: 120_000 });
-      if (result.error) throw result.error;
-      if (result.status !== 0) throw new Error(`pnpm ${args[0]} exited with ${String(result.status)}.`);
-    };
-    const tarball = path.join(directory, "daynight.tgz");
-    const modules = parse(readFileSync(path.join(workspace, "node_modules/.modules.yaml"), "utf8")) as { storeDir: string };
-    const storeDirectory = path.dirname(modules.storeDir);
-    pnpm(["pack", "--out", tarball], packageDirectory);
-    writeFileSync(path.join(consumer, "package.json"), JSON.stringify({ name: "daynight-installed-acceptance", private: true, dependencies: { "@codetreker/daynight": `file:${tarball.replaceAll("\\", "/")}` } }));
-    pnpm(["install", "--prod", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile", "--store-dir", storeDirectory, "--reporter", "append-only"], consumer);
-    const installedBin = path.join(consumer, "node_modules/.bin", process.platform === "win32" ? "daynight.cmd" : "daynight");
+    const installedBin = installedFixture.receipt.launcherPath;
     expect(existsSync(installedBin)).toBe(true);
-    const installedPackage = path.join(consumer, "node_modules", "@codetreker", "daynight");
+    const installedPackage = path.dirname(path.dirname(installedFixture.receipt.entryPath));
     const installed = JSON.parse(readFileSync(path.join(installedPackage, "package.json"), "utf8")) as { name: string; version: string; bin: { daynight: string; dn: string } };
     expect(installed.name).toBe("@codetreker/daynight");
     expect(installed.bin).toEqual({ daynight: "dist/main.js", dn: "dist/main.js" });
@@ -695,7 +686,8 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
       expect(calls.every((item) => item.prompt.includes("Never submit REQUEST_CHANGES") && item.reviewFile.endsWith("\n"))).toBe(true);
       expect(publications().every((item) => item.publisher === "copilot-fixture" && (item.event === "COMMENT" || item.event === "APPROVE"))).toBe(true);
       writeFileSync(path.join(temporary, "e2e-evidence.json"), JSON.stringify({ success: true, packageVersion: installed.version,
-        installedBin: path.relative(directory, installedBin).replaceAll("\\", "/"), packagePacked: true, consumerInstall: "registry",
+        installedBin: path.relative(directory, installedBin).replaceAll("\\", "/"), packagePacked: true, consumerInstall: "shared-pnpm-production-installation-view",
+        artifact: { tarballSha256: installedFixture.receipt.tarballSha256, entrySha256: installedFixture.receipt.entrySha256, source: installedFixture.receipt.source },
         sqlite: "real", git: "real-local-origin", github: "controlled-native-executable", copilot: "controlled-default-command-shim",
         liveCopilotExercised: false, liveGitHubExercised: false, scenarios,
         receipts: { agentInvocations: calls.length, skillDiscoveryInvocations: discoveryCalls.length, configuredCopilotModel: copilotModel, modelArgumentInvocations: calls.length,
@@ -715,6 +707,6 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
       }
     }
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    await installedFixture.cleanup();
   }
 }, 180_000);
