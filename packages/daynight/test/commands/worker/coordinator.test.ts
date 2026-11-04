@@ -1,6 +1,8 @@
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import type { TimerOptions } from "node:timers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OperationError } from "../../../src/api/operation.js";
 import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
@@ -19,15 +21,48 @@ import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import type { Task, WorkerClaimDescriptor } from "../../../src/api/types.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
 
+const polling = vi.hoisted(() => ({ requested: [] as number[], onSchedule: undefined as ((milliseconds: number) => void) | undefined }));
+vi.mock("node:timers/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:timers/promises")>();
+  return { ...actual, setTimeout: <T>(milliseconds: number, value?: T, options?: TimerOptions) => {
+    polling.requested.push(milliseconds);
+    polling.onSchedule?.(milliseconds);
+    return actual.setTimeout(milliseconds === 1_000 ? 1 : milliseconds, value, options);
+  } };
+});
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const origin = "https://daynight.example";
 const workerId = uuid(1);
 const configuration: ExecutionConfiguration = { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 2 };
 const directories: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
-afterEach(async () => { vi.restoreAllMocks(); for (const store of stores.splice(0)) store.close(); await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => {
+  polling.onSchedule = undefined; polling.requested.length = 0;
+  vi.restoreAllMocks();
+  for (const store of stores.splice(0)) store.close();
+  await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
 const task = (projectId: string, id: string): Task => ({ id, projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const eventually = (check: () => void) => vi.waitFor(check, { timeout: 3500, interval: 10 });
+it("preserves native polling values, asynchronous settlement and cancellation", async () => {
+  const value = { polling: "value" };
+  let settled = false;
+  const result = delay(1_000, value).then(returned => { settled = true; return returned; });
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(await result).toBe(value);
+  for (const cancelBeforeScheduling of [true, false]) {
+    const cancellation = new AbortController(); const reason = new Error("Polling cancelled.");
+    if (cancelBeforeScheduling) cancellation.abort(reason);
+    const failure = delay(1_000, undefined, { signal: cancellation.signal }).catch(error => error as Error & { code: string });
+    await Promise.resolve();
+    if (!cancelBeforeScheduling) cancellation.abort(reason);
+    expect(await failure).toMatchObject({ name: "AbortError", code: "ABORT_ERR" });
+    expect((await failure as Error).cause).toBe(reason);
+  }
+  expect(polling.requested).toEqual([1_000, 1_000, 1_000]);
+});
+
 const fixture = async (maxConcurrent = 1) => {
   const base = path.resolve("../../.tmp/minimal-coordinator-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "r-")); directories.push(root);
@@ -396,6 +431,26 @@ describe("minimal worker resource reconciliation", () => {
     await f.coordinator.tick(); await eventually(() => expect(f.store.getTask(old)?.status).toBe("done"));
     expect(f.order.slice(-3)).toEqual(["notify", "stop-close", "remove-worktree"]);
     expect(f.store.getTask(old)?.sessionId).toBe(old.sessionId);
+    expect(polling.requested).toEqual([1_000]);
+  });
+
+  it("clips cleanup polling to the actual remaining deadline", async () => {
+    const f = await fixture();
+    await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    const row = f.store.listTasks()[0]!;
+    f.grants.clear(); f.candidates.splice(0);
+    f.tasks.submitPrompt.mockImplementation(async (context, binding) => {
+      f.order.push("notify");
+      return { submission: "submitted", observation: { ...f.resources.get(context.claimId)!.panes[0]!, name: "managed", binding } };
+    });
+    polling.onSchedule = milliseconds => {
+      if (milliseconds === 1_000) f.clock(600_863);
+      else if (milliseconds === 137) f.clock(601_001);
+    };
+    await f.coordinator.tick(); await eventually(() => expect(f.store.getTask(row)?.status).toBe("done"));
+    expect(polling.requested).toEqual([1_000, 137]);
+    expect(f.order.slice(-3)).toEqual(["notify", "stop-close", "remove-worktree"]);
+    expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
   });
 
   it("holds a newer same-task claim pending until old resources are removed", async () => {

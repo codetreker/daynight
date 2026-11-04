@@ -73,6 +73,11 @@ and its cancellation, and accelerate the incomplete socket's native expiry;
 virtual time separately exercises the authenticated response wait. The
 [test timing decision](../.agents/notes/implemented/testing/2026-11-04-cli-test-time-and-bytes.md)
 explains the distinction between Node socket timers and global fake timers.
+Controller and Worker lifecycle fixtures record production poll requests while
+using short native promise-timer ticks for their controlled resource states.
+Their tests retain exact cadence, deadline clipping and cancellation assertions;
+the [coordinator polling decision](../.agents/notes/implemented/testing/2026-11-04-coordinator-test-polling.md)
+owns that test boundary.
 The pnpm dependency store is local to `.tmp/pnpm-store`. Native skill terminal
 acceptance uses the development-only `node-pty` dependency, including Windows
 ConPTY. The workspace build policy permits only the pinned node-pty hook and
