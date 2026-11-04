@@ -8,27 +8,27 @@ import (
 )
 
 const taskAssigneesCatalogueQuery = `WITH candidate_ids (user_id) AS (
-  SELECT user_id FROM project_members WHERE project_id = $1
+  SELECT user_id FROM (` + projectAccessRelation + `) access WHERE project_id = $1
   UNION
   SELECT assigned_to FROM tasks
   WHERE project_id = $1 AND deleted_at IS NULL AND assigned_to IS NOT NULL
 )
 SELECT candidate.user_id::text, profile.id::text, profile.name, profile.avatar_url,
-  EXISTS (SELECT 1 FROM project_members member WHERE member.project_id = $1 AND member.user_id = candidate.user_id)
+  EXISTS (SELECT 1 FROM (` + projectAccessRelation + `) access WHERE access.project_id = $1 AND access.user_id = candidate.user_id)
 FROM candidate_ids candidate
 LEFT JOIN users profile ON profile.id = candidate.user_id
 ORDER BY candidate.user_id`
 
 const taskAssigneesResolveQuery = `SELECT requested.user_id::text, profile.id::text, profile.name, profile.avatar_url,
-  member.user_id IS NOT NULL, member.user_id IS NOT NULL OR retained.id IS NOT NULL
+  access.user_id IS NOT NULL, access.user_id IS NOT NULL OR retained.id IS NOT NULL
 FROM unnest($2::uuid[]) requested(user_id)
-LEFT JOIN project_members member ON member.project_id = $1 AND member.user_id = requested.user_id
+LEFT JOIN (` + projectAccessRelation + `) access ON access.project_id = $1 AND access.user_id = requested.user_id
 LEFT JOIN LATERAL (
   SELECT task.id FROM tasks task
   WHERE task.project_id = $1 AND task.assigned_to = requested.user_id AND task.deleted_at IS NULL
   LIMIT 1
 ) retained ON true
-LEFT JOIN users profile ON profile.id = requested.user_id AND (member.user_id IS NOT NULL OR retained.id IS NOT NULL)
+LEFT JOIN users profile ON profile.id = requested.user_id AND (access.user_id IS NOT NULL OR retained.id IS NOT NULL)
 ORDER BY requested.user_id`
 
 func taskAssigneeProfile(userID string, profileID, name, avatarURL *string, hasProjectAccess bool) (core.TaskAssignee, error) {

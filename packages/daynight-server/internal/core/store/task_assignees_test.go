@@ -139,6 +139,11 @@ func TestTaskAssigneeStoreRejectsMissingQualifiedProfiles(t *testing.T) {
 			mustQueryExec(t, database, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, missing)
 		}
 		mustQueryExec(t, database, `DELETE FROM users WHERE id=$1`, missing)
+		resolved, err := storeAssigneeRead(t, database, project.ID, []string{queryID(101)})
+		if err != nil {
+			t.Fatalf("unrequested missing profile broke bounded resolution: %v", err)
+		}
+		assertStoreAssignees(t, resolved, map[string]bool{queryID(101): true}, nil)
 		for _, ids := range [][]string{nil, {queryID(101), missing}} {
 			result, err := storeAssigneeRead(t, database, project.ID, ids)
 			var failure *Error
