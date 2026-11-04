@@ -1501,13 +1501,23 @@ Native recovery uses current resources and the recorded session ID:
 | Agent needs starting, session_id is present | Resume that native session using the recorded agent type. |
 | Agent needs starting, session_id is NULL | Emit `info`, start a fresh native conversation, and save its ID in the same row. |
 
-When a native process must restart, the worker stops/closes an existing
-inactive workspace and creates a new one with the current native environment
-and an empty pane-level session reference. Herdr restore can retain the old
-native reference while restoring the shell without its extra launch environment.
-The saved SQLite session_id still selects resume or fresh startup; an inactive
-pane's retained reference is not saved as a newly observed session ID. A live
-agent keeps its current connection.
+When a native Agent exits unexpectedly and current resources confirm its pane
+is inactive, normal patrol automatically stops/closes that workspace and creates
+a new one with the current native environment and an empty pane-level session
+reference. Herdr restore can retain the old native reference while restoring the
+shell without its extra launch environment. The saved SQLite session_id selects
+resume or fresh startup; an inactive pane's retained reference is not saved as a
+newly observed session ID. A live agent keeps its current connection.
+
+A replacement shell can still be initializing when Herdr rejects `agent.start`
+with `agent_pane_busy`. The adapter retries this explicit rejection for at most
+two seconds while the original workspace, pane, terminal and cwd remain owned,
+no Agent has appeared, and foreground process evidence confirms shell
+initialization. Cancellation and the original operation deadline still apply.
+Recovery within that call does not consume an execution failure attempt. Busy
+foreground programs, missing process evidence, changed identities and unknown
+launch outcomes remain visible errors; unknown launches are observed before
+another decision.
 
 Startup, recovery and continuation prompts require autonomous decisions within
 the task scope and existing authorization. Human intervention requires specific
