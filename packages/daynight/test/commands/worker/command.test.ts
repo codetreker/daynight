@@ -26,7 +26,6 @@ const projectId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const dependencies = () => ({
   setup: vi.fn<WorkerCommandDependencies["setup"]>(async () => {}),
   attach: vi.fn<WorkerCommandDependencies["attach"]>(async () => {}),
-  prepareRepositories: vi.fn<WorkerCommandDependencies["prepareRepositories"]>(async () => {}),
   repository: vi.fn<WorkerCommandDependencies["repository"]>(async () => {}),
   run: vi.fn<WorkerCommandDependencies["run"]>(async () => {}),
   manage: vi.fn<WorkerCommandDependencies["manage"]>(async () => {}),
@@ -49,20 +48,17 @@ describe("worker command", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it("passes startup context and defers repository preparation to the foreground runtime's signal", async () => {
+  it("passes startup context without repository discovery or interactive preparation", async () => {
     const { cli, errors } = context();
     cli.homeDirectory = () => path.resolve("worker-home");
     cli.workingDirectory = vi.fn(() => path.resolve("startup-directory"));
     const run = vi.fn<WorkerCommandDependencies["run"]>(async (options) => { options.log?.("worker started\n"); });
     const deps = { ...dependencies(), run };
     await runWorkerCommand(["run"], cli, deps);
-    expect(deps.prepareRepositories).not.toHaveBeenCalled();
-    expect(run).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, version: cli.version, workingDirectory: path.resolve("startup-directory"), log: expect.any(Function), prepareRepositories: expect.any(Function) });
+    expect(run).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, version: cli.version, workingDirectory: path.resolve("startup-directory"), log: expect.any(Function) });
     expect(cli.workingDirectory).toHaveBeenCalledOnce();
     expect(errors).toEqual(["worker started\n"]);
-    const signal = new AbortController().signal;
-    await run.mock.calls[0]![0].prepareRepositories!(signal);
-    expect(deps.prepareRepositories).toHaveBeenCalledExactlyOnceWith(cli, signal);
+
   });
 
   it("routes setup without inspecting home or loading a worker controller", async () => {
@@ -107,20 +103,6 @@ describe("worker command", () => {
     for (const action of Object.values(deps)) expect(action).not.toHaveBeenCalled();
   });
 
-  it("preserves a repository preparation failure returned through the runtime callback", async () => {
-    const { cli } = context();
-    cli.homeDirectory = () => path.resolve("worker-home");
-    const deps = dependencies();
-    cli.workingDirectory = () => path.resolve("startup-directory");
-    const failure = new Error("Project selection cancelled.");
-    const signal = new AbortController().signal;
-    deps.prepareRepositories.mockRejectedValueOnce(failure);
-    deps.run.mockImplementation(async ({ prepareRepositories }) => { await prepareRepositories!(signal); });
-    await expect(runWorkerCommand(["run"], cli, deps)).rejects.toBe(failure);
-    expect(deps.run).toHaveBeenCalledOnce();
-    expect(deps.prepareRepositories).toHaveBeenCalledExactlyOnceWith(cli, signal);
-    expect(deps.manage).not.toHaveBeenCalled();
-  });
 
   it.each([
     { args: ["repo", "list"], request: { kind: "list", json: false } },
@@ -134,7 +116,6 @@ describe("worker command", () => {
     const deps = dependencies();
     await runWorkerCommand(args, cli, deps);
     expect(deps.repository).toHaveBeenCalledExactlyOnceWith(request, cli);
-    expect(deps.prepareRepositories).not.toHaveBeenCalled();
     expect(deps.run).not.toHaveBeenCalled();
     expect(deps.manage).not.toHaveBeenCalled();
   });
@@ -161,7 +142,6 @@ describe("worker command", () => {
     await runWorkerCommand([kind, taskId.toUpperCase(), `--claim-id=${claimId.toUpperCase()}`, "--project", projectId.toUpperCase(), ...(kind === "retry" ? [] : ["--if-version", "9223372036854775807"])], cli, deps);
     expect(deps.manage).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, log: expect.any(Function), request: { kind, taskId, claimId, projectId, ...(kind === "retry" ? {} : { version: 9_223_372_036_854_775_807n }) } });
     expect(deps.run).not.toHaveBeenCalled();
-    expect(deps.prepareRepositories).not.toHaveBeenCalled();
     expect(errors).toEqual([`claim=${claimId} waiting\n`]);
   });
 
