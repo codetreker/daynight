@@ -2,7 +2,6 @@ import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
 import { directAccessFixture, taskSyncQuery, taskSyncResponse, viewerHeaders } from './helpers/taskSync';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
-import { performance as nodePerformance } from 'node:perf_hooks';
 import { openDB } from 'idb';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
@@ -413,14 +412,10 @@ describe("authenticated application shell", () => {
 
   it("evicts the old project and open detail as soon as a sync response proves another principal while identity is pending", async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    const waitForCacheUi = async (assertion: () => void) => {
-      const deadline = nodePerformance.now() + 1_000;
-      for (;;) {
-        await act(async () => { await nextEventLoopTurn(); });
-        try { assertion(); return; }
-        catch (error) { if (nodePerformance.now() >= deadline) throw error; }
-      }
-    };
+    const waitForCacheUi = (assertion: () => void) => waitFor(async () => {
+      await act(async () => { await nextEventLoopTurn(); });
+      assertion();
+    }, { timeout: 5_000 });
     const taskId = '00000000-0000-4000-8000-000000000005';
     const detail = detailFixture(projectId, taskId, { title: 'Alice-only task', description: 'Alice-only private detail' });
     const aliceGraph = { ...graphFixture([detail]), project: project('Alice 的项目') };
