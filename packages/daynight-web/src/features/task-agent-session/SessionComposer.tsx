@@ -292,8 +292,10 @@ export function SessionComposer({ state, connected, authPaused = false, active =
   }
   const commandSendAllowed = !authPaused && connected && !pending && !commandPending && (commands.some(command => command.id.startsWith('$') && `/${command.name}` === text.trim()) || controlsAllowed);
   return <form ref={formRef} className="session-composer session-composer-adaptive" onSubmit={(event) => { event.preventDefault(); void send(); }} onKeyDown={event => {
-    if (event.key !== 'Escape' || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
-    if (controlView || showCommands) { event.preventDefault(); event.stopPropagation(); closeControls(); }
+    if (event.key !== 'Escape' || !(controlView || showCommands)) return;
+    event.stopPropagation();
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
+    event.preventDefault(); closeControls();
   }}>
     <SessionControlsPanel controls={controls} state={state} intents={settingIntents} view={controlView} disabled={!controlsAllowed} onClose={closeControls} onSelect={onUpdateSetting} onRefresh={onRefreshControls} />
     {showCommands ? <div className="session-command-menu">

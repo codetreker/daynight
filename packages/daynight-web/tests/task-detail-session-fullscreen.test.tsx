@@ -126,3 +126,31 @@ describe('Session fullscreen inside task details', () => {
     expect(document.body.style.overflow).toBe('');
   });
 });
+
+it.each([
+  { setting: 'Model', label: 'Model settings', fullscreen: false },
+  { setting: 'Permissions', label: 'Permission settings', fullscreen: false },
+  { setting: 'Model', label: 'Model settings', fullscreen: true },
+  { setting: 'Permissions', label: 'Permission settings', fullscreen: true },
+])('retains $setting and its task dialog during composition Escape (fullscreen=$fullscreen)', async ({ setting, label, fullscreen }) => {
+  const f = await fixture(true);
+  if (fullscreen) fireEvent.click(screen.getByRole('button', { name: 'Enter Session fullscreen' }));
+  fireEvent.click(screen.getByRole('button', { name: setting }));
+  const input = screen.getByRole('textbox', { name: 'Message' }); input.focus();
+  const verify = () => {
+    expect(screen.getByLabelText(label)).toBeInTheDocument();
+    expect(f.surface.classList.contains('task-detail-session-fullscreen')).toBe(fullscreen);
+    expect(f.onClose).not.toHaveBeenCalled(); expect(input).toHaveFocus();
+  };
+  for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+    expect(fireEvent.keyDown(input, { key: 'Escape', cancelable: true, ...composition })).toBe(true);
+    verify();
+  }
+  fireEvent.compositionStart(input);
+  expect(fireEvent.keyDown(input, { key: 'Escape', cancelable: true })).toBe(true); verify();
+  fireEvent.compositionEnd(input);
+  expect(fireEvent.keyDown(input, { key: 'Escape', cancelable: true })).toBe(false);
+  expect(screen.queryByLabelText(label)).toBeNull();
+  expect(f.surface.classList.contains('task-detail-session-fullscreen')).toBe(fullscreen);
+  expect(f.onClose).not.toHaveBeenCalled();
+});
