@@ -2,7 +2,7 @@ import { createContext, createElement, useCallback, useContext, useEffect, useRe
 import { ApiError } from "../../api/client";
 import { canonicalId } from "../../api/validation";
 import type { TeamRef } from "../../api/auth-types";
-import { getTeam } from "../../api/teams";
+import { getTeam, type Team } from "../../api/teams";
 import { replaceRoute } from "../../app/router";
 import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
 
@@ -112,6 +112,12 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
     })();
     return () => controller.abort();
   }, [routeKey, epoch, navigation, blocked, revision, admission, personal.id, personal.kind, personal.name, save, retry]);
+  const acceptTeam = useCallback((team: Team) => {
+    if (admission.isInvalidated || blockedRef.current || current.current.id !== team.id) return;
+    current.current = team;
+    setState((previous) => previous.detail.id === team.id && previous.detail.status === "ready"
+      ? { ...previous, detail: { id: team.id, status: "ready", team } } : previous);
+  }, [admission]);
   const detail: Detail = routeKey === null ? { id: current.current.id, status: "ready", team: current.current } : state.key !== routeKey ? { id: routeKey === "default" ? current.current.id : routeKey, status: "loading" } : state.detail;
-  return { detail, retry, saveError, retrySave };
+  return { detail, retry, saveError, retrySave, acceptTeam };
 };

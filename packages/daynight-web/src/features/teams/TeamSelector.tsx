@@ -5,7 +5,7 @@ import { navigate } from "../../app/router";
 import { useTeams } from "./TeamsProvider";
 import { useTeamMessages } from "./messages";
 
-export const TeamSelector = ({ personalId, selectedId, expanded, onExpand, onNavigate }: { readonly personalId: string; readonly selectedId: string; readonly expanded: boolean; readonly onExpand: () => void; readonly onNavigate: () => void }) => {
+export const TeamSelector = ({ personalId, selectedId, expanded, onExpand, onNavigate, onCreate }: { readonly personalId: string; readonly selectedId: string; readonly expanded: boolean; readonly onExpand: () => void; readonly onNavigate: () => void; readonly onCreate?: () => void }) => {
   const teams = useTeams(), m = useTeamMessages(), menu = useRef<HTMLDetailsElement>(null);
   const { messages: { common } } = useI18n();
   const detail = (error: unknown) => <><span>{error instanceof ApiError && error.kind === "network" ? m.network : m.readError}</span>{error instanceof ApiError && error.requestId !== null && <span> {common.requestId}<code>{error.requestId}</code></span>}</>;
@@ -25,6 +25,7 @@ export const TeamSelector = ({ personalId, selectedId, expanded, onExpand, onNav
       {teams.list.status === "error" && <p role="alert">{m.failed} {detail(teams.list.error)} <button type="button" onClick={teams.refreshList}>{m.retry}</button></p>}
       <a href={`/teams/${personalId}`} onClick={follow} aria-current={personalId === selectedId ? "true" : undefined}>{m.personal}</a>
       {teams.list.items.filter((team) => team.id !== personalId).map((team) => <a key={team.id} href={team.id === personalId ? "/projects" : `/teams/${team.id}`} onClick={follow} aria-current={team.id === selectedId ? "true" : undefined}>{team.kind === "personal" ? m.personal : team.name}</a>)}
+      {onCreate && <button type="button" className="create-team-item" onClick={() => { if (menu.current) { menu.current.open = false; menu.current.querySelector("summary")?.focus(); } onCreate(); }}>{m.createTeam}</button>}
       {teams.list.status === "ready" && teams.list.cursor !== null && <div>{teams.list.moreError !== null && <p role="alert">{m.moreFailed} {detail(teams.list.moreError)}</p>}<button type="button" disabled={teams.list.more} onClick={teams.loadMore}>{teams.list.more ? m.loading : teams.list.moreError !== null ? m.retry : m.more}</button></div>}
     </div>
   </details>;
