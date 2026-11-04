@@ -753,6 +753,8 @@ describe("minimal worker resource reconciliation", () => {
 
   it("does not infer claim absence for a project registered after inventory began", async () => {
     const f = await fixture(); f.candidates.splice(0);
+    const onInventory = vi.fn();
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory });
     let release!: () => void, entered!: () => void;
     const waiting = new Promise<void>(resolve => { release = resolve; });
     const requested = new Promise<void>(resolve => { entered = resolve; });
@@ -760,7 +762,7 @@ describe("minimal worker resource reconciliation", () => {
       expect(projects.map(project => project.projectId)).toEqual([f.project.projectId]);
       entered(); await waiting; return [];
     });
-    const tick = f.coordinator.tick();
+    const tick = coordinator.tick();
     try {
       await requested;
       const project = { projectId: uuid(11), repoUrl: "https://example.test/owner/new.git", localPath: path.join(f.root, "new") };
@@ -773,13 +775,16 @@ describe("minimal worker resource reconciliation", () => {
       f.resources.set(owner.claimId, { owner, workspaceId: binding.workspaceId, panes: [{ binding, cwd: f.bind(owner).worktreePath, kind: "codex", status: "working", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(213) }, stateChangeSeq: 2, completionSeq: 0 }] });
       release(); await tick;
       expect(f.store.getTask(row)?.status).toBe("active");
+      expect(onInventory).not.toHaveBeenCalled();
       expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
       expect(f.git.removeWorktree).not.toHaveBeenCalled();
       expect(f.resources.has(owner.claimId)).toBe(true);
       expect(f.worktrees.has(owner.claimId)).toBe(true);
-      await f.coordinator.tick();
+      await coordinator.tick();
       expect(vi.mocked(f.remote.ownInventory).mock.calls[1]![0].map(item => item.projectId)).toContain(project.projectId);
       expect(f.store.getTask(row)?.status).toBe("active");
+      expect(onInventory).toHaveBeenCalledOnce();
+      expect(onInventory.mock.calls[0]![0].claims).toEqual([{ projectId: project.projectId, taskId: owner.taskId, claimId: owner.claimId }]);
       expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
       expect(f.git.removeWorktree).not.toHaveBeenCalled();
     } finally { release(); await tick; }
