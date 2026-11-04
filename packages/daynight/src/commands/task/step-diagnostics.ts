@@ -4,6 +4,8 @@ import { UsageError } from "../../cli/context.js";
 import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 import { ProjectDiscoveryError } from "../../repository/discovery-error.js";
 import { stepText } from "./step-rendering.js";
+import { findStepWriteFailure, stepApiFailures } from "./step-write-errors.js";
+import type { StepAddAttempt } from "./step-write-errors.js";
 
 type ReadPhase = "prepare" | "request" | "render" | "output";
 const apiFailure = (cause: unknown, seen = new Set<unknown>()): ApiError | undefined => {
@@ -35,17 +37,22 @@ const projectDiscoveryFailure = (cause: unknown, seen = new Set<unknown>()): Pro
 const discoveryMessage = (failure: ProjectDiscoveryError): string => failure.kind === "missing" ? "Project does not exist."
   : `Multiple projects match this repository (${failure.projectIds.map(stepText).join(", ")}); specify --project <id>.`;
 
+const ordinaryStepMessage = (cause: unknown, operation: "list" | "show" | "add", phase: ReadPhase, api: ApiError | undefined): string => {
+  const discovery = projectDiscoveryFailure(cause);
+  const operationFailure = api?.cause instanceof OperationError ? api.cause : cause instanceof OperationError ? cause : undefined;
+  return cause instanceof UsageError ? `${cause.message} Run ${cause.helpCommand} for usage.`
+    : discovery !== undefined ? discoveryMessage(discovery)
+    : api?.serverMessage !== undefined ? `${api.code}: ${stepText(api.serverMessage)}`
+    : operationFailure !== undefined ? operationFailure.message
+    : phase === "prepare" ? operation === "add" ? "Could not prepare the Step Add. Check configuration and authentication; run daynight login if needed." : "Could not prepare the Steps read. Check configuration and authentication; run daynight login if needed."
+    : `Steps ${operation} failed.`;
+};
+
 export class StepReadCommandError extends PublicDiagnosticError {
   constructor(cause: unknown, operation: "list" | "show", phase: ReadPhase, projectId?: string, taskId?: string, stepId?: string) {
     const discovery = projectDiscoveryFailure(cause);
     const api = discovery === undefined ? apiFailure(cause) : undefined;
-    const operationFailure = api?.cause instanceof OperationError ? api.cause : cause instanceof OperationError ? cause : undefined;
-    const message = cause instanceof UsageError ? `${cause.message} Run ${cause.helpCommand} for usage.`
-      : discovery !== undefined ? discoveryMessage(discovery)
-      : api?.serverMessage !== undefined ? `${api.code}: ${stepText(api.serverMessage)}`
-      : operationFailure !== undefined ? operationFailure.message
-      : phase === "prepare" ? "Could not prepare the Steps read. Check configuration and authentication; run daynight login if needed."
-      : `Steps ${operation} failed.`;
+    const message = ordinaryStepMessage(cause, operation, phase, api);
     const context = ["source=cli", `operation=task.step.${operation}`, `phase=${api?.phase ?? phase}`,
       ...(projectId === undefined ? [] : [`projectId=${projectId}`]),
       ...(taskId === undefined ? [] : [`taskId=${taskId}`]),
@@ -58,5 +65,38 @@ export class StepReadCommandError extends PublicDiagnosticError {
     super(`${message}${api?.status === 401 ? " Run daynight login to authenticate." : ""}\n${context.join(" ")}`,
       cause instanceof UsageError ? 2 : 1, { cause });
     this.name = "StepReadCommandError";
+  }
+}
+
+export class StepWriteCommandError extends PublicDiagnosticError {
+  constructor(cause: unknown, phase: ReadPhase, projectId?: string, taskId?: string, stepId?: string, confirmed?: StepAddAttempt) {
+    const failure = findStepWriteFailure(cause);
+    const attempt = confirmed === undefined ? failure?.attempt : confirmed;
+    const outcome = confirmed !== undefined ? "confirmed" : failure === undefined ? "failed" : failure.outcome;
+    const discovery = projectDiscoveryFailure(cause);
+    const api = attempt === undefined ? discovery === undefined ? apiFailure(cause) : undefined
+      : stepApiFailures(cause).find((error) => error.operation === "task.step.add" && error.sentRequestId === attempt.requestId);
+    const message = outcome === "unknown" ? "The Step Add outcome is unknown."
+      : outcome === "confirmed" ? `Step added. ID: ${attempt!.stepId}\nThe Step is confirmed, but local result handling failed.`
+      : ordinaryStepMessage(cause, "add", phase, api);
+    const context = ["source=cli", "operation=task.step.add", `phase=${api?.phase ?? phase}`, `outcome=${outcome}`,
+      ...(projectId === undefined && attempt === undefined ? [] : [`projectId=${attempt === undefined ? projectId : attempt.projectId}`]),
+      ...(taskId === undefined && attempt === undefined ? [] : [`taskId=${attempt === undefined ? taskId : attempt.taskId}`]),
+      ...(stepId === undefined && attempt === undefined ? [] : [`stepId=${attempt === undefined ? stepId : attempt.stepId}`]),
+      ...(attempt === undefined ? [] : [`requestId=${attempt.requestId}`]),
+      ...(api?.status === undefined ? [] : [`status=${api.status}`]),
+      ...(api?.code === undefined ? [] : [`code=${api.code}`]),
+      ...(api?.requestId === undefined ? [] : [`serverRequestId=${stepText(api.requestId)}`]),
+      ...(api?.responseRequestId === undefined ? [] : [`responseRequestId=${stepText(api.responseRequestId)}`]),
+      ...(api?.details === undefined ? [] : [`details=${stepText(JSON.stringify(api.details))}`]),
+      ...(failure?.recoveryAttempted === true ? [`recoveryRequestId=${failure.attempt.requestId}.r1`] : []),
+    ];
+    const observation = outcome !== "unknown" ? "" : failure?.observation === undefined ? "\nNo current observation is available."
+      : `\nCurrent facts only: version=${failure.observation.version} target=${failure.observation.found ? "found" : "absent"}. The Add outcome remains unknown.`;
+    const guidance = outcome !== "unknown" || attempt === undefined ? ""
+      : `\nRead current Steps: daynight task step list ${attempt.taskId} --project ${attempt.projectId}\nInspect the original ID: daynight task step show ${attempt.taskId} ${attempt.stepId} --project ${attempt.projectId}`;
+    super(`${message}${api?.status === 401 ? " Run daynight login to authenticate." : ""}\n${context.join(" ")}${observation}${guidance}`,
+      cause instanceof UsageError ? 2 : 1, { cause });
+    this.name = "StepWriteCommandError";
   }
 }

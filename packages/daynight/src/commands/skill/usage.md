@@ -1,6 +1,6 @@
 ---
 name: daynight
-description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads, attachments and ordered Step reads with version-safe writes and explicit write outcomes.
+description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads, attachments and ordered Step reads and additions with version-safe writes and explicit write outcomes.
 ---
 
 # Daynight Project and Task Usage
@@ -57,7 +57,7 @@ and does not issue another identity request. `ready` has no assignee option; use
 `task list --ready --assigned-to me` instead. Readiness, human responsibility and
 automatic permission are separate.
 
-## Read Task Steps
+## Task Steps
 
 ```bash
 daynight task step list <task-id>
@@ -69,7 +69,7 @@ daynight task step show <task-id> <step-id> --json --project <project-id>
 Steps are Task-owned ordered records with a title, Markdown description,
 `todo`/`in_progress`/`done`/`skipped` status and creation/update times. Their parent
 Task version is the collection version. Ordinary task show/list/graph output does
-not include the full collection. This CLI provides Step list and show reads.
+not include the full collection. This CLI provides Step list/show reads and Add.
 
 List preserves saved order and prints the parent Task version, total count and
 one-based display number, full short ID, status and complete title for each
@@ -80,7 +80,7 @@ List JSON is the complete projectId/taskId/version/steps resource; show JSON is
 the complete projectId/taskId/version/step resource. Neither is a bare array.
 
 Use the complete eight-hex Step ID, never a UUID, prefix or display number.
-Explicit `--project` works outside Git and issues the selected GET without a
+For list/show, explicit `--project` works outside Git and issues the selected GET without a
 hidden project or parent read; omitted project selection uses normal repository
 discovery. Help runs before configuration, Git or network access. Reads validate
 all required fields, scope, IDs, collection uniqueness, status, text and UTC
@@ -90,6 +90,41 @@ successful `--json` contains one JSON value followed by LF. Output failure may
 leave partial stdout and still exits as a failure. Success exits 0, argument errors
 2 and operation failures 1. Errors use stderr; a 401 directs you to
 `daynight login` without automatic login or request replay.
+
+### Add a Step
+
+```bash
+daynight task step add <task-id> --title "Coding round 2" --project <project-id>
+daynight task step add <task-id> --title "Review round 2" --id 00abcdef --description "" --status todo --after <step-id> --if-version <observed-version> --json --project <project-id>
+```
+
+Title is required and preserves its original text. Omitted description is empty;
+omitted status is todo. The four Step statuses are accepted. --before and --after
+are mutually exclusive Task-local anchors; omit both to append. --id and anchor
+IDs accept exactly eight hex characters and normalize case with leading zeros
+preserved. With no --id, one UUIDv4 first segment is selected before submission.
+An independent request UUID is also retained; conflicts and unknown results do
+not automatically generate a new identity or repeat POST.
+
+Explicit --project and --if-version make one POST. Omit --if-version to read
+complete Steps once, then submit that version once; a failed read prevents POST.
+Preserve exact int64 digits. The 1 MiB request body limit includes JSON escaping.
+Success requires a complete 201 receipt with canonical Location, correct scope,
+version +1, exact target fields/new times and placement. Readable success prints
+`Step added. ID: <id>` and the confirmed collection; --json prints only the full
+resource and LF.
+
+Known 4xx refusals preserve safe code/message and capacity byte details. Unknown
+Add results keep original Project/Task/Step ID and request UUID, exit 1 and leave
+success stdout empty. At most one same-live-operation full GET, correlated with
+originalUUID.r1, reports current version and found/absent facts only; it never
+confirms historical success or rollback. Cancellation or exhausted operation
+budgets do not start a detached read. With no current observation, use ordinary
+list/show with the original ID and explicit project; there is no fallback to an
+old pre-read, automatic retry or replacement ID. Server IDs are separate
+diagnostic facts, not an echo-equality gate. A confirmed receipt remains confirmed
+if local cleanup or output later fails; nonzero exit reports that local failure,
+and output failure may leave partial stdout.
 
 ## Version-Safe Writes
 

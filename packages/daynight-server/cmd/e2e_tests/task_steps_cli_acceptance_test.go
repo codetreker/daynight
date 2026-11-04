@@ -114,7 +114,7 @@ func TestInstalledCLITaskStepsReadAcceptance(t *testing.T) {
 				t.Fatal("Steps read help is missing or advertises write options")
 			}
 		}
-		for _, arguments := range [][]string{{"task", "step", "add"}, {"task", "step", "delete"}, {"task", "step", "move"}, {"task", "step", "set-status"}, {"task", "step", "list", "bad"}, {"task", "step", "show", uuid.NewString(), "abc"}, {"task", "step", "list", uuid.NewString(), "--project", "bad"}, {"task", "step", "list", uuid.NewString(), "--if-version", "1"}} {
+		for _, arguments := range [][]string{{"task", "step", "add", uuid.NewString()}, {"task", "step", "delete"}, {"task", "step", "move"}, {"task", "step", "set-status"}, {"task", "step", "list", "bad"}, {"task", "step", "show", uuid.NewString(), "abc"}, {"task", "step", "list", uuid.NewString(), "--project", "bad"}, {"task", "step", "list", uuid.NewString(), "--if-version", "1"}} {
 			result := taskStepsRunRead(t, cli, arguments...)
 			if result.status != 2 || result.stdout != "" || result.stderr == "" {
 				t.Fatal("unsupported/invalid Steps read did not fail as usage before configuration")
