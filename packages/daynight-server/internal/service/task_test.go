@@ -569,7 +569,7 @@ func TestTaskListKeysetsFiltersAndCursorScopes(t *testing.T) {
 	requireFault(t, err, "invalid_input")
 	_, err = NewProjects(database).List(ctx, principal, PageRequest{Limit: 10, Cursor: firstCursor})
 	requireFault(t, err, "invalid_input")
-	projectCursor, err := encodeProjectCursor(project)
+	projectCursor, err := encodeProjectCursor(project, principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
 	if err != nil {
 		t.Fatal(err)
 	}

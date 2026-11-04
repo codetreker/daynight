@@ -18,6 +18,14 @@
 
 独立会话使用 `initialInput: "none"` 和 `initialPrompt: ""` 时，角色文本仍可存在。初始输入状态为 `not_required`，IPC `submit_initial` 必须拒绝；只有真正的用户请求才能进入发送路径。已有 Task 与无角色 Test 的输入规则保持不变。
 
+## Codex 原生角色
+
+Codex 在 `thread/start` 与 `thread/resume` 中将冻结原文传入 `developerInstructions`。省略 `instructions` 时不得发送该字段，也不得用空字符串覆盖原生配置。角色不能通过 `turn/start`、`turn/steer` 或隐藏用户输入发送；恢复使用同一 native session ID，并保留既有历史。
+
+该字段提供独立于基础提示的 developer 指令，不设置 `baseInstructions`。其原生语义是覆盖该层已有的 developer 配置，不承诺与用户原有 `developer_instructions` 拼接。角色传递不得改变 native PATH、CLI alias 环境、模型、effort 或权限选择；新建沿用原参数规则，恢复不以启动参数重置已有设置。
+
+原生端拒绝角色时，启动必须失败并向调用方传播原错误，关闭本次拥有的原生子进程和传输资源。不得删除角色后重试、降级为用户消息或报告无角色的启动成功。
+
 ## Claude 原生追加
 
 Claude 新建和恢复都将角色原文映射为 SDK 的 `systemPrompt: { type: "preset", preset: "claude_code", append: instructions }`，保留 Claude Code 基础提示。无角色时省略 `systemPrompt`，不改动既有默认行为；不得以完整字符串替换系统提示，也不得为角色插入用户消息。
@@ -26,8 +34,8 @@ Claude 新建和恢复都将角色原文映射为 SDK 的 `systemPrompt: { type:
 
 ## 实现边界与验证
 
-该契约提供 ticket 校验、持久化、Controller 到 Provider 的共享传递及 Claude 的原生追加映射。其余 Provider 适配、Bot 角色模板、首次角色冻结与 Worker 托管由各自消费者负责；共享字段和单个适配器可用不表示完整助手入口已启用。独立 CLI 当前没有角色创建参数。
+该契约提供 ticket 校验、持久化、Controller 到 Provider 的共享传递、Codex 原生字段映射及 Claude 原生追加映射。其余 Provider 适配、Bot 角色模板、首次角色冻结与 Worker 托管由各自消费者负责；共享字段和单个适配器可用不表示完整助手入口已启用。独立 CLI 当前没有角色创建参数。
 
-验证须覆盖旧 Task/Test 字段与 hash 不变、非法输入及准确 UTF-8 边界、同 launchId 的角色改写拒绝、持久 ticket 经停止代际恢复后的原文传递、未知操作不重放，以及三个 Provider 的新建/恢复 options。Claude 适配验证须覆盖新建与恢复的 preset append、无角色时字段缺失、零准备输入、原生设置和审批语义、SDK 启动失败及关闭。模拟结果证明适配边界，真实 Provider 行为需独立运行证据。
+验证须覆盖旧 Task/Test 字段与 hash 不变、非法输入及准确 UTF-8 边界、同 launchId 的角色改写拒绝、持久 ticket 经停止代际恢复后的原文传递、未知操作不重放，以及三个 Provider 的新建/恢复 options。Codex stdio 夹具还须验证 start/resume 原文、缺省字段、基础提示不覆盖、初始化无用户 turn、首个真实输入与设置保持，以及原生拒绝后的原错误和资源关闭。Claude 适配验证须覆盖新建与恢复的 preset append、无角色时字段缺失、零准备输入、原生设置和审批语义、SDK 启动失败及关闭。共享层模拟与 Provider 夹具仅证明各自传递和失败处理，真实 Provider 行为需独立运行证据。
 
 机制见[会话协议设计](../design/task-session-protocol.md#角色指令的共享传递)，输入和身份基础见[独立测试会话需求](controller-test-sessions.md)。

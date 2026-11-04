@@ -1,6 +1,6 @@
-# 用户登录与项目权限需求
+# 用户登录、Team 与项目权限需求
 
-状态：UniAuth 身份交接、本地会话/PAT、项目成员授权、CLI 凭据和双语 Web 已接入
+状态：UniAuth 身份交接、本地会话/PAT、Team 生命周期 API、项目成员授权、CLI 凭据和双语 Web 已接入
 正式服务入口。运行配置必填，业务请求强制认证。本文定义当前实现的行为；
 [架构设计](../design/daynight-auth.md)拥有机制，
 [启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
@@ -16,7 +16,8 @@ CLI 创建私有项目，创建者自动成为管理员；Web 表单复用现有
 覆盖现有 project、task、依赖图、属性和附件。成员使用业务读写及任务生命周期
 操作；网页元数据编辑不由登录功能增加，任务操作遵守[任务生命周期](daynight-server.md#状态与更新规则)。
 每个项目具有真实 Team 归属，现有资源入口统一计算 owner Team 与独立 Project grant 的有效权限。
-Personal 初始化和存量归属迁移遵守下述原子性与数据完整性要求。
+Personal 初始化和存量归属迁移遵守下述原子性与数据完整性要求。登录用户可以通过 Team API
+创建、读取、分页、改名和删除普通 Team；Team 的成员管理、邀请及项目转移保持各自的功能边界。
 
 可信 HTML 保持现有同源执行，复用主站会话、普通 iframe、相对资源和键盘交互。
 鉴权不能把独立预览域名、预览凭据或相关设施作为前提；该约束的选择依据记录在
@@ -36,6 +37,7 @@ Personal 初始化和存量归属迁移遵守下述原子性与数据完整性�
 | AU10 | 附件维持可信同源预览，以主站会话验证资源请求，保留脚本、模块、相对 CSS/图片/fetch、Esc/Tab 和焦点恢复。 |
 | AU11 | 启用鉴权时，全部服务入口、客户端、部署健康检查和既有验收同次适配，不能依赖前端隐藏按钮。 |
 | AU12 | 错误、取消及不确定写入可见；秘密不进入诊断、日志、仓库绑定或持久 URL。 |
+| AU13 | 普通 Team 创建与创建者 admin 原子提交；本人列表和详情受成员资格限制，admin 按精确元数据版本改名或删除空 Team，Personal 禁止变更。 |
 
 ## 身份与凭据
 
@@ -140,6 +142,52 @@ Cookie Origin 准入失败不输出未经准入的用户 ID。该头用于客户
 GET/HEAD `/api/v1/me` 每次先按当前凭据认证，并成功读取当前用户的最小资料，再决定是否复用表示。成功响应使用 `Cache-Control: private, no-cache` 和强 ETag；标识覆盖完整公开表示中的用户 ID、nullable email/emailVerified/name/avatarUrl，不包含登录时间等无关变化。当前表示与 If-None-Match 匹配时返回无正文 304，资料变化或实际账户不同则返回完整 200；认证身份头始终来自本次实际准入。HEAD 不返回正文。认证或资料读取失败保留既有错误与 no-store，不能返回 304。
 
 Web 只为 `/me` 使用浏览器的 no-cache 重验模式，由浏览器 HTTP 缓存保存资料与验证器。页面刷新及前台身份核验仍进行实际认证，但未变化的姓名、头像等响应正文可以跨刷新复用；缓存缺失或被浏览器清理后重新读取完整资料。该表示不写入自定义 IndexedDB，也不替代身份核验、项目授权或 foreground gate。其他认证及业务端点沿用自身缓存策略，一次性凭据不进入人员内容缓存。
+
+## Team 生命周期
+
+Team 的身份是规范小写 UUID，名称只用于展示。Team 元数据与当前主体真实成员关系分开版本化；
+项目中的 `TeamRef` 仍只有 `{id,kind,name}`，不能作为 Team 设置或目录的读取凭据。
+Team API 使用既有 session/PAT、Cookie 写请求 Origin 校验、`Daynight-User-ID`、
+`Cache-Control: no-store` 和 JSON 错误 envelope。仅当前 Team 成员能读取详情；
+不存在或不可见的 Team 都返回 `404 not_found`，只有项目单独授权不授予 Team 访问权。
+
+| 方法与路径 | 输入或权限 | 成功结果 |
+|---|---|---|
+| `GET /api/v1/teams` | 当前主体；可选 `limit`、`cursor` | `200`，本人已加入的 Team 分页 `{items,nextCursor}` |
+| `POST /api/v1/teams` | `name,expectedUserId` | `201`，新普通 Team 与创建者 admin 成员关系；`Location` 指向新 Team |
+| `GET /api/v1/teams/{teamId}` | 当前 Team member/admin | `200`，Team 元数据与本人真实成员关系 |
+| `PATCH /api/v1/teams/{teamId}` | 当前 admin；`version,name,expectedUserId` | `200`，保存后的 Team 与本人真实成员关系 |
+| `DELETE /api/v1/teams/{teamId}` | 当前 admin；`version,name,expectedUserId` | `200`，有限回执 `{teamId,deleted:true}` |
+
+创建、分页条目、详情和改名返回同一结构：
+`{id,kind,name,version,createdAt,updatedAt,membership:{teamId,userId,role,version,createdAt,updatedAt}}`。
+`kind` 为 `personal` 或 `ordinary`；Personal 的 name 为 null，普通 Team 的 name 为原始文字。
+两个 version 均为无损正 int64 JSON number，时间为 UTC。membership 只表示当前主体的实际成员行，
+不包含其他成员或个人资料。列表在排序与取页前按认证主体的成员资格筛选，按 `(createdAt,id)`
+稳定分页；cursor 绑定该主体，跨账号续页、未知或重复参数、显式空参数及畸形 cursor 明确拒绝。
+空页的 items 为 `[]`，末页 nextCursor 为 null，不增加搜索或总数。
+
+任意登录用户可创建普通 Team；Team 与创建者的真实 admin 行原子提交。普通名称必须是合法
+Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原始文字及首尾空白完整保存，
+允许重名，不增加字符数上限。通用请求大小限制保持。未知、重复、缺失、null、错误类型字段，
+非法 Unicode 转义、非规范 UUID，以及非正或越界版本返回 `400 invalid_input`。
+
+所有 Team 管理写入在任何领域 SQL 前核对 expectedUserId 与实际 principal；错主体返回
+`409 identity_mismatch`，Team、成员和 ownership 行及版本均不变。读取权不包含管理权，
+普通 member 改名或删除返回 `403 forbidden`。Personal Team 允许本人读取，改名与删除返回
+`409 personal_team_immutable`。
+
+改名先比较元数据 version，过期请求即使 name 恰与当前原文相同也返回 `409 version_conflict`。
+精确版本下的相同原文是 no-op，保留版本和全部时间；真实名称改变使元数据版本加一。
+元数据版本达到最大正 int64 时仍接受同值 no-op，真实改名返回 `409 version_exhausted`。
+删除同时核对精确元数据版本和当前名称原文，任一不符返回 `409 version_conflict`；只有没有
+Project ownership 引用的普通 Team 可删除，否则返回 `409 team_not_empty`。删除原子移除
+现有成员和 Team，不隐式转移或删除 Project，不改写独立 Project grant。
+
+仅确认事务提交后交付成功资源或删除回执。领域拒绝不产生领域写入；取消、SQL、rollback 和
+提交错误保持原有优先级及原因链。无法确认 COMMIT 结果返回 `503 write_outcome_unknown`；
+清理失败返回安全的 `500 internal_error`，不把保存的领域拒绝当作最终结果。响应丢失或提交结果
+未知时只读取当前事实，不自动重放管理写入；当前值符合目标不能证明找回了原提交回执。
 
 ## 项目、成员与邀请
 
@@ -312,7 +360,8 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 
 服务只注册配置的 callback 路径，包括 `/auth/callback` 这样的已登记路径，不额外
 挂载旧别名。路径不能与应用 API、页面、静态资源或健康检查冲突，包含使用引导的
-`/login`、`/setup` 根及全部后代路径；配置和启动验证必须先于路由注册拒绝冲突。已有 callback
+`/login`、`/setup`、`/teams` 根及全部后代路径，以及 `/api/v1/teams` API 命名空间；
+配置和启动验证必须先于路由注册拒绝冲突。已有 callback
 占用该命名空间时须更换路径并同步 UniAuth 登记值。不接受编码别名、
 路由通配符或 dot-segment。返回位置在建立登录事务前拒绝登录入口和实际 callback
 路径，避免认证循环。callback URL 与 UniAuth App 登记值精确匹配，主站 origin
@@ -336,10 +385,14 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | 场景 | 对外结果 |
 |---|---|
 | 缺失、无效、撤销或到期用户凭据 | 401 unauthenticated JSON |
-| 项目不存在或不是成员 | 404 not_found JSON |
+| Team/项目不存在或当前主体没有对应成员资格 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
-| 修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
-| 观察独立授权版本过期 | 409 version_conflict |
+| Team 管理或修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
+| 观察独立授权或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
+| 变更 Personal Team | 409 personal_team_immutable |
+| 删除仍有 Project ownership 引用的 Team | 409 team_not_empty |
+| Team 真实改名所需版本已达最大正 int64 | 409 version_exhausted；同值 no-op 仍有效 |
+| 无法确认 Team 管理 COMMIT 结果 | 503 write_outcome_unknown |
 | 生命周期前态不符或前置未完成 | 409 invalid_transition / dependency_unsatisfied |
 | 邀请已消费、到期或撤销 | 410 invitation_unavailable |
 | provider discovery 的 App 配置/凭据错误 | 503 identity_configuration |
@@ -372,6 +425,7 @@ App Secret、一次性 code 或邀请秘密。
 | AU-V10 | 独立登录的缺失/合法/非法目标、已有会话、历史、任务/文件/query、已知 callback 失败、邀请和设备账号切换、普通退出及失败重试保持上述连续性；公开首页不成为私有授权依据。 |
 | AU-V10 | 日志按请求/用户/项目关联登录、授权和错误；Cookie、PAT、App Secret、设备秘密、上游一次性 code 与邀请秘密不进入诊断或持久 URL；设备短码只用于核对和验证链接，不进入日志。 |
 | AU-V11 | 缺省服务地址、无本地凭据提示、显式 login/logout、已有/新浏览器登录、短码核对、拒绝/设备授权过期/轮询限速、取消/断连/响应丢失、并发单次领取、配置冲突与凭据撤销均有可观察验证。默认永不过期、设置/清除到期、同一凭据继续使用、账号/到期观察冲突、过期或撤销不能恢复、未知修改只读取核对均须验证；迁移保留旧有限到期值，浏览器会话仍为七天。 |
+| AU-V12 | Team 创建者 admin 原子性、本人过滤和跨账号 cursor、不可见/非 admin/Personal 拒绝、合法 Unicode 与原文空白、NUL/非法转义/全空白拒绝、重名、精确版本 no-op/冲突/耗尽、空删除与非空拒绝均有验证；真实 PostgreSQL 锁等待证明删除和 ownership 写入互斥，错误身份零领域 SQL，取消、回滚失败和未知 COMMIT 保持结果分类。 |
 
 模型工具面继续使用既有 CLI，不增加 MCP 工具。保留现有请求/操作/响应预算与输出
 合同，认证失败不触发自动写重试。
