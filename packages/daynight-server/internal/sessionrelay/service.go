@@ -81,6 +81,11 @@ type record struct {
 func load(ctx context.Context, tx pgx.Tx, id string) (*record, error) {
 	bot, err := lockSessionBot(ctx, tx, id)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || bot != nil && bot.Deletion != nil {
+			if rt, ok := tx.(*relayTx); ok {
+				rt.service.discardBotSession(id)
+			}
+		}
 		return nil, err
 	}
 	r := &record{}
