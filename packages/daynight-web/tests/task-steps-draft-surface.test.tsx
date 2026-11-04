@@ -34,6 +34,8 @@ it.each(['identity', 'project'] as const)('retains the draft across another task
   try {
     const add = await screen.findByRole('button', { name: 'Add step' }); await waitFor(() => expect(add).toBeEnabled()); fireEvent.click(add);
     const title = screen.getByRole('textbox', { name: 'Title' }); fireEvent.change(title, { target: { value: 'Unsaved private draft' } });
+    const panels = title.closest<HTMLElement>('.task-detail-panels')!;
+    expect(panels.parentElement).toHaveClass('task-detail-body'); expect(panels).not.toHaveAttribute('hidden');
     fireEvent.click(screen.getByRole('button', { name: /^Cancel$/ }));
     expect(screen.getByRole('alertdialog')).toHaveTextContent('Unsaved private draft');
     const ticket = await world.scope.beginSync(projectId, world.scope.signal);
@@ -44,6 +46,7 @@ it.each(['identity', 'project'] as const)('retains the draft across another task
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(screen.queryByText('Unsaved private draft')).toBeNull();
     expect(title).not.toBeVisible(); expect(title).toHaveValue('Unsaved private draft');
+    expect(panels).toHaveAttribute('hidden'); expect(panels).toHaveAttribute('inert'); expect(panels).toHaveStyle({ display: 'none' });
     act(() => navigate('/projects'));
     expect(screen.getByRole('alertdialog')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
@@ -53,6 +56,7 @@ it.each(['identity', 'project'] as const)('retains the draft across another task
     fireEvent.click(screen.getByRole('button', { name: 'Retry details' }));
     await waitFor(() => expect(title).toBeVisible());
     expect(screen.getByRole('textbox', { name: 'Title' })).toBe(title);
+    expect(panels.parentElement).toHaveClass('task-detail-body'); expect(panels).not.toHaveAttribute('hidden'); expect(panels.style.display).toBe('');
     expect(title).toHaveValue('Unsaved private draft');
     await act(async () => {
       if (retirement === 'identity') await world.scope.invalidateScope();
