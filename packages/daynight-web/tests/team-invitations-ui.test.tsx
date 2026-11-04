@@ -15,7 +15,7 @@ const link = 'http://localhost:3000/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAA
 let scope: TaskCacheScope;
 const mismatch = vi.fn(), permission = vi.fn(), guard = vi.fn();
 const openInvite = async () => { const button = await screen.findByRole('button', { name: 'Invite member' }); await waitFor(() => expect(button).toBeEnabled()); fireEvent.click(button); };
-const panel = (active = true, onRoute = true, editable = true) => <TeamInvitations teamId={teamId} teamName="Alpha" active={active} onRoute={onRoute} editable={editable} admission={scope} onIdentityMismatch={mismatch} onPermissionChange={permission} onGuardChange={guard} />;
+const panel = (active = true, onRoute = true, editable = true) => <TeamInvitations teamId={teamId} teamName="Alpha" active={active} onRoute={onRoute} editable={editable} actorRole={editable ? 'admin' : null} unavailable={false} admission={scope} onIdentityMismatch={mismatch} onPermissionChange={permission} onGuardChange={guard} />;
 beforeEach(() => {
   vi.clearAllMocks(); const controller = new AbortController();
   scope = { userId, signal: controller.signal, isInvalidated: false, ready: async (signal: AbortSignal) => signal.throwIfAborted() } as TaskCacheScope;

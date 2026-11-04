@@ -360,6 +360,53 @@ describe('authoritative project management', () => {
     expect(auth.createInvitation).toHaveBeenCalledOnce();
   });
 
+  it('keeps an unknown invitation unresolved when admin access is lost and requires an authorized catalogue read after restoration', async () => {
+    const result = deferred<import('../src/api/auth').CreatedProjectInvitation>();
+    vi.mocked(auth.createInvitation).mockImplementation(async (_project, _user, _signal, _mismatch, dispatched) => { dispatched?.(); return result.promise; });
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', projectName: 'Project', user, onRemoved: vi.fn() };
+    const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    await waitFor(() => expect(auth.createInvitation).toHaveBeenCalledOnce());
+    view.rerender(<MembersPanel {...props} active={false} onRoute={false} />);
+    actorRole = 'member';
+    vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'member'), member('Alice', 'admin')]));
+    await act(async () => result.reject(new ApiError('network')));
+    view.rerender(<MembersPanel {...props} active onRoute />);
+    await screen.findByText('当前权限无法读取这些邀请，原操作结果仍未确认。');
+    const readsBefore = vi.mocked(auth.listInvitations).mock.calls.length;
+    await clickWhenReady('读取当前邀请');
+    await readyMembers();
+    expect(auth.listInvitations).toHaveBeenCalledTimes(readsBefore);
+    expect(screen.queryByText(/已读取当前邀请/)).toBeNull();
+    expect(screen.getByText('当前权限无法读取这些邀请，原操作结果仍未确认。')).toBeInTheDocument();
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
+
+    view.rerender(<MembersPanel {...props} active={false} onRoute={false} />);
+    actorRole = 'admin';
+    vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'admin'), member('Alice')]));
+    view.rerender(<MembersPanel {...props} active onRoute />);
+    await waitFor(() => expect(auth.listInvitations).toHaveBeenCalledTimes(readsBefore + 1));
+    await readyMembers();
+    expect(screen.getByRole('button', { name: '邀请成员' })).toBeDisabled();
+    expect(screen.queryByText(/已读取当前邀请/)).toBeNull();
+    await clickWhenReady('读取当前邀请');
+    await screen.findByText(/已读取当前邀请；原操作结果仍未确认/);
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an unknown invitation visible when project access is lost', async () => {
+    vi.mocked(auth.createInvitation).mockRejectedValueOnce(new ApiError('network'));
+    members(); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    await screen.findByText(/邀请变更结果尚未确认/);
+    vi.mocked(auth.getProjectAccess).mockRejectedValue(new ApiError('server', 404, 'not_found'));
+    vi.mocked(auth.listMembers).mockRejectedValue(new ApiError('server', 404, 'not_found'));
+    await clickWhenReady('读取当前邀请');
+    await screen.findByText('当前权限无法读取这些邀请，原操作结果仍未确认。');
+    expect(screen.queryByText(/已读取当前邀请/)).toBeNull();
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
+  });
+
   it('keeps both unknown invitation revocations disabled after reading the catalogue', async () => {
     vi.mocked(auth.listInvitations).mockResolvedValue([invitation, { ...invitation, id: 'invitation-b' }]);
     vi.mocked(auth.revokeInvitation).mockRejectedValue(new ApiError('network'));

@@ -14,7 +14,7 @@ export const verifyScopedInvitationManagement = async (page: Page, context: Brow
   const project = await createProject(request, { name: `Invitation management ${randomUUID()}` });
   const teamUrl = `${baseURL}/api/v1/teams/${team.id}/invitations`;
   const projectUrl = `${baseURL}/api/v1/projects/${project.id}/invitations`;
-  allowWrites([{ method: 'POST', url: teamUrl, count: 3 }, { method: 'POST', url: projectUrl, count: 3 }]);
+  allowWrites([{ method: 'POST', url: teamUrl, count: 4 }, { method: 'POST', url: projectUrl, count: 3 }]);
 
   // Personal membership never exposes the Team invitation controls.
   await page.goto(`/teams/${identity.personalTeam.id}/members`);
@@ -236,6 +236,105 @@ export const verifyScopedInvitationManagement = async (page: Page, context: Brow
     const after = await bob.get(`/api/v1/projects/${teamProject.id}/access`);
     expect(after.status()).toBe(200);
     expect(await after.json()).toMatchObject({ effectiveRole: 'admin', teamRole: 'admin', directGrant: { userId: bobIdentity.id, role: 'member' } });
+
+    // A lost invitation result remains visible when another admin demotes its actor.
+    const roster = await bob.get(`/api/v1/teams/${team.id}/members`);
+    expect(roster.status()).toBe(200);
+    const alice = (await roster.json() as { items: { userId: string; version: number }[] }).items.find((member) => member.userId === identity.id);
+    expect(alice).toBeDefined();
+    await browserAuthentication(context, baseURL, 'alice');
+    await page.goto(`/teams/${team.id}`);
+    await page.locator(`a.nav-button[href="/teams/${team.id}/members"]`).click();
+    const teamHeld = Promise.withResolvers<void>();
+    const teamReached = Promise.withResolvers<void>();
+    let demotionWriteStatus = 0;
+    const loseDuringDemotion = async (route: Route) => {
+      if (route.request().method() !== 'POST') { await route.continue(); return; }
+      const result = await route.fetch();
+      demotionWriteStatus = result.status();
+      teamReached.resolve();
+      await teamHeld.promise;
+      await route.abort();
+    };
+    await page.route(teamUrl, loseDuringDemotion);
+    try {
+      await page.getByRole('button', { name: '邀请成员', exact: true }).click();
+      await page.getByRole('dialog').getByRole('button', { name: '创建邀请链接', exact: true }).click();
+      await teamReached.promise;
+      expect(demotionWriteStatus).toBe(201);
+      await page.goBack();
+      await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
+      const demotion = await bob.patch(`/api/v1/teams/${team.id}/members/${identity.id}`, { data: { role: 'member', version: alice!.version, expectedUserId: bobIdentity.id } });
+      expect(demotion.status()).toBe(200);
+      const failed = page.waitForEvent('requestfailed', (event) => event.url() === teamUrl && event.method() === 'POST');
+      teamHeld.resolve();
+      await failed;
+      await page.goForward();
+      await expect(page.getByText('邀请变更结果仍未确认；你已无权读取此 Team 的邀请。')).toBeVisible();
+      if (await page.getByRole('dialog').isVisible()) await page.keyboard.press('Escape');
+      await expect(page.getByRole('button', { name: '邀请成员', exact: true })).toHaveCount(0);
+      const leave = page.getByRole('button', { name: '退出 Team', exact: true });
+      await expect(leave).toBeEnabled();
+      allowWrites([{ method: 'DELETE', url: `${baseURL}/api/v1/teams/${team.id}/members/${identity.id}`, count: 1 }]);
+      await leave.click();
+      await page.getByRole('dialog').getByRole('button', { name: '退出 Team', exact: true }).click();
+      await expect(page).toHaveURL(`${baseURL}/teams/${identity.personalTeam.id}`);
+      const remaining = await bob.get(`/api/v1/teams/${team.id}/members`);
+      expect(remaining.status()).toBe(200);
+      expect((await remaining.json() as { items: { userId: string }[] }).items.some((member) => member.userId === identity.id)).toBe(false);
+    } finally { teamHeld.resolve(); await page.unroute(teamUrl, loseDuringDemotion); }
+
+    // Losing membership after demotion must retain the same unknown result.
+    const lostTeamResponse = await request.post('/api/v1/teams', { data: { name: `Lost access ${randomUUID()}`, expectedUserId: identity.id } });
+    expect(lostTeamResponse.status()).toBe(201);
+    const lostTeam = await lostTeamResponse.json() as { id: string; membership: { version: number } };
+    const lostInvite = await request.post(`/api/v1/teams/${lostTeam.id}/invitations`, { data: { expectedUserId: identity.id } });
+    expect(lostInvite.status()).toBe(201);
+    const lostLink = await lostInvite.json() as { link: string };
+    const bobJoined = await bob.post('/api/v1/team-invitations/accept', { data: { token: new URL(lostLink.link).hash.slice(1), expectedUserId: bobIdentity.id } });
+    expect(bobJoined.status()).toBe(200);
+    const bobMembership = await bobJoined.json() as { membership: { version: number } };
+    const bobPromoted = await request.patch(`/api/v1/teams/${lostTeam.id}/members/${bobIdentity.id}`, { data: { role: 'admin', version: bobMembership.membership.version, expectedUserId: identity.id } });
+    expect(bobPromoted.status()).toBe(200);
+    const lostUrl = `${baseURL}/api/v1/teams/${lostTeam.id}/invitations`;
+    allowWrites([{ method: 'POST', url: lostUrl, count: 1 }]);
+    await page.goto(`/teams/${lostTeam.id}`);
+    await page.locator(`a.nav-button[href="/teams/${lostTeam.id}/members"]`).click();
+    const lostHeld = Promise.withResolvers<void>();
+    const lostReached = Promise.withResolvers<void>();
+    let lostStatus = 0;
+    const loseBeforeRemoval = async (route: Route) => {
+      if (route.request().method() !== 'POST') { await route.continue(); return; }
+      const result = await route.fetch();
+      lostStatus = result.status();
+      lostReached.resolve();
+      await lostHeld.promise;
+      await route.abort();
+    };
+    await page.route(lostUrl, loseBeforeRemoval);
+    try {
+      await page.getByRole('button', { name: '邀请成员', exact: true }).click();
+      await page.getByRole('dialog').getByRole('button', { name: '创建邀请链接', exact: true }).click();
+      await lostReached.promise;
+      expect(lostStatus).toBe(201);
+      await page.goBack();
+      await expect(page).toHaveURL(`${baseURL}/teams/${lostTeam.id}`);
+      const demotion = await bob.patch(`/api/v1/teams/${lostTeam.id}/members/${identity.id}`, { data: { role: 'member', version: lostTeam.membership.version, expectedUserId: bobIdentity.id } });
+      expect(demotion.status()).toBe(200);
+      const demoted = await demotion.json() as { membership: { version: number } };
+      const failed = page.waitForEvent('requestfailed', (event) => event.url() === lostUrl && event.method() === 'POST');
+      lostHeld.resolve();
+      await failed;
+      await page.goForward();
+      await expect(page.getByText('邀请变更结果仍未确认；你已无权读取此 Team 的邀请。')).toBeVisible();
+      await page.goBack();
+      await expect(page).toHaveURL(`${baseURL}/teams/${lostTeam.id}`);
+      const removed = await bob.delete(`/api/v1/teams/${lostTeam.id}/members/${identity.id}`, { data: { version: demoted.membership.version, expectedUserId: bobIdentity.id } });
+      expect(removed.status()).toBe(200);
+      await page.goForward();
+      await expect(page.getByText('邀请变更结果仍未确认；此 Team 不可用或你已无权访问。')).toBeVisible();
+      await expect(page.getByRole('button', { name: '邀请成员', exact: true })).toHaveCount(0);
+    } finally { lostHeld.resolve(); await page.unroute(lostUrl, loseBeforeRemoval); }
   } finally {
     await bob.dispose();
     await browserAuthentication(context, baseURL, 'alice');

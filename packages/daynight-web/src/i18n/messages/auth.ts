@@ -237,6 +237,7 @@ export type AuthMessages = {
       readonly loading: string;
       readonly memberNotice: string;
       readonly invitationUnknown: string;
+      readonly invitationUnreadable: string;
     readonly invitationObserved: string;
     readonly readCurrentInvitations: string;
     readonly grantUnknown: string;
