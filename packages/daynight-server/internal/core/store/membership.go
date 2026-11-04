@@ -223,3 +223,20 @@ func (tx *ProjectTx) ConsumeInvitation(ctx context.Context, id, userID string, n
         WHERE project_id=$1 AND id=$2`, tx.projectID, id, userID, now)
 	return authQueryError("consume invitation", err)
 }
+
+// DirectGrant locks the actual stored grant; a missing row is not a synthetic version.
+func (tx *ProjectTx) DirectGrant(ctx context.Context, userID string) (core.ProjectGrant, error) {
+	var grant core.ProjectGrant
+	err := tx.tx.QueryRow(ctx, `SELECT project_id::text,user_id::text,role,version,created_at,updated_at
+        FROM project_grants WHERE project_id=$1 AND user_id=$2 FOR UPDATE`, tx.projectID, userID).Scan(
+		&grant.ProjectID, &grant.UserID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt)
+	return grant, authQueryError("lock direct grant", err)
+}
+
+func (tx *ProjectTx) CreateGrant(ctx context.Context, userID string, role core.ProjectRole) (core.ProjectGrant, error) {
+	_, err := tx.tx.Exec(ctx, `INSERT INTO project_grants (project_id,user_id,role) VALUES ($1,$2,$3)`, tx.projectID, userID, role)
+	if err != nil {
+		return core.ProjectGrant{}, queryError("create project grant", err)
+	}
+	return tx.DirectGrant(ctx, userID)
+}
