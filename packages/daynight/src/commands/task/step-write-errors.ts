@@ -1,25 +1,27 @@
 import { ApiError } from "../../api/client.js";
-import type { AddTaskStepInput } from "../../api/types.js";
+import type { AddTaskStepInput, DeleteTaskStepInput } from "../../api/types.js";
 
-export type StepAddAttempt = {
+type StepAttemptIdentity = {
   readonly projectId: string;
   readonly taskId: string;
   readonly stepId: string;
   readonly requestId: string;
-  readonly payload: AddTaskStepInput;
 };
+export type StepAddAttempt = StepAttemptIdentity & { readonly operation: "add"; readonly payload: AddTaskStepInput };
+export type StepDeleteAttempt = StepAttemptIdentity & { readonly operation: "delete"; readonly payload: DeleteTaskStepInput };
+export type StepWriteAttempt = StepAddAttempt | StepDeleteAttempt;
 export type StepCurrentObservation = { readonly version: bigint; readonly found: boolean };
 export type StepWriteOutcome = "failed" | "refused" | "unknown" | "confirmed";
 
 export class StepWriteFailure extends Error {
   constructor(
     readonly outcome: StepWriteOutcome,
-    readonly attempt: StepAddAttempt,
+    readonly attempt: StepWriteAttempt,
     cause: unknown,
     readonly observation?: StepCurrentObservation,
     readonly recoveryAttempted = false,
   ) {
-    super("Step Add did not complete its local result handling.", { cause });
+    super(`Step ${attempt.operation} did not complete its local result handling.`, { cause });
     this.name = "StepWriteFailure";
   }
 }

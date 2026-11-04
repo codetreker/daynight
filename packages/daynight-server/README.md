@@ -1107,7 +1107,11 @@ concurrency, parent and Session preservation, rollback and completion facts, and
 safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
-`TestStepsHTTPDelete*`. Actual binary read restart persistence is covered by
+`TestStepsHTTPDelete*`. Installed CLI deletion and a lost response after a real commit are covered by
+`TestInstalledCLITaskStepsDeleteAcceptance` and
+`TestInstalledCLITaskStepsDeleteUnknownAfterRealCommit`; they verify request
+budgets, complete surviving rows, parent and referenced attachment preservation,
+refusals and current-facts-only recovery. Actual binary read restart persistence is covered by
 `TestBuiltBinaryStepsReadPersistence`. Installed Step list/show and its separate
 maximum-resource CLI check are mapped in
 [built-process acceptance](#built-process-acceptance-and-ci-evidence). After
@@ -1398,7 +1402,7 @@ URLs, bodies, SQL and credentials are excluded from logs.
 ## Built-process acceptance and CI evidence
 
 The test-only [`cmd/e2e_tests/`](cmd/e2e_tests/) package owns the actual-process
-scenarios, installed CLI project/task, Step reads and attachment workflows,
+scenarios, installed CLI project/task, Step reads, Add/Delete and attachment workflows,
 [installed lifecycle migration/race scenarios](cmd/e2e_tests/acceptance_lifecycle_cli_test.go)
 and [offline attachment migration](cmd/e2e_tests/migrate_attachment_acceptance_test.go).
 The full check runs this package in its E2E phase, independently of production

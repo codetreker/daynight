@@ -165,6 +165,7 @@ daynight task step
 daynight task step list <task-id> [--json] [--project <project-id>]
 daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step delete <task-id> <step-id> [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
@@ -198,7 +199,7 @@ dn --skill
 
 `--skill` prints one standalone English project/task usage manual from the
 current package. It covers project selection, task queries and writes,
-dependencies, properties, attachments and ordered Step list/show reads and Add. Other
+dependencies, properties, attachments and ordered Step list/show reads, Add and Delete. Other
 capabilities are discovered
 through `daynight --help`, with exact options in each subcommand's help. The
 output preserves the manual's original bytes, including YAML
@@ -937,7 +938,7 @@ daynight task step show <task-id> <step-id> --json --project <project-id>
 
 Steps are an independent ordered resource owned by a Task. The
 [resource contract](../../docs/spec/daynight-task-steps.md#cli-读取) owns their
-fields and read behavior. The CLI provides `list`, `show` and `add`; the parent Task's
+fields and read behavior. The CLI provides `list`, `show`, `add` and `delete`; the parent Task's
 ordinary show/list/graph does not contain the full Steps collection. Step status
 is `todo`, `in_progress`, `done` or `skipped`, independent from Task status.
 
@@ -972,7 +973,7 @@ output failure can still leave partial stdout and is reported as a failure.
 Errors go to stderr with exit status 1; argument errors use 2 and success uses 0.
 A 401 includes `daynight login` guidance without automatic login or retry.
 Help, Bash/zsh completion and the standalone manual expose the delivered
-list/show/add commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
+list/show/add/delete commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 maps the real-service installed Node-entry read case, separate maximum-resource
 check and their normal fixture prerequisites. The packed CLI acceptance runner
 checks literal `daynight`/`dn` launchers through cross-spawn on native platforms.
@@ -1020,6 +1021,35 @@ flag. Once a full receipt is confirmed, later cleanup/render/output failure keep
 that confirmed fact and identity, with nonzero exit; output failure may leave
 partial stdout. The [Steps contract](../../docs/spec/daynight-task-steps.md#cli-添加与结果确认)
 owns these outcome rules and the server guide maps installed Add verification.
+
+### Delete a Step
+
+```bash
+daynight task step delete <task-id> <step-id> --project <project-id>
+daynight task step delete <task-id> 00ABCDEF --if-version <observed-version> --json --project <project-id>
+```
+
+Delete removes the specified Task-local record and description in any Step
+status. Referenced attachments, PRs, Sessions and other materials remain; there
+is no history or restore command. IDs normalize case while preserving leading
+zeros. Explicit project/version sends one JSON DELETE whose body contains only
+version. Without --if-version, one complete Steps GET supplies the version;
+a failed pre-read prevents DELETE.
+
+A complete valid 200 receipt must confirm scope, principal, version +1 and target
+absence. With a real pre-read, all remaining records must retain their fields,
+times and relative order. Explicit versions do not add a hidden baseline read.
+Readable output is `Step deleted. ID: <id>` plus the full confirmed remaining
+collection; --json prints only the complete resource and LF. Deleting the last
+record returns steps: []. Repeated deletion, a deleted parent, version conflict
+and version exhaustion remain visible errors.
+
+Delete shares Add's request identity, refusal, unknown, cancellation and confirmed
+local-failure handling. Its one eligible read reports current found/absent facts;
+absence does not prove that the unknown request deleted the original record,
+and a current same-ID record need not be that original record. No DELETE is
+replayed. The [deletion contract](../../docs/spec/daynight-task-steps.md#cli-删除与结果确认)
+owns these guarantees.
 
 ## Task deletion
 

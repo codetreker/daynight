@@ -26,6 +26,7 @@ const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
     addTaskStep: vi.fn<ApiClient["addTaskStep"]>(),
+    deleteTaskStep: vi.fn<ApiClient["deleteTaskStep"]>(),
     listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),
     readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(currentUser),

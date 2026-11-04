@@ -17,6 +17,7 @@ const fixture = (projects: readonly Project[] = []) => {
   const unavailable = async (): Promise<never> => { throw new Error("Unexpected task API"); };
   const api = {
     addTaskStep: unavailable,
+    deleteTaskStep: unavailable,
     listTaskSteps: unavailable, getTaskStep: unavailable,
     getProjectAccess: unavailable,
     readTaskThread: unavailable, postTaskThreadMessage: unavailable,

@@ -1,6 +1,6 @@
 # Task Steps 资源契约
 
-状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新、独立状态设置、位置移动、记录删除及 CLI list/show 读取和 add 已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
+状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新、独立状态设置、位置移动、记录删除及 CLI list/show 读取及 add/delete 已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
 
 ## 所有权与模型
 
@@ -69,7 +69,7 @@ daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 
 读取结果拒绝未知或重复字段，必须具有完整的必填字段、正确的 Project/Task/Step 作用域、正 int64 父版本、唯一且已规范为小写的短 ID、合法状态、原值文本与 UTC 微秒时间字符串；不能将坏响应修成合法资源、跳过条目、重排集合或将失败显示为空集合。成功时 JSON stdout 仅包含一个完整值并以换行结束；错误写 stderr，`401` 提示 `daynight login`，不自动登录或重放。读取继承共享取消、期限与响应字节预算，单次 Steps 响应正文另受 64 MiB 资源上限约束；有效上限取配置的单响应预算与该资源上限的较小值，恰好达到上限允许，更严格的配置限制继续生效，共享默认预算不变。在完整校验与渲染成功前不输出部分资源；输出本身失败可能留下部分 stdout，必须同时非零退出并报告错误。
 
-帮助、Bash/zsh 补全及独立 CLI 手册列出当前已交付的 `list`、`show` 与 `add`。完整项目选择、错误和输出约定由[客户端要求](daynight-project-task.md)拥有，命令实现与验证入口由[CLI 说明](../../packages/daynight/README.md#task-steps)拥有。
+帮助、Bash/zsh 补全及独立 CLI 手册列出当前已交付的 `list`、`show`、`add` 与 `delete`。完整项目选择、错误和输出约定由[客户端要求](daynight-project-task.md)拥有，命令实现与验证入口由[CLI 说明](../../packages/daynight/README.md#task-steps)拥有。
 
 ## CLI 添加与结果确认
 
@@ -86,6 +86,20 @@ daynight task step add <task-id> --title <text> [--id <step-id>] [--description 
 本地递交前失败与完整解码的 4xx 拒绝均明确失败；已确认的容量 409 保留 `encodedBytes`、`maxEncodedBytes` 与安全错误信息。已递交但没有可信完整回执的网络、5xx、取消或协议失败为 unknown：保留原 Project/Task/Step ID 与请求 UUID，stdout 不输出成功资源，退出 `1`。服务错误 ID 与响应回显 ID 分别记录，诊断关联不构成回显相等的确认门槛。
 
 unknown 最多在原认证会话与仍有效的同一 Operation 内，使用 `originalUUID.r1` 读取一次完整集合；只报告当前父版本和目标 found/absent，结果仍为 unknown、非零退出，不归因历史操作。取消、总期限或累计预算耗尽时不创建脱离的核对操作；核对无法完成时报告没有当前观察，并提供普通的显式 project list/show 指导，不使用旧预读代替观察。完整新增回执一经确认，后续本地清理、渲染或输出失败仍保留已确认身份，不降为 unknown 或触发核对；输出失败可能留下部分 stdout。
+
+## CLI 删除与结果确认
+
+```text
+daynight task step delete <task-id> <step-id> [--if-version <version>] [--json] [--project <project-id>]
+```
+
+删除按完整 Project/Task UUID 和恰好八位的 Task-local Step ID 定位，输入大小写统一为小写并保留前导零。四种 Step 状态均可删除；仅移除指定记录及说明，保留父任务、其他步骤和所引用的附件、PR、Session 及外部材料。不提供历史或恢复命令，重复删除返回不存在。
+
+显式 project/version 只发送一次 `DELETE /steps/{stepId}`，JSON 正文仅含精确整数 `version`；省略 `--if-version` 时先 GET 完整 Steps，再提交该父版本。预读失败不递交，显式版本不增加隐藏读取。只有 `200`、有效 principal、完整合法且作用域正确的 `StepsResource`、父版本恰为提交版本 +1 和目标 ID 缺失共同成立，才确认删除。默认分支还核对预读目标确实存在，所有剩余项的身份、内容、状态、时间和相对顺序保持；显式版本不补造旧基线。
+
+可读成功输出 `Step deleted. ID: <id>` 及服务确认的完整剩余集合；`--json` 只输出一个完整资源和 LF，末项删除返回 `steps: []`。帮助、参数、退出码、转义、容量与错误 details、认证和预算沿用上述读取与添加规则。子项不存在、父软删除、版本冲突及版本耗尽均明确暴露，不将删除转为 no-op。
+
+未知删除保留原 Project/Task/Step ID 与请求 UUID，按上述同一 Operation 的规则至多读取一次当前集合；found/absent 只说明当前事实，不能证明该请求造成删除，也不能证明当前同 ID 记录就是原记录。不自动重放。已确认删除后的本地渲染、输出或清理失败保留确认事实并非零退出，不降为 unknown。
 
 ## 写入输入与添加结果
 

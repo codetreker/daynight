@@ -1,6 +1,6 @@
 import { parseApiJson } from "./json.js";
 import { jsonObjectSources } from "./json-source.js";
-import type { AddTaskStepInput, StepResource, StepsResource, TaskStep, TaskStepStatus } from "./types.js";
+import type { AddTaskStepInput, DeleteTaskStepInput, StepResource, StepsResource, TaskStep, TaskStepStatus } from "./types.js";
 import { array, fields, id, malformed, resourceVersion, text, timestamp } from "./validation.js";
 
 export const TASK_STEPS_RESPONSE_BYTES = 64 * 1024 * 1024;
@@ -76,4 +76,16 @@ export const confirmAddedTaskStep = (resource: StepsResource, input: AddTaskStep
     })) return malformed();
   }
   return input.id;
+};
+
+export const confirmDeletedTaskStep = (resource: StepsResource, stepId: string, input: DeleteTaskStepInput, previous?: StepsResource): string => {
+  if (resource.version !== input.version + 1n || resource.steps.some((step) => step.id === stepId)) return malformed();
+  if (previous !== undefined) {
+    const remaining = previous.steps.filter((step) => step.id !== stepId);
+    if (remaining.length !== previous.steps.length - 1 || resource.steps.length !== remaining.length || resource.steps.some((step, position) => {
+      const old = remaining[position]!;
+      return step.id !== old.id || step.title !== old.title || step.description !== old.description || step.status !== old.status || step.createdAt !== old.createdAt || step.updatedAt !== old.updatedAt;
+    })) return malformed();
+  }
+  return stepId;
 };

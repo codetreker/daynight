@@ -106,7 +106,7 @@ export const taskDefinition: CommandDefinition = {
     },
     {
       name: "step",
-      description: "Read and add task-owned Steps independently from Sessions",
+      description: "Read, add and delete task-owned Steps independently from Sessions",
       options: [helpOption],
       commands: [
         {
@@ -137,6 +137,13 @@ export const taskDefinition: CommandDefinition = {
             versionOption, projectOption, jsonOption, helpOption,
           ],
           details: "Without an anchor, append to the saved order. --before and --after are mutually exclusive. Same titles create independent records; an existing ID is a conflict and is never regenerated or retried. Without --if-version, read the current Steps version before one POST. An explicit project/version performs one POST without parent pre-reads. Unknown results retain the original ID and request UUID; at most one same-operation read observes current facts, never historical attribution or a retry. --json prints only the complete confirmed collection.",
+        },
+        {
+          name: "delete",
+          description: "Delete one Step and return the complete confirmed remaining collection",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }],
+          options: [versionOption, projectOption, jsonOption, helpOption],
+          details: "Remove the specified Task-local record in any Step status. Referenced attachments, PRs and other materials remain. There is no history or restore command. Without --if-version, read the current Steps version before one JSON DELETE. An explicit project/version performs one DELETE without parent pre-reads. Success requires parent version +1 and target absence; --json prints only the complete confirmed remaining collection, including steps: [] after the last deletion. Unknown results preserve the original identity and request UUID; at most one same-operation read reports current facts without attributing absence to this request or replaying it.",
         },
       ],
       details: "Without --project, resolve the current Git origin. An explicit project UUID avoids project or Task pre-reads and works outside a repository. Step IDs are Task-local eight-character identities, not prefixes or display numbers. Run daynight task step <command> --help for usage.",

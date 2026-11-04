@@ -1,6 +1,6 @@
 ---
 name: daynight
-description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads, attachments and ordered Step reads and additions with version-safe writes and explicit write outcomes.
+description: Use the Daynight CLI to create and query projects and manage tasks, responsibility, dependencies, properties, discussion threads, attachments and ordered Step reads, additions and deletions with version-safe writes and explicit write outcomes.
 ---
 
 # Daynight Project and Task Usage
@@ -125,6 +125,36 @@ old pre-read, automatic retry or replacement ID. Server IDs are separate
 diagnostic facts, not an echo-equality gate. A confirmed receipt remains confirmed
 if local cleanup or output later fails; nonzero exit reports that local failure,
 and output failure may leave partial stdout.
+
+### Delete a Step
+
+```bash
+daynight task step delete <task-id> <step-id> --project <project-id>
+daynight task step delete <task-id> 00ABCDEF --if-version <observed-version> --json --project <project-id>
+```
+
+Delete removes one Task-local record and its description in any Step status;
+referenced attachments, PRs, Sessions and other materials remain. There is no
+history or restore command. IDs accept exactly eight hex characters, normalize
+case and preserve leading zeros. Explicit project/version sends one JSON DELETE
+with only version in its body. Omit --if-version for one complete Steps GET
+followed by DELETE; a failed pre-read prevents submission.
+
+Success requires a complete valid 200 resource with the correct scope/principal,
+parent version +1 and target absence. A real pre-read also permits checking that
+all remaining records retain their fields, times and relative order. Readable
+success prints `Step deleted. ID: <id>` plus the full remaining collection;
+--json prints only that full resource and LF, including steps: [] after the last
+deletion. Repeated deletion, a soft-deleted parent and version exhaustion remain
+errors. Exit codes and terminal escaping follow the read/Add rules above.
+
+The shared write rules preserve the original Project/Task/Step identity and
+request UUID. Unknown deletion permits at most one same-live-operation current
+read and never replays DELETE. Current absence cannot attribute a deletion to
+that request; a current same-ID record need not be the original record. A
+confirmed deletion stays confirmed across local render/output/cleanup failure,
+which still exits nonzero. Cancellation and exhausted budgets create no detached
+recovery read.
 
 ## Version-Safe Writes
 
