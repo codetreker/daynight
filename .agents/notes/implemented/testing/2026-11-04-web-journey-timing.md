@@ -34,9 +34,11 @@ owns target scheduling and resource isolation.
 Only sibling step durations can be subtracted once from a test's total. The
 remainder includes fixture/authentication setup, unwrapped actions, screenshots
 outside the named blocks and teardown. It is not a measurement of fixture cost.
-The pinned JSON reporter omits steps nested under fixture hooks, so shared
-fixtures retain their existing code and checks. Wall time alone does not
-establish CPU, I/O or scheduling causality.
+The pinned JSON reporter omits steps nested under fixture hooks, so named body
+steps do not measure those hooks. The
+[shared preparation decision](2026-11-04-web-scenario-preparation.md) owns the
+selected worker-resource lifetimes and their case-isolation requirements.
+Wall time alone does not establish CPU, I/O or scheduling causality.
 
 ## Alternatives
 
