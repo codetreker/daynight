@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { TaskStep } from "../../../api/task-steps";
 import { useI18n } from "../../../i18n/LocaleProvider";
 
-export type MoveAction = "edit" | "up" | "down" | "first" | "last" | "relative";
+export type MoveAction = "edit" | "delete" | "up" | "down" | "first" | "last" | "relative";
 
 export const StepMoveMenu = ({ step, index, total, available, busy, onSelect }: {
   readonly step: TaskStep; readonly index: number; readonly total: number;
@@ -24,6 +24,7 @@ export const StepMoveMenu = ({ step, index, total, available, busy, onSelect }: 
     { action: "last", label: m.moveLast, disabled: index === total - 1 },
     { action: "relative", label: m.moveRelative, disabled: total < 2 },
     { action: "edit", label: m.editStep, disabled: false },
+    { action: "delete", label: m.deleteStep, disabled: false },
   ];
   const enabled = actions.map((item, i) => item.disabled ? -1 : i).filter((i) => i >= 0);
   const close = (restore: boolean) => { setOpen(false); if (restore) trigger.current?.focus(); };
@@ -62,6 +63,6 @@ export const StepMoveMenu = ({ step, index, total, available, busy, onSelect }: 
       } else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); }
       else if (event.key === "Tab") close(false);
     }}>{actions.map((item, i) => <button key={item.action} ref={(node) => { options.current[i] = node; }} type="button" role="menuitem" disabled={item.disabled} tabIndex={active === i ? 0 : -1}
-      className="task-status-option" onFocus={() => setActive(i)} onClick={() => { close(true); onSelect(item.action); }}>{item.label}</button>)}</div>}
+      className={`task-status-option${item.action === "delete" ? " step-delete-action" : ""}`} onFocus={() => setActive(i)} onClick={() => { close(true); onSelect(item.action); }}>{item.label}</button>)}</div>}
   </div>;
 };

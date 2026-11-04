@@ -78,6 +78,23 @@ export const setTaskStepStatus = async (projectId: string, taskId: string, stepI
 
 export type AddStepInput = { readonly id: string; readonly title: string; readonly description: string; readonly status: StepStatus; readonly version: bigint };
 
+export const deleteTaskStep = async (projectId: string, taskId: string, stepId: string, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  const target = stepId.toLowerCase();
+  if (!/^[0-9a-f]{8}$/.test(target) || !isTaskVersion(version)) throw new ApiError("protocol");
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps/${target}`, signal, {
+    method: "DELETE", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId }, body: stringifyApiJson({ version }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
+  return json(response, signal, (value) => {
+    const result = parseTaskSteps(value, project, task);
+    if (response.status !== 200 || result.version !== version + 1n || result.steps.some((step) => step.id === target)) throw new ApiError("protocol", response.status);
+    return result;
+  }, undefined, true);
+};
+
 export const editTaskStep = async (projectId: string, taskId: string, stepId: string, title: string, description: string, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
