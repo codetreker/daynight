@@ -20,6 +20,7 @@ export const inspection: InspectionMessages = {
     moveConflict: "The task changed. Read the current steps before choosing a position again.", moveConflictReconciled: "The task changed. Steps were read; choose a position again.", moveUnknown: "The move outcome is unknown. Read the current steps before another change.", moveRefused: "The server refused the move.", moveMissing: "The step or target was not found. Read the current steps before choosing again.", moveInvalid: "The server rejected the move as invalid. The target must be a different step.",
     capacityDetails: (encoded, maximum) => `Encoded size: ${encoded} bytes; limit: ${maximum} bytes.`,
     add: "Add step", addTitle: "Title", description: "Description (Markdown, optional)", initialStatus: "Initial status",
+    addBefore: "Add before", addAfter: "Add after", addEnd: "End", chooseTarget: "Choose target", selectTarget: "Select target", confirmTarget: "Select", addMissing: "The target step was not found. Read current steps and choose a position again.",
     edit: "Edit", preview: "Preview", save: "Save", cancel: "Cancel", titleRequired: "Enter a title containing a non-whitespace character.",
     discardTitle: "Discard unsaved changes?", discardQuestion: "Discard this new step?", discardExplanation: "Your unsaved draft will be lost.", discard: "Discard", keep: "Keep editing",
     addConflict: "The task changed. Read the current steps before deciding whether to save again.", addConflictReconciled: "Steps were read. Review your draft before saving again.",

@@ -84,6 +84,16 @@ describe("append Steps transport", () => {
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/steps`, expect.objectContaining({ method: "POST", body: '{"version":5,"id":"0000000a","title":" New 😀 ","description":"[draft](file.md)","status":"in_progress"}', headers: expect.objectContaining({ "X-Request-ID": "request-id" }) }));
     expect(owner.onWriteConfirmed).toHaveBeenCalledOnce();
   });
+  it.each(["before", "after"] as const)("sends and verifies a relative %s insertion", async (direction) => {
+    const anchor = { ...step, id: "0000000b" };
+    const ordered = direction === "before" ? [added, anchor] : [anchor, added];
+    const fetcher = vi.fn().mockResolvedValue(created({ ...result, steps: ordered })); vi.stubGlobal("fetch", fetcher);
+    const placement = { [direction]: "0000000B" } as { before: string } | { after: string };
+    await expect(addTaskStep(projectId, taskId, { ...input, placement }, new AbortController().signal, admission(), "r")).resolves.toMatchObject({ steps: ordered });
+    expect(fetcher.mock.calls[0]![1].body).toBe(stringifyApiJson({ version: 5n, id: "0000000a", title: input.title, description: input.description, status: input.status, [direction]: "0000000b" }));
+    fetcher.mockResolvedValue(created({ ...result, steps: [...ordered].reverse() }));
+    await expect(addTaskStep(projectId, taskId, { ...input, placement }, new AbortController().signal, admission(), "r")).rejects.toMatchObject({ kind: "protocol" });
+  });
   it.each([
     [result, "/wrong"], [{ ...result, version: 5n }, `/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a`],
     [{ ...result, steps: [{ ...added, title: "wrong" }] }, `/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a`],

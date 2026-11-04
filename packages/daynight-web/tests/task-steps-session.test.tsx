@@ -742,6 +742,24 @@ it("serializes an append with parent writes and admits it only after the parent 
   expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual([item, added]);
 });
 
+it.each(["before", "after"] as const)("admits an exact %s insertion through the shared owner", async (direction) => {
+  const scope = await seed(); const session = await open(scope); let submitted = false;
+  const added: TaskStep = { ...item, id: "0000000a", title: "New", description: "Draft", status: "todo" };
+  const ordered = direction === "before" ? [added, item] : [item, added];
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "POST") { submitted = true; return Promise.resolve(new Response(JSON.stringify({ ...resource(6n, ordered), version: 6 }), { status: 201, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json", Location: `/api/v1/projects/${projectId}/tasks/${taskId}/steps/${added.id}` }) })); }
+    return Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource(submitted ? 6n : 5n, submitted ? ordered : [item]) : body(submitted ? 6n : 5n), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session);
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  const token = session.addStep(projectId, taskId, added.id, added.title, added.description, added.status, 5n, { [direction]: item.id } as { before: string } | { after: string });
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ operation: { action: "stepAdd", requestId: token }, phase: "confirmed" }));
+  expect(fetcher.mock.calls.find(([, options]) => options.method === "POST")![1].body).toContain(`"${direction}":"${item.id}"`);
+  await apply(scope, body(6n)); session.observe(projectId, taskId, node(scope));
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual(ordered);
+});
+
 it("reconciles an unknown append against its original identity without replay or attributing existence", async () => {
   const scope = await seed(); const session = await open(scope); let submitted = false; let failed = false;
   const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
