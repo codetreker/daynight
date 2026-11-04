@@ -284,38 +284,56 @@ describe("private project and membership API", () => {
 });
 
 describe("invitation API", () => {
-  it("lists invitations and returns only the current origin's one-time link from creation", async () => {
+  const mismatch = vi.fn();
+  const admission = { userId, onPrincipalMismatch: mismatch };
+  const access = { ...directAccessFixture(projectId, userId, "admin"), directGrant: grant };
+  it("binds creation and revocation to the current identity and returns the one-time link", async () => {
     const fetcher = mock(response({ items: [invitation] }));
-    expect(await listInvitations(projectId.toUpperCase(), signal())).toEqual([invitation]);
+    expect(await listInvitations(projectId.toUpperCase(), signal(), admission)).toEqual([invitation]);
     const created = { ...invitation, link: `${window.location.origin}/invitations#opaque-invitation` };
     fetcher.mockResolvedValue(response(created, 201));
-    expect(await createInvitation(projectId, signal())).toEqual(created);
-    expect(fetcher.mock.calls[1]).toEqual([`/api/v1/projects/${projectId}/invitations`, expect.objectContaining({ method: "POST", body: "{}" })]);
-    fetcher.mockResolvedValue(new Response(null, { status: 204 }));
-    await revokeInvitation(projectId, inviteId.toUpperCase(), signal());
-    expect(fetcher.mock.calls[2]).toEqual([`/api/v1/projects/${projectId}/invitations/${inviteId}`, expect.objectContaining({ method: "DELETE" })]);
+    expect(await createInvitation(projectId, userId, signal(), mismatch)).toEqual(created);
+    expect(fetcher.mock.calls[1]).toEqual([`/api/v1/projects/${projectId}/invitations`, expect.objectContaining({ method: "POST", body: JSON.stringify({ expectedUserId: userId }) })]);
+    fetcher.mockResolvedValue(new Response(null, { status: 204, headers: { "Daynight-User-ID": userId } }));
+    await revokeInvitation(projectId, inviteId.toUpperCase(), userId, signal(), mismatch);
+    expect(fetcher.mock.calls[2]).toEqual([`/api/v1/projects/${projectId}/invitations/${inviteId}`, expect.objectContaining({ method: "DELETE", body: JSON.stringify({ expectedUserId: userId }) })]);
   });
 
-  it("sends invitation secrets only in JSON bodies and explicitly separates inspection from acceptance", async () => {
+  it("keeps secrets in bodies and verifies direct grant and effective access without rounding", async () => {
     const secret = "invitation-only-in-body";
-    const fetcher = mock(response({ projectId, projectName: project.name }));
-    expect(await inspectInvitation(secret, signal())).toEqual({ projectId, projectName: project.name });
+    const empty = { projectId, projectName: project.name, directGrant: null, access: null };
+    const fetcher = mock(response(empty));
+    expect(await inspectInvitation(secret, userId, signal(), mismatch)).toEqual(empty);
     expect(fetcher.mock.calls[0]).toEqual(["/api/v1/invitations/inspect", expect.objectContaining({ method: "POST", body: JSON.stringify({ token: secret }) })]);
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    fetcher.mockResolvedValue(response({ projectId, projectName: project.name, member }));
-    expect((await inspectInvitation(secret, signal())).member).toEqual(member);
-    fetcher.mockResolvedValue(response(member));
-    expect(await acceptInvitation(secret, signal())).toEqual(member);
-    expect(fetcher.mock.calls[2]).toEqual(["/api/v1/invitations/accept", expect.objectContaining({ method: "POST", body: JSON.stringify({ token: secret }) })]);
+    fetcher.mockResolvedValue(response({ ...empty, directGrant: grant, access }));
+    expect((await inspectInvitation(secret, userId, signal(), mismatch)).directGrant).toEqual(grant);
+    const accepted = { projectId, directGrant: grant, access, joined: true, consumed: true };
+    fetcher.mockResolvedValue(response(accepted));
+    expect(await acceptInvitation(secret, projectId, userId, signal(), mismatch)).toEqual(accepted);
+    expect(fetcher.mock.calls[2]).toEqual(["/api/v1/invitations/accept", expect.objectContaining({ method: "POST", body: JSON.stringify({ token: secret, expectedUserId: userId }) })]);
     for (const [url] of fetcher.mock.calls) expect(url).not.toContain(secret);
   });
 
+  it("rejects wrong principals and malformed acceptance results without replay or secret causes", async () => {
+    const secret = "secret-in-error";
+    const fetcher = mock(new Response(JSON.stringify({ projectId }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": otherId } }));
+    await expect(acceptInvitation(secret, projectId, userId, signal(), mismatch)).rejects.toMatchObject({ code: "principal_mismatch" });
+    expect(mismatch).toHaveBeenCalled();
+    fetcher.mockResolvedValue(response({ projectId, directGrant: { ...grant, userId: otherId }, access, joined: true, consumed: true }));
+    await expect(acceptInvitation(secret, projectId, userId, signal(), mismatch)).rejects.toMatchObject({ kind: "protocol" });
+    fetcher.mockRejectedValue(new Error(secret));
+    for (const call of [() => inspectInvitation(secret, userId, signal(), mismatch), () => acceptInvitation(secret, projectId, userId, signal(), mismatch)]) {
+      const failure = await call().catch((error: unknown) => error);
+      expect(failure).not.toHaveProperty("cause");
+      expect(String(failure)).not.toContain(secret);
+    }
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  });
+
   it.each(["", "secret\nvalue", "secret value", "secret\0value", "secret\ud800value"])("rejects malformed invitation secrets without exposing them %#", (secret) => {
-    const fetcher = vi.fn();
-    vi.stubGlobal("fetch", fetcher);
-    for (const call of [inspectInvitation, acceptInvitation]) {
-      try { call(secret, signal()); expect.unreachable(); }
-      catch (error) { expect(error).toBeInstanceOf(ApiError); if (secret !== "") expect(String(error)).not.toContain(secret); }
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    for (const call of [() => inspectInvitation(secret, userId, signal(), mismatch), () => acceptInvitation(secret, projectId, userId, signal(), mismatch)]) {
+      try { call(); expect.unreachable(); } catch (error) { expect(error).toBeInstanceOf(ApiError); if (secret !== "") expect(String(error)).not.toContain(secret); }
     }
     expect(fetcher).not.toHaveBeenCalled();
   });

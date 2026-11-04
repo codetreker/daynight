@@ -18,13 +18,13 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	_, data := identityRequest(t, admin, "POST", integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Steps auth", RepoURL: "https://example.com/steps", ExpectedUserID: adminUser.ID}), origin, 201)
 	project := identityDecode[api.Project](t, data)
 	base := "/api/v1/projects/" + project.ID
-	_, data = identityRequest(t, admin, "POST", integration.server.URL+base+"/invitations", `{}`, origin, 201)
+	_, data = identityRequest(t, admin, "POST", integration.server.URL+base+"/invitations", invitationActorBody(adminUser.ID), origin, 201)
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
 	link, err := url.Parse(invitation.Link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	identityRequest(t, member, "POST", integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, 200)
+	identityRequest(t, member, "POST", integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, memberUser.ID), origin, 200)
 	_, data = identityRequest(t, admin, "POST", integration.server.URL+base+"/tasks", `{"title":"Steps without Session"}`, origin, 201)
 	task := identityDecode[api.Task](t, data)
 	path := base + "/tasks/" + task.ID + "/steps"

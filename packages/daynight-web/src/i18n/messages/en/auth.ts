@@ -95,6 +95,9 @@ export const auth: AuthMessages = {
     alreadyMemberDetail: "Open the project directly. You do not need to accept this invitation again.",
     memberRole: "Joining as: Member", permissions: ["Read and write project tasks and attachments", "View project members"],
     noEmail: "No email provided", switchAccount: "Switch account", acceptError: "The invitation could not be accepted. Please try again.",
+    acceptUnknown: "The result is unknown. Check your project access before trying again.", checkAccess: "Check project access",
+    currentDirectRole: "Current direct role", preserveDirect: "Your direct role remains unchanged and this invitation will not be consumed.", inheritedAdmin: "You will add a direct member role while keeping your inherited administrator access.",
+    currentlyUnavailable: "The invitation is currently unavailable. The original result is still unknown.",
     accepting: "Joining…", accept: "Accept invitation and join", open: "Open project", cancel: "Not now", returnToProjects: "Back to my projects",
   },
   createProject: {
@@ -133,6 +136,7 @@ export const auth: AuthMessages = {
     },
     members: {
       eyebrow: "PROJECT SETTINGS", title: "Project members", subtitle: ({ projectName }) => `${projectName} · Manage collaborators and invitations`,
+      invitationUnknown: "The invitation change was not confirmed. Read current invitations before making another change. A lost link cannot be recovered.", invitationObserved: "Current invitations are shown; the original result is still unknown. Review before changing them.", readCurrentInvitations: "Read current invitations",
       grantUnknown: "The service did not confirm the member change. Read current members before reviewing another change.",
       grantObserved: "Current members have been read. The original write result remains unconfirmed; review the current grant before another change.",
       readCurrentMembers: "Read current members",

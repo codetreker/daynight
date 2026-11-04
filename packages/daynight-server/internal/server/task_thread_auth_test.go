@@ -33,13 +33,13 @@ func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
 	}
 	_, data := request(admin, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Thread authentication", RepoURL: "https://example.com/thread-auth", ExpectedUserID: adminUser.ID}, origin, 201, "")
 	project := identityDecode[api.Project](t, data)
-	_, data = request(admin, http.MethodPost, "/api/v1/projects/"+project.ID+"/invitations", map[string]any{}, origin, 201, "")
+	_, data = request(admin, http.MethodPost, "/api/v1/projects/"+project.ID+"/invitations", map[string]any{"expectedUserId": adminUser.ID}, origin, 201, "")
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
 	link, err := url.Parse(invitation.Link)
 	if err != nil || link.Fragment == "" {
 		t.Fatal("missing invitation token")
 	}
-	identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, 200)
+	identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, memberUser.ID), origin, 200)
 	_, data = request(member, http.MethodPost, taskCollection(project.ID), map[string]any{"title": "Thread owner", "assignedTo": memberUser.ID}, origin, 201, "")
 	task := identityDecode[api.Task](t, data)
 	path := threadPath(task)

@@ -115,10 +115,16 @@ export type AuthMessages = {
     readonly invitedDetail: string;
     readonly alreadyMemberDetail: string;
     readonly memberRole: string;
+    readonly currentDirectRole: string;
+    readonly preserveDirect: string;
+    readonly inheritedAdmin: string;
     readonly permissions: readonly string[];
     readonly noEmail: string;
     readonly switchAccount: string;
     readonly acceptError: string;
+    readonly acceptUnknown: string;
+    readonly checkAccess: string;
+    readonly currentlyUnavailable: string;
     readonly accepting: string;
     readonly accept: string;
     readonly open: string;
@@ -224,7 +230,10 @@ export type AuthMessages = {
       readonly invite: string;
       readonly loading: string;
       readonly memberNotice: string;
-      readonly grantUnknown: string;
+      readonly invitationUnknown: string;
+    readonly invitationObserved: string;
+    readonly readCurrentInvitations: string;
+    readonly grantUnknown: string;
       readonly grantObserved: string;
       readonly readCurrentMembers: string;
       readonly membersTitle: string;

@@ -35,8 +35,9 @@ supplement the audit token because exec changes its pidversion without ending
 the original birth instance.
 
 Shutdown closes the run and its segments while retaining the claim and Session.
-A confirmed stop, known native conversation and confirmed initial input permit
-another generation. Reconnection changes the connection epoch and starts a
+A confirmed stop, known native conversation and confirmed or explicitly resolved
+initial input permit another generation; the [input arbitration decision](2026-11-04-herdr-input-arbitration.md)
+keeps human-owned input suspended and preserves the original unknown receipt. Reconnection changes the connection epoch and starts a
 segment with an explicit gap. Uncertain input is never automatically replayed.
 Stop proof, segment closure and ledger acknowledgement are separately recoverable
 boundaries. Without a committed stop intent, emergency signaling cannot produce
@@ -90,7 +91,7 @@ does not silently adopt legacy live runs without the required evidence.
 
 Terminal cleanup releases the execution slot after confirmed stopping and ledger
 publication, but retains the worktree until archive acceptance is implemented.
-Web observation, control and archive capabilities remain false. Input arbitration,
-terminal recording and final archive cleanup must consume these durable owners
+Web observation, control and archive capabilities remain false. Input arbitration
+consumes these durable owners; terminal recording and final archive cleanup must do so
 without treating segment metadata as recorded output or local stop proof as a
 final archive receipt.

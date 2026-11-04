@@ -1108,6 +1108,14 @@ choices. No disclosure state is stored in browser preferences. The [Goal-list
 decision](../../.agents/notes/implemented/feature/2026-10-26-goal-task-lists.md)
 owns this interaction.
 
+In-progress Goal children can open their current accessible Session directly.
+Small working, notice and warning text annotations share a bounded current-session
+summary with each visible chain header. Collapsed chains include every ordinary
+member, including the root; external chains do not contribute. The chain status
+control only expands members. Failed, stale or mismatched observations disappear
+without changing task state. The [Session status design](../../docs/design/task-session-status.md)
+owns precedence, visibility, refresh limits and stable annotation geometry.
+
 The explicit View dependencies / 查看依赖关系 action opens one centered
 horizontal-graph dialog at a time without changing any disclosure state.
 Desktop geometry is `80vw × 80dvh`; at widths of 740px or less the dialog fills

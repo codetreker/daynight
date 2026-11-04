@@ -27,14 +27,14 @@ func TestTaskLifecycleAuthenticationAndMemberAccess(t *testing.T) {
 		_, data = identityRequest(t, admin, http.MethodPut, integration.server.URL+taskPath(prerequisite)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: prerequisite.Version, Status: action}), origin, http.StatusOK)
 		prerequisite = identityDecode[api.Task](t, data)
 	}
-	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", `{}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", invitationActorBody(adminUser.ID), origin, http.StatusCreated)
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
 	link, err := url.Parse(invitation.Link)
 	if err != nil || link.Fragment == "" {
 		t.Fatal("project invitation did not contain an acceptance token")
 	}
-	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, http.StatusOK)
-	if joined := identityDecode[api.ProjectMember](t, data); joined.UserID != memberUser.ID || joined.Role != "member" {
+	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, memberUser.ID), origin, http.StatusOK)
+	if joined := identityDecode[api.ProjectInvitationAcceptance](t, data); joined.DirectGrant.UserID != memberUser.ID || joined.DirectGrant.Role != "member" {
 		t.Fatalf("invitation did not grant the ordinary member role: %+v", joined)
 	}
 	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+taskCollection(project.ID),

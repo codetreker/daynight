@@ -267,9 +267,12 @@ creator direct admin 原子提交。身份不符在任何领域 SQL 前返回 40
 
 邀请固定七天，属于项目，创建者离任不自动撤销。创建时一次显示可复制链接；列表
 只显示元数据和撤销入口。有效期至消费、到期或管理员撤销。接受者必须登录并明确
-确认，GET、链接预览、inspect 和登录跳转不消费。有效邀请只允许查看项目名称等最小
-摘要。接受与消费原子提交，并发只增加一名新成员；已有直接成员关系不升级角色且不消费邀请。
-邀请 inspect/accept 保留现有成员结果 DTO，与 participant 名册的读取合同分开。
+确认，GET、链接预览、inspect 和登录跳转不消费。inspect 返回项目 ID、名称及当前
+主体的可空 directGrant 和 access，不公开成员目录。接受与消费原子提交，并发只增加一名
+新成员；已有直接授权保持原角色且不消费邀请，仅有继承权限的人仍新增 direct member。
+accept 返回真实 directGrant、有效 access、joined 和 consumed，成功后进入该项目。
+创建、撤销和接受携带 expectedUserId，服务端在任何领域 SQL 前核对主体；客户端核对
+响应主体，不自动重放未知写入。创建结果丢失时无法恢复一次性链接。
 
 ## 当前主体的项目权限
 
@@ -424,15 +427,15 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | 缺失、无效、撤销或到期用户凭据 | 401 unauthenticated JSON |
 | Team/项目不存在或当前主体没有对应成员资格 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
-| Team 管理、项目创建或转移，或新增/修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
+| Team 管理、项目创建或转移、新增/修改/移除独立项目授权或创建、撤销、接受邀请时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
 | 独立授权存在性或观察版本不符；ownership 或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
 | 新增独立授权的目标不是有效 participant | 404 not_found |
 | 变更 Personal Team | 409 personal_team_immutable |
 | 删除仍有 Project ownership 引用的 Team | 409 team_not_empty |
 | Team 真实改名或项目真实转移所需版本已达最大正 int64 | 409 version_exhausted；经核对的 no-op 仍有效 |
-| 无法确认 Team 管理、项目创建或转移或独立授权的提交结果 | 503 write_outcome_unknown；不得自动重放 |
+| 无法确认 Team 管理、项目创建或转移、独立授权或邀请写入的提交结果 | 503 write_outcome_unknown；不得自动重放 |
 | 生命周期前态不符或前置未完成 | 409 invalid_transition / dependency_unsatisfied |
-| 邀请已消费、到期或撤销 | 410 invitation_unavailable |
+| 邀请无效、已消费、到期、撤销或目标已删除 | 404 invitation_unavailable |
 | provider discovery 的 App 配置/凭据错误 | 503 identity_configuration |
 | provider discovery 的上游网络/协议错误 | 502 identity_unavailable |
 | provider discovery 超时 | 504 identity_timeout |
