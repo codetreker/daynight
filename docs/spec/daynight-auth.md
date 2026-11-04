@@ -249,9 +249,9 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 既有 `PATCH .../members/{userId}` 接受 `{version,role,expectedUserId}` 并返回真实 ProjectGrant；
 `DELETE` 接受 `{version,expectedUserId}`，成功仍为 204 无正文。旧路径只操作已有 direct grant，
 不存在时返回 not_found。所有这些写入在任何领域 SQL 前验证 expectedUserId 与实际 principal；
-错主体返回 409 identity_mismatch，领域行和版本零变化。客户端核对成功、拒绝及空响应的 `Daynight-User-ID`，
+错主体返回 409 identity_mismatch，领域行和版本零变化。客户端核对响应的 `Daynight-User-ID`，
 错主体触发身份重验，不安装结果。新的 grants 路径在无法确认 COMMIT 时返回 `write_outcome_unknown`；
-响应丢失同样不能证明提交结果。未确认的已发送写入不得自动重放或重新启用原确认，后续读取只证明当前事实，不能恢复
+响应丢失同样不能证明提交结果。未确认的已发送写入不得自动重放，后续读取只证明当前事实，不能恢复
 原操作的成功回执。Team 关系与 Project grant 独立，撤销一种来源不能撤销另一种来源。
 
 创建 Project 接受原文 `name`、`repoUrl`、可选 `teamId` 和必填 `expectedUserId`。目标 Team 的
