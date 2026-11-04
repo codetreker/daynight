@@ -27,11 +27,21 @@ export type WorkerCoordinatorOptions = {
   webBackend?: WebExecutionBackend; webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
   serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
-  repositories: readonly WorkerRepositoryAssignment[]; globalConfiguration: ExecutionConfiguration; maxConcurrent: number;
+  readyProjectIds?: readonly string[];
+  repositories: readonly WorkerRepositoryAssignment[]; globalConfiguration: ExecutionConfiguration | null; maxConcurrent: number;
   buildPrompt: (assignment: ManagedAssignment, platform: TaskPlatform) => string;
   onInventory?: (inventory: WorkerTaskInventory) => void; onClaim?: (reference: WorkerTaskReference) => void;
   emit: (event: WorkerEvent) => void; signal?: AbortSignal; now?: () => number;
 };
+export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "readyProjectIds">;
+
+const configurationView = (value: WorkerCoordinatorConfiguration): WorkerCoordinatorConfiguration => Object.freeze({
+  maxConcurrent: value.maxConcurrent,
+  ...(value.readyProjectIds === undefined ? {} : { readyProjectIds: Object.freeze([...value.readyProjectIds]) }),
+  globalConfiguration: value.globalConfiguration === null ? null : Object.freeze({ ...value.globalConfiguration, args: Object.freeze([...value.globalConfiguration.args]) }),
+  repositories: Object.freeze(value.repositories.map(repository => Object.freeze({ project: Object.freeze({ ...repository.project }), configuration: Object.freeze({ ...repository.configuration, args: Object.freeze([...repository.configuration.args]) }) }))),
+});
+
 type CleanupTarget = ClaimIdentity & { worktreeId?: string };
 const hasWorktreeIdentity = (target: CleanupTarget): target is ResourceOwner => target.worktreeId !== undefined;
 type Snapshot = { herdr: HerdrOwnedWorkspace[]; owners: Map<string, ResourceOwner>; proven: Set<string> };
@@ -45,6 +55,8 @@ const remoteOwner = (task: Task): ResourceOwner => {
 
 export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const now = options.now === undefined ? Date.now : options.now;
+  let configuration = configurationView(options);
+  const selected = (projectId: string): boolean => configuration.readyProjectIds === undefined ? configuration.repositories.some(repository => repository.project.projectId === projectId) : configuration.readyProjectIds.includes(projectId);
   const deps: ExecutionDependencies = { store: options.store, git: options.git, herdr: options.herdr, readTask: options.remote.readTask, platform: options.platform, workerId: options.workerId, serverOrigin: options.serverOrigin, buildPrompt: options.buildPrompt, emit: options.emit, now };
   const execution = createExecutionDriver(deps);
   const cleanup = createCleanupDriver(deps);
@@ -84,14 +96,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (project === null) throw new Error(`The project mapping is missing for ${identity.projectId}.`);
     return project;
   };
-  const configurationFor = (task: LocalTask): ExecutionConfiguration => {
+  const configurationFor = (task: LocalTask): ExecutionConfiguration | null => {
     if (task.agentControlMode === "web") { const frozen = options.webStore?.getTask(task)?.configuration; if (frozen) return frozen; }
-    const current = options.repositories.find((repository) => repository.project.projectId === task.projectId)?.configuration ?? options.globalConfiguration;
+    const repository = configuration.repositories.find(repository => repository.project.projectId === task.projectId);
+    if (repository === undefined && configuration.readyProjectIds !== undefined && selected(task.projectId)) return null;
+    const current = repository?.configuration ?? configuration.globalConfiguration;
+    if (current === null) return null;
     return current.agent === task.agent ? { ...current, agentControlMode: task.agentControlMode ?? "herdr" } : { agent: task.agent, agentControlMode: task.agentControlMode ?? "herdr", model: null, args: [], recoveryLimit: current.recoveryLimit };
   };
+  const canAdvance = (task: LocalTask): boolean => selected(task.projectId) && configurationFor(task) !== null;
   // Cleanup-only backend access stays inside its claim job and retry schedule.
-  const needsHerdr = (): boolean => options.globalConfiguration.agentControlMode !== "web"
-    || options.repositories.some(repository => repository.configuration.agentControlMode !== "web")
+  const needsHerdr = (): boolean => configuration.repositories.some(repository => repository.configuration.agentControlMode !== "web")
     || options.store.listUnfinishedTasks().some(task => task.agentControlMode !== "web" && !ending.has(key(task)));
   const hasHerdrCleanup = (): boolean => [...ending.values()].some(owner => options.store.getTask(owner)?.agentControlMode !== "web" && options.webStore?.getTask(owner) == null);
   const hasDurableOwnership = (): boolean => options.hasHerdrJournal === true || options.store.listTasks().some(task => task.agentControlMode !== "web" && (task.status !== "done" || options.platform === "macos"));
@@ -161,11 +176,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const startJob = (identity: ClaimIdentity, action: (signal: AbortSignal) => Promise<void>, terminal: boolean): void => {
     const identityKey = key(identity);
-    if (shuttingDown || jobs.has(identityKey)) return;
+    if (shuttingDown || jobs.has(identityKey) || !terminal && !selected(identity.projectId)) return;
     const controller = new AbortController();
     controllers.set(identityKey, { controller, terminal });
     const signal = AbortSignal.any([normalSignal, controller.signal]);
-    const job = serialize(identity, () => action(signal)).catch((error: unknown) => {
+    const job = serialize(identity, () => !terminal && !selected(identity.projectId) ? Promise.resolve() : action(signal)).catch((error: unknown) => {
       if (isWorkerCancellation(error, signal)) return;
       let cleanupMessage: string | undefined;
       let reportedError = error;
@@ -331,6 +346,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (task.agentControlMode === "web") {
       if (!options.webStore || !options.webBackend) throw new Error("The Web execution backend is unavailable.");
       const configuration = configurationFor(task);
+      if (configuration === null) return;
       const worker = readWorkerClaim(remoteTask.properties)!;
       let record = options.webStore.getTask(task);
       if (record !== null && (record.worktreeId !== owner.worktreeId || record.workerId !== options.workerId || record.userId !== worker.userId || record.serverOrigin !== options.serverOrigin)) throw new Error("The durable Web execution does not match the observed original worker claim.");
@@ -376,7 +392,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     await syncWorkspaceName(task, owner, remoteTask.title, signal);
     if (!execute) return;
-    const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: configurationFor(task) };
+    const currentConfiguration = configurationFor(task);
+    if (currentConfiguration === null) return;
+    const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: currentConfiguration };
     const observed = await execution.advance(input, signal);
     const latest = options.store.getTask(task)!;
     await publishSummary(latest, observed, remoteTask, signal);
@@ -393,9 +411,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     options.store.listUnfinishedTasks().some((other) => other.projectId === task.projectId && other.taskId === task.taskId && other.claimId !== task.claimId && other.status === "active")
     || [...owners, ...ending.values(), ...pendingStops().map((stop) => stop.context)].some((owner) => owner.projectId === task.projectId && owner.taskId === task.taskId && owner.claimId !== task.claimId);
   const schedule = (task: LocalTask, remoteTask: Task): void => {
-    if (jobs.has(key(task)) || ending.has(key(task))) return;
+    if (!canAdvance(task) || jobs.has(key(task)) || ending.has(key(task))) return;
     const count = failures.get(key(task)) ?? 0;
-    startJob(task, (signal) => ensure(task, remoteTask, signal, count <= configurationFor(task).recoveryLimit), false);
+    startJob(task, signal => {
+      const current = configurationFor(task);
+      return current === null ? Promise.resolve() : ensure(task, remoteTask, signal, count <= current.recoveryLimit);
+    }, false);
   };
   const reconcile = async (): Promise<void> => {
     launchCleanups();
@@ -438,19 +459,19 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     launchCleanups();
     for (const [identityKey, remoteTask] of inventory) {
       let local = options.store.getTask(remoteOwner(remoteTask))!;
-      if (resources.owners.has(identityKey) && local.status === "pending" && !blockedByOldClaim(local, resources.owners.values())) {
+      if (canAdvance(local) && resources.owners.has(identityKey) && local.status === "pending" && !blockedByOldClaim(local, resources.owners.values())) {
         local = options.store.activateTask(local);
         schedule(local, remoteTask);
       }
     }
-    const projects = options.store.listProjects();
-    while (capacity(resources) < options.maxConcurrent && projects.length > 0) {
+    const projects = options.store.listProjects().filter(project => selected(project.projectId));
+    while (capacity(resources) < configuration.maxConcurrent && projects.length > 0) {
       let started = false;
       for (let turn = 0; turn < projects.length; turn++) {
         const project = projects[nextPendingProject % projects.length]!;
         nextPendingProject = (nextPendingProject + 1) % projects.length;
         const pending = options.store.listUnfinishedTasks().filter((task) => task.projectId === project.projectId && task.status === "pending").sort((left, right) => left.taskId.localeCompare(right.taskId));
-        const local = pending.find((task) => inventory.has(key(task)) && !blockedByOldClaim(task, resources.owners.values()));
+        const local = pending.find(task => canAdvance(task) && inventory.has(key(task)) && !blockedByOldClaim(task, resources.owners.values()));
         if (local === undefined) continue;
         schedule(options.store.activateTask(local), inventory.get(key(local))!);
         started = true;
@@ -459,22 +480,22 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (!started) break;
     }
     const cleanupFailure = (identity: string) => options.store.getCleanupSchedule(ending.get(identity)!) ?? cleanupRetries.get(identity);
-    const blocked = capacity(resources) >= options.maxConcurrent
+    const blocked = capacity(resources) >= configuration.maxConcurrent
       ? [...ending.keys()].filter(identity => cleanupFailure(identity)?.lastError != null).sort() : [];
     const warning = blocked.join(",");
     if (warning !== capacityWarning) {
       capacityWarning = warning;
       if (warning !== "") options.emit({ kind: "cleanup-capacity-blocked", message: `Worker capacity is full; failed cleanup retains ${blocked.length} slot(s). ${blocked.map(identity => { const state = cleanupFailure(identity)!; return `${identity}: ${state.stage}, next retry ${new Date(state.nextAttemptAt).toISOString()}, ${state.lastError}`; }).join("; ")}. Correct the reported resource or archive failure; retries are automatic. No slot is released until cleanup is confirmed.` });
     }
-    if (capacity(resources) >= options.maxConcurrent || options.repositories.length === 0) return;
+    if (capacity(resources) >= configuration.maxConcurrent || configuration.repositories.length === 0) return;
     const candidates = new Map<number, AsyncGenerator<Task>>();
     const exhausted = new Set<number>();
     try {
-      while (capacity(resources) < options.maxConcurrent && exhausted.size < options.repositories.length) {
-        const index = nextRepository % options.repositories.length;
-        nextRepository = (nextRepository + 1) % options.repositories.length;
+      while (capacity(resources) < configuration.maxConcurrent && exhausted.size < configuration.repositories.length) {
+        const index = nextRepository % configuration.repositories.length;
+        nextRepository = (nextRepository + 1) % configuration.repositories.length;
         if (exhausted.has(index)) continue;
-        const repository = options.repositories[index]!;
+        const repository = configuration.repositories[index]!;
         let page = candidates.get(index);
         if (page === undefined) {
           page = options.remote.candidates(repository.project.projectId, options.platform, normalSignal);
@@ -483,6 +504,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const next = await page.next();
         if (next.done) { exhausted.add(index); continue; }
         const candidate = next.value;
+        const currentRepository = configuration.repositories.find(value => value.project.projectId === candidate.projectId);
+        if (currentRepository === undefined) continue;
         try {
           assertCanAcquire({ projectId: candidate.projectId, taskId: candidate.id });
           if ([...resources.owners.values()].some(owner => owner.projectId === candidate.projectId && owner.taskId === candidate.id)) throw new Error("An original task resource still reserves its worktree; a new claim cannot be acquired.");
@@ -491,16 +514,16 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           options.emit({ kind: "warning", message: `Skipping ${candidate.projectId}/${candidate.id}: its original archive responsibility and worktree reservation prevent a new claim.`, error });
           continue;
         }
-        requireImplementedWorkerBackend(repository.configuration);
-        if (repository.configuration.agentControlMode === "web") await options.verifyWebServer?.(repository.configuration.agent, normalSignal);
+        requireImplementedWorkerBackend(currentRepository.configuration);
+        if (currentRepository.configuration.agentControlMode === "web") await options.verifyWebServer?.(currentRepository.configuration.agent, normalSignal);
         const claimId = randomUUID();
         try {
-          const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: repository.configuration.agent, ...(repository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
+          const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
           const owner = remoteOwner(granted);
           const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode });
           registerClaim(granted);
           options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
-          if (!blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted);
+          if (canAdvance(local) && !blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < configuration.maxConcurrent) schedule(options.store.activateTask(local), granted);
           return;
         } catch (error) {
           if (isWorkerCancellation(error, normalSignal)) throw error;
@@ -533,6 +556,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     return { task, owner: remoteOwner(remoteTask), remoteTask };
   };
   return {
+    updateConfiguration: (value: WorkerCoordinatorConfiguration): void => { configuration = configurationView(value); },
     assertCanAcquire,
     registerClaim,
     tick: async (): Promise<void> => {
@@ -547,6 +571,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const worker = readWorkerClaim(remoteTask.properties)!;
       if (task.agentControlMode === "web" && !webRecord) throw new Error("Retry requires the original Web execution evidence; it cannot start a replacement assignment.");
       if (webRecord && (webRecord.worktreeId !== worker.worktreeId || webRecord.workerId !== worker.workerId || webRecord.userId !== worker.userId || webRecord.serverOrigin !== options.serverOrigin)) throw new Error("The original Web execution ownership no longer matches the active claim.");
+      if (configurationFor(task) === null) throw new Error("Native configuration is unavailable for this project; correct its cloud settings before retrying execution.");
       failures.delete(key(identity));
       await ensureHerdr(normalSignal);
       await serialize(identity, async () => {

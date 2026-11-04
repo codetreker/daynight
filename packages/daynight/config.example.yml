@@ -39,29 +39,38 @@ review:
       # directory, and do not expand ~. Keep review clones outside that directory.
       path: ../daynights/github.com/owner/repo
 
-# Worker configuration. Run daynight worker setup to inspect prerequisites,
-# choose a native agent and select existing Projects before worker run.
-# Omitted values use these defaults; an empty selection also makes interactive
-# worker run guide Project registration. Native credentials and the official
-# Herdr integration must be configured explicitly. Every fresh/resumed native
-# agent uses fixed full access and task-folder trust; args cannot lower that
-# policy or re-enable permission prompts. Global native configuration is unchanged.
+# Worker local settings and first-import seed. Optional daynight worker setup
+# inspects prerequisites and selects an agent and existing Projects before the
+# first connection. The seed is imported only when the cloud target is absent.
+# Afterwards, My Workers owns concurrency, polling/recovery limits, Project
+# selection and global/per-Project agent/model/args. Local managed values cannot
+# overwrite that target. Normal worker run accepts an empty selection and does
+# not open a Project picker.
+# Paths, identity, service credentials and agentControlMode remain local. Native
+# credentials and the official Herdr integration must be configured explicitly.
+# Every fresh/resumed native agent uses fixed full access and task-folder trust;
+# args cannot lower that policy or re-enable permission prompts. The fixed launch
+# policy does not edit provider global settings.
 worker:
-  # Used only for new worker repo registrations; independent of review's root.
+  # Root for new Worker repository paths; independent of review's root.
+  # Changing it does not relocate an existing local binding.
   repositoryRoot: ~/daynights
+  # Initial cloud values. maxConcurrent and pollIntervalMs are positive integers;
+  # pollIntervalMs uses milliseconds, and recoveryLimit is nonnegative.
   maxConcurrent: 1
   pollIntervalMs: 60000
   recoveryLimit: 3
-  # Choose herdr for terminal control or web for the Task Session page.
-  # The service freezes this mode per claim.
+  # Local choice: herdr for terminal control or web for the Task Session page.
+  # The service freezes this mode per claim; it is not a cloud-managed setting.
   agentControlMode: herdr
+  # Initial global native values. Later changes belong in My Workers.
   agent: copilot
   model: null
   args: []
-  # maxConcurrent and pollIntervalMs are positive integers; pollIntervalMs uses
-  # milliseconds. recoveryLimit is nonnegative; automatic recovery counts are
-  # process-local and reset when the worker restarts. Restarted agents use current
-  # settings for their recorded agent type, while native session IDs remain saved.
+  # Initial Project selection and native overrides become cloud configuration.
+  # Local transports/paths remain bindings; they do not choose the cloud scope.
+  # Existing native processes retain their launch parameters. Herdr restarts use
+  # current applicable values; Web recovery keeps its frozen execution record.
   repositories:
     - remote: https://github.com/OWNER/REPO.git
       # Paths follow the same config-directory-relative rule as review paths.
@@ -70,9 +79,10 @@ worker:
       # The matching Daynight project must exist. Set its actual UUID when remote
       # discovery matches more than one project.
       # projectId: REPLACE_WITH_MATCHING_PROJECT_UUID
-      # Repository overrides inherit fields independently for the same agent.
+      # Native overrides inherit fields independently for the same agent.
       # Switching agent clears inherited model and args unless set here. Explicit
       # null model or [] args clears that field; args replaces the entire list.
+      # Omission remains inheritance when the first-import seed is projected.
       # agent: codex
       # model: null
       # args: []

@@ -35,7 +35,7 @@ const fixture = (operation = createOperation()) => {
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(currentUser),
     getTeamCurrentUser: vi.fn<ApiClient["getTeamCurrentUser"]>(), listTeams: vi.fn<ApiClient["listTeams"]>(), getTeam: vi.fn<ApiClient["getTeam"]>(), listTeamProjects: vi.fn<ApiClient["listTeamProjects"]>(),
     getProjectAccess: vi.fn<ApiClient["getProjectAccess"]>(),
-    reportWorker: vi.fn<ApiClient["reportWorker"]>(),
+    reportWorker: vi.fn<ApiClient["reportWorker"]>(), getWorkerConfiguration: vi.fn<ApiClient["getWorkerConfiguration"]>(), reportWorkerConfiguration: vi.fn<ApiClient["reportWorkerConfiguration"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),
     getTaskPropertySchema: vi.fn<ApiClient["getTaskPropertySchema"]>().mockResolvedValue(propertySchema),
     getTaskProperties: vi.fn<ApiClient["getTaskProperties"]>().mockResolvedValue(propertyResource),

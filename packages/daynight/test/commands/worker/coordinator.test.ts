@@ -1175,6 +1175,7 @@ describe("minimal worker resource reconciliation", () => {
     const f = await fixture(3);
     const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
     f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    f.coordinator.updateConfiguration(f.options);
     f.candidates.splice(0, f.candidates.length, task(second.projectId, uuid(200)), task(second.projectId, uuid(201)));
     await f.coordinator.tick();
     expect(vi.mocked(f.remote.candidates).mock.calls.map(([projectId]) => projectId)).toEqual([f.project.projectId, second.projectId]);
@@ -1205,6 +1206,7 @@ describe("minimal worker resource reconciliation", () => {
     const f = await fixture(3);
     const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
     f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    f.coordinator.updateConfiguration(f.options);
     f.candidates.push(task(second.projectId, uuid(200)), task(second.projectId, uuid(201)));
     const expected = [uuid(100), uuid(200), uuid(101)];
     for (let round = 0; round < expected.length; round++) {
@@ -1220,6 +1222,7 @@ describe("minimal worker resource reconciliation", () => {
     const f = await fixture(2);
     const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
     f.store.registerProject(second); f.options.repositories.push({ project: second, configuration }); f.candidates.splice(0);
+    f.coordinator.updateConfiguration(f.options);
     for (const [projectId, taskId, claimId] of [[f.project.projectId, uuid(100), uuid(300)], [f.project.projectId, uuid(101), uuid(301)], [second.projectId, uuid(200), uuid(302)]]) {
       f.grant(task(projectId!, taskId!), { claimId: claimId!, workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(Number(claimId!.slice(-3)) + 100) });
     }
@@ -1233,6 +1236,7 @@ describe("minimal worker resource reconciliation", () => {
     const f = await fixture(2);
     const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
     f.store.registerProject(second); f.options.repositories.push({ project: second, configuration }); f.candidates.push(task(second.projectId, uuid(200)));
+    f.coordinator.updateConfiguration(f.options);
     let release!: () => void;
     const wait = new Promise<void>((resolve) => { release = resolve; });
     const start = f.tasks.start.getMockImplementation()!;
@@ -1468,7 +1472,7 @@ it("missing Web execution evidence never permits replacing or deleting an existi
   const remote = f.grant(f.candidates[0]!, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: { id: uuid(3), name: "fixture" } });
   const row = f.store.registerPending({ projectId: remote.projectId, taskId: remote.id, claimId: uuid(810), agent: "codex", agentControlMode: "web" }); f.store.activateTask(row);
   const advance = vi.fn(), cleanup = vi.fn(); const refusal = new Error("Existing Session requires original execution evidence.");
-  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [], globalConfiguration: configuration, webStore, webBackend: { advance, cleanup }, verifyWebServer: vi.fn(async () => {}), verifyWebUnregistered: vi.fn(async () => { throw refusal; }) });
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, webBackend: { advance, cleanup }, verifyWebServer: vi.fn(async () => {}), verifyWebUnregistered: vi.fn(async () => { throw refusal; }) });
   try {
     await coordinator.tick(); await eventually(() => expect(f.events.some(event => event.kind === "execution-error")).toBe(true));
     expect(advance).not.toHaveBeenCalled(); expect(webStore.getTask(row)).toBeNull();
@@ -2025,4 +2029,84 @@ it("observes completed Web resources when shutdown follows an interrupted schedu
     expect(f.store.getCleanupSchedule(owner)).not.toBeNull();
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
   } finally { webStore.close(); }
+});
+
+
+describe("applied cloud runtime configuration", () => {
+  it("keeps an unavailable project tuple distinct from usable global defaults", async () => {
+    const f = await fixture();
+    await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    const observed = f.tasks.observe.mock.calls.length;
+    f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [f.project.projectId], globalConfiguration: { ...configuration, model: "unrelated-global-model" }, maxConcurrent: 2 });
+    await f.coordinator.tick();
+    expect(f.tasks.observe).toHaveBeenCalledTimes(observed);
+    expect(f.tasks.start).toHaveBeenCalledOnce();
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+    await expect(f.coordinator.advanceRetry(f.store.listUnfinishedTasks()[0]!)).rejects.toThrow("Native configuration is unavailable");
+    await f.coordinator.shutdown();
+  });
+
+  it("changes future capacity and native parameters without restarting a healthy process", async () => {
+    const f = await fixture(1);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    const first = f.tasks.start.mock.calls[0]![2];
+    const native = { ...configuration, model: "updated-model", args: ["--search"] };
+    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: native }], globalConfiguration: native, maxConcurrent: 2 });
+    native.model = "mutated-after-publication";
+    native.args.push("--no-alt-screen");
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
+    expect(f.tasks.start.mock.calls[1]![2].configuration).toMatchObject({ model: "updated-model", args: ["--search"] });
+    expect(first.configuration.model).toBe("current-model");
+    expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+    f.candidates.push(task(f.project.projectId, uuid(102)));
+    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, maxConcurrent: 1 });
+    await f.coordinator.tick();
+    expect(f.remote.claim).toHaveBeenCalledTimes(2);
+    expect(f.tasks.start).toHaveBeenCalledTimes(2);
+    expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+    await f.coordinator.shutdown();
+  });
+
+  it("uses a changed recovery limit on the next serialized advancement", async () => {
+    const f = await fixture();
+    await f.coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const failed = new Error("native observation failed");
+    f.tasks.observe.mockRejectedValueOnce(failed);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error", error: failed })));
+    const observations = f.tasks.observe.mock.calls.length;
+    const exhausted = { ...configuration, recoveryLimit: 0 };
+    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: exhausted }], globalConfiguration: exhausted, maxConcurrent: 1 });
+    await f.coordinator.tick();
+    expect(f.tasks.observe).toHaveBeenCalledTimes(observations);
+    const resumed = { ...configuration, recoveryLimit: 5 };
+    f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: resumed }], globalConfiguration: resumed, maxConcurrent: 1 });
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(observations + 1));
+    expect(f.tasks.start).toHaveBeenCalledOnce();
+    await f.coordinator.shutdown();
+  });
+
+  it("retains an in-flight grant as pending when its project becomes unavailable", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { await pending; return f.grant(candidate, descriptor); });
+    const ticking = f.coordinator.tick();
+    await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
+    f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], globalConfiguration: configuration, maxConcurrent: 1 });
+    release(); await ticking;
+    expect(f.store.listUnfinishedTasks()).toHaveLength(1);
+    expect(f.store.listUnfinishedTasks()[0]!.status).toBe("pending");
+    expect(f.tasks.start).not.toHaveBeenCalled();
+    await f.coordinator.tick();
+    expect(f.tasks.start).not.toHaveBeenCalled();
+    expect(f.store.listUnfinishedTasks()[0]!.status).toBe("pending");
+    expect(f.store.getProject(f.project)).toEqual(f.project);
+    expect(f.grants.size).toBe(1);
+    await f.coordinator.shutdown();
+  });
 });
