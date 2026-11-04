@@ -23,7 +23,7 @@ test('append steps with draft protection and recovery through the real service',
     version = Number(parseTaskSteps(parseApiJson(await response.text()), projectId, task.id).version);
   }
   const url = new URL(path, baseURL).href;
-  allowBrowserWrites([{ method: 'POST', url, count: 9 }]);
+  allowBrowserWrites([{ method: 'POST', url, count: 10 }, { method: 'DELETE', url: `${url}/00000063`, count: 1 }]);
   let mode: 'normal' | 'conflict' | 'lost' | 'late' = 'normal';
   let readsBlocked = false;
   let readsGate: Promise<void> | null = null;
