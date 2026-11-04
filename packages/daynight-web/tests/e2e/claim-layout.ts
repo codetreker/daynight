@@ -69,7 +69,7 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
   const membersURL = `**/api/v1/projects/${project.id}/members`;
   await page.route(membersURL, async (route) => {
     const response = await api.get(`/api/v1/projects/${project.id}/members`);
-    const body = { items: parseMembers(await decodeMembersJson(new Response(await response.text())), project.id) };
+    const body = parseMembers(await decodeMembersJson(new Response(await response.text())), project.id);
     const headers = { ...response.headers() }; delete headers['content-length'];
     await route.fulfill({ status: response.status(), headers, body: stringifyWireJson({ ...body, items: body.items.map((member) => member.userId === readWorkerClaim(current.properties)!.userId ? { ...member, profile: { ...member.profile, name: ownerName, email: account } } : member) }) });
   });
@@ -96,6 +96,17 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
           await page.setViewportSize(viewport);
           for (const fullscreen of [false, true]) {
             if (fullscreen) await root.locator('.task-detail-fullscreen-toggle').click();
+            await root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }).focus();
+            await page.keyboard.press('End');
+            const lastTab = root.locator('.task-detail-tabs').getByRole('tab').last();
+            await expect(lastTab).toHaveAttribute('aria-selected', 'true');
+            await expect(lastTab).toBeFocused();
+            await expect.poll(() => lastTab.evaluate((element) => {
+              const tab = element.getBoundingClientRect();
+              const list = element.closest('[role=tablist]')!.getBoundingClientRect();
+              return tab.left >= list.left - 1 && tab.right <= list.right + 1;
+            })).toBe(true);
+            await page.keyboard.press('Home');
             await root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }).click();
             const overview = root.locator('.task-detail-panel-overview');
             await expect.poll(async () => (await overview.boundingBox())!.height).toBeGreaterThanOrEqual(32);

@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 
 export type CommandOptions = {
   cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; quiet?: boolean; signal?: AbortSignal;
+  input?: string | Uint8Array;
   forceAfterMs?: number; onOutput?: (chunk: string) => void;
   onSpawn?: (child: ChildProcess) => void | Promise<void>;
 };
@@ -15,7 +16,7 @@ export const terminateGroup = (child: ChildProcess, signal: NodeJS.Signals): voi
 const capture = async (file: string, args: readonly string[], options: CommandOptions, raw: boolean): Promise<CommandBytes> => {
   options.signal?.throwIfAborted();
   return await new Promise<CommandBytes>((resolve, reject) => {
-    const child = spawn(file, args, { cwd: options.cwd, env: options.env ?? process.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(file, args, { cwd: options.cwd, env: options.env ?? process.env, detached: true, stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
     const output: Buffer[] = [];
     const errors: Buffer[] = [];
     let bytes = 0;
@@ -43,6 +44,10 @@ const capture = async (file: string, args: readonly string[], options: CommandOp
     const timer = setTimeout(() => stop(new Error(`Acceptance command timed out: ${file}`)), options.timeoutMs ?? 60_000);
     const abort = (): void => stop(new Error('Acceptance command cancelled.', { cause: options.signal?.reason }));
     options.signal?.addEventListener('abort', abort, { once: true });
+    if (options.input !== undefined) {
+      child.stdin!.once('error', stop);
+      child.stdin!.end(options.input);
+    }
     const collect = (data: Buffer, target: Buffer[]): void => {
       bytes += data.length;
       if (bytes > 8 * 1024 * 1024) stop(new Error('Acceptance command exceeded its bounded output.'));

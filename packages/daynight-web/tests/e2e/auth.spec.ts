@@ -196,7 +196,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     const bobUser = await user(bob);
     expect(aliceUser.email).toBe(bobUser.email);
     expect(aliceUser.id).not.toBe(bobUser.id);
-    const task = await createTask(request, own.id, { title: 'Private resource boundary', description: 'Visible only to project members.' });
+    const task = await createTask(request, own.id, { title: 'Private resource boundary', description: 'Visible only to project members.', assignedTo: aliceUser.id });
     const file = attachmentDownloadUrl(own.id, task.id, 'site/index.html');
     const preview = attachmentPreviewUrl(own.id, task.id, 'site/index.html');
     expect((await request.put(file, { headers: { 'Content-Type': 'text/html' }, data: '<!doctype html><button>Private file</button>' })).status()).toBe(201);
@@ -295,7 +295,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
       });
       try {
         if (database.version !== schema) throw new Error('The native task cache schema differs from the acceptance fixture.');
-        const transaction = database.transaction(['projects', 'summaries', 'details'], 'readonly');
+        const transaction = database.transaction(['projects', 'summaries', 'details', 'profiles'], 'readonly');
         const done = new Promise<void>((resolve, reject) => {
           transaction.oncomplete = () => resolve();
           transaction.onerror = () => reject(transaction.error);
@@ -305,17 +305,19 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
           request.onsuccess = () => resolve(request.result);
           request.onerror = () => reject(request.error);
         });
-        const [aliceProjects, aliceSummaries, aliceDetails, bobProject, bobSummaries, bobDetails] = await Promise.all([
+        const [aliceProjects, aliceSummaries, aliceDetails, aliceProfiles, bobProject, bobSummaries, bobDetails, bobProfiles] = await Promise.all([
           read(transaction.objectStore('projects').index('by-user').getAll(aliceId)) as Promise<ProjectRecord[]>,
           read(transaction.objectStore('summaries').index('by-user').count(aliceId)),
           read(transaction.objectStore('details').index('by-user').count(aliceId)),
+          read(transaction.objectStore('profiles').index('by-user').count(aliceId)),
           read(transaction.objectStore('projects').get([bobId, projectId])) as Promise<ProjectRecord | undefined>,
           read(transaction.objectStore('summaries').index('by-project').count([bobId, projectId])),
           read(transaction.objectStore('details').index('by-project').count([bobId, projectId])),
+          read(transaction.objectStore('profiles').index('by-project').count([bobId, projectId])),
         ]);
         await done;
-        return { aliceActiveProjects: aliceProjects.filter((project) => project.state === 'active').length, aliceSummaries, aliceDetails,
-          bobOwnProjectActive: bobProject?.state === 'active', bobSummaries, bobDetails };
+        return { aliceActiveProjects: aliceProjects.filter((project) => project.state === 'active').length, aliceSummaries, aliceDetails, aliceProfiles,
+          bobOwnProjectActive: bobProject?.state === 'active', bobSummaries, bobDetails, bobProfiles };
       } finally { database.close(); }
     }, { databaseName: TASK_CACHE_DATABASE, schema: TASK_CACHE_SCHEMA, aliceId: aliceUser.id, bobId: bobUser.id, projectId: own.id });
     const queueGraphWhileAway = async (): Promise<void> => {
@@ -358,15 +360,19 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await queueGraphWhileAway();
     expect(graphRequests).toHaveLength(sameUserGraphBaseline);
     await page.route(`${baseURL}/api/v1/me`, async (route) => {
-      const response = await authenticatedAPI(context.request).get('/api/v1/me');
-      expect(response.status()).toBe(200);
+      const response = await authenticatedAPI(context.request).fetch(route.request());
+      expect([200, 304]).toContain(response.status());
+      const principal = response.headers()['daynight-user-id'];
+      expect(principal).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
       const body = await response.body();
+      if (response.status() === 200) expect((JSON.parse(body.toString()) as { id: string }).id).toBe(principal);
+      else expect(body.byteLength).toBe(0);
       const release = Promise.withResolvers<void>();
       const completed = Promise.withResolvers<void>();
-      heldChecks.push({ identity: (JSON.parse(body.toString()) as { id: string }).id, release: release.resolve, completed: completed.promise });
+      heldChecks.push({ identity: principal!, release: release.resolve, completed: completed.promise });
       try {
         await release.promise;
-        await route.fulfill({ status: response.status(), headers: response.headers(), body });
+        await route.fulfill({ status: response.status(), headers: response.headers(), ...(response.status() === 304 ? {} : { body }) });
       } finally { completed.resolve(); }
     });
     await page.bringToFront();
@@ -417,6 +423,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     const changedUserGraphBaseline = graphRequests.length;
     const cacheBeforeAccountChange = await cachePrivacy();
     expect(cacheBeforeAccountChange.aliceSummaries, 'The old account has real persisted summaries before switching identities').toBeGreaterThan(0);
+    expect(cacheBeforeAccountChange.aliceProfiles, 'The old account has a real persisted assignee profile before switching identities').toBeGreaterThan(0);
     requestOrder.push('external-departure:2');
     await queueGraphWhileAway();
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
@@ -478,7 +485,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     let cacheAfterAccountChange: Awaited<ReturnType<typeof cachePrivacy>> | undefined;
     await expect.poll(async () => { cacheAfterAccountChange = await cachePrivacy(); return cacheAfterAccountChange; }, {
       message: 'Changing accounts purges the old cache namespace and never authorizes its project for the new account',
-    }).toEqual({ aliceActiveProjects: 0, aliceSummaries: 0, aliceDetails: 0, bobOwnProjectActive: false, bobSummaries: 0, bobDetails: 0 });
+    }).toEqual({ aliceActiveProjects: 0, aliceSummaries: 0, aliceDetails: 0, aliceProfiles: 0, bobOwnProjectActive: false, bobSummaries: 0, bobDetails: 0, bobProfiles: 0 });
     const accessDenial = { status: graphRefusal.status(), principal: graphRefusal.headers()['daynight-user-id'] };
     await info.attach('auth-real-tab-return', { body: Buffer.from(JSON.stringify({ identityRequests, graphRequests, graphResponses, accessDenial, pendingGraphWindows, requestOrder, continuity, cacheBeforeAccountChange, cacheAfterAccountChange })), contentType: 'application/json' });
     await picture(page, info, 'auth-account-return');
@@ -505,7 +512,7 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     const bobRole = page.getByRole('combobox', { name: `${bobUser.name} 的项目角色`, exact: true });
     await expect(bobRole).toHaveValue('member');
     await expect(page.getByRole('combobox', { name: `${alice.name} 的项目角色`, exact: true })).toBeEnabled();
-    const observed = (await memberList(request, project.id)).find((member) => member.userId === bobUser.id)!;
+    const observed = (await memberList(request, project.id)).items.find((member) => member.userId === bobUser.id)!;
     expect((await request.patch(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: observed.directGrant!.version, role: 'admin', expectedUserId: alice.id }) })).status()).toBe(200);
     await bobRole.selectOption('admin');
     await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
@@ -514,7 +521,7 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     await bobRole.selectOption('member');
     await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
     await expect(bobRole).toHaveValue('member');
-    const current = (await memberList(request, project.id)).find((member) => member.userId === bobUser.id)!;
+    const current = (await memberList(request, project.id)).items.find((member) => member.userId === bobUser.id)!;
     expect(current.directGrant!.version).not.toBe(observed.directGrant!.version);
     expect((await bob.patch(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.directGrant!.version, role: 'admin', expectedUserId: bobUser.id }) })).status()).toBe(403);
     const collaborative = await createTask(bob, project.id, { title: 'Member can write project tasks' });
@@ -529,7 +536,7 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '邀请成员', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: `移除 ${alice.name}`, exact: true })).toHaveCount(0);
-    const inherited = (await memberList(request, project.id)).find((member) => member.userId === alice.id)!;
+    const inherited = (await memberList(request, project.id)).items.find((member) => member.userId === alice.id)!;
     expect(inherited.effectiveRole).toBe('admin');
     expect(inherited.directGrant).toBeNull();
     expect((await request.get(`/api/v1/projects/${project.id}/access`)).status()).toBe(200);
@@ -620,7 +627,7 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   const bob = await bearerContext(playwright.request, baseURL, 'bob');
   try {
     const identity = await user(bob);
-    expect((await memberList(request, project.id)).find((member) => member.userId === identity.id)?.directGrant?.role).toBe('member');
+    expect((await memberList(request, project.id)).items.find((member) => member.userId === identity.id)?.directGrant?.role).toBe('member');
     expect((await bob.post('/api/v1/invitations/inspect', { data: { token: new URL(metadata.link).hash.slice(1) } })).status()).toBe(410);
     const revoked = await invitation(request, project.id);
     expect((await request.delete(`/api/v1/projects/${project.id}/invitations/${revoked.id}`)).status()).toBe(204);

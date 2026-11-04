@@ -17,7 +17,7 @@ import type { WorkerSetupDependencies } from "../../../src/commands/worker/setup
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const projects: Project[] = [1, 2, 3].map((number) => ({
   id: uuid(number), name: `Project ${number}`, repoUrl: `https://github.com/example/repo-${number}.git`,
-  settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z",
+  settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z",
 }));
 const connection = "serverUrl: https://service.example\nserverToken: test-credential\n";
 const directories: string[] = [];

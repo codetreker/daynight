@@ -21,8 +21,9 @@ const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project =
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: claim?.state !== "active",
 });
 const project = (id = projectId, repoUrl = "https://github.com/example/repo.git"): Project => ({
-  id, name: "Repository", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time,
+  id, name: "Repository", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time,
 });
+const accessSources = { projectId, ownerTeam: { id: uuid(90), kind: "ordinary", name: "Team" }, ownership: { teamId: uuid(90), version: 9_007_199_254_740_995n }, teamRole: null, canTransfer: false };
 const cleanup: (() => void | Promise<void>)[] = [];
 const respond = (response: ServerResponse, value: unknown, status = 200): void => {
   response.writeHead(status, { "Content-Type": "application/json" });
@@ -35,7 +36,7 @@ const listen = async (handler: (request: IncomingMessage, response: ServerRespon
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     response.setHeader("Daynight-User-ID", userId);
     if (request.url === "/api/v1/me" && options.identity !== false) {
-      respond(response, { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null });
+      respond(response, { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } });
       return;
     }
     handler(request, response, chunks.length === 0 ? null : parseApiJson(Buffer.concat(chunks).toString("utf8")));
@@ -124,7 +125,7 @@ describe("worker remote API", () => {
     const requests: string[] = [];
     const serverUrl = await listen((request, response) => {
       requests.push(request.url!);
-      respond(response, { effectiveRole: role, directGrant: {
+      respond(response, { ...accessSources, effectiveRole: role, directGrant: {
         projectId, userId: worker.userId, role, version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time,
       } });
     });
@@ -137,7 +138,7 @@ describe("worker remote API", () => {
     const requests: string[] = [];
     const serverUrl = await listen((request, response) => {
       requests.push(request.url!);
-      respond(response, { effectiveRole: "member", directGrant: {
+      respond(response, { ...accessSources, effectiveRole: "member", directGrant: {
         projectId, userId: worker.userId, role: "member", version: 1n, createdAt: time, updatedAt: time,
       } });
     });
@@ -162,7 +163,7 @@ describe("worker remote API", () => {
     const serverUrl = await listen((_request, response) => {
       requests++;
       response.setHeader("Daynight-User-ID", uuid(80));
-      respond(response, { effectiveRole: "admin", directGrant: null });
+      respond(response, { ...accessSources, effectiveRole: "admin", directGrant: null });
     });
     const remote = await verifiedRemote(serverUrl);
     await expect(remote.authorizeControl(projectId, uuid(80), signal())).rejects.toMatchObject({ operation: "project.access", phase: "protocol", outcomeUnconfirmed: false });
@@ -175,7 +176,7 @@ describe("worker remote API", () => {
       headers.push(request.headers.authorization);
       const owner = request.headers.authorization === "Bearer test-account-a" ? worker.userId : uuid(80);
       response.setHeader("Daynight-User-ID", owner);
-      respond(response, request.url === "/api/v1/me" ? { id: owner, email: null, emailVerified: null, name: null, avatarUrl: null } : { items: [], nextCursor: null });
+      respond(response, request.url === "/api/v1/me" ? { id: owner, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } } : { items: [], nextCursor: null });
     }, { identity: false });
     const first = createWorkerRemote({ serverUrl, serverToken: "test-account-a" });
     const second = createWorkerRemote({ serverUrl, serverToken: "test-account-b" });
@@ -228,7 +229,7 @@ describe("worker remote API", () => {
     const serverUrl = await listen((request, response) => {
       requests.push({ authorization: request.headers.authorization, principal: request.headers["daynight-user-id"] });
       if (request.url === "/api/v1/me") identityQueries++;
-      respond(response, request.url === "/api/v1/me" ? { id: worker.userId, email: null, emailVerified: null, name: null, avatarUrl: null } : { items: [], nextCursor: null });
+      respond(response, request.url === "/api/v1/me" ? { id: worker.userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } } : { items: [], nextCursor: null });
     }, { identity: false });
     const options = { serverUrl, serverToken: "test-account-a" };
     const remote = createWorkerRemote(options);

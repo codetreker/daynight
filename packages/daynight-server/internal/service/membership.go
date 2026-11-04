@@ -93,7 +93,7 @@ func completeMembershipOperation(operation func() error, refusal **Fault) error 
 	return err
 }
 
-func (s *Memberships) read(ctx context.Context, principal core.Principal, projectID string, admin bool, operation func(*store.Snapshot) error) error {
+func (s *Memberships) read(ctx context.Context, principal core.Principal, projectID string, admin bool, operation func(*store.Snapshot, core.ProjectAccess) error) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
@@ -113,7 +113,7 @@ func (s *Memberships) read(ctx context.Context, principal core.Principal, projec
 					return err
 				}
 			}
-			return operation(snapshot)
+			return operation(snapshot, access)
 		}, &refusal)
 	})
 	if err != nil {
@@ -155,14 +155,28 @@ func (s *Memberships) write(ctx context.Context, principal core.Principal, proje
 	return nil
 }
 
+type ProjectParticipants struct {
+	Items       []core.ProjectParticipant
+	ActorAccess core.ProjectAccess
+}
+
 func (s *Memberships) List(ctx context.Context, principal core.Principal, projectID string) ([]core.ProjectParticipant, error) {
-	var members []core.ProjectParticipant
-	err := s.read(ctx, principal, projectID, false, func(snapshot *store.Snapshot) error {
+	result, err := s.ListWithAccess(ctx, principal, projectID)
+	return result.Items, err
+}
+
+func (s *Memberships) ListWithAccess(ctx context.Context, principal core.Principal, projectID string) (ProjectParticipants, error) {
+	var result ProjectParticipants
+	err := s.read(ctx, principal, projectID, false, func(snapshot *store.Snapshot, access core.ProjectAccess) error {
 		var err error
-		members, err = snapshot.ProjectParticipants(ctx, projectID)
+		result.ActorAccess = access
+		result.Items, err = snapshot.ProjectParticipants(ctx, projectID)
 		return err
 	})
-	return members, err
+	if err != nil {
+		return ProjectParticipants{}, err
+	}
+	return result, nil
 }
 
 func memberMutationTarget(ctx context.Context, tx *store.ProjectTx, userID string, version int64) (core.ProjectMember, error) {
@@ -289,7 +303,7 @@ func (s *Memberships) CreateInvitation(ctx context.Context, principal core.Princ
 
 func (s *Memberships) ListInvitations(ctx context.Context, principal core.Principal, projectID string) ([]core.ProjectInvitation, error) {
 	var invitations []core.ProjectInvitation
-	err := s.read(ctx, principal, projectID, true, func(snapshot *store.Snapshot) error {
+	err := s.read(ctx, principal, projectID, true, func(snapshot *store.Snapshot, _ core.ProjectAccess) error {
 		var err error
 		invitations, err = snapshot.Invitations(ctx, projectID, s.now().UTC())
 		return err

@@ -44,8 +44,12 @@ semantic JSON equality, so object key order is irrelevant while missing keys and
 array order remain observable. The
 [full-property synchronization decision](2026-10-30-task-property-sync.md) owns
 the property feed expansion and its schema-3 rebuild; the
-[assignment decision](2026-11-03-task-assignment-foundation.md) owns current
-schema-4 consumption. Older bodies cannot replace newer content. The feed exposes
+[assignment decision](2026-11-03-task-assignment-foundation.md) owns required
+nullable field consumption. The
+[public ownership decision](2026-11-04-public-project-ownership.md) introduced the
+schema-5 rebuild for required Project ownership. The
+[profile-reuse decision](../bug-fix/2026-11-04-task-view-request-reuse.md) extends
+the shared database to schema 6 without changing compatible schema-5 task rows. Older bodies cannot replace newer content. The feed exposes
 current task rows and may skip intermediate business versions. A newer GET
 waits while its version is ahead of the summary and is admitted on an exact
 match. If the summary overtakes a pending payload, the session discards that
@@ -153,11 +157,11 @@ crash gap. Repair needs a durable pending-work protocol and another transaction.
 The existing atomic task update remains unchanged.
 
 **Append-only logs or push transport.** They add history, retention or connection
-ownership beyond the current latest-state, five-second polling requirements.
+ownership beyond the then-current latest-state, five-second polling requirements.
 
 ## Consequences
 
-Five-second summary synchronization retains the accepted repeated tail window,
+Fifteen-second summary synchronization retains the accepted repeated tail window,
 including potentially dense batches. Intrinsic detail GETs now follow actual
 versions, openings and recovery needs rather than every receipt. Local derived
 state can update without downloading unchanged successor bodies. This preserves

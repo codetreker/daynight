@@ -360,12 +360,17 @@ workflow. Exact preparation inputs are listed in
 [the selector](.github/scripts/ci-modules.mts).
 
 Documentation exclusions apply after CLI source ownership; changes selecting
-several modules run their union. The Web selector enables parallel quality and
-browser jobs, each with a 20-minute bound. The server selector enables parallel
-coverage and E2E jobs, also bounded to 20 minutes each. All selected jobs are
-required by `checks` and retain their complete integration and coverage gates.
+several modules run their union. The Web selector enables a quality job and two
+browser matrix entries, each with a 20-minute bound. The two browser shards
+jointly cover the complete native/container inventory; shard 2 owns the shared
+navigation, deployment, combined-authentication and persistence checks. The
+server selector enables parallel coverage and E2E jobs, also bounded to 20 minutes
+each. All selected jobs are required by `checks` and retain their complete
+integration and coverage gates.
 The final `checks` job uses `always()` and accepts only `success` or `skipped`
-from all preceding jobs. A newer PR run cancels the older run for that PR.
+from preceding jobs. Selected Web quality and browser matrix results must be
+`success`; the same gate validates both current-source shard summaries and their
+complete inventory before passing. A newer PR run cancels the older run for that PR.
 New `main` pushes queue behind an active `main` run without cancelling it.
 Documentation-only PRs run routing tests and that gate; every `main` push selects
 full application validation. See the

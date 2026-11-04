@@ -1,7 +1,9 @@
 import { selectTaskList } from './project-view';
 import type { Locator, Page } from '@playwright/test';
-import { startTask, createProject, createTask, expect, test, updateTask, type Task } from './fixtures';
+import { startTask, createTask, expect, test, updateTask, type Task } from './fixtures';
 import { expectCenteredTaskDetail } from './detail-dialog';
+
+test.use({ preparationFamily: 'task-controls' });
 
 const scenario = { annotation: { type: 'scenario', description: 'task-agent-permission' } };
 const taskPath = (project: string, task: string): string => `/api/v1/projects/${project}/tasks/${task}`;
@@ -33,8 +35,8 @@ const geometry = async (page: Page): Promise<void> => {
   })).toBe(true);
 };
 
-test('task-agent-permission', scenario, async ({ page, api, allowBrowserWrites }, info) => {
-  const own = await createProject(api, { name: 'Automatic execution acceptance' });
+test('task-agent-permission', scenario, async ({ page, api, allowBrowserWrites, controlProject }, info) => {
+  const own = controlProject;
   let task = await createTask(api, own.id, { title: '自动执行许可', description: '许可与任务状态和 ready 独立。' });
   const other = await createTask(api, own.id, { title: '另一个任务', description: '原任务写入不能污染此任务。' });
   expect(task.allowAgents).toBe(false);

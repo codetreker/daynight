@@ -31,11 +31,23 @@ type ProjectParticipantProfile struct {
 	AvatarURL *string
 }
 
+type TeamRef struct {
+	ID   string
+	Kind string
+	Name *string
+}
+
+type ProjectInheritance struct {
+	Team TeamRef
+	Role ProjectRole
+}
+
 type ProjectParticipant struct {
 	UserID        string
 	Profile       ProjectParticipantProfile
 	EffectiveRole ProjectRole
 	DirectGrant   *ProjectGrant
+	InheritedFrom *ProjectInheritance
 }
 
 type ProjectAccess struct {
@@ -43,6 +55,10 @@ type ProjectAccess struct {
 	UserID      string
 	Role        ProjectRole
 	DirectGrant *ProjectGrant
+	OwnerTeam   TeamRef
+	Ownership   ProjectOwnership
+	TeamRole    *ProjectRole
+	CanTransfer bool
 }
 
 type ProjectInvitation struct {

@@ -1,9 +1,10 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { createInstalledCli } from "../fixtures/installed-cli.js";
+
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const packageDirectory = path.join(workspace, "packages/daynight");
@@ -11,7 +12,7 @@ const sqlDirectories = [
   "commands/review/sqlite", "commands/worker/sqlite", "commands/worker/backends/sqlite",
   "commands/controller/sqlite/journal", "commands/controller/sqlite/resume-lease",
 ];
-let fixture: Awaited<ReturnType<typeof createInstalledCli>>;
+let fixture: Awaited<ReturnType<typeof createAcceptanceCli>>;
 let installed: string;
 const files = (directory: string): Record<string, Buffer> => Object.fromEntries(readdirSync(directory, { recursive: true, withFileTypes: true })
   .filter(entry => entry.isFile()).map(entry => {
@@ -25,7 +26,7 @@ const run = (program: string, args: readonly string[], cwd: string) => {
 };
 
 beforeAll(async () => {
-  fixture = await createInstalledCli();
+  fixture = await createAcceptanceCli({ writablePackage: true });
   installed = path.dirname(path.dirname(fixture.receipt.entryPath));
 }, 180_000);
 afterAll(async () => { if (fixture !== undefined) await fixture.cleanup(); });

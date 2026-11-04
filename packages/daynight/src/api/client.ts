@@ -1,8 +1,8 @@
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
-import { canonicalStepId, confirmAddedTaskStep, confirmMovedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
+import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
-import type { AddTaskStepInput, AddTaskStepOptions, MoveTaskStepInput, MoveTaskStepOptions, TaskStepsReadOptions, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
+import type { AddTaskStepInput, AddTaskStepOptions, DeleteTaskStepInput, MoveTaskStepInput, MoveTaskStepOptions, SetTaskStepStatusInput, TaskStepWriteOptions, TaskStepsReadOptions, UpdateTaskStepInput, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
 import { isNonemptyText, isText } from "../platform/text.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
@@ -69,6 +69,9 @@ export class ApiError extends Error {
 export type ApiClient = {
   listTaskSteps(projectId: string, taskId: string, options?: TaskStepsReadOptions): Promise<StepsResource>;
   addTaskStep(projectId: string, taskId: string, input: AddTaskStepInput, options: AddTaskStepOptions): Promise<StepsResource>;
+  deleteTaskStep(projectId: string, taskId: string, stepId: string, input: DeleteTaskStepInput, options: TaskStepWriteOptions): Promise<StepsResource>;
+  updateTaskStep(projectId: string, taskId: string, stepId: string, input: UpdateTaskStepInput, options: TaskStepWriteOptions): Promise<StepsResource>;
+  setTaskStepStatus(projectId: string, taskId: string, stepId: string, input: SetTaskStepStatusInput, options: TaskStepWriteOptions): Promise<StepsResource>;
   moveTaskStep(projectId: string, taskId: string, stepId: string, input: MoveTaskStepInput, options: MoveTaskStepOptions): Promise<StepsResource>;
   getTaskStep(projectId: string, taskId: string, stepId: string): Promise<StepResource>;
   readTaskThread(projectId: string, taskId: string, query: ThreadReadQuery): Promise<ThreadPage>;
@@ -461,6 +464,44 @@ export const createApiClient = (options: {
     } }, [200], { kind: "json", value: input }, true);
   };
 
+  const updateStep = async (action: "update" | "set-status", projectId: string, taskId: string, stepId: string, input: UpdateTaskStepInput | SetTaskStepStatusInput, options: TaskStepWriteOptions): Promise<StepsResource> => {
+    const context: Context = { operation: `task.step.${action}`, sentRequestId: options.requestId };
+    try {
+      const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
+      if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
+      const target = { ...context, projectId: project, taskId: task, stepId: step };
+      try {
+        taskVersion(input.version);
+        let normalized: UpdateTaskStepInput | SetTaskStepStatusInput;
+        if (action === "update") {
+          const fields = input as UpdateTaskStepInput;
+          if (fields.title === undefined && fields.description === undefined) throw new Error("Provide at least one Step title or description.");
+          if (fields.title !== undefined && !isNonemptyText(fields.title)) throw new Error("Step title must be nonempty Unicode text without NUL.");
+          if (fields.description !== undefined && !isText(fields.description)) throw new Error("Step description must be Unicode text without NUL.");
+          normalized = { version: fields.version, ...(fields.title === undefined ? {} : { title: fields.title }), ...(fields.description === undefined ? {} : { description: fields.description }) };
+        } else {
+          const fields = input as SetTaskStepStatusInput;
+          if (!["todo", "in_progress", "done", "skipped"].includes(fields.status)) throw new Error("Step status must be todo, in_progress, done or skipped.");
+          normalized = { version: fields.version, status: fields.status };
+        }
+        const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
+        if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
+        const pathname = resourcePath("projects", project, "tasks", task, "steps", step) + (action === "set-status" ? "/status" : "");
+        return await exchange(target, pathname, action === "update" ? "PATCH" : "PUT", {
+          kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
+          parse: (value) => parseStepsResource(value, project, task),
+          confirmMutation: (result) => confirmUpdatedTaskStep(result, step, normalized, previous),
+        }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
+      } catch (cause) {
+        if (cause instanceof ApiError) throw cause;
+        throw new ApiError(target, "prepare", { cause });
+      }
+    } catch (cause) {
+      if (cause instanceof ApiError) throw cause;
+      throw new ApiError(context, "prepare", { cause });
+    }
+  };
+
   return {
     listTaskSteps: (projectId, taskId, options) => {
       const project = resourceId(projectId), task = resourceId(taskId);
@@ -513,6 +554,8 @@ export const createApiClient = (options: {
         throw new ApiError(context, "prepare", { cause });
       }
     },
+    updateTaskStep: (projectId, taskId, stepId, input, options) => updateStep("update", projectId, taskId, stepId, input, options),
+    setTaskStepStatus: (projectId, taskId, stepId, input, options) => updateStep("set-status", projectId, taskId, stepId, input, options),
     moveTaskStep: async (projectId, taskId, stepId, input, options) => {
       const context: Context = { operation: "task.step.move", sentRequestId: options.requestId };
       try {
@@ -538,6 +581,31 @@ export const createApiClient = (options: {
             kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
             parse: (value) => parseStepsResource(value, project, task),
             confirmMutation: (result) => confirmMovedTaskStep(result, step, normalized, previous),
+          }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
+        } catch (cause) {
+          if (cause instanceof ApiError) throw cause;
+          throw new ApiError(target, "prepare", { cause });
+        }
+      } catch (cause) {
+        if (cause instanceof ApiError) throw cause;
+        throw new ApiError(context, "prepare", { cause });
+      }
+    },
+    deleteTaskStep: async (projectId, taskId, stepId, input, options) => {
+      const context: Context = { operation: "task.step.delete", sentRequestId: options.requestId };
+      try {
+        const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
+        if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
+        const target = { ...context, projectId: project, taskId: task, stepId: step };
+        try {
+          taskVersion(input.version);
+          const normalized: DeleteTaskStepInput = { version: input.version };
+          const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
+          if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
+          return await exchange(target, resourcePath("projects", project, "tasks", task, "steps", step), "DELETE", {
+            kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
+            parse: (value) => parseStepsResource(value, project, task),
+            confirmMutation: (result) => confirmDeletedTaskStep(result, step, normalized, previous),
           }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
         } catch (cause) {
           if (cause instanceof ApiError) throw cause;
@@ -592,7 +660,7 @@ export const createApiClient = (options: {
     },
     listProjectMembers: (projectId) => {
       const project = resourceId(projectId);
-      return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectParticipants(value, project) }, [200], undefined, true);
+      return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectParticipants(value, project, expectedUserId) }, [200], undefined, true);
     },
     createTask: (projectId, input) => {
       const project = resourceId(projectId);

@@ -1,8 +1,9 @@
 import { ApiError, assertResponsePrincipal, isAbortError, json, read, request, requestId, type TaskResponseAdmission } from "./client";
 import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitations, parseMember, parseMembers, decodeMembersJson, parseProjectGrant, parseMemberVersion, parseProjectAccess, decodeProjectAccessJson, parseRole, parseToken, parseTokens, parseUser } from "./auth-parse";
 import { array, boolean, id, malformed, project, record, string, timestamp } from "./parse";
-import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectParticipant, ProjectGrant, ProjectPeople, ProjectPeopleQuery, ProjectPerson, ProjectRole, ProjectAccess, User } from "./auth-types";
+import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectParticipants, ProjectGrant, ProjectPeople, ProjectPeopleQuery, ProjectPerson, ProjectRole, ProjectAccess, User } from "./auth-types";
 import type { Project } from "./types";
+import { parseProfileVersion } from "./profile-version";
 import { decodeProjectJson } from "./project-json";
 export type * from "./auth-types";
 
@@ -38,7 +39,13 @@ const secretBody = (token: string): string => {
   return JSON.stringify({ token });
 };
 
-export const me = (signal: AbortSignal): Promise<User> => authRead("/api/v1/me", signal, parseUser);
+export const me = (signal: AbortSignal): Promise<User> => authOperation(signal, async () => {
+  const response = await request("/api/v1/me", signal, { cache: "no-cache", headers: { Accept: "application/json" } });
+  return json(response, signal, (value) => {
+    if (response.status !== 200) throw new ApiError("protocol", response.status);
+    return parseUser(value);
+  });
+});
 export const getAuthConfig = (signal: AbortSignal): Promise<AuthConfig> => authRead("/api/v1/auth/providers", signal, parseAuthConfig);
 export const logout = (signal: AbortSignal): Promise<void> => empty("/api/v1/auth/logout", "POST", signal);
 export const listTokens = (signal: AbortSignal, expectedUserId: string, onIdentityMismatch: () => void): Promise<readonly PersonalAccessToken[]> => authOperation(signal, async () => {
@@ -72,12 +79,12 @@ export const createProject = (input: { readonly name: string; readonly repoUrl: 
   if (input.name.trim() === "" || input.repoUrl.trim() === "" || input.name.includes("\0") || input.repoUrl.includes("\0")) throw new ApiError("protocol");
   return send("/api/v1/projects", "POST", 201, JSON.stringify(input), signal, project, decodeProjectJson);
 };
-export const listMembers = (projectId: string, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<readonly ProjectParticipant[]> => {
+export const listMembers = (projectId: string, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<ProjectParticipants> => {
   const project = requestId(projectId);
   return authOperation(signal, async () => {
     const response = await request(`${projectUrl(project)}/members`, signal, { headers: { Accept: "application/json" } });
     if (admission !== undefined) assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
-    return json(response, signal, (data) => parseMembers(data, project), decodeMembersJson);
+    return json(response, signal, (data) => parseMembers(data, project, admission?.userId), decodeMembersJson);
   });
 };
 const parseProjectPeople = (value: unknown, requested: readonly string[] | null): ProjectPeople => {
@@ -85,9 +92,10 @@ const parseProjectPeople = (value: unknown, requested: readonly string[] | null)
   if (Object.keys(data).some((key) => key !== "items" && key !== "unresolvedUserIds")) return malformed();
   const items = array(data.items, (value): ProjectPerson => {
     const person = record(value);
-    if (Object.keys(person).some((key) => key !== "userId" && key !== "name" && key !== "avatarUrl" && key !== "hasProjectAccess")) return malformed();
+    if (Object.keys(person).some((key) => key !== "userId" && key !== "name" && key !== "avatarUrl" && key !== "hasProjectAccess" && key !== "version")) return malformed();
     return {
       userId: id(person.userId),
+      version: parseProfileVersion(person.version),
       name: person.name === null ? null : string(person.name),
       avatarUrl: person.avatarUrl === null ? null : string(person.avatarUrl),
       hasProjectAccess: boolean(person.hasProjectAccess),

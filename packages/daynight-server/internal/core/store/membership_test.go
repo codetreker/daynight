@@ -57,7 +57,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 			t.Fatalf("first admin: %+v", original)
 		}
 		access, err := snapshot.ProjectAccess(ctx, admin, project.ID)
-		if err != nil || !reflect.DeepEqual(access, core.ProjectAccess{ProjectID: project.ID, UserID: admin.UserID, Role: core.ProjectAdmin, DirectGrant: &original.Grant}) {
+		if err != nil || (access.ProjectID != project.ID || access.UserID != admin.UserID || access.Role != core.ProjectAdmin || !reflect.DeepEqual(access.DirectGrant, &original.Grant)) {
 			t.Fatalf("admin access: %+v %v", access, err)
 		}
 		page, err := snapshot.AccessibleProjects(ctx, admin, Page{Limit: 1})
@@ -92,7 +92,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 			t.Fatal("snapshot mismatch")
 		}
 		access, err := tx.ProjectAccess(ctx, admin)
-		if err != nil || !reflect.DeepEqual(access, core.ProjectAccess{ProjectID: project.ID, UserID: admin.UserID, Role: core.ProjectAdmin, DirectGrant: &current.Grant}) {
+		if err != nil || (access.ProjectID != project.ID || access.UserID != admin.UserID || access.Role != core.ProjectAdmin || !reflect.DeepEqual(access.DirectGrant, &current.Grant)) {
 			t.Fatalf("write admission: %+v %v", access, err)
 		}
 		return tx.CreateInvitation(ctx, invitation)
@@ -137,7 +137,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 	}
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		access, err := snapshot.ProjectAccess(ctx, member, project.ID)
-		if err != nil || !reflect.DeepEqual(access, core.ProjectAccess{ProjectID: project.ID, UserID: member.UserID, Role: core.ProjectMemberRole, DirectGrant: &invited.Grant}) {
+		if err != nil || (access.ProjectID != project.ID || access.UserID != member.UserID || access.Role != core.ProjectMemberRole || !reflect.DeepEqual(access.DirectGrant, &invited.Grant)) {
 			t.Fatalf("invited access: %+v %v", access, err)
 		}
 		members, err := snapshot.ProjectParticipants(ctx, project.ID)

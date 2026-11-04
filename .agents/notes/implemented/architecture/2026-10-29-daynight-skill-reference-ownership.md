@@ -29,14 +29,14 @@ Daynight task.
 | [Setup](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/setup.md) | CLI availability, sign-in, project and repository setup |
 | [CLI handbook](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/handbook.md) | Command discovery and help entry points |
 | [Project management](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/project-management.md) | Project identity, discovery and reuse |
-| [Task management](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-management.md) | Task fields, lifecycle and dependency semantics |
+| [Task management](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-management.md) | Task Steps operations, fields, lifecycle and dependency semantics |
 | [Write safety](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/write-safety.md) | Versions, conflicts, uncertain writes and attachment concurrency |
-| [Task content](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-content.md) | Definitions, artifacts, session separation and source ownership |
+| [Task content](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-content.md) | Definitions, artifacts, durable Steps and session separation, and source ownership |
 | [Create task](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/create-task.md) | Preparation, registration, prototypes and readback |
 | [Goal protocol](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/goal.md) | Stage confirmation, breakdown and whole-Goal completion |
 | [Handoff](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/handoff.md) | Content review and automatic-execution permission |
 | [Ordinary execution](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/run-task.md) | Ordinary start, recovery, completion and return |
-| [Shared execution](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-execution.md) | Inputs, delivery, waiting context and completion readiness |
+| [Shared execution](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-execution.md) | Inputs, project-defined Step maintenance, delivery, waiting context and completion readiness |
 | [Managed execution](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md) | Sustained delivery, intervention and original-claim completion |
 | [Final acceptance](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/final-acceptance.md) | Requirement-based conclusions, evidence and temporary-helper boundaries |
 

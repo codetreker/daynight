@@ -5,7 +5,7 @@ import { GraphDataError, projectChain } from "../src/features/task-graph/model";
 
 const id = (value: number) => `00000000-0000-0000-0000-${value.toString(16).padStart(12, "0")}`;
 const time = "2026-10-20T12:00:00Z";
-const project: Project = { id: id(100), name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: id(100), name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ assignedTo: null, id: id(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
 
 it("orders UTC seconds and padded nanoseconds without rounding or lexical fraction errors", () => {

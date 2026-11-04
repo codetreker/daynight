@@ -1,10 +1,12 @@
 import { createInterface } from 'node:readline';
+import { appendFileSync } from 'node:fs';
 const out = value => process.stdout.write(JSON.stringify(value) + '\n');
 let waiting = null, holdResponse = false;
 const sleep = { type: 'sleep', id: 'sleep-call', durationMs: 50000, startedAtMs: 1793708507841 };
 const completedSleep = { ...sleep, completedAtMs: 1793708557843 };
 for await (const line of createInterface({input:process.stdin})) {
  const m=JSON.parse(line);
+ if(process.env.CODEX_TEST_REQUEST_LOG)appendFileSync(process.env.CODEX_TEST_REQUEST_LOG, JSON.stringify(m)+'\n');
  if(m.method==='initialize')out({id:m.id,result:{}});
  if(m.method==='config/read')out({id:m.id,result:{config:JSON.parse(process.env.CODEX_TEST_EFFECTIVE_CONFIG ?? '{}')}});
  if(process.env.EXPECT_WORKER_PERMISSIONS && (m.method==='thread/start'||m.method==='thread/resume')) {
@@ -15,10 +17,15 @@ for await (const line of createInterface({input:process.stdin})) {
   const expected=JSON.parse(process.env.EXPECT_AGENT_CLI_ENV);
   if (Object.entries(expected).some(([key,value])=>m.params.config?.['shell_environment_policy.set.'+key]!==value)) {out({id:m.id,error:{code:-32602,message:'Agent CLI environment did not override native shell snapshot'}});continue;}
  }
- if(m.method==='thread/start'||m.method==='thread/resume')out({id:m.id,result:{thread:{id:'native-thread',cwd:process.cwd()}}});
+ if(m.method==='thread/start'||m.method==='thread/resume') {
+  if(process.env.CODEX_TEST_REJECT_ROLE && Object.hasOwn(m.params,'developerInstructions')) {
+   out({id:m.id,error:{code:-32602,message:process.env.CODEX_TEST_REJECT_ROLE}});continue;
+  }
+  out({id:m.id,result:{...JSON.parse(process.env.CODEX_TEST_THREAD_SETTINGS ?? '{}'),thread:{id:'native-thread',cwd:process.cwd()}}});
+ }
  if(m.method==='thread/items/list')out({id:m.id,result:{data:[{type:'userMessage',id:'history-user',clientId:'persisted-operation',content:[{type:'text',text:'previous'}]},...(process.env.CODEX_TEST_SLEEP ? [completedSleep] : [])],nextCursor:null}});
  if(m.method==='thread/read')out({id:m.id,result:{thread:{id:'native-thread',turns:[]}}});
- if(m.method==='model/list')out({id:m.id,result:{data:[],nextCursor:null}});
+ if(m.method==='model/list')out({id:m.id,result:{data:JSON.parse(process.env.CODEX_TEST_MODELS ?? '[]'),nextCursor:null}});
  if(m.method==='configRequirements/read')out({id:m.id,result:{requirements:null}});
  if(m.method==='skills/list')out({id:m.id,result:{data:[]}});
  if(m.method==='turn/start'){

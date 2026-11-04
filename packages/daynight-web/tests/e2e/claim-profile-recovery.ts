@@ -26,7 +26,7 @@ export const verifyClaimProfileRecovery = async (page: Page, api: AuthenticatedA
   const membersResponse = await api.get(`/api/v1/projects/${project.id}/members`);
   expect(membersResponse.status()).toBe(200);
   const members = parseMembers(await decodeMembersJson(new Response(await membersResponse.text())), project.id);
-  const owner = members.find(member => member.userId === caller.id)!;
+  const owner = members.items.find(member => member.userId === caller.id)!;
   const ownerLabel = owner.profile.name ?? owner.profile.email ?? owner.userId;
   const membersURL = `**/api/v1/projects/${project.id}/members`;
   const accessURL = `**/api/v1/projects/${project.id}/access`;

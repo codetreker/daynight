@@ -1,11 +1,12 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { createInstalledCli } from "../fixtures/installed-cli.js";
+
 import { createSkillFixture, skillPipe } from "../fixtures/skill-terminal.js";
 
-let installed: Awaited<ReturnType<typeof createInstalledCli>>;
-beforeAll(async () => { installed = await createInstalledCli(); });
+let installed: Awaited<ReturnType<typeof createAcceptanceCli>>;
+beforeAll(async () => { installed = await createAcceptanceCli({ writablePackage: true }); });
 afterAll(async () => { await installed?.cleanup(); });
 const manual = (): string => path.join(path.dirname(installed.receipt.entryPath), "commands/skill/usage.md");
 

@@ -24,6 +24,7 @@ type User struct {
 	AvatarURL     *string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	PersonalTeam  TeamRef
 }
 
 type LoginTransaction struct {

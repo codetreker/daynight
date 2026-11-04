@@ -1,3 +1,4 @@
+import { wireResponse, stringifyWireJson } from './helpers/wireJson';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { useLayoutEffect, type ReactElement, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,14 +7,14 @@ import { ProjectMembersProvider, useProjectMembers } from '../src/features/proje
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskClaimSummary } from '../src/features/task-detail/TaskClaim';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
+import { directAccessFixture, TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
 
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const projectId = id(100), otherProjectId = id(101), ownerId = id(3);
 const stamp = '2026-10-27T00:00:00Z';
 const worker: WorkerClaim = { claimId: id(2), state: 'active', userId: ownerId, workerId: id(4), machine: { id: id(5), name: 'fixture.local' }, platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: id(6), phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: stamp };
-const participant = (name = 'Claim owner', userId = ownerId) => ({ userId, profile: { name, email: null, avatarUrl: null }, effectiveRole: 'member', directGrant: null });
-const response = (items: readonly unknown[] = [participant()], userId = TEST_VIEWER_ID) => Response.json({ items }, { headers: viewerHeaders(userId) });
+const participant = (name = 'Claim owner', userId = ownerId) => ({ inheritedFrom: { team: directAccessFixture(projectId).ownerTeam, role: 'member' }, userId, profile: { name, email: null, avatarUrl: null }, effectiveRole: 'member', directGrant: null });
+const response = (items: readonly unknown[] = [participant()], userId = TEST_VIEWER_ID, project = projectId) => wireResponse({ actorAccess: directAccessFixture(project, userId), items }, { headers: viewerHeaders(userId) });
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((settle) => { resolve = settle; });
@@ -41,9 +42,9 @@ const mount = (children: ReactElement) => renderWithLocale(children, { locale: '
 
 describe('claim profiles through the membership transport', () => {
   it('decodes nested grant versions and displays the actual claim owner rather than another participant', async () => {
-    const body = JSON.stringify({ items: [participant('Current viewer', TEST_VIEWER_ID), {
-      ...participant(), directGrant: { projectId, userId: ownerId, role: 'member', version: 1, createdAt: stamp, updatedAt: stamp },
-    }] }).replace('"version":1', '"version":9007199254740993');
+    const body = stringifyWireJson({ actorAccess: directAccessFixture(projectId), items: [participant('Current viewer', TEST_VIEWER_ID), {
+      ...participant(), directGrant: { projectId, userId: ownerId, role: 'member', version: 999, createdAt: stamp, updatedAt: stamp },
+    }] }).replace('"version":999', '"version":9007199254740993');
     const fetcher = vi.fn().mockResolvedValue(new Response(body, { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) }));
     vi.stubGlobal('fetch', fetcher);
     mount(<Boundary owner={scope()}><Claim /></Boundary>);
@@ -56,7 +57,7 @@ describe('claim profiles through the membership transport', () => {
     const fetcher = vi.fn();
     if (failure === 'network') fetcher.mockRejectedValueOnce(new TypeError('Failed to fetch'));
     else if (failure === 'malformed') fetcher.mockResolvedValueOnce(new Response('{', { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) }));
-    else fetcher.mockResolvedValueOnce(Response.json({ items: [{ projectId, userId: ownerId, name: 'Legacy name', email: null, avatarUrl: null, role: 'member', version: 1, createdAt: stamp, updatedAt: stamp }] }, { headers: viewerHeaders(TEST_VIEWER_ID) }));
+    else fetcher.mockResolvedValueOnce(Response.json({ items: [{ projectId, userId: ownerId, name: 'Legacy name', email: null, avatarUrl: null, role: 'member', version: 999, createdAt: stamp, updatedAt: stamp }] }, { headers: viewerHeaders(TEST_VIEWER_ID) }));
     fetcher.mockResolvedValueOnce(Response.json({ items: [{ ...participant(), profile: {} }] }, { headers: viewerHeaders(TEST_VIEWER_ID) })).mockResolvedValueOnce(response());
     vi.stubGlobal('fetch', fetcher);
     mount(<Boundary owner={scope()}><Claim /></Boundary>);
@@ -116,7 +117,7 @@ describe('claim profiles through the membership transport', () => {
   it.each(['project', 'account'] as const)('ignores a late response from the previous %s', async (change) => {
     const first = scope(), next = change === 'account' ? scope(id(202)) : first;
     const pending = deferred<Response>();
-    const fetcher = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce(response([participant('Current profile')], next.userId));
+    const fetcher = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce(response([participant('Current profile')], next.userId, change === 'project' ? otherProjectId : projectId));
     vi.stubGlobal('fetch', fetcher);
     const view = mount(<Boundary owner={first}><Claim /></Boundary>);
     view.rerender(<Boundary owner={next}><Claim project={change === 'project' ? otherProjectId : projectId} /></Boundary>);

@@ -96,11 +96,15 @@ export const tokenContext = async (request: RequestFactory, origin: string, toke
   catch (error) { throw failed('API context setup', 'AUTHENTICATE', '/', error); }
 };
 
-export const bearerContext = async (request: RequestFactory,
-  origin: string, persona = 'alice'): Promise<AuthenticatedAPI> => {
+export const createApiToken = async (origin: string, persona = 'alice'): Promise<string> => {
   try {
     const session = await login({ origin, persona });
-    const token = await session.createPAT('Browser acceptance');
-    return await tokenContext(request, origin, token);
+    return await session.createPAT('Browser acceptance');
   } catch (error) { throw failed('API authentication setup', 'AUTHENTICATE', '/', error); }
+};
+
+export const bearerContext = async (request: RequestFactory,
+  origin: string, persona = 'alice'): Promise<AuthenticatedAPI> => {
+  try { return await tokenContext(request, origin, await createApiToken(origin, persona)); }
+  catch (error) { throw failed('API authentication setup', 'AUTHENTICATE', '/', error); }
 };

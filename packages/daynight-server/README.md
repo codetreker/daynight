@@ -5,7 +5,7 @@ foundation is implemented: explicit database and file-storage configuration,
 loopback-only HTTP binding, connection validation, structured request logs, cancellation, and bounded
 HTTP shutdown. Versioned migrations and transactional storage are implemented;
 project/task APIs and built-process acceptance are implemented. The current
-executable serves project, task, task-chain graph, task-summary synchronization
+executable serves Team lifecycle, project, task, task-chain graph, task-summary synchronization
 and account-owned Worker snapshot routes together with the embedded task dashboard.
 Generic bucket/path local storage, task attachment
 metadata and file/preview HTTP endpoints are implemented. Attachment addresses
@@ -25,8 +25,8 @@ The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 [design](../../docs/design/daynight-task-assignment.md) define the native nullable
 Task assignee. Ordinary task creation/PATCH and full Task, summary and graph
 producers carry it. Native assignee filtering and project-scoped people reads
-are implemented. The Web consumes assignment with schema-4 cache rebuilding,
-people presentation, mutation and local list filters. The CLI consumes the required
+are implemented. The Web consumes assignment with schema-6 persistent profile
+content, strict task parsing, people presentation, mutation and local list filters. The CLI consumes the required
 nullable field and supports assignment/clearing, current-ID output and explicit
 list filters.
 
@@ -38,19 +38,32 @@ implements persistent users, browser-bound login transactions, sessions, PATs an
 callable HTTP handlers. NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The [membership foundation](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
 adds NewMemberships/NewMembershipRoutes, transaction-scoped access checks, private
 project creation, filtered project lists, administrator changes and invitations.
+GET/HEAD `/api/v1/me` authenticates and reads the current user before comparing a
+strong ETag over the complete identity-bound JSON representation. Successful
+responses use `Cache-Control: private, no-cache`; an unchanged validator receives
+a bodyless 304, while a changed profile/account receives 200. HEAD omits the body.
+Authentication and user-read failures retain no-store errors and cannot return
+304. The Web overrides its usual no-store fetch policy only for `/me`, allowing
+browser-managed revalidation across reloads without a custom identity store.
 Stored `ProjectGrant` facts and their real observation versions are distinct from
 computed `ProjectAccess`. The authenticated
-`GET /api/v1/projects/{projectId}/access` returns exactly
-`{effectiveRole,directGrant}`. Both keys are required; a present grant contains
-only its project/user IDs, stored role, int64 JSON-number version and UTC creation
-and update times. Inherited-only admission has a null grant; failed admission
-remains an error. It returns no member profiles, accepts no query
-parameters, supports GET/HEAD and preserves the principal response header and
-no-store policy. Resource admission and accessible-project filtering use
+`GET /api/v1/projects/{projectId}/access` returns required projectId, ownerTeam,
+ownership, effectiveRole, teamRole, directGrant and canTransfer. TeamRef has an
+id, personal/ordinary kind and a nullable raw name; Personal names are null.
+Ownership contains the real teamId and positive int64 JSON-number version.
+A present grant contains its project/user IDs, stored role, exact version and
+UTC creation/update times. teamRole is null/member/admin; canTransfer is true
+only for an owner Team admin. Inherited-only admission has a null grant; failed
+admission remains an error. The endpoint returns no member profiles, accepts no
+query parameters, supports GET/HEAD and preserves the principal response header
+and no-store policy. Resource admission and accessible-project filtering use
 the canonical relation that computes the maximum of owner Team and direct-grant
 roles under `none < member < admin`. GET project members returns
-`{items: ProjectParticipant[]}` with `userId`, a required `profile` object
-(nullable `name`, `email`, `avatarUrl`), `effectiveRole` and nullable `directGrant`.
+`{items: ProjectParticipant[], actorAccess: ProjectAccess}` from one snapshot.
+Each participant has userId, a required profile object (nullable name, email and
+avatarUrl), effectiveRole, nullable inheritedFrom:{team:TeamRef,role} and nullable
+directGrant. The Web publishes actorAccess through its existing identity,
+project and observation fences before using the roster for management.
 Raw owner-Team and grant candidates survive the canonical-user LEFT JOIN;
 missing user rows fail the whole roster instead of disappearing. Inherited-only
 participants have a null grant, while any direct grant retains its own real
@@ -86,9 +99,15 @@ exact decimal strings; each intrinsic summary includes explicit nullable
 assignedTo and the complete current properties object, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and batched property rows share one
 repeatable-read snapshot. Every snapshot and delta, including an empty delta,
-also returns required top-level `actorAccess` using the access endpoint's DTO.
-The existing admission result supplies it in the same snapshot; its nested grant
-version remains an exact int64 JSON number. Browser consumers publish access only
+also returns required top-level `actorAccess` using the access endpoint's DTO and
+complete `assigneeVersions` entries `{userId,version,hasProjectAccess}` for the
+qualified people catalogue. The existing admission result supplies access in the
+same snapshot; its nested ownership and grant versions remain exact int64 JSON numbers.
+People metadata contains no names or avatars, is UUID-sorted and distinct, and
+uses the same qualification and content versions as task-assignees. Any profile
+query, integrity or transaction failure fails the whole sync. Hashing reads all
+qualified profile content on each sync, costing O(people + total profile bytes);
+manifest transport is O(people). It introduces no PostgreSQL migration. Browser consumers publish access only
 to the current identity/project memory owner, outside persistent Project and Task
 records. Missing keys propagate removal through whole-summary
 replacement; ordinary property changes preserve the epoch. Invalid stored
@@ -97,11 +116,14 @@ transaction-completion faults remain 500 internal_error and take precedence over
 a saved property validation refusal. A stored project epoch invalidates caches after supported
 history replacement and transactional task soft deletion. The Web persists
 summaries and details and replaces them atomically after an epoch change. Its
-schema-4 upgrade directly rebuilds project, summary and detail stores from
-versions 1, 2 or 3, rotates user fences and clears old watermarks before a complete
-snapshot. Strict assignedTo consumption and that cache-format upgrade are
-delivered together. Absent properties or assignedTo in old summaries cannot be
-inferred as an empty object or null. Graph nodes omit properties,
+schema-6 upgrade adds a separate profiles store while retaining valid schema-5
+task data, required Project ownership and user fences. Upgrades from versions 1,
+2, 3 or 4 still rebuild incompatible project, summary and detail stores, rotate
+user fences and clear old watermarks before a complete snapshot. Profile content is reusable after reload
+only after current identity/project admission and version matching; access stays
+in the live manifest. Ordinary task epoch replacement can retain matching profile
+content while all publication remains generation-fenced. Missing properties, assignedTo or Project ownership in old records cannot
+receive defaults. Graph nodes omit properties,
 and cached values grant no detail or mutation admission. Complete properties
 increase transport, parsing and summary storage costs: node/edge limits and the
 detail-cache byte budget do not bound total summary bytes. Network, decoding and
@@ -314,7 +336,8 @@ diagnostics and cause categories.
 Wildcard, non-loopback, hostname, scoped IPv6, and malformed listen addresses are
 rejected. Callback paths that collide with application routes are rejected during
 configuration and startup validation before route registration; this includes
-`/login`, `/setup` and every descendant path. If an existing callback occupies that
+`/login`, `/setup`, `/teams` and every descendant path, together with the
+`/api/v1/teams` API namespace. If an existing callback occupies that
 namespace, choose another path and register its exact full URL in UniAuth before
 starting the server. Login return loops, including `/login`, are rejected before a
 login transaction is created. An absent return target defaults to `/projects`; a
@@ -653,9 +676,20 @@ Returning an error rolls back fields, properties, dependencies, version and
 timestamps together. Only expose a captured resource after the outer call
 succeeds.
 
+`Store.WriteTeam` locks the real Team row in a `READ COMMITTED` transaction,
+then rechecks the caller's current admin membership. Deletion reads ownership
+with a separate nonlocking `EXISTS` statement after that lock, so it observes
+commits made while waiting. A successful empty check is followed by deleting
+members and Team in the same transaction. Ownership writers lock and recheck
+the same Team before insertion; Team deletion does not acquire existing
+Project, Task or Thread head locks. Team creation atomically stores the creator
+admin membership. Captured write results are published only after confirmed
+transaction completion; the [Team design](../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
+owns the outcome and lock-order details.
+
 `Store.ReadSnapshot` uses read-only `REPEATABLE READ` for project/task queries and
 derived readiness, with membership and resource reads in the same snapshot.
-Project-list membership filtering precedes pagination. Pages use a validated limit and optional `(createdAt, id)`
+Project-list effective-access and scope filtering precedes pagination. Pages use a validated limit and optional `(createdAt, id)`
 position; status/readiness filters run before keyset pagination. Page lookahead
 is returned as `HasMore`; HTTP cursor encoding belongs to the API layer.
 
@@ -738,6 +772,46 @@ to both rows and counts. Completion or reassignment
 does not erase an otherwise visible historical observation. Liveness and recent
 visibility do not control claims or task state.
 
+## Team lifecycle API
+
+The authenticated Team API creates ordinary Teams and reads the caller's joined
+Teams. Current Team administrators can rename an ordinary Team or delete it only
+when no Project ownership references remain. Personal Teams are readable by
+their owner and reject rename and deletion.
+
+| Method | Path | Result |
+|---|---|---|
+| `POST` | `/api/v1/teams` | `201`, Team with creator admin membership and `Location` |
+| `GET` | `/api/v1/teams` | `200`, member-filtered `{items,nextCursor}` page |
+| `GET` | `/api/v1/teams/{teamId}` | `200`, Team and the caller's real membership |
+| `PATCH` | `/api/v1/teams/{teamId}` | `200`, Team after exact-version rename |
+| `DELETE` | `/api/v1/teams/{teamId}` | `200`, `{teamId,deleted:true}` after empty deletion |
+
+Create accepts `name` and `expectedUserId`; rename and delete also require a
+positive int64 `version`. The actor guard runs before domain SQL. Delete matches
+the observed name exactly. Ordinary names preserve valid Unicode and raw
+whitespace, refuse NUL and all-White_Space values, and may repeat. No character
+limit is added beyond the existing request-body limit. Team IDs and actor IDs
+must use canonical lowercase UUIDs. GET supports HEAD; authenticated method
+refusals retain `Allow`, `Daynight-User-ID` and no-store behavior.
+
+Full Team responses add metadata version and UTC timestamps to the stable
+`TeamRef`, plus the caller's real `membership` with its independent version and
+timestamps. The list applies membership before `(createdAt,id)` pagination and
+binds its cursor to the current user; it provides no search or total count.
+No-op rename requires the current version and preserves all metadata. Stale
+versions or a delete-name mismatch return `version_conflict`; Personal changes
+return `personal_team_immutable`, and nonempty deletion returns `team_not_empty`.
+A real rename at the maximum int64 version returns `version_exhausted`, while
+an exact-version same-name no-op still succeeds. An unconfirmed COMMIT returns `503 write_outcome_unknown`; cleanup failure
+retains `500 internal_error`. A lost response is not evidence of rollback and
+does not authorize automatic replay.
+
+The [authentication requirements](../../docs/spec/daynight-auth.md#team-生命周期)
+own the complete public contract. The
+[Team transaction design](../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
+owns existence locking, completion classification and independent versions.
+
 ## Project API
 
 | Method | Path | Result |
@@ -753,7 +827,10 @@ grant. Canonical login UPSERT, Personal initialization and session creation shar
 one transaction; repeat and concurrent login reuse the unique Team and validate
 its owner admin. Authentication does not repair broken Personal state. Internal
 Project reads require real ownership and report integrity errors for a missing
-row; the public Project/account DTOs retain their existing fields. Lists contain
+row. Public Project DTOs add required ownership:{teamId,version} across create,
+GET, list, graph and sync. GET additionally returns fresh access from the same
+read snapshot. GET /me adds a required personalTeam:TeamRef read from the real
+validated Personal relationship. Lists contain
 only projects admitted by the same current dual-source relation.
 Names preserve accepted text and must be nonempty UTF-8 without NUL. Repository addresses accept HTTPS, SSH URL and SCP
 syntax, including SSH aliases and `@` inside repository paths. HTTPS userinfo,
@@ -791,6 +868,14 @@ or hidden behind a pending domain refusal.
 Creation requires `application/json` (optionally UTF-8 charset), one object within
 1 MiB, exact field names and unique keys. Unknown/read-only fields, null required
 fields, wrong types, invalid UTF-8 and trailing JSON return `invalid_input`.
+
+Project lists default to all accessible projects. `teamId` selects a Team of which
+the principal is a member; `shared=true` selects direct grants outside the owner
+Team. The filters are mutually exclusive. Missing or inaccessible Teams return 404;
+database failures remain errors. Project cursor version 2 uses the scoped-projects
+kind and binds canonical principal, all/team/shared scope, Team ID and position;
+version 1 and cross-scope or cross-principal cursors are rejected. Cursors are not tamper-proof and are not authorization credentials; each request
+checks access independently. No count is returned.
 
 Lists accept `limit` (default 50 only when absent, range 1–100) and opaque
 `cursor`. Empty, repeated, malformed and unknown query parameters fail. Cursors
@@ -898,8 +983,8 @@ worker ownership is matched by decoding each candidate’s worker property row
 before collecting the final limit+1 matches; complete properties are batch-loaded
 for selected tasks. Assignee equality/IS NULL applies before this worker
 matching and final pagination. No bounded output page hides later matches, and
-opaque PR strings are not converted through PostgreSQL JSON types. Project and
-account-Worker cursors stay at version 1; old version-1 task cursors are refused.
+opaque PR strings are not converted through PostgreSQL JSON types. Account-Worker
+cursors stay at version 1; old version-1 task cursors are refused.
 The assignee filter is explicit and does not change automatic worker eligibility.
 
 ## Task-chain graph
@@ -1107,7 +1192,11 @@ concurrency, parent and Session preservation, rollback and completion facts, and
 safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
-`TestStepsHTTPDelete*`. Actual binary read restart persistence is covered by
+`TestStepsHTTPDelete*`. Installed CLI deletion and a lost response after a real commit are covered by
+`TestInstalledCLITaskStepsDeleteAcceptance` and
+`TestInstalledCLITaskStepsDeleteUnknownAfterRealCommit`; they verify request
+budgets, complete surviving rows, parent and referenced attachment preservation,
+refusals and current-facts-only recovery. Actual binary read restart persistence is covered by
 `TestBuiltBinaryStepsReadPersistence`. Installed Step list/show and its separate
 maximum-resource CLI check are mapped in
 [built-process acceptance](#built-process-acceptance-and-ci-evidence). After
@@ -1330,8 +1419,8 @@ query aggregated successfully across all relevant projects/pages supplies a comp
 ownership inventory. Partial pages, additional filters and failed traversals cannot
 authorize cleanup by absence. HTTP input retains strict query validation.
 Task cursor version 2 includes the resolved assignee scope; me and its concrete
-UUID may share that scope, but another account's me cannot. Project and
-account-owned Worker list cursors remain version 1.
+UUID may share that scope, but another account's me cannot. Account-owned Worker
+list cursors remain version 1.
 
 The project-scoped task-assignees GET returns `items` and `unresolvedUserIds`
 as non-null arrays. With no query it enumerates current members and assignees
@@ -1342,9 +1431,12 @@ they are disjoint and cover the requested IDs exactly. The complete catalogue
 has an empty unresolved array. HEAD and method refusal retain the authenticated
 GET/no-store/Allow contract.
 
-Each item has only userId, nullable name, nullable avatarUrl and boolean
-hasProjectAccess. Values preserve the canonical profile; no name or email
-fallback is synthesized, and email, external identity, role, version and
+Each item has only userId, required version, nullable name, nullable avatarUrl
+and boolean hasProjectAccess. Version is a server-issued lowercase 64-hex
+SHA-256 identifier of userId/name/avatarUrl content; clients do not compute it.
+Access, role, login timestamps and task references do not change an unchanged
+profile version. Values preserve the canonical profile; no name or email
+fallback is synthesized, and email, external identity, role, Task versions and
 execution records are not returned. No scoped membership or live-task reference
 means unresolved, regardless of whether a global user exists. A raw qualifying
 reference whose users row is missing is an internal integrity failure, not an
@@ -1352,9 +1444,12 @@ unresolved ID or a null name. Both modes authorize and read references/profiles
 within one repeatable-read snapshot and fail as a whole on query, scan, rows,
 cancellation or transaction-completion errors.
 
-Full catalogue reads are intended for explicit selection/retry. Recurring
-consumers resolve their rendered/selected IDs in batches of at most 100; an empty
-set sends no request rather than omitting arguments and enumerating everything.
+Full catalogue reads remain available to explicit enumeration callers. The Web
+uses task-sync's complete qualified-person metadata and resolves only profiles
+missing from its persistent cache or carrying a changed content version, in
+batches of at most 100. Picker reopening and recovery reuse unchanged profiles;
+an empty set sends no request rather than omitting arguments and enumerating
+everything.
 The [assignment contract](../../docs/spec/daynight-task-assignment.md) owns the
 privacy, qualification and error rules. Neither mode mutates Task versions.
 
@@ -1398,7 +1493,7 @@ URLs, bodies, SQL and credentials are excluded from logs.
 ## Built-process acceptance and CI evidence
 
 The test-only [`cmd/e2e_tests/`](cmd/e2e_tests/) package owns the actual-process
-scenarios, installed CLI project/task, Step reads and attachment workflows,
+scenarios, installed CLI project/task, Step reads, Add/Delete and attachment workflows,
 [installed lifecycle migration/race scenarios](cmd/e2e_tests/acceptance_lifecycle_cli_test.go)
 and [offline attachment migration](cmd/e2e_tests/migrate_attachment_acceptance_test.go).
 The full check runs this package in its E2E phase, independently of production
@@ -1464,6 +1559,7 @@ Thread scenario also verifies the [discussion contract](../../docs/spec/daynight
 | V9: mandatory infrastructure and complete CI | Missing/unavailable PostgreSQL fails the check; test-result expiration preserves real observations; the [final `checks` job](../../.github/workflows/checks.yml) accepts only `success` or `skipped` from every preceding job and rejects failures, cancellations and other results under the [repository CI rules](../../README.md#ci-selection); main pushes run all modules |
 | V10: correlation and privacy | Workflow/refusal/partial-failure/cancellation/startup scenarios verify HTTP request IDs, canonical resource IDs, structured categories and absence of submitted secret markers from logs |
 | Task Steps: installed CLI Add | [`installed_cli_task_steps_add` and `installed_cli_task_steps_add_unknown`](cmd/e2e_tests/task_steps_cli_add_acceptance_test.go) cover options, saved placement, explicit one-POST/default GET+POST budgets, exact identities/versions, known refusals and current-fact-only observation after a real committed Add loses its response |
+| Task Steps: installed CLI updates | [`installed_cli_task_steps_update` and `installed_cli_task_steps_update_unknown`](cmd/e2e_tests/task_steps_cli_update_acceptance_test.go) cover raw content/omission/clearing, all four-state transitions, exact no-op/+1 versions, explicit PATCH/PUT and default GET+write budgets, preservation, refusals and current-facts-only observation after committed writes lose their response |
 | Task Steps: installed CLI Move | [`installed_cli_task_steps_move` and `installed_cli_task_steps_move_unknown`](cmd/e2e_tests/task_steps_cli_move_acceptance_test.go) cover all four positions, exact explicit/default request budgets, complete saved order and unchanged Step fields/times, no-op/+1 and maximum version, refusals and factual observation after a real committed Move loses its response |
 | Task Steps: installed CLI reads | [`installed_cli_task_steps_read`](cmd/e2e_tests/task_steps_cli_acceptance_test.go) checks installed list/show against persistent production resources, empty and full item output, exact versions, saved order, short IDs, explicit-project reads, help isolation, usage/refusal failures and Task preservation; the existing fixture owns receipt/source identity and cleanup |
 | Task Thread: CLI/service contract | [`installed_cli_task_thread`](cmd/e2e_tests/acceptance_thread_cli_test.go) verifies authenticated human/Agent authors, replies and nullable snapshots, millisecond message-ID pagination, complete resource/text byte bounds, controlled refusals and unknown submissions, task immutability and owned resource cleanup |

@@ -37,7 +37,8 @@ func resourceMethodNotAllowed(logger *slog.Logger, allowed string) Authenticated
 func projectResponse(project core.Project) api.Project {
 	return api.Project{ID: project.ID, Name: project.Name, RepoURL: project.RepoURL,
 		CreatedAt: project.CreatedAt.UTC(), UpdatedAt: project.UpdatedAt.UTC(),
-		Settings: api.ProjectSettings{Version: project.Settings.Version, ExecutionWarningMinutes: project.Settings.ExecutionWarningMinutes}}
+		Settings:  api.ProjectSettings{Version: project.Settings.Version, ExecutionWarningMinutes: project.Settings.ExecutionWarningMinutes},
+		Ownership: ownershipResponse(project.Ownership)}
 }
 
 func (h *projectHandler) create(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -72,12 +73,28 @@ func (h *projectHandler) create(w http.ResponseWriter, request *http.Request, pr
 func (h *projectHandler) list(w http.ResponseWriter, request *http.Request, principal core.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", principal.UserID)
-	page, err := pageRequest(request)
+	values, err := queryValues(request, "limit", "cursor", "teamId", "shared")
 	if err != nil {
 		writeError(w, request, logger, "project", "list", err)
 		return
 	}
-	result, err := h.projects.List(request.Context(), principal, page)
+	page, err := pageValues(values)
+	if err != nil {
+		writeError(w, request, logger, "project", "list", err)
+		return
+	}
+	input := service.ProjectListRequest{Page: page}
+	if team, exists := values["teamId"]; exists {
+		input.TeamID = &team[0]
+	}
+	if shared, exists := values["shared"]; exists {
+		if shared[0] != "true" || input.TeamID != nil {
+			writeError(w, request, logger, "project", "list", invalidInput("shared must be true and cannot be combined with teamId"))
+			return
+		}
+		input.Shared = true
+	}
+	result, err := h.projects.ListScoped(request.Context(), principal, input)
 	if err != nil {
 		writeError(w, request, logger, "project", "list", err)
 		return
@@ -98,11 +115,11 @@ func (h *projectHandler) get(w http.ResponseWriter, request *http.Request, princ
 		return
 	}
 	logger = logger.With("project_id", id)
-	project, err := h.projects.Get(request.Context(), principal, id)
+	project, access, err := h.projects.GetWithAccess(request.Context(), principal, id)
 	if err != nil {
 		writeError(w, request, logger, "project", "get", err)
 		return
 	}
 	logger.InfoContext(request.Context(), "project read", "type", "resource", "component", "project", "phase", "get", "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, projectResponse(project))
+	writeJSON(w, request, logger, http.StatusOK, api.ProjectDocument{Project: projectResponse(project), Access: projectAccessResponse(access)})
 }

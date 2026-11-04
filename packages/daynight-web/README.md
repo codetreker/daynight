@@ -205,6 +205,13 @@ any visibility-triggered refresh can dispatch. An authenticated mount that is
 already away applies the pause before child request effects. Returning confirms
 identity: same-user success resumes requests, while identity replacement or
 session loss cancels queued requests from the previous session. Identity checks and logout bypass this wait.
+The `/me` request alone uses browser HTTP revalidation with `cache: no-cache`.
+Successful responses carry `private, no-cache` and a strong ETag over the complete
+identity-bound representation. An unchanged authenticated response is bodyless
+304 on the wire and reuses the browser's stored profile; reload still verifies the
+current login without retransferring an unchanged avatar. A different account,
+changed profile or missing HTTP cache receives 200. Authentication and profile
+read failures retain no-store errors; no custom `/me` IndexedDB is used.
 A failed check keeps requests waiting through recovery. The [foreground verification decision](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 records this presentation policy. Ordinary same-origin
 iframe focus changes do not count as top-level returns. Requests
@@ -373,19 +380,22 @@ returning to the page loads authoritative state before editing. The existing
 foreground identity guard preserves same-user drafts and focus, while identity
 or project replacement invalidates old requests and results.
 
-Project resources include required `settings.version` and
-`settings.executionWarningMinutes`. `project-json.ts` uses shared raw JSON
-source spans to decode only root Project settings, each project-page item, or
-the graph Project envelope. The existing generic root-version decoder and
-unknown nested-field semantics remain intact; no browser reviver source-context
-feature is required. Versions above 2^53 remain exact bigint values and mutation
-encoding sends JSON numbers. Missing contract fields do not acquire defaults.
+Project resources include required `settings.version`,
+`settings.executionWarningMinutes` and `ownership:{teamId,version}`. The resource
+codecs share validated raw JSON source-field maps and convert only declared
+Project settings, ownership and grant version paths. Unknown nested-field
+semantics remain intact; no browser reviver source-context feature is required.
+Versions above 2^53 remain exact bigint values and mutation encoding sends JSON
+numbers. Missing contract fields do not acquire defaults.
 
 Project synchronization merges intrinsic summaries by ID and exact business
 version in the current durable collection, then derives task readiness,
 statistics and GraphIndex. Duplicate summaries retain task and index references;
-settings-only changes replace Project metadata while preserving task projection.
-Clock-only responses retain the graph and index while refreshing the separate
+settings and ownership merge independently by their exact versions within one
+epoch. Equal ownership versions must identify the same Team; contradictions fail
+synchronization. Metadata-only changes preserve task projection. A new epoch
+snapshot fully replaces Project, including legitimately lower restored versions,
+while old-history ownership cannot carry forward. Clock-only responses retain the graph and index while refreshing the separate
 latest `GraphSnapshot.observedAt` and its paired `receivedMonotonic`. No settings
 edit changes task time or graph geometry.
 
@@ -394,11 +404,13 @@ edit changes task time or graph geometry.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 4 and idb 8.0.4, with `userScopes`, `projects`, `summaries` and `details`
-stores. Upgrades directly from schema 1, 2 or 3 rebuild projects, summaries and
-details, rotate user fences and clear old epochs/watermarks before a complete
-snapshot. Missing properties or assignedTo in old records cannot be inferred as
-empty objects or null.
+schema 6 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details` and
+`profiles` stores. Upgrading the ownership-complete schema 5 adds profiles while
+preserving compatible task records, user fences and watermarks. Upgrades from
+schema 1, 2, 3 or 4 rebuild incompatible projects, summaries and details, rotate
+user fences and clear old epochs/watermarks before a complete snapshot. Missing
+properties, assignedTo or Project ownership in old records cannot receive
+defaults.
 Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
 fences/generations and bounded counts for both active and invalidated manifests.
@@ -470,8 +482,8 @@ a bound cold peer with no projection, without rebroadcast. Stale hints cannot
 replace a newer generation or denial. Failed IDB opening,
 blocked upgrades, abnormal close, corruption or writes use existing visible
 error/Retry states and retain an allowed current view. Missing or malformed user
-scope records are repaired in one four-store transaction: replace the fence,
-clear only that user's summaries/details and invalidate its project baselines.
+scope records are repaired in one shared-cache transaction: replace the fence,
+clear only that user's summaries/details/profiles and invalidate its project baselines.
 The repair never parses or reuses the damaged fence. For that user-corruption
 repair, memory binding, scope retirement and hints wait for commit; a cold scope can then bind the replacement,
 while an already-bound scope retires and requests identity verification. A failed
@@ -485,7 +497,7 @@ owns the algorithm, schema, failure rules and detail integration.
 
 ## Persistent task details
 
-`TaskDetailSessions(scope)` uses the same authenticated scope and schema-4 details
+`TaskDetailSessions(scope)` uses the same authenticated scope and schema-6 details
 store as project summaries. `detail-cache.ts` validates intrinsic bodies against
 the current summary and guarded lifecycle ticket, then materializes readiness and
 blockers from the complete local graph. Full current properties preserve actual
@@ -548,8 +560,8 @@ Task, summary and graph consumers require an explicit assignedTo field containin
 null or a canonical local user UUID. Equality, freshness, review keys and material
 preservation include the field. Its native storage, atomic permission reset and
 in-progress write policy belong to the [assignment contract](../../docs/spec/daynight-task-assignment.md).
-Schema 4 and the strict consumers are delivered together; profile data is never
-persisted in task records or included in task versions.
+Schema 6 preserves strict task parsing and stores versioned profile content in a
+separate store; profile data never enters task records or task versions.
 
 The detail places status and assignee in one 24px compact group, followed by
 platform and readiness, with automatic execution on the right. The assignee
@@ -559,10 +571,12 @@ name displays a short UUID, failed images use an identity placeholder, and only
 an explicit hasProjectAccess=false result marks a former member. Long names
 retain accessible full text and narrow layouts keep controls within the viewport.
 
-Opening the shared picker or choosing Retry requests the complete project
-catalogue. Search accepts names and UUIDs; assignment choices contain current
-members and clearing, while filters can retain former assignees. Loading and
-failure keep choices unavailable with explicit recovery. Arrow keys move among
+The shared picker uses the complete qualified-person manifest from task-sync and
+loads only missing or changed profiles. Ordinary reopening reuses matching
+content and in-flight work; explicit Retry recovers failed or missing items.
+Search accepts names and UUIDs; assignment choices contain current members and
+clearing, while filters can retain former assignees. Loading and failure keep
+choices unavailable with explicit recovery. Arrow keys move among
 options, Escape closes and restores the trigger, and Tab or outside click closes
 without stealing subsequent focus. A fixed popup stays inside the surface's
 focus-owner subtree and tracks scrolling, resizing and fullscreen changes.
@@ -578,17 +592,45 @@ through values and availability, retaining necessary errors, access status and
 recovery actions.
 
 TaskAssigneesProvider lives inside the authenticated TaskCacheProvider and outside
-the detail provider. Its session-memory owner coalesces mounted row, detail and
-selected-filter ID demands, sorts and deduplicates them, then resolves batches of
-at most 100. Empty demand sends no request. Successful graph receipts, including
-empty deltas, refresh the bounded set; owner identity plus mount-local revision
-handles remounts, and a slow request retains one queued refresh. Complete
-catalogues remain explicit open/Retry reads, with no second polling loop.
-Per-person dispatch sequencing prevents an old catalogue from replacing a newer
-resolve. Scope fences and captured authorized in-memory manifests protect
-publication without another beginSync. Trusted same-user project 404 responses
-withdraw admission even after presentation demand changes; stale histories
-cannot withdraw a replacement generation.
+the detail provider. Every successful task-sync supplies required complete
+`assigneeVersions` metadata: `{userId, version, hasProjectAccess}` for each current
+member or retained assignee, including when tasks are unchanged. Versions are
+server-issued lowercase SHA-256 content identifiers for user ID, nullable name
+and avatar only. Access, role, login timestamps and task changes do not alter an
+unchanged profile's version.
+
+The `profiles` store persists `{userId, version, name, avatarUrl}` under the
+viewer/project/profile-user key and userFence. It stores no access boolean.
+After live `/me` and project admission, the owner hydrates content matching the
+fresh manifest. Local summary previews supply no people qualification. Mounted
+row, detail and selected-filter demands are coalesced; only qualified people with
+missing or changed content are resolved in batches of at most 100. Nullable
+fields remain complete data. Empty demand sends no request. Ordinary task opens,
+successful empty deltas and picker reopening reuse matching profiles, including
+their inline data-URL avatars. Access-only changes use the live manifest without
+redownloading the same content.
+
+In-flight demands are shared. Same-history results remain useful after demand
+changes, and each GET retains its actual observed content version. A profile
+read newer than its initiating manifest cannot be relabeled with the old version
+or cause an immediate retry loop. Ahead-of-manifest and transient unresolved
+exceptions last only through their current positive graph-receipt observation.
+The next new successful receipt clears them even if content tokens are unchanged;
+duplicate receipts and presentation changes preserve the observation. Each GET
+captures that observation, so an older conflicting result cannot restore its
+exception later. Normally matching cached profiles still cause no extra GET.
+Generation or userFence replacement immediately withdraws the old people,
+qualification, access markers and ready catalogue. A cross-tab replacement with
+`assigneeVersions: null` follows the same rule: a requested catalogue waits in
+loading, an unopened one stays idle, and unknown metadata is not a successful
+empty catalogue. Ordinary task epoch replacement retains only raw same-userFence
+content until a fresh online manifest validates it; userFence replacement clears
+old content. All reads, writes and publication check the current generation. Logout, account change,
+session loss and project access withdrawal clear the corresponding profiles.
+Failures stay visible and retryable. Trusted same-user project 404 responses
+withdraw admission even after presentation changes; stale histories cannot
+withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/implemented/bug-fix/2026-11-04-task-view-request-reuse.md)
+owns the versioning, HTTP cache and scan-cost trade-offs.
 
 The task-list filter supports All, Assigned to me, Unassigned and a person. It
 intersects recent/show-all selections before pagination and returns to page one
@@ -598,6 +640,39 @@ full-chain progress, readiness, dependencies, statistics and graph use the compl
 index. Overview positioning can clear a filter that hides its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
+
+## Steps reading
+
+Task details always expose Steps after Overview, in both the dialog and standalone
+page. `tab=steps` preserves the tab through direct access, reload and browser
+history, including details without a Session. Reading shows the ordered title,
+four-state status and task-local ID; multiple expanded rows render Task-root
+Markdown and timestamps through the same attachment controller as Overview.
+
+`TaskDetailSessions` owns a separate lazy Steps resource in memory. Summary,
+parent-detail and confirmed mutation versions invalidate it; identity, cache
+generation and version admission fence late responses. An ahead resource waits
+for summary admission and requests parent/project refresh, while stale responses
+are reread against the highest verified floor, including pending parent details.
+Refresh and reader release retain that scalar floor within the same cache
+generation. Confirmed parent deletion fences in-flight reads and asynchronous
+admission so late responses cannot restore a deleted detail. First-read errors, valid emptiness and
+retained-content errors remain distinct and retryable. A Steps 404 checks the
+parent before retiring access; 403 remains a refusal, and parent 410 uses the
+existing deleted-task presentation. Retirement and the last active reader's
+unsubscribe release complete collections, including pending admission. Steps never
+enter the TaskDetail LRU or IndexedDB.
+
+The list mounts at most 100 rows per page, with global numbering, previous/next
+buttons and a numeric page input. Paging makes no API requests; expansion remains
+bound to IDs across pages, same-task tabs and refresh reordering. Both languages
+and the 320px layout retain reading and recovery controls. Web writing controls
+are not exposed. At heights up to 500px, a single scrollable tab row reserves
+reading space; the tab owner reveals its target after focus, selection styling
+and locale updates. At heights up to 600px, pagination scrolls with the list so
+its controls cannot cover the remaining reading area. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
+and [design](../../docs/design/daynight-task-steps.md#web-资源与单一写入所有者)
+own the complete read lifecycle and the remaining write architecture.
 
 ## Session display
 
@@ -615,7 +690,7 @@ owns identity binding, menu behavior and preference integration.
 
 ## Task discussions
 
-Task details always provide Overview, Attachments and Discussion tabs, followed
+Task details always provide Overview, Steps, Attachments and Discussion tabs, followed
 by Session when native execution content is available. Discussion works before
 execution starts, after completion and while an execution environment is offline.
 It reads and posts directly to the task Thread resource; ordinary browser posts
@@ -1137,7 +1212,7 @@ edges use the persisted marker independently of outside-component card context.
 The complete model is specified in the
 [external dependency design](../../docs/design/daynight-external-dependencies.md).
 
-An open project automatically requests task-sync every five seconds while the
+An open project automatically requests task-sync every fifteen seconds while the
 document is visible. Hidden documents start no periodic reads; returning requests
 immediately unless a sync is already active. Automatic ticks skip active syncs.
 Manual refresh cancels the active read and starts immediately. Every successful
@@ -1540,13 +1615,20 @@ The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
 were never imported by a test. Empty, malformed and incomplete reports fail.
 
+The platform, pause, status and assignment controller session tests use
+`tests/helpers/waitForState.ts` for non-DOM state changes. It delegates to
+Testing Library with a 5ms default polling interval, preserving immediate
+checks, timeouts, errors and explicit options. DOM tests keep their existing
+waits. The [state polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-controller-state-polling.md)
+records the cadence and its limits.
+
 The focused navigation browser suite builds a minimal editor host from the
 production router, admitted-location owner and task confirmation. It checks draft
 admission independently of Steps forms and HTTP writes, including indexed
 history traversal, retirement, beforeunload, keyboard focus and both languages at
 320px. Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
-tests/navigation/playwright.config.ts` after installing Chromium. The browser CI
-entry runs it before full-stack acceptance. Its results and failure captures
+tests/navigation/playwright.config.ts` after installing Chromium. Browser CI
+shard 2 runs all 28 cases before its full-stack acceptance. Its results and failure captures
 are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
 inside the browser CI artifact directory.
 
@@ -1558,69 +1640,96 @@ under this package's `.tmp/` and are removed after classification. Typechecking
 remains a separate mandatory check; classification is not a substitute for it.
 
 PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection);
-main pushes run the full suite. The Web result enables two parallel jobs,
-`verify-web-quality` and `verify-web`, each bounded at 20 minutes. The final
-`checks` job depends on both, alongside all other selected jobs, and accepts only
-`success` or deliberately unselected `skipped` results. Failures, cancellations
-and other results fail the gate. Shared workflow changes retain the existing
-all-module selection rule.
+main pushes run the full suite. The Web selector enables `verify-web-quality`
+and a two-entry `verify-web` matrix. Each job keeps a 20-minute bound. The final
+`checks` job retains the general `success`/unselected-`skipped` gate and additionally
+requires selected Web quality and matrix results to be `success`. Missing,
+failed, cancelled or skipped selected validation cannot pass. Shared workflow
+changes retain all-module selection.
 
-`node packages/daynight-web/scripts/ci.mts quality` runs `test:harness` and the complete
-`test:coverage` command serially. Each retains a separate 180-second deadline,
-so harness duration cannot consume the coverage command's budget. Only the
-Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=4`, retaining
-its `forks` pool, per-file isolation, full product manifest and strict statement
-gate. The [worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
-calibrates this existing resource setting for the dedicated public standard
-Linux runner's four CPUs. The complete product-source coverage manifest and
-strict gate apply to the ordinary suite; scale workloads use the separate local
-stress configuration.
+`node packages/daynight-web/scripts/ci.mts quality` runs `test:harness`, complete
+Vitest/V8 collection and `scripts/coverage.mts` serially. Harness has a 180-second
+deadline, collection has a 300-second deadline, and final source-inventory and
+strict coverage verification has its own 60-second deadline. Completed collection
+cannot consume the final checker's budget. The
+[stage budget decision](../../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)
+owns that separation. Only the Vitest/V8 child receives a copied environment with
+`VITEST_MAX_WORKERS=4`, retaining its `forks` pool, per-file isolation, full product
+manifest and strict statement gate. The
+[worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
+calibrates that resource setting for the dedicated public standard Linux runner's
+four CPUs. Scale workloads use the separate local stress configuration.
 
-`node packages/daynight-web/scripts/ci.mts browser` installs pinned Chromium and
-Linux dependencies under the
-existing 600-second bound, then calls the same ordinary core acceptance runner
-as `pnpm web:acceptance`. This job retains real embedded Go builds, both
-native/container functional targets, dev-ci lifecycle fixtures, persistence
-checks and recovery. Capacity and timing workloads run through the explicit
-local stress command, which refuses CI. Browser installation precedes core preparation; the core has no
-quality/browser preparation hooks, empty success phases or readiness gate. Local
-acceptance keeps its preinstalled-browser behavior.
+The browser matrix invokes `node packages/daynight-web/scripts/ci.mts browser
+--shard=1/2` or `--shard=2/2`. Both install pinned Chromium and Linux dependencies
+under the existing 600-second bound, build real embedded Go targets and own
+independent native/container services, databases, private credentials and cleanup.
+Playwright selects cases with `--fully-parallel --workers=1 --retries=0
+--shard=i/2`: fully-parallel controls case-level partitioning, while each database
+still executes one browser worker serially. The current canonical inventory is
+32 scenarios, divided into disjoint sets of 16. Default file-level partitioning
+would produce a 24/8 split for this inventory.
 
-The CI command wrapper requires its owned process group to stop after settlement,
-not merely its leader to exit. Command, cancellation and cleanup failures remain
-failures, including combined errors. The container browser keeps its 900-second
-permission wait and source/run-bound release after native preparation. The normal dev-ci runner continues
-to own the built/running image identity and full stack cleanup. The
+Before preparing services, the runner collects the complete canonical functional
+inventory and the selected shard using the same functional arguments as the
+actual run. It records only the validated selected scenario IDs. Native and
+container phases execute that same selection; the callback derives it from its
+existing source/run-bound parent receipt. Invalid identities, collection errors,
+unknown/duplicate/missing scenarios or a mismatched selection fail validation.
+The pure `scripts/acceptance/inventory.mts` owns canonical functional and
+combined-authentication check names.
+
+Shard 2 owns the complete 28-case navigation-contract suite, dev-ci lifecycle
+fixtures, both eleven-check combined-authentication journeys, and the real
+attachment persistence/paired-backup-restoration check. Ownership derives from
+the shard identity. Shard 1 runs its functional selection and full owned-resource
+cleanup. Both entries retain normal dev-ci built/running image checks, private
+browser profiles, source validation and the CLI cleanup barrier. Matrix
+`fail-fast` is false so one failure does not cancel the other entry's diagnostics
+and cleanup.
+
+The CI wrapper requires each owned command group to stop after settlement,
+not merely its leader. Command, cancellation and cleanup failures remain failures,
+including combined errors. Native preparation installs the shared CLI before an
+atomic, run/source-bound permission releases the container browser. Selected
+native/container phases overlap against independent service, database,
+authentication and storage resources. The container permission wait remains
+900 seconds. Run-wide CLI recovery waits until both targets drain; combined CLI
+commands receive cancellation without terminating commands in the other target.
+The [functional target decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
+owns those isolation constraints; the
 [quality isolation decision](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
-owns the responsibility split and evidence limits. The browser job selects the
-official Ubuntu archives before installation, as delivered in
-[PR #148](https://github.com/codetreker/daynight/pull/148).
+owns the separate quality workload and command budgets.
 
-Native functional checks start after the native process and browser are ready.
-Native preparation installs the shared CLI before an atomic, run/source-bound
-permission releases the container's thirty-two functional checks. Native and
-container functional browsers then overlap against independent service,
-database, authentication and storage resources. Each phase has a separate
-private Chromium profile root. Run-wide CLI recovery waits until both targets
-have drained; combined CLI commands receive cancellation without terminating
-commands in the other target. Ordinary acceptance finishes after both functional
-targets, combined authentication, browser recovery, container cleanup and shared
-CLI recovery. When explicitly requested locally, capacity runs last after those
-barriers and all its preparation commands. Every browser phase retains one
-worker and zero retries. The
-[functional target decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
-records the scheduling constraints. Browser CI runs controlled deployment fixtures before
-core acceptance and keys outer recovery and its acceptance artifact upload to
-that attempt. The quality artifact upload follows the quality command attempt.
-After core acceptance and recorded recovery, the Ubuntu browser job runs `node deployment/dev-ci/tests/attachments.mts` once for real
-volume/recreation/isolation and paired-backup proof. Its
-`.tmp/attachment-deployment-*/` receipts join the existing deployment artifact.
-Go module/compiler caches remain reusable.
-The [pipeline decision](../../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
-records the scheduling and ownership constraints. The quality job uploads
-`coverage-final.json` and `summary.json`, which records exact counts and the relative
-product-source manifest; the browser job uploads acceptance and deployment
-evidence. Both artifact families are retained for 30 days. The
+Quality uploads `coverage-final.json` and `summary.json` as
+`daynight-web-coverage`. Browser entries upload full evidence as
+`daynight-web-acceptance-1` and `daynight-web-acceptance-2`; shard 2 includes
+navigation and persistence receipts. Each also uploads its existing
+`acceptance/*/evidence.json` as `daynight-web-summary-1` or `daynight-web-summary-2`,
+preserving `runID/evidence.json`. The existing final `checks` job downloads only
+these small JSON summaries. All artifact families retain 30 days.
+
+For selected Web validation, that final job checks out its current source, sets
+up Node 24, downloads both exact summary names, and invokes the install-free
+`scripts/acceptance/report.mts --shards file1 file2` validator. It requires exactly
+shards 1/2 and 2/2 with distinct run IDs, clean passing receipts, the current
+`GITHUB_SHA` and checkout tree, accurate native/container targets and browser/CLI
+cleanup, matching selected inventories, disjoint canonical unions and both
+complete combined-authentication receipts owned only by shard 2. Missing or
+inconsistent evidence fails the same required gate. No executable, image or
+resource ownership is transferred between runners. The
+[two-shard decision](../../.agents/notes/implemented/testing/2026-11-04-web-ci-case-shards.md)
+records duplication costs and performance-model limits.
+
+Default local `pnpm web:acceptance` retains complete unsharded functional and
+combined-authentication validation with its preinstalled browser. Explicit local
+stress runs capacity last after functional, container, browser and CLI barriers;
+a stress/shard combination is rejected before preparation. Browser jobs select
+official Ubuntu archives before installation, as delivered in
+[PR #148](https://github.com/codetreker/daynight/pull/148). Go module/compiler caches
+remain reusable. The
+[pipeline decision](../../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
+records the original scheduling and ownership choices. The
 [deployment decision](../../.agents/notes/archived/architecture/2026-10-20-embedded-dashboard-deployment.md)
 records embedded HTTP/container smoke checks and concurrent dev-ci isolation;
 the [production acceptance decision](../../.agents/notes/archived/testing/2026-10-20-dashboard-production-acceptance.md)
@@ -1642,15 +1751,18 @@ pnpm web:acceptance
 pnpm web:acceptance:stress
 ```
 
-The ordinary command and CI require thirty-two functional scenarios on each
-native/container target, sixty-four in total. The explicit local stress command adds five native
+The ordinary local command requires thirty-two functional scenarios on each
+native/container target, sixty-four in total. CI retains that complete inventory
+across two disjoint case shards, each running its sixteen selected scenarios on
+both targets. The explicit local stress command adds five native
 capacity/limit scenarios and their performance receipt. From this package, use
 `pnpm test:stress:browser`, or invoke `node scripts/acceptance.mts --stress`;
 `--apfs --stress` combines the local capacity matrix with explicit APFS storage.
-Stress mode is refused in CI before fixture preparation. Raw Playwright
-selection also excludes the capacity spec by default and rejects a stress
-selection in CI. Both modes retain combined authentication, exact source/browser
-identity and full cleanup.
+Stress mode is refused in CI and cannot be combined with a shard before fixture
+preparation. Raw Playwright selection excludes the capacity spec by default and
+rejects a stress selection in CI. Both local modes retain combined authentication,
+exact source/browser identity and full cleanup; CI runs the two combined journeys
+on shard 2 while every shard performs its owned cleanup.
 
 Use Node 24, pnpm 11.28.6 and a frozen dependency install first. Chromium requires
 its normal runtime libraries on Linux; CI installs them with Playwright's
@@ -1701,9 +1813,11 @@ npm registry unless the build variable is explicitly supplied.
 The command builds real embedded assets and a new Go executable and owns a
 separate PostgreSQL container/volume and ephemeral loopback listener. In parallel,
 the normal dev-ci runner builds and starts the actual production image. Browser
-execution overlaps thirty-two native functional scenarios with the same
-thirty-two scenarios through the production image's stream gateway.
-Explicit local stress mode then runs five native capacity/limit scenarios. In
+execution overlaps the same selected functional scenarios in native and
+production-image stream-gateway targets. Local ordinary execution selects all
+thirty-two scenarios; each CI shard selects sixteen and the final gate requires
+the complete disjoint union. Explicit local stress mode then runs five native
+capacity/limit scenarios. In
 that mode, the native process and PostgreSQL remain alive through capacity;
 other preparation commands and the complete container stack finish before it
 starts. No normal localhost service or dataset is used. Functional and
@@ -1747,12 +1861,29 @@ pending protection, stale conflicts and committed-response-loss GET-only
 reconciliation, and covers English/Chinese narrow layouts. Pause counts retain
 their complete project/component scope independently of status and list filters.
 
-The [status journeys](tests/e2e/status.spec.ts) reuse the packed CLI and each
-target's authenticated service with the same Alice identity. Origin, method,
-headers and body pass through the redacting authenticated wrapper unchanged;
-receipts exclude credentials. Status scenarios are task-status, task-status-conflicts,
-task-status-recovery and task-status-transitions. The status-transition extension
-was validated against its 28-per-target functional inventory with five additional
+The [status journeys](tests/e2e/status.spec.ts) are task-status,
+task-status-conflicts, task-status-recovery and task-status-transitions. Within
+one Playwright worker incarnation and exact service origin, they share an
+Alice API PAT, a separately acquired CLI PAT/client, and a project created through
+the installed CLI. Each case opens a fresh API request context and independently
+validates the installed package's source and artifact hashes. Its command, write
+and snapshot receipt remains case-owned. The shared setup receipt records the
+actual project-creation command once; case receipts reference that source-qualified
+receipt. Worker teardown drains preparation and closes its owned CLI client.
+
+The automatic-permission, platform and assignment journeys share only a project
+within the same worker. Their API authentication stays case-owned, and assignment
+retains its normal Bob login, invitation and acceptance assertions. All seven
+journeys retain fresh browser contexts, pages, storage and normal browser logins;
+each creates its own mutable tasks and retains its exact write/fault assertions.
+A common worker-fixture registration and test-scoped family option preserve
+worker-pool reuse. Restarted workers prepare new resources. The
+[shared preparation decision](../../.agents/notes/implemented/testing/2026-11-04-web-scenario-preparation.md)
+records ownership and measurement limits.
+
+Origin, method, headers and body pass through the redacting authenticated wrapper
+unchanged; receipts exclude credentials. The status-transition extension was
+validated against its 28-per-target functional inventory with five additional
 native capacity/limit checks (61 combined); the current complete inventory below
 also includes later functional scenarios.
 
@@ -1967,24 +2098,32 @@ process groups. Each browser phase records its own result, browser identity,
 Playwright process/group and `browserCleanup` result. Raw reports and screenshots
 live under `native/functional/` and `container/`; stress runs additionally create
 `native/capacity/` and its unchanged schema 1 `performance.json` receipt.
-Additional mandatory
-combined receipts are `native/auth-combined/target.json` and
-`container/auth-combined/target.json`, both schema 1 with `kind: auth-combined`.
-They require all eleven named checks, source/browser/installed-package identity,
-old/new restart process identity and passed browser/resource cleanup. They retain
-safe observations and hashes, not credential/configuration bodies or raw logs.
-The report validator remains independent and validates the exact selected
-functional or stress inventory. `CI` requires a clean checkout matching
-`GITHUB_SHA` and the pinned browser for the current Linux or macOS host. Playwright uses one worker and no
-retries; skipped, flaky, duplicate/missing or incomplete scenarios fail validation.
-When selected, the web CI job archives `daynight-web-acceptance` separately from raw
-coverage for 30 days. Inspect the artifact from the exact workflow run and its
-tested checkout identity, which is normally a merge revision for PR runs. A pass
-requires exactly thirty-two native and thirty-two container functional
-scenarios. Explicit local stress mode requires the strict native union of those
-thirty-two functional and five capacity/limit scenarios, plus the same
-thirty-two container scenarios. Every phase and target rejects missing, extra
-or duplicate scenarios and skipped/flaky/retried results.
+Local ordinary/stress runs and CI shard 2 require
+`native/auth-combined/target.json` and `container/auth-combined/target.json`, both
+schema 1 with `kind: auth-combined`. They require all eleven canonical checks,
+source/browser/installed-package identity, old/new restart process identity and
+passed browser/resource cleanup. Shard 1 has no combined-authentication receipts.
+They retain safe observations and hashes, not credential/configuration bodies
+or raw logs.
+
+Schema 3 functional `evidence.json` includes `shard: { current, total: 2 }` and
+`selection: string[]` for CI shards. Each native/container target and functional
+phase must match that selection. The final validator requires the two selections
+to be disjoint and cover the canonical inventory exactly once per target, with
+all 22 combined checks assigned to shard 2. Local unsharded receipts keep their
+complete inventory without shard metadata. `CI` requires a clean checkout
+matching `GITHUB_SHA` and the pinned browser. Each database uses one worker and
+zero retries; skipped, flaky, duplicate/missing or incomplete scenarios fail.
+
+Full shard artifacts are `daynight-web-acceptance-1` and
+`daynight-web-acceptance-2`, separate from raw coverage and retained for 30 days.
+Inspect the artifact from the exact workflow run and tested checkout identity,
+which is normally a merge revision for PR runs. Complete ordinary validation
+requires thirty-two native and thirty-two container functional scenarios across
+the two CI shards or in one local run. Explicit local stress requires their
+strict native union with five capacity/limit scenarios and the same thirty-two
+container scenarios. Every selected phase rejects missing, extra or duplicate
+scenarios and skipped/flaky/retried results.
 Installed-CLI handoff, container callbacks and recovery require matching source
 commit/tree/dirty state as well as existing package/artifact ownership. A missing
 or mismatched tree field fails; no old-receipt fallback is introduced. The tree

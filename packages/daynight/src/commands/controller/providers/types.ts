@@ -5,6 +5,8 @@ export type ProviderEntry = TimelineEntry extends infer T ? T extends TimelineEn
 export type ProviderState = { nativeSessionId: string | null; activity: SessionSnapshot["activity"]; currentTurnId: string | null; capabilities: SessionCapabilities; controls?: SessionControls; turnStartedAt?: string | null };
 export type ProviderOptions = {
   cwd: string; model: string | null; args: readonly string[]; resumeNativeSessionId: string | null;
+  /** Frozen role text for native prompt append on start and resume, separate from user input. */
+  instructions?: string;
   unattended?: boolean;
   agentCliEnvironment?: Readonly<{ PATH: string; DN_CONFIG_DIR: string }>;
   env?: NodeJS.ProcessEnv; executable?: string; controlsRevisionFloor?: string;

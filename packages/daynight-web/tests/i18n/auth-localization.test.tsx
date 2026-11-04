@@ -1,3 +1,5 @@
+import { directAccessFixture } from "../helpers/taskSync";
+import { stringifyWireJson } from "../helpers/wireJson";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,10 +18,10 @@ const projectId = "00000000-0000-4000-8000-000000000002";
 const tokenId = "00000000-0000-4000-8000-000000000003";
 const memberId = "00000000-0000-4000-8000-000000000004";
 const timestamp = "2026-10-22T12:34:56Z";
-const user = { id: userId, name: "Raw 用户", email: "raw@example.com", emailVerified: true, avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: userId, name: "Raw 用户", email: "raw@example.com", emailVerified: true, avatarUrl: null };
 const member = (id = userId, role = "admin") => ({ projectId, userId: id, name: id === userId ? user.name : "协作者 Raw", email: `${id}@example.com`, avatarUrl: null, role, version: 12, createdAt: timestamp, updatedAt: timestamp });
-const participant = (id = userId, role = "admin") => { const { name, email, avatarUrl, ...directGrant } = member(id, role); return { userId: id, profile: { name, email, avatarUrl }, effectiveRole: role, directGrant }; };
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
+const participant = (id = userId, role = "admin") => { const { name, email, avatarUrl, ...directGrant } = member(id, role); return { inheritedFrom: null, userId: id, profile: { name, email, avatarUrl }, effectiveRole: role, directGrant }; };
+const json = (body: unknown, status = 200) => new Response(stringifyWireJson(body), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
 const failure = (status: number, code: string) => json({ error: { code, message: "Untrusted server detail", requestId: "auth-locale-request" } }, status);
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -33,9 +35,9 @@ const defaults = (url: string): Response => {
   if (url === "/api/v1/me/tokens") return json({ items: [] });
   if (url === `/api/v1/projects/${projectId}/access`) {
     const { email: _email, name: _name, avatarUrl: _avatarUrl, ...directGrant } = member();
-    return json({ effectiveRole: directGrant.role, directGrant });
+    return json({ ...directAccessFixture(projectId, userId), effectiveRole: directGrant.role, directGrant });
   }
-  if (url === `/api/v1/projects/${projectId}/members`) return json({ items: [participant(), participant(memberId, "member")] });
+  if (url === `/api/v1/projects/${projectId}/members`) return json({ actorAccess: { ...directAccessFixture(projectId, userId), effectiveRole: "admin", directGrant: participant().directGrant }, items: [participant(), participant(memberId, "member")] });
   if (url === `/api/v1/projects/${projectId}/invitations`) return json({ items: [] });
   throw new Error(`Unexpected test request: ${url}`);
 };
