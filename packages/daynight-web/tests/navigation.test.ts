@@ -1,0 +1,196 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BrowserNavigation, type DirtyDraft } from '../src/app/navigation';
+
+let owner: BrowserNavigation;
+beforeEach(() => { owner = new BrowserNavigation(window); });
+afterEach(() => owner.dispose());
+const scope = () => ({ identity: {}, projectId: 'project', taskId: 'task' });
+const draft = (overrides: Partial<DirtyDraft> = {}): DirtyDraft => ({ scope: scope(), isDirty: () => true, discard: vi.fn(), survives: () => false, ...overrides });
+const arrival = (state: unknown, path: string) => {
+  window.history.replaceState(state, '', path);
+  window.dispatchEvent(new PopStateEvent('popstate', { state }));
+};
+
+describe('window navigation admission', () => {
+  it('initializes without adding an entry and preserves other history state fields on writes', () => {
+    owner.dispose();
+    window.history.replaceState({ reader: { offset: 7 } }, '', '/projects');
+    const length = history.length;
+    owner = new BrowserNavigation(window);
+    expect(history.length).toBe(length);
+    owner.navigate('/account');
+    expect(history.state.reader).toEqual({ offset: 7 });
+    const first = history.state.__daynightNavigation;
+    owner.navigate('/invitations', true);
+    expect(history.state.__daynightNavigation.index).toBe(first.index);
+    expect(history.length).toBe(length + 1);
+  });
+
+  it('cancels before changing URL or history and reads current dirty state', () => {
+    let dirty = true;
+    const registration = draft({ isDirty: () => dirty });
+    owner.register(registration);
+    const notify = vi.fn(); owner.subscribe(notify);
+    const length = history.length;
+    owner.navigate('/account');
+    expect(owner.decision()).not.toBeNull();
+    expect(location.pathname).toBe('/projects');
+    owner.cancel(); owner.cancel();
+    expect(history.length).toBe(length);
+    expect(registration.discard).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    dirty = false;
+    owner.navigate('/account');
+    expect(notify).toHaveBeenCalledOnce();
+  });
+
+  it('confirms one target once, retaining registration for later input and admitting nested routes', () => {
+    const registration = draft(); owner.register(registration);
+    const action = vi.fn(() => owner.navigate('/account'));
+    owner.requestAction(action);
+    owner.requestAction(vi.fn());
+    owner.confirm(); owner.confirm();
+    expect(action).toHaveBeenCalledOnce();
+    expect(registration.discard).toHaveBeenCalledOnce();
+    expect(owner.snapshot().pathname).toBe('/account');
+    expect(owner.decision()).toBeNull();
+    owner.navigate('/projects');
+    expect(owner.decision()).not.toBeNull();
+  });
+
+  it('keeps surviving draft registrations on same-task changes and guards replace', () => {
+    const registration = draft({ survives: (url) => url.pathname === '/account' });
+    owner.register(registration);
+    owner.navigate('/account?tab=overview');
+    expect(owner.decision()).toBeNull();
+    const length = history.length;
+    owner.navigate('/projects', true);
+    expect(owner.snapshot().pathname).toBe('/account');
+    owner.confirm();
+    expect(history.length).toBe(length);
+    expect(owner.snapshot().pathname).toBe('/projects');
+  });
+
+  it('retains the mounted route during consecutive traversals and adopts only the latest target', () => {
+    const origin = history.state;
+    owner.navigate('/account'); const first = history.state;
+    owner.navigate('/invitations');
+    let dirty = true;
+    const registration = draft({ isDirty: () => dirty, discard: () => { dirty = false; } });
+    owner.register(registration);
+    const notify = vi.fn(); owner.subscribe(notify);
+    arrival(first, '/account');
+    arrival(origin, '/projects');
+    expect(owner.snapshot().pathname).toBe('/invitations');
+    expect(notify).not.toHaveBeenCalled();
+    owner.confirm();
+    expect(owner.snapshot().pathname).toBe('/projects');
+    expect(notify).toHaveBeenCalledOnce();
+    expect(dirty).toBe(false);
+  });
+
+  it('consumes recovery traversal, keeps input and releases navigation after restoring the origin', () => {
+    const start = history.state;
+    owner.navigate('/account'); const original = history.state;
+    owner.register(draft());
+    const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+    arrival(start, '/projects');
+    owner.cancel();
+    expect(go).toHaveBeenLastCalledWith(1);
+    owner.navigate('/invitations');
+    expect(owner.decision()).toBeNull();
+    arrival(original, '/account');
+    expect(owner.snapshot().pathname).toBe('/account');
+    expect(owner.decision()).toBeNull();
+    owner.navigate('/invitations');
+    expect(owner.decision()).not.toBeNull();
+  });
+
+  it('dismisses the choice without discard when traversal returns to the surviving scope', () => {
+    const start = history.state;
+    owner.navigate('/account'); const original = history.state;
+    const registration = draft({ survives: (url) => url.pathname === '/account' }); owner.register(registration);
+    arrival(start, '/projects');
+    expect(owner.decision()).not.toBeNull();
+    arrival(original, '/account');
+    expect(owner.decision()).toBeNull();
+    expect(registration.discard).not.toHaveBeenCalled();
+  });
+
+  it('uses native behavior for unindexed entries and starts a fresh segment only on an application write', () => {
+    const old = history.state;
+    const registration = draft(); owner.register(registration);
+    arrival(null, '/account#native');
+    expect(history.state).toBeNull();
+    expect(owner.snapshot()).toEqual({ pathname: '/account', search: '', hash: '#native' });
+    owner.navigate('/invitations'); owner.confirm();
+    expect(history.state.__daynightNavigation.session).not.toBe(old.__daynightNavigation.session);
+    expect(history.state.__daynightNavigation.index).toBe(0);
+    arrival(old, '/projects');
+    expect(owner.decision()).toBeNull();
+    expect(owner.snapshot().pathname).toBe('/projects');
+  });
+
+  it('does not trust copied fragment markers or invalid indexes', () => {
+    const initial = history.state;
+    owner.register(draft());
+    arrival(initial, '/projects#native');
+    expect(owner.decision()).toBeNull();
+    expect(history.state).toBe(initial);
+    arrival({ __daynightNavigation: { ...initial.__daynightNavigation, href: location.origin + '/account', index: 1.5 } }, '/account');
+    expect(owner.snapshot().pathname).toBe('/account');
+  });
+
+  it('unregisters without discarding, revokes the precise identity and never executes a retired action', () => {
+    const first = draft(); const second = draft();
+    const release = owner.register(first); owner.register(second);
+    release();
+    expect(first.discard).not.toHaveBeenCalled();
+    const action = vi.fn(); owner.requestAction(action);
+    owner.retireScope({ ...second.scope, identity: {} });
+    expect(owner.decision()).not.toBeNull();
+    owner.retireScope(second.scope); owner.confirm();
+    expect(second.discard).toHaveBeenCalledOnce();
+    expect(action).not.toHaveBeenCalled();
+    expect(owner.decision()).toBeNull();
+  });
+
+  it('retires synchronously on abort and refuses already retired registrations', () => {
+    const controller = new AbortController();
+    const registration = draft({ signal: controller.signal });
+    owner.register(registration);
+    owner.requestAction(vi.fn());
+    controller.abort();
+    expect(registration.discard).toHaveBeenCalledOnce();
+    expect(owner.decision()).toBeNull();
+    const retired = draft({ signal: controller.signal });
+    owner.register(retired)();
+    expect(retired.discard).toHaveBeenCalledOnce();
+    owner.navigate('/account');
+    expect(owner.decision()).toBeNull();
+  });
+
+  it('invalidates an unregistered owner without inferring a history or discard decision', () => {
+    const original = history.state;
+    owner.navigate('/account');
+    const registration = draft();
+    const unregister = owner.register(registration);
+    const go = vi.spyOn(history, 'go');
+    arrival(original, '/projects');
+    unregister(); owner.confirm();
+    expect(owner.decision()).toBeNull();
+    expect(registration.discard).not.toHaveBeenCalled();
+    expect(go).not.toHaveBeenCalled();
+    expect(owner.snapshot().pathname).toBe('/account');
+  });
+
+  it('asks the browser to protect whole-document departure only for dirty live scopes', () => {
+    const release = owner.register(draft());
+    const blocked = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(blocked);
+    expect(blocked.defaultPrevented).toBe(true);
+    release();
+    const allowed = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(allowed);
+    expect(allowed.defaultPrevented).toBe(false);
+    expect(() => owner.navigate('https://elsewhere.invalid')).toThrow();
+  });
+});

@@ -32,6 +32,7 @@ import { WorkersPage } from "../features/workers/WorkersPage";
 import { WorkerDetailPage } from "../features/workers/WorkerDetailPage";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { useSidebarPreference } from "./useSidebarPreference";
+import { useBrowserLocation } from './browser-location';
 import "../styles/auth.css";
 
 export { parseAuthRoute } from "./router";
@@ -133,7 +134,8 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   const { locale, messages: { auth: { shell: m }, workspace: { app, projects } } } = useI18n();
   const testMessages = useTestSessionListMessages();
   const [invitation, setInvitation] = useState(captureInvitation);
-  const [location, setLocation] = useState(() => ({ pathname: window.location.pathname, search: window.location.search }));
+  const location = useBrowserLocation();
+  const invitationLocationSeen = useRef(location);
   const { pathname, search } = location;
   const [invitationRevision, setInvitationRevision] = useState(0);
   const invitationLifetime = useRef(new AbortController());
@@ -183,19 +185,16 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     return () => { mounted.current = false; active.current?.abort(); invitationLifetime.current.abort(); cacheScope.current?.dispose(); invalidateAuthRequests(); };
   }, []);
   useEffect(() => {
-    const onNavigate = () => {
-      if (window.location.pathname === "/invitations" && window.location.hash !== "") {
-        const incoming = captureInvitation();
-        invitationLifetime.current.abort();
-        invitationLifetime.current = new AbortController();
-        setInvitation(incoming); setInvitationRevision((value) => value + 1);
-      }
-      setLocation({ pathname: window.location.pathname, search: window.location.search });
-    };
-    window.addEventListener("popstate", onNavigate);
-    window.addEventListener("hashchange", onNavigate);
-    return () => { window.removeEventListener("popstate", onNavigate); window.removeEventListener("hashchange", onNavigate); };
-  }, []);
+    // The initial state already consumed the first secret, even when storage is unavailable.
+    if (invitationLocationSeen.current === location) return;
+    invitationLocationSeen.current = location;
+    if (location.pathname === "/invitations" && location.hash !== "") {
+      const incoming = captureInvitation();
+      invitationLifetime.current.abort();
+      invitationLifetime.current = new AbortController();
+      setInvitation(incoming); setInvitationRevision((value) => value + 1);
+    }
+  }, [location]);
   useEffect(() => {
     const controller = new AbortController(); active.current = controller;
     const current = ++generation.current;
