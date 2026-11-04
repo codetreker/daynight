@@ -11,6 +11,7 @@ import { openControllerLifecycleStore, type ControllerOperation } from "./lifecy
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
 import { captureProcessProof, captureControllerProcessProof } from "./process-proof.js";
 import { createControllerRelay } from "./relay.js";
+import { providerDisplayEntry } from "./provider-display.js";
 import { isCleaningGeneration, observeNativeInput, observeNativeInteraction } from "./recovery.js";
 import { NativeRpcError } from "./providers/native-rpc.js";
 import type { NativeProvider, ProviderOptions } from "./providers/types.js";
@@ -267,7 +268,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
         publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
       }),
       onTimeline: entry => nativeEvent(() => {
-        journal.projectTimeline(entry);
+        journal.projectTimeline(providerDisplayEntry(entry));
         if (entry.kind === "interaction") {
           const id = entry.interaction.interactionId;
           if (cleaning && cleanupInputStarted && !knownInteractions.has(id) && entry.interaction.state === "pending") cleanupInteractions.add(id);
