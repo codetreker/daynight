@@ -78,6 +78,25 @@ export const setTaskStepStatus = async (projectId: string, taskId: string, stepI
 
 export type AddStepInput = { readonly id: string; readonly title: string; readonly description: string; readonly status: StepStatus; readonly version: bigint };
 
+export const editTaskStep = async (projectId: string, taskId: string, stepId: string, title: string, description: string, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  const target = stepId.toLowerCase();
+  if (!/^[0-9a-f]{8}$/.test(target) || !isTaskVersion(version) || !/[^\p{White_Space}]/u.test(title) ||
+    [title, description].some((value) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value))) throw new ApiError("protocol");
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps/${target}`, signal, {
+    method: "PATCH", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId }, body: stringifyApiJson({ version, title, description }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
+  return json(response, signal, (value) => {
+    const result = parseTaskSteps(value, project, task);
+    const targetStep = result.steps.find((step) => step.id === target);
+    if (response.status !== 200 || result.version !== version && result.version !== version + 1n || targetStep?.title !== title || targetStep.description !== description) throw new ApiError("protocol", response.status);
+    return result;
+  }, undefined, true);
+};
+
 export const addTaskStep = async (projectId: string, taskId: string, input: AddStepInput, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
   const project = requestId(projectId);
   const task = requestId(taskId);

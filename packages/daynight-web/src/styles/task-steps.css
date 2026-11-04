@@ -9,6 +9,7 @@
 .step-add-form label { display: grid; gap: 6px; color: #45516a; font-size: 11px; font-weight: 600; }
 .step-add-form input, .step-add-form select, .step-add-form textarea { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid #dce0e8; border-radius: 5px; padding: 8px; background: #fff; color: #344258; font: inherit; font-size: 12px; }
 .step-add-form textarea { min-height: 120px; resize: vertical; }
+.step-add-form textarea.step-title-editor { min-height: 40px; }
 .step-add-form input:focus-visible, .step-add-form select:focus-visible, .step-add-form textarea:focus-visible, .step-editor-heading button:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 2px; }
 .step-field-error { color: #a05252; font-size: 11px; margin: -6px 0 0; }
 .step-editor-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: #45516a; font-size: 11px; font-weight: 600; }

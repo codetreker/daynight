@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/client";
 import { parseApiJson, stringifyApiJson } from "../src/api/json";
-import { addTaskStep, getTaskSteps, moveTaskStep, parseTaskSteps, setTaskStepStatus } from "../src/api/task-steps";
+import { addTaskStep, editTaskStep, getTaskSteps, moveTaskStep, parseTaskSteps, setTaskStepStatus } from "../src/api/task-steps";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
 const taskId = "20000000-0000-0000-0000-00000000000b";
@@ -116,5 +116,30 @@ describe("Step position transport", () => {
     await expect(moveTaskStep(projectId, taskId, step.id, { before: step.id }, 1n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ status: 400, code: "invalid_input" });
     await expect(moveTaskStep(projectId, taskId, step.id, { after: "ffffffff" }, 1n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ status: 404, code: "not_found" });
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Step content transport", () => {
+  it("sends both fields atomically with the scoped ID, exact version and request identity", async () => {
+    const changed = { ...step, title: " New 😀 ", description: "" };
+    const result = { ...resource, version: 6n, steps: [changed] };
+    const fetcher = vi.fn().mockResolvedValue(response(result)); vi.stubGlobal("fetch", fetcher);
+    const owner = { ...admission(), onWriteConfirmed: vi.fn() };
+    await expect(editTaskStep(projectId, taskId, "0000000A", changed.title, "", 5n, new AbortController().signal, owner, "request-id")).resolves.toEqual(result);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a`, expect.objectContaining({ method: "PATCH", body: '{"version":5,"title":" New 😀 ","description":""}', headers: expect.objectContaining({ "X-Request-ID": "request-id" }) }));
+    expect(owner.onWriteConfirmed).toHaveBeenCalledOnce();
+  });
+  it.each([
+    { ...resource, version: 7n }, { ...resource, version: 6n, steps: [] },
+    { ...resource, version: 6n, steps: [{ ...step, title: "wrong", description: "" }] },
+    { ...resource, version: 6n, steps: [{ ...step, title: "new", description: "wrong" }] },
+  ])("rejects a mismatched success receipt %#", async (body) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(body)));
+    await expect(editTaskStep(projectId, taskId, step.id, "new", "", 5n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ kind: "protocol" });
+  });
+  it.each([["  ", ""], ["ok", "\0"], ["\ud800", ""]])("rejects invalid text before dispatch %#", async (title, description) => {
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    await expect(editTaskStep(projectId, taskId, step.id, title, description, 5n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ kind: "protocol" });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
