@@ -13,6 +13,7 @@ const projectId = "abcdefab-1111-4222-8333-123456789abc";
 const taskId = "abcdefab-2222-4222-8333-123456789abc";
 const otherId = "abcdefab-3333-4222-8333-123456789abc";
 const claimId = "abcdefab-4444-4222-8333-123456789abc";
+const accountId = "abcdefab-5555-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
@@ -31,6 +32,7 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
       const current = { method: request.method!, path: url.pathname, query: url.searchParams, body };
       requests.push(current);
       if (current.path === `/api/v1/projects/${projectId}`) respond(response, project);
+      else if (current.path === "/api/v1/me") respond(response, { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null });
       else handler(current, response, request);
     });
   });
@@ -197,7 +199,7 @@ describe("task commands over HTTP", () => {
     const writes = f.requests.filter(({ method }) => method === "POST");
     expect(writes).toHaveLength(1);
     expect(writes[0]!.path).toBe(`/api/v1/projects/${projectId}/tasks`);
-    expect(parseApiJson(writes[0]!.body)).toEqual({ title, description: "", dependsOn: [otherId], externalDependsOn: [] });
+    expect(parseApiJson(writes[0]!.body)).toEqual({ title, description: "", assignedTo: accountId, dependsOn: [otherId], externalDependsOn: [] });
     expect(f.context.stdout).toHaveBeenCalledOnce();
     expect(f.context.stdout.mock.calls[0]![0]).toContain("Task created.");
     expect(f.context.stdout.mock.calls[0]![0]).toContain("-Original=title\\n\\u001b[2J");

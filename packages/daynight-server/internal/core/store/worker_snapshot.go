@@ -53,7 +53,7 @@ func (w *WorkerTx) ReportTaskSnapshots(ctx context.Context, userID, workerID str
 	}
 	rows, err := w.tx.Query(ctx, `SELECT t.id::text, t.project_id::text, t.title, t.status, worker_property.value, p.name
 		FROM tasks t
-		JOIN project_members m ON m.project_id=t.project_id AND m.user_id=$2
+		JOIN (`+projectAccessRelation+`) a ON a.project_id=t.project_id AND a.user_id=$2
 		JOIN projects p ON p.id=t.project_id
  LEFT JOIN task_properties worker_property ON worker_property.task_id=t.id AND worker_property.name='worker'
 		WHERE t.id=ANY($1::uuid[]) AND t.deleted_at IS NULL`, ids, userID)
@@ -212,7 +212,7 @@ func (s *Snapshot) filterWorkerTasks(ctx context.Context, userID string, workers
 		return nil
 	}
 	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.project_id::text FROM tasks t
-		JOIN project_members m ON m.project_id=t.project_id AND m.user_id=$2
+		JOIN (`+projectAccessRelation+`) a ON a.project_id=t.project_id AND a.user_id=$2
 		WHERE t.id=ANY($1::uuid[]) AND t.deleted_at IS NULL`, ids, userID)
 	if err != nil {
 		return queryError("filter worker task visibility", err)
