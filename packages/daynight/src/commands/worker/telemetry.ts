@@ -11,6 +11,8 @@ import { createHerdrNativeEnvironment } from "./herdr/instance.js";
 import { createHerdrRuntimeVersionObserver, HerdrVersionUnavailableError } from "./herdr/runtime-version.js";
 import { NativeVersionOutputError, probeNativeAgentVersion } from "./herdr/version-probe.js";
 import type { WorkerPaths } from "./paths.js";
+import { captureCodexProbeEnvironment, createCodexProbeOwner } from "./codex-probe-owner.js";
+import type { CodexProbeOwner } from "./codex-probe-owner.js";
 import type { AssistantHostSample } from "./bots/host-capabilities.js";
 
 export type WorkerTelemetryIssue = {
@@ -117,11 +119,13 @@ const executableMissing = async (agent: string, environment: NodeJS.ProcessEnv, 
 
 export const createWorkerTelemetryCollector = (options: {
   paths: WorkerPaths; homeDirectory: string; version: string; workingDirectory: string; machine: WorkerMachine; platform: TaskPlatform; workerId: string; serverOrigin: string;
-  assistantHost?: { collect: (operation: Operation) => Promise<AssistantHostSample> };
+  assistantHost?: { collect: (operation: Operation, codexProbes?: CodexProbeOwner) => Promise<AssistantHostSample> };
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || /[\0\r\n]/.test(options.workingDirectory)) throw new TypeError("The Worker startup directory must be absolute and contain no control separators.");
   const environment = createHerdrNativeEnvironment(options.paths, process.env);
   const herdr = createHerdrRuntimeVersionObserver(options);
+  const codexEnvironment = captureCodexProbeEnvironment(environment);
+  const codexProbes = createCodexProbeOwner(codexEnvironment, options.workingDirectory);
   const cache = new Map<"codex" | "copilot", { started: number; probe: WorkerExecutableProbe; issue?: WorkerTelemetryIssue; cleanupUncertain: boolean }>();
   let pendingDisk: Promise<WorkerDisk> | null = null;
   const disk = async (operation: Operation): Promise<WorkerDisk> => {
@@ -148,6 +152,7 @@ export const createWorkerTelemetryCollector = (options: {
         catch (error) { const code = codeOf(error); issues.push({ component, code, error }); return { state: "error", checkedAt, code }; }
       };
       const version = async (agent: "codex" | "copilot"): Promise<WorkerExecutableProbe> => {
+        const probeEnvironment = agent === "codex" ? codexEnvironment : environment;
         const previous = cache.get(agent);
         // A missing close acknowledgement leaves ownership uncertain; starting a replacement could leak another process tree.
         if (previous?.cleanupUncertain === true) {
@@ -155,22 +160,27 @@ export const createWorkerTelemetryCollector = (options: {
           issues.push({ component: agent, code: "unavailable", error });
           return { state: "error", checkedAt: new Date().toISOString(), code: "unavailable" };
         }
-        if (previous !== undefined && performance.now() - previous.started < 60_000) {
-          if (previous.issue !== undefined) issues.push(previous.issue);
-          return previous.probe;
-        }
         const started = performance.now(); const checkedAt = new Date().toISOString();
         let result: WorkerExecutableProbe; let issue: WorkerTelemetryIssue | undefined;
-        let cleanupUncertain = false;
+        let cleanupUncertain = false; let cached = false;
         try {
-          result = { state: "ok", checkedAt, value: await probeNativeAgentVersion({ agent, environment, cwd: options.workingDirectory, runCommand: (command, childOperation) => runHerdrCommand(command, childOperation, spawnHerdrProcess, { cleanupWithinDeadline: true }) }, collection) };
+          const observeVersion = async (): Promise<WorkerExecutableProbe> => {
+            if (previous !== undefined && performance.now() - previous.started < 60_000) {
+              cached = true;
+              if (previous.issue !== undefined) issues.push(previous.issue);
+              return previous.probe;
+            }
+            return { state: "ok", checkedAt, value: await probeNativeAgentVersion({ agent, environment: probeEnvironment, cwd: options.workingDirectory, runCommand: (command, childOperation) => runHerdrCommand(command, childOperation, spawnHerdrProcess, { cleanupWithinDeadline: true }) }, collection) };
+          };
+          result = agent === "codex" ? await codexProbes.observe({ file: agent, environment: probeEnvironment, workingDirectory: options.workingDirectory }, collection, observeVersion) : await observeVersion();
         } catch (error) {
           cleanupUncertain = hasHerdrCommandCleanupFailure(error);
           try {
-            if (!cleanupUncertain && hasCode(error, "ENOENT") && await executableMissing(agent, environment, options.workingDirectory, collection)) result = { state: "not_installed", checkedAt };
+            if (!cleanupUncertain && hasCode(error, "ENOENT") && await executableMissing(agent, probeEnvironment, options.workingDirectory, collection)) result = { state: "not_installed", checkedAt };
             else { const code = codeOf(error); issue = { component: agent, code, error }; result = { state: "error", checkedAt, code }; }
           } catch (lookupError) { const code = codeOf(lookupError); issue = { component: agent, code, error: new Error("Native executable absence could not be established.", { cause: lookupError }) }; result = { state: "error", checkedAt, code }; }
         }
+        if (cached) return result;
         cache.set(agent, { started, probe: result, ...(issue === undefined ? {} : { issue }), cleanupUncertain });
         if (issue !== undefined) issues.push(issue);
         return result;
@@ -178,7 +188,7 @@ export const createWorkerTelemetryCollector = (options: {
       const sampledAt = new Date().toISOString();
       try {
         // The assistant collector owns its five-second budget. Capture rejection so ordinary probes still finish their process cleanup.
-        const assistantPending = Promise.resolve().then(() => options.assistantHost?.collect(operation)).then(value => ({ value }), (error: unknown) => ({ error }));
+        const assistantPending = Promise.resolve().then(() => options.assistantHost?.collect(operation, codexProbes)).then(value => ({ value }), (error: unknown) => ({ error }));
         const [system, cpu, memory, filesystem, daemon, codex, copilot, assistantOutcome] = await Promise.all([
           probe("os", () => ({ type: text(os.type()), release: text(os.release()), version: text(os.version()), arch: text(os.arch()) })),
           probe("cpu", () => sampleCPU(collection)),

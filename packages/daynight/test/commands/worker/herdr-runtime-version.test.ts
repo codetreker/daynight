@@ -98,7 +98,8 @@ describe("read-only durable Herdr runtime versions", () => {
       machine: { id: "fixture", name: "Fixture" }, assistantHost: assistant }).collect(parent);
     expect(sample.telemetry.versions.herdr).toMatchObject({ state: "ok", value: "0.9.5" });
     expect(sample.telemetry.assistantHost).toEqual(assistantHost);
-    expect(assistant.collect).toHaveBeenCalledExactlyOnceWith(parent);
+    expect(assistant.collect.mock.calls[0]?.[0]).toBe(parent);
+    expect(assistant.collect).toHaveBeenCalledExactlyOnceWith(parent, { observe: expect.any(Function) });
     expect(mocks.rpc.mock.calls.map(call => call[0])).toEqual([endpoint(record)]);
     expect(readFileSync(f.journal)).toEqual(original);
     expect(mocks.execution).not.toHaveBeenCalled();

@@ -66,7 +66,7 @@ collector 对完整 Herdr 观察使用现有有界等待，每次异步步骤后
 
 可执行来源与 Web 运行适配器一致：Codex 使用原生 PATH，Copilot 使用其随包平台可执行文件，Claude 使用 SDK 的随包平台可执行文件。只运行版本和启动参数帮助探测，不启动原生 Session、不发用户消息，也不读取认证文件来声称账户可用。目录存在、工具存在和参数可识别仍不能保证未来的认证、模型访问或真实启动成功；启动者必须再次验证并等待原生同步事实。
 
-助手预检在报告 Operation 内拥有独立的五秒预算和严格进程清理责任。遥测采集先保存助手成功或失败的结果，等待普通采集和全部原生命令结束后，再传播取消或失败并保留所有清理错误；`reporter.stop()` 因而不会在其它探测尚未完成清理时成功返回。无法确认清理的工具不再启动替代探测；报告仅包含有限 reason，私有 issue 通过现有 reporter 诊断和退出错误链传递。预检来源 observedAt 不随新的普通机器报告刷新，消费端以服务器时间独立检查 120 秒年龄上限。
+助手预检在报告 Operation 内拥有独立的五秒预算和严格进程清理责任。遥测采集先保存助手成功或失败的结果，等待普通采集和全部原生命令结束后，再传播取消或失败并保留所有清理错误；`reporter.stop()` 因而不会在其它探测尚未完成清理时成功返回。无法确认清理的工具不再启动替代探测。telemetry 为显式组合创建一个 Codex probe owner，并在调用助手 collector 时传入；独立助手 collector 使用自己的 owner。普通 collector 与助手 collector 分别捕获自己的 bare `codex` 探测环境：Windows 按 Node 的字母序保留第一个大小写不敏感 PATH/PATHEXT 键的值，删除其重复别名并使用唯一的大写键；其它环境键不变，其他 Provider 和显式 executable 继续使用原环境。`cross-spawn` 的 shebang 查找与 Node native 启动对重复 PATH 键采用不同选择，先捕获唯一键使 launcher 与 owner 使用同一份选定搜索输入。相同 `codex` executable 名称、启动目录与选定 PATH（Windows 还包含 PATHEXT）复用现有原生 executable 搜索规则，普通版本与助手版本/帮助整条命令链依次取得该 owner；助手使用已验证的真实目录执行，匹配保留其原始启动目录来源。owner 在等待前登记后续调用，等待既有链完全收尾，再检查取消与原始清理失败。清理失败永久保留原对象，并在普通版本缓存读取前检查，避免旧成功掩盖助手失败。等待 owner 不增加命令或改变五秒采集预算，其他 Provider 不进入这条等待链。不同搜索输入或显式 executable 不共享该 owner；没有新增 executable 查找，也不声称识别任意绝对路径或别名的文件身份。[组合清理决策](../../.agents/notes/implemented/bug-fix/2026-11-04-codex-reporting-probe-ownership.md)记录范围依据。报告仅包含有限 reason，私有 issue 通过现有 reporter 诊断和退出错误链传递。预检来源 observedAt 不随新的普通机器报告刷新，消费端以服务器时间独立检查 120 秒年龄上限。
 
 ## 失败与可观察性
 

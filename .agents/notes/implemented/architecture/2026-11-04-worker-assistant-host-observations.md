@@ -58,7 +58,11 @@ remain explicit, and unsupported arguments and raw native output are excluded
 from reports. Bounded probes retain cleanup responsibility instead of starting
 replacement processes after uncertain termination. Telemetry joins every probe
 before propagating assistant failure or cancellation, preserving all cleanup
-errors so reporter shutdown cannot finish before native cleanup.
+errors so reporter shutdown cannot finish before native cleanup. The
+[shared Codex probe ownership decision](../bug-fix/2026-11-04-codex-reporting-probe-ownership.md)
+coordinates matching ordinary and assistant Codex invocations; the original
+per-collector refusal remains responsible for standalone observations and
+nonmatching provider executables.
 
 The protocol does not provide hosting, authentication checks, successful Bot
 creation, or cross-machine path verification. Those consumers must combine the
