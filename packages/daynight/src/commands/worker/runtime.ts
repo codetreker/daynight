@@ -41,6 +41,7 @@ import { resolveWorkerPaths } from "./paths.js";
 import { createWorkerPromptBuilder } from "./prompts.js";
 import { createWorkerRemote } from "./remote.js";
 import { createWorkerReporter } from "./reporter.js";
+import { createWorkerRepositoryAdmission } from "./repository-admission.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
 import { createWorkerGitManager } from "./worktrees.js";
@@ -230,6 +231,7 @@ export const runWorker = async (options: {
     const prepared = new Map<string, WorkerProject>();
     const getStore = (): ReturnType<typeof openWorkerStore> => store === undefined ? (store = openWorkerStore(paths.databaseFile)) : store;
     const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory })) : git;
+    const { admit: admitRepository } = createWorkerRepositoryAdmission({ paths, store: getStore });
     const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, mode: local.agentControlMode, signal, emit });
     const view = (snapshot: WorkerConfigurationSnapshot): WorkerCoordinatorConfiguration | null => {
       const effective = snapshot.effective;
@@ -292,7 +294,7 @@ export const runWorker = async (options: {
       const mapped = previous === null ? await workerLocalRepositoryForProject(local, paths, project) : undefined;
       if (previous === null && mapped === undefined) return false;
       if (previous !== null) await remote.resolveProject({ repoUrl: previous.repoUrl, projectId }, applicationSignal);
-      const binding = previous === null ? currentStore.registerProject({ projectId, repoUrl: mapped!.remote, localPath: mapped!.path }) : previous;
+      const binding = await admitRepository(previous === null ? { projectId, repoUrl: mapped!.remote, localPath: mapped!.path } : previous, applicationSignal);
       const operation = createOperation({ signal: applicationSignal });
       try { await getGit().prepareRepository(binding, operation); }
       finally { operation.dispose(); }
