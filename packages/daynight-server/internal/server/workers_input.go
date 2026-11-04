@@ -15,11 +15,13 @@ import (
 
 var workerReportTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]([01]\d|2[0-3]):[0-5]\d)$`)
 
-var workerReportFields = []string{"machine", "platform", "workingDirectory", "sampledAt", "os", "cpu", "memory", "disk", "versions", "taskInventory"}
+var workerRequiredReportFields = []string{"machine", "platform", "workingDirectory", "sampledAt", "os", "cpu", "memory", "disk", "versions", "taskInventory"}
+
+var workerReportFields = append(append([]string{}, workerRequiredReportFields...), "assistantHost")
 
 func workerReportInput(fields map[string]json.RawMessage) (core.WorkerReport, error) {
 	var input core.WorkerReport
-	for _, key := range workerReportFields {
+	for _, key := range workerRequiredReportFields {
 		if _, present := fields[key]; !present {
 			return input, invalidInput(key + " is required")
 		}
@@ -77,6 +79,12 @@ func workerReportInput(fields map[string]json.RawMessage) (core.WorkerReport, er
 	input.Telemetry.Versions.Copilot, err = workerProbeInput(versions["copilot"], "copilot", "not_installed", workerVersionInput)
 	if err != nil {
 		return input, err
+	}
+	if raw, present := fields["assistantHost"]; present {
+		input.Telemetry.AssistantHost, err = workerAssistantHostInput(raw)
+		if err != nil {
+			return input, err
+		}
 	}
 	input.TaskInventory, err = workerInventoryInput(fields["taskInventory"])
 	return input, err
