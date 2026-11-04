@@ -18,7 +18,10 @@ intervals have durable checkpoints; recovery preserves gaps instead of extending
 an old screen through downtime. Recovering a segment without a durable orderly end
 retains interruption evidence even when terminal cleanup will never start another
 sampler. A crash before any durable frame remains failed; an already persisted
-segment end is recovered without inventing an interruption. Native identity
+segment end is recovered without inventing an interruption. Recovery tracks
+committed frame and gap coverage separately from the last observed frame. A
+durable gap_end advances the recoverable segment range even before the next
+frame selection; it cannot extend a frame interval or invent a wall-clock time. Native identity
 enrichment changes identity only,
 including already closed capture segments, without changing their observations.
 Post-input observation and ordinary polling reconcile the enriched ledger before
@@ -74,6 +77,12 @@ capture interruptions; they do not repair corrupted source ownership or bytes.
 **Holding a slot until upload completes.** A permanently failed archive can block
 unrelated tasks forever. Separating execution slots from retained-resource budgets
 preserves both scheduling progress and an explicit upper bound on storage debt.
+
+**Replacing gap and frame records with one atomic transition.** A new combined
+event could remove one future crash window, but would not repair an existing
+journal prefix ending in gap_end. Deriving recovery coverage from every committed
+event preserves that prefix without changing the stored format or weakening
+archive interval validation.
 
 ## Consequences
 

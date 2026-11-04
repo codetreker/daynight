@@ -8,7 +8,7 @@
 
 每轮使用原私有 daemon 的 `session.snapshot`、`pane.process_info`、PTY 尺寸与 `pane.read(source=visible,format=ansi)`，读取前后核对原运行、workspace、pane、terminal、shell 和几何。观察不 attach、不 resize、不恢复 agent。ANSI 只保留文本及 v2 白名单样式，OSC、DCS 和其他控制数据不进入网页可执行上下文。
 
-每轮结束至少等待 350ms。不同完整画面先提交 selected 意图，再写临时帧、fsync、原子 rename、同步父目录，最后登记文件及索引；完成登记后才发布 `recorded=true`。索引采用带哈希链的 append journal，每次提交同步落盘。相同内容与尺寸保留一个帧，观察区间每 5 秒或正常停采时 checkpoint。重启只承认持久边界，重新采集创建新段并保留 restart gap；未 checkpoint 的持续时间不延长上一画面。恢复尚未持久结束的段时，即使 claim 已终态且不会再启动采样，也保留 `checkpoint_lost` 缺失标记或既有未结束 gap；该标记不声称观察了停机期间的画面，也不估算停机持续时间。已有持久 `segment_end` 则读回原结束边界，不增加中断；重复恢复保持幂等。
+每轮结束至少等待 350ms。不同完整画面先提交 selected 意图，再写临时帧、fsync、原子 rename、同步父目录，最后登记文件及索引；完成登记后才发布 `recorded=true`。索引采用带哈希链的 append journal，每次提交同步落盘。相同内容与尺寸保留一个帧，观察区间每 5 秒或正常停采时 checkpoint。重启只承认持久边界，重新采集创建新段并保留 restart gap；未 checkpoint 的持续时间不延长上一画面。恢复尚未持久结束的段时，即使 claim 已终态且不会再启动采样，也保留 `checkpoint_lost` 缺失标记或既有未结束 gap；该标记不声称观察了停机期间的画面，也不估算停机持续时间。已有持久 `segment_end` 则读回原结束边界，不增加中断；重复恢复保持幂等。恢复段末单独依据 journal 已持久覆盖的位置，包含帧、checkpoint、gap 起点和已提交的 `gap_end`；它不能退回最后一帧的观察位置。gap 结束已提交、下一帧尚未选择时，新的缺失标记接在已结束 gap 之后，原 gap 和帧索引都保持不变。没有墙钟字段的 `gap_end` 只推进单调时间范围，不推算新的墙钟时间。
 
 录制与输入共享原 Session 身份，但各自承担持久责任。nativeSessionId 从未知变为已知时，同代录制段只作单向身份补齐，不改变帧和已关闭段的观察边界。selected 文件未登记时仅可按原意图核验并恢复；已登记文件缺失、原始字节 hash 不符、错误归属或损坏 journal 均为 failed，不能静默删帧或转换为 unavailable。
 

@@ -10,7 +10,7 @@ import type { HerdrRecordingBoundary, HerdrRecordingIdentity, HerdrRecordingObse
 
 type FileRecord = Omit<SessionV2FrameFile, "data">;
 type Selected = { file: FileRecord; index: SessionV2FrameIndex; screenHash: string; capturedAt: string };
-type SegmentState = { segment: HerdrLocalSegment; durableElapsed: string; durableCapturedAt: string; lastFile: string | null; screenHash: string | null };
+type SegmentState = { segment: HerdrLocalSegment; durableElapsed: string; durableCapturedAt: string; coverageBoundary: HerdrRecordingBoundary | null; lastFile: string | null; screenHash: string | null };
 type Event =
   | { type: "run"; run: HerdrRecordingRun }
   | { type: "segment"; segment: HerdrLocalSegment }
@@ -62,10 +62,19 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
   const runs = new Map<string, HerdrRecordingRun>(), segments = new Map<string, SegmentState>();
   const selected = new Map<string, Selected>(), files = new Map<string, FileRecord>(), indexes = new Map<string, SessionV2FrameIndex>();
   const gaps: SessionV2Gap[] = [], pending = new Map<string, HerdrRecordingObservation>(), liveSequences = new Map<string, bigint>();
-  const gapBoundaries = new Map<string, HerdrRecordingBoundary>();
   let revision = 0n, chain = digest(canonicalSessionJson(header)), recordingBytes = bytes({ files: [], index: [] }), failed = false;
   const runFor = (segmentId: string): HerdrRecordingRun => { const segment = segments.get(segmentId); return segment ? runs.get(segment.segment.executionGeneration) ?? corrupt() : corrupt(); };
   const segmentFor = (segmentId: string): SegmentState => segments.get(segmentId) ?? corrupt();
+  const cover = (s: SegmentState, durationMs: string, capturedAt?: string): void => {
+    const prior = s.coverageBoundary;
+    // Frames and gaps both bound the committed timeline, but only frames extend
+    // frame indexes. A gap_end has no wall-clock observation: retain the latest
+    // committed timestamp instead of deriving one from its monotonic duration.
+    s.coverageBoundary = {
+      durationMs: prior && BigInt(prior.durationMs) > BigInt(durationMs) ? prior.durationMs : durationMs,
+      endedAt: capturedAt && (!prior || Date.parse(capturedAt) > Date.parse(prior.endedAt)) ? capturedAt : prior?.endedAt ?? s.segment.startedAt,
+    };
+  };
   const apply = (event: Event): void => {
     if (event.type === "run") {
       const run = event.run;
@@ -76,7 +85,7 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
       const s = event.segment, run = runs.get(s.executionGeneration);
       uuid(s.segmentId); seq(s.segmentOrdinal); timestamp(s.startedAt);
       if (!run || run.closed || segments.has(s.segmentId) || s.segmentOrdinal !== String(segments.size + 1) || s.endedAt !== null || s.durationMs !== null || [...segments.values()].some(value => value.segment.endedAt === null)) corrupt();
-      segments.set(s.segmentId, { segment: clone(s), durableElapsed: "0", durableCapturedAt: s.startedAt, lastFile: null, screenHash: null });
+      segments.set(s.segmentId, { segment: clone(s), durableElapsed: "0", durableCapturedAt: s.startedAt, coverageBoundary: null, lastFile: null, screenHash: null });
       if (s.gap !== null) gaps.push(clone(s.gap));
     } else if (event.type === "binding") {
       const run = runs.get(event.executionGeneration) ?? corrupt(), binding = parseTerminalBinding(event.binding);
@@ -97,28 +106,31 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
       files.set(event.fileId, clone(choice.file)); indexes.set(event.fileId, clone(choice.index));
       run.registeredFrameCount = String(BigInt(run.registeredFrameCount) + 1n);
       s.lastFile = event.fileId; s.screenHash = choice.screenHash; s.durableElapsed = choice.index.lastElapsedMs; s.durableCapturedAt = choice.capturedAt;
+      cover(s, choice.index.lastElapsedMs, choice.capturedAt);
     } else if (event.type === "checkpoint") {
       const index = indexes.get(event.fileId) ?? corrupt(), s = segmentFor(index.segmentId);
       seq(event.elapsedMs, true); timestamp(event.capturedAt);
       if (s.lastFile !== event.fileId || s.segment.endedAt !== null || BigInt(event.elapsedMs) < BigInt(index.lastElapsedMs)) corrupt();
       index.lastElapsedMs = event.elapsedMs; s.durableElapsed = event.elapsedMs; s.durableCapturedAt = event.capturedAt;
+      cover(s, event.elapsedMs, event.capturedAt);
     } else if (event.type === "gap") {
       const s = segmentFor(event.gap.segmentId); seq(event.gap.startElapsedMs, true);
       timestamp(event.capturedAt);
       if (s.segment.endedAt !== null || event.gap.endElapsedMs !== null || gaps.some(g => !("kind" in g) && g.segmentId === event.gap.segmentId && g.endElapsedMs === null) || BigInt(event.gap.startElapsedMs) <= BigInt(s.durableElapsed) && s.lastFile !== null) corrupt();
       gaps.push(clone(event.gap)); s.screenHash = null;
-      gapBoundaries.set(event.gap.segmentId, { durationMs: event.gap.startElapsedMs, endedAt: event.capturedAt });
+      cover(s, event.gap.startElapsedMs, event.capturedAt);
     } else if (event.type === "gap_end") {
       const gap = gaps.findLast(g => !("kind" in g) && g.segmentId === event.segmentId && g.endElapsedMs === null);
       seq(event.endElapsedMs, true); if (!gap || "kind" in gap || BigInt(event.endElapsedMs) < BigInt(gap.startElapsedMs)) corrupt();
       (gap as SessionV2IntervalGap).endElapsedMs = event.endElapsedMs;
+      cover(segmentFor(event.segmentId), event.endElapsedMs);
     } else if (event.type === "gap_limit") {
       const gap = gaps.findLast(g => !("kind" in g) && g.segmentId === event.segmentId && g.endElapsedMs === null);
       if (!gap || "kind" in gap || gap.reason !== "read_interrupted") corrupt();
       (gap as SessionV2IntervalGap).reason = "recording_limit";
     } else if (event.type === "segment_end") {
       const s = segmentFor(event.segmentId); timestamp(event.boundary.endedAt); seq(event.boundary.durationMs, true);
-      if (s.segment.endedAt !== null || BigInt(event.boundary.durationMs) < BigInt(s.durableElapsed) || Date.parse(event.boundary.endedAt) < Date.parse(s.segment.startedAt)) corrupt();
+      if (s.segment.endedAt !== null || BigInt(event.boundary.durationMs) < BigInt(s.coverageBoundary?.durationMs ?? "0") || Date.parse(event.boundary.endedAt) < Date.parse(s.segment.startedAt)) corrupt();
       s.segment.endedAt = event.boundary.endedAt; s.segment.durationMs = event.boundary.durationMs;
     } else if (event.type === "error") {
       const run = runs.get(event.executionGeneration) ?? corrupt();
@@ -233,9 +245,9 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
     catch (error) { markFailed(runFor(segmentId).executionGeneration); throw error; }
   };
   const recoveryBoundary = (segmentId: string): HerdrRecordingBoundary => {
-    const s = segmentFor(segmentId), gap = gapBoundaries.get(segmentId);
+    const s = segmentFor(segmentId);
     if (s.segment.endedAt !== null && s.segment.durationMs !== null) return { endedAt: s.segment.endedAt, durationMs: s.segment.durationMs };
-    return gap && BigInt(gap.durationMs) > BigInt(s.durableElapsed) ? clone(gap) : { endedAt: s.durableCapturedAt, durationMs: s.durableElapsed };
+    return s.coverageBoundary ? clone(s.coverageBoundary) : { endedAt: s.segment.startedAt, durationMs: "0" };
   };
   return {
     directory,
@@ -323,11 +335,11 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
       if (s.segment.endedAt !== null) return recoveryBoundary(segmentId);
       pending.delete(segmentId);
       if (!openGap(segmentId)) {
-        if (gaps.length >= SESSION_V2_LIMITS.maxGaps || BigInt(s.durableElapsed) === 9223372036854775807n) { markFailed(s.segment.executionGeneration); corrupt(); }
-        // The open marker follows the last durable frame without claiming any
-        // observation or reconstructing elapsed downtime from the wall clock.
-        const startElapsedMs = s.lastFile === null ? "0" : String(BigInt(s.durableElapsed) + 1n);
-        append({ type: "gap", gap: { segmentId, reason: "checkpoint_lost", startElapsedMs, endElapsedMs: null }, capturedAt: s.durableCapturedAt });
+        if (gaps.length >= SESSION_V2_LIMITS.maxGaps || s.coverageBoundary?.durationMs === "9223372036854775807") { markFailed(s.segment.executionGeneration); corrupt(); }
+        // The marker follows every committed frame or closed gap, including a
+        // gap_end committed before the next selected frame or limit marker.
+        const startElapsedMs = s.coverageBoundary === null ? "0" : String(BigInt(s.coverageBoundary.durationMs) + 1n);
+        append({ type: "gap", gap: { segmentId, reason: "checkpoint_lost", startElapsedMs, endElapsedMs: null }, capturedAt: s.coverageBoundary?.endedAt ?? s.segment.startedAt });
       }
       const boundary = recoveryBoundary(segmentId);
       append({ type: "segment_end", segmentId, boundary });
@@ -336,8 +348,7 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
     endSegment: (segmentId: string, boundary: HerdrRecordingBoundary): void => {
       const s = segmentFor(segmentId); if (s.segment.endedAt !== null) { if (s.segment.endedAt !== boundary.endedAt || s.segment.durationMs !== boundary.durationMs) corrupt(); return; }
       checkpoint(segmentId);
-      const gap = openGap(segmentId);
-      if (gap && BigInt(boundary.durationMs) < BigInt(gap.startElapsedMs)) { markFailed(s.segment.executionGeneration); corrupt(); }
+      if (BigInt(boundary.durationMs) < BigInt(s.coverageBoundary?.durationMs ?? "0")) { markFailed(s.segment.executionGeneration); corrupt(); }
       append({ type: "segment_end", segmentId, boundary });
     },
     closeRun: (executionGeneration: string): void => {
@@ -352,7 +363,7 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
         const outputFiles = [...files.values()].map(file => ({ ...clone(file), data: readFrame(file) }));
         const outputIndex = clone([...indexes.values()]);
         if (selected.size !== files.size || bytes({ files: outputFiles, index: outputIndex }) !== recordingBytes) corrupt();
-        const outputSegments: SessionV2Segment[] = [...segments.values()].map(s => ({ segmentId: s.segment.segmentId, segmentOrdinal: s.segment.segmentOrdinal, executionGeneration: s.segment.executionGeneration, binding: clone(s.segment.binding), startedAt: s.segment.startedAt, endedAt: s.segment.endedAt ?? s.durableCapturedAt, durationMs: s.segment.durationMs ?? s.durableElapsed }));
+        const outputSegments: SessionV2Segment[] = [...segments.values()].map(s => ({ segmentId: s.segment.segmentId, segmentOrdinal: s.segment.segmentOrdinal, executionGeneration: s.segment.executionGeneration, binding: clone(s.segment.binding), startedAt: s.segment.startedAt, ...recoveryBoundary(s.segment.segmentId) }));
         const intervals = gaps.filter(g => !("kind" in g)).sort((a, b) => Number(BigInt(segmentFor((a as SessionV2IntervalGap).segmentId).segment.segmentOrdinal) - BigInt(segmentFor((b as SessionV2IntervalGap).segmentId).segment.segmentOrdinal)) || Number(BigInt((a as SessionV2IntervalGap).startElapsedMs) - BigInt((b as SessionV2IntervalGap).startElapsedMs)));
         return { schemaVersion: 1, ...clone(identity), runs: clone([...runs.values()]), segments: outputSegments, files: outputFiles, index: outputIndex, gaps: clone([...intervals, ...gaps.filter(g => "kind" in g)]), journalSha256: digest(journalBytes) };
       } catch (error) { markFailed(); throw error; }

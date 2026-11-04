@@ -50,6 +50,50 @@ const setup = (name = "valid-archive") => {
   return { directory, record, source, remote, api, open, bodies, counts: () => ({ finalizes, uploads, reads }), time: (value: number) => { clock = value; }, loseFinalization: () => { loseFinalization = true; }, loseUpload: () => { loseUpload = true; }, permission: (value: boolean) => { permission = value; } };
 };
 describe("persistent Herdr archive finalization", () => {
+  it.each(["sample", "limit"] as const)("recovers a committed gap_end before the next %s event as a partial archive", async transition => {
+    const s = setup(), directory = path.join(s.directory, "recordings");
+    const open = () => createHerdrRecordingRuntime({ directory, read: async () => ({ width: 1, height: 1, rows: [[]] }), publish: async () => {} });
+    const runtime = open(); runtime.prepare({ ...s.record, segments: [] });
+    const segment = { ...s.record.segments[0]!, endedAt: null, durationMs: null }, screen = { width: 1, height: 1, rows: [[]] };
+    const source = runtime.source(s.record); source.openSegment(segment);
+    s.remote.recording[0]!.responsibility!.responsibilityId = source.status().runs[0]!.responsibilityId;
+    source.sample(segment.segmentId, screen, { elapsedMs: "0", capturedAt: segment.startedAt });
+    const interruptedAt = new Date(Date.parse(segment.startedAt) + 1000).toISOString();
+    source.interrupt(segment.segmentId, "1000", interruptedAt);
+    if (transition === "sample") source.sample(segment.segmentId, screen, { elapsedMs: "2000", capturedAt: new Date(Date.parse(segment.startedAt) + 2000).toISOString() });
+    else source.limit(segment.segmentId, "2000", new Date(Date.parse(segment.startedAt) + 2000).toISOString());
+    const completed = source.snapshot(), journal = path.join(source.directory, "journal.jsonl");
+    const lines = readFileSync(journal, "utf8").trimEnd().split("\n"), end = lines.findIndex(line => JSON.parse(line).event.type === "gap_end");
+    expect(end).toBeGreaterThan(0);
+    expect(JSON.parse(lines[end]!).event).toMatchObject({ type: "gap_end", endElapsedMs: "1999" });
+    runtime.close();
+    // Restore the exact hash-linked prefix committed before the next selection
+    // or limit marker. Its successor file did not exist at that crash boundary.
+    writeFileSync(journal, `${lines.slice(0, end + 1).join("\n")}\n`);
+    for (const file of completed.files.slice(1)) rmSync(path.join(source.directory, "frames", `${file.fileId}.json`));
+    let recovered = open();
+    const local = { ...s.record, segments: [segment] }, prefix = recovered.source(local);
+    expect(prefix.recoveryBoundary(segment.segmentId)).toEqual({ durationMs: "1999", endedAt: interruptedAt });
+    expect(prefix.snapshot().segments[0]).toMatchObject({ durationMs: "1999", endedAt: interruptedAt });
+    expect(prefix.snapshot().index[0]!.lastElapsedMs).toBe("0");
+    const boundaries = recovered.recover(local);
+    for (const value of boundaries) Object.assign(s.record.segments.find(segment => segment.segmentId === value.segmentId)!, value.boundary);
+    const first = recovered.source(local).snapshot();
+    recovered.close(); recovered = open();
+    expect(recovered.recover(local)).toEqual(boundaries);
+    expect(recovered.source(local).snapshot().journalSha256).toBe(first.journalSha256);
+    recovered.closeRun(s.record);
+    const result = await s.open().advance(s.record, () => recovered.source(s.record).snapshot());
+    expect(result.state).toBe("ready"); expect(result.receipt!.payload.completeness).toBe("partial");
+    const body = parseSessionV2Archive(JSON.parse(s.bodies[0]!));
+    expect(body.gaps).toEqual([
+      { segmentId: segment.segmentId, reason: "read_interrupted", startElapsedMs: "1000", endElapsedMs: "1999" },
+      { segmentId: segment.segmentId, reason: "checkpoint_lost", startElapsedMs: "2000", endElapsedMs: null },
+    ]);
+    expect(body.index).toMatchObject([{ firstElapsedMs: "0", lastElapsedMs: "0" }]);
+    expect(body.segments[0]).toMatchObject({ durationMs: "2000", endedAt: interruptedAt });
+    recovered.close();
+  });
   it.each(["recorded-crash", "empty-crash", "empty-orderly"] as const)("preserves terminal cleanup evidence: %s", async scenario => {
     const recorded = scenario === "recorded-crash", orderly = scenario === "empty-orderly";
     const s = setup(), directory = path.join(s.directory, "recordings");
