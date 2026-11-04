@@ -14,8 +14,10 @@ session operations or stored history.
 
 `SessionTimeline` accepts an explicit display mode and renders the existing
 [classification selector](2026-11-04-session-display-classification.md)'s result.
-Its omitted-mode behavior remains Standard so ordinary entry points retain
-their visible history until mode controls are integrated. The Conversation
+Its omitted-mode behavior remains Standard for internal compatibility. This
+preserved ordinary entry points' visible history when filtering first shipped
+without mode controls. The shared Session View now explicitly supplies its
+selected preference and defaults to Conversation. The Conversation
 empty message is localized separately from the original empty-session message.
 History loading, failure and retry remain independent of visible row count.
 
@@ -54,5 +56,6 @@ The hook retains one captured key order in addition to the current lists. Its
 display argument is optional so other timeline consumers preserve their API.
 DOM geometry remains a browser acceptance concern: simulated unit geometry
 checks selection rules but cannot prove native text wrapping or scroll events.
-Ordinary entry points still use Standard; preference and menu integration are
-separate consumers of this explicit interface.
+The [shared view integration](2026-11-04-session-display-integration.md) consumes
+this explicit interface for Task, Test and readable archives. It owns default
+selection and the menu; neither belongs in the scrolling hook.

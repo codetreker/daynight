@@ -12,13 +12,13 @@ export function TaskAgentSession({ projectId, taskId, claimId, active, current }
 }) {
   const scope = useTaskCacheScope();
   const currentRef = useRef(current); currentRef.current = current;
-  const [client, setClient] = useState<TaskSessionClient | null>(null);
+  const [owned, setOwned] = useState<{ client: TaskSessionClient; scope: typeof scope; projectId: string; taskId: string; claimId: string } | null>(null);
   useEffect(() => {
     let storage: Storage | null = null; try { storage = window.sessionStorage; } catch { /* Browser storage is optional. */ }
     const isCurrent = () => currentRef.current && !scope.isInvalidated;
     const api = createSessionApi(projectId, taskId, scope.userId, scope.principalMismatch);
     const next = new TaskSessionClient({ api, userId: scope.userId, projectId, taskId, claimId, isCurrent, isPaused: authRequestsPaused, onPrincipalMismatch: scope.principalMismatch, storage });
-    setClient(next);
+    setOwned({ client: next, scope, projectId, taskId, claimId });
     next.syncAvailability();
     const timer = setInterval(next.syncAvailability, 250);
     const unsubscribe = scope.subscribe((event) => { if (event.projectId === projectId && event.accessRevoked) next.invalidate(); else next.syncAvailability(); });
@@ -26,5 +26,6 @@ export function TaskAgentSession({ projectId, taskId, claimId, active, current }
     return () => { clearInterval(timer); unsubscribe(); scope.signal.removeEventListener('abort', abort); next.close(); };
   }, [scope, projectId, taskId, claimId]);
   const m = useSessionMessages();
-  return client ? <SessionView client={client} active={active} current={current} /> : <p className="session-empty" role="status">{m.loading}</p>;
+  const client = owned?.scope === scope && owned.projectId === projectId && owned.taskId === taskId && owned.claimId === claimId ? owned.client : null;
+  return client ? <SessionView userId={scope.userId} client={client} active={active} current={current} /> : <p className="session-empty" role="status">{m.loading}</p>;
 }

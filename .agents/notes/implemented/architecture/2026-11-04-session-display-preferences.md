@@ -27,8 +27,11 @@ Storage exceptions are reduced to error categories rather than retained objects.
 
 The module consumes the [display classification contract](2026-11-04-session-display-classification.md)
 and does not depend on a Session client, draft, operation ledger or execution
-identity. It is available for shared view integration; production views still
-use their existing Standard-compatible behavior.
+identity. The [shared view integration](2026-11-04-session-display-integration.md)
+binds it to the authenticated account and verified Session snapshot, supplies
+the selected mode to the timeline and presents errors only inside Display.
+The store initially shipped independently so storage and identity behavior
+could be verified without changing the existing production view.
 
 ## Alternatives
 
@@ -50,6 +53,6 @@ selection does not publish a new snapshot that could reset a reader's position.
 
 The cache grows with distinct identities encountered during a page lifetime.
 Cross-tab updates are not observed until a page reload, and unsaved choices do
-not survive that reload. Cross-device synchronization and production menu,
-filtering and scroll integration remain separate capabilities; the store must
-remain independent of those components and of operational authorization.
+not survive that reload. Cross-device synchronization is not provided. The
+production menu, filtering and scroll consumers share this preference without
+giving the store ownership of those components or operational authorization.

@@ -1,5 +1,9 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 const en = {
+  display: 'Display', displayStandard: 'Standard', displayConversation: 'Conversation', displayRetry: 'Retry saving',
+  displayReadError: 'The saved display preference could not be read. The current choice is not saved.',
+  displayInvalidError: 'The saved display preference is invalid. The current choice is not saved.',
+  displayWriteError: 'The current display choice is not saved. You can retry saving it.',
   conversationEmpty: 'No content in conversation mode.',
   archivePreparing: 'The session is ending. Waiting for its history archive.',
   archived: 'Completed · Read-only history', archiveLoading: 'Loading archived history…', archivePending: 'The session has ended. History is being archived.', archiveFailed: 'History could not be archived or loaded. Refresh to check again.', archiveUnavailable: 'This session has ended, but no archived history is available.',
@@ -37,6 +41,10 @@ export const sessionNativeLabels = Object.freeze({
 });
 type SessionMessages = { readonly [K in keyof typeof en]: string };
 const zh: SessionMessages = {
+  display: '显示', displayStandard: '标准', displayConversation: '对话', displayRetry: '重试保存',
+  displayReadError: '无法读取已保存的显示偏好。当前选择尚未保存。',
+  displayInvalidError: '已保存的显示偏好无效。当前选择尚未保存。',
+  displayWriteError: '当前显示选择未保存，可以重试保存。',
   conversationEmpty: '当前对话模式下暂无内容',
   archivePreparing: '会话正在结束，等待历史归档。',
   archived: '已结束 · 只读历史', archiveLoading: '正在加载归档历史…', archivePending: '会话已结束，正在归档历史。', archiveFailed: '历史归档或加载失败，可刷新重新检查。', archiveUnavailable: '会话已结束，但没有可用的历史归档。',

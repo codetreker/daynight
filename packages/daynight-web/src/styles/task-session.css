@@ -6,7 +6,8 @@
 .test-session-page > .task-agent-session { border: 1px solid #e2e6ee; border-radius: 10px; overflow: hidden; background: #fff; }
 .task-detail-panel-session { display: flex; overflow: hidden; }
 .task-agent-session { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; color: #29364b; font-size: 13px; }
-.session-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 26px; border-bottom: 1px solid #e8ebf1; background: #fcfcfe; }
+.session-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 26px; border-bottom: 1px solid #e8ebf1; background: #fcfcfe; }
+.session-header-actions { margin-left: auto; }
 .session-header > div { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .session-status { display: inline-flex; align-items: center; gap: 6px; color: #68758a; font-size: 11px; }
 .session-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #8e98a8; }

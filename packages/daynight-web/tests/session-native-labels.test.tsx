@@ -24,7 +24,7 @@ function viewClient(s: SessionSnapshot, connected = true, operations = new Map<s
 const activities = [ ['initializing', 'Starting task'], ['idle', 'Ready'], ['working', 'Working'], ['waiting_input', 'Waiting for an answer'], ['stopped', 'Stopped'], ['unknown', 'Outcome unknown'] ] as const;
 it.each(activities)('keeps header and visible footer %s labels English through locale changes', (activity, label) => {
   const s = snapshot({ activity });
-  const view = render(<><SessionView client={viewClient(s)} active current /><SessionActivity snapshot={s} connected active commandPending={false} interruptRequested={false} interruptPending interruptAllowed={false} onInterrupt={vi.fn()} /></>);
+  const view = render(<><SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(s)} active current /><SessionActivity snapshot={s} connected active commandPending={false} interruptRequested={false} interruptPending interruptAllowed={false} onInterrupt={vi.fn()} /></>);
   for (const locale of ['zh-CN', 'en', 'zh-CN'] as const) {
     view.setLocale(locale);
     const header = view.container.querySelector('.session-header .session-status')!;
@@ -37,7 +37,7 @@ it.each([
   [{ connectionState: 'disconnected' }, true, 'Disconnected'], [{ connectionState: 'synchronizing' }, true, 'Restoring session'], [{ synchronized: false }, true, 'Restoring session'], [{}, false, 'Disconnected'],
 ] as const)('keeps connection labels English in header and footer (%j, connected=%s)', (patch, connected, label) => {
   const s = snapshot({ activity: 'working', ...patch });
-  const view = render(<SessionView client={viewClient(s, connected)} active current />);
+  const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(s, connected)} active current />);
   for (const locale of ['zh-CN', 'en'] as const) {
     view.setLocale(locale);
     expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent(label);
@@ -45,7 +45,7 @@ it.each([
   }
 });
 it('keeps the archived header English while its body follows the locale', () => {
-  const view = render(<SessionView client={viewClient(snapshot({ lifecycle: 'archived' }))} active current />);
+  const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(snapshot({ lifecycle: 'archived' }))} active current />);
   expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent('Completed · Read-only history');
   expect(screen.getByText('已结束 · 只读历史')).toBeVisible();
   view.setLocale('en');
@@ -54,7 +54,7 @@ it('keeps the archived header English while its body follows the locale', () => 
 });
 it('keeps unknown operation receipts localized independently of the activity label', () => {
   const s = snapshot({ activity: 'unknown' }), op = operation(s);
-  const view = render(<SessionView client={viewClient(s, true, new Map([[op.operationId, op]]))} active current />);
+  const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(s, true, new Map([[op.operationId, op]]))} active current />);
   expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent('Outcome unknown');
   expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('结果未知')).toBeVisible();
   expect(screen.getByRole('button', { name: '核对原操作' })).toBeVisible();

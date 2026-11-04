@@ -96,3 +96,37 @@ it('retains a task session channel and draft through a short identity pause, but
   view.rerender(f.element(false));
   await waitFor(() => expect(close).toHaveBeenCalledOnce());
 });
+
+it('keeps the channel, draft and retained message when changing display mode', async () => {
+  const f = fixture();
+  vi.mocked(f.api.timeline).mockResolvedValue({ sessionId: f.snapshot.sessionId, historyEpoch: f.snapshot.historyEpoch, items: [
+    { kind: 'assistant_message', entryId: 'message', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Retained answer' }] },
+    { kind: 'reasoning', entryId: 'reasoning', entrySeq: '2', revision: '1', text: 'Reasoning text' },
+  ], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+  render(f.element());
+  await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+  f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
+  const message = await screen.findByText('Retained answer'), input = screen.getByRole('textbox');
+  expect(screen.queryByText('Reasoning')).toBeNull();
+  fireEvent.change(input, { target: { value: 'Unsubmitted draft' } });
+  const calls = vi.mocked(f.api.current).mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: 'Display' }));
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Standard' }));
+  expect(screen.getByText('Reasoning')).toBeInTheDocument();
+  expect(screen.getByText('Retained answer')).toBe(message);
+  expect(screen.getByRole('textbox')).toBe(input); expect(input).toHaveValue('Unsubmitted draft');
+  expect(f.api.channel).toHaveBeenCalledOnce(); expect(f.api.current).toHaveBeenCalledTimes(calls);
+  expect(f.api.command).not.toHaveBeenCalled();
+  expect(localStorage.getItem(`daynight.web.session.display.v1:${JSON.stringify([userId, f.snapshot.sessionId])}`)).toBe('"standard"');
+});
+
+it('does not combine a new account with the previous client snapshot before its replacement starts', async () => {
+  const f = fixture(); const rendered = render(f.element());
+  await screen.findByRole('button', { name: 'Display' });
+  vi.mocked(f.api.current).mockImplementation(() => new Promise(() => {}));
+  const nextScope = createTaskCacheScope({ userId: '00000019-1111-4111-8111-111111111111', onIdentityMismatch: vi.fn() }); scopes.push(nextScope);
+  const getItem = vi.spyOn(Storage.prototype, 'getItem');
+  rendered.rerender(<TaskCacheProvider scope={nextScope}><TaskAgentSession projectId={f.snapshot.identity.projectId} taskId={f.snapshot.identity.taskId} claimId={f.snapshot.claimId} active current /></TaskCacheProvider>);
+  expect(getItem.mock.calls.filter(([key]) => key.startsWith('daynight.web.session.display.v1:'))).toEqual([]);
+  expect(screen.queryByRole('button', { name: 'Display' })).toBeNull();
+});

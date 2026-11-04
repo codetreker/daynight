@@ -1,0 +1,8 @@
+.session-display-picker { flex: none; }
+.session-display-trigger { white-space: nowrap; }
+.session-display-menu { position: fixed; inset: auto; margin: 0; width: 240px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: auto; box-sizing: border-box; padding: 5px; border: 1px solid #e1e4ed; border-radius: 7px; background: #fff; box-shadow: 0 8px 24px #17244726; color: #29364b; font-size: 13px; }
+.session-display-option { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; padding: 9px 10px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; font: inherit; overflow-wrap: anywhere; cursor: pointer; }
+.session-display-option:hover, .session-display-option:focus-visible { background: #f0f0fb; }
+.session-display-option:focus-visible { outline: 2px solid #6262ba; outline-offset: -2px; }
+.session-display-option[aria-checked='true'] { color: #5555b6; }
+.session-display-issue { margin: 5px; padding: 8px 5px; border-top: 1px solid #e8ebf1; color: #9c3d48; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }

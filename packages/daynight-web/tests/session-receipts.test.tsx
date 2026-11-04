@@ -37,7 +37,7 @@ async function fixture() {
 
 it('keeps consecutive successful operations in the ledger without a receipt region', async () => {
   const f = await fixture();
-  const { container } = render(<SessionView client={f.client} active current />);
+  const { container } = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   for (const kind of ['send_message', 'cancel', 'interaction_response', 'update_setting', 'execute_command', 'refresh_controls'] as const) f.emit(f.operation('confirmed', kind));
   for (const kind of ['send_message', 'execute_command'] as const) f.emit(f.operation('provider_accepted', kind));
   expect(screen.queryByText('Confirmed')).toBeNull();
@@ -48,7 +48,7 @@ it('keeps consecutive successful operations in the ledger without a receipt regi
 
 it.each(['cancel', 'interaction_response', 'update_setting', 'refresh_controls'] as const)('keeps provider acceptance visible while %s still needs confirmation', async kind => {
   const f = await fixture();
-  render(<SessionView client={f.client} active current />);
+  render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   f.emit(f.operation('provider_accepted', kind));
   expect(screen.getByText('Accepted by provider')).toBeVisible();
 });
@@ -57,7 +57,7 @@ it.each([
   ['accepted', 'Received by relay; awaiting controller'], ['offered', 'Delivering to controller'], ['dispatching', 'Submitting to provider'], ['unknown', 'Outcome unknown'], ['failed', 'Failed'], ['rejected', 'Rejected'], ['expired', 'Expired'],
 ] as const)('keeps %s visible after newer successful operations', async (state, label) => {
   const f = await fixture();
-  render(<SessionView client={f.client} active current />);
+  render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   f.emit(f.operation(state));
   for (let i = 0; i < 13; i += 1) f.emit(f.operation('confirmed'));
   expect(screen.getByText(label)).toBeVisible();
@@ -66,7 +66,7 @@ it.each([
 
 it.each(['confirmed', 'provider_accepted'] as const)('preserves error details even on a %s receipt', async state => {
   const f = await fixture();
-  render(<SessionView client={f.client} active current />);
+  render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   f.emit(f.operation(state, 'send_message', { code: 'provider_error', message: 'Provider details need attention.' }));
   expect(screen.getByText('Provider details need attention.')).toBeVisible();
 });
@@ -75,7 +75,7 @@ it('checks an unknown operation and hides its confirmation without resending or 
   const f = await fixture();
   const operation = f.operation('unknown');
   vi.mocked(f.api.operation).mockResolvedValue({ ...operation, state: 'confirmed' });
-  const { container } = render(<SessionView client={f.client} active current />);
+  const { container } = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   act(() => f.client.setDraft('New unsent text'));
   f.emit(operation);
   fireEvent.click(screen.getByRole('button', { name: 'Check original operation' }));
@@ -89,7 +89,7 @@ it('checks an unknown operation and hides its confirmation without resending or 
 it.each(['confirmed', 'provider_accepted'] as const)('clears only the submitted draft on %s without showing a success receipt', async state => {
   const f = await fixture();
   vi.mocked(f.api.command).mockImplementation(async (_session, command) => ({ ...f.operation(state), operationId: command.operationId }));
-  const { container } = render(<SessionView client={f.client} active current />);
+  const { container } = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={f.client} active current />);
   act(() => f.client.setDraft('Send this text'));
   await act(async () => f.client.send('Send this text'));
   expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');

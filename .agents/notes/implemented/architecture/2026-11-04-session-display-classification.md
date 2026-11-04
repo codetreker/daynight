@@ -33,9 +33,11 @@ new native activity kinds. Sharing the existing recognizer preserves one
 interpretation without changing persisted data.
 
 **Enable Conversation at the existing timeline entry point immediately.**
-Users would lose visible history before a mode control and appropriate reading
-position handling exist. The production timeline keeps its existing behavior;
-the new default remains a contract for consumers that explicitly adopt it.
+During classification delivery, users would have lost visible history before a
+mode control and appropriate reading position handling existed. The selector
+therefore shipped without changing ordinary entry points. The later
+[shared view integration](2026-11-04-session-display-integration.md) supplies the
+control, preferences and explicit mode before enabling Conversation by default.
 
 ## Consequences
 
@@ -45,12 +47,12 @@ consumers. The selector has no React, client or preference dependency. Adding a
 timeline kind requires an explicit classification because the predicate has an
 exhaustive switch and a boolean return type.
 
-Ordinary views retain Standard-compatible behavior until they explicitly pass a
-mode. The timeline consumes this selector for explicit modes, including filtered
+The timeline consumes this selector for explicit modes, including filtered
 pagination and mode-switch scroll recovery as described by the
 [display reading decision](2026-11-04-session-display-reading.md). That consumer
 retains complete source order separately from visible entries. The independent
 [preference module](2026-11-04-session-display-preferences.md) provides persisted
-choices without changing production views. Preference and menu integration
-remain outside this classification module; the selector owns neither session
-state nor resource loading.
+choices to the shared Session View, which explicitly supplies the selected mode
+and defaults to Conversation. Preference and menu integration remain outside
+this classification module; the selector owns neither session state nor resource
+loading. Omitted-mode timeline callers retain Standard compatibility.
