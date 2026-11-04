@@ -18,6 +18,7 @@ export type TaskMutationState = {
   readonly error: unknown;
   readonly reconciling: boolean;
   readonly reconciliationError: unknown;
+  readonly reconciledFrom?: "unknown" | "conflict";
 };
 export type DetailState = {
   readonly revision: number;
@@ -207,7 +208,8 @@ export class TaskDetailSessions {
     const version = steps.state.resource?.version;
     if (mutation.operation?.action !== "stepStatus" || !mutation.reconciling || steps.state.stale || steps.state.error !== null || version === undefined ||
       entry.state.detail?.version !== version || this.summaryVersion(steps.projectId, steps.taskId) !== version || entry.state.requiresFreshRead || entry.state.error !== null) return;
-    this.publish(entry, { ...entry.state, mutation: { ...mutation, phase: mutation.phase === "unknown" || mutation.phase === "conflict" ? "reconciled" : mutation.phase, reconciling: false, reconciliationError: null } });
+    this.publish(entry, { ...entry.state, mutation: { ...mutation, phase: mutation.phase === "unknown" || mutation.phase === "conflict" ? "reconciled" : mutation.phase,
+      ...(mutation.phase === "unknown" || mutation.phase === "conflict" ? { reconciledFrom: mutation.phase } : {}), reconciling: false, reconciliationError: null } });
     if (steps.listeners.size === 0) this.clearSteps(steps, emptyTaskStepsState, false);
   }
   private stepsFloor(entry: Entry): bigint | null {

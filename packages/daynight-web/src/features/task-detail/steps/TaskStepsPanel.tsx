@@ -45,6 +45,8 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
   const pendingStepId = mutation.operation?.action === "stepStatus" && mutation.phase === "pending" ? mutation.operation.stepId : null;
   const unresolved = stepMutation?.phase === "unknown" || stepMutation?.phase === "conflict" || stepMutation?.reconciliationError != null;
   const mutationError = stepMutation?.error;
+  const resolvedConflict = stepMutation?.phase === "reconciled" && stepMutation.reconciledFrom === "conflict";
+  const resolvedUnknown = stepMutation?.phase === "reconciled" && stepMutation.reconciledFrom === "unknown";
   const refusal = mutationError instanceof ApiError ? mutationError.status === 404 ? m.statusMissing : mutationError.status === 403 ? m.statusDenied
     : mutationError.code === "version_exhausted" ? m.statusExhausted : mutationError.code === "steps_limit_exceeded" ? m.statusCapacity
       : mutationError.code === "invalid_input" ? m.statusInvalid : m.statusRefused : m.statusRefused;
@@ -62,9 +64,11 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
       {error instanceof ApiError && error.requestId !== null && <p className="request-id">{messages.common.requestId} <code>{error.requestId}</code></p>}
       <button className="button" type="button" disabled={busy || !active || unresolved} onClick={state.retry}>{m.retry}</button>
     </div>}
-    {stepMutation !== null && (unresolved || stepMutation.phase === "refused") && <div className="steps-error" role="alert">
+    {stepMutation !== null && (unresolved || resolvedConflict || resolvedUnknown || stepMutation.phase === "refused") && <div className="steps-error" role="alert">
       {stepMutation.phase === "unknown" && <p>{m.unknown}</p>}
       {stepMutation.phase === "conflict" && <p>{m.conflict}</p>}
+      {resolvedConflict && <p>{m.conflictReconciled}</p>}
+      {resolvedUnknown && <p>{m.unknownReconciled}</p>}
       {stepMutation.phase === "refused" && <p>{refusal}</p>}
       {stepMutation.phase === "refused" && mutationError instanceof ApiError && mutationError.stepsLimit !== undefined && <p>{m.capacityDetails(format.number(mutationError.stepsLimit.encodedBytes), format.number(mutationError.stepsLimit.maxEncodedBytes))}</p>}
       {mutationError instanceof ApiError && mutationError.requestId !== null && <p className="request-id">{messages.common.requestId} <code>{mutationError.requestId}</code></p>}

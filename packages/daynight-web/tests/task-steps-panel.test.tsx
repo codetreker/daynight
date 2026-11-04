@@ -58,6 +58,29 @@ describe("Step status", () => {
     view.rerender(panel());
     expect(screen.getByRole("alert")).toHaveTextContent("permission");
   });
+  it("keeps a reconciled conflict visible while permitting a new decision without another readback", () => {
+    read.mutation = { operation: { action: "stepStatus", stepId: "00000000" }, phase: "reconciled", error: new ApiError("server", 409, "version_conflict", "conflict-id"), reconciling: false, reconciliationError: null };
+    Object.assign(read.mutation, { reconciledFrom: "conflict" });
+    const view = renderWithLocale(panel(), { locale: "en" });
+    expect(screen.getByRole("alert")).toHaveTextContent("Current steps have been read; choose a status again.");
+    expect(screen.getByText("conflict-id")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Read current steps" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Status for Round 1: To do" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Done" }));
+    expect(read.setStatus).toHaveBeenCalledWith("00000000", "done", 3n);
+    view.setLocale("zh-CN"); expect(screen.getByRole("alert")).toHaveTextContent("已读取当前步骤，请重新选择状态");
+  });
+  it("reports that a reconciled unknown outcome remains unknown while permitting another decision", () => {
+    read.mutation = { operation: { action: "stepStatus", stepId: "00000000" }, phase: "reconciled", error: new ApiError("network"), reconciling: false, reconciliationError: null };
+    Object.assign(read.mutation, { reconciledFrom: "unknown" });
+    const view = renderWithLocale(panel(), { locale: "en" });
+    expect(screen.getByRole("alert")).toHaveTextContent("The current steps have been read. The earlier request's outcome remains unknown.");
+    expect(screen.queryByRole("button", { name: "Read current steps" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Status for Round 1: To do" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Done" }));
+    expect(read.setStatus).toHaveBeenCalledWith("00000000", "done", 3n);
+    view.setLocale("zh-CN"); expect(screen.getByRole("alert")).toHaveTextContent("先前请求的结果仍未知");
+  });
   it("shows bounded capacity facts without exposing server diagnostics", () => {
     read.mutation = { operation: { action: "stepStatus", stepId: "00000000" }, phase: "refused", error: new ApiError("server", 409, "steps_limit_exceeded", "request-2", undefined, undefined, "private-server-sentinel", { encodedBytes: 101, maxEncodedBytes: 100 }), reconciling: false, reconciliationError: null };
     renderWithLocale(panel(), { locale: "en" });

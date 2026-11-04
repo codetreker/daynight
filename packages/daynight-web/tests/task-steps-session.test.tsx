@@ -61,7 +61,7 @@ it("keeps malformed success unknown when readback fails, then reconciles without
   session.setStepStatus(projectId, taskId, item.id, "done", 5n);
   await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "unknown", reconciling: false, reconciliationError: { status: 500 } }));
   expect(session.stepsSnapshot(projectId, taskId).resource?.steps[0]?.status).toBe("todo"); expect(session.canSetStepStatus(projectId, taskId)).toBe(false);
-  session.reconcile(projectId, taskId); await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "reconciled", reconciling: false, reconciliationError: null }));
+  session.reconcile(projectId, taskId); await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "reconciled", reconciledFrom: "unknown", reconciling: false, reconciliationError: null }));
   expect(session.canSetStepStatus(projectId, taskId)).toBe(true); expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
 });
 
@@ -84,7 +84,7 @@ it("reconciles a conflict at the current version without repeating the write", a
   session.setStepStatus(projectId, taskId, item.id, "done", 5n); await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("conflict"));
   await apply(scope, body(6n)); session.observe(projectId, taskId, node(scope));
   await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
-  expect(session.snapshot(projectId, taskId).mutation.phase).toBe("reconciled");
+  expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "reconciled", reconciledFrom: "conflict" });
   expect(session.stepsSnapshot(projectId, taskId).resource?.steps[0]?.status).toBe("todo"); expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
 });
 
