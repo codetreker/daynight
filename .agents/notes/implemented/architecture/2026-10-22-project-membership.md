@@ -29,9 +29,13 @@ Read admission returns `ProjectAccess` within the existing read snapshot. This
 computed projection has project/user IDs, the current role and an optional actual
 direct grant. It has no independent writable version or storage timestamps; the
 embedded grant retains its own facts. Point admission and accessible-project filtering
-use the same canonical direct-authorization source. Resource services and Worker
-non-owner administrator checks consume access; claim ownership and task-assignee
-requirements keep their separate rules. The [actor access projection](2026-11-03-project-access-projection.md)
+use the same canonical direct-authorization source. Resource services, new task
+assignment targets and Worker non-owner administrator checks consume access.
+Task-assignee catalogues and bounded resolution use that source's raw identities
+for access qualification while retaining their separate profile-integrity and
+historical-reference rules. Responsibility and claim ownership remain distinct;
+the [assignment decision](2026-11-03-task-assignment-foundation.md) owns those
+rules. The [actor access projection](2026-11-03-project-access-projection.md)
 owns public reads, same-snapshot task-sync publication and client freshness.
 
 Writes use the existing project row lock before checking actor access, the target
