@@ -470,17 +470,20 @@ describe("Step position", () => {
   it("restores expansion and focus at the actual confirmed page", () => {
     read.resource = resource();
     const view = renderWithLocale(panel(), { locale: "en" });
-    fireEvent.click(screen.getByRole("button", { name: "Round 1" }));
-    fireEvent.click(screen.getByRole("button", { name: "More actions for Round 1" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Move to end" }));
+    const currentStep = () => within(view.container.querySelector<HTMLElement>('[data-step-id="00000000"]')!);
+    fireEvent.click(currentStep().getByRole("button", { name: "Round 1" }));
+    fireEvent.click(currentStep().getByRole("button", { name: "More actions for Round 1" }));
+    fireEvent.click(currentStep().getByRole("menuitem", { name: "Move to end" }));
     read.mutation = { operation: { action: "stepPosition", stepId: "00000000" }, phase: "pending", error: null, reconciling: false, reconciliationError: null }; view.rerender(panel());
-    expect(screen.getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
+    expect(currentStep().getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
     read.resource = resource([...steps.slice(1), steps[0]!]);
     read.mutation = { ...read.mutation, phase: "confirmed" }; view.rerender(panel());
     expect(screen.getByText("201–241 of 241 steps")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Round 1" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "More actions for Round 1" })).toHaveFocus();
-    expect(screen.getByRole("button", { name: "Round 1" }).closest("li")!.querySelector(".step-number")).toHaveTextContent("241");
+    const confirmedStep = currentStep();
+    const disclosure = confirmedStep.getByRole("button", { name: "Round 1" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expect(confirmedStep.getByRole("button", { name: "More actions for Round 1" })).toHaveFocus();
+    expect(disclosure.closest("li")!.querySelector(".step-number")).toHaveTextContent("241");
   }, 15_000);
   it("returns focus after a confirmed relative move within the same page", () => {
     const view = renderWithLocale(panel(), { locale: "en" });
