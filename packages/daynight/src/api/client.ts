@@ -660,7 +660,7 @@ export const createApiClient = (options: {
     },
     listProjectMembers: (projectId) => {
       const project = resourceId(projectId);
-      return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectParticipants(value, project) }, [200], undefined, true);
+      return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectParticipants(value, project, expectedUserId) }, [200], undefined, true);
     },
     createTask: (projectId, input) => {
       const project = resourceId(projectId);

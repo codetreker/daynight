@@ -8,7 +8,7 @@ import { ProjectsProvider } from '../src/features/projects/ProjectsProvider';
 
 const render = createLocaleRender('zh-CN');
 
-const project = (index: number, overrides: Partial<Project> = {}): Project => ({ settings: { version: 1n, executionWarningMinutes: 60 },
+const project = (index: number, overrides: Partial<Project> = {}): Project => ({ ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 },
   id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
   name: `项目 ${index}`,
   repoUrl: `https://github.com/example/project-${index}`,

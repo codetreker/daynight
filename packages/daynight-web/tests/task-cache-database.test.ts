@@ -42,7 +42,7 @@ it("clears persisted null-ownership details before admitting the same task versi
   await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
   expect((await connection.get("details", [userId, projectId, taskId]))!.detail.properties).toHaveProperty("worker", null);
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(4);
+  expect(TASK_CACHE_SCHEMA).toBe(5);
   expect(await current.getAll("details")).toEqual([]);
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
 });
@@ -89,7 +89,7 @@ it("reports an actual upgrade transaction abort as storage failure while its own
   await expect(cache().open()).rejects.toMatchObject({ name: "TaskCacheError", category: "storage", cause: { name: "AbortError" } });
 });
 
-it.each([1, 2, 3])("rebuilds schema %i summaries and details before admitting assignment-bearing snapshots", async (oldVersion) => {
+it.each([1, 2, 3, 4])("rebuilds schema %i project and task formats before admitting ownership-bearing snapshots", async (oldVersion) => {
   const userId = "10000000-0000-4000-8000-000000000001";
   const projectId = "20000000-0000-4000-8000-000000000001";
   const taskId = "30000000-0000-4000-8000-000000000001";
@@ -100,16 +100,17 @@ it.each([1, 2, 3])("rebuilds schema %i summaries and details before admitting as
   const project = { id: projectId, name: "Project", repoUrl: "https://example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: detail.createdAt, updatedAt: detail.updatedAt };
   await connection.put("userScopes", { userId, userFence });
   await connection.put("projects", { userId, projectId, userFence, cacheGeneration: userFence, state: "active", invalidatedBy: null,
-    epoch: userFence, project, maxUpdatedAt: detail.updatedAt, taskCount: 1, edgeCount: 0 });
-  // Old persisted summaries intentionally omit the required assignment field.
-  const legacy = { userId, projectId, taskId, summary: { ...intrinsic, ...(oldVersion === 3 ? { properties: detail.properties } : {}), titlePreview: title, titleTruncated: false } };
+    epoch: userFence, project, maxUpdatedAt: detail.updatedAt, taskCount: 1, edgeCount: 0 } as unknown as TaskCacheSchema["projects"]["value"]);
+  // Project ownership is absent in every older schema; assignment first appears in schema 4.
+  const legacy = { userId, projectId, taskId, summary: { ...intrinsic, ...(oldVersion >= 3 ? { properties: detail.properties } : {}), ...(oldVersion === 4 ? { assignedTo: detail.assignedTo } : {}), titlePreview: title, titleTruncated: false } };
   await connection.put("summaries", legacy as unknown as TaskCacheSchema["summaries"]["value"]);
   const { assignedTo: _legacyAssignment, ...legacyDetail } = detail;
-  const legacyRecord = { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail: legacyDetail, byteSize: 100, lastUsedAt: 1 };
+  const legacyRecord = { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail: oldVersion === 4 ? detail : legacyDetail, byteSize: 100, lastUsedAt: 1 };
   await connection.put("details", legacyRecord as unknown as TaskCacheSchema["details"]["value"]);
-  expect((await connection.get("details", [userId, projectId, taskId]))!.detail).not.toHaveProperty("assignedTo");
+  expect((await connection.get("projects", [userId, projectId]))!.project).not.toHaveProperty("ownership");
+  if (oldVersion < 4) expect((await connection.get("details", [userId, projectId, taskId]))!.detail).not.toHaveProperty("assignedTo");
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(4);
+  expect(TASK_CACHE_SCHEMA).toBe(5);
   expect(failure).toHaveBeenCalledWith(expect.objectContaining({ category: "versionchange" }));
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
   for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);

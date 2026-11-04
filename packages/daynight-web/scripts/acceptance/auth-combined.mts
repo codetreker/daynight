@@ -1,3 +1,4 @@
+import { authCombinedChecks as requiredChecks } from './inventory.mts';
 import type { ProjectParticipant } from "../../src/api/auth-types";
 import { selectTaskList } from '../../tests/e2e/project-view.ts';
 import { attachmentFileButton, attachmentFileActions } from '../../tests/e2e/attachment-tree.ts';
@@ -36,9 +37,6 @@ export type AuthCombinedOptions = {
   readLogs(run: CombinedCommand): Promise<string>;
 };
 
-const requiredChecks = ['partial-sharing', 'normal-member-writes', 'bilingual-token', 'same-data-cli-browser',
-  'restart-original-state', 'logout-independent-pat', 'pat-revocation', 'socket-disconnect',
-  'admitted-member-removal', 'expired-pat', 'secret-scan'] as const;
 class CombinedFailure extends Error {}
 let launchingBrowser = false;
 export const launchAuthCombinedBrowser = async <T,>(temporaryRoot: string, launch: () => Promise<T>): Promise<T> => {

@@ -44,8 +44,10 @@ semantic JSON equality, so object key order is irrelevant while missing keys and
 array order remain observable. The
 [full-property synchronization decision](2026-10-30-task-property-sync.md) owns
 the property feed expansion and its schema-3 rebuild; the
-[assignment decision](2026-11-03-task-assignment-foundation.md) owns current
-schema-4 consumption. Older bodies cannot replace newer content. The feed exposes
+[assignment decision](2026-11-03-task-assignment-foundation.md) owns required
+assignment consumption. The
+[public ownership decision](2026-11-04-public-project-ownership.md) owns the
+current schema-5 rebuild. Older bodies cannot replace newer content. The feed exposes
 current task rows and may skip intermediate business versions. A newer GET
 waits while its version is ahead of the summary and is admitted on an exact
 match. If the summary overtakes a pending payload, the session discards that

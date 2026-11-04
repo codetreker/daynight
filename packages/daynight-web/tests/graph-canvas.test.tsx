@@ -30,7 +30,7 @@ vi.mock('../src/features/task-graph/TaskNode', async (importOriginal) => {
 
 const time = '2026-10-20T00:00:00Z';
 const graph: TaskGraphData = { observedAt: "2026-10-20T12:00:00Z",
-  project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },
+  project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },
   summary: { total: 6, todo: 3, inProgress: 1, done: 2, ready: 2, blocked: 1 },
   tasks: [
     { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },

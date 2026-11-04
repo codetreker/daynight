@@ -214,8 +214,7 @@ test('step status writes converge through real service resources', { annotation:
       await fulfillAuthenticatedResponse(route, response);
     });
     await root(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
-    await page.locator(`#standalone-task-${deletedTask.id}`).click();
-    await root(page).getByRole('tab', { name: '步骤', exact: true }).click();
+    await page.goto(`/projects/${project.id}/tasks/${deletedTask.id}?tab=steps`);
     await choose(page, stepIdForDeleted(), 'done');
     await expect(root(page)).toContainText('任务已删除');
     await page.unroute(deletedUrl);
@@ -257,7 +256,7 @@ test('step resources retire after actual membership revocation', { annotation: {
     await expect(row(bobPage, 'abcdef12')).toContainText('Private Step for membership test');
     const membersResponse = await api.get(`/api/v1/projects/${project.id}/members`);
     expect(membersResponse.status()).toBe(200);
-    const member = parseMembers(await decodeMembersJson(new Response(await membersResponse.text())), project.id).find(value => value.userId === bobProfile.id);
+    const member = parseMembers(await decodeMembersJson(new Response(await membersResponse.text())), project.id).items.find(value => value.userId === bobProfile.id);
     if (member?.directGrant === null || member?.directGrant === undefined) throw new Error('Exact direct grant is required for revocation.');
     const revoke = await api.delete(`/api/v1/projects/${project.id}/members/${bobProfile.id}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: member.directGrant.version, expectedUserId: aliceProfile.id }) });
     expect(revoke.status()).toBe(204);

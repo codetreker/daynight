@@ -10,7 +10,7 @@ import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
 import { stringifyWireJson } from "./helpers/wireJson";
 
 const render = createLocaleRender("en");
-const project = (index: number, name = `Project ${index}`): Project => ({
+const project = (index: number, name = `Project ${index}`): Project => ({ ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n },
   id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
   name, repoUrl: `https://github.com/example/project-${index}`,
   settings: { version: 1n, executionWarningMinutes: 60 },

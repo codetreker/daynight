@@ -1,3 +1,5 @@
+import { directAccessFixture } from "./helpers/taskSync";
+import { stringifyWireJson } from "./helpers/wireJson";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole } from "../src/api/auth";
 import { ApiError, checkAttachmentPreview, invalidateAuthRequests, listProjects, pauseAuthRequests, request, subscribeUnauthorized } from "../src/api/client";
@@ -8,13 +10,13 @@ const tokenId = "30000000-0000-0000-0000-00000000000c";
 const inviteId = "40000000-0000-0000-0000-00000000000d";
 const otherId = "50000000-0000-0000-0000-00000000000e";
 const time = "2026-10-22T12:34:56.123456789Z";
-const user = { id: userId, email: null, emailVerified: false, name: "Member", avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: userId, email: null, emailVerified: false, name: "Member", avatarUrl: null };
 const pat = { id: tokenId, name: "Developer machine", createdAt: time, expiresAt: time };
 const member = { projectId, userId, email: null, name: "Member", avatarUrl: null, role: "admin", version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time };
 const { email: memberEmail, name: memberName, avatarUrl: memberAvatar, ...grant } = member;
-const participant = { userId, profile: { email: memberEmail, name: memberName, avatarUrl: memberAvatar }, effectiveRole: member.role, directGrant: grant };
+const participant = { inheritedFrom: null, userId, profile: { email: memberEmail, name: memberName, avatarUrl: memberAvatar }, effectiveRole: member.role, directGrant: grant };
 const invitation = { id: inviteId, projectId, createdBy: userId, createdAt: time, expiresAt: time, consumedBy: null, consumedAt: null, revokedAt: null };
-const project = { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "New project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
+const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "New project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
 const signal = () => new AbortController().signal;
 const rawJson = JSON as unknown as { rawJSON: (text: string) => unknown };
 const response = (value: unknown, status = 200): Response => new Response(JSON.stringify(value, (_key, item: unknown) => typeof item === "bigint" ? rawJson.rawJSON(item.toString()) : item), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
@@ -201,8 +203,8 @@ describe("private project and membership API", () => {
 
   it("preserves full int64 member observations in responses and PATCH/DELETE numeric bodies", async () => {
     const maximum = 9_223_372_036_854_775_807n;
-    const fetcher = mock(response({ items: [participant] }));
-    expect(await listMembers(projectId.toUpperCase(), signal())).toEqual([participant]);
+    const fetcher = mock(response({ actorAccess: directAccessFixture(projectId, userId), items: [participant] }));
+    expect((await listMembers(projectId.toUpperCase(), signal())).items).toEqual([participant]);
     expect(fetcher.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/members`);
     fetcher.mockResolvedValue(response({ ...grant, role: "member", version: maximum }));
     expect(await setMemberRole(projectId, userId.toUpperCase(), { version: member.version, role: "member", expectedUserId: userId }, signal(), vi.fn())).toEqual({ ...grant, role: "member", version: maximum });
@@ -213,19 +215,19 @@ describe("private project and membership API", () => {
   });
 
   it.each(["9007199254740993", "9223372036854775807"])("parses the original numeric member version lexeme %s", async (version) => {
-    const text = JSON.stringify({ items: [{ ...participant, directGrant: { ...grant, version: 1 } }] }).replace('"version":1', `"version":${version}`);
+    const text = stringifyWireJson({ actorAccess: directAccessFixture(projectId, userId), items: [{ ...participant, directGrant: { ...grant, version: 999 } }] }).replace('"version":999', `"version":${version}`);
     mock(new Response(text, { headers: { "Content-Type": "application/json" } }));
-    expect((await listMembers(projectId, signal()))[0]?.directGrant?.version).toBe(BigInt(version));
+    expect((await listMembers(projectId, signal())).items[0]?.directGrant?.version).toBe(BigInt(version));
   });
 
   it.each(["0", "-1", "1.5", "1e3", "9223372036854775808", '"9007199254740993"'])("rejects invalid membership numeric representations %s", async (version) => {
-    const text = JSON.stringify({ items: [{ ...participant, directGrant: { ...grant, version: 1 } }] }).replace('"version":1', `"version":${version}`);
+    const text = stringifyWireJson({ actorAccess: directAccessFixture(projectId, userId), items: [{ ...participant, directGrant: { ...grant, version: 999 } }] }).replace('"version":999', `"version":${version}`);
     mock(new Response(text, { headers: { "Content-Type": "application/json" } }));
     await expect(listMembers(projectId, signal())).rejects.toMatchObject({ kind: "protocol", status: 200 });
   });
 
   it("binds membership responses to both requested IDs", async () => {
-    const fetcher = mock(response({ items: [{ ...participant, directGrant: { ...grant, projectId: otherId } }] }));
+    const fetcher = mock(response({ actorAccess: directAccessFixture(projectId, userId), items: [{ ...participant, directGrant: { ...grant, projectId: otherId } }] }));
     await expect(listMembers(projectId, signal())).rejects.toMatchObject({ kind: "protocol" });
     fetcher.mockResolvedValue(response({ ...grant, userId: otherId }));
     await expect(setMemberRole(projectId, userId, { version: 1n, role: "admin", expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });

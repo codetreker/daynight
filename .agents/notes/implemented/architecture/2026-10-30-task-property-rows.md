@@ -65,8 +65,10 @@ PR-specific options. The row-model delivery retained the compact property-free
 task-sync projection. The later
 [full-property synchronization decision](2026-10-30-task-property-sync.md) added
 complete properties to snapshot and delta records and rebuilt old summaries with
-schema 3. The [assignment decision](2026-11-03-task-assignment-foundation.md) owns
-the current schema-4 rebuild and required nullable assignedTo field. Graph nodes
+schema 3. The [assignment decision](2026-11-03-task-assignment-foundation.md)
+introduced schema 4 and the required nullable assignedTo field. The
+[public ownership decision](2026-11-04-public-project-ownership.md) owns the
+current schema-5 rebuild. Graph nodes
 retain their property-free projection.
 
 ## Alternatives

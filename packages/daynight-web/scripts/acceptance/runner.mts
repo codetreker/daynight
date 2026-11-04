@@ -1,3 +1,5 @@
+import { functionalScenarios } from './inventory.mts';
+import { functionalArguments, ownsSharedChecks, readFunctionalCollection, requireSelection, requireShard, type FunctionalShard } from './shard.mts';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises';
@@ -24,12 +26,6 @@ const evidenceRoot = join(packageRoot, '.tmp/acceptance');
 const privateRoot = join(packageRoot, '.tmp/acceptance-private');
 const script = fileURLToPath(new URL('../acceptance.mts', import.meta.url));
 const labelKey = 'io.daynight.acceptance.run';
-const functionalScenarios = ['project-list', 'project-graph', 'detail-navigation', 'refresh-staleness',
-  'failure-recovery', 'deep-links', 'keyboard-focus', 'narrow-layout', 'task-attachments', 'task-detail-page', 'project-view-tabs',
-  'language-startup-preferences', 'language-state-preservation', 'language-errors-and-narrow',
-  'task-description-markdown', 'task-status', 'task-status-conflicts', 'task-status-recovery', 'task-status-transitions', 'task-agent-permission', 'task-platform', 'task-assignment', 'task-assignment-layout',
-  'auth-login-session', 'auth-project-isolation', 'auth-project-members', 'auth-personal-tokens',
-  'auth-invitations', 'auth-resource-session', 'project-settings', 'task-execution-time', 'task-pause', 'task-step-status', 'task-step-access-retirement'] as const;
 const capacityScenarios = ['capacity-chain', 'capacity-merge', 'capacity-shared', 'capacity-external', 'capacity-limits'] as const;
 
 const json = async (path: string, value: unknown): Promise<void> => {
@@ -39,7 +35,7 @@ const json = async (path: string, value: unknown): Promise<void> => {
 };
 const readJson = async (path: string): Promise<unknown> => JSON.parse(await readFile(path, 'utf8'));
 export type AcceptanceCommand = (file: string, args: readonly string[], options?: Omit<CommandOptions, 'cwd'> & { cwd?: string }) => Promise<string>;
-export type AcceptanceOptions = { allowApfsImage?: boolean; stress?: boolean };
+export type AcceptanceOptions = { allowApfsImage?: boolean; stress?: boolean; shard?: FunctionalShard };
 
 type InstalledPreparation = { receipt: InstalledCliReceipt; receiptPath: string; cleanup(): Promise<void> };
 type InstalledFactoryOptions = { signal: AbortSignal; temporaryRoot: string; rootDirectory: string; onSpawn(child: ChildProcess): Promise<void> };
@@ -168,6 +164,8 @@ export const launchNativeServer = async (options: NativeLaunchOptions): Promise<
 
 const createRunner = (cancellation: AbortController, options: AcceptanceOptions = {}) => {
   const stress = options.stress === true;
+  const shard = options.shard === undefined ? undefined : requireShard(options.shard);
+  if (stress && shard !== undefined) throw new Error('Browser stress acceptance cannot be sharded.');
   if (stress && process.env.CI !== undefined) throw new Error('Browser stress acceptance is local-only and cannot run in CI.');
   const expectedServerShutdowns = new WeakSet<ChildProcess>();
   const run = (file: string, args: readonly string[], options: Omit<CommandOptions, 'cwd'> & { cwd?: string } = {}): Promise<string> =>
@@ -207,7 +205,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     cleanup: 'pending' | 'passed' | 'failed'; finishedAt?: string; error?: string; cleanupErrors?: string[];
     installedCli?: InstalledEvidence;
     runner: ProcessIdentity; devCi?: { runId?: string; runner?: ProcessIdentity };
-    authCombined?: AuthCombinedReceipt[];
+    authCombined?: AuthCombinedReceipt[]; shard?: FunctionalShard; selection?: readonly string[];
   };
 
   const sourceIdentity = async (): Promise<Source> => {
@@ -220,7 +218,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     return { gitSha, gitTreeSha, githubSha, dirty };
   };
 
-  const playwright = async (target: BrowserPhase, directory: string, installed: ReadyInstalledEvidence): Promise<BrowserPhase> => {
+  const playwright = async (target: BrowserPhase, directory: string, installed: ReadyInstalledEvidence, selection: readonly string[], selectedShard?: FunctionalShard): Promise<BrowserPhase> => {
     let identitySaved: Promise<void> = Promise.resolve();
     let failure: unknown;
     try {
@@ -232,8 +230,8 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
       target.browserCleanup = 'pending';
       await json(join(directory, 'target.json'), target);
       await mkdir(join(packageRoot, '.tmp'), { recursive: true });
-      await run('pnpm', ['exec', 'playwright', 'test', '--workers=1', '--retries=0', '--reporter=line,json',
-        target.phase === 'capacity' ? '--grep' : '--grep-invert', '@capacity'], {
+      const args = target.phase === 'capacity' ? ['--workers=1', '--retries=0', '--grep', '@capacity'] : functionalArguments(selectedShard);
+      await run('pnpm', ['exec', 'playwright', 'test', ...args, '--reporter=line,json'], {
         cwd: packageRoot, timeoutMs: 900_000,
         env: { ...process.env, TMPDIR: browserTemporaryRoot(directory), DAYNIGHT_BASE_URL: target.baseUrl, DAYNIGHT_ACCEPTANCE_TARGET: target.target,
           DAYNIGHT_ACCEPTANCE_DIRECTORY: directory, DAYNIGHT_ACCEPTANCE_STRESS: target.phase === 'capacity' ? '1' : undefined,
@@ -250,7 +248,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
       });
       await identitySaved;
       target.scenarios = readReport(await readJson(join(directory, 'playwright.json')),
-        target.phase === 'capacity' ? capacityScenarios : functionalScenarios);
+        target.phase === 'capacity' ? capacityScenarios : selection);
       for (const scenario of target.scenarios) {
         for (const path of scenario.screenshots) {
           if (!resolve(path).startsWith(`${resolve(directory)}${sep}`)) throw new Error('Screenshot lies outside the owned acceptance directory.');
@@ -308,6 +306,9 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
       || !/^[a-f0-9]{40}$/.test(evidence.source.gitTreeSha)) {
       throw new Error('Container callback does not belong to this acceptance source and run.');
     }
+    const parentShard = evidence.shard === undefined ? undefined : requireShard(evidence.shard);
+    if (parentShard !== undefined && evidence.mode !== 'functional') throw new Error('Sharded callback requires functional acceptance.');
+    const selection = requireSelection(evidence.selection, parentShard);
     const project = `daynight-dev-ci-${runId}`;
     const callback = await processIdentity(process.pid);
     if (callback === null) throw new Error('Container callback process identity disappeared.');
@@ -326,7 +327,8 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     await validateInstalledCli(installation.receiptPath, acceptanceDirectory);
     const phase = await playwright({ target: 'container', phase: 'functional', result: 'running', startedAt: new Date().toISOString(),
       browserCleanup: 'not-started', caseSensitiveStorage: true, baseUrl, postgresContainer,
-      projectLabel: { key: 'com.docker.compose.project', value: project }, database: 'daynight' }, directory, installation);
+      projectLabel: { key: 'com.docker.compose.project', value: project }, database: 'daynight' }, directory, installation, selection, parentShard);
+    if (!ownsSharedChecks(parentShard)) return;
     const serverId = await run('docker', ['ps', '--quiet', '--no-trunc', '--filter', `label=com.docker.compose.project=${project}`,
       '--filter', 'label=com.docker.compose.service=server'], { quiet: true, timeoutMs: 10_000 });
     const manifest = await readJson(join(repositoryRoot, '.tmp/dev-ci', runId, 'manifest.json')) as { imageId: string };
@@ -694,7 +696,8 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     const evidence: Evidence = { schemaVersion: 3, mode: stress ? 'stress' : 'functional', runId, source: await sourceIdentity(), startedAt: new Date().toISOString(),
       result: 'running', native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`,
         binary: join(directory, 'daynight-server'), storageRoot: join(directory, 'native-storage'),
-        postgresImage, cleanup: 'pending' }, targets: [], stages: [], cleanup: 'pending', runner, authCombined: [] };
+        postgresImage, cleanup: 'pending' }, targets: [], stages: [], cleanup: 'pending', runner, authCombined: [],
+      ...(shard === undefined ? {} : { shard }) };
     let evidenceWrites = Promise.resolve();
     const save = (): Promise<void> => {
       evidenceWrites = evidenceWrites.then(async () => {
@@ -781,6 +784,18 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     };
     await save();
     try {
+      if (shard !== undefined) await stage('functional-selection', async (ownedRun) => {
+        const args = functionalArguments(shard);
+        const collect = async (selected: readonly string[]) => JSON.parse(await ownedRun('pnpm', ['exec', 'playwright', 'test',
+          ...selected, '--list', '--reporter=json'], { cwd: packageRoot, quiet: true, timeoutMs: 180_000,
+          env: { ...process.env, DAYNIGHT_BASE_URL: 'http://127.0.0.1:1', DAYNIGHT_ACCEPTANCE_DIRECTORY: join(directory, 'native/functional'),
+            DAYNIGHT_ACCEPTANCE_STRESS: undefined, PLAYWRIGHT_JSON_OUTPUT_FILE: undefined,
+            PLAYWRIGHT_JSON_OUTPUT_DIR: undefined, PLAYWRIGHT_JSON_OUTPUT_NAME: undefined } }));
+        readFunctionalCollection(await collect(args.filter((arg) => !arg.startsWith('--shard='))), undefined);
+        evidence.selection = readFunctionalCollection(await collect(args), shard);
+        await save();
+      });
+      const selection = requireSelection(evidence.selection, shard);
       await runPipeline(cancellation, {
         nativePreparation: () => stage('native-preparation', async (ownedRun, register) => {
           console.log(`Web acceptance ${runId}: building production assets and native Go executable.`);
@@ -832,44 +847,46 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
         nativeFunctional: () => stage('native-functional', async () => {
           const phase = nativePhase('functional');
           await save();
-          await playwright(phase, join(directory, 'native/functional'), installedEvidence());
+          await playwright(phase, join(directory, 'native/functional'), installedEvidence(), selection, shard);
           await save();
-          const target: CombinedTarget = { target: 'native', baseUrl: phase.baseUrl, sourceGitSha: evidence.source.gitSha, acceptanceDirectory: directory,
-            postgresContainer: phase.postgresContainer, projectLabel: phase.projectLabel, database: 'daynight', storage: { kind: 'native', root: evidence.native.storage!.root } };
-          const combinedDirectory = join(directory, 'native/auth-combined');
-          const logs: Buffer[] = []; let logBytes = 0; let logFailure = false;
-          nativeLogSink = (data) => { logBytes += data.length; if (logBytes > 8 * 1024 * 1024) logFailure = true; else logs.push(data); };
-          try {
-            const combined = await runAuthCombined({ target, directory: combinedDirectory, installedReceiptPath: installedEvidence().receiptPath,
-              signal: cancellation.signal,
-              restartTarget: async (_ownedRun, restartSignal) => {
-                if (child === undefined || authFixture === undefined || nativeDatabaseUrl === undefined || evidence.native.processIdentity === undefined
-                  || evidence.native.binarySha256 === undefined) throw new Error('Native restart is missing its original owned configuration.');
-                const beforeIdentity = evidence.native.processIdentity;
-                const before = { pid: beforeIdentity.pid, start: beforeIdentity.startTicks };
-                const startedAt = new Date().toISOString();
-                await json(join(combinedDirectory, 'restart.json'), { target: 'native', origin: phase.baseUrl, before, startedAt });
-                await stopServer(child);
-                await launchNativeServer({ binary: evidence.native.binary, databaseUrl: nativeDatabaseUrl, storageRoot: evidence.native.storage!.root,
-                  baseUrl: phase.baseUrl, auth: authFixture, signal: restartSignal,
-                  onSpawn: async (replacement) => trackNativeChild(replacement, evidence.native.binary, evidence.native,
-                    (ownedChild) => { child = ownedChild; }, save),
-                  onUnexpectedExit: (nativeChild, code, signal) => {
-                    if (!expectedServerShutdowns.has(nativeChild)) cancellation.abort(new Error(`Native Go exited unexpectedly (exit=${code}, signal=${signal}).`));
-                  } });
-                const afterIdentity = evidence.native.processIdentity;
-                if (afterIdentity === undefined) throw new Error('Restarted native process lacks its persisted identity.');
-                const restart: RestartReceipt = { target: 'native', origin: phase.baseUrl, startedAt, readyAt: new Date().toISOString(), before,
-                  after: { pid: afterIdentity.pid, start: afterIdentity.startTicks }, binaryOrImage: evidence.native.binarySha256 };
-                (evidence.native.restarts ??= []).push(restart); await save(); await json(join(combinedDirectory, 'restart.json'), restart); return restart;
-              },
-              readLogs: async () => {
-                const text = Buffer.concat(logs).toString('utf8');
-                if (logFailure || text === '' || authFixture === undefined || text.includes(authFixture.appSecret)) throw new Error('Native private authentication log scan failed.');
-                return text;
-              } });
-            sameBrowser(combined, phase.browser); evidence.authCombined!.push(combined); await save();
-          } finally { nativeLogSink = undefined; }
+          if (ownsSharedChecks(shard)) {
+            const target: CombinedTarget = { target: 'native', baseUrl: phase.baseUrl, sourceGitSha: evidence.source.gitSha, acceptanceDirectory: directory,
+              postgresContainer: phase.postgresContainer, projectLabel: phase.projectLabel, database: 'daynight', storage: { kind: 'native', root: evidence.native.storage!.root } };
+            const combinedDirectory = join(directory, 'native/auth-combined');
+            const logs: Buffer[] = []; let logBytes = 0; let logFailure = false;
+            nativeLogSink = (data) => { logBytes += data.length; if (logBytes > 8 * 1024 * 1024) logFailure = true; else logs.push(data); };
+            try {
+              const combined = await runAuthCombined({ target, directory: combinedDirectory, installedReceiptPath: installedEvidence().receiptPath,
+                signal: cancellation.signal,
+                restartTarget: async (_ownedRun, restartSignal) => {
+                  if (child === undefined || authFixture === undefined || nativeDatabaseUrl === undefined || evidence.native.processIdentity === undefined
+                    || evidence.native.binarySha256 === undefined) throw new Error('Native restart is missing its original owned configuration.');
+                  const beforeIdentity = evidence.native.processIdentity;
+                  const before = { pid: beforeIdentity.pid, start: beforeIdentity.startTicks };
+                  const startedAt = new Date().toISOString();
+                  await json(join(combinedDirectory, 'restart.json'), { target: 'native', origin: phase.baseUrl, before, startedAt });
+                  await stopServer(child);
+                  await launchNativeServer({ binary: evidence.native.binary, databaseUrl: nativeDatabaseUrl, storageRoot: evidence.native.storage!.root,
+                    baseUrl: phase.baseUrl, auth: authFixture, signal: restartSignal,
+                    onSpawn: async (replacement) => trackNativeChild(replacement, evidence.native.binary, evidence.native,
+                      (ownedChild) => { child = ownedChild; }, save),
+                    onUnexpectedExit: (nativeChild, code, signal) => {
+                      if (!expectedServerShutdowns.has(nativeChild)) cancellation.abort(new Error(`Native Go exited unexpectedly (exit=${code}, signal=${signal}).`));
+                    } });
+                  const afterIdentity = evidence.native.processIdentity;
+                  if (afterIdentity === undefined) throw new Error('Restarted native process lacks its persisted identity.');
+                  const restart: RestartReceipt = { target: 'native', origin: phase.baseUrl, startedAt, readyAt: new Date().toISOString(), before,
+                    after: { pid: afterIdentity.pid, start: afterIdentity.startTicks }, binaryOrImage: evidence.native.binarySha256 };
+                  (evidence.native.restarts ??= []).push(restart); await save(); await json(join(combinedDirectory, 'restart.json'), restart); return restart;
+                },
+                readLogs: async () => {
+                  const text = Buffer.concat(logs).toString('utf8');
+                  if (logFailure || text === '' || authFixture === undefined || text.includes(authFixture.appSecret)) throw new Error('Native private authentication log scan failed.');
+                  return text;
+                } });
+              sameBrowser(combined, phase.browser); evidence.authCombined!.push(combined); await save();
+            } finally { nativeLogSink = undefined; }
+          }
         }),
         releaseContainer: () => stage('container-release', async () => {
           cancellation.signal.throwIfAborted();
@@ -918,14 +935,16 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
           }
           const target: Target = { target: 'container', baseUrl: phase.baseUrl, postgresContainer: phase.postgresContainer,
             projectLabel: phase.projectLabel, database: phase.database, result: 'running', phases: [phase] };
-          const rawCombined = await readJson(join(containerDirectory, 'auth-combined/target.json')) as AuthCombinedReceipt;
-          const serverId = rawCombined.restart?.containerId;
-          if (typeof serverId !== 'string' || !Array.isArray(receipt.containerIds) || !receipt.containerIds.includes(serverId)) throw new Error('Combined container differs from the owned deployment receipt.');
-          const combinedTarget: CombinedTarget = { target: 'container', baseUrl: phase.baseUrl, sourceGitSha: evidence.source.gitSha, acceptanceDirectory: directory,
-            postgresContainer: phase.postgresContainer, projectLabel: phase.projectLabel, database: 'daynight',
-            storage: { kind: 'container', root: '/var/lib/daynight/storage', containerId: serverId, imageId: String(receipt.imageId) } };
-          const combined = validateAuthCombinedReceipt(rawCombined, combinedTarget); sameBrowser(combined, phase.browser); evidence.authCombined!.push(combined);
-          aggregate(target, functionalScenarios);
+          if (ownsSharedChecks(shard)) {
+            const rawCombined = await readJson(join(containerDirectory, 'auth-combined/target.json')) as AuthCombinedReceipt;
+            const serverId = rawCombined.restart?.containerId;
+            if (typeof serverId !== 'string' || !Array.isArray(receipt.containerIds) || !receipt.containerIds.includes(serverId)) throw new Error('Combined container differs from the owned deployment receipt.');
+            const combinedTarget: CombinedTarget = { target: 'container', baseUrl: phase.baseUrl, sourceGitSha: evidence.source.gitSha, acceptanceDirectory: directory,
+              postgresContainer: phase.postgresContainer, projectLabel: phase.projectLabel, database: 'daynight',
+              storage: { kind: 'container', root: '/var/lib/daynight/storage', containerId: serverId, imageId: String(receipt.imageId) } };
+            const combined = validateAuthCombinedReceipt(rawCombined, combinedTarget); sameBrowser(combined, phase.browser); evidence.authCombined!.push(combined);
+          }
+          aggregate(target, selection);
           evidence.targets.push(target);
           await save();
         }),
@@ -937,15 +956,17 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
           capacity: () => stage('native-capacity', async () => {
             const phase = nativePhase('capacity');
             await save();
-            await playwright(phase, join(directory, 'native/capacity'), installedEvidence());
+            await playwright(phase, join(directory, 'native/capacity'), installedEvidence(), functionalScenarios);
             evidence.performance = await readJson(join(directory, 'native/capacity/performance.json'));
             validatePerformance(evidence.performance);
             await save();
           }),
         } : {}),
       });
-      aggregate(native(), stress ? [...functionalScenarios, ...capacityScenarios] : functionalScenarios);
-      if (evidence.authCombined?.length !== 2 || new Set(evidence.authCombined.map((entry) => entry.target)).size !== 2) throw new Error('Both owned targets must pass their combined authentication journey.');
+      aggregate(native(), stress ? [...functionalScenarios, ...capacityScenarios] : selection);
+      if (ownsSharedChecks(shard)) {
+        if (evidence.authCombined?.length !== 2 || new Set(evidence.authCombined.map((entry) => entry.target)).size !== 2) throw new Error('Both owned targets must pass their combined authentication journey.');
+      } else if (evidence.authCombined?.length !== 0) throw new Error('Combined authentication belongs only to shard 2.');
       evidence.result = 'passed';
     } catch (error) {
       failure = error;

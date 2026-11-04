@@ -84,11 +84,12 @@ export function useTimelineScroll(identity: string, active: boolean, revision: u
   const pause = () => { following.current = false; expectedTop.current = null; lastTop.current = viewport.current?.scrollTop ?? 0; capture(); };
   const latest = () => { following.current = true; intent.current?.(true, null); anchor.current = null; updateRef.current(); };
   const onScroll = () => {
-    const box = viewport.current; if (!box || !active || box.clientHeight === 0) return;
-    if (expectedTop.current !== null && Math.abs(box.scrollTop - expectedTop.current) < 1) return;
+    const box = viewport.current; if (!box || !active || box.clientHeight === 0) return false;
+    if (expectedTop.current !== null && Math.abs(box.scrollTop - expectedTop.current) < 1) return false;
     if (!following.current && display?.visibleKeys.length !== 0 && box.scrollTop > lastTop.current && box.scrollHeight - box.clientHeight - box.scrollTop < 2) following.current = true;
     expectedTop.current = null; lastTop.current = box.scrollTop;
     capture(); setShowLatest(!following.current && box.scrollHeight - box.clientHeight - box.scrollTop > 64);
+    return true;
   };
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.defaultPrevented || (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"]'))) return;

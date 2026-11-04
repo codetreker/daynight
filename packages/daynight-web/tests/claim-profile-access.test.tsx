@@ -33,10 +33,10 @@ const mount = async ({ role = 'admin', ownerId = otherOwnerId, membersFail = fal
   const detail = detailFixture(projectId, taskId, { title: 'Claim access integration', status: 'in_progress', startedAt: stamp, ready: false, allowAgents: true, properties: { worker, pullRequests: [] } });
   const transport = {
     access: initialAccess ?? (() => accessResponse(role)),
-    members: () => membersFail ? membershipFailure() : resourceResponse({ items: [
-      { userId: ownerId, profile: { name: 'Actual claim owner', email: null, avatarUrl: null }, effectiveRole: 'member', directGrant: null },
+    members: () => membersFail ? membershipFailure() : resourceResponse({ actorAccess: directAccessFixture(projectId, TEST_VIEWER_ID, role), items: [
+      { inheritedFrom: { team: directAccessFixture(projectId).ownerTeam, role: 'member' }, userId: ownerId, profile: { name: 'Actual claim owner', email: null, avatarUrl: null }, effectiveRole: 'member', directGrant: null },
       // The roster deliberately disagrees with access: it cannot authorize withdrawal.
-      ...(ownerId === TEST_VIEWER_ID ? [] : [{ userId: TEST_VIEWER_ID, profile: { name: 'Current viewer', email: null, avatarUrl: null }, effectiveRole: role === 'admin' ? 'member' : 'admin', directGrant: null }]),
+      ...(ownerId === TEST_VIEWER_ID ? [] : [{ inheritedFrom: { team: directAccessFixture(projectId).ownerTeam, role: role === 'admin' ? 'member' : 'admin' }, userId: TEST_VIEWER_ID, profile: { name: 'Current viewer', email: null, avatarUrl: null }, effectiveRole: role === 'admin' ? 'member' : 'admin', directGrant: null }]),
     ] }, TEST_VIEWER_ID),
   };
   const requests: string[] = [], writes: string[] = [];

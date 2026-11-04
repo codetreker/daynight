@@ -9,6 +9,7 @@ import type {
   TaskGraph,
   TaskGraphSummary,
 } from "./types";
+import { parseProjectOwnership } from "./team-parse";
 import { isTaskVersion } from "./json";
 
 export { array, boolean, canonicalId, executionPlatform, id, malformed, nonemptyString, record, string, timestamp } from "./validation";
@@ -30,6 +31,7 @@ export const project = (value: unknown): Project => {
     name: nonemptyString(data.name),
     repoUrl: nonemptyString(data.repoUrl),
     settings: projectSettings(data.settings),
+    ownership: parseProjectOwnership(data.ownership),
     createdAt: timestamp(data.createdAt),
     updatedAt: timestamp(data.updatedAt),
   };

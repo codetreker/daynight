@@ -44,7 +44,8 @@ export const parseTaskSync = (value: unknown, projectId: string, userId?: string
     mode: data.mode, epoch: id(data.epoch), project: project(data.project),
     observedAt: timestamp(data.observedAt), tasks: array(data.tasks, parseTaskSummary),
   };
-  if (result.project.id !== projectId || result.tasks.length > 1000 ||
+  if (result.project.id !== projectId || result.actorAccess.ownership.teamId !== result.project.ownership.teamId ||
+    result.actorAccess.ownership.version !== result.project.ownership.version || result.tasks.length > 1000 ||
     new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length ||
     result.tasks.reduce((count, task) => count + task.dependsOn.length, 0) > 5000) return malformed();
   return result;

@@ -145,7 +145,7 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     await expect(page.locator('.task-assignee-filter .assignee-trigger')).toHaveText('Everyone'); await expect(goalRow).toBeVisible();
 
     const membersResponse = await api.get(`/api/v1/projects/${project.id}/members`); expect(membersResponse.status()).toBe(200);
-    const former = parseMembers(await decodeMembersJson(new Response(await membersResponse.text())), project.id).find((member) => member.userId === bobProfile.id);
+    const former = parseMembers(await decodeMembersJson(new Response(await membersResponse.text())), project.id).items.find((member) => member.userId === bobProfile.id);
     if (former === undefined) throw new Error('Former-assignee acceptance requires the exact current Bob membership.');
     expect((await api.delete(`/api/v1/projects/${project.id}/members/${bobProfile.id}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: former.directGrant!.version, expectedUserId: aliceProfile.id }) })).status()).toBe(204);
     await page.reload();

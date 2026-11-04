@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { act, fireEvent, screen, within } from '@testing-library/react';
+import { act, fireEvent, screen, within, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import type { SessionSnapshot } from '../src/api/types';
 import type { TaskSessionClient, SessionViewState } from '../src/features/task-agent-session/client';
@@ -12,7 +12,7 @@ let sequence = 0;
 function fixture() {
   const snapshot: SessionSnapshot = JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8'));
   const userId = `display-user-${++sequence}`;
-  let view: SessionViewState = { state: { ...emptySessionState(), snapshot, entries: [
+  let view: SessionViewState = { historyReady: true, historyRevision: 1, connectionGeneration: 1, state: { ...emptySessionState(), snapshot, entries: [
     { entryId: 'message', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: 'Keep this message' }] },
     { entryId: 'thought', entrySeq: '2', revision: '1', kind: 'reasoning', text: 'Private reasoning' },
   ] }, archiveState: null, settingIntents: new Map(), draft: { text: 'Keep this draft', revision: '1', submission: null }, status: 'ready', connected: true, authPaused: false, error: 'Connection diagnostic', hasOlder: false, loadingOlder: false, historyError: null, checking: new Set() };
@@ -96,4 +96,17 @@ it('closes Display before the enclosing dialog even while the Chatbox keyboard h
   const trigger = screen.getByRole('button', { name: 'Display' }); fireEvent.click(trigger);
   fireEvent.keyDown(screen.getByRole('menuitemradio', { name: 'Conversation' }), { key: 'Escape' });
   expect(screen.queryByRole('menu')).toBeNull(); expect(trigger).toHaveFocus(); expect(outerEscape).not.toHaveBeenCalled();
+});
+
+it('abandons an in-flight history error when the authenticated account changes', async () => {
+  const f = fixture(); let reject!: (error: Error) => void;
+  vi.mocked(f.client.loadOlder).mockImplementation(() => new Promise<void>((_resolve, fail) => { reject = fail; }));
+  const view = render(<SessionView client={f.client} userId={f.userId} active current />);
+  const box = view.container.querySelector<HTMLElement>('.session-timeline')!;
+  Object.defineProperties(box, { clientHeight: { configurable: true, value: 200 }, scrollHeight: { configurable: true, value: 100 } });
+  f.update({ hasOlder: true });
+  await waitFor(() => expect(f.client.loadOlder).toHaveBeenCalledTimes(1));
+  view.rerender(<SessionView client={f.client} userId="another-account" active current />);
+  await act(async () => { reject(new Error('The previous account history failed')); await Promise.resolve(); });
+  expect(screen.queryByText('The previous account history failed')).toBeNull();
 });

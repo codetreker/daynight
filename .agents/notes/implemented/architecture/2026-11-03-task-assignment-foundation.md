@@ -61,8 +61,10 @@ revealing a global profile. Nullable names and avatars remain actual data.
 Bounded resolution probes only requested identities; an unrequested missing
 profile cannot fail that read, while complete enumeration still exposes it.
 
-Web Task/detail/summary/graph consumers require the nullable field, and schema 4
-rebuilds old task material from versions 1, 2 and 3. The detail session owns one
+Web Task/detail/summary/graph consumers require the nullable field. Introducing
+assignment used schema 4 to rebuild old task material from versions 1, 2 and 3.
+The [public ownership decision](2026-11-04-public-project-ownership.md) owns the
+current schema-5 rebuild, which retains the assignment requirement. The detail session owns one
 normal Task PATCH and read-only reconciliation of unknown outcomes. It predicts
 same-value versions separately and preserves assignment across all other
 mutations.
@@ -181,7 +183,7 @@ create membership nor change task versions, and errors never publish a partial
 set. Complete catalogue cost remains a measured consideration; the bounded mode
 has direct cardinality, qualification and query-plan checks. CLI assignment
 operations use required nullable parsing, direct mutation and principal-bound
-list validation. Web assignment and schema-4 consumption are implemented
+list validation. Web assignment and its required cache consumption are implemented
 together, with session-memory people data and complete graph facts.
 Migration, raw-wire, snapshot, privacy, race and rollback checks retain these
 boundaries.

@@ -65,8 +65,11 @@ func (s *Store) CreatePrivateProject(ctx context.Context, principal core.Princip
 }
 
 func (s *Snapshot) ProjectParticipants(ctx context.Context, projectID string) ([]core.ProjectParticipant, error) {
-	rows, err := s.tx.Query(ctx, `SELECT a.user_id::text,u.id::text,u.name,u.email,u.avatar_url,a.role,
+	rows, err := s.tx.Query(ctx, `SELECT a.user_id::text,u.id::text,u.name,u.email,u.avatar_url,a.role,tm.role,t.id::text,t.name,t.personal_user_id::text,
         g.project_id::text,g.user_id::text,g.role,g.version,g.created_at,g.updated_at FROM (`+projectAccessRelation+`) a
+        JOIN project_ownership o ON o.project_id=a.project_id
+        JOIN teams t ON t.id=o.team_id
+        LEFT JOIN team_members tm ON tm.team_id=o.team_id AND tm.user_id=a.user_id
         LEFT JOIN project_grants g ON g.project_id=a.project_id AND g.user_id=a.user_id
         LEFT JOIN users u ON u.id=a.user_id
         WHERE a.project_id=$1 ORDER BY a.joined_at,a.user_id`, projectID)
@@ -79,7 +82,10 @@ func (s *Snapshot) ProjectParticipants(ctx context.Context, projectID string) ([
 		var participant core.ProjectParticipant
 		var profileID *string
 		var grant nullableProjectGrant
-		destinations := []any{&participant.UserID, &profileID, &participant.Profile.Name, &participant.Profile.Email, &participant.Profile.AvatarURL, &participant.EffectiveRole}
+		var teamRole *core.ProjectRole
+		var team core.TeamRef
+		var personalUserID *string
+		destinations := []any{&participant.UserID, &profileID, &participant.Profile.Name, &participant.Profile.Email, &participant.Profile.AvatarURL, &participant.EffectiveRole, &teamRole, &team.ID, &team.Name, &personalUserID}
 		if err := rows.Scan(append(destinations, grant.destinations()...)...); err != nil {
 			return nil, queryError("list project participants", err)
 		}
@@ -87,6 +93,13 @@ func (s *Snapshot) ProjectParticipants(ctx context.Context, projectID string) ([
 			return nil, queryError("list project participants", fmt.Errorf("project participant profile is missing or inconsistent"))
 		}
 		participant.DirectGrant = grant.value()
+		if teamRole != nil {
+			team.Kind = "ordinary"
+			if personalUserID != nil {
+				team.Kind = "personal"
+			}
+			participant.InheritedFrom = &core.ProjectInheritance{Team: team, Role: *teamRole}
+		}
 		participants = append(participants, participant)
 	}
 	return participants, authQueryError("list project participants", rows.Err())
