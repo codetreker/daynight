@@ -29,7 +29,7 @@ for (const [path, expected] of [
   ["packages/daynight/src/commands/review/skills/daynight-review/README.md", { ...none, cli: true }],
   ["packages/daynight/src/commands/review/skills/daynight-review/AGENTS.md", { ...none, cli: true }],
   ["packages/daynight/src/README.md", { ...none, cli: true }],
-  ["packages/daynight/test/tooling/check-version.test.ts", { ...none, cli: true }],
+  ["packages/daynight/test/tooling/copy-resources.test.ts", { ...none, cli: true }],
   ["packages/daynight/test/fixtures/installed-cli.ts", all],
   ["packages/daynight-server/internal/server/tasks.go", { ...none, server: true }],
   ["packages/daynight-server/.gitignore", { ...none, server: true }],

@@ -13,7 +13,6 @@
     "acceptance": "pnpm --filter @codetreker/daynight acceptance",
     "check": "pnpm typecheck && pnpm test",
     "daynight": "pnpm --filter @codetreker/daynight exec node dist/main.js",
-    "version:check": "node packages/daynight/scripts/check-version.ts",
     "web:dev": "pnpm --filter @codetreker/daynight-web dev",
     "web:typecheck": "pnpm --filter @codetreker/daynight-web typecheck",
     "web:test:storage-native": "pnpm --filter @codetreker/daynight-web test:storage-native",
