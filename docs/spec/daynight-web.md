@@ -13,7 +13,7 @@
 生产 `Application` 在常驻 LocaleProvider 下区分公开首页、公开指南与认证应用。
 `AuthenticatedApp` 及其 API 客户端拥有 `/login` 和认证后的工作空间；
 [推广页要求](daynight-landing.md)拥有公开介绍、演示与入口，[鉴权架构](../design/daynight-auth.md)拥有私有生命周期。登录方式来自后端
-真实 UniAuth App discovery，项目列表仅包含当前用户加入的项目。登录、账户、
+真实 UniAuth App discovery，项目列表仅包含当前用户有权访问且符合当前范围的项目。登录、账户、
 成员、邀请、设备授权、令牌与原有看板共用英语/简体中文目录及状态保持规则。
 可信同源 frame、相对资源和键盘交互继续保留，附件请求按当前身份执行成员检查。
 
