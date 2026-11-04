@@ -204,10 +204,22 @@ receipts and diagnostics use `daynight-cli-installed-*` and
 `daynight-cli-installed-probes-*`. The installed receipts include the environment,
 curated acceptance outputs and canonical preparation/cleanup result. Every
 native version and both complete phase workloads remain required whenever CLI
-validation is selected. Each phase has its own 600-second job gate, so the former
-combined platform ceiling and aggregate runner cost are not preserved. The
+validation is selected. Linux/Windows phases each have a 600-second job gate;
+macOS retains a 600-second limit per validation phase inside one 1200-second
+job, including shared setup and uploads. The
 [cold-start decision](../.agents/notes/archived/bug-fix/2026-10-20-gh-cold-start-preparation.md)
 records the measurements, deadline semantics and remaining limits.
+
+The macOS ordinary test command runs under
+`packages/daynight/scripts/observe-native-validation.mjs`. It preserves the
+complete Vitest command, default concurrency and test deadlines, and propagates
+the command's exit result. Incremental process/resource samples and a bounded
+post-exit macOS termination-log query are uploaded from `.tmp/native-validation/`
+as `daynight-cli-tests-termination-macos-15`, including after test failure.
+Unavailable probes are recorded as diagnostic errors; sampling cannot prove the
+absence of a short-lived process or identify a signal sender by itself. The
+[termination diagnostics decision](../.agents/notes/implemented/testing/2026-11-05-native-test-termination-diagnostics.md)
+describes the evidence limits and collection cost.
 
 Explicit `pnpm test:apfs` diagnostics on macOS mount temporary case-sensitive and
 case-insensitive APFS images to check path identity against both behaviors.

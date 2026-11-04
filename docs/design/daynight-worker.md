@@ -40,7 +40,7 @@ Worker 用期望状态与实际状态之差选择动作，不以重复的步骤�
 
 资源身份、控制意图、固定期限和重试策略可持久保存；“停止做过了”“删除做过了”等步骤状态不能授权跳过观察。一次清理调用返回临时的完成结果，只有本次观察满足全部目标才更新本机记录并释放容量。设计取舍见[资源状态决策](../../.agents/notes/implemented/architecture/2026-11-04-worker-resource-state.md)。
 
-macOS Herdr 将原运行停止、封段和 ledger 确认作为执行槽释放目标；最终归档尚未接入，独立 archive/worktree 责任继续保留并维持同 task 屏障，不用本机 done 认定归档或工作区已删除。
+macOS Herdr 将本地原运行停止证明和封段作为执行槽释放目标；独立归档队列继续发布 ledger、冻结并上传归档，读回 ready/unavailable receipt 后才清理原 worktree。失败保留源和工作区并维持同 task 路径屏障，不用本机 done 认定归档或工作区已删除。采样、预算与处置规则由 [Herdr 录制设计](herdr-recording.md)拥有。
 
 ## 配置与目录
 

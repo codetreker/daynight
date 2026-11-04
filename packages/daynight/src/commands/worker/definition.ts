@@ -56,6 +56,22 @@ export const workerDefinition: CommandDefinition = {
     }],
     options: [help],
   }, {
+    name: "resources",
+    description: "Inspect and explicitly dispose stopped Herdr recording resources",
+    options: [help],
+    details: "Stop worker run first. These commands use the original worker lock and never start an Agent. Inspection reports original Session, claim, stop evidence, worktree, source and archive disposition as JSON.",
+    commands: [{
+      name: "list", description: "Inspect retained original execution resources", options: [help],
+    }, {
+      name: "retry", description: "Explicitly retry a stopped original archive after fixing its cause", arguments: task,
+      options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, help],
+      details: "Retain the original owner, source and operation. This schedules archive reconciliation only; it cannot recover an Agent or repair corrupt source.",
+    }, {
+      name: "dispose", description: "Record an explicit abandonment or delete stopped original resources", arguments: task,
+      options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, { names: ["--operation-id"], description: "Stable UUID for this explicit disposal decision", value: { name: "operation-id", kind: "text" }, required: true }, { names: ["--action"], description: "abandon retains files; delete removes the selected worktree and recording source", value: { name: "action", kind: "text" }, required: true }, { names: ["--confirm"], description: "Confirm this exact disposal and its loss of local recording data", required: true }, help],
+      details: "Read resources list first. Only the matching terminal claim with confirmed original stop may be disposed. Abandon stops archive retry and keeps files. Delete removes only the original source and worktree through ownership checks. Neither action manufactures ready/unavailable or changes remote archive history. Reuse the same operation ID to reconcile an interrupted decision.",
+    }],
+  }, {
     name: "retry",
     description: "Attempt recovery once for an active original claim",
     arguments: task,

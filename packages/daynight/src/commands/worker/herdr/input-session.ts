@@ -116,7 +116,7 @@ export const createHerdrInputSession = (options: HerdrInputSessionOptions) => {
       if (stopped) throw new Error("The Herdr input session owner is closed.");
       signal?.throwIfAborted();
       const registration = parseSessionV2Message(raw);
-      if (registration.type !== "registration" || Object.values(registration.payload.capabilities).some(Boolean)) throw new Error("Input-session registration must preserve the combined capability gate.");
+      if (registration.type !== "registration") throw new Error("Input-session registration requires the original terminal registration.");
       const owner = { ...registration.payload.owner, claimId: registration.claimId };
       const record = options.getRecord(owner);
       if (!same(record.registrationRequest, registration) || record.connectionEpoch !== registration.payload.connectionEpoch) throw new Error("The input registration intent must be durably recorded first.");
@@ -204,6 +204,14 @@ export const createHerdrInputSession = (options: HerdrInputSessionOptions) => {
         }
       }
       return holdReconciliation(entry);
+    },
+    publishSnapshot: async (sessionId: string, payload: SessionV2Payloads["snapshot"]): Promise<void> => {
+      const entry = entries.get(sessionId);
+      if (!entry || !entry.active || entry.closed || !entry.bridge.connected()) throw new Error("The original live Session is disconnected.");
+      const record = requireRecord(entry), segment = record.segments.at(-1);
+      if (!hasActiveSegment(record) || record.registrationRequest !== null || record.connectionEpoch !== entry.epoch || payload.connectionEpoch !== entry.epoch || segment?.segmentId !== payload.segmentId || segment.segmentOrdinal !== payload.segmentOrdinal) throw new Error("The live snapshot no longer belongs to the active recording segment.");
+      assertTerminalBinding(payload.binding, record.runs.at(-1)!.run.binding);
+      await entry.bridge.send({ ...envelope(entry.registration), type: "snapshot", payload });
     },
     connected: (sessionId: string): boolean => { const entry = entries.get(sessionId); return entry !== undefined && entry.active && !entry.closed && entry.bridge.connected(); },
     poll,
