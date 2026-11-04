@@ -18,10 +18,12 @@ order; groups wrap when the container has limited space, including narrow deskto
 panels. Focus remains visible both for the
 input surface and for individual keyboard controls.
 
-The form retains submission and keyboard ownership. Settings and command panels
-retain their existing lifecycle, and errors remain visible. This changes visual
-grouping without moving state ownership or changing provider capability gates,
-draft recovery, IME handling or operation confirmation. The
+The form retains submission and keyboard ownership, and errors remain visible.
+The grouping decision preserved settings and command panel lifecycles without
+moving state ownership or changing provider capability gates, draft recovery or
+operation confirmation. The
+[command menu decision](2026-11-04-session-command-menu.md) owns the menu's
+container sizing and dismissal behavior, including IME Escape handling. The
 [Session requirements](../../../../docs/spec/task-sessions.md#chatbox-设置命令与运行状态)
 own the presentation contract; the
 [native controls decision](../feature/2026-10-28-chatbox-native-controls.md)
