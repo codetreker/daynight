@@ -23,15 +23,20 @@ execution evidence.
 Native macOS support is limited to Apple Silicon (ARM64). Intel macOS is
 unsupported. The [client requirements](../../../../docs/spec/daynight.md#c1-包与平台)
 own that platform boundary for CLI, Worker, Controller and Review.
-The [checks workflow](../../../../.github/workflows/checks.yml) selects the
-standard `macos-26` runner for each native validation phase and verifies Darwin
-ARM64 independently before ordinary tests and installed acceptance. The
-[phase decision](2026-11-04-parallel-native-cli-validation.md) owns their parallel
-execution and separate evidence.
-The [official image catalog](https://github.com/actions/runner-images/blob/a2d4955654f519bd5b559bffaea60d9f90156630/README.md#L32)
+At adoption, the [checks workflow](../../../../.github/workflows/checks.yml)
+selected the standard `macos-26` runner for each native validation phase. The
+[official image catalog](https://github.com/actions/runner-images/blob/a2d4955654f519bd5b559bffaea60d9f90156630/README.md#L32)
 and [standard runner table](https://github.com/github/docs/blob/396218f23a6e3fa24d173ebfa74b3499adde67a3/data/reusables/actions/supported-github-runners.md#L83-L87)
-identify that label as macOS 26 ARM64. It preserves the OS major version and
-requires no larger-runner registration. The lane has no Intel fallback.
+identified it as macOS 26 ARM64, preserving the OS major version while restoring
+the supported architecture without larger-runner registration. The later
+[image availability decision](2026-11-05-macos-ci-image-availability.md) replaces
+that image selection with standard `macos-15` after repeated acquisition failure;
+this ARM64 support boundary remains in effect.
+
+Each phase verifies Darwin ARM64 independently before ordinary tests or
+installed acceptance. The [phase decision](2026-11-04-parallel-native-cli-validation.md)
+owns their parallel execution and separate evidence. The lane has no Intel
+fallback.
 
 This supersedes the Intel runner selection and architecture-independent support
 premise in the [hosted capacity decision](2026-11-03-macos-hosted-runner-capacity.md).
@@ -58,7 +63,8 @@ problems. Reverting them does not restore the supported runner architecture.
 
 ## Consequences
 
-macOS native validation produces ARM64 evidence on an explicit macOS 26 label.
+macOS native validation requires ARM64 evidence on the explicit image selected
+by the [image availability decision](2026-11-05-macos-ci-image-availability.md).
 Hosted ARM64 capacity is still controlled by GitHub; acquisition failures must
 be diagnosed from actual job annotations without substituting Intel execution.
 Runner catalog support and historical success do not establish source-bound

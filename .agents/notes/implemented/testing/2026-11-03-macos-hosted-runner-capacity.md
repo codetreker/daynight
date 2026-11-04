@@ -123,9 +123,10 @@ The original Intel selection made the lane's OS major version and architecture
 explicit while retaining normal GitHub image updates. Capacity remained under
 GitHub's control, and native acquisition annotations were required to diagnose
 a failure before execution. The later [ARM64 support
-decision](2026-11-04-macos-arm64-support.md) owns the current runner and support
-policy. Full native CI must pass on that runner before its configuration is
-accepted; catalog support, component probes and dependency targets do not prove
+decision](2026-11-04-macos-arm64-support.md) owns the support policy, and the
+[image availability decision](2026-11-05-macos-ci-image-availability.md) selects the
+current standard ARM64 image. Full native CI must pass on that runner before its
+configuration is accepted; catalog support, component probes and dependency targets do not prove
 whole-suite execution.
 
 Local phase measurements do not prove native-platform speed, and changes in

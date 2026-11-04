@@ -157,11 +157,13 @@ loading guarantees.
 
 Native development and validation support Linux, Windows and Apple Silicon
 (ARM64) macOS. Intel macOS is unsupported. GitHub Actions runs type checking,
-build and tests on native Linux, macOS 26 ARM64 and Windows runners. Both native
-phases use the standard `macos-26` label for macOS and verify Darwin ARM64 before validation;
-the [platform decision](../.agents/notes/implemented/testing/2026-11-04-macos-arm64-support.md)
-records the support boundary and runner selection. Hosted capacity failures
-require diagnosis within this ARM64 runner policy.
+build and tests on native Linux, macOS 15 ARM64 and Windows runners. Both native
+phases use the standard `macos-15` label for macOS and verify Darwin ARM64 before
+validation. The [platform decision](../.agents/notes/implemented/testing/2026-11-04-macos-arm64-support.md)
+owns the support boundary; the [image availability decision](../.agents/notes/implemented/testing/2026-11-05-macos-ci-image-availability.md)
+records the explicit image selection and its limits. Hosted capacity failures
+require diagnosis within this ARM64 runner policy, and a supported label still
+requires real allocation and complete native test results.
 Each native job resolves the latest available Node.js 24 patch.
 The ordinary Ubuntu job builds and packs the Node.js 24 artifact consumed by the
 separate runtime matrix. Runtime jobs wait for the ordinary matrix, without an

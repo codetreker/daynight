@@ -58,7 +58,7 @@ test("change detection failure remains visible when application jobs skip", () =
 const ordinary = jobs.get("verify")!;
 const installed = jobs.get("verify-installed")!;
 const nativeStages = [ordinary, installed];
-const nativePlatforms = ["ubuntu-latest", "macos-26", "windows-latest"];
+const nativePlatforms = ["ubuntu-latest", "macos-15", "windows-latest"];
 
 test("ordinary and installed CLI matrices independently select the complete native platform set", () => {
   for (const stage of nativeStages) {
