@@ -153,6 +153,35 @@ describe("execution from current Herdr resources", () => {
     expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
   });
 
+  it.each(["codex", "copilot"] as const)("automatically resumes %s after an exit while the replacement shell initializes", async (agent) => {
+    const f = await fixture(agent, savedId);
+    const first = await f.driver.advance(f.input);
+    const originalTask = f.store.getTask(f.input.task);
+    f.agents.splice(0);
+    const exitedPane = f.panes.find((pane) => pane.pane_id === first.binding.paneId)!;
+    exitedPane.agent_session = { source: `herdr:${agent}`, agent, kind: "id", value: savedId };
+    const request = f.rpc.request;
+    const busy = new HerdrRpcError("replacement shell is initializing", { method: "agent.start", requestId: "restart", submission: "unknown", code: "agent_pane_busy" });
+    let attempts = 0;
+    vi.spyOn(f.rpc, "request").mockImplementation(async (method, params, operation) => {
+      if (method === "agent.start" && ++attempts === 1) throw busy;
+      if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: params.pane_id, shell_pid: 100, foreground_process_group_id: 100, foreground_processes: [{ pid: 100, name: "bash", argv: ["/bin/bash"] }, { pid: 101, name: "shell-init" }] } };
+      return request(method, params, operation);
+    });
+
+    const recovered = await f.driver.advance(f.input);
+    expect(attempts).toBe(2);
+    expect(recovered.binding.workspaceId).not.toBe(first.binding.workspaceId);
+    expect(recovered.nativeSession?.sessionId).toBe(savedId);
+    expect(f.store.getTask(f.input.task)).toEqual(originalTask);
+    expect(f.launches).toHaveLength(2);
+    expect(f.launches[1]!.args).toContain(agent === "codex" ? savedId : `--resume=${savedId}`);
+    expect(f.launches[1]!.environment).toEqual(f.expectedNativeEnvironment);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(2);
+    expect(f.dependencies.git.verifyWorktree).toHaveBeenCalledTimes(2);
+    expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
+  });
+
   it.each(["codex", "copilot"] as const)("pings stopped %s turns once and resumes checking after native progress", async (agent) => {
     const f = await fixture(agent, staleId);
     const current: Entry = { ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 };
