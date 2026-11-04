@@ -59,6 +59,16 @@ Chatbox 提供文本发送、按原生能力追加、停止当前 turn，以及�
 
 Copilot 的 model 或 effort 未指定时保留原生默认值，不补造模型或推理档位；Web args 只接受 `--effort low|medium|high|xhigh`。计划审批通过已有 form 提供 `exit_only`、`interactive`、`reject` 与可选 feedback，不启动 autopilot。URL elicitation 与不能投影的二进制资源必须明确报错，不能伪装成完整的可交互内容。
 
+## 启动结果与恢复阻断
+
+Web Task Session 必须提供与当前 claim、Session、executionGeneration 和 controllerInstanceId 绑定的启动观察及独立恢复阻断。明确原生拒绝或操作系统拒绝启动才能记为失败；初始化超时、传输中断及证据缺失保持结果未知。原生初始化完整完成后才能确认 ready，早到的 idle 通知不能替代完成证据。ready 表示本代曾完成启动，不代表当前连接仍可用。
+
+Worker 即使无法通过 Controller relay 连接服务，也须通过既有认领更新上报其持久本机事实；首次 hello 前的故障不能永远停留为正常 initializing。恢复缺失原生身份、预算耗尽或其他安全门禁须保留独立原因，不用恢复受阻覆盖未知启动结果。摘要只包含稳定原因码，安全文字由固定映射生成，不暴露原始凭据、私有路径、完整日志或输入。
+
+服务端在当前执行所有者、完整代际身份和任务版本检查后持久保存报告。旧 claim、旧代际、旧修订和同修订不同内容均不得替换当前结果。上报失败必须先重新读取对账，不得消耗原生恢复预算、重放 assignment、创建替代会话或删除原工作区。成功的同一报告可幂等确认；换代后只能读取新身份的报告。
+
+旧消费者保持原协议形状，新消费者将缺字段视为未知。观察时间不作为在线证明，也不因重复上报而刷新；陈旧 starting 只允许降级为待确认，不能推断确定失败或触发恢复。Task/current 的现有读取权限及原生恢复授权不变，具体字段、协商与持久化由[协议设计](../design/task-session-protocol.md#启动观察的独立上报)定义。
+
 ## Session 显示模式
 
 Task、Test 和可读取的只读归档共用 Session View 顶部的 Display（显示）菜单，与 Session 全屏和刷新按钮并列。菜单只有 Standard（标准）与 Conversation（对话）两个单选项，checked 表示当前选择；新 Session 或没有有效保存偏好的 Session 默认 Conversation。显示模式是阅读偏好，不改变历史、执行状态、操作权限或 Provider 行为。

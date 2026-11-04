@@ -145,7 +145,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       },
       emit: event => { const task = event.task === undefined ? null : store.getTask(event.task); emit({ kind: event.kind, message: event.message, ...(task === null ? {} : { task }) }); },
     });
-    return { webStore, webBackend, launcher, backfillArchives, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, buildPrompt };
+    return { webStore, webBackend, launcher, backfillArchives, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, verifyWebStartupReporting: api.supportsStartupReports, buildPrompt };
   } catch (error) {
     try { webStore.close(); } catch (closeError) { throw new AggregateError([error, closeError], "Web runtime initialization and store shutdown failed."); }
     throw error;

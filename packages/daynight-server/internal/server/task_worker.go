@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
@@ -89,7 +90,7 @@ func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, 
 }
 
 func (h *taskHandler) updateWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
-	workerMutation(h, w, request, principal, "update", []string{"version", "claimId", "phase", "herdr", "nativeSessionId"}, updateWorkerInput, h.tasks.UpdateWorker)
+	workerMutation(h, w, request, principal, "update", []string{"version", "claimId", "phase", "herdr", "nativeSessionId", "startupReport"}, updateWorkerInput, h.tasks.UpdateWorker)
 }
 
 func (h *taskHandler) releaseWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -233,6 +234,16 @@ func updateWorkerInput(fields map[string]json.RawMessage) (service.UpdateWorker,
 		return service.UpdateWorker{}, err
 	}
 	input.NativeSessionID, err = nullableWorkerSession(fields)
+	if err != nil {
+		return input, err
+	}
+	if raw, present := fields["startupReport"]; present {
+		report, parseErr := sp.DecodeStartupReport(raw)
+		if parseErr != nil {
+			return input, invalidInput("Invalid startup report.")
+		}
+		input.StartupReport = &report
+	}
 	return input, err
 }
 

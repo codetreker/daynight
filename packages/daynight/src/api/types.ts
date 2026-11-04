@@ -326,6 +326,7 @@ export type UpdateWorkerClaimInput = {
   readonly phase?: WorkerPhase;
   readonly herdr?: WorkerHerdr | null;
   readonly nativeSessionId?: string | null;
+  readonly startupReport?: import("../session/startup.js").SessionStartupReport;
 };
 export type CompleteWorkerTaskInput = { readonly version: bigint; readonly claimId: string };
 export type ReleaseWorkerClaimInput = CompleteWorkerTaskInput & { readonly stoppedConfirmed: true };

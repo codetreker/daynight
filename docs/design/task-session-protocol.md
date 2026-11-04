@@ -155,6 +155,20 @@ Task Worker 的 grant 维护每 30 秒独立扫描当前服务的未完成 Web �
 
 原生调用前，Controller 先持久记录操作，再请求服务端 operation_begin 授权，获准后写 dispatching 并调用原生。数据库仅保存 operation 身份、类型、正文哈希、操作者、执行约束和无正文的回执摘要；完整命令、原生结果和错误详情由 Controller 本地保存。服务端只在当前在线连接的有界内存中暂存命令。accepted 表示 relay 暂收，不保证持久排队；网页保留草稿，直到原生明确受理或确认。尚未送达 Controller 的正文在服务重启后不可从哈希重建，原操作按实际证据拒绝、过期或保持 unknown。已 offered 但尚未 dispatch 的操作如果因状态或权限变化失去授权，服务端持久化 rejected 并返回 receipt_ack，只拒绝该操作，保留当前连接。Controller 记录拒绝并拒绝对应 authorization 等待，不调用原生；迟到回执与重连对账仍按同 operation 身份收敛。已 dispatching 的不确定结果、内部错误或失效 Controller fence 不走这个拒绝捷径。重连以最多 100 条一批对账，最后一批带 final；整个对账完成后还需同步当前本机状态，才能启用新命令。重复 operationId 必须保持相同内容，断线或超时不能触发自动重发原生输入。
 
+### 启动观察的独立上报
+
+Controller journal 的可选 `startup` 保存 typed state/reasonCode。NativeRpc 将响应超时与明确原生拒绝分别建模；运行时只有在 Provider 打开、进程证明及初始化错误检查完成后才记 ready。关闭过程保留首次未确认结果，已完成启动后的失联不重写启动历史。旧 journal 缺字段时保持 unknown，不从 native ID 或 activity 推断结果。
+
+Worker Web 执行 JSON 保存可选 `startupReport`，包含 `schemaVersion:1`、`source:worker`、sessionId、claimId、executionGeneration、controllerInstanceId、revision、observedAt、startup 和 recovery。完整本机身份校验先于观察；同代际语义变化递增持久 revision，观察不变时保留原时间，换代清除前代报告。recovery 的 none/null 与 blocked/稳定原因码分离表达。JSON 新字段是可选向前读取扩展；旧严格二进制不支持读取新增字段，不能用删除本机记录绕过降级限制。
+
+既有 `session-capabilities` 的 `startupReportVersion:1` 确认上报支持。Worker 在独立摘要阶段通过 PATCH worker-claim 的可选 startupReport 写入，只读 task property `sessionStartup` 保存其结果。原任务 CAS 和 owner 校验后，以 task→Session 锁序检查当前 Session、generation、Controller instance、Worker、worktree 与 active 生命周期。相同 revision 同内容幂等，较小 revision 或同 revision 异内容拒绝。新 claim 清除旧属性，普通属性修改不能伪造或清除报告。
+
+current 请求显式发送 `X-Daynight-Startup-Version: 1` 时，registered 响应附加顶层 startupReport；无当前匹配报告为 null。无该 header、未注册及不适用响应保持原形，Session snapshot、Controller 消息、事件和归档不扩展。旧 CLI/Web Task parser 可忽略独立 property，严格 properties.worker 形状不变。新 parser 校验报告与同响应 Session 的四项身份；旧服务缺字段按 unknown 消费。全部 Go 服务实例必须先升级再启用新 Worker；旧 Go 属性白名单不能读取新增持久属性，不支持混跑或直接降级读取。下游从公共纯模块 `session/startup.ts` 获取严格类型、解析器和安全摘要映射。
+
+状态组合限定为 starting/initializing、ready/ready、failed/native_rejected 或 controller_launch_failed；其余 evidence_missing、native_timeout、native_transport_unknown、controller_start_unknown 均为 unknown。blocked 的原因是 native_identity_missing、recovery_limit 或 recovery_blocked。无自由文本错误进入报告，私有原始诊断继续由 Controller/Worker 本机保存。
+
+observedAt 是观测发生时间，不是心跳。读到未来时间或超过 90 秒的 starting 时，消费者显示待确认；该保守降级不改变已保存事实或恢复授权。ready、failed 及具体 unknown 是本代历史结果，当前在线状态仍由 Session 与既有 Worker 新鲜度表示。服务端按 revision 排序，时钟回退不允许旧结果覆盖新修订。独立摘要失败不计入原生恢复预算，下轮完整库存读取实际任务版本后重新判定是否写入。
+
 ### 本机内容与在线读取
 
 活跃 Session 的内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal 保存原生身份、完整操作记录、投影修订索引和有界 outbox。标准化 timeline 与资源保存在 journal.sqlite.pending-content/，每个条目使用独立原子文件，替换前 flush 文件、替换后同步目录；内存索引提供在线分页。Timeline entryId 源于原生条目身份，entrySeq 首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不清除待归档源。原生 transcript 可以辅助恢复，但不能补齐所有实时审批、错误或 Provider 临时事件，不能替代标准化事件录制。
