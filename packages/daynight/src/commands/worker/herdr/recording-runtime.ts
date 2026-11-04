@@ -61,6 +61,9 @@ export const createHerdrRecordingRuntime = (options: {
       if (exhausted.has(record.sessionId)) return;
       const segment = record.segments.at(-1), store = source(record);
       if (!segment || segment.endedAt !== null || record.runs.at(-1)?.phase !== "active") throw new SessionV2Error("stale_fence");
+      // Source closure commits before the lifecycle stop intent. Reattaching to
+      // that still-active lifecycle must not resume the sealed recording clock.
+      if (store.closedBoundary(segment.segmentId) && store.status().runs.some(run => run.executionGeneration === segment.executionGeneration && run.captureError === "recording_limit")) return;
       const active = samplers.get(record.sessionId);
       const boundary = active ? await active.sampler.stop() : store.recoveryBoundary(segment.segmentId);
       samplers.delete(record.sessionId); latest.delete(record.sessionId);
@@ -88,8 +91,9 @@ export const createHerdrRecordingRuntime = (options: {
       const limited = exhausted.get(record.sessionId);
       if (limited) {
         exhausted.delete(record.sessionId); latest.delete(record.sessionId);
-        const boundary = { durationMs: String(BigInt(limited.base.durationMs) + BigInt(Math.max(0, Math.floor(performance.now() - limited.monotonicStart)))), endedAt: new Date(Math.max(Date.now(), Date.parse(limited.base.endedAt))).toISOString() };
-        source(record).endSegment(limited.segmentId, boundary); return boundary;
+        const store = source(record);
+        const boundary = store.closedBoundary(limited.segmentId) ?? { durationMs: String(BigInt(limited.base.durationMs) + BigInt(Math.max(0, Math.floor(performance.now() - limited.monotonicStart)))), endedAt: new Date(Math.max(Date.now(), Date.parse(limited.base.endedAt))).toISOString() };
+        store.endSegment(limited.segmentId, boundary); return boundary;
       }
       const active = samplers.get(record.sessionId);
       if (!active) return null;

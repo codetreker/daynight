@@ -40,11 +40,8 @@ export const assertHerdrDisposalTarget = (resource: HerdrRetainedResource, reque
   if (resource.disposition !== null && (resource.disposition.operationId !== request.operationId || resource.disposition.action !== request.action)) throw new Error("Another original disposal decision already owns these resources.");
 };
 
-/** Reconcile the original claim after deletion has already been durably recorded.
- * Never inspect or delete its path again: a later claim may now own that path.
- */
-export const reconcileDeletedHerdrResource = (store: WorkerStore, resource: HerdrRetainedResource): boolean => {
-  if (!resource.worktreeDeleted) return false;
+const assertConfirmedHerdrResourceDeletion = (resource: HerdrRetainedResource): void => {
+  if (!resource.worktreeDeleted) throw new Error("Original resource deletion is not confirmed.");
   const owner = resource.owner;
   for (const field of ["projectId", "taskId", "claimId", "worktreeId"] as const) {
     if (canonicalId(owner[field]) !== owner[field]) throw new Error("Deleted-resource reconciliation requires the canonical original owner.");
@@ -52,6 +49,20 @@ export const reconcileDeletedHerdrResource = (store: WorkerStore, resource: Herd
   if (!resource.stopped || resource.stopEvidence.length === 0 || resource.stopEvidence.some(proof => proof.terminalStopped !== true)) throw new Error("The original execution stop remains unconfirmed after resource deletion.");
   const explicitlyDeleted = resource.disposition?.action === "delete" && resource.disposition.completed;
   if (!resource.terminal || !(resource.state === "ready" || resource.state === "unavailable" || explicitlyDeleted)) throw new Error("Resource deletion has no confirmed original archive or disposal decision.");
+};
+
+/** A verified archive projection retires local responsibility without acknowledging its ledger. */
+export const hasConfirmedHerdrResourceDeletion = (resource: HerdrRetainedResource): boolean => {
+  try { assertConfirmedHerdrResourceDeletion(resource); return true; } catch { return false; }
+};
+
+/** Reconcile the original claim after deletion has already been durably recorded.
+ * Never inspect or delete its path again: a later claim may now own that path.
+ */
+export const reconcileDeletedHerdrResource = (store: WorkerStore, resource: HerdrRetainedResource): boolean => {
+  if (!resource.worktreeDeleted) return false;
+  assertConfirmedHerdrResourceDeletion(resource);
+  const owner = resource.owner;
   const project = store.getProject(owner), schedule = store.getCleanupSchedule(owner), task = store.getTask(owner);
   if (!project || path.join(project.localPath, ".worktrees", "daynight", owner.taskId) !== resource.worktreePath) throw new Error("Deleted-resource reconciliation has no matching original project path.");
   if (schedule !== null && schedule.worktreeId !== owner.worktreeId) throw new Error("The cleanup schedule belongs to another original worktree.");

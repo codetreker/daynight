@@ -8,7 +8,7 @@
 
 每轮使用原私有 daemon 的 `session.snapshot`、`pane.process_info`、PTY 尺寸与 `pane.read(source=visible,format=ansi)`，读取前后核对原运行、workspace、pane、terminal、shell 和几何。观察不 attach、不 resize、不恢复 agent。ANSI 只保留文本及 v2 白名单样式，OSC、DCS 和其他控制数据不进入网页可执行上下文。
 
-每轮结束至少等待 350ms。不同完整画面先提交 selected 意图，再写临时帧、fsync、原子 rename、同步父目录，最后登记文件及索引；完成登记后才发布 `recorded=true`。索引采用带哈希链的 append journal，每次提交同步落盘。相同内容与尺寸保留一个帧，观察区间每 5 秒或正常停采时 checkpoint。重启只承认持久边界，重新采集创建新段并保留 restart gap；未 checkpoint 的持续时间不延长上一画面。恢复尚未持久结束的段时，即使 claim 已终态且不会再启动采样，也保留 `checkpoint_lost` 缺失标记或既有未结束 gap；该标记不声称观察了停机期间的画面，也不估算停机持续时间。已有持久 `segment_end` 则读回原结束边界，不增加中断；重复恢复保持幂等。恢复段末单独依据 journal 已持久覆盖的位置，包含帧、checkpoint、gap 起点和已提交的 `gap_end`；它不能退回最后一帧的观察位置。gap 结束已提交、下一帧尚未选择时，新的缺失标记接在已结束 gap 之后，原 gap 和帧索引都保持不变。没有墙钟字段的 `gap_end` 只推进单调时间范围，不推算新的墙钟时间。
+每轮结束至少等待 350ms。不同完整画面先提交 selected 意图，再写临时帧、fsync、原子 rename、同步父目录，最后登记文件及索引；完成登记后才发布 `recorded=true`。索引采用带哈希链的 append journal，每次提交同步落盘。相同内容与尺寸保留一个帧，观察区间每 5 秒或正常停采时 checkpoint。重启只承认持久边界，重新采集创建新段并保留 restart gap；未 checkpoint 的持续时间不延长上一画面。恢复尚未持久结束的段时，即使 claim 已终态且不会再启动采样，也保留 `checkpoint_lost` 缺失标记或既有未结束 gap；该标记不声称观察了停机期间的画面，也不估算停机持续时间。已有持久 `segment_end` 则读回原结束边界，不增加中断；该代已记录 `recording_limit` 且源已封段时，即使 lifecycle 尚未提交停止意图，恢复也不能重新累计该段时长或改写其结束边界。普通 complete 源不会因无法分配新段而获得这一限额恢复例外；该路径继续拒绝恢复，不能隐去后续未观察区间。源封段与 lifecycle 停止分别持久化，后者滞后只需收敛原边界；重复恢复保持幂等。恢复段末单独依据 journal 已持久覆盖的位置，包含帧、checkpoint、gap 起点和已提交的 `gap_end`；它不能退回最后一帧的观察位置。gap 结束已提交、下一帧尚未选择时，新的缺失标记接在已结束 gap 之后，原 gap 和帧索引都保持不变。没有墙钟字段的 `gap_end` 只推进单调时间范围，不推算新的墙钟时间。
 
 录制与输入共享原 Session 身份，但各自承担持久责任。nativeSessionId 从未知变为已知时，同代录制段只作单向身份补齐，不改变帧和已关闭段的观察边界。selected 文件未登记时仅可按原意图核验并恢复；已登记文件缺失、原始字节 hash 不符、错误归属或损坏 journal 均为 failed，不能静默删帧或转换为 unavailable。
 
@@ -36,7 +36,7 @@ metadata 准入使用与最终包相同的 canonical JSON 计算 owner、运行�
 
 保留资源最多 20 个 worktree、待归档源共 2 GiB；实际可用磁盘低于 1 GiB 阻止新 claim。ready 源仍影响实际磁盘可用量。同 task 的旧 worktree 仍预留原路径，不能被新 claim 覆盖。stop_unknown 保留执行槽；已运行的其他任务不因资源门槛被停止。
 
-正常 worktree 删除要求先持久保存 ready/unavailable receipt，再复用原 Git 身份、占用检查和安全删除机制；中断后只继续该删除，不改变历史归档。持久删除记录还承担本地调度收敛责任：核对原 owner、worktree、停止证明与回执或已完成的显式 delete 后，幂等结束对应本机任务并删除其清理计划，再移除内存中的收尾占位。SQLite 写失败保留删除记录，重启继续收敛；不能仅因资源不再列入保留集合就丢弃该责任，也不能影响同 task 的其他 claim。人工 `worker resources` 入口列出原 claim/Session、停止证据、源与工作区、归档状态和处置结果。命令格式由 [CLI 手册](../../packages/daynight/README.md)拥有。
+正常 worktree 删除要求先持久保存 ready/unavailable receipt，再复用原 Git 身份、占用检查和安全删除机制；中断后只继续该删除，不改变历史归档。持久删除记录还承担本地调度收敛责任：核对原 owner、worktree、停止证明与回执或已完成的显式 delete 后，幂等结束对应本机任务并删除其清理计划，再移除内存中的收尾占位。SQLite 写失败保留删除记录，重启继续收敛；不能仅因资源不再列入保留集合就丢弃该责任，也不能影响同 task 的其他 claim。保留资源、待停止记录、容量和旧 claim 屏障必须一致采用已验证的持久删除决策；显式 delete 完成后，尚未同步的 stopped ledger 不能重新占槽或阻挡后继 claim。该决策不修改 ledger hash，不伪造服务端确认；未完成删除或无法验证原身份及停止证明时继续保留责任。人工 `worker resources` 入口列出原 claim/Session、停止证据、源与工作区、归档状态和处置结果。命令格式由 [CLI 手册](../../packages/daynight/README.md)拥有。
 
 显式处置要求匹配原 project/task/claim/session/worktree、已确认停止、当前原 owner 身份与终态 claim，以及操作 ID、动作和确认。abandon 停止重试并保留资源；delete 先持久处置意图，核对源目录 inode 身份，复用安全 Git 删除并删除所选源。原 owner PAT 的身份校验不能代替 claim 终态证明：任务读取的 `404/not_found` 可能隐藏已撤销的项目访问权限，必须拒绝处置；只有已核验的终态任务或明确且结果已确认的 `410/task_deleted` 才能作为远端结束证据。未知停止、错身份、仍可恢复的 active claim 和未确认请求均拒绝。处置记录与归档真相分开，不能伪造 ready 或 unavailable；不提供自动过期删除。
 

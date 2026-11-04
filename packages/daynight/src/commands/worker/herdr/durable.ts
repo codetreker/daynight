@@ -30,6 +30,7 @@ import { createHerdrRecordingRuntime } from "./recording-runtime.js";
 import { readHerdrTerminalSnapshot } from "./recording-sampler.js";
 import type { HerdrRecordingScreen } from "./recording-types.js";
 import { createHerdrArchiveApi, ensureHerdrRecordingResponsibility, type HerdrArchiveApi } from "./archive-api.js";
+import { hasConfirmedHerdrResourceDeletion } from "../resource-disposal.js";
 import { createHerdrRecordingArchive } from "./recording-archive.js";
 import { createHerdrRecordingResources } from "./recording-resources.js";
 
@@ -328,6 +329,9 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     publishStopped: async (record, operation) => { await finishStop(identity(record), operation); }, readTask: options.readTask,
     currentUserId: options.currentUserId ?? (async () => { throw new Error("The original resource owner cannot be authenticated."); }),
   });
+  // The same durable deletion decision retires both resource ownership and
+  // pending stop publication. Disposal does not fabricate a remote ledger ACK.
+  const retainedResources = () => resources.resources().filter(resource => !hasConfirmedHerdrResourceDeletion(resource));
   const enrich = (owner: Identity, observed: HerdrAgentObservation): void => {
     if (observed.nativeSession === null) return;
     update(owner, draft => {
@@ -554,7 +558,13 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   for (const record of store.list()) { store.recover(record); if (inputStore.get(record.sessionId)) inputStore.recover(record.sessionId); }
   const tasks: ReturnType<typeof createWorkerHerdr>["tasks"] = {
     ...legacy.tasks,
-    pendingStops: () => store.list().filter(record => record.runs.length > 0 && (["stop_intent", "close_requested", "stop_unknown"].includes(current(record).phase) || current(record).phase === "stopped_confirmed" && (record.segments.some(segment => segment.endedAt === null) || record.publishedLedgerHash !== herdrLedgerHash(record)))).map(record => ({ context: contextFor(record), binding: bindingFor(current(record)) })),
+    pendingStops: () => {
+      const deleted = new Set(resources.resources().filter(hasConfirmedHerdrResourceDeletion).map(resource => key(resource.owner)));
+      return store.list().filter(record => !deleted.has(key(identity(record))) && record.runs.length > 0
+        && (["stop_intent", "close_requested", "stop_unknown"].includes(current(record).phase) || current(record).phase === "stopped_confirmed"
+          && (record.segments.some(segment => segment.endedAt === null) || record.publishedLedgerHash !== herdrLedgerHash(record))))
+        .map(record => ({ context: contextFor(record), binding: bindingFor(current(record)) }));
+    },
     listResources: async operation => {
       const result = [];
       for (const record of store.list()) {
@@ -682,7 +692,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       },
       assertCanAdvance: context => { const record = need(context); if (record.preparation !== null) throw new Error("The original Herdr preparation remains unconfirmed."); if (record.runs.length === 0) return; const run = current(record); if (run.phase === "active" || run.phase === "prepared") return; assertHerdrRecovery({ phase: run.phase, nativeSessionId: run.run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) }); },
       archive: resources,
-      responsibilities: () => resources.resources().filter(resource => !resource.worktreeDeleted).map(resource => resource.owner),
+      responsibilities: () => retainedResources().map(resource => resource.owner),
       hasPreparedRun: owner => { const record = store.get(owner); return record !== null && record.preparation === null && record.runs.at(-1)?.phase === "prepared"; },
       isStopped: owner => { const record = store.get(owner); return record !== null && record.preparation === null && (record.runs.length === 0 || record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null)) && record.segments.every(segment => segment.endedAt !== null); },
       cleanup: async (owner, prompt, operation) => {

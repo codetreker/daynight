@@ -5,6 +5,7 @@ import archive from "../../session/fixtures/v2/valid-archive.json" with { type: 
 import { createHerdrRecordingRuntime } from "../../../src/commands/worker/herdr/recording-runtime.js";
 import type { HerdrLifecycleRecord } from "../../../src/commands/worker/herdr/lifecycle-types.js";
 import { SESSION_V2_LIMITS } from "../../../src/session/v2/values.js";
+import { parseSessionV2Archive } from "../../../src/session/v2/archive.js";
 const roots: string[] = [];
 afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const setup = () => {
@@ -133,4 +134,58 @@ test("recovery fails closed when a missing tail has no remaining gap slot", () =
     expect(recovered.source(f.record).status()).toMatchObject({ failed: true, runs: [{ captureError: "source_corrupt" }] });
     expect(() => recovered.source(f.record).snapshot()).toThrow();
   } finally { recovered.close(); Object.assign(SESSION_V2_LIMITS, { maxGaps: maximum }); }
+});
+
+
+test.each(["reattach-after-seal", "recover-before-stop"] as const)("reuses the sealed exhausted boundary after %s without corrupting its partial archive", async crash => {
+  vi.useFakeTimers({ toFake: ["Date", "performance"] });
+  const f = setup(), read = vi.fn(async () => ({ width: 1, height: 1, rows: [[]] }));
+  const open = () => createHerdrRecordingRuntime({ directory: f.directory, read, publish: async () => {} });
+  let runtime = open(); runtime.prepare({ ...f.record, segments: [] });
+  const segment = f.record.segments[0]!, source = runtime.source(f.record); source.openSegment(segment);
+  source.sample(segment.segmentId, { width: 1, height: 1, rows: [[]] }, { elapsedMs: "1", capturedAt: segment.startedAt });
+  await runtime.exhaust(f.record);
+  vi.advanceTimersByTime(20);
+  // The recording journal seals before the lifecycle stop intent; its record
+  // can therefore still describe an active, open segment after Worker restart.
+  const sealed = crash === "reattach-after-seal" ? (await runtime.stop(f.record))! : runtime.recover(f.record)[0]!.boundary;
+  const before = runtime.source(f.record).snapshot();
+  if (crash === "reattach-after-seal") {
+    runtime.close(); runtime = open();
+    expect(runtime.canAllocate(f.record)).toBe(false);
+    await runtime.exhaust(f.record); await runtime.exhaust(f.record);
+  }
+  vi.advanceTimersByTime(500);
+  const stopped = await runtime.stop(f.record);
+  const recovered = stopped ?? runtime.recover(f.record)[0]!.boundary;
+  expect(recovered).toEqual(sealed);
+  expect(runtime.source(f.record).snapshot()).toEqual(before);
+  expect(runtime.recover(f.record)[0]!.boundary).toEqual(sealed);
+  runtime.closeRun(f.record);
+  const saved = runtime.source(f.record).snapshot(), runs = structuredClone(archive.runs);
+  runs[0]!.stoppedAt = sealed.endedAt; runs[0]!.stopProof.stoppedAt = sealed.endedAt;
+  const body = parseSessionV2Archive({ ...archive, endedAt: sealed.endedAt, runs, segments: saved.segments, files: saved.files, index: saved.index, gaps: saved.gaps, completeness: "partial" });
+  expect(body.completeness).toBe("partial"); expect(body.index[0]!.lastElapsedMs).toBe("1");
+  expect(body.gaps).toMatchObject([{ reason: "recording_limit" }]);
+  expect(saved.runs[0]!.captureError).toBe("recording_limit"); expect(read).not.toHaveBeenCalled();
+  runtime.close();
+});
+
+test("refuses an already closed complete source when another segment cannot represent continuing execution", async () => {
+  const maximum = SESSION_V2_LIMITS.maxSegments, f = setup();
+  const open = () => createHerdrRecordingRuntime({ directory: f.directory, read: async () => ({ width: 1, height: 1, rows: [[]] }), publish: async () => {} });
+  let runtime = open(); runtime.prepare({ ...f.record, segments: [] });
+  const segment = f.record.segments[0]!, source = runtime.source(f.record); source.openSegment(segment);
+  source.sample(segment.segmentId, { width: 1, height: 1, rows: [[]] }, { elapsedMs: "1", capturedAt: segment.startedAt });
+  source.endSegment(segment.segmentId, { durationMs: "100", endedAt: segment.startedAt });
+  expect(source.snapshot().gaps).toEqual([]); expect(source.status().runs[0]!.captureError).toBeNull();
+  runtime.close(); runtime = open();
+  try {
+    Object.assign(SESSION_V2_LIMITS, { maxSegments: 1 });
+    expect(runtime.canAllocate(f.record)).toBe(false);
+    // A prior complete segment has no limit gap covering continued execution.
+    // The existing fail-closed contract must not become a successful no-op.
+    await expect(runtime.exhaust(f.record)).rejects.toThrow(/source_corrupt/);
+    expect(() => runtime.source(f.record).snapshot()).toThrow();
+  } finally { runtime.close(); Object.assign(SESSION_V2_LIMITS, { maxSegments: maximum }); }
 });

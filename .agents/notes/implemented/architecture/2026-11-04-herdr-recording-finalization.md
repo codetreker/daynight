@@ -18,7 +18,9 @@ intervals have durable checkpoints; recovery preserves gaps instead of extending
 an old screen through downtime. Recovering a segment without a durable orderly end
 retains interruption evidence even when terminal cleanup will never start another
 sampler. A crash before any durable frame remains failed; an already persisted
-segment end is recovered without inventing an interruption. Recovery tracks
+segment end is recovered without inventing an interruption. Exhausted capture also
+reuses that end when lifecycle stop intent lags behind source closure; it cannot
+start a new elapsed-time accumulator for a closed segment. Recovery tracks
 committed frame and gap coverage separately from the last observed frame. A
 durable gap_end advances the recoverable segment range even before the next
 frame selection; it cannot extend a frame interval or invent a wall-clock time. Native identity
@@ -54,6 +56,10 @@ Durable deletion records remain available to reconcile the original local task
 and cleanup schedule before releasing their scheduling entries. This closes the
 crash window between filesystem cleanup and SQLite updates without completing a
 different claim or treating missing execution evidence as proof of deletion.
+Retained resources and pending-stop selectors share the same verified deletion
+decision, so an unacknowledged stopped ledger cannot restore execution capacity
+usage or block a successor claim after completed explicit deletion. The ledger
+hash remains unchanged; local resource deletion is not a remote acknowledgement.
 
 The [recording design](../../../../docs/design/herdr-recording.md) owns mechanisms
 and limits. This extends [durable lifecycle ownership](2026-11-04-herdr-worker-lifecycle.md)

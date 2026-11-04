@@ -5,7 +5,7 @@ import { SESSION_V2_LIMITS } from "../../../src/session/v2/values.js";
 import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-store.js";
 import { inspectHerdrInput } from "../../../src/commands/worker/herdr/input-readiness.js";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
@@ -14,6 +14,10 @@ import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { Task } from "../../../src/api/types.js";
 import { cleanupOperation } from "../../../src/commands/cleanup-operation.js";
+import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/resource-disposal.js";
+import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
+import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { createExecutionDriver, type WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { createHerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
@@ -823,4 +827,77 @@ it.each([true, false])("retains crash evidence when a terminal claim stops witho
     expect(events).toContainEqual({ type: "error", executionGeneration: "1", code: "source_corrupt" });
     expect(events.find(event => event.type === "gap").gap).toMatchObject({ reason: "checkpoint_lost", endElapsedMs: null });
   }
+});
+
+
+it("releases a deleted claim with an unacknowledged stopped ledger for the next same-task claim after restart", async () => {
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const originalTask = await f.readTask();
+  f.changeTask({ status: "done", properties: { ...originalTask.properties, worker: { ...readWorkerClaim(originalTask.properties)!, state: "completed" } } });
+  f.settings.ledgerFailure = "before";
+  await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toThrow();
+  const stopped = f.read();
+  expect(stopped.runs[0]!.run.stopProof).not.toBeNull(); expect(stopped.segments.every(segment => segment.endedAt !== null)).toBe(true);
+  expect(stopped.publishedLedgerHash).not.toBe(herdrLedgerHash(stopped)); expect(f.facade.tasks.pendingStops()).toHaveLength(1);
+  const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
+  let store = openWorkerStore(f.paths.databaseFile);
+  store.registerProject(project); store.activateTask(store.registerPending({ ...f.context, agent: "codex" }));
+  store.saveCleanupSchedule(f.context, { deadline: Date.now() + 600000, failures: 0, nextAttemptAt: 0, stage: "worktree-removal", lastError: null });
+  const deleted = await f.facade.lifecycle!.archive!.dispose({ ...f.context, sessionId: stopped.sessionId, operationId: uuid(991), action: "delete", confirmed: true }, operation(), async () => { rmSync(f.context.cwd, { recursive: true }); });
+  expect(reconcileDeletedHerdrResource(store, deleted)).toBe(true);
+  store.close(); store = openWorkerStore(f.paths.databaseFile); f.reopen();
+  const cancellation = new AbortController();
+  const candidate: Task = { ...originalTask, status: "todo", ready: true, properties: { pullRequests: [] } };
+  const granted: Task[] = [];
+  const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "claim"> = {
+    currentUserId: async () => uuid(5), ownInventory: async () => granted, candidates: async function* () { yield candidate; }, readTask: f.readTask,
+    claim: async (_candidate, descriptor) => {
+      const task: Task = { ...originalTask, properties: { ...originalTask.properties, worker: { ...readWorkerClaim(originalTask.properties)!, ...descriptor } } };
+      granted.push(task); f.changeTask(task); return task;
+    },
+  };
+  const configuration = { agent: "codex" as const, model: null, args: [], recoveryLimit: 3 };
+  const coordinator = createWorkerCoordinator({ store, herdr: f.facade, git: { listWorktrees: async () => [], findWorktree: async () => null } as unknown as WorkerGitManager, remote: remote as WorkerRemote,
+    workerId: uuid(6), serverOrigin: "https://daynight.example", platform: "macos", machine: { id: uuid(8), name: "test-machine" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent: 1,
+    emit: () => {}, buildPrompt: () => "managed", signal: cancellation.signal, onClaim: () => cancellation.abort(new Error("Stop this test after successor admission")) });
+  try {
+    await coordinator.tick();
+    expect(granted).toHaveLength(1);
+    const next = readWorkerClaim(granted[0]!.properties)!;
+    expect(next.claimId).not.toBe(f.context.claimId); expect(store.getTask({ ...f.context, claimId: next.claimId })?.status).toBe("active");
+    expect(store.getTask(f.context)?.status).toBe("done"); expect(store.getCleanupSchedule(f.context)).toBeNull();
+    expect(f.facade.tasks.pendingStops().some(value => value.context.claimId === f.context.claimId)).toBe(false);
+    expect(f.facade.lifecycle!.responsibilities().some(value => value.claimId === f.context.claimId)).toBe(false);
+    expect(f.read().publishedLedgerHash).toBe(stopped.publishedLedgerHash); expect(f.read().ledgerRequest).toEqual(stopped.ledgerRequest);
+    expect(f.launches).toHaveLength(1); expect(f.events.filter(value => value === "stop")).toHaveLength(1);
+  } finally { await coordinator.shutdown(); store.close(); }
+});
+
+it.each(["abandon", "delete-intent", "wrong-owner", "stop-unknown"] as const)("keeps pending stopped responsibility for %s", async failure => {
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const task = await f.readTask(); f.changeTask({ status: "done", properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } } });
+  f.settings.ledgerFailure = "before"; f.settings.stopUnknown = failure === "stop-unknown";
+  await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toThrow();
+  const record = f.read(), request = { ...f.context, sessionId: record.sessionId, operationId: uuid(992), action: failure === "abandon" ? "abandon" as const : "delete" as const, confirmed: true as const };
+  if (failure === "wrong-owner") request.worktreeId = uuid(993);
+  if (failure === "abandon") await f.facade.lifecycle!.archive!.dispose(request, operation(), async () => { throw new Error("Abandon must retain the worktree"); });
+  else await expect(f.facade.lifecycle!.archive!.dispose(request, operation(), async () => { throw new Error("Deletion interrupted"); })).rejects.toThrow();
+  f.reopen();
+  expect(f.facade.tasks.pendingStops()).toHaveLength(1); expect(f.facade.lifecycle!.responsibilities()).toHaveLength(1);
+  expect(f.facade.lifecycle!.archive!.resources()[0]!.worktreeDeleted).toBe(false);
+});
+
+
+it("retains pending responsibility when the completed deletion journal belongs to another owner", async () => {
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const task = await f.readTask(); f.changeTask({ status: "done", properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } } });
+  f.settings.ledgerFailure = "before"; await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toThrow();
+  const record = f.read();
+  await f.facade.lifecycle!.archive!.dispose({ ...f.context, sessionId: record.sessionId, operationId: uuid(994), action: "delete", confirmed: true }, operation(), async () => rmSync(f.context.cwd, { recursive: true }));
+  const file = path.join(f.paths.workerDirectory, "herdr-archives", `${record.sessionId}.archive-state.json`);
+  const journal = JSON.parse(readFileSync(file, "utf8")); journal.state.owner.worktreeId = uuid(995);
+  journal.sha256 = createHash("sha256").update(canonicalSessionJson(journal.state)).digest("hex"); writeFileSync(file, JSON.stringify(journal));
+  f.reopen();
+  expect(f.facade.tasks.pendingStops()).toHaveLength(1); expect(f.facade.lifecycle!.responsibilities()).toHaveLength(1);
+  expect(f.facade.lifecycle!.archive!.resources()[0]).toMatchObject({ state: "failed", worktreeDeleted: false });
 });

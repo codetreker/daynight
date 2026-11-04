@@ -329,6 +329,11 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
     },
     fail: (executionGeneration?: string): void => markFailed(executionGeneration),
     recoveryBoundary,
+    closedBoundary: (segmentId: string): HerdrRecordingBoundary | null => {
+      const s = segmentFor(segmentId);
+      if (failed) corrupt();
+      return s.segment.endedAt === null ? null : recoveryBoundary(segmentId);
+    },
     recoverSegment: (segmentId: string): HerdrRecordingBoundary => {
       const s = segmentFor(segmentId);
       if (failed) corrupt();
