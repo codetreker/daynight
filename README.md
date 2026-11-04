@@ -302,19 +302,10 @@ browser acceptance and complete validation commands.
 
 ## Package versions
 
-Release-input changes require a strictly greater SemVer in
-`packages/daynight/package.json`. This includes `packages/daynight/src/`, either
-package manifest, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc`, either
-application TypeScript configuration and the CLI build-cleanup and resource-copy
-scripts. Additions,
-deletions and moves count; build metadata alone does not increase precedence.
-Tests, fixtures, documentation, CI workflows and validation scripts alone do not
-require a version increase.
-
-Check committed revisions with
-`pnpm version:check pull_request <base-sha> <head-sha>` or
-`pnpm version:check push <before-sha> <after-sha>`. The
-[version guide](docs/development.md#package-versions) explains comparison rules.
+Choose the version in `packages/daynight/package.json` when preparing a CLI
+release. Code and build-input changes can merge without increasing that version;
+CI validates the affected modules independently of release numbering. The
+[version guide](docs/development.md#package-versions) explains release checks.
 
 ### npm publication
 

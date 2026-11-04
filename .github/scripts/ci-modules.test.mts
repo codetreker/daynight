@@ -40,7 +40,7 @@ for (const [path, expected] of [
   ["packages/daynight/scripts/check-runtime.mjs", { ...none, cli: true }],
   ["packages/daynight-web/scripts/publish-assets.mts", { ...none, server: true, web: true }],
   ["packages/daynight-web/package.json", { ...none, server: true, web: true }],
-  ["packages/daynight/test/tooling/check-version.test.ts", { ...none, cli: true }],
+  ["packages/daynight/test/tooling/copy-resources.test.ts", { ...none, cli: true }],
   ["packages/daynight/test/fixtures/installed-cli.ts", all],
   ["packages/daynight/test/fixtures/installed-operation-limits.ts", { ...none, cli: true, server: true }],
   ["packages/daynight-server/internal/server/tasks.go", { ...none, server: true }],
