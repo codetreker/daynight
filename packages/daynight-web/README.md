@@ -1856,6 +1856,10 @@ unit tests verify those defaults and the shorter schedules. Browser tests change
 only their owned polling periods, preserving request deadlines, freshness,
 execution clocks and real warning-threshold crossing. Cases with controlled
 browser clocks and local capacity measurements retain their own timing setup.
+Controlled Step fixtures install the browser clock before application navigation
+and derive later pause anchors from the existing case timeout; the
+[clock lifecycle decision](../../.agents/notes/implemented/testing/2026-11-05-browser-clock-lifecycle.md)
+owns that ordering. Native execution-time threshold crossing retains real timers.
 The [polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-polling.md)
 owns this separation and its validation limits. The isolated dev-ci stack probes
 startup readiness every 250ms while preserving its normal health cadence and real

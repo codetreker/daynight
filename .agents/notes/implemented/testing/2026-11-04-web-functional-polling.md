@@ -31,8 +31,11 @@ Native and container verification use the same production assets. The browser
 fixture changes only its selected polling periods, retaining real Server and
 Controller communication, response parsing, state publication, authentication,
 layout and cleanup. Cases that control browser time and capacity measurements
-retain their own schedule setup. Unit tests cover the production schedules and
-short-period behavior. Assignment reconciliation also uses the short task-sync
+retain their own schedule setup. The
+[controlled-clock lifecycle decision](2026-11-05-browser-clock-lifecycle.md)
+requires installation before application timers and a bounded future pause
+anchor in the Step status fixtures. Unit tests cover the production schedules
+and short-period behavior. Assignment reconciliation also uses the short task-sync
 period when an API-originated permission change must reach its open detail
 control; its version-conflict, uncertain-result and exact write-count checks
 retain their original assertions.
