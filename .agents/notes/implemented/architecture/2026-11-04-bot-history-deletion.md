@@ -9,6 +9,8 @@ objects, or establish that a remote process stopped writing. Cleanup crosses
 PostgreSQL, file storage and the bound Worker, so one transaction cannot make
 all effects atomic. Lost responses and partial failures must leave enough
 identity to finish the original deletion without exposing its history again.
+An owner credential can expire while deletion waits for a row lock, even when
+its shared credential lock prevents concurrent revocation.
 
 ## Decision
 
@@ -17,6 +19,11 @@ Deletion locks Bot before all associated Sessions, revokes grants, and commits
 before physical cleanup. This extends the
 [definition kernel](2026-11-04-bot-definition-storage.md) and preserves the
 [shared admission order](2026-11-04-bot-session-admission.md).
+
+The public DELETE transaction rechecks the owner PAT or login Session with a
+fresh current time at write completion and exact replay completion. Expiry after
+Bot or associated Session lock contention rejects the request and rolls back
+Bot state and grant revocation before local cache invalidation.
 
 A bound Worker submits an exact execution stop receipt and its private-cleanup
 result. The relay validates the original identity; process verification remains
@@ -53,6 +60,10 @@ revocation authoritative while cleanup remains retryable.
 **Depend on local cache invalidation for deletion.** Another Service can retain
 its own cache. Persistent admission before attachment and before asynchronous
 content return is required regardless of local invalidation.
+
+**Validate credentials only before row-lock waits.** Shared credential locks
+serialize revocation writes but do not prevent time-based expiry. Admission at
+transaction completion preserves the same rule for writes and exact retries.
 
 ## Consequences
 

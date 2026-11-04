@@ -70,7 +70,7 @@ HTTP DTO 将版本及创建序号编码为字符串，并投影实际关联的 s
 
 ## 删除与清理事务
 
-公开 DELETE 由同一 `sessionrelay.Service` 处理。删除事务先锁 Bot，核对 owner、原请求身份和当前版本，再按 `bot_id` 查询并锁定所有实际关联 Session，撤销 grant/连接授权，最后存入删除责任。登记、归档上传和清理都使用 Bot → Session → archive metadata 锁序；已获准上传先完成，随后删除屏障生效。删除先提交时旧上传在文件写入前被拒绝。普通 Task 的历史归档流程不改变。
+公开 DELETE 由同一 `sessionrelay.Service` 处理。事务先通过共享凭据行锁验证 owner PAT 或登录 Session，再锁 Bot，核对 owner、原请求身份和当前版本，再按 `bot_id` 查询并锁定所有实际关联 Session，撤销 grant/连接授权，最后存入删除责任，并在事务完成前用新的当前时间再次验证凭据。精确重放在返回原结果前也执行该检查。凭据行共享锁阻止并发撤销，但不能阻止自然过期；最终检查覆盖 Bot、Session 行锁和写入等待，失效会回滚所有删除与授权变更，提交后才清除缓存。登记、归档上传和清理都使用 Bot → Session → archive metadata 锁序；已获准上传先完成，随后删除屏障生效。删除先提交时旧上传在文件写入前被拒绝。普通 Task 的历史归档流程不改变。
 
 屏障事务单独提交，不与物理删除同生共死。提交后丢弃本实例的 live cache 和 pending content；其它实例在下一次权威读取观察 deletion 或 Session 已不存在时也丢弃对应内容。Controller 的 scope 预查询发生在共享 load 之前，因此该预查询确认 Session 不存在时也清除缓存与等待正文，覆盖只有 Poll 或 Disconnect 到达的旧连接；数据库查询失败本身不等于持久删除。异步正文返回前的二次准入阻止删除后交付迟到内容。进程缓存只服务当前连接，不能恢复持久删除记录。
 

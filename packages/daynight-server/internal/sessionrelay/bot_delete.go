@@ -67,7 +67,7 @@ func (s *Service) DeleteBot(ctx context.Context, p core.Principal, id string, in
 				return fault("resource_conflict", "Bot deletion belongs to a different request.")
 			}
 			out = bot
-			return nil
+			return credential(ctx, tx, p, s.now())
 		}
 		if err = botVersion(bot, input.Version); err != nil {
 			return err
@@ -97,7 +97,11 @@ func (s *Service) DeleteBot(ctx context.Context, p core.Principal, id string, in
 		}
 		bot.Deletion = &core.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: core.BotCleanupResult{State: "pending"}, ServerCleanup: core.BotCleanupResult{State: "pending"}}
 		out, err = writeBotDeletion(ctx, tx, bot)
-		return err
+		if err != nil {
+			return err
+		}
+		// Row-lock waits can outlive the credential without a revocation write.
+		return credential(ctx, tx, p, s.now())
 	})
 	if err != nil {
 		return core.Bot{}, err

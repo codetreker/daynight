@@ -98,6 +98,8 @@ ready 要求 code 为 null；failed 要求非空、良构 Unicode 错误码。re
 
 删除在当前版本保护下原子记录意图并递增版本；从普通列表隐藏，撤销关联 Session 的 grant 和连接授权。所有关联入口立即遵守持久删除屏障，不等待 Worker 在线或文件清理。相同删除 ID 与原请求版本可重复核对；不同请求冲突，不能盲重试。只核对结果时版本不增加；当 Worker 已完成而服务端清理未完成时，重放原 DELETE 会重试服务端清理并返回实际阶段。
 
+公开 DELETE 的 owner PAT 或登录 Session 必须在事务完成前仍有效，包括原请求的精确重放。等待 Bot 或关联 Session 行锁期间自然过期时返回 401；整个删除事务回滚，Bot 版本、删除责任及 Session 的 grant/连接授权保持不变。
+
 绑定 Worker 通过 `POST /api/v1/me/workers/{workerId}/bots/{botId}/deletion-complete` 提交 `{deletionId,stop,result}`。请求必须包含全部字段且无额外字段，使用 owner 的有效 PAT 和绑定 Worker ID。`result` 为 `{state:"completed",code:null}` 或 `{state:"failed",code:<非空错误码>}`。未绑定 Session 的 completed 回执使用 `stop:null`；已绑定的 completed 回执必须携带现有独立会话 `TestStop`：`protocol`、`sessionId`、`testExecutionId`、`executionGeneration`、`controllerId`、`controllerInstanceId` 和 `stopProof`。停证必须匹配删除时原执行，不能用未来时间或旧代替代；`never_started` 仅在未消费 grant、未连接、没有 source/native 身份时接受。failed 回执可以用 null stop，不触发服务端清理。相同 failed state/code 的重放返回原版本与更新时间；错误码变化或推进到 completed 才记录新的结果。
 
 Worker 的 completed 声明表示它已验证原生写入停止并清理该 Bot 私有资料；服务端校验身份与停证格式，不独立测量远端进程。有效 completed 回执先持久化，再清理服务端 SQL 子表、Session 行、live cache 和该 Session 的全部归档命名空间，包括没有 SQL metadata 的孤立对象。已完成 Worker 回执只接受语义完全相同的重放，不能改用新的停证；相同回执可重试未完成的服务端阶段。
@@ -108,4 +110,4 @@ Worker 的 completed 声明表示它已验证原生写入停止并清理该 Bot 
 
 ## 验证要求
 
-真实隔离 PostgreSQL 测试覆盖名字创建、稳定候选、显式离线拒绝、跨机器和 Provider 参数隔离、默认观测时效、反序成功偏好、失败不提交、偏好事务回滚、并发重复 ID、不同指纹、组合 Worker 归属、失效凭据、事务回滚、分页、精确 int64、删除重放和任务不变。Session 测试另覆盖并发与丢失响应登记、首次角色原子冻结、错误 Worker/owner/版本/native/fence、普通 Test 绕过拒绝、代际停证及精确重放、真实同步 ready、父 PAT 撤销、浏览器换身份和持久删除后所有旧入口拒绝。删除测试覆盖上传和删除的两种锁交错、跨实例旧缓存、全部 SQL 子表、孤立归档、文件及 SQL 失败重试、受限路径和符号链接保护。HTTP 测试覆盖认证、严格请求解析、真实绑定引用、删除阶段、精确回执重放和删除后响应隐藏。完整服务端检查使用 [服务端验证命令](../../packages/daynight-server/README.md)，包含 race 与覆盖率门禁。这些检查不证明真实 Provider、Worker 托管或完整助手交互已交付。
+真实隔离 PostgreSQL 测试覆盖名字创建、稳定候选、显式离线拒绝、跨机器和 Provider 参数隔离、默认观测时效、反序成功偏好、失败不提交、偏好事务回滚、并发重复 ID、不同指纹、组合 Worker 归属、失效凭据、事务回滚、分页、精确 int64、删除重放和任务不变。Session 测试另覆盖并发与丢失响应登记、首次角色原子冻结、错误 Worker/owner/版本/native/fence、普通 Test 绕过拒绝、代际停证及精确重放、真实同步 ready、父 PAT 撤销、浏览器换身份和持久删除后所有旧入口拒绝。删除测试覆盖 PAT/登录 Session 在 Bot/关联 Session 锁等待期间过期的拒绝与完整状态回滚、有效删除和精确重放、上传和删除的两种锁交错、跨实例旧缓存、全部 SQL 子表、孤立归档、文件及 SQL 失败重试、受限路径和符号链接保护。HTTP 测试覆盖实际 DELETE 路径在 Bot 锁等待期间过期的 PAT/登录 Session、原请求重放、认证、严格请求解析、真实绑定引用、删除阶段、精确回执重放和删除后响应隐藏。完整服务端检查使用 [服务端验证命令](../../packages/daynight-server/README.md)，包含 race 与覆盖率门禁。这些检查不证明真实 Provider、Worker 托管或完整助手交互已交付。
