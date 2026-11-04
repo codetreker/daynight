@@ -33,6 +33,9 @@ which owns one Task-root Markdown renderer and attachment controller. This keeps
 ordinary reading independently composable and gives Steps the same link,
 preview and keyboard ownership. Local pages mount at most 100 rows with global
 numbering and numeric navigation; paging does not change the service resource.
+Narrow layouts wrap the expanded tab set when height permits. At heights up to
+500px, one horizontally scrollable row preserves reading space and native focus
+reveals the keyboard target. The tab scroller does not widen the page.
 
 ## Alternatives
 
@@ -48,6 +51,11 @@ gate for later Steps operations.
 **Make TaskDetailReading require a detail session.** This unnecessarily couples
 the generic Markdown/attachment composition to task loading. Supplying the panel
 from the detail surface preserves the existing reading component's ownership.
+
+**Wrap narrow tabs at every height.** Two tab rows keep all labels visible, but
+at 320×240 they leave less than the existing minimum attachment reading space
+beside claim metadata. A single scrollable row at short heights preserves both
+tab reachability and the existing reading-height guarantees.
 
 ## Consequences
 

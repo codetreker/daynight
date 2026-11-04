@@ -622,7 +622,8 @@ The list mounts at most 100 rows per page, with global numbering, previous/next
 buttons and a numeric page input. Paging makes no API requests; expansion remains
 bound to IDs across pages, same-task tabs and refresh reordering. Both languages
 and the 320px layout retain reading and recovery controls. Web writing controls
-are not exposed. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
+are not exposed. At heights up to 500px, a single scrollable tab row reserves
+reading space; keyboard focus reveals its target within that row. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
 and [design](../../docs/design/daynight-task-steps.md#web-资源与单一写入所有者)
 own the complete read lifecycle and the remaining write architecture.
 
