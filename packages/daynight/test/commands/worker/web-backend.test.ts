@@ -231,3 +231,36 @@ it.each([240_000, 300_001])("bounds Web worktree removal to five minutes (durati
     expect(f.store.getTask(f.identity)?.cleanup).toMatchObject({ agentStopped: true, backendResourcesClosed: true, worktreeDeleted: false });
   }
 });
+
+
+it.each(["completed", "deadline", "cancelled"] as const)("keeps cleanup provenance reads bounded to five minutes (%s)", async outcome => {
+  const api = createWorkerSessionApi("https://daynight.example", "test-token");
+  const identity = { projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID() };
+  const cancellation = new AbortController();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  // AbortSignal.timeout uses native timers, so route only its timer through the
+  // controlled queue while preserving the signal's deadline behavior.
+  vi.spyOn(AbortSignal, "timeout").mockImplementation(milliseconds => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), milliseconds);
+    return controller.signal;
+  });
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (_target, init) => new Promise<Response>((resolve, reject) => {
+    const signal = init!.signal!;
+    const timer = setTimeout(() => { signal.removeEventListener("abort", cancel); resolve(Response.json({ status: "not_registered", agentControlMode: "web", claimId: identity.claimId })); }, outcome === "completed" ? 60_000 : 300_001);
+    const cancel = (): void => { clearTimeout(timer); reject(signal.reason); };
+    signal.addEventListener("abort", cancel, { once: true });
+  })));
+  let settled = false;
+  const result = api.verifyUnregistered(identity, cancellation.signal).then(() => { settled = true; return null; }, error => { settled = true; return error; });
+  await vi.advanceTimersByTimeAsync(30_001);
+  expect(settled).toBe(false);
+  if (outcome === "cancelled") {
+    cancellation.abort(new Error("cleanup cancelled"));
+    expect(await result).toBe(cancellation.signal.reason);
+  } else {
+    await vi.advanceTimersByTimeAsync((outcome === "completed" ? 60_000 : 300_000) - 30_001);
+    if (outcome === "completed") expect(await result).toBeNull();
+    else expect(await result).toMatchObject({ name: "TimeoutError" });
+  }
+});

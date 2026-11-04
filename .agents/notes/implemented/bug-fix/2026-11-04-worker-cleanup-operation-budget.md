@@ -16,8 +16,9 @@ Increasing an outer deadline alone leaves shorter nested limits effective.
 Cleanup observations, notification, stop/close, and worktree verification and
 deletion use five-minute operations. The shared cleanup operation owns both the
 total deadline and request cap; Herdr RPC and cleanup Git commands inherit that
-request budget. Web cleanup IPC, Controller cleanup-response waiting and final
-process-stop proof use the same five-minute upper bound. Signal escalation
+request budget. Web cleanup IPC, missing-execution provenance HTTP verification,
+Controller cleanup-response waiting and final process-stop proof use the same
+five-minute upper bound. Signal escalation
 intervals remain independent of that final deadline.
 
 The agent still has its original ten-minute cleanup turn. Notification and

@@ -1494,7 +1494,8 @@ ten minutes for this cleanup attempt, stops the agent, closes its workspace, rem
 and marks the local row done. Done, release and force withdrawal have the same terminal
 resource rule. Cleanup observations, notification, stop/close, and worktree
 verification and deletion each have a five-minute operation budget, including
-their RPC, Controller cleanup requests and Git commands. Notification and
+their RPC, cleanup provenance HTTP verification, Controller cleanup requests
+and Git commands. Notification and
 Controller cleanup-response waits are also capped by the remaining ten-minute
 agent deadline. Ordinary execution keeps its existing operation budgets. Failed
 stop or deletion retains responsibility and the error.
