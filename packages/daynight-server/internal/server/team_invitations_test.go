@@ -60,3 +60,55 @@ func TestTeamInvitationHTTP(t *testing.T) {
 		t.Fatal("secret in logs")
 	}
 }
+
+func TestTeamInvitationHTTPRefusalsAndRevoke(t *testing.T) {
+	h := authTestHarness(t)
+	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
+	mux := http.NewServeMux()
+	h.auth.RegisterRoutes(mux)
+	teamRoutes(mux, service.NewTeams(h.database), h.auth, logger)
+	h.handler = RequestLogging(logger, mux)
+	admin, outsider := h.login(t, "invite-admin-refusals"), h.login(t, "invite-outsider-refusals")
+	adminCookies, outsiderCookies := []*http.Cookie{admin}, []*http.Cookie{outsider}
+	adminUser := decodeResponse[api.User](t, h.request("GET", "/api/v1/me", "", adminCookies, nil, ""), 200)
+	outsiderUser := decodeResponse[api.User](t, h.request("GET", "/api/v1/me", "", outsiderCookies, nil, ""), 200)
+	team := decodeResponse[api.Team](t, h.request("POST", "/api/v1/teams", jsonBody(t, api.CreateTeamRequest{Name: "Invite Refusals", ExpectedUserID: adminUser.ID}), adminCookies, nil, h.auth.origin), 201)
+	path := "/api/v1/teams/" + team.ID + "/invitations"
+	actor := jsonBody(t, api.ProjectInvitationMutationRequest{ExpectedUserID: adminUser.ID})
+	created := decodeResponse[api.CreatedTeamInvitation](t, h.request("POST", path, actor, adminCookies, nil, h.auth.origin), 201)
+	link, err := url.Parse(created.Link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspectPath := "/api/v1/team-invitations/inspect"
+	body := jsonBody(t, api.InspectProjectInvitationRequest{Token: link.Fragment})
+	preview := decodeResponse[api.TeamInvitationInspection](t, h.request("POST", inspectPath, body, adminCookies, nil, h.auth.origin), 200)
+	if preview.Membership == nil || preview.Membership.UserID != adminUser.ID || preview.Membership.Role != "admin" {
+		t.Fatalf("existing member preview: %#v", preview)
+	}
+	assertProjectError(t, h.request("GET", path+"?limit=1", "", adminCookies, nil, ""), 400, "invalid_input")
+	assertProjectError(t, h.request("GET", path, "", outsiderCookies, nil, ""), 404, "not_found")
+	assertProjectError(t, h.request("POST", inspectPath, `{"token":null}`, adminCookies, nil, h.auth.origin), 400, "invalid_input")
+	assertProjectError(t, h.request("POST", inspectPath, `{"token":"invalid"}`, adminCookies, nil, h.auth.origin), 404, "invitation_unavailable")
+
+	revoke := path + "/" + created.ID
+	wrong := jsonBody(t, api.ProjectInvitationMutationRequest{ExpectedUserID: outsiderUser.ID})
+	assertProjectError(t, h.request("DELETE", revoke, wrong, adminCookies, nil, h.auth.origin), 409, "identity_mismatch")
+	assertProjectError(t, h.request("DELETE", revoke, `{}`, adminCookies, nil, h.auth.origin), 400, "invalid_input")
+	assertProjectError(t, h.request("DELETE", revoke+"?unexpected=1", actor, adminCookies, nil, h.auth.origin), 400, "invalid_input")
+	for _, changed := range []bool{true, false} {
+		response := h.request("DELETE", revoke, actor, adminCookies, nil, h.auth.origin)
+		receipt := decodeResponse[struct {
+			TeamID       string `json:"teamId"`
+			InvitationID string `json:"invitationId"`
+			Changed      bool   `json:"changed"`
+		}](t, response, 200)
+		if receipt.TeamID != team.ID || receipt.InvitationID != created.ID || receipt.Changed != changed || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("revoke: %#v", receipt)
+		}
+	}
+	assertProjectError(t, h.request("POST", inspectPath, body, outsiderCookies, nil, h.auth.origin), 404, "invitation_unavailable")
+	if strings.Contains(h.logs.String(), link.Fragment) {
+		t.Fatal("secret in logs")
+	}
+}

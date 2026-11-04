@@ -200,3 +200,112 @@ func TestTeamInvitationAcceptRevokeRace(t *testing.T) {
 		}
 	}
 }
+
+func TestTeamInvitationInspectIntegrityAndReadErrors(t *testing.T) {
+	_, db, _, admin := projectService(t)
+	teams := NewTeams(db)
+	ctx := context.Background()
+	team := newTestTeam(t, teams, admin, "Inspect")
+	invitation, err := teams.CreateInvitation(ctx, admin, team.ID, admin.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inspection, err := teams.InspectInvitation(ctx, admin, invitation.Secret)
+	if err != nil || inspection.Membership == nil || inspection.Membership.Role != core.ProjectAdmin || inspection.Membership.UserID != admin.UserID {
+		t.Fatalf("existing member inspection: %#v %v", inspection, err)
+	}
+
+	// A failed member read is an error, not an anonymous preview.
+	if _, err = db.Pool.Exec(ctx, `ALTER TABLE team_members RENAME TO team_members_unavailable`); err != nil {
+		t.Fatal(err)
+	}
+	_, inspectErr := teams.InspectInvitation(ctx, admin, invitation.Secret)
+	if _, err = db.Pool.Exec(ctx, `ALTER TABLE team_members_unavailable RENAME TO team_members`); err != nil {
+		t.Fatal(err)
+	}
+	if inspectErr == nil {
+		t.Fatal("member read failure returned a preview")
+	}
+
+	// Invalid orphan and Personal references cannot turn a bearer into an invitation.
+	var personalID string
+	if err = db.Pool.QueryRow(ctx, `SELECT id::text FROM teams WHERE personal_user_id=$1`, admin.UserID).Scan(&personalID); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{personalID, uuid.NewString()} {
+		if _, err = db.Pool.Exec(ctx, `UPDATE team_invitations SET team_id=$2 WHERE id=$1`, invitation.Invitation.ID, target); err != nil {
+			t.Fatal(err)
+		}
+		_, err = teams.InspectInvitation(ctx, admin, invitation.Secret)
+		teamFault(t, err, "invitation_unavailable")
+	}
+}
+
+func TestTeamInvitationRechecksAfterTeamLockWait(t *testing.T) {
+	for _, outcome := range []string{"revoked", "deleted"} {
+		t.Run(outcome, func(t *testing.T) {
+			_, db, _, admin := projectService(t)
+			teams := NewTeams(db)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			member := servicePrincipal(t, db)
+			team := newTestTeam(t, teams, admin, "Lock wait")
+			invitation, err := teams.CreateInvitation(ctx, admin, team.ID, admin.UserID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			blocker, err := db.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer blocker.Rollback(context.Background())
+			if _, err = blocker.Exec(ctx, `SELECT id FROM teams WHERE id=$1 FOR UPDATE`, team.ID); err != nil {
+				t.Fatal(err)
+			}
+			result := make(chan error, 1)
+			go func() { _, err := teams.AcceptInvitation(ctx, member, invitation.Secret, member.UserID); result <- err }()
+			for {
+				var waiting bool
+				if err = db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, blocker.Conn().PgConn().PID()).Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				if waiting {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatal("accept did not wait for Team lock")
+				case <-time.After(5 * time.Millisecond):
+				}
+			}
+			if outcome == "revoked" {
+				_, err = blocker.Exec(ctx, `UPDATE team_invitations SET revoked_at=now() WHERE id=$1`, invitation.Invitation.ID)
+			} else {
+				_, err = blocker.Exec(ctx, `DELETE FROM team_invitations WHERE team_id=$1`, team.ID)
+				if err == nil {
+					_, err = blocker.Exec(ctx, `DELETE FROM team_members WHERE team_id=$1`, team.ID)
+				}
+				if err == nil {
+					_, err = blocker.Exec(ctx, `DELETE FROM teams WHERE id=$1`, team.ID)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = blocker.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err = <-result:
+				teamFault(t, err, "invitation_unavailable")
+			case <-ctx.Done():
+				t.Fatal("accept did not finish after releasing Team lock")
+			}
+			var count int
+			if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM team_members WHERE team_id=$1 AND user_id=$2`, team.ID, member.UserID).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("unavailable invitation added a member: %d %v", count, err)
+			}
+		})
+	}
+}

@@ -1,4 +1,5 @@
 import { invitationLocation } from "../../app/router";
+import { browserNavigation } from "../../app/navigation";
 
 export const invitationStorageKey = "daynight.pendingInvitation";
 export const teamInvitationStorageKey = "daynight.pendingTeamInvitation";
@@ -29,7 +30,7 @@ export const captureInvitation = (): PendingInvitation => {
   const key = scope === "team" ? teamInvitationStorageKey : invitationStorageKey;
   const otherKey = scope === "team" ? invitationStorageKey : teamInvitationStorageKey;
   const token = window.location.pathname === path ? window.location.hash.slice(1) : "";
-  if (token !== "") window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+  if (token !== "") browserNavigation().clearCapturedFragment();
   const cleanupFailed = !erase(otherKey);
   try {
     if (token !== "") window.sessionStorage.setItem(key, token);

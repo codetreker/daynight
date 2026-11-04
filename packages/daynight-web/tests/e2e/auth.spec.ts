@@ -598,7 +598,7 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
     { method: 'POST', url: `${baseURL}/api/v1/projects/${project.id}/invitations`, count: 1 },
     { method: 'POST', url: `${baseURL}/api/v1/invitations/inspect`, count: 2 },
     { method: 'POST', url: `${baseURL}/api/v1/invitations/accept`, count: 1 },
-    { method: 'POST', url: `${baseURL}/api/v1/team-invitations/inspect`, count: 3 },
+    { method: 'POST', url: `${baseURL}/api/v1/team-invitations/inspect`, count: 5 },
     { method: 'POST', url: `${baseURL}/api/v1/team-invitations/accept`, count: 3 },
   ]);
   await page.goto(`/projects/${project.id}/members`);
@@ -659,11 +659,17 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   expect(existingReceipt.status()).toBe(200);
   expect(await existingReceipt.json()).toMatchObject({ team: { id: team.id }, membership: { teamId: team.id, userId: alice.id, role: 'admin' }, joined: false, consumed: false });
   await expect(page.getByText('你已经是此 Team 的成员', { exact: true })).toBeVisible();
+  await openInvitation(page, teamInvitation.link);
+  await expect(page.getByRole('heading', { name: '你已经是 Team 成员' })).toBeVisible();
+  expect(new URL(page.url()).hash === '', 'Reopening the same invitation removes its fragment').toBe(true);
+  expect(await page.evaluate((token) => !JSON.stringify(history.state).includes(token), new URL(teamInvitation.link).hash.slice(1))).toBe(true);
   const available = await request.get(`/api/v1/teams/${team.id}/invitations`);
   expect((await available.json() as { items: { id: string }[] }).items.some((item) => item.id === teamInvitation.id)).toBe(true);
 
   // Control only the external OAuth provider; the application login, callback and return are real.
   await context.clearCookies();
+  await page.goto('/');
+  expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(401);
   await openInvitation(page, teamInvitation.link);
   await expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible();
   expect(new URL(page.url()).hash === '', 'Login return URL does not contain the invitation secret').toBe(true);
@@ -716,6 +722,10 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
     await expect(page.getByText('You joined this Team', { exact: true })).toBeVisible();
     await expect(page.getByText(`Team ID: ${team.id}`, { exact: true })).toBeVisible();
+    await openInvitation(page, teamInvitation.link);
+    await expect(page.getByRole('heading', { name: 'Invitation unavailable' })).toBeVisible();
+    expect(new URL(page.url()).hash === '', 'Reopening a consumed invitation removes its fragment').toBe(true);
+    expect(await page.evaluate((token) => !JSON.stringify(history.state).includes(token), new URL(teamInvitation.link).hash.slice(1))).toBe(true);
 
     // Drop a confirmed server response to prove that the browser never reports or replays an unknown write.
     const unknownTeamResponse = await request.post('/api/v1/teams', { data: { name: `Unknown Team ${randomUUID()}`, expectedUserId: alice.id } });
@@ -724,6 +734,8 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
     const unknownInvitationResponse = await request.post(`/api/v1/teams/${unknownTeam.id}/invitations`, { data: { expectedUserId: alice.id } });
     expect(unknownInvitationResponse.status()).toBe(201);
     const unknownInvitation = await unknownInvitationResponse.json() as { link: string };
+    await page.goto('/projects');
+    await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
     await openInvitation(page, unknownInvitation.link);
     await expect(page.getByRole('heading', { name: 'You are invited to a Team' })).toBeVisible();
     let committedStatus: number | undefined;
