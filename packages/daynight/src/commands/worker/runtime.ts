@@ -127,6 +127,7 @@ const nativeConfigurationApplication = (options: {
   };
   return {
     current: () => environment,
+    prepareEnvironment: getEnvironment,
     apply: async (native: WorkerCloudNative, signal: AbortSignal): Promise<void> => {
       if (options.mode === "web") parseProviderArguments(native.agent, native.args);
       else validateHerdrAgentArguments(native.agent, native.args);
@@ -297,9 +298,7 @@ export const runWorker = async (options: {
       finally { operation.dispose(); }
       prepared.set(projectId, binding);
     } });
-    const lazyHerdr = new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => {
-      const environment = nativeApplication.current();
-      if (environment === undefined) throw new Error("The native environment has not passed configuration validation.");
+    const lazyHerdr = (environment: Awaited<ReturnType<typeof prepareWorkerAgentEnvironment>>): WorkerHerdrAdapter => new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => {
       herdr = herdr === undefined ? platform === "macos" ? createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...environment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask }) : createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...environment }) : herdr;
       return Reflect.get(herdr, property);
     } });
@@ -316,7 +315,8 @@ export const runWorker = async (options: {
               if (renewal === undefined) renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
                 onError: message => emit({ kind: "credential-renewal-error", message }),
               }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
-              coordinator = createWorkerCoordinator({ store: currentStore, git: getGit(), herdr: lazyHerdr, ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
+              const environment = await nativeApplication.prepareEnvironment();
+              coordinator = createWorkerCoordinator({ store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
                 hasHerdrJournal: await hasHerdrJournal(paths, platform), onInventory: reporter.publishInventory, onClaim: reporter.recordClaim,
                 buildPrompt: web.buildPrompt, emit, signal });
             }

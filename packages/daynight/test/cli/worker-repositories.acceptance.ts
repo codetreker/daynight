@@ -114,7 +114,7 @@ it("adds, lists and removes existing remote Projects through the installed launc
     const added = await pipe(["worker", "repo", "add", "--project", project.id], f.home);
     expect(added.code, added.stderr).toBe(0);
     expect(added.stdout).toBe("");
-    expect(added.stderr).toContain("Changes apply at the next worker startup");
+    expect(added.stderr).toContain("This local selection is imported when the Worker first connects to cloud management.");
     expect(added.stdout + added.stderr).not.toContain(token);
   }
   const expected = projects.map((project) => ({ projectId: project.id, remote: project.repoUrl, path: path.join(f.home, "daynights", "github.com", "WorkerAcceptance", project.id === firstId ? "First" : "Second") }));
@@ -162,22 +162,20 @@ it("requires a known accessible Project and rejects raw URLs and path overrides 
   expect(f.calls).toHaveLength(beforeInvalid);
 });
 
-it("requires terminal selection for no-argument add and initial worker run without creating runtime state", async () => {
+it("requires terminal selection for no-argument repository add without creating runtime state", async () => {
   const f = await fresh();
-  for (const args of [["worker", "repo", "add"], ["worker", "run"]]) {
-    const result = await pipe(args, f.home);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("requires terminal input and stderr");
-    expect(result.stderr).toContain("worker repo add --project <project-id>");
-    await f.unchanged();
-  }
-  expect(f.calls).toHaveLength(4);
+  const result = await pipe(["worker", "repo", "add"], f.home);
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("requires terminal input and stderr");
+  expect(result.stderr).toContain("worker repo add --project <project-id>");
+  await f.unchanged();
+  expect(f.calls).toHaveLength(2);
 });
 
-it("preserves configuration and reports remote Project failures before configuration or startup", async () => {
+it("preserves configuration and reports remote Project failures before explicit repository selection", async () => {
   const f = await fresh();
   f.fail();
-  for (const args of [["worker", "repo", "add", "--project", firstId], ["worker", "run"]]) {
+  for (const args of [["worker", "repo", "add", "--project", firstId], ["worker", "repo", "add"]]) {
     const result = await pipe(args, f.home);
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
@@ -203,9 +201,9 @@ it.skipIf(process.platform === "win32")("selects and removes multiple Projects w
   expect(await readdir(path.dirname(f.configuration))).toEqual(["config.yml"]);
 });
 
-it.skipIf(process.platform === "win32")("cancels the startup Project selector before saving configuration or creating worker resources", async () => {
+it.skipIf(process.platform === "win32")("cancels the explicit repository Project selector before saving configuration or creating worker resources", async () => {
   const f = await fresh();
-  const result = await terminal(["worker", "run"], f.home, [{ waitFor: addPrompt, signal: "SIGTERM" }]);
+  const result = await terminal(["worker", "repo", "add"], f.home, [{ waitFor: addPrompt, signal: "SIGTERM" }]);
   expect(result.code, result.stderr).toBe(0);
   expect(result.stdout).toBe("");
   expect(f.calls).toHaveLength(2);
