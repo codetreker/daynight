@@ -1439,8 +1439,9 @@ The NULL rule also covers interruption before a newly started native ID was save
 It retains the task, claim and worktree and requires no history scan or approval
 gate. A failed resume of a known ID remains an error. Launch/input receipts,
 process observations, retries and cleanup progress exist only in the current
-call or process. Recovery counts reset on restart; reaching recoveryLimit keeps
-the task active with a visible error until explicit retry or another run.
+call or process in Herdr mode. Herdr recovery counts reset on restart; reaching
+recoveryLimit keeps the task active with a visible error until explicit retry or
+another run. Web recovery follows the persistent rules below.
 
 For human input, use another interactive terminal:
 
@@ -1585,6 +1586,24 @@ requires proof that the original native processes stopped and the exact native
 session ID. A missing journal or ID cannot authorize a replacement conversation.
 Unknown initial inputs and operations are reconciled without replay.
 
+Web recovery counts and diagnostic pause reasons persist across worker restarts.
+Exhausted automatic recovery or the execution failure threshold pauses the
+original execution before worktree preparation, Controller initialization,
+launch or native input. An older exhausted stopped record without a pause reason
+or orderly-shutdown provenance is reconciled from its journal and complete
+process-stop proof before any launch;
+uncertain stop evidence retains a diagnostic wait. A healthy final recovery
+and its orderly shutdown restart are not paused merely because the count has
+reached its limit.
+
+A paused execution keeps its active claim, native session ID, worktree and
+capacity slot. The worker continues publishing `waiting` with `herdr:null` even
+when execution is blocked. A failed summary update is retried using a newly read
+task version without consuming native recovery budget; an unchanged confirmed
+summary is not written again. Ordinary restart and shutdown cannot clear this
+pause. It is separate from `task.properties.paused`, which controls Herdr
+continuation pings.
+
 Normal Web terminal cleanup keeps its original cleanup operation and deadline,
 then proves native stop before deleting the task worktree. Worker shutdown stops
 owned processes while preserving unfinished claims, worktrees and native history.
@@ -1684,11 +1703,22 @@ Retry performs one attempt for an active claim still owned by this worker:
 daynight worker retry <task-id> --claim-id <claim-id> --project <project-id>
 ```
 
-It connects the live agent or resumes its recorded native session. A NULL ID
-starts a fresh conversation in the same task worktree with an `info` event. The
-claim and agent type remain; pending rows are started through normal run
-scheduling. After the attempt, run connects to the actual surviving resource. Retry does not
-persist a permit or a cumulative cross-restart budget.
+In Herdr mode, retry connects the live agent or resumes its recorded native
+session. A NULL ID starts a fresh conversation in the same task worktree with an
+`info` event. Its extra attempt and recovery count remain process-local.
+
+In Web mode, retry persists one authorization to recover the original native
+session. It still requires the original active claim, matching generation and
+complete proof that the old processes stopped. Missing native identity or stop
+evidence cannot authorize a replacement conversation or a repeated initial
+assignment. Authorization does not report successful execution: the summary
+remains waiting through initialization until a ready or working observation, and failure
+pauses again. The attempt remains bound to that generation across ticks and
+worker restarts; initialization cannot authorize another generation.
+
+Both modes retain the claim and agent type; pending rows are started through
+normal run scheduling. After the attempt, run reconciles the actual surviving
+resource and any persistent Web pause.
 
 Release validates current Project access, source owner/admin, original claim
 and exact supplied version. Its ordering is:

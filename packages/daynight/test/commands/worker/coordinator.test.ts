@@ -1304,3 +1304,119 @@ it.each(["archive", "worktree removal"])("releases a deleted Web task's last wor
     await coordinator.shutdown();
   } finally { allowRemoval.resolve(); webStore.close(); }
 });
+
+it("persists Web failure exhaustion, reconciles waiting with fresh versions, and retains its slot after restart", async () => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture();
+  let webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 1 };
+  const advance = vi.fn(async (input: import("../../../src/commands/worker/backends/web-types.js").LocalTask) => {
+    webStore.bindNativeSession(input, { source: "controller", sessionId: uuid(880) }, 2);
+    throw new Error("Original controller observation failed.");
+  });
+  const update = vi.mocked(f.remote.update).getMockImplementation()!;
+  vi.mocked(f.remote.update).mockImplementationOnce(async current => {
+    f.grants.set(readWorkerClaim(current.properties)!.claimId, { ...current, version: 17n });
+    throw new Error("Summary response lost.");
+  }).mockImplementation(update);
+  const options = () => ({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, verifyWebServer: vi.fn(async () => {}), verifyWebUnregistered: async () => {}, webBackend: { advance, cleanup: vi.fn() } });
+  let coordinator = createWorkerCoordinator(options());
+  const tick = async () => { await coordinator.tick(); await new Promise<void>(resolve => setImmediate(resolve)); };
+  try {
+    await tick(); await eventually(() => expect(advance).toHaveBeenCalledTimes(1));
+    await tick(); await eventually(() => expect(advance).toHaveBeenCalledTimes(2));
+    await tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalled());
+    const row = f.store.listTasks()[0]!;
+    const paused = webStore.getTask(row)!;
+    expect(paused.recovery.pauseReason).toContain("Original controller observation failed");
+    expect(paused.recovery.count).toBe(0);
+    expect(paused.recovery.retryAuthorized).toBe(false);
+    await tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(f.remote.update).mock.calls[1]![0].version).toBe(17n);
+    expect(vi.mocked(f.remote.update).mock.calls[1]![1]).toEqual({ phase: "waiting", nativeSessionId: uuid(880), herdr: null });
+    webStore.close(); webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+    coordinator = createWorkerCoordinator(options());
+    await tick(); await tick();
+    expect(advance).toHaveBeenCalledTimes(2);
+    expect(f.remote.update).toHaveBeenCalledTimes(2);
+    expect(webStore.getTask(row)?.recovery).toEqual(paused.recovery);
+    expect(f.store.getTask(row)).toMatchObject({ status: "active", sessionId: uuid(880) });
+    expect(readWorkerClaim(f.grants.get(row.claimId)!.properties)).toMatchObject({ claimId: row.claimId, state: "active", phase: "waiting" });
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
+});
+
+it.each(["claim", "worktree"])("rejects Web retry after original %s loss without authorizing or advancing it", async field => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(), webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
+  const advance = vi.fn(async (input: import("../../../src/commands/worker/backends/web-types.js").LocalTask) => input);
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance, cleanup: vi.fn() } });
+  try {
+    await coordinator.tick(); await eventually(() => expect(advance).toHaveBeenCalledOnce());
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const row = f.store.listTasks()[0]!;
+    const original = f.grants.get(row.claimId)!;
+    f.grants.set(row.claimId, { ...original, properties: { ...original.properties, worker: { ...readWorkerClaim(original.properties)!, ...(field === "claim" ? { claimId: uuid(999) } : { worktreeId: uuid(999) }) } } });
+    await expect(coordinator.advanceRetry(row)).rejects.toThrow(/no longer/);
+    expect(webStore.getTask(row)?.recovery.retryAuthorized).toBe(false);
+    expect(advance).toHaveBeenCalledOnce();
+  } finally { webStore.close(); }
+});
+
+it("keeps an authorized Web retry waiting until a healthy observation after confirmed shutdown", async () => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(), webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 0 };
+  let starting = true;
+  const advance = vi.fn(async (input: import("../../../src/commands/worker/backends/web-types.js").LocalTask) => {
+    let record = webStore.initializeWebExecution(input, 2);
+    if (record.recovery.retryAuthorized && record.recovery.pauseReason !== null) {
+      const e = record.webExecution!;
+      record = webStore.beginWebGeneration(record, { executionGeneration: e.executionGeneration, controllerInstanceId: e.controllerInstanceId, nativeSessionId: uuid(880), nativeStopped: true }, 3);
+    }
+    record = webStore.updateWebExecution(record, { activity: starting ? "initializing" : "working" }, 4);
+    record = webStore.bindNativeSession(record, { source: "controller", sessionId: uuid(880) }, 5);
+    if (!starting && record.recovery.retryAuthorized) {
+      const e = record.webExecution!;
+      record = webStore.completeRecoveryRetry(record, { executionId: e.executionId, claimId: record.claimId, sessionId: e.sessionId!, executionGeneration: e.executionGeneration, controllerInstanceId: e.controllerInstanceId, lifecycle: "ready", nativeSessionId: uuid(880), initialInputState: "confirmed", activity: "working", currentTurnId: null, capabilities: { send: true, steer: true, cancel: true, respond: true }, controllerProcess: null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null }, 6);
+    }
+    return record;
+  });
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance, cleanup: vi.fn() } });
+  try {
+    await coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    webStore.pauseRecovery(row, "Recovery exhausted.", 6);
+    webStore.beginCleanup(row, { kind: "shutdown", deadline: 9 }, 7);
+    webStore.confirmAgentStopped(row, { agentStopped: true }, 8);
+    webStore.confirmBackendResourcesClosed(row, { controllerStopped: true, endpointClosed: true }, 9);
+    await coordinator.advanceRetry(row);
+    expect(webStore.getTask(row)?.cleanup).toBeNull();
+    expect(webStore.getTask(row)?.recovery).toMatchObject({ count: 1, retryAuthorized: true });
+    expect(readWorkerClaim(f.grants.get(row.claimId)!.properties)?.phase).toBe("waiting");
+    starting = false;
+    await coordinator.tick();
+    await eventually(() => expect(readWorkerClaim(f.grants.get(row.claimId)!.properties)?.phase).toBe("executing"));
+    expect(webStore.getTask(row)?.recovery.count).toBe(1);
+  } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
+});
+
+it("refuses an explicit Web retry without original execution evidence instead of starting an assignment", async () => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(), webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
+  const remote = f.grant(f.candidates[0]!, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
+  const row = f.store.registerPending({ projectId: remote.projectId, taskId: remote.id, claimId: uuid(810), agent: "codex", agentControlMode: "web" });
+  f.store.activateTask(row);
+  const advance = vi.fn(async (input: import("../../../src/commands/worker/backends/web-types.js").LocalTask) => input);
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [], globalConfiguration: configuration, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { advance, cleanup: vi.fn() } });
+  try {
+    await expect(coordinator.advanceRetry(row)).rejects.toThrow("original Web execution evidence");
+    expect(advance).not.toHaveBeenCalled();
+    expect(webStore.getTask(row)).toBeNull();
+  } finally { webStore.close(); }
+});

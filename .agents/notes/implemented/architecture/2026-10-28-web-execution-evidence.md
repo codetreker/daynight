@@ -28,6 +28,9 @@ extends the shared index with frozen routing; the [session design](../../../../d
 owns Web recovery and operation semantics. Neither backend can reinterpret an
 existing claim using the latest configured mode. Missing Web provenance is a
 visible recovery failure, not proof that no native process was started.
+The [persistent recovery pause decision](../bug-fix/2026-11-04-web-recovery-pause.md)
+uses this Web evidence store to preserve recovery pauses and reconcile waiting
+without allowing ordinary restarts to authorize another attempt.
 
 A new Task Worker native session uses the unattended full-access policy.
 Independent Test Sessions retain native defaults, and native resume preserves

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration, WorkerProject, ResourceOwner } from "../types.js";
+import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState } from "./web-types.js";
 import { backendResourcesClosed, taskAgentControlMode } from "./web-types.js";
 import { webRecordInteger as integer, webRecordChoice as oneOf, webRecordText as text, webRecordId as id, parseWebWorktreeV1 as parseWorktree, parseWebExecutionV1 as parseWebExecution, parseWebCleanupV1 as parseCleanup, webClaimKey as key, parseWebTaskV1 as validate } from "./web-record.js";
@@ -62,12 +63,28 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
       requireOrdinary(task);
       if (task.status !== "active") throw new Error("Only an active execution can recover.");
       const recovery = task.recovery;
-      if (recovery.pauseReason !== null && !recovery.retryAuthorized) throw new Error("The paused execution requires an explicit recovery retry.");
+      if (recovery.retryAuthorized) throw new Error("An explicit retry must consume its authorization with the original generation transition.");
+      if (recovery.pauseReason !== null) return task;
       if (task.configuration === null) throw new Error("The original frozen execution configuration is missing.");
-      if (recovery.count >= task.configuration.recoveryLimit && !recovery.retryAuthorized) throw new Error("The execution recovery budget is exhausted.");
+      if (recovery.count >= task.configuration.recoveryLimit) return { ...task, recovery: { ...recovery, pauseReason: "The execution recovery budget is exhausted.", retryAuthorized: false } };
       return { ...task, recovery: { count: integer(recovery.count + 1, "Recovery count"), pauseReason: null, retryAuthorized: false } };
     }),
-    authorizeRecoveryRetry: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => { requireOrdinary(task); return { ...task, recovery: { ...task.recovery, retryAuthorized: true } }; }),
+    pauseRecovery: (identity: ClaimIdentity, reason: string, now: number): LocalTask => change(identity, now, task => {
+      if (task.status !== "active") throw new Error("Only an active execution can pause recovery.");
+      return { ...task, recovery: { ...task.recovery, pauseReason: text(reason, "Recovery pause reason"), retryAuthorized: false } };
+    }),
+    authorizeRecoveryRetry: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => {
+      requireOrdinary(task);
+      if (task.recovery.retryAuthorized) return task;
+      // A reason marks unconsumed authorization; clearing it with a new generation marks the one in-flight attempt.
+      return { ...task, recovery: { ...task.recovery, pauseReason: task.recovery.pauseReason ?? "An explicit recovery retry is awaiting original process stop verification.", retryAuthorized: true } };
+    }),
+    completeRecoveryRetry: (identity: ClaimIdentity, observed: ControllerSnapshot, now: number): LocalTask => change(identity, now, task => {
+      requireOrdinary(task);
+      const execution = task.webExecution;
+      if (execution === null || (observed.lifecycle !== "ready" && observed.lifecycle !== "working") || observed.executionId !== execution.executionId || observed.claimId !== task.claimId || observed.executionGeneration !== execution.executionGeneration || observed.controllerInstanceId !== execution.controllerInstanceId || observed.nativeSessionId === null || observed.nativeSessionId !== task.resources.nativeSession?.sessionId || task.recovery.pauseReason !== null) throw new Error("Explicit recovery completion requires the ready original generation and native identity.");
+      return { ...task, recovery: { ...task.recovery, retryAuthorized: false } };
+    }),
     bindNativeSession: (identity: ClaimIdentity, reference: { source: "controller"; sessionId: string }, now: number): LocalTask => change(identity, now, task => {
       id(reference.sessionId, "Native session");
       if (task.resources.nativeSession !== null && task.resources.nativeSession.sessionId !== reference.sessionId) throw new Error("The original native session cannot be replaced.");
@@ -97,7 +114,11 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
     beginWebGeneration: (identity: ClaimIdentity, previous: { executionGeneration: string; controllerInstanceId: string; nativeSessionId: string | null; nativeStopped: boolean }, now: number): LocalTask => change(identity, now, task => {
       requireOrdinary(task); const execution = task.webExecution;
       if (execution == null || task.configuration?.agentControlMode !== "web" || previous.executionGeneration !== execution.executionGeneration || previous.controllerInstanceId !== execution.controllerInstanceId || !previous.nativeStopped || previous.nativeSessionId === null || previous.nativeSessionId !== task.resources.nativeSession?.sessionId) throw new Error("Web recovery requires the exact stopped generation and native identity.");
-      return { ...task, webExecution: { ...execution, executionGeneration: String(BigInt(execution.executionGeneration) + 1n), controllerInstanceId: randomUUID(), launchId: randomUUID(), launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [], restartAfterShutdown: false, cleanupOperationId: null, ticketPath: null, activity: "initializing" } };
+      if (task.recovery.pauseReason !== null && !task.recovery.retryAuthorized) throw new Error("The paused execution requires an explicit recovery retry.");
+      if (task.recovery.retryAuthorized && task.recovery.pauseReason === null) throw new Error("The authorized recovery generation is still awaiting a successful observation.");
+      // Persist consumption and its sole replacement identity together across Worker interruption.
+      const recovery = task.recovery.retryAuthorized ? { count: integer(task.recovery.count + 1, "Recovery count"), pauseReason: null, retryAuthorized: true } : task.recovery;
+      return { ...task, recovery, webExecution: { ...execution, executionGeneration: String(BigInt(execution.executionGeneration) + 1n), controllerInstanceId: randomUUID(), launchId: randomUUID(), launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [], restartAfterShutdown: false, cleanupOperationId: null, ticketPath: null, activity: "initializing" } };
     }),
     confirmBackendResourcesClosed: (identity: ClaimIdentity, proof: { controllerStopped: true; endpointClosed: true }, now: number): LocalTask => change(identity, now, task => {
       const cleanup = needCleanup(task);
