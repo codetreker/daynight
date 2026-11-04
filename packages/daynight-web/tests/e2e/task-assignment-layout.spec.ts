@@ -99,6 +99,8 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
   const meReceipts = () => [...wire.values()].filter((receipt) => receipt.path === '/api/v1/me');
   const expectMe = async (index: number, status: number) => {
     await expect.poll(() => meReceipts()[index]?.wireStatus).toBe(status);
+    // Session expiry aborts the active identity fetch after the 401 headers arrive.
+    if (status === 401) return meReceipts()[index]!;
     await expect.poll(() => meReceipts()[index]?.wireBytes).not.toBeNull();
     const receipt = meReceipts()[index]!;
     expect(receipt.wireBytes).toBeGreaterThanOrEqual(0);
