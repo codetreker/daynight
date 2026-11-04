@@ -598,6 +598,8 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
     { method: 'POST', url: `${baseURL}/api/v1/projects/${project.id}/invitations`, count: 1 },
     { method: 'POST', url: `${baseURL}/api/v1/invitations/inspect`, count: 2 },
     { method: 'POST', url: `${baseURL}/api/v1/invitations/accept`, count: 1 },
+    { method: 'POST', url: `${baseURL}/api/v1/team-invitations/inspect`, count: 3 },
+    { method: 'POST', url: `${baseURL}/api/v1/team-invitations/accept`, count: 3 },
   ]);
   await page.goto(`/projects/${project.id}/members`);
   await page.getByRole('button', { name: '邀请成员', exact: true }).click();
@@ -635,6 +637,117 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
     expect(await page.evaluate(() => sessionStorage.getItem('daynight.pendingInvitation') === null), 'Accepted invitation clears pending session storage').toBe(true);
     await picture(page, info, 'auth-invitations');
   } finally { await bob.dispose(); }
+
+  const alice = await user(request);
+  const teamName = `Invitation Team ${randomUUID()}`;
+  const teamResponse = await request.post('/api/v1/teams', { data: { name: teamName, expectedUserId: alice.id } });
+  expect(teamResponse.status()).toBe(201);
+  const team = await teamResponse.json() as { id: string; name: string };
+  const teamInvitationResponse = await request.post(`/api/v1/teams/${team.id}/invitations`, { data: { expectedUserId: alice.id } });
+  expect(teamInvitationResponse.status()).toBe(201);
+  const teamInvitation = await teamInvitationResponse.json() as { id: string; link: string };
+  expect(new URL(teamInvitation.link).pathname).toBe('/team-invitations');
+
+  // An existing admin retains their role and does not spend the invitation.
+  await browserAuthentication(context, baseURL, 'alice');
+  await openInvitation(page, teamInvitation.link);
+  await expect(page.getByRole('heading', { name: '你已经是 Team 成员' })).toBeVisible();
+  expect(new URL(page.url()).hash === '', 'Team invitation fragment is removed immediately').toBe(true);
+  const existingAcceptance = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/team-invitations/accept` && response.request().method() === 'POST');
+  await page.getByRole('button', { name: '接受邀请并加入', exact: true }).click();
+  const existingReceipt = await existingAcceptance;
+  expect(existingReceipt.status()).toBe(200);
+  expect(await existingReceipt.json()).toMatchObject({ team: { id: team.id }, membership: { teamId: team.id, userId: alice.id, role: 'admin' }, joined: false, consumed: false });
+  await expect(page.getByText('你已经是此 Team 的成员', { exact: true })).toBeVisible();
+  const available = await request.get(`/api/v1/teams/${team.id}/invitations`);
+  expect((await available.json() as { items: { id: string }[] }).items.some((item) => item.id === teamInvitation.id)).toBe(true);
+
+  // Control only the external OAuth provider; the application login, callback and return are real.
+  await context.clearCookies();
+  await openInvitation(page, teamInvitation.link);
+  await expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible();
+  expect(new URL(page.url()).hash === '', 'Login return URL does not contain the invitation secret').toBe(true);
+  expect(new URL(page.url()).searchParams.get('returnPath')).toBe('/team-invitations');
+  expect(await page.evaluate(() => sessionStorage.getItem('daynight.pendingTeamInvitation') !== null)).toBe(true);
+  const providerSession = await context.newCDPSession(page);
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const controlledProvider = new Promise<void>((resolve, reject) => {
+    deadline = setTimeout(() => reject(new Error('The controlled external provider request was not reached.')), 15_000);
+    providerSession.once('Fetch.requestPaused', (event) => {
+      void (async () => {
+        const upstream = new URL(event.request.url);
+        if (upstream.origin !== 'https://github.com' || upstream.pathname !== '/login/oauth/authorize'
+          || upstream.searchParams.get('code_challenge_method') !== 'S256') throw new Error('The external provider authorization or PKCE request changed.');
+        const challenge = upstream.searchParams.get('code_challenge');
+        const state = upstream.searchParams.get('state');
+        const callback = upstream.searchParams.get('redirect_uri');
+        if (challenge === null || state === null || callback === null) throw new Error('External provider request omitted required PKCE or callback fields.');
+        const target = new URL(callback);
+        target.search = new URLSearchParams({ state, code: `bob:${challenge}` }).toString();
+        await providerSession.send('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: 302,
+          responseHeaders: [{ name: 'Location', value: target.href }], body: '' });
+      })().then(resolve, reject);
+    });
+  });
+  try {
+    await providerSession.send('Fetch.enable', { patterns: [{ urlPattern: 'https://github.com/login/oauth/authorize*', requestStage: 'Request' }] });
+    await Promise.all([page.getByRole('button', { name: '使用 GitHub 登录', exact: true }).click(), controlledProvider]);
+    await expect(page.getByRole('heading', { name: '你受邀加入一个 Team' })).toBeVisible();
+    await expect(page.locator('.invite-account .person-name')).toHaveText('Bob');
+    await expect(page.getByText(teamName, { exact: true })).toBeVisible();
+    expect(new URL(page.url()).hash === '').toBe(true);
+    expect(await page.evaluate(() => sessionStorage.getItem('daynight.pendingTeamInvitation') === null)).toBe(true);
+    const acceptance = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/team-invitations/accept` && response.request().method() === 'POST');
+    await page.getByRole('button', { name: '接受邀请并加入', exact: true }).click();
+    const receiptResponse = await acceptance;
+    expect(receiptResponse.status()).toBe(200);
+    const receipt = await receiptResponse.json() as { team: { id: string; name: string }; membership: { teamId: string; userId: string; role: string }; joined: boolean; consumed: boolean };
+    const bob = await user(authenticatedAPI(context.request));
+    expect(receipt).toMatchObject({ team: { id: team.id, name: teamName }, membership: { teamId: team.id, userId: bob.id, role: 'member' }, joined: true, consumed: true });
+    await expect(page.getByText('你已加入此 Team', { exact: true })).toBeVisible();
+    await expect(page.getByText(teamName, { exact: true })).toBeVisible();
+    await expect(page.getByText(`Team ID: ${team.id}`, { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => sessionStorage.getItem('daynight.pendingTeamInvitation') === null)).toBe(true);
+    const actual = await authenticatedAPI(context.request).get(`/api/v1/teams/${team.id}`);
+    expect(actual.status()).toBe(200);
+    expect(await actual.json()).toMatchObject({ id: team.id, name: teamName, membership: { teamId: team.id, userId: bob.id, role: 'member' } });
+    await page.setViewportSize({ width: 320, height: 844 });
+    expect(await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) <= innerWidth)).toBe(true);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+    await expect(page.getByText('You joined this Team', { exact: true })).toBeVisible();
+    await expect(page.getByText(`Team ID: ${team.id}`, { exact: true })).toBeVisible();
+
+    // Drop a confirmed server response to prove that the browser never reports or replays an unknown write.
+    const unknownTeamResponse = await request.post('/api/v1/teams', { data: { name: `Unknown Team ${randomUUID()}`, expectedUserId: alice.id } });
+    expect(unknownTeamResponse.status()).toBe(201);
+    const unknownTeam = await unknownTeamResponse.json() as { id: string };
+    const unknownInvitationResponse = await request.post(`/api/v1/teams/${unknownTeam.id}/invitations`, { data: { expectedUserId: alice.id } });
+    expect(unknownInvitationResponse.status()).toBe(201);
+    const unknownInvitation = await unknownInvitationResponse.json() as { link: string };
+    await openInvitation(page, unknownInvitation.link);
+    await expect(page.getByRole('heading', { name: 'You are invited to a Team' })).toBeVisible();
+    let committedStatus: number | undefined;
+    const loseResponse = async (route: Route) => {
+      const response = await route.fetch();
+      committedStatus = response.status();
+      await route.abort();
+    };
+    await page.route(`${baseURL}/api/v1/team-invitations/accept`, loseResponse);
+    try {
+      await page.getByRole('button', { name: 'Accept invitation and join', exact: true }).click();
+      await expect(page.getByRole('alert')).toContainText('The result is unknown');
+      expect(committedStatus).toBe(200);
+      await expect(page.getByRole('button', { name: 'Accept invitation and join', exact: true })).toBeDisabled();
+      await expect(page.getByText('You joined this Team', { exact: true })).toHaveCount(0);
+      const actualUnknown = await authenticatedAPI(context.request).get(`/api/v1/teams/${unknownTeam.id}`);
+      expect(actualUnknown.status()).toBe(200);
+      expect(await actualUnknown.json()).toMatchObject({ id: unknownTeam.id, membership: { userId: bob.id, role: 'member' } });
+    } finally { await page.unroute(`${baseURL}/api/v1/team-invitations/accept`, loseResponse); }
+  } finally {
+    clearTimeout(deadline);
+    await providerSession.send('Fetch.disable');
+    await providerSession.detach();
+  }
 });
 
 test('auth-resource-session', scenario('auth-resource-session'), async ({ page, context, api: request, allowBrowserWrites }, info) => {

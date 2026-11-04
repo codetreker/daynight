@@ -1,7 +1,7 @@
 import { ApiError, assertResponsePrincipal, isAbortError, json, read, request, requestId, type TaskResponseAdmission } from "./client";
-import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitationAcceptance, decodeInvitationJson, parseInvitations, parseMember, parseMembers, decodeMembersJson, parseProjectGrant, parseMemberVersion, parseProjectAccess, decodeProjectAccessJson, parseRole, parseToken, parseTokens, parseUser } from "./auth-parse";
+import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitationAcceptance, decodeInvitationJson, parseTeamInvitationInspection, parseTeamInvitationAcceptance, decodeTeamInvitationJson, parseInvitations, parseMember, parseMembers, decodeMembersJson, parseProjectGrant, parseMemberVersion, parseProjectAccess, decodeProjectAccessJson, parseRole, parseToken, parseTokens, parseUser } from "./auth-parse";
 import { array, boolean, id, malformed, project, record, string, timestamp } from "./parse";
-import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipants, ProjectGrant, ProjectPeople, ProjectPeopleQuery, ProjectPerson, ProjectRole, ProjectAccess, User } from "./auth-types";
+import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipants, ProjectGrant, ProjectPeople, ProjectPeopleQuery, ProjectPerson, ProjectRole, ProjectAccess, User, TeamInvitationInspection, TeamInvitationAcceptance } from "./auth-types";
 import type { Project } from "./types";
 import { parseProfileVersion } from "./profile-version";
 import { decodeProjectJson } from "./project-json";
@@ -213,6 +213,27 @@ export const acceptInvitation = (token: string, projectId: string, expectedUserI
       if (response.status !== 200) throw new ApiError("protocol", response.status);
       return parseInvitationAcceptance(data, project, expected);
     }, decodeInvitationJson);
+  });
+};
+
+export const inspectTeamInvitation = (token: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void): Promise<TeamInvitationInspection> => {
+  const body = secretBody(token), expected = requestId(expectedUserId);
+  return grantWrite(signal, onIdentityMismatch, async () => {
+    const response = await invitationRequest("/api/v1/team-invitations/inspect", "POST", body, expected, signal, onIdentityMismatch);
+    return json(response, signal, (data) => {
+      if (response.status !== 200) throw new ApiError("protocol", response.status);
+      return parseTeamInvitationInspection(data, expected);
+    }, decodeTeamInvitationJson);
+  });
+};
+export const acceptTeamInvitation = (token: string, teamId: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void): Promise<TeamInvitationAcceptance> => {
+  const secret = JSON.parse(secretBody(token)) as { token: string }, team = requestId(teamId), expected = requestId(expectedUserId);
+  return grantWrite(signal, onIdentityMismatch, async () => {
+    const response = await invitationRequest("/api/v1/team-invitations/accept", "POST", JSON.stringify({ ...secret, expectedUserId: expected }), expected, signal, onIdentityMismatch);
+    return json(response, signal, (data) => {
+      if (response.status !== 200) throw new ApiError("protocol", response.status);
+      return parseTeamInvitationAcceptance(data, team, expected);
+    }, decodeTeamInvitationJson);
   });
 };
 

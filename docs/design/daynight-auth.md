@@ -271,11 +271,14 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 | project_ownership | project_id 唯一；真实 team_id、正 version 与 updated_at；每个 Project 恰一行。 |
 | project_grants | `(project_id,user_id)` 唯一；role 为 admin/member；bigint version 来自独立 sequence。 |
 | project_invitations | ID、project_id、唯一 token_hash、created_by、expires_at、consumed_by/at、revoked_at。 |
+| team_invitations | ID、team_id、唯一 token_hash、created_by、expires_at、consumed_by/at、revoked_at。 |
 
 使用既有迁移机制、唯一索引和角色 CHECK，不要求新增 foreign key；关联由业务事务验证。
 迁移 `018_device_authorization.sql` 建立设备授权和共享限流表，
 `019_optional_token_expiry.sql` 仅让 personal_access_tokens.expires_at 可空，保留既有令牌的
 ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessions.expires_at 保持必填。
+`035_team_invitations.sql` 随真实邀请入口建立独立邀请表、唯一散列及 Team/到期索引；
+删除 Team 的事务负责清除子记录，不引入 foreign key。
 
 `032_personal_project_ownership.sql` 在一份编号迁移中建立真实归属并切换授权来源。
 迁移先验证既有用户、项目、grant 与邀请引用；任何 Project 没有现任 admin 或存在坏引用
@@ -321,6 +324,14 @@ directGrant/access；accept 返回 projectId、真实 directGrant、提交后 ac
 consumed。无效、到期、消费、撤销和目标删除统一为 404 invitation_unavailable。到期
 查询即时拒绝，不依赖后台任务；写入时有界清理到期记录，过期索引支持每次最多清理 100 条。
 
+Team 邀请使用独立 `dnteam_` 秘密及 `team_invitations`，仅存散列。接受按 Team →
+邀请 → 当前成员顺序锁定，先重验邀请有效，再检查真实成员；已有成员保留角色且不消费，
+新 member 与消费同事务提交。撤销与接受共享 Team 和邀请锁；删除 Team 同事务清除邀请。
+Personal 不可创建邀请。inspect 仅返回 Team 引用和当前主体关系，accept 返回真实成员及
+joined/consumed。两种邀请都通过 POST body 传秘密，响应 no-store，失效原因统一为
+invitation_unavailable；[Team 邀请决策](../../.agents/notes/implemented/architecture/2026-11-04-team-invitations.md)
+拥有接收入口及交付边界。
+
 HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在自身 Snapshot 或
 项目写锁内检查成员；凭据认证与业务事务是各自的准入时点，不额外把凭据撤销和业务
 提交串行化。附件在短快照完成项目/task/路径与成员检查后准入文件 IO，不持锁慢传输。
@@ -360,10 +371,12 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | PATCH/DELETE .../members/{userId} | admin；携带真实 grant version 与必填 expectedUserId，PATCH 另含存储 role；成功分别返回 ProjectGrant / 204。 |
 | GET/POST .../projects/{id}/invitations、DELETE .../{inviteId} | admin；创建和撤销携带 expectedUserId，创建一次显示链接。 |
 | POST /api/v1/invitations/inspect、POST .../accept | 已登录用户，body 携带秘密；accept 另携带 expectedUserId，由本人明确提交。 |
+| GET/POST /api/v1/teams/{id}/invitations、DELETE .../{inviteId} | 当前 Team admin；写入携带 expectedUserId，创建一次返回链接。 |
+| POST /api/v1/team-invitations/inspect、POST .../accept | 已登录用户，body 携带秘密；accept 另携带 expectedUserId。 |
 
 unauthenticated/forbidden/invitation_unavailable 保留原 envelope/requestId。
 Team 管理的 expectedUserId guard 在 Teams 领域查询或事务之前执行；项目转移、授权新增/修改/移除及
-邀请创建、撤销、接受的 guard 在领域事务及 Project 行锁之前执行。错主体返回 409 identity_mismatch；
+邀请创建、撤销、接受的 guard 在领域事务及相应 Team 或 Project 行锁之前执行。错主体返回 409 identity_mismatch；
 认证与独立请求日志不属于领域 SQL。
 该 fault 同时进入 HTTP 409 映射和日志已知类型集合，避免误变为 internal_error。
 非成员与不存在的 Team/项目均 not_found。Team 生命周期的 personal_team_immutable、
@@ -386,7 +399,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 用户核验与语言切换不重建 Provider。状态设置依赖当前完整详情的精确版本，冲突与未知
 结果遵守[三状态设计](daynight-task-status.md)。
 它通过 /me 取得身份，401 进入带有效目标的独立登录流程；资源 404 不退出全局会话。
-登录地址的有效目标仍是 invitations 时保留现有 tab 内凭据，fragment 在请求之前捕获
+登录地址的有效目标仍是相应邀请路径时保留现有 tab 内凭据，fragment 在请求之前捕获
 并移出地址。离开到公开页会卸载认证分支，因此 Application 同时负责离开邀请时的清理
 与失败可见性。设备授权保留原始 user_code；普通退出成功回公开首页，账号切换保留
 邀请/设备目标，退出失败保持当前错误与重试。
@@ -397,7 +410,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 仅权限核验失败的重试保留有效资源和设置草稿；完整资源核对仍用于资源错误、缺失及写结果不确定。
 具体数据和读取机制由[计时架构](daynight-task-timing.md)与[Web 架构](daynight-web.md#项目执行提醒设置)拥有。
 成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。
-邀请的读取和写入响应核对主体；接受页按 directGrant 展示真实关系，确认后消费回执并进入原项目。
+邀请的读取和写入响应核对主体；Project 接受页按 directGrant 展示真实关系，确认后消费回执并进入原项目。Team 接受页展示真实 Team 和本人关系，确认后的回执显示名称、ID、加入结果及安全返回入口。
 未确认的写入不自动重放，创建结果未知时一次性秘密无法恢复。
 401/换账号使共享请求 generation 失效并卸载旧项目和附件内容，
 失败不伪装成空列表。ownership.version、settings.version 与 nested directGrant.version 只在声明的资源路径无损解码，
@@ -434,7 +447,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 重建组件或进入请求依赖，保持输入、一次性秘密、成员版本、当前身份和 pending
 操作。[语言设计](daynight-web-i18n.md)拥有公共机制，鉴权组件遵守相同状态规则。
 
-邀请入口 /invitations#<secret> 读取后立即清除 fragment，以 tab 的临时 sessionStorage
+邀请入口 /invitations#<secret> 和 /team-invitations#<secret> 读取后立即清除 fragment，以 tab 的临时 sessionStorage
 跨登录保存，确认/取消/失效后删除；秘密不进请求路径/Referer/日志。一次性 token/
 邀请复制失败可恢复，关闭前清楚提示无法再次读取。界面验证覆盖桌面、窄屏、长内容、加载、空、错误、
 失效、禁用和键盘焦点。
@@ -625,6 +638,6 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 ## 交付边界
 
 真实 Personal 归属、存量迁移、登录与项目 writer、双来源准入及 Thread 强 fence 共同成立。
-普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；项目转移提供服务端预览和提交。成员管理、邀请及转移客户端保持各自的功能所有权。当前 Project、access 与 participant
+普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；项目转移提供服务端预览和提交。Team 邀请的公开接收入口可登录、确认并加入；成员管理、邀请管理界面及转移客户端保持各自的功能所有权。当前 Project、access 与 participant
 公开真实 ownership 和完整权限来源，无占位来源或旧格式回退。
 可信同源 HTML 保持原权限模型，不引入预览安全系统。K1 和已准入传输语义保持。

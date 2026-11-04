@@ -17,7 +17,7 @@ CLI 创建私有项目，创建者自动成为管理员；Web 表单复用现有
 操作；网页元数据编辑不由登录功能增加，任务操作遵守[任务生命周期](daynight-server.md#状态与更新规则)。
 每个项目具有真实 Team 归属，现有资源入口统一计算 owner Team 与独立 Project grant 的有效权限。
 Personal 初始化和存量归属迁移遵守下述原子性与数据完整性要求。登录用户可以通过 Team API
-创建、读取、分页、改名和删除普通 Team；当前 owner Team admin 可预览和转移项目。Team 成员管理、邀请及转移客户端保持各自的功能边界。
+创建、读取、分页、改名和删除普通 Team，并通过邀请加入普通 Team；当前 owner Team admin 可预览和转移项目。Team 成员管理和转移客户端保持各自的功能边界。
 
 可信 HTML 保持现有同源执行，复用主站会话、普通 iframe、相对资源和键盘交互。
 鉴权不能把独立预览域名、预览凭据或相关设施作为前提；该约束的选择依据记录在
@@ -182,7 +182,7 @@ Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原
 元数据版本达到最大正 int64 时仍接受同值 no-op，真实改名返回 `409 version_exhausted`。
 删除同时核对精确元数据版本和当前名称原文，任一不符返回 `409 version_conflict`；只有没有
 Project ownership 引用的普通 Team 可删除，否则返回 `409 team_not_empty`。删除原子移除
-现有成员和 Team，不隐式转移或删除 Project，不改写独立 Project grant。
+现有邀请、成员和 Team，不隐式转移或删除 Project，不改写独立 Project grant。
 
 仅确认事务提交后交付成功资源或删除回执。领域拒绝不产生领域写入；取消、SQL、rollback 和
 提交错误保持原有优先级及原因链。无法确认 COMMIT 结果返回 `503 write_outcome_unknown`；
@@ -269,6 +269,30 @@ accept 返回真实 directGrant、有效 access、joined 和 consumed，成功�
 创建、撤销和接受携带 expectedUserId，服务端在任何领域 SQL 前核对主体；客户端核对
 响应主体，不自动重放未知写入。创建结果丢失时无法恢复一次性链接。
 
+## Team 邀请
+
+普通 Team 的当前 admin 可创建、列出和撤销邀请。创建和撤销携带 `expectedUserId`，
+在任何领域 SQL 前核对实际主体；Personal Team 拒绝创建。秘密以 `dnteam_` 开头，
+七天有效，只授予 member，创建时一次返回 `/team-invitations#<secret>`；列表仅返回
+元数据。发起者离任不撤销邀请。无效、到期、已消费、撤销及目标删除均返回
+`404 invitation_unavailable`。
+
+`GET/POST /api/v1/teams/{teamId}/invitations` 分别返回 `{items}` 和一次创建结果；
+`DELETE /api/v1/teams/{teamId}/invitations/{inviteId}` 返回
+`{teamId,invitationId,changed}`，重复撤销为明确 no-op。元数据包含 `id`、`teamId`、
+`createdBy`、`createdAt`、`expiresAt`、可空 `consumedBy`、`consumedAt`、`revokedAt`；
+创建结果额外包含 `link`。`POST /api/v1/team-invitations/inspect` 接收 `{token}` 并返回
+`{team,membership}`，membership 可空；`POST /api/v1/team-invitations/accept` 接收
+`{token,expectedUserId}` 并返回 `{team,membership,joined,consumed}`。Team 是真实
+`TeamRef`，membership 是当前主体真实成员行，包含正 int64 version 和 UTC 时间。
+
+已登录接收者 inspect 只读取 Team 身份和本人是否为成员，不公开目录；明确确认后
+accept 携带 `expectedUserId`，返回本人真实成员关系、`joined` 和 `consumed`。
+有效性检查先于成员检查：已有成员保持原角色且不消费，新成员与单次消费原子提交。
+接受与撤销竞争由实际提交顺序决定。删除 Team 在同一事务清除邀请，旧链接不可用。
+客户端核对响应主体；未知写入不能自动重放或显示成功。Team 工作空间尚不存在时，
+确认成功页面显示真实 Team 名称、ID 和本人加入结果，并提供安全返回入口。
+
 ## 当前主体的项目权限
 
 `GET /api/v1/projects/{projectId}/access` 在当前读取快照内返回本人权限：
@@ -330,7 +354,7 @@ access 成功而消失；普通权限刷新保持设置草稿和未知写入的�
 有效目标，包括建立本地 session 失败；失败不重放可能已消费的身份 code。
 
 邀请凭据在跳转前从 fragment 同步捕获并移出地址；以有效回跳目标识别同一邀请流程，
-经过 `/login?returnPath=/invitations` 和账号切换时保留，凭据不进入回跳参数。主动离开邀请
+经过 `/login?returnPath=/invitations` 或 `/login?returnPath=/team-invitations` 和账号切换时保留，凭据不进入回跳参数。主动离开邀请
 到公开首页或指南时仍清理临时凭据，清理失败保持可见。设备登录保留原 `user_code` 和授权
 目标，批准继续需要明确确认。普通退出成功回公开首页，邀请或设备流程的切换账号继续
 原目标；退出失败保持错误和重试入口。

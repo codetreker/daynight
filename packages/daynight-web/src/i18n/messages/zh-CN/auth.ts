@@ -29,7 +29,7 @@ export const auth: AuthMessages = {
     documentTitle: {
       workers: "我的 Worker · Daynight", worker: "Worker · Daynight",
       setup: "使用引导 · Daynight",
-      loading: "正在确认登录 · Daynight", error: "登录暂不可用 · Daynight", login: "登录 · Daynight", device: "授权 CLI · Daynight", invitations: "项目邀请 · Daynight",
+      loading: "正在确认登录 · Daynight", error: "登录暂不可用 · Daynight", login: "登录 · Daynight", device: "授权 CLI · Daynight", invitations: "项目邀请 · Daynight", teamInvitations: "Team 邀请 · Daynight",
       projects: "我的项目 · Daynight", project: "项目任务 · Daynight", settings: "项目设置 · Daynight", members: "项目成员 · Daynight", account: "账户设置 · Daynight", notFound: "页面不存在 · Daynight",
     },
   },
@@ -64,6 +64,13 @@ export const auth: AuthMessages = {
     currentDirectRole: "当前单独授权角色", preserveDirect: "你的单独授权角色保持不变，邀请不会被消耗。", inheritedAdmin: "加入后将新增单独成员授权，并保留继承的管理员权限。",
     currentlyUnavailable: "邀请目前不可用；原操作结果仍未确认。",
     accepting: "正在加入…", accept: "接受邀请并加入", open: "打开项目", cancel: "暂不加入", returnToProjects: "返回我的项目",
+  },
+  teamInvitation: {
+    loading: "正在读取 Team 邀请", unavailableDetail: "此邀请可能已过期、被撤销或已使用。请联系 Team 管理员获取新的邀请。",
+    invited: "你受邀加入一个 Team", alreadyMember: "你已经是 Team 成员", invitedDetail: "请确认 Team 和当前账户后加入。",
+    alreadyMemberDetail: "你的现有角色将保留，邀请不会被消耗。", memberRole: "加入角色：成员",
+    currentRole: "当前角色", joined: "你已加入此 Team", alreadyJoined: "你已经是此 Team 的成员", teamId: "Team ID",
+    acceptUnknown: "加入结果尚未确认。可以查看邀请的当前状态，但这不能确认原操作的结果。", checkInvitation: "查看邀请状态",
   },
   createProject: {
     open: "＋ 创建项目", createFirst: "创建第一个项目", emptyDetail: "创建私有项目来整理工作，或使用管理员发给你的邀请链接加入团队。",

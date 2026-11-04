@@ -49,7 +49,7 @@ export const auth: AuthMessages = {
       workers: "My Workers · Daynight", worker: "Worker · Daynight",
       setup: "Setup guide · Daynight",
       loading: "Checking sign-in · Daynight", error: "Sign-in unavailable · Daynight", login: "Sign in · Daynight",
-      device: "Authorize CLI · Daynight", invitations: "Project invitation · Daynight", projects: "My projects · Daynight", project: "Project tasks · Daynight",
+      device: "Authorize CLI · Daynight", invitations: "Project invitation · Daynight", teamInvitations: "Team invitation · Daynight", projects: "My projects · Daynight", project: "Project tasks · Daynight",
       settings: "Project settings · Daynight", members: "Project members · Daynight", account: "Account settings · Daynight", notFound: "Page not found · Daynight",
     },
   },
@@ -99,6 +99,13 @@ export const auth: AuthMessages = {
     currentDirectRole: "Current direct role", preserveDirect: "Your direct role remains unchanged and this invitation will not be consumed.", inheritedAdmin: "You will add a direct member role while keeping your inherited administrator access.",
     currentlyUnavailable: "The invitation is currently unavailable. The original result is still unknown.",
     accepting: "Joining…", accept: "Accept invitation and join", open: "Open project", cancel: "Not now", returnToProjects: "Back to my projects",
+  },
+  teamInvitation: {
+    loading: "Loading Team invitation", unavailableDetail: "This invitation may have expired, been revoked, or already been used. Ask a Team administrator for a new invitation.",
+    invited: "You are invited to a Team", alreadyMember: "You are already a Team member", invitedDetail: "Confirm the Team and account before joining.",
+    alreadyMemberDetail: "Your existing role will be preserved and the invitation will not be used.", memberRole: "Joining role: Member",
+    currentRole: "Current role", joined: "You joined this Team", alreadyJoined: "You are already a member of this Team", teamId: "Team ID",
+    acceptUnknown: "The result is unknown. Check the invitation for current information; this cannot confirm the original result.", checkInvitation: "Check invitation",
   },
   createProject: {
     open: "＋ Create project", createFirst: "Create your first project",
