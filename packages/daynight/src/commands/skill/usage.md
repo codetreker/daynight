@@ -126,6 +126,36 @@ diagnostic facts, not an echo-equality gate. A confirmed receipt remains confirm
 if local cleanup or output later fails; nonzero exit reports that local failure,
 and output failure may leave partial stdout.
 
+### Update Step content or status
+
+```bash
+daynight task step update <task-id> <step-id> [--title <text>] [--description <markdown>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped> [--if-version <version>] [--json] [--project <project-id>]
+```
+
+Update requires --title or --description; supply both to save them atomically.
+Omitted fields keep their values. --description="" clears the description.
+Titles require at least one non-Unicode-White_Space character; U+FEFF alone is
+valid and U+0085 alone is invalid. Title and Markdown text retain their original
+whitespace and characters. Set-status accepts all four states freely, including
+the current state, independently from Task status or other Steps.
+
+Explicit project/version sends exactly one PATCH for Update or PUT to /status
+for Set-status. Without --if-version, read complete Steps once before one write;
+a failed pre-read prevents submission. Same-value requests are no-op with the
+current version; stale versions still conflict and are never replayed.
+
+Confirmation requires a complete valid 200 collection with the exact submitted
+fields, target identity and unchanged or +1 version. With a pre-read, it also
+checks omitted values, order, every non-target field, creation time and the
+no-op/changed update-time branch. Explicit versions add no hidden read or invented
+baseline. Readable success prints `Step updated. ID: <id>` or
+`Step status set. ID: <id>` plus the complete confirmed collection. --json prints
+only that resource and LF. These writes share Add's request/response budgets,
+refusal details, original identity/request UUID, current-facts-only unknown
+observation and confirmed local-output/cleanup failure behavior.
+
+
 ## Version-Safe Writes
 
 Read `task show <task-id> --json` before deciding a change, then supply its exact
@@ -308,32 +338,3 @@ attachments; deleted tasks cannot be read or changed. Dependents prevent deletio
 unless `--remove-depends` removes their ordinary and external edges to the target
 in the same transaction, potentially making them ready. An active worker claim
 always prevents deletion. Confirm the target and affected dependencies first.
-
-### Update Step content or status
-
-```bash
-daynight task step update <task-id> <step-id> [--title <text>] [--description <markdown>] [--if-version <version>] [--json] [--project <project-id>]
-daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped> [--if-version <version>] [--json] [--project <project-id>]
-```
-
-Update requires --title or --description; supply both to save them atomically.
-Omitted fields keep their values. --description="" clears the description.
-Titles require at least one non-Unicode-White_Space character; U+FEFF alone is
-valid and U+0085 alone is invalid. Title and Markdown text retain their original
-whitespace and characters. Set-status accepts all four states freely, including
-the current state, independently from Task status or other Steps.
-
-Explicit project/version sends exactly one PATCH for Update or PUT to /status
-for Set-status. Without --if-version, read complete Steps once before one write;
-a failed pre-read prevents submission. Same-value requests are no-op with the
-current version; stale versions still conflict and are never replayed.
-
-Confirmation requires a complete valid 200 collection with the exact submitted
-fields, target identity and unchanged or +1 version. With a pre-read, it also
-checks omitted values, order, every non-target field, creation time and the
-no-op/changed update-time branch. Explicit versions add no hidden read or invented
-baseline. Readable success prints `Step updated. ID: <id>` or
-`Step status set. ID: <id>` plus the complete confirmed collection. --json prints
-only that resource and LF. These writes share Add's request/response budgets,
-refusal details, original identity/request UUID, current-facts-only unknown
-observation and confirmed local-output/cleanup failure behavior.
