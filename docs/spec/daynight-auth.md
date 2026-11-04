@@ -162,18 +162,30 @@ Web 只为 `/me` 使用浏览器的 no-cache 重验模式，由浏览器 HTTP �
 名册是当前 owner Team 成员与独立 Project grant 的去重并集；有效角色为两种来源在
 `none < member < admin` 下的最大值。只有继承权限时 directGrant 为 null；有效角色不等于可写授权记录。
 
-角色修改与移除读取 `directGrant.role/version`，不使用 effectiveRole 或合成版本。
-grant 版本是独立于 task.version 的不连续正 int64 JSON number；大于 `2^53` 仍须无损。
-`PATCH .../members/{userId}` 接受 `{version,role,expectedUserId}` 并返回真实 ProjectGrant；
-`DELETE` 接受 `{version,expectedUserId}`，成功仍为 204 无正文。服务端在任何领域 SQL 前
-验证 expectedUserId 与实际 principal；错主体返回 409 identity_mismatch，领域行和版本零变化。
-客户端核对成功、拒绝及空响应的 `Daynight-User-ID`，错主体触发现有身份重验，不安装结果。
-未确认的已发送写入保留结果未知与只读核对入口，不自动重放或重新启用原确认；后续读取只证明当前事实。
+独立授权的新增、修改和移除由有效 Project admin 执行，可针对本人或其他 admin；不改变 Team 角色，
+也不要求保留 direct admin。新增目标必须已经是有效 ProjectParticipant，外部用户仍须本人接受邀请，
+不能通过任意用户 ID 加入项目。Team admin 即使有 direct member grant，有效角色仍为 admin。
 
-过期修改返回 version_conflict；移除后重新加入获得新版本，旧观察仍冲突，
-无变化角色更新保留版本。有效 admin 可以删除或降级最后一位 direct admin；Team 关系与
-Project grant 独立，撤销一种来源不能撤销另一种来源。当前项目创建原子保存调用者 Personal
-归属、ownership 与 creator direct admin。
+`PUT /api/v1/projects/{projectId}/grants/{userId}` 接受
+`{version:null|正 int64,role:"member"|"admin",expectedUserId}`：null 要求 grant 不存在，
+正版本要求已存在且与真实 grant 版本相等。成功 200 返回 `{grant,actorAccess}`，其中 grant 是
+指定的完整 ProjectGrant。`DELETE` 同一路径接受 `{version:正 int64,expectedUserId}`，成功 200
+返回 `{projectId,userId,deleted:true,actorAccess}`。两种回执的 actorAccess 是同一事务中变更后的
+完整 ProjectAccess；本人失去项目访问时为 null，仍表示已确认成功。回执不包含项目内容或人员目录。
+
+角色修改与移除读取 `directGrant.role/version`，不使用 effectiveRole 或合成版本。grant 版本是
+独立于 task.version 的不连续正 int64 JSON number；大于 `2^53` 仍须无损。存在性或版本前置条件
+不匹配返回 409 `version_conflict`，目标不是有效 participant 返回 404 `not_found`。同角色更新也须先
+匹配版本，匹配后保留版本；移除后重新加入获得新版本，旧观察仍冲突。
+
+既有 `PATCH .../members/{userId}` 接受 `{version,role,expectedUserId}` 并返回真实 ProjectGrant；
+`DELETE` 接受 `{version,expectedUserId}`，成功仍为 204 无正文。旧路径只操作已有 direct grant，
+不存在时返回 not_found。所有这些写入在任何领域 SQL 前验证 expectedUserId 与实际 principal；
+错主体返回 409 identity_mismatch，领域行和版本零变化。客户端核对响应的 `Daynight-User-ID`，
+错主体触发身份重验，不安装结果。新的 grants 路径在无法确认 COMMIT 时返回 `write_outcome_unknown`；
+响应丢失同样不能证明提交结果。未确认的已发送写入不得自动重放，后续读取只证明当前事实，不能恢复
+原操作的成功回执。Team 关系与 Project grant 独立，
+撤销一种来源不能撤销另一种来源。当前项目创建原子保存调用者 Personal 归属、ownership 与 creator direct admin。
 
 既有项目按最早加入的现任 admin 的 Personal Team 回填；加入时间相同按 user UUID 稳定决定。
 全部既有用户，包括仅持 PAT 的用户，预先取得 Personal。零 admin 或坏引用使迁移整体失败，
@@ -338,8 +350,10 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | 缺失、无效、撤销或到期用户凭据 | 401 unauthenticated JSON |
 | 项目不存在或不是成员 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
-| 修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
-| 观察独立授权版本过期 | 409 version_conflict |
+| 新增/修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
+| 独立授权存在性或观察版本不符 | 409 version_conflict |
+| 新增独立授权的目标不是有效 participant | 404 not_found |
+| 独立授权提交结果无法确认 | 503 write_outcome_unknown；不得自动重放 |
 | 生命周期前态不符或前置未完成 | 409 invalid_transition / dependency_unsatisfied |
 | 邀请已消费、到期或撤销 | 410 invitation_unavailable |
 | provider discovery 的 App 配置/凭据错误 | 503 identity_configuration |
