@@ -174,6 +174,10 @@ func (s *Service) RegisterBot(ctx context.Context, p core.Principal, workerID, i
 		if err != nil {
 			return err
 		}
+		// Credential share locks prevent revocation, but not expiry while waiting.
+		if err = credential(ctx, tx, p, s.now()); err != nil {
+			return err
+		}
 		out = BotRegistrationResult{Bot: bot, Session: v}
 		return nil
 	})
@@ -279,6 +283,11 @@ func (s *Service) ReportBot(ctx context.Context, p core.Principal, workerID, id 
 			}
 		}
 		if jsonEqual(encode(input.Result), encode(bot.StartupResult)) {
+			if bot.SessionID == nil {
+				if err = credential(ctx, tx, p, s.now()); err != nil {
+					return err
+				}
+			}
 			out = bot
 			return nil
 		}
@@ -291,6 +300,9 @@ func (s *Service) ReportBot(ctx context.Context, p core.Principal, workerID, id 
 		}
 		if input.Result.State == "ready" {
 			return store.CommitBotPreferences(ctx, tx, id)
+		}
+		if bot.SessionID == nil {
+			return credential(ctx, tx, p, s.now())
 		}
 		return nil
 	})
