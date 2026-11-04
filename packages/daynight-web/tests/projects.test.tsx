@@ -293,4 +293,71 @@ describe('project browsing', () => {
     view.unmount();
     admission.dispose();
   });
+
+  it.each(['team', 'shared'] as const)('loads the new %s scope after identity revalidation', async (kind) => {
+    const userId = '00000000-0000-4000-8000-000000000101';
+    const teamA = '00000000-0000-4000-8000-000000000701';
+    const teamB = '00000000-0000-4000-8000-000000000702';
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const page = (items: readonly Project[], nextCursor: string | null = null) => new Response(stringifyWireJson({ items, nextCursor }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
+    const fetch = vi.fn().mockResolvedValueOnce(page([project(1)], 'old-cursor')).mockResolvedValueOnce(page([project(2)]));
+    vi.stubGlobal('fetch', fetch);
+    const newScope = kind === 'team' ? { kind: 'team' as const, teamId: teamB } : { kind: 'shared' as const };
+    const view = render(<ProjectsProvider admission={admission} scope={{ kind: 'team', teamId: teamA }}><ProjectsPage /></ProjectsProvider>);
+    await screen.findByRole('heading', { name: '项目 1' });
+    const resume = pauseAuthRequests();
+    view.rerender(<ProjectsProvider admission={admission} admissionBlocked scope={newScope}><ProjectsPage /></ProjectsProvider>);
+    expect(screen.queryByRole('heading', { name: '项目 1' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '加载更多' })).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await act(async () => { resume(); view.rerender(<ProjectsProvider admission={admission} scope={newScope}><ProjectsPage /></ProjectsProvider>); });
+    await screen.findByRole('heading', { name: '项目 2' });
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      `/api/v1/projects?limit=50&teamId=${teamA}`,
+      kind === 'team' ? `/api/v1/projects?limit=50&teamId=${teamB}` : '/api/v1/projects?limit=50&shared=true',
+    ]);
+    view.unmount(); admission.dispose();
+  });
+
+  it('keeps an in-flight continuation for the same scope through revalidation', async () => {
+    const userId = '00000000-0000-4000-8000-000000000101';
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const page = (items: readonly Project[], nextCursor: string | null = null) => new Response(stringifyWireJson({ items, nextCursor }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
+    const continuation = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(page([project(1)], 'next')).mockReturnValueOnce(continuation.promise);
+    vi.stubGlobal('fetch', fetch);
+    const scope = { kind: 'shared' as const };
+    const view = render(<ProjectsProvider admission={admission} scope={scope}><ProjectsPage /></ProjectsProvider>);
+    await screen.findByRole('heading', { name: '项目 1' });
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+    const resume = pauseAuthRequests();
+    view.rerender(<ProjectsProvider admission={admission} admissionBlocked scope={scope}><ProjectsPage /></ProjectsProvider>);
+    await act(async () => continuation.resolve(page([project(2)])));
+    expect(screen.queryByRole('heading', { name: '项目 2' })).toBeNull();
+    await act(async () => { resume(); view.rerender(<ProjectsProvider admission={admission} scope={scope}><ProjectsPage /></ProjectsProvider>); });
+    await screen.findByRole('heading', { name: '项目 2' });
+    expect(screen.getByRole('heading', { name: '项目 1' })).toBeTruthy();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1]?.[0]).toBe('/api/v1/projects?limit=50&cursor=next&shared=true');
+    view.unmount(); admission.dispose();
+  });
+
+  it('keeps an in-flight first page for the same scope through revalidation', async () => {
+    const userId = '00000000-0000-4000-8000-000000000101';
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const pending = deferred<Response>();
+    const fetch = vi.fn().mockReturnValue(pending.promise);
+    vi.stubGlobal('fetch', fetch);
+    const scope = { kind: 'shared' as const };
+    const view = render(<ProjectsProvider admission={admission} scope={scope}><ProjectsPage /></ProjectsProvider>);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const resume = pauseAuthRequests();
+    view.rerender(<ProjectsProvider admission={admission} admissionBlocked scope={scope}><ProjectsPage /></ProjectsProvider>);
+    await act(async () => pending.resolve(new Response(stringifyWireJson({ items: [project(1)], nextCursor: null }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } })));
+    expect(screen.queryByRole('heading', { name: '项目 1' })).toBeNull();
+    await act(async () => { resume(); view.rerender(<ProjectsProvider admission={admission} scope={scope}><ProjectsPage /></ProjectsProvider>); });
+    await screen.findByRole('heading', { name: '项目 1' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    view.unmount(); admission.dispose();
+  });
 });

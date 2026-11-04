@@ -94,8 +94,8 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
   }, [request]);
 
   useEffect(() => {
-    if (!admissionBlocked && active.current === null && state.scopeKey === scopeKey) {
-      if (state.status === 'loading') void request(null, false);
+    if (!admissionBlocked && active.current === null) {
+      if (state.scopeKey !== scopeKey || state.status === 'loading') void request(null, false);
       else if (state.loadingMore && state.nextCursor !== null) void request(state.nextCursor, true);
     }
   }, [admissionBlocked, request, scopeKey]);
