@@ -67,3 +67,35 @@ type TeamInvitationAcceptance struct {
 	Joined     bool       `json:"joined"`
 	Consumed   bool       `json:"consumed"`
 }
+
+type TeamMemberWithProfile struct {
+	TeamMember
+	Profile ProjectParticipantProfile `json:"profile"`
+}
+
+type TeamMemberList struct {
+	Items []TeamMemberWithProfile `json:"items"`
+}
+
+type SetTeamMemberRoleRequest struct {
+	Version        int64  `json:"version"`
+	Role           string `json:"role"`
+	ExpectedUserID string `json:"expectedUserId"`
+}
+
+type RemoveTeamMemberRequest struct {
+	Version        int64  `json:"version"`
+	ExpectedUserID string `json:"expectedUserId"`
+}
+
+type TeamMemberRoleReceipt struct {
+	Membership TeamMember `json:"membership"`
+	ActorRole  *string    `json:"actorRole"`
+}
+
+type RemoveTeamMemberReceipt struct {
+	TeamID    string  `json:"teamId"`
+	UserID    string  `json:"userId"`
+	Removed   bool    `json:"removed"`
+	ActorRole *string `json:"actorRole"`
+}
