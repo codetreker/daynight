@@ -13,8 +13,8 @@ import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { ProjectTransferPreview, ProjectTransferReceipt, Team } from "./types.js";
+import { canonicalId, parsePage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
+import type { ProjectTransferPreview, ProjectTransferReceipt, Team, InvitationScope, InvitationInspection, InvitationAcceptance } from "./types.js";
 import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string };
@@ -89,6 +89,8 @@ export type ApiClient = {
   postTaskThreadMessage(projectId: string, taskId: string, input: PostThreadMessageInput): Promise<ThreadMessage>;
   getCurrentUser(requirePrincipal?: boolean): Promise<User>;
   getTeamCurrentUser(): Promise<User>;
+  inspectInvitation(scope: InvitationScope, token: string, userId: string): Promise<InvitationInspection>;
+  acceptInvitation(scope: InvitationScope, token: string, userId: string, targetId: string, requestId: string): Promise<InvitationAcceptance>;
   listTeams(userId: string): Promise<readonly Team[]>;
   getTeam(userId: string, teamId: string): Promise<Team>;
   createTeam(userId: string, name: string, requestId: string): Promise<Team>;
@@ -134,6 +136,27 @@ const resourceId = (value: string): string => {
   return parsed;
 };
 
+const validateInvitationToken = (scope: InvitationScope, token: string): void => {
+  const prefix = scope === "team" ? "dnteam_" : scope === "project" ? "dninvite_" : "";
+  if (prefix === "" || !token.startsWith(prefix)) throw new Error("Invalid invitation secret.");
+  const encoded = token.slice(prefix.length);
+  if (!/^[A-Za-z0-9_-]{43}$/.test(encoded) || Buffer.from(encoded, "base64url").toString("base64url") !== encoded) throw new Error("Invalid invitation secret.");
+};
+
+// Invitation transports and response bodies are untrusted and may echo the bearer secret.
+// Retain the shape and safe classifications of failures without copying their text or fields.
+const safeInvitationCause = (input: unknown, seen = new WeakSet<object>(), depth = 0): Error => {
+  if (!(input instanceof Error) || depth >= 16 || seen.has(input)) return new Error("Invitation failure details withheld.");
+  seen.add(input);
+  const cause = input.cause === undefined ? undefined : safeInvitationCause(input.cause, seen, depth + 1);
+  const options = cause === undefined ? undefined : { cause };
+  if (input instanceof AggregateError) return new AggregateError(Array.from(input.errors, (item: unknown) => safeInvitationCause(item, seen, depth + 1)), "Invitation request and cleanup failed.", options);
+  if (input instanceof OperationError) return new OperationError(input.kind, options);
+  const result = new Error(input instanceof ProtocolError ? "Invalid invitation response." : "Invitation failure details withheld.", options);
+  if (input instanceof ProtocolError) result.name = "ProtocolError";
+  return result;
+};
+
 const attachmentPrefix = (projectId: string, taskId: string): string => `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/attachments`;
 const encodeAttachmentPath = (path: string): string => path.split("/").map(encodeURIComponent).join("/");
 
@@ -162,11 +185,12 @@ export const createApiClient = (options: {
   type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
-    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string; readonly readOnly?: boolean }
+    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown; readonly maxBytes?: number } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
   const exchange = async <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", mode: ResponseMode<T>, statuses: readonly number[], body?: RequestBody, mutable = false): Promise<T> => {
+    const secret = mode.kind === "json" ? mode.secret : undefined;
     const mutation = method !== "GET" && !(mode.kind === "json" && mode.readOnly === true);
     let phase: ApiPhase = "prepare";
     let dispatched = false;
@@ -260,10 +284,11 @@ export const createApiClient = (options: {
       }), aborted]);
       status = response.status;
       const observedRequestId = response.headers.get("X-Request-ID");
-      if (observedRequestId !== null && validRequestId(observedRequestId)) responseRequestId = observedRequestId;
+      if (observedRequestId !== null && validRequestId(observedRequestId) && (secret === undefined || canonicalId(observedRequestId) === observedRequestId)) responseRequestId = observedRequestId;
       phase = "response";
       const success = statuses.includes(status);
       let principalId: string | undefined;
+      let invitationIdentityMismatch = false;
       const binary = success && mode.kind === "bytes";
       const empty = success && mode.kind === "empty";
       const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -279,9 +304,19 @@ export const createApiClient = (options: {
       if (success && (expectedUserId !== undefined || mode.kind === "json" && mode.requirePrincipal === true) || !success && mode.kind === "json" && (status !== 401 && mode.checkFailurePrincipal === true || response.headers.has("Daynight-User-ID") && mode.checkPrincipalOnError === true && (expectedUserId !== undefined || mode.requirePrincipal === true))) {
         phase = "protocol";
         const principal = response.headers.get("Daynight-User-ID");
-        if (principal === null || canonicalId(principal) === null || mode.kind === "json" && mode.requirePrincipal === true && canonicalId(principal) !== principal || expectedUserId !== undefined && canonicalId(principal) !== expectedUserId) throw new ProtocolError("The authenticated response principal does not match the expected user.");
+        if (principal === null || canonicalId(principal) === null || mode.kind === "json" && mode.requirePrincipal === true && canonicalId(principal) !== principal) throw new ProtocolError("The authenticated response principal does not match the expected user.");
         principalId = canonicalId(principal)!;
-        if (mode.kind === "json") mode.onPrincipal?.(principalId);
+        if (expectedUserId !== undefined && principalId !== expectedUserId) {
+          if (secret !== undefined && !success && status === 409) invitationIdentityMismatch = true;
+          else throw new ProtocolError("The authenticated response principal does not match the expected user.");
+        }
+        if (mode.kind === "json") {
+          try { mode.onPrincipal?.(principalId); }
+          catch (error) {
+            if (secret !== undefined && !success && status === 409) invitationIdentityMismatch = true;
+            else throw error;
+          }
+        }
         phase = "response";
       }
       if (reader !== undefined) {
@@ -324,10 +359,19 @@ export const createApiClient = (options: {
       if (!success) {
         if (status < 400 || status > 599) throw new ProtocolError("Unexpected HTTP status.");
         serverError = parseServerError(value);
+        if (invitationIdentityMismatch && serverError.code !== "identity_mismatch") { serverError = undefined; throw new ProtocolError("The authenticated response principal changed during the operation."); }
+        if (secret !== undefined) {
+          const safeCodes = ["unauthenticated", "forbidden", "invalid_input", "identity_mismatch", "invitation_unavailable", "write_outcome_unknown", "internal_error"];
+          serverError = { code: safeCodes.includes(serverError.code) ? serverError.code : "server_error", message: "Invitation request failed.", requestId: canonicalId(serverError.requestId) === serverError.requestId ? serverError.requestId : "unavailable" };
+        }
         const confirmedRefusal = status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
         throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: mutation && !confirmedRefusal, ...(responseRequestId === undefined ? {} : { responseRequestId }) });
       }
       if (mode.kind !== "json") throw new ProtocolError("Unexpected response mode.");
+      if (secret !== undefined) {
+        const containsSecret = (item: unknown): boolean => typeof item === "string" ? item.includes(secret) : Array.isArray(item) ? item.some(containsSecret) : typeof item === "object" && item !== null ? Object.entries(item).some(([key, child]) => key.includes(secret) || containsSecret(child)) : false;
+        if (containsSecret(value)) throw new ProtocolError("Invitation response contains sensitive data.");
+      }
       const result = mode.parse(value, responseContext);
       if (mode.confirmMutation !== undefined) confirmedMutationId = mode.confirmMutation(result);
       else checkRequest();
@@ -353,8 +397,8 @@ export const createApiClient = (options: {
           if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
         }
       }
-      terminalFailure = cause instanceof ApiError && failure === cause ? cause : new ApiError(context, phase, {
-        cause: failure,
+      terminalFailure = secret === undefined && cause instanceof ApiError && failure === cause ? cause : new ApiError(context, cause instanceof ApiError ? cause.phase : phase, {
+        cause: secret === undefined ? failure : safeInvitationCause(failure),
         ...(status === undefined ? {} : { status }),
         ...(serverError === undefined ? {} : { serverError }),
         ...(responseRequestId === undefined ? {} : { responseRequestId }),
@@ -372,7 +416,7 @@ export const createApiClient = (options: {
         try { stream?.releaseLock(); } catch (cause) { releaseFailures.push(cause); }
       }
       if (releaseFailures.length !== 0) {
-        const cause = new AggregateError(terminalFailure === undefined ? releaseFailures : [terminalFailure, ...releaseFailures], "HTTP request completion and stream release failed.", terminalFailure === undefined ? undefined : { cause: terminalFailure });
+        const cause = secret === undefined ? new AggregateError(terminalFailure === undefined ? releaseFailures : [terminalFailure, ...releaseFailures], "HTTP request completion and stream release failed.", terminalFailure === undefined ? undefined : { cause: terminalFailure }) : new AggregateError([...(terminalFailure === undefined ? [] : [terminalFailure]), ...releaseFailures].map((failure) => safeInvitationCause(failure)), "Invitation request stream release failed.");
         throw new ApiError(context, terminalFailure?.phase ?? phase, {
           cause,
           ...(status === undefined ? {} : { status }),
@@ -732,6 +776,28 @@ export const createApiClient = (options: {
       if (user.id !== response.principalId) throw new ProtocolError("The authenticated response principal does not match the user.");
       return user;
     } }, [200], undefined, true),
+    inspectInvitation: (scope, token, userId) => {
+      const user = resourceId(userId);
+      validateInvitationToken(scope, token);
+      const path = scope === "team" ? "/team-invitations/inspect" : "/invitations/inspect";
+      return exchange({ operation: "invitation.inspect" }, path, "POST", {
+        kind: "json", secret: token, readOnly: true, requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true,
+        onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        parse: (value) => scope === "team" ? parseTeamInvitationInspection(value, user) : parseProjectInvitationInspection(value, user),
+      }, [200], { kind: "json", value: { token } }, true);
+    },
+    acceptInvitation: (scope, token, userId, targetId, requestId) => {
+      const user = resourceId(userId), target = resourceId(targetId);
+      validateInvitationToken(scope, token);
+      if (canonicalId(requestId) !== requestId) throw new Error("Invitation request ID must be a canonical UUID.");
+      const path = scope === "team" ? "/team-invitations/accept" : "/invitations/accept";
+      return exchange({ operation: "invitation.accept", sentRequestId: requestId }, path, "POST", {
+        kind: "json", secret: token, requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true,
+        onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        parse: (value) => scope === "team" ? parseTeamInvitationAcceptance(value, user, target) : parseProjectInvitationAcceptance(value, user, target),
+        confirmMutation: () => target,
+      }, [200], { kind: "json", value: { token, expectedUserId: user } }, true);
+    },
     listTeams: (userId) => {
       const user = resourceId(userId);
       return list({ operation: "team.list" }, "/teams", (value) => parsePage(value, (item) => parseTeam(item, user), (team) => team.id), (team) => team.id, {}, true, user);

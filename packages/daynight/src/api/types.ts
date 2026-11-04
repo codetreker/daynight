@@ -133,6 +133,15 @@ export type ProjectAccess = {
   readonly directGrant: ProjectGrant | null;
 };
 
+export type InvitationScope = "project" | "team";
+export type TeamInvitationMember = Team["membership"];
+export type ProjectInvitationInspection = { readonly projectId: string; readonly projectName: string; readonly directGrant: ProjectGrant | null; readonly access: ProjectAccess | null };
+export type ProjectInvitationAcceptance = { readonly projectId: string; readonly directGrant: ProjectGrant; readonly access: ProjectAccess; readonly joined: boolean; readonly consumed: boolean };
+export type TeamInvitationInspection = { readonly team: TeamRef; readonly membership: TeamInvitationMember | null };
+export type TeamInvitationAcceptance = { readonly team: TeamRef; readonly membership: TeamInvitationMember; readonly joined: boolean; readonly consumed: boolean };
+export type InvitationInspection = ProjectInvitationInspection | TeamInvitationInspection;
+export type InvitationAcceptance = ProjectInvitationAcceptance | TeamInvitationAcceptance;
+
 export type ProjectTransferPreview = {
   readonly sourceTeam: TeamRef;
   readonly targetTeam: TeamRef & { readonly version: bigint };

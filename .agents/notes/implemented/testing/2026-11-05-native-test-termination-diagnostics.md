@@ -13,12 +13,14 @@ an unresolved defect behind a later passing run.
 
 ## Decision
 
-The macOS ordinary CLI job executes its unchanged command under
+The ordinary phase of the dedicated macOS ARM64 job executes its unchanged command under
 [`observe-native-validation.mjs`](../../../../packages/daynight/scripts/observe-native-validation.mjs).
 The observer inherits the command's stdio and environment, records its PID and
 exit code or signal, and propagates failure. It does not change suite selection,
-Vitest concurrency, test deadlines or the ten-minute job deadline established
-by the [native phase decision](2026-11-04-parallel-native-cli-validation.md).
+Vitest concurrency or test deadlines. The [single macOS allocation decision](2026-11-05-single-macos-native-allocation.md)
+owns the current ten-minute validation-phase limits and twenty-minute job limit.
+Ordinary termination diagnostics upload before installed validation begins and
+remain separate from the environment/probe paths reused by those phases.
 
 Incremental observations contain process IDs, parent/group IDs, resident memory
 and elapsed lifetime without command arguments or environment values. Process

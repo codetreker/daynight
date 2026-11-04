@@ -248,6 +248,21 @@ Unicode、不能包含 NUL 或全为 Unicode `White_Space`。Personal Team 不�
 回执，未知结果须以非零退出报告，并在可用时提供安全请求标识。`--json` 输出已确认的
 资源或删除回执。回执已确认后，即使本地输出或清理失败也保留该确认事实。
 
+## 邀请接收
+
+`daynight invitation inspect [--stdin] [--json]` 预览同服务 Project 或 Team
+邀请，不消费邀请；`daynight invitation accept [--stdin] [--confirm] [--json]`
+由当前登录账号明确接受。两者不读取默认 Team，不支持代接受。链接和 token 不作为
+位置参数或 flag 值；交互输入隐藏，`--stdin` 读取至 EOF，最多 4096 字节，允许末尾
+一个 LF 或 CRLF。秘密不进入配置、日志、
+命令行或递归错误 cause。只接受同服务的规定路径和 fragment。
+
+accept 显示目标与当前账号并要求确认，非 TTY 且无 `--confirm` 时不得写入。
+布尔 `--confirm` 无值，重复或 `--confirm=false` 是参数错误。已有 direct Project
+grant 或 Team membership 保持角色且不消费；只有继承权限的 Project 接收者获得 direct
+member grant。失效、到期、撤销、已消费或目标删除的邀请不可用。客户端校验响应主体，
+错主体和未知提交不重放；无法从后续读取恢复丢失的回执，未知结果以非零退出报告。
+
 ## PT7. Task 命令与更新语义
 
 ```bash
