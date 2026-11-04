@@ -15,7 +15,7 @@ can preserve that boundary while changing the selected hosted image.
 
 ## Decision
 
-Both native matrices select explicit standard `macos-15`. The
+The native macOS phases select explicit standard `macos-15`. The
 [pinned image catalog](https://github.com/actions/runner-images/blob/9df30d63b790ea2057d1f50295a8f8a9a303bd88/README.md#L30-L47)
 lists it as macOS 15 ARM64, and the
 [pinned runner table](https://github.com/github/docs/blob/e44c283a7f901f63aead1ea13cf9062956706e24/data/reusables/actions/supported-github-runners.md#L1-L88)
@@ -27,8 +27,10 @@ This replaces the macOS 26 image selected by the
 Apple Silicon boundary and independent Darwin ARM64 guards. The
 [earlier capacity decision](2026-11-03-macos-hosted-runner-capacity.md) retains the
 Intel, bootstrap and fixture-lifecycle history. Complete ordinary and installed
-suites, the [native phase boundaries](2026-11-04-parallel-native-cli-validation.md),
-job budgets, race policy and final checks retain their settings. The
+suites and the [logical phase responsibilities](2026-11-04-parallel-native-cli-validation.md)
+remain. The later [single-allocation decision](2026-11-05-single-macos-native-allocation.md)
+places both phases in one 20-minute job with separate 10-minute validation
+bounds. Race policy and final checks retain their settings. The
 [development guide](../../../../docs/development.md) owns the current image and
 validation commands. There is no automatic fallback selection mechanism.
 

@@ -33,9 +33,11 @@ the supported architecture without larger-runner registration. The later
 that image selection with standard `macos-15` after repeated acquisition failure;
 this ARM64 support boundary remains in effect.
 
-Each phase verifies Darwin ARM64 independently before ordinary tests or
-installed acceptance. The [phase decision](2026-11-04-parallel-native-cli-validation.md)
-owns their parallel execution and separate evidence. The lane has no Intel
+Darwin ARM64 verification remains mandatory before native validation. The
+[phase decision](2026-11-04-parallel-native-cli-validation.md) owns the original
+parallel model; the [single-allocation decision](2026-11-05-single-macos-native-allocation.md)
+places the complete ordinary and installed macOS phases on one runner with
+separate outcomes and evidence. The lane has no Intel
 fallback.
 
 This supersedes the Intel runner selection and architecture-independent support
@@ -43,8 +45,10 @@ premise in the [hosted capacity decision](2026-11-03-macos-hosted-runner-capacit
 Its pnpm setup bootstrap correction, supported executable-link preference,
 case-owned preparation and bounded cleanup remain in effect. Linux and Windows
 validation, application dependencies and native hook, callback and command
-limits retain their existing settings. Each native phase retains a 10-minute
-job limit; phase separation changes the aggregate budget and bootstrap cost. Task-platform values remain OS enums.
+limits retain their existing settings. Each native validation phase retains a
+10-minute bound; macOS shares a 20-minute allocation while Linux/Windows keep
+independent jobs. Allocation changes affect preparation and scheduling costs.
+Task-platform values remain OS enums.
 
 ## Alternatives
 

@@ -81,10 +81,13 @@ architecture-independent premise. Environment receipts continue retaining the
 actual OS, architecture, toolchain and tested source.
 
 The 180-second hook/callback and 120-second command limits retain their settings.
-The [native phase decision](2026-11-04-parallel-native-cli-validation.md) replaces
-the combined platform job with independent ordinary and installed jobs, each
-bounded to 10 minutes. Their separate ceilings and duplicated bootstrap do not
-preserve the earlier total platform budget. Setup and behavior consume separate hook/callback allowances;
+The [native phase decision](2026-11-04-parallel-native-cli-validation.md)
+originally replaced the combined platform job with independent ordinary and
+installed jobs, each bounded to 10 minutes. Their separate ceilings and duplicated
+bootstrap changed the earlier total platform budget. The later
+[single macOS allocation decision](2026-11-05-single-macos-native-allocation.md)
+keeps both complete phases and their validation bounds on one 20-minute macOS
+job; Linux and Windows retain independent jobs. Setup and behavior consume separate hook/callback allowances;
 this changes budget ownership and does not preserve the old scenario-total
 allowance or imply less total work. Ubuntu still builds the runtime matrix's
 packed artifact. The [development guide](../../../../docs/development.md) owns
