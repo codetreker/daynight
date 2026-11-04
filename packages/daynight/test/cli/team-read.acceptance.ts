@@ -98,13 +98,37 @@ it("reads Team context through the packed launcher without changing configuratio
     await writeFile(config, connection);
     const fallback = await pipe(["team", "default", "show", "--json"]);
     expect(fallback.code, fallback.stderr).toBe(0); expect(JSON.parse(fallback.stdout)).toMatchObject({ configured: null, team: { id: personalId } });
+    const setHelp = await pipe(["team", "default", "set", "--help"]);
+    expect(setHelp.code, setHelp.stderr).toBe(0); expect(setHelp.stdout).toContain("--confirm");
+    const noTty = await pipe(["team", "default", "set", ordinaryId]);
+    expect(noTty.code).not.toBe(0); expect(await readFile(config, "utf8")).toBe(connection);
+    mode = "wrong-principal";
+    const wrongPrincipal = await pipe(["team", "default", "set", ordinaryId, "--confirm"]);
+    expect(wrongPrincipal.code).not.toBe(0); expect(await readFile(config, "utf8")).toBe(connection);
+    mode = "normal";
     if (process.platform !== "win32") {
       const harness = await capture(spawn("python3", ["-u", path.join(import.meta.dirname, "review-configuration-pty.py")], { cwd: home, detached: true, stdio: ["pipe", "pipe", "pipe"] }), JSON.stringify({ command: [installed.receipt.launcherPath, "team", "show", "--team", "personal"], cwd: home, environment, actions: [] }));
       expect(harness.code, harness.stderr).toBe(0);
       const terminal = JSON.parse(harness.stdout) as Result;
       expect(terminal.code, terminal.stderr).toBe(0); expect(terminal.stdout).toContain(personalId); expect(terminal.stdout).toContain("Personal");
+      const ask = (input: string) => capture(spawn("python3", ["-u", path.join(import.meta.dirname, "review-configuration-pty.py")], { cwd: home, detached: true, stdio: ["pipe", "pipe", "pipe"] }), JSON.stringify({ command: [installed.receipt.launcherPath, "team", "default", "set", ordinaryId], cwd: home, environment, actions: [{ waitFor: "[y/N]", input }] }));
+      const cancelled = await ask("n\n");
+      expect(cancelled.code, cancelled.stderr).toBe(0); expect((JSON.parse(cancelled.stdout) as Result).code).not.toBe(0);
+      expect(await readFile(config, "utf8")).toBe(connection);
+      const accepted = await ask("y\n");
+      expect(accepted.code, accepted.stderr).toBe(0); expect((JSON.parse(accepted.stdout) as Result).code).toBe(0);
+      const show = await pipe(["team", "default", "show", "--json"]);
+      expect(show.code, show.stderr).toBe(0); expect(JSON.parse(show.stdout).configured).toBe(ordinaryId);
     }
-    expect(await readFile(config, "utf8")).toBe(connection);
+    await writeFile(config, source);
+    const repaired = await pipe(["team", "default", "set", "personal", "--confirm", "--json"]);
+    expect(repaired.code, repaired.stderr).toBe(0); expect(JSON.parse(repaired.stdout).configured).toBe(personalId);
+    const saved = await readFile(config, "utf8");
+    expect(saved).toContain(`# Preserve unrelated and account-scoped settings`);
+    expect(saved).toContain(`${userId}: ${personalId}`);
+    expect(saved).toContain(`eeeeeeee-5555-4555-8555-555555555555: ${ordinaryId}`);
+    const roundtrip = await pipe(["team", "default", "show", "--json"]);
+    expect(roundtrip.code, roundtrip.stderr).toBe(0); expect(JSON.parse(roundtrip.stdout).team.id).toBe(personalId);
     expect(await readdir(path.dirname(config))).toEqual(["config.yml"]);
     expect(calls.every(({ method, authorization }) => method === "GET" && authorization === `Bearer ${token}`)).toBe(true);
     expect(calls.some(({ path: value }) => new URL(value, origin).searchParams.get("cursor") === "page 2+/=")).toBe(true);

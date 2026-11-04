@@ -33,3 +33,11 @@ test("native rejection is distinguishable from uncertain transport loss and all 
   await expect(lost).rejects.toThrow("closed");
   rpc.dispose();
 });
+
+
+test("initialization timeout retains an explicitly unknown typed outcome", async () => {
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough() });
+  const rpc = new NativeRpc(child, () => {}, 5);
+  try { await expect(rpc.request("initialize", {})).rejects.toMatchObject({ name: "NativeRpcTimeoutError", method: "initialize" }); }
+  finally { rpc.dispose(); }
+});

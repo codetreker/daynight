@@ -1,5 +1,17 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 const en = {
+  sessionStarting: 'Starting session', waitingEnvironment: 'Waiting for the execution environment',
+  startupUnconfirmed: 'Startup unconfirmed', startupFailed: 'Startup failed', recoveryBlocked: 'Recovery blocked',
+  startupUnconfirmedBlocked: 'Startup unconfirmed; recovery blocked', startupFailedBlocked: 'Startup failed; recovery blocked',
+  environmentDisconnected: 'Execution environment disconnected', sessionSynchronizing: 'Synchronizing session', sessionStatusUnavailable: 'Status unavailable',
+  startupDetails: 'View reason', startupObserved: 'Observed',
+  startup_evidence_missing: 'Current startup evidence is unavailable.', startup_initializing: 'The original native session is initializing.',
+  startup_ready: 'The original native session completed initialization.', startup_native_rejected: 'The native provider rejected initialization.',
+  startup_native_timeout: 'Native initialization timed out; its result is unknown.', startup_native_transport_unknown: 'The native startup result could not be confirmed.',
+  startup_controller_start_unknown: 'The original controller startup result could not be confirmed.', startup_controller_launch_failed: 'The operating system rejected the controller launch.',
+  recovery_native_identity_missing: 'Recovery is blocked because the original native session identity is unconfirmed.',
+  recovery_recovery_limit: 'Recovery is blocked because its recovery budget is exhausted.', recovery_recovery_blocked: 'Recovery is blocked by the original execution safety checks.',
+
   enterFullscreen: 'Enter Session fullscreen', exitFullscreen: 'Exit Session fullscreen',
   display: 'Display', displayStandard: 'Standard', displayConversation: 'Conversation', displayRetry: 'Retry saving',
   displayReadError: 'The saved display preference could not be read. The current choice is not saved.',
@@ -42,6 +54,18 @@ export const sessionNativeLabels = Object.freeze({
 });
 type SessionMessages = { readonly [K in keyof typeof en]: string };
 const zh: SessionMessages = {
+  sessionStarting: '正在启动会话', waitingEnvironment: '等待执行环境连接',
+  startupUnconfirmed: '启动未确认', startupFailed: '启动失败', recoveryBlocked: '恢复受阻',
+  startupUnconfirmedBlocked: '启动未确认，恢复受阻', startupFailedBlocked: '启动失败，恢复受阻',
+  environmentDisconnected: '执行环境连接中断', sessionSynchronizing: '正在同步会话', sessionStatusUnavailable: '状态暂时无法确认',
+  startupDetails: '查看原因', startupObserved: '观测时间',
+  startup_evidence_missing: '当前启动证据缺失。', startup_initializing: '原生会话正在初始化。',
+  startup_ready: '本代原生会话曾完成初始化。', startup_native_rejected: '原生 Provider 明确拒绝初始化。',
+  startup_native_timeout: '原生初始化响应超时，结果未知。', startup_native_transport_unknown: '无法确认原生启动结果。',
+  startup_controller_start_unknown: '无法确认原 Controller 的启动结果。', startup_controller_launch_failed: '操作系统明确拒绝启动 Controller。',
+  recovery_native_identity_missing: '无法证明原生会话身份，安全检查已阻止恢复。',
+  recovery_recovery_limit: '恢复预算已耗尽，恢复受阻。', recovery_recovery_blocked: '原执行安全检查已阻止恢复。',
+
   enterFullscreen: '会话全屏', exitFullscreen: '退出会话全屏',
   display: '显示', displayStandard: '标准', displayConversation: '对话', displayRetry: '重试保存',
   displayReadError: '无法读取已保存的显示偏好。当前选择尚未保存。',

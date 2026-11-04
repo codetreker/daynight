@@ -71,7 +71,6 @@ export const parseHerdrLifecycleRecord = (value: unknown): HerdrLifecycleRecord 
   if (o.registrationRequest !== null) {
     const request = parseSessionV2Message(o.registrationRequest);
     if (request.type !== "registration" || request.sessionId !== record.sessionId || request.claimId !== record.claimId || request.payload.registrationId !== record.registrationId || !same(request.payload.owner, record.owner)) return reject("The pending registration belongs to another execution.");
-    if (Object.values(request.payload.capabilities).some(Boolean)) return reject("Herdr lifecycle registration cannot advertise unimplemented combined capabilities.");
     record.registrationRequest = request;
   }
   if (o.ledgerRequest !== null) {
@@ -92,6 +91,12 @@ export const parseHerdrLifecycleRecord = (value: unknown): HerdrLifecycleRecord 
   for (const local of record.runs) if (local.run.segmentIds.some(id => !record.segments.some(segment => segment.segmentId === id && segment.executionGeneration === local.run.executionGeneration))) return reject("A run references an unregistered segment.");
   return record;
 };
+/** Empty registration is only a candidate; retirement also requires terminal and resource evidence. */
+export const isHerdrNeverStarted = (record: HerdrLifecycleRecord): boolean =>
+  record.preparation === null && record.runs.length === 0 && record.segments.length === 0
+  && record.connectionEpoch === null && record.registrationRequest === null && record.ledgerRequest === null
+  && record.publishedLedgerHash === null && record.initialAssignment === "pending" && record.initialPrompt === null && !record.automationBlocked;
+
 const transitions: Record<HerdrRunPhase, readonly HerdrRunPhase[]> = {
   prepared: ["prepared", "launch_requested", "stop_intent", "stop_unknown"],
   launch_requested: ["launch_requested", "active", "stop_intent", "stop_unknown"],
@@ -157,7 +162,7 @@ const validateChange = (before: HerdrLifecycleRecord, after: HerdrLifecycleRecor
   if (after.segments.length < before.segments.length) reject("Capture segment history cannot be removed.");
   for (const [index, previous] of before.segments.entries()) {
     const next = after.segments[index]!;
-    if (previous.endedAt !== null && !same(previous, next)) reject("A closed capture segment is immutable.");
+    if (previous.endedAt !== null && !same({ ...previous, binding: next.binding }, next)) reject("A closed capture segment observation boundary is immutable.");
     assertTerminalBinding(previous.binding, next.binding);
     const { endedAt: _end, durationMs: _duration, binding: _binding, ...stable } = previous;
     const { endedAt: _nextEnd, durationMs: _nextDuration, binding: _nextBinding, ...nextStable } = next;
@@ -195,8 +200,16 @@ export const openHerdrLifecycleStore = (filename: string, options: { onMigration
     return db.transaction(() => { assertCurrentSqlite(db, herdrLifecycleStoreFormat); return action(); }).deferred();
   };
   const get = (identity: ClaimIdentity): HerdrLifecycleRecord | null => read(() => { const row = db.prepare("SELECT identity, version, data FROM executions WHERE identity = ?").get(identityKey(identity)) as { identity: string; version: number; data: string } | undefined; return row === undefined ? null : parseRow(row); });
+  const retired = (identity: ClaimIdentity): HerdrLifecycleRecord | null => read(() => {
+    const row = db.prepare("SELECT identity, version, data FROM never_started_retirements WHERE identity = ?").get(identityKey(identity)) as LifecycleRow | undefined;
+    if (!row) return null;
+    const record = parseRow(row), original = get(identity);
+    if (!isHerdrNeverStarted(record) || !same(record, original)) return reject("The never-started retirement differs from its original lifecycle evidence.");
+    return record;
+  });
   const atomic = <T>(action: () => T): T => runSqliteImmediate(db, () => { assertCurrentSqlite(db, herdrLifecycleStoreFormat); return action(); });
   const update = (expected: HerdrLifecycleRecord, change: (draft: HerdrLifecycleRecord) => void): HerdrLifecycleRecord => atomic(() => {
+    if (retired({ ...expected.owner, claimId: expected.claimId })) return reject("A retired never-started claim cannot acquire new execution evidence.");
     const original = get({ ...expected.owner, claimId: expected.claimId });
     if (original === null || original.version !== expected.version) return reject("The Herdr lifecycle version changed; reread the original execution before deciding.");
     if (!same(original, expected)) return reject("The expected lifecycle record differs from its stored version.");
@@ -210,9 +223,18 @@ export const openHerdrLifecycleStore = (filename: string, options: { onMigration
   return {
     close: (): void => { closeSqliteDatabase(db, { file: filename, format: herdrLifecycleStoreFormat }); },
     get,
+    retired,
+    listRetired: (): HerdrLifecycleRecord[] => read(() => (db.prepare("SELECT identity, version, data FROM never_started_retirements ORDER BY identity").all() as LifecycleRow[]).map(row => { const record = parseRow(row); return retired({ ...record.owner, claimId: record.claimId })!; })),
+    retireNeverStarted: (expected: HerdrLifecycleRecord): void => atomic(() => {
+      const original = get({ ...expected.owner, claimId: expected.claimId });
+      if (!same(original, expected) || !isHerdrNeverStarted(expected)) return reject("The never-started lifecycle version or evidence changed before retirement.");
+      if (retired({ ...expected.owner, claimId: expected.claimId })) return;
+      db.prepare("INSERT INTO never_started_retirements(identity, version, data) VALUES (?, ?, ?)").run(key(expected), expected.version, canonicalSessionJson(expected));
+    }),
     list: (): HerdrLifecycleRecord[] => read(() => (db.prepare("SELECT identity, version, data FROM executions ORDER BY identity").all() as { identity: string; version: number; data: string }[]).map(parseRow)),
     create: (input: { owner: SessionV2Owner; claimId: string; cwd: string }, now = new Date().toISOString()): HerdrLifecycleRecord => atomic(() => {
       timestamp(now); const owner = parseSessionV2Owner(input.owner), claimId = uuid(input.claimId), cwd = absolute(input.cwd);
+      if (retired({ ...owner, claimId })) return reject("A retired never-started claim cannot be registered again.");
       const existing = get({ ...owner, claimId });
       if (existing !== null) { if (!same(existing.owner, owner) || existing.cwd !== cwd) return reject("The original execution cannot be rebound to a different owner or worktree."); return existing; }
       const record = parseHerdrLifecycleRecord({ owner, claimId, cwd, sessionId: randomUUID(), registrationId: randomUUID(), connectionEpoch: null, registrationRequest: null, ledgerRequest: null, publishedLedgerHash: null, controlEpoch: "0", initialAssignment: "pending", initialPrompt: null, automationBlocked: false, preparation: null, runs: [], segments: [], version: 1 });

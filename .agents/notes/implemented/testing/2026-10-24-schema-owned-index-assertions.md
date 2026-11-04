@@ -50,7 +50,8 @@ index name are explicit.
 
 ## Consequences
 
-Parallel package validation and its coverage, race and cleanup requirements stay
+Parallel package validation and its coverage, event-specific
+[race](2026-11-04-go-validation-timing.md) and cleanup requirements stay
 intact. The assertion validates the same migration requirement while depending
 only on its fixture's index. No production query, migration or service behavior
 changes. Full-system catalog predicates should not be used to deparse objects

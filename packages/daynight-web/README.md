@@ -1679,7 +1679,8 @@ or publication fails the build; a failed swap attempts to restore previous asset
 and reports both causes if rollback also fails.
 The Go binary embeds the published output. Both generated directories are ignored
 by Git, and clean server builds require this explicit build first. The Go
-`scripts/check.sh` invokes the same command before build/vet/race/go-cov.
+`scripts/check.sh` invokes the same command before build, vet and go-cov; Go race
+instrumentation follows the [server validation policy](../daynight-server/README.md#race-instrumentation).
 The existing root `build`, `test` and `acceptance` commands retain their CLI scope.
 
 `web:test` serially composes two required package commands. `test:harness` runs
@@ -1714,6 +1715,15 @@ tests/navigation/playwright.config.ts` after installing Chromium. Browser CI
 shard 2 runs all 28 cases before its full-stack acceptance. Its results and failure captures
 are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
 inside the browser CI artifact directory.
+
+The Bot viewport suite runs the production application, Session host and timeline
+against controlled HTTP and Session API responses. It checks long-history
+scrolling, bounded pagination, visible input and retained reading positions at
+desktop and 390px widths. Run `pnpm --filter @codetreker/daynight-web exec playwright
+test --config tests/navigation/bots-viewport-playwright.config.ts`. Browser CI
+shard 2 also runs this suite; captures are stored in
+`packages/daynight-web/.tmp/acceptance/bots-viewport/`. These fixtures do not
+establish native Worker or Provider behavior.
 
 The required comparison is `covered * 10 > total * 9` using BigInt. Exactly 90%
 fails independently of display rounding. Pure-type declarations contribute zero
@@ -1822,7 +1832,7 @@ fault testing and controlled fixtures each retain their own evidence scope.
 
 ## Production browser acceptance
 
-On a Linux or macOS host, with Go 1.27.2, Docker Engine 28+, Compose 2.20+ and Linux
+On a Linux or macOS host, with Go 1.27.2, Docker Engine 28+, Compose 2.20.2+ and Linux
 containers available, run from the repository root to install the pinned browser
 into the project:
 
@@ -1846,16 +1856,20 @@ rejects a stress selection in CI. Both local modes retain combined authenticatio
 exact source/browser identity and full cleanup; CI runs the two combined journeys
 on shard 2 while every shard performs its owned cleanup.
 
-Selected functional journeys inject shorter named polling intervals before page
-initialization: task synchronization and current-Session summary refreshes still
-use the real service, HTTP responses and normal state publication. The shared
+Selected functional journeys, including assignment reconciliation, inject shorter
+named polling intervals before page initialization: task synchronization and
+current-Session summary refreshes still use the real service, HTTP responses and
+normal state publication. The shared
 polling module keeps the production defaults of fifteen and five seconds;
 unit tests verify those defaults and the shorter schedules. Browser tests change
 only their owned polling periods, preserving request deadlines, freshness,
 execution clocks and real warning-threshold crossing. Cases with controlled
 browser clocks and local capacity measurements retain their own timing setup.
 The [polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-polling.md)
-owns this separation and its validation limits.
+owns this separation and its validation limits. The isolated dev-ci stack probes
+startup readiness every 250ms while preserving its normal health cadence and real
+readiness gates; the [startup probe decision](../../.agents/notes/implemented/testing/2026-11-04-dev-ci-startup-probes.md)
+owns that deployment timing.
 
 Use Node 24, pnpm 11.28.6 and a frozen dependency install first. Chromium requires
 its normal runtime libraries on Linux; CI installs them with Playwright's
