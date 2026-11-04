@@ -4,7 +4,7 @@ import type { Operation, User } from "../../src/api/index.js";
 
 const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const otherId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const user: User = { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null };
+const user: User = { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } };
 const operations: Operation[] = [];
 const response = (value: unknown, principal?: string): Response => new Response(stringifyApiJson(value), {
   headers: { "Content-Type": "application/json", ...(principal === undefined ? {} : { "Daynight-User-ID": principal }) },
@@ -34,7 +34,10 @@ describe("authenticated API identity", () => {
   it.each([
     null, [], { id: userId }, { ...user, id: "invalid" }, { ...user, id: userId.toUpperCase() },
     { ...user, email: 42 }, { ...user, emailVerified: "true" }, { ...user, name: false },
-    { ...user, avatarUrl: {} }, { ...user, extra: "unexpected" },
+    { ...user, avatarUrl: {} }, { ...user, personalTeam: undefined }, { ...user, personalTeam: null },
+    { ...user, personalTeam: { ...user.personalTeam, id: "invalid" } },
+    { ...user, personalTeam: { ...user.personalTeam, kind: "ordinary", name: "Ordinary" } },
+    { ...user, personalTeam: { ...user.personalTeam, name: "Personal" } }, { ...user, extra: "unexpected" },
   ])("refuses a malformed or incomplete current-user DTO %j", async (value) => {
     await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(value))).getCurrentUser()).rejects.toMatchObject({ operation: "auth.me", phase: "protocol", outcomeUnconfirmed: false });
   });

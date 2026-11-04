@@ -20,7 +20,7 @@ const unrelatedId = "cccccccc-3333-4333-8333-333333333333";
 const taskId = "dddddddd-4444-4444-8444-444444444444";
 const time = "2026-11-03T10:11:12.123456Z";
 const serverUrl = "http://localhost:8787";
-const project: Project = { id: projectId, name: "private-project-name\n\u001b[31m token-secret", repoUrl: "https://git.example/Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project: Project = { id: projectId, name: "private-project-name\n\u001b[31m token-secret", repoUrl: "https://git.example/Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 

@@ -210,7 +210,7 @@ there is no second native start. Submitted/unknown input or unproven missing-ID
 history remains fenced, and committed control/cleanup/shutdown takes priority
 over business startup input. This adds neither a reporting protocol nor a new
 controller. The [structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
-replaces the adapter's former positive visible-composer guard with explicit known
+replaces the adapter's automatic positive visible-composer guard with explicit known
 menu and disabled-input exclusions. Unknown normal layouts do not wait; original
 input provenance and native startup controls retain their separate
 responsibilities.

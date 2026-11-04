@@ -19,10 +19,11 @@ receiving its argv must actually be in the task worktree.
 
 ## Decision
 
-The Herdr adapter checks the original workspace/pane/terminal and native agent
-identity, launch state, required interactive readiness and blocked state. For
-Codex and Claude, it then reads the bound pane's complete visible text only to
-reject explicit known menu or disabled-input patterns. A selected picker row
+Automatic assignment, continuation and cleanup check the original
+workspace/pane/terminal and native agent identity, launch state, required
+interactive readiness and blocked state. For Codex and Claude, they then read
+the bound pane's complete visible text only to reject explicit known menu or
+disabled-input patterns. A selected picker row
 with its source-defined accept/cancel controls, or a recognized disabled input
 row, returns a definitely not-submitted result. Picker controls include selected
 item actions, secondary shortcuts, runtime key bindings and wrapped hints.
@@ -31,20 +32,43 @@ and [disabled input rendering](https://github.com/openai/codex/blob/6aaac6948030
 identify the concrete patterns. Ordinary prose mentioning cancellation is not a
 menu, and a later normal prompt excludes stale menu text above it.
 
-There is no positive composer whitelist, status-bar or displayed-directory
-requirement. Normal customized or unknown layouts proceed immediately after
-structured readiness; they do not wait for a recognized normal frame. The read
-must belong to the requested pane/workspace and be complete; malformed,
-truncated or failed observations remain definitely unsent errors. Any supplied final task authorization guard runs after the visible read and
-binding/state recheck, immediately before `agent.prompt`. Receipt identity, error propagation
-and unknown-result handling keep their existing meanings.
+Automatic and cleanup inspection has no positive composer whitelist, status-bar
+or displayed-directory requirement. Normal customized or unknown layouts proceed
+immediately after structured readiness; they do not wait for a recognized
+normal frame. The macOS inspector reports `composer: "unavailable"`, not a
+fabricated empty-composer fact. The read must belong to the requested pane/workspace and be
+complete; malformed, truncated or failed observations remain definitely unsent
+errors. Any supplied final task authorization guard runs after the visible read
+and binding/state recheck, immediately before mutation. Receipt identity, error
+propagation and unknown-result handling keep their existing meanings.
+
+On macOS, manual input skips visible-screen exclusions so its lease holder can
+operate menus, and also reports composer evidence as unavailable. Explicit handback and
+clean orderly automation recovery use the separate `resume` purpose. The
+resume-specific `hasEmptyResumeComposer` predicate reads the existing
+`pane.read` visible ANSI format with `strip_ansi=false`. Codex requires a current
+enabled prompt glyph, its renderer-DIM empty placeholder, blank next input row
+and normal keyboard footer. An optional status row needs no particular model,
+cwd or status-bar content. Literal text with the same words and multiline
+drafts do not prove an empty field. RGB and indexed color parameters cannot
+stand in for DIM; unsupported or ambiguous escape/style forms remain unproved.
+Claude accepts only a genuinely blank bordered field with its normal footer;
+ambiguous `Try` text is not empty-field evidence. A menu, draft or unknown
+layout cannot become `empty`.
+Copilot retains its unavailable composer evidence and explicit handback
+responsibility. The [input arbitration design](../../../../docs/design/herdr-input-arbitration.md)
+owns leases, fences, draft dispositions, recovery permission and cleanup priority.
 
 A recognized menu or disabled input is waiting, not an execution failure. It
 retains the pending initial assignment or the continuation opportunity without
 advancing the submitted-input baseline or consuming execution recovery attempts.
 Once the operator closes the blocker, the same bound agent can receive that
 input on a later patrol. Previously submitted or unknown input is not replayed.
-This adds no manual-input lease or separate input arbiter.
+For macOS, the arbiter preserves the typed blocker after durably recording its
+zero-write rejection; the lifecycle projection clears admission and returns an
+initial assignment to pending. A write already attempted remains unknown on
+failure, rather than becoming a waiting blocker. Existing leases, fences, draft
+dispositions and the single durable input arbiter retain their guarantees.
 
 Ordinary input observation, reconnection, resource discovery and stopping do not
 require pane and agent cwd metadata to equal each other or the launch directory.
@@ -87,6 +111,19 @@ can ignore text while [Enter handling](https://github.com/openai/codex/blob/6aaa
 selects the highlighted action. Rejecting explicit known menus and disabled
 input retains that distinction without identifying every normal composer.
 
+**Use an empty-composer predicate for every input purpose.** Returning control
+to automation must not accept an unknown field or draft as empty. Applying that
+positive proof to ordinary automatic input or cleanup would reintroduce layout
+requirements, while applying blockers to manual input would prevent a lease
+holder from closing the very menu being handled. Purpose-specific inspection
+keeps these responsibilities distinct.
+
+**Treat stripped placeholder words as empty-field evidence.** A literal draft
+can contain the same words as an empty placeholder. Resume inspection preserves
+renderer attributes and field geometry rather than granting handback from
+stripped text. This bounded observation is not an ANSI terminal emulator or a
+general proof for unknown renderers.
+
 **Keep cwd telemetry equality as an input gate.** The worker already verifies
 the bound task resources. Requiring mutable pane and agent cwd observations to
 match adds no task-routing identity and can reject a valid existing execution.
@@ -108,8 +145,11 @@ directory without proving any resource ownership conflict.
 
 ## Consequences
 
-Ready managed agents receive task input with customized or unknown normal
-layouts. Recognized menu and disabled-input blockers wait without exhausting
+Ready managed agents receive automatic task input and eligible cleanup with
+customized or unknown normal layouts. Handback and clean recovery still require
+real empty-field evidence for the providers that support it; ambiguous styles
+and literal or multiline drafts cannot release control. Recognized menu
+and disabled-input blockers wait without exhausting
 execution recovery, and closing them preserves the original input opportunity.
 Structured blocked/not-ready observations, changed resource identities, revoked
 task authorization and native transport errors remain visible and can prevent

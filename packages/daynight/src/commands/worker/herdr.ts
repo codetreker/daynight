@@ -71,6 +71,13 @@ export type WorkerHerdrLifecycle = {
   responsibilities(): HerdrExecutionOwner[];
   isStopped(owner: HerdrExecutionOwner): boolean;
   stop(owner: HerdrExecutionOwner, reason: "shutdown" | "terminal", operation: Operation): Promise<void>;
+  cleanup?(owner: HerdrExecutionOwner, prompt: string, operation: Operation): Promise<boolean>;
   close(): void;
 };
-export type WorkerHerdrAdapter = ReturnType<typeof createWorkerHerdr> & { lifecycle?: WorkerHerdrLifecycle };
+export type WorkerHerdrInput = {
+  state(owner: HerdrExecutionOwner): import("../../session/v2/types.js").SessionV2Payloads["control_state"];
+  control(owner: HerdrExecutionOwner, message: Extract<import("../../session/v2/types.js").SessionV2Message, { type: "control_dispatch" }>, operation: Operation): Promise<import("../../session/v2/types.js").SessionV2Payloads["control_ack"]>;
+  submit(owner: HerdrExecutionOwner, message: Extract<import("../../session/v2/types.js").SessionV2Message, { type: "operation" }>, operation: Operation): Promise<import("../../session/v2/types.js").SessionV2Payloads["operation_result"]>;
+  suspend(owner: HerdrExecutionOwner): void;
+};
+export type WorkerHerdrAdapter = ReturnType<typeof createWorkerHerdr> & { lifecycle?: WorkerHerdrLifecycle; input?: WorkerHerdrInput };

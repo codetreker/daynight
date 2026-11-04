@@ -245,6 +245,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     else if (ticket.provider === "claude") env.CLAUDE_CONFIG_DIR = ticket.nativeHome;
     else env.COPILOT_HOME = ticket.nativeHome;
     const nativeOptions: ProviderOptions = {
+      ...(ticket.instructions === undefined ? {} : { instructions: ticket.instructions }),
       ...(aliases.bindings.length > 0 ? { agentCliEnvironment: { PATH: env.PATH!, DN_CONFIG_DIR: env.DN_CONFIG_DIR! } } : {}),
       ...(journal.getSnapshot().controlsRevisionFloor ? { controlsRevisionFloor: journal.getSnapshot().controlsRevisionFloor! } : {}),
       cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, unattended: ticket.claimId !== undefined, env,

@@ -31,6 +31,62 @@ function setup() {
 beforeEach(() => { vi.clearAllMocks(); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
 
+test.each([false, true])("Copilot appends the exact role without an initial user turn (resume=%s)", async resume => {
+  const instructions = "  Daynight 助手\nKeep native defaults. 😀 e\u0301\n", id = resume ? randomUUID() : null;
+  const setApproveAll = vi.fn(async () => ({ success: true }));
+  Object.assign(fixture.native.rpc.permissions, { setApproveAll });
+  const provider = await openCopilotProvider({ ...fixture.options, instructions, resumeNativeSessionId: id });
+  try {
+    expect(fixture.config().systemMessage).toEqual({ mode: "append", content: instructions });
+    expect(fixture.config()).not.toHaveProperty("model");
+    expect(fixture.config()).not.toHaveProperty("reasoningEffort");
+    expect(provider.nativeSessionId).toBe(id ?? fixture.config().sessionId);
+    expect(fixture.native.send).not.toHaveBeenCalled();
+    expect(fixture.states.at(-1)).toMatchObject({ activity: "idle", currentTurnId: null });
+    expect(fixture.entries.some(entry => entry.kind === "user_message")).toBe(false);
+    expect(fixture.native.rpc.permissions.configure).not.toHaveBeenCalled();
+    expect((fixture.config().onPermissionRequest as () => unknown)()).toEqual({ kind: "no-result" });
+    if (resume) {
+      expect(fixture.client.createSession).not.toHaveBeenCalled();
+      expect(setApproveAll).not.toHaveBeenCalled();
+    } else expect(setApproveAll).toHaveBeenCalledWith({ enabled: false });
+    expect(processMock.spawn.mock.calls[0]![1]).not.toContain("--allow-all");
+  } finally { await provider.close(); }
+});
+
+test.each([false, true])("Copilot leaves legacy sessions without a system message (resume=%s)", async resume => {
+  const provider = await openCopilotProvider({ ...fixture.options, resumeNativeSessionId: resume ? randomUUID() : null });
+  try {
+    expect(fixture.config()).not.toHaveProperty("systemMessage");
+    expect(fixture.native.send).not.toHaveBeenCalled();
+  } finally { await provider.close(); }
+});
+
+test.each([false, true])("Copilot roles preserve explicit creation settings and native resume settings (resume=%s)", async resume => {
+  const provider = await openCopilotProvider({ ...fixture.options, instructions: "Role", model: "selected-model", args: ["--effort", "high"], resumeNativeSessionId: resume ? randomUUID() : null });
+  try {
+    expect(fixture.config().systemMessage).toEqual({ mode: "append", content: "Role" });
+    if (resume) {
+      expect(fixture.config()).not.toHaveProperty("model");
+      expect(fixture.config()).not.toHaveProperty("reasoningEffort");
+    } else expect(fixture.config()).toMatchObject({ model: "selected-model", reasoningEffort: "high" });
+  } finally { await provider.close(); }
+});
+
+test.each([false, true])("Copilot role startup failures preserve the error and stop the owned runtime (resume=%s)", async resume => {
+  const error = new Error("Native role configuration rejected");
+  const opening = resume ? fixture.client.resumeSession : fixture.client.createSession;
+  opening.mockRejectedValue(error);
+  await expect(openCopilotProvider({ ...fixture.options, instructions: "Role", resumeNativeSessionId: resume ? randomUUID() : null })).rejects.toBe(error);
+  expect(fixture.native.send).not.toHaveBeenCalled();
+  expect(fixture.client.rpc.runtime.shutdown).toHaveBeenCalledOnce();
+  expect(fixture.client.stop).toHaveBeenCalledOnce();
+  expect(fixture.child.kill).toHaveBeenCalledWith("SIGTERM");
+  expect(fixture.child.signalCode).toBe("SIGTERM");
+  expect(fixture.states.at(-1)?.activity).toBe("stopped");
+  if (resume) expect(fixture.client.createSession).not.toHaveBeenCalled();
+});
+
 test("Copilot owns a token-authenticated local runtime, preserves private profile and stops its child", async () => {
   const provider = await openCopilotProvider(fixture.options);
   expect(fixture.spawned).toEqual([fixture.child]);

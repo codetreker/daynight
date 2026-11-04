@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHerdrSessionApi } from "../../../src/commands/worker/herdr/session-api.js";
@@ -135,4 +137,66 @@ describe("Herdr Session v2 client", () => {
     const message = registration(origin);
     await expect(createHerdrSessionApi(origin, "token").state({ owner: message.payload.owner, claimId: message.claimId, sessionId: message.sessionId })).rejects.toMatchObject({ status: 404 });
   });
+});
+
+const prepareRecovery = (message: Registration) => ({ ...message, type: "automation_recovery_prepare" as const, payload: { recoveryId: uuid(30), connectionEpoch: "1", controlEpoch: "1", closingControlEpoch: "2", stopOperationId: uuid(31), binding: { ...message.payload.binding, nativeSessionId: uuid(32) }, initialAssignment: "transport_completed" as const } });
+const recoveryState = (message: ReturnType<typeof prepareRecovery>) => ({ ...message, type: "automation_recovery_state" as const, payload: { recoveryId: message.payload.recoveryId, prepareDigest: createHash("sha256").update(canonicalSessionJson(message)).digest("hex"), sourceGeneration: "1", sourceConnectionEpoch: "1", sourceControlEpoch: "1", closingControlEpoch: "2", stopOperationId: uuid(31), nativeSessionId: uuid(32), consumed: null } });
+const recoveryIdentity = (message: Registration) => ({ owner: message.payload.owner, sessionId: message.sessionId, claimId: message.claimId });
+
+describe("original automation recovery decisions", () => {
+  it("posts one exact prepare intent on the original epoch and verifies its digest", async () => {
+    const received: { url: string | undefined; epoch: string | string[] | undefined; body: unknown }[] = [];
+    let corrupt = false;
+    const origin = await listen((req, res) => { const chunks: Buffer[] = []; req.on("data", c => chunks.push(Buffer.from(c))); req.on("end", () => { const body = JSON.parse(Buffer.concat(chunks).toString()) as ReturnType<typeof prepareRecovery>; received.push({ url: req.url, epoch: req.headers["daynight-connection-epoch"], body }); const reply = recoveryState(body); if (corrupt) reply.payload.prepareDigest = "f".repeat(64); send(res, reply); }); });
+    const base = registration(origin), intent = prepareRecovery(base), api = createHerdrSessionApi(origin, "token");
+    expect(await api.prepareRecovery(recoveryIdentity(base), intent)).toEqual(recoveryState(intent));
+    expect(received).toEqual([{ url: `/api/v1/projects/${uuid(4)}/tasks/${uuid(5)}/sessions/${uuid(1)}/worker-messages`, epoch: "1", body: intent }]);
+    corrupt = true; await expect(api.prepareRecovery(recoveryIdentity(base), intent)).rejects.toThrow();
+  });
+  it("reads an original consumed receipt without treating it as current automation authority", async () => {
+    let response: unknown, lastPath: string | undefined;
+    const origin = await listen((req, res) => { lastPath = req.url; send(res, response); });
+    const base = registration(origin), api = createHerdrSessionApi(origin, "token");
+    response = { ...recoveryState(prepareRecovery(base)), executionGeneration: "2", payload: { ...recoveryState(prepareRecovery(base)).payload, consumed: { executionGeneration: "2", connectionEpoch: "4", controlEpoch: "8", requestDigest: "a".repeat(64) } } };
+    expect(await api.readRecovery(recoveryIdentity(base), uuid(30))).toEqual(response);
+    expect(lastPath).toBe(`/api/v1/projects/${uuid(4)}/tasks/${uuid(5)}/sessions/${uuid(1)}/automation-recovery/${uuid(30)}`);
+    const valid = response;
+    response = { ...response as object, claimId: uuid(99) }; await expect(api.readRecovery(recoveryIdentity(base), uuid(30))).rejects.toThrow();
+    response = { ...valid as object, payload: { ...(valid as ReturnType<typeof recoveryState>).payload, recoveryId: uuid(99) } }; await expect(api.readRecovery(recoveryIdentity(base), uuid(30))).rejects.toThrow();
+  });
+  it("binds consume acknowledgement to the new generation, epoch, and exact request", async () => {
+    let reply: unknown;
+    const origin = await listen((_req, res) => send(res, reply)), base = registration(origin), prepared = prepareRecovery(base);
+    const message = { ...base, executionGeneration: "2", type: "automation_recovery" as const, payload: { recoveryId: uuid(30), connectionEpoch: "3", controlEpoch: "5", previousGeneration: "1", stopOperationId: uuid(31), binding: { ...prepared.payload.binding, instanceId: "second-daemon", terminalId: "second-terminal" } } };
+    const consumed = { executionGeneration: "2", connectionEpoch: "3", controlEpoch: "5", requestDigest: createHash("sha256").update(canonicalSessionJson(message)).digest("hex") };
+    reply = { ...recoveryState(prepared), executionGeneration: "2", payload: { ...recoveryState(prepared).payload, consumed } };
+    const api = createHerdrSessionApi(origin, "token"); expect(await api.recoverAutomation(recoveryIdentity(base), message)).toEqual(reply);
+    reply = { ...reply as object, payload: { ...recoveryState(prepared).payload, consumed: { ...consumed, connectionEpoch: "2" } } };
+    await expect(api.recoverAutomation(recoveryIdentity(base), message)).rejects.toThrow();
+  });
+  it("never replays prepare after a lost HTTP response", async () => {
+    let requests = 0;
+    const origin = await listen(req => { requests++; req.resume(); req.on("end", () => req.socket.destroy()); });
+    const base = registration(origin), api = createHerdrSessionApi(origin, "token");
+    await expect(api.prepareRecovery(recoveryIdentity(base), prepareRecovery(base))).rejects.toThrow();
+    expect(requests).toBe(1);
+  });
+});
+
+it("publishes an original control snapshot only with an exact acknowledgement", async () => {
+  let changed = false;
+  const origin = await listen((req, res) => { const chunks: Buffer[] = []; req.on("data", chunk => chunks.push(Buffer.from(chunk))); req.on("end", () => { const body = JSON.parse(Buffer.concat(chunks).toString()); if (changed) body.payload.controlEpoch = "9"; send(res, body); }); });
+  const base = registration(origin), api = createHerdrSessionApi(origin, "token");
+  const message = { ...base, type: "control_state" as const, payload: { connectionEpoch: "1", controlEpoch: "1", state: "automation" as const, lease: null, initialAssignment: "transport_completed" as const, availableActions: ["acquire_control" as const], unavailableReason: null } };
+  expect(await api.publishControl(recoveryIdentity(base), message)).toEqual(message);
+  changed = true; await expect(api.publishControl(recoveryIdentity(base), message)).rejects.toThrow();
+});
+
+it("does not replay an unconfirmed consume or infer a missing permit", async () => {
+  let calls = 0, missing = false;
+  const origin = await listen((req, res) => { calls++; if (missing) { res.statusCode = 404; res.end(); } else { req.resume(); req.on("end", () => req.socket.destroy()); } });
+  const base = registration(origin), prepared = prepareRecovery(base), api = createHerdrSessionApi(origin, "token");
+  const message = { ...base, executionGeneration: "2", type: "automation_recovery" as const, payload: { recoveryId: uuid(30), connectionEpoch: "3", controlEpoch: "5", previousGeneration: "1", stopOperationId: uuid(31), binding: { ...prepared.payload.binding, instanceId: "second", terminalId: "second" } } };
+  await expect(api.recoverAutomation(recoveryIdentity(base), message)).rejects.toThrow(); expect(calls).toBe(1);
+  missing = true; await expect(api.readRecovery(recoveryIdentity(base), uuid(30))).rejects.toMatchObject({ status: 404 }); expect(calls).toBe(2);
 });

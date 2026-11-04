@@ -14,7 +14,8 @@ one account can otherwise submit after its browser credential changes accounts.
 
 The existing project-members route returns one `ProjectParticipant` per source
 user: `userId`, a required `profile` object with nullable name/email/avatarUrl,
-`effectiveRole` and nullable `directGrant`. Real owner Team members and direct
+`effectiveRole`, nullable `inheritedFrom:{team:TeamRef,role}` and nullable
+`directGrant`. Real owner Team members and direct
 grants supply the source identities; inherited-only participants have a null
 direct grant. Raw source identities survive a LEFT JOIN to users; missing or
 mismatched canonical identity fails the complete roster. Existing canonical
@@ -32,15 +33,16 @@ it does not recover the original commit receipt.
 
 Caller authority remains with the existing access owner. Claim-owner names,
 email, loading, failure/retry and former-user display remain project-scoped
-profile observations. Current invitation DTOs and direct-relation readers keep
-their actual consumers; they do not supply a second roster or a fallback decoder.
+profile observations. Invitation direct-relation readers do not supply a second roster or a fallback decoder.
+The [invitation result decision](2026-11-04-project-invitation-results.md) owns its separate grant and access responses.
 The [Personal ownership decision](2026-11-04-personal-project-ownership.md)
 activates real inherited access and permits removal of the final direct admin.
 
-The roster envelope currently contains only items. Adding actor metadata from
-the roster snapshot requires one coordinated producer, codec and live access
-consumer change; the existing observation and identity fences remain its owner.
-No unused metadata or permission cache is introduced by this projection.
+The roster envelope contains items and same-snapshot actorAccess. MembersPanel
+publishes that observation through the existing access owner and identity fences
+before displaying management controls. The
+[public ownership decision](2026-11-04-public-project-ownership.md) owns the
+coordinated source expansion and derived cache rebuild.
 
 ## Alternatives
 
@@ -64,6 +66,8 @@ DTO/read owners allows this roster and observation conversion to stand alone.
 would not establish the snapshot-consistency guarantee. Its later coordinated
 read-contract change must publish through the existing access fences; this
 projection preserves that seam instead of creating another permission owner.
+The separate [grant management decision](2026-11-04-project-grant-management.md)
+adds grant routes without changing the existing invitation DTOs.
 
 ## Consequences
 
@@ -71,7 +75,7 @@ Profiles can be unavailable without becoming authorization decisions. Versioned
 writes use real grant observations and cannot cross a changed actor identity.
 The CLI keeps its existing roster facade with a participant result, and Web's
 lossless decoder handles grant versions only at the declared resource path.
-Current invitations retain their public contract. The original projection introduced no Team data or source placeholders.
+The original projection introduced no Team data or source placeholders.
 Real inheritance now uses the same nullable-grant shape; no compatibility roster,
-new command or persistent actor cache is needed. A future complete roster/access envelope must update its actual
-consumers together, while retaining these identity and publication fences.
+new command or persistent actor cache is needed. The complete roster/access envelope updates its actual consumers together
+while retaining these identity and publication fences.

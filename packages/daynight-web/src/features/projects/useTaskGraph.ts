@@ -142,7 +142,7 @@ export const useTaskGraph = (projectId: string) => {
     });
     let timer: ReturnType<typeof setInterval> | null = null;
     const pause = () => { if (timer !== null) clearInterval(timer); timer = null; };
-    const resume = () => { pause(); if (document.visibilityState !== "hidden") timer = setInterval(() => { void request(true); }, 5_000); };
+    const resume = () => { pause(); if (document.visibilityState !== "hidden") timer = setInterval(() => { void request(true); }, 15_000); };
     const onVisibilityChange = () => { resume(); if (document.visibilityState !== "hidden") void request(true); };
     resume(); document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {

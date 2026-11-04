@@ -74,6 +74,14 @@ func ErrorKind(err error) string {
 }
 
 func knownFault(err error) (*service.Fault, bool) {
+	var transaction *store.TransactionError
+	if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted) {
+		return nil, false
+	}
+	var botOperation *service.BotOperationError
+	if errors.As(err, &botOperation) {
+		return nil, false
+	}
 	var validation *taskproperties.ValidationError
 	if errors.As(err, &validation) && onlyPropertyValidation(err) {
 		return &service.Fault{Code: "invalid_input", Message: validation.Error(), Cause: err}, true
@@ -81,7 +89,9 @@ func knownFault(err error) (*service.Fault, bool) {
 	var fault *service.Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {
-		case "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "permission_denied", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "unsupported_protocol", "unsupported_content_kind", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "invalid_payload", "controller_offline", "relay_instance_unavailable", "content_unavailable", "rate_limited", "unauthenticated", "forbidden", "last_admin", "identity_mismatch", "invitation_unavailable", "task_deleted", "invalid_input", "not_found", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "payload_too_large", "message_not_found", "clock_not_advanced", "message_outcome_unknown":
+		case "configuration_not_initialized":
+			return fault, true
+		case "personal_team_immutable", "team_not_empty", "write_outcome_unknown", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "permission_denied", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "unsupported_protocol", "unsupported_content_kind", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "invalid_payload", "controller_offline", "relay_instance_unavailable", "content_unavailable", "rate_limited", "unauthenticated", "forbidden", "last_admin", "identity_mismatch", "invitation_unavailable", "task_deleted", "invalid_input", "not_found", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "payload_too_large", "message_not_found", "clock_not_advanced", "message_outcome_unknown":
 			return fault, true
 		}
 	}

@@ -175,13 +175,13 @@ func TestTaskAssignedToCursorScopeAndOtherCursorVersions(t *testing.T) {
 		_, err := tasks.List(ctx, admin, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 1}, AssignedTo: &invalid})
 		requireFault(t, err, "invalid_input")
 	}
-	projectCursor, err := encodeProjectCursor(project)
+	projectCursor, err := encodeProjectCursor(project, admin.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
 	if err != nil {
 		t.Fatal(err)
 	}
 	projectFields := assignmentCursorFields(t, projectCursor)
-	if projectFields["version"] != float64(1) || projectFields["kind"] != "projects" {
-		t.Fatalf("project cursor version changed with task cursor: %#v", projectFields)
+	if projectFields["version"] != float64(2) || projectFields["kind"] != "scoped-projects" {
+		t.Fatalf("project cursor version or kind mismatch: %#v", projectFields)
 	}
 	workers := NewWorkers(database)
 	for range 2 {

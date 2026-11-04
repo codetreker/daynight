@@ -8,7 +8,7 @@ import { ApiError } from '../src/api/client';
 import { AccountPage } from '../src/features/management/AccountPage';
 import { MembersPanel } from '../src/features/management/MembersPanel';
 import { Identity, ManagementError, SecretDialog } from '../src/features/management/feedback';
-import type { CurrentUser, PersonalAccessToken, ProjectInvitation, ProjectParticipant, ProjectGrant } from '../src/api/auth';
+import type { CurrentUser, PersonalAccessToken, ProjectInvitation, ProjectParticipant, ProjectParticipants, ProjectGrant } from '../src/api/auth';
 
 vi.mock('../src/api/auth', () => ({
   listTokens: vi.fn(), createToken: vi.fn(), revokeToken: vi.fn(), updateTokenExpiry: vi.fn(),
@@ -19,12 +19,18 @@ const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { taskCache: { viewerId: user.id }, ...options });
 let actorRole: 'admin' | 'member' = 'admin';
 
-const user: CurrentUser = { id: '00000000-0000-4000-8000-000000000201', name: 'Jianjun', email: 'a@example.com', emailVerified: true, avatarUrl: null };
+const user: CurrentUser = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: '00000000-0000-4000-8000-000000000201', name: 'Jianjun', email: 'a@example.com', emailVerified: true, avatarUrl: null };
 const token: PersonalAccessToken = { id: 'token-a', name: 'MacBook', createdAt: '2026-10-22T12:00:00Z', expiresAt: '2099-10-22T12:00:00Z' };
-const member = (id: string, role: 'admin' | 'member' = 'member'): ProjectParticipant => ({
+const member = (id: string, role: 'admin' | 'member' = 'member'): ProjectParticipant => ({ inheritedFrom: null,
   userId: id, profile: { name: id === user.id ? user.name : id, email: `${id}@example.com`, avatarUrl: null }, effectiveRole: role,
   directGrant: { projectId: '00000000-0000-4000-8000-000000000101', userId: id, role, version: 9223372036854775806n, createdAt: '2026-10-22T12:00:00Z', updatedAt: '2026-10-22T12:00:00Z' },
 });
+const memberPage = (items: readonly ProjectParticipant[]): ProjectParticipants => {
+  const actor = items.find((item) => item.userId === user.id);
+  const role = actor?.effectiveRole ?? actorRole;
+  const base = directAccessFixture('00000000-0000-4000-8000-000000000101', user.id, role);
+  return { items, actorAccess: { ...base, directGrant: actor?.directGrant ?? null, teamRole: actor?.directGrant?.role === role ? null : role, canTransfer: actor?.directGrant?.role === role ? false : role === 'admin' } };
+};
 const invitation: ProjectInvitation = { id: 'invitation-a', projectId: '00000000-0000-4000-8000-000000000101', createdBy: user.id, createdAt: '2026-10-22T12:00:00Z', expiresAt: '2099-10-29T12:00:00Z', consumedAt: null, consumedBy: null, revokedAt: null };
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -57,7 +63,7 @@ beforeEach(() => {
   actorRole = 'admin';
   vi.mocked(auth.getProjectAccess).mockImplementation(async (projectId) => directAccessFixture(projectId, user.id, actorRole));
   vi.mocked(auth.listTokens).mockResolvedValue([]);
-  vi.mocked(auth.listMembers).mockResolvedValue([member(user.id, 'admin'), member('Alice')]);
+  vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'admin'), member('Alice')]));
   vi.mocked(auth.listInvitations).mockResolvedValue([]);
   vi.mocked(auth.revokeToken).mockResolvedValue();
   vi.mocked(auth.setMemberRole).mockImplementation(async (_projectId, userId, input) => { if (userId === user.id) actorRole = input.role; return member(userId, input.role).directGrant!; });
@@ -211,7 +217,7 @@ describe('account credentials', () => {
 describe('authoritative project management', () => {
   it('reads regular member state without requesting administrator invitations', async () => {
     actorRole = 'member';
-    vi.mocked(auth.listMembers).mockResolvedValue([member(user.id), member('Alice', 'admin')]);
+    vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id), member('Alice', 'admin')]));
     members(); await readyMembers();
     expect(screen.getByText(/成员与邀请由项目管理员管理/)).toBeInTheDocument();
     expect(auth.listInvitations).not.toHaveBeenCalled(); expect(screen.queryByRole('combobox')).toBeNull(); expect(screen.queryByRole('button', { name: '邀请成员' })).toBeNull();
@@ -231,7 +237,7 @@ describe('authoritative project management', () => {
   });
 
   it.each([403, 409])('reloads authoritative role after %s, hides privileged actions and does not repeat the mutation', async (status) => {
-    vi.mocked(auth.listMembers).mockResolvedValueOnce([member(user.id, 'admin'), member('Alice')]).mockResolvedValue([member(user.id), member('Alice', 'admin')]);
+    vi.mocked(auth.listMembers).mockResolvedValueOnce(memberPage([member(user.id, 'admin'), member('Alice')])).mockResolvedValue(memberPage([member(user.id), member('Alice', 'admin')]));
     vi.mocked(auth.setMemberRole).mockImplementation(async () => { actorRole = 'member'; throw new ApiError('server', status, status === 409 ? 'conflict' : 'forbidden'); });
     members(); await readyMembers();
     fireEvent.change(screen.getByRole('combobox', { name: 'Alice 的项目角色' }), { target: { value: 'admin' } }); await dialogClick('保存角色');
@@ -242,7 +248,7 @@ describe('authoritative project management', () => {
   });
 
   it('localizes a conflict notice and the current role without reloading network state on language change', async () => {
-    vi.mocked(auth.listMembers).mockResolvedValueOnce([member(user.id, 'admin'), member('Alice')]).mockResolvedValue([member(user.id), member('Alice', 'admin')]);
+    vi.mocked(auth.listMembers).mockResolvedValueOnce(memberPage([member(user.id, 'admin'), member('Alice')])).mockResolvedValue(memberPage([member(user.id), member('Alice', 'admin')]));
     vi.mocked(auth.setMemberRole).mockImplementation(async () => { actorRole = 'member'; throw new ApiError('server', 409, 'conflict'); });
     members(); await readyMembers();
     fireEvent.change(screen.getByRole('combobox', { name: 'Alice 的项目角色' }), { target: { value: 'admin' } });
@@ -256,7 +262,7 @@ describe('authoritative project management', () => {
   });
 
   it('reloads after self-demotion and gives up its admin actions immediately', async () => {
-    vi.mocked(auth.listMembers).mockResolvedValueOnce([member(user.id, 'admin'), member('Alice', 'admin')]).mockResolvedValue([member(user.id), member('Alice', 'admin')]);
+    vi.mocked(auth.listMembers).mockResolvedValueOnce(memberPage([member(user.id, 'admin'), member('Alice', 'admin')])).mockResolvedValue(memberPage([member(user.id), member('Alice', 'admin')]));
     members(); await readyMembers();
     fireEvent.change(screen.getByRole('combobox', { name: 'Jianjun 的项目角色' }), { target: { value: 'member' } });
     expect(screen.getByText(/你通过 Team 获得的权限保持不变/)).toBeInTheDocument(); await dialogClick('保存角色');
@@ -264,7 +270,7 @@ describe('authoritative project management', () => {
   });
 
   it('confirms and removes another member with its observed version, then navigates after explicit self-removal', async () => {
-    vi.mocked(auth.listMembers).mockResolvedValue([member(user.id, 'admin'), member('Alice', 'admin')]);
+    vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'admin'), member('Alice', 'admin')]));
     const removed = vi.fn(); members({ onRemoved: removed }); await readyMembers();
     click('移除 Alice'); expect(screen.getByText(/这会撤销对方的项目单独授权/)).toBeInTheDocument(); await dialogClick('移除成员');
     await waitFor(() => expect(auth.removeMember).toHaveBeenCalledOnce()); await readyMembers();
@@ -277,8 +283,8 @@ describe('authoritative project management', () => {
   it('retains inherited administrator access after self-demotion', async () => {
     const changed = { ...member(user.id, 'member'), effectiveRole: 'admin' as const };
     vi.mocked(auth.setMemberRole).mockImplementation(async () => {
-      vi.mocked(auth.listMembers).mockResolvedValue([changed, member('Alice')]);
-      vi.mocked(auth.getProjectAccess).mockResolvedValue({ effectiveRole: 'admin', directGrant: changed.directGrant });
+      vi.mocked(auth.listMembers).mockResolvedValue(memberPage([changed, member('Alice')]));
+      vi.mocked(auth.getProjectAccess).mockResolvedValue({ ...directAccessFixture('00000000-0000-4000-8000-000000000101', user.id, 'admin'), teamRole: 'admin', canTransfer: true, directGrant: changed.directGrant });
       return changed.directGrant!;
     });
     members(); await readyMembers();
@@ -292,8 +298,8 @@ describe('authoritative project management', () => {
   it.each(['member', 'admin'] as const)('retains inherited %s access after removing its own direct grant', async (effectiveRole) => {
     const removed = vi.fn();
     vi.mocked(auth.removeMember).mockImplementation(async () => {
-      vi.mocked(auth.listMembers).mockResolvedValue([{ ...member(user.id, effectiveRole), directGrant: null }, member('Alice')]);
-      vi.mocked(auth.getProjectAccess).mockResolvedValue({ effectiveRole, directGrant: null });
+      vi.mocked(auth.listMembers).mockResolvedValue(memberPage([{ ...member(user.id, effectiveRole), directGrant: null }, member('Alice')]));
+      vi.mocked(auth.getProjectAccess).mockResolvedValue({ ...directAccessFixture('00000000-0000-4000-8000-000000000101', user.id, effectiveRole), teamRole: effectiveRole, canTransfer: effectiveRole === 'admin', directGrant: null });
     });
     members({ onRemoved: removed }); await readyMembers();
     click('移除 Jianjun'); await dialogClick('移除成员');
@@ -325,33 +331,52 @@ describe('authoritative project management', () => {
     vi.mocked(auth.revokeInvitation).mockImplementation(async (_projectId, invitationId) => { catalogue = catalogue.filter((item) => item.id !== invitationId); });
     members(); await readyMembers(); expect(screen.getByText(/还没有有效邀请/)).toBeInTheDocument();
     click('邀请成员'); expect(screen.getByText('7 天后到期 · 单次使用 · 加入角色：成员')).toBeInTheDocument(); await dialogClick('创建邀请链接');
-    await screen.findByLabelText('一次性邀请链接'); expect(auth.createInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', expect.any(AbortSignal));
+    await screen.findByLabelText('一次性邀请链接'); expect(auth.createInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', user.id, expect.any(AbortSignal), expect.any(Function));
     expect(screen.getByLabelText('一次性邀请链接')).toHaveValue('https://daynight.test/invitations#once-secret'); await dialogClick('我已保存，关闭');
     expect(screen.queryByDisplayValue(/once-secret/)).toBeNull();
     await clickWhenReady('撤销邀请 invitation-a');
     expect(screen.getByText(/这个邀请链接将立即失效/)).toBeInTheDocument(); await dialogClick('撤销邀请');
-    await screen.findByText(/还没有有效邀请/); expect(auth.revokeInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'invitation-a', expect.any(AbortSignal));
+    await screen.findByText(/还没有有效邀请/); expect(auth.revokeInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'invitation-a', user.id, expect.any(AbortSignal), expect.any(Function));
   });
 
-  it('retains invitation failures in the dialog and can retry or cancel safely', async () => {
+  it('preserves unknown invitation results and requires a fresh catalogue before another action', async () => {
     vi.mocked(auth.createInvitation).mockRejectedValueOnce(new Error('secret-link-error')).mockResolvedValueOnce({ ...invitation, id: 'invitation-b', link: 'https://example.com/invitations#secret' });
-    vi.mocked(auth.revokeInvitation).mockRejectedValueOnce(new Error('internal secret'));
     vi.mocked(auth.listInvitations).mockResolvedValue([invitation]);
     members(); await readyMembers(); click('邀请成员'); await dialogClick('创建邀请链接'); await screen.findByRole('alert');
-    expect(screen.queryByText('secret-link-error')).toBeNull(); await dialogClick('创建邀请链接'); await screen.findByLabelText('一次性邀请链接');
-    fireEvent.keyDown(document, { key: 'Escape' }); expect(screen.getByRole('alert')).toHaveTextContent('邀请链接'); await dialogClick('确认已保存，关闭');
-    await clickWhenReady('撤销邀请 invitation-a'); await dialogClick('撤销邀请'); await screen.findByRole('alert'); await dialogClick('取消'); expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText('secret-link-error')).toBeNull();
+    expect(screen.getByRole('button', { name: '邀请成员' })).toBeDisabled();
+    expect(auth.createInvitation).toHaveBeenCalledTimes(1);
+    await clickWhenReady('读取当前邀请');
+    await screen.findByText(/原操作结果仍未确认/);
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接'); await screen.findByLabelText('一次性邀请链接');
+    expect(auth.createInvitation).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps both unknown invitation revocations disabled after reading the catalogue', async () => {
+    vi.mocked(auth.listInvitations).mockResolvedValue([invitation, { ...invitation, id: 'invitation-b' }]);
+    vi.mocked(auth.revokeInvitation).mockRejectedValue(new ApiError('network'));
+    members(); await readyMembers();
+    await clickWhenReady('撤销邀请 invitation-a'); await dialogClick('撤销邀请');
+    await screen.findByText(/邀请变更结果尚未确认/);
+    await clickWhenReady('读取当前邀请'); await screen.findByText(/原操作结果仍未确认/);
+    expect(screen.getByRole('button', { name: '撤销邀请 invitation-a' })).toBeDisabled();
+    await clickWhenReady('撤销邀请 invitation-b'); await dialogClick('撤销邀请');
+    await screen.findByText(/邀请变更结果尚未确认/);
+    await clickWhenReady('读取当前邀请'); await screen.findByText(/原操作结果仍未确认/);
+    expect(screen.getByRole('button', { name: '撤销邀请 invitation-a' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '撤销邀请 invitation-b' })).toBeDisabled();
+    expect(vi.mocked(auth.revokeInvitation).mock.calls.map((call) => call[1])).toEqual(['invitation-a', 'invitation-b']);
   });
 
   it('recovers ordinary member state when invitation access races a role loss', async () => {
-    vi.mocked(auth.listMembers).mockResolvedValueOnce([member(user.id, 'admin'), member('Alice')]).mockResolvedValue([member(user.id), member('Alice', 'admin')]);
+    vi.mocked(auth.listMembers).mockResolvedValueOnce(memberPage([member(user.id, 'admin'), member('Alice')])).mockResolvedValue(memberPage([member(user.id), member('Alice', 'admin')]));
     vi.mocked(auth.listInvitations).mockImplementation(async () => { actorRole = 'member'; throw new ApiError('server', 403, 'forbidden'); });
     members(); await readyMembers(); expect(screen.getByText(/成员与邀请由项目管理员管理/)).toBeInTheDocument();
     expect(auth.listMembers).toHaveBeenCalledOnce(); expect(auth.listInvitations).toHaveBeenCalledOnce();
   });
 
   it('handles membership removal between member-list and invitation-list requests', async () => {
-    vi.mocked(auth.listMembers).mockResolvedValueOnce([member(user.id, 'admin'), member('Alice')]).mockResolvedValue([member('Alice', 'admin')]);
+    vi.mocked(auth.listMembers).mockResolvedValueOnce(memberPage([member(user.id, 'admin'), member('Alice')])).mockResolvedValue(memberPage([member('Alice', 'admin')]));
     vi.mocked(auth.listInvitations).mockImplementation(async () => { vi.mocked(auth.getProjectAccess).mockRejectedValue(new ApiError('server', 404, 'not_found')); throw new ApiError('server', 403); });
     const unavailable = vi.fn(); members({ onUnavailable: unavailable }); await readyMembers();
     expect(unavailable).toHaveBeenCalledOnce(); expect(screen.queryByRole('button', { name: '邀请成员' })).toBeNull();
@@ -382,13 +407,17 @@ describe('authoritative project management', () => {
 
   it('uses access refusal independently of roster membership, discards old project data and aborts late responses', async () => {
     vi.mocked(auth.getProjectAccess).mockRejectedValueOnce(new ApiError('server', 404, 'not_found'));
-    const unavailable = vi.fn(); vi.mocked(auth.listMembers).mockResolvedValueOnce([member('Alice', 'admin')]);
+    const unavailable = vi.fn(); vi.mocked(auth.listMembers).mockResolvedValueOnce(memberPage([member('Alice', 'admin')]));
     const view = members({ onUnavailable: unavailable }); await readyMembers(); expect(unavailable).toHaveBeenCalledOnce(); expect(screen.getByRole('alert')).toHaveTextContent('项目不存在');
-    const late = deferred<readonly ProjectParticipant[]>(); vi.mocked(auth.listMembers).mockReturnValueOnce(late.promise);
+    vi.mocked(auth.listMembers).mockReset();
+    const earlierReads = vi.mocked(auth.listMembers).mock.calls.length;
+    const earlierInvitations = vi.mocked(auth.listInvitations).mock.calls.length;
+    const late = deferred<ProjectParticipants>(); vi.mocked(auth.listMembers).mockReturnValueOnce(late.promise);
     view.rerender(<MembersPanel projectId="00000000-0000-4000-8000-000000000102" projectName="Different" user={user} onRemoved={vi.fn()} />);
     expect(screen.queryByText('Alice')).toBeNull();
-    const signal = vi.mocked(auth.listMembers).mock.calls[1]![1]; view.unmount(); expect(signal.aborted).toBe(true);
-    await act(async () => late.resolve([member(user.id, 'admin')])); expect(auth.listInvitations).not.toHaveBeenCalled();
+    await waitFor(() => expect(auth.listMembers).toHaveBeenCalledTimes(earlierReads + 1));
+    const signal = vi.mocked(auth.listMembers).mock.calls.at(-1)![1]; view.unmount(); expect(signal.aborted).toBe(true);
+    await act(async () => late.resolve(memberPage([member(user.id, 'admin')]))); expect(auth.listInvitations).toHaveBeenCalledTimes(earlierInvitations);
   });
 
   it('keeps an unconfirmed removal closed and reads access loss without repeating the write', async () => {
@@ -406,7 +435,7 @@ describe('participant grants and unconfirmed writes', () => {
   it('uses the real direct grant role and never makes a null grant writable', async () => {
     const target = { ...member('Alice'), effectiveRole: 'admin' as const };
     const inherited = { ...member('Inherited', 'admin'), directGrant: null };
-    vi.mocked(auth.listMembers).mockResolvedValue([member(user.id, 'admin'), target, inherited]);
+    vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'admin'), target, inherited]));
     members(); await readyMembers();
     expect(screen.getByRole('combobox', { name: 'Alice 的项目角色' })).toHaveValue('member');
     expect(screen.queryByRole('combobox', { name: 'Inherited 的项目角色' })).toBeNull();
@@ -431,7 +460,7 @@ describe('participant grants and unconfirmed writes', () => {
   });
   it.each(['network', 'protocol', 'server'] as const)('closes an unconfirmed %s write and requires a new read and review', async (kind) => {
     vi.mocked(auth.setMemberRole).mockImplementation(async () => {
-      vi.mocked(auth.listMembers).mockResolvedValue([member(user.id, 'admin'), { ...member('Alice', 'admin'), directGrant: { ...member('Alice', 'admin').directGrant!, version: 9223372036854775807n } }]);
+      vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'admin'), { ...member('Alice', 'admin'), directGrant: { ...member('Alice', 'admin').directGrant!, version: 9223372036854775807n } }]));
       throw new ApiError(kind, kind === 'server' ? 500 : null);
     });
     members(); await readyMembers();

@@ -24,20 +24,30 @@ values without property tombstones. Older rows cannot advance coverage or revive
 removed properties. Graph projections explicitly drop properties while the
 summary map retains them.
 
-The origin-local daynight-task-cache database uses schema 4 and idb 8.0.4. The
+The origin-local daynight-task-cache database uses schema 6 and idb 8.0.4. The
 [property-row model](2026-10-30-task-property-rows.md) made property absence
 observable without changing task versions during migration; its 1-to-2 upgrade
 cleared rebuildable stores to prevent conflicts with old worker:null or
 mandatory-PR details. The
 [full-property synchronization decision](2026-10-30-task-property-sync.md)
 introduced complete properties to summary rows and a schema-3 rebuild. The
-[assignment decision](2026-11-03-task-assignment-foundation.md) adds the required
-nullable assignedTo field and schema 4. Direct upgrades from 1, 2 or 3 clear
-rebuildable project/summary/detail stores, rotate user fences and clear old
-watermarks before a complete snapshot. Missing properties or assignedTo cannot
-be inferred as an empty object or null. Its userScopes store owns durable user
-fences; projects owns project manifests and cache generations; summaries owns intrinsic task rows; details establishes the
-shared intrinsic-detail record and transaction shape. Manifest counts, edges,
+[assignment decision](2026-11-03-task-assignment-foundation.md) introduced the
+required nullable assignedTo field and schema 4. The
+[public ownership decision](2026-11-04-public-project-ownership.md) introduced
+required Project ownership and the schema-5 rebuild. Direct upgrades from 1, 2,
+3 or 4 clear rebuildable project/summary/detail stores, rotate user fences and
+clear old watermarks before a complete snapshot. The
+[profile-reuse decision](../bug-fix/2026-11-04-task-view-request-reuse.md) adds a
+separate profiles store in schema 6; upgrading from the ownership-complete
+schema 5 preserves task records, user fences and watermarks. Missing properties,
+assignedTo or Project ownership cannot be filled with defaults. The userScopes
+store owns durable user fences; projects owns project manifests and cache
+generations; summaries owns intrinsic task rows; details establishes the shared
+intrinsic-detail record and transaction shape. Profiles stores content and its
+server-issued version per viewer/project/person under userFence; live task-sync
+qualification and access metadata remain in memory. Content can survive task
+epoch replacement but requires fresh authorized metadata before reuse.
+Manifest counts, edges,
 maximum time, ownership and graph validity are checked against the complete
 durable collection before applying a delta. Missing independent rows are
 corruption, even when the remaining graph is valid. Central lifecycle validation
@@ -47,7 +57,7 @@ counts are zero. An invalidated record cannot preserve an old incremental epoch.
 
 Missing or malformed user scope records require a user-wide repair because their
 fence guards every project owned by that user. One dedicated transaction replaces
-the fence without parsing the damaged value, clears that user's summaries/details
+the fence without parsing the damaged value, clears that user's summaries/details/profiles
 and invalidates its rebuildable project baselines. Other users remain intact.
 For user-scope corruption repair, binding memory, retiring scopes and broadcasting
 wait for transaction completion.
@@ -75,9 +85,11 @@ local errors. Captured user fence/generation checks reject stale revocation befo
 clearing content. Access withdrawal synchronously retires memory admission, then
 scope-owned CAS cleanup invalidates the matching durable generation. Cleanup
 failure keeps the denial until Retry and fresh online project admission. Logout
-also releases memory synchronously while user-wide storage cleanup runs.
+also releases memory synchronously while user-wide storage cleanup runs, including
+profile content. Project revocation clears the corresponding persisted profiles;
+ordinary epoch replacement retains content for validation by a fresh manifest.
 
-Visible-page five-second scheduling, automatic serialization and manual-refresh
+Visible-page fifteen-second scheduling, automatic serialization and manual-refresh
 priority retain their existing owner. Duplicate or empty results update the
 mount's successful clock receipt without rewriting rows, invalidating detail
 records, replacing the published graph index or broadcasting. Ordinary hints

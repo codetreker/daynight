@@ -13,7 +13,7 @@ Task 命令、安装产物、真实 Go/PostgreSQL 联调及默认预算验收已
 列表默认值与文本输出见[列表决策](../../.agents/notes/implemented/feature/2026-10-22-task-list-defaults.md)，
 JSON 列表字段见[描述省略决策](../../.agents/notes/implemented/simplification/2026-10-22-task-list-json-description.md)。
 任务起止字段与图时钟的读取机制由[执行计时架构](daynight-task-timing.md)扩展；
-CLI 同步保留 `startedAt`、`completedAt`、`observedAt` 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
+CLI 同步保留 `startedAt`、`completedAt`、`observedAt`、Project.ownership 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
 服务端[负责人设计](daynight-task-assignment.md)拥有原生 assignedTo、任务筛选和项目内人员读取。CLI 的 Task/graph 严格解析、普通元数据设置/清空、list 筛选及当前ID输出已实现，复用同一字段契约，不增加人名或头像请求。
 [Steps 资源要求](../spec/daynight-task-steps.md)扩展独立的 task step list/show 读取、Add、Update、Set-status 与 Move；它不将完整 Steps 加入普通 Task 投影。
@@ -79,6 +79,7 @@ src/
   commands/
     server/                # 共享配置、操作与信号生命周期
     project/               # 参数、帮助、project 操作及渲染
+    team/                  # Team 只读命令、上下文与渲染
     task/                  # task、Step 读取与附件的参数、帮助、操作及渲染
     review/                # review 配置投影和既有行为
     update/                # 既有 npm 安装生命周期
@@ -353,6 +354,9 @@ flowchart TD
 | `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时 `POST /api/v1/projects`，提交原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
+| `team list` | `GET /api/v1/me`，再读取全部 `GET /api/v1/teams` 页 |
+| `team show`、`team default show` | `GET /api/v1/me`，再按选定 ID 读取 `GET /api/v1/teams/{id}` |
+| `team projects` | `GET /api/v1/me`，再读取全部 `GET /api/v1/projects?teamId=...` 页 |
 | `task create [--required-platform <platform>] [--assigned-to <user-uuid>]` | 省略负责人先 `GET /api/v1/me`，再 `POST /api/v1/projects/{projectId}/tasks`，携带 assignedTo 和可选 requiredPlatform |
 | `task list` | `GET /api/v1/projects/{projectId}/tasks`，保留相同筛选遍历 cursor |
 | `task ready [--limit <N>] [--allow-agents true\|false] [--compatible-platform <platform>]` | 单次 `GET /api/v1/projects/{projectId}/tasks?ready=true&limit=N`，可带 allowAgents、compatiblePlatform，不提交 cursor |
@@ -377,6 +381,14 @@ flowchart TD
 或重建。每页验证后累积结果，末页才渲染；重复 cursor 或不前进的循环响应作为
 协议错误终止，不能无限请求。多页读取继承服务不提供跨请求快照的边界，CLI 不
 宣称列表是同一时间点的完整快照。
+
+Team 读取先以 `/me` 确定真实用户和 Personal Team，并核对响应主体；后续每个响应
+绑定同一用户。显式目标绕过默认配置，否则只读取规范 origin 与用户 ID 对应的
+`teamDefaults` 值，缺失使用真实 Personal ID。详情验证返回 ID 与 membership 的 Team、
+用户身份；项目页验证 ownership 属于目标 Team。列表复用有界分页，拒绝重复 ID、游标
+循环及超额，完整验证后统一渲染。`default show` 对已配置目标执行详情读取，避免把
+失效配置显示成可用；`team list` 不解析默认，显式目标也不受其影响。该读取路径不写
+配置，既有全范围 Project 发现继续使用原列表方法。
 
 Steps typed GET 复用 `exchange` 的认证、no-store、取消、期限与响应预算。显式 project
 直接访问所选路径，不增加项目发现、父 Task GET 或子项 404 后的隐藏核验。

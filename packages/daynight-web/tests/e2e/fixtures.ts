@@ -292,10 +292,11 @@ export const seedUserProfile = async (userId: string, profile: { readonly name: 
   if (!uuid.test(userId) || Object.values(profile).some((value) => value !== null && value.includes('\0'))) throw new Error('Invalid owned user profile fixture.');
   const literal = (value: string | null): string => value === null ? 'NULL' : `'${value.replaceAll("'", "''")}'`;
   const target = await ownedDatabase();
-  const result = await command('docker', ['exec', target.postgresContainer, 'psql', '--no-psqlrc', '--set', 'ON_ERROR_STOP=1',
-    '--username', 'daynight', '--dbname', target.database, '--tuples-only', '--no-align', '--command',
-    `UPDATE users SET name = ${literal(profile.name)}, avatar_url = ${literal(profile.avatarUrl)}, updated_at = statement_timestamp() WHERE id = '${userId}' RETURNING id;`],
-  { cwd: process.cwd(), timeoutMs: 15_000, quiet: true });
+  const result = await command('docker', ['exec', '--interactive', target.postgresContainer, 'psql', '--no-psqlrc', '--set', 'ON_ERROR_STOP=1',
+    '--username', 'daynight', '--dbname', target.database, '--tuples-only', '--no-align', '--file', '-'], {
+    cwd: process.cwd(), timeoutMs: 15_000, quiet: true,
+    input: `UPDATE users SET name = ${literal(profile.name)}, avatar_url = ${literal(profile.avatarUrl)}, updated_at = statement_timestamp() WHERE id = '${userId}' RETURNING id;`,
+  });
   expect(result.split('\n').filter((line) => uuid.test(line)), 'Owned profile fixture updates exactly the selected cached user').toEqual([userId]);
 };
 

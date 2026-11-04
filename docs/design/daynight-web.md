@@ -23,7 +23,7 @@ SDK 提供 App-aware provider discovery；发现失败与用户会话失效分�
 [语言设计](daynight-web-i18n.md)拥有已实现的类型化目录、Intl 格式化器、首屏解析、常驻 Provider、共享选择器和全部现有第一方组件的双语呈现；[双语需求](../spec/daynight-web-i18n.md)拥有完整覆盖与验收。语言偏好使用独立的 origin-local 键，不改变本文的项目浏览记录、API、图或附件生命周期。
 
 [执行计时架构](daynight-task-timing.md)的起止字段与数据库 `observedAt` 已进入严格 API 读取器。
-`useTaskGraph` 从 task-sync 获取最新服务端样本，保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。[缓存架构](daynight-task-sync.md)拥有已实现的 IndexedDB schema 4 摘要、完整属性同步、原子增量应用和身份生命周期；详情已在同一 scope 下按需持久化，以摘要业务版本和恢复需要驱动 GET。
+`useTaskGraph` 从 task-sync 获取最新服务端样本，保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。[缓存架构](daynight-task-sync.md)拥有已实现的 IndexedDB schema 6 摘要及独立人员内容、完整属性同步、原子增量应用和身份生命周期；详情已在同一 scope 下按需持久化，以摘要业务版本和恢复需要驱动 GET。
 [外部依赖架构](daynight-external-dependencies.md)的存储及严格读取准备也已实现：
 GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去重及完整依赖的子集，
 摘要自身内容比较和详情描述符纳入该集合。buildGraphIndex 用普通依赖构造弱连通分量，
@@ -48,7 +48,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 ## 看板基线与附件扩展
 
 原看板交付两个页面、一个详情侧栏和一个新增只读 API。该基线使用手动刷新，保持
-原有写入接口、依赖规则与本机监听方式。当前项目任务页使用每 5 秒的可见页面自动刷新，
+原有写入接口、依赖规则与本机监听方式。当前项目任务页使用每 15 秒的可见页面自动刷新，
 延续完整快照替换与资源隔离；[自动刷新决策](../../.agents/notes/implemented/feature/2026-10-22-project-task-auto-refresh.md)
 部分取代原基线的手动触发策略。附件是独立的文件资源扩展，使用自己的
 元数据、HTTP 接口和局部状态，不把文件写入混入 task PATCH 或图快照。
@@ -119,7 +119,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 - 页首显示“项目”和刷新按钮。
 - 卡片显示项目名称、仓库地址、创建日期和“查看任务”。长名称、地址允许换行，仓库地址按普通文本展示。
 - Workspace 的认证身份内只挂载一个项目目录 Provider；侧栏与项目卡片共享目录、刷新及“加载更多”，切换项目保留已加载页。
-- 复用 `GET /api/v1/projects?limit=50&cursor=...`，服务端先按成员关系过滤，再以“加载更多”遍历，按 ID 去重并保留服务端顺序。创建成功及移除自身成员后刷新共享目录。
+- 复用 `GET /api/v1/projects?limit=50&cursor=...`，服务端先按有效项目权限过滤，再以“加载更多”遍历，按 ID 去重并保留服务端顺序。创建成功及移除自身成员后刷新共享目录。
 - 加载下一页失败时保留已加载卡片，错误和重试定位在列表末尾；首次加载失败使用整页错误。
 - 刷新重置分页，从新列表开始。列表没有跨页一致性承诺，不显示未经完整读取的项目总数。
 
@@ -154,7 +154,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 └ 实线：普通依赖；虚线：外部依赖；虚线卡片：链外前置       ┘
 ```
 
-- `ProjectView` 持有唯一项目快照、`useTaskGraph` 同步、详情选择、项目订阅与浏览偏好。公共标题、刷新、错误和详情不属于任何可隐藏内容区。概览展示同一快照的六项统计和整体进度；任务列表使用同一完整索引和分类。停留概览仍需要当前统计，因此原有五秒同步按页面可见性运行，不按外层选择创建第二套请求或缓存。
+- `ProjectView` 持有唯一项目快照、`useTaskGraph` 同步、详情选择、项目订阅与浏览偏好。公共标题、刷新、错误和详情不属于任何可隐藏内容区。概览展示同一快照的六项统计和整体进度；任务列表使用同一完整索引和分类。停留概览仍需要当前统计，因此 15 秒同步按页面可见性运行，不按外层选择创建第二套请求或缓存。
 - `ProjectSectionTabs` 拥有外层导航的呈现与键盘方向，`ProjectOverview` 呈现统计与进度列表，`ProjectTaskWorkspace` 组合既有内层列表与任务时钟。两个面板复用 `.project-section-heading`；概览的标题与说明以 flex 单行、基线对齐，间隔 12px，任务列表只保留标题。标题不收缩且无下边距，概览说明允许收缩并在溢出时显示省略号，完整文案保留在文本节点及原生 `title` 提示中。标题/说明的桌面字号为 16px/12px，740px 及以下为 15px/11px，字重、颜色和标题区下方间距沿用各自规则。独立任务与任务链的工具栏直接衔接列表或空态，不渲染说明段落及其占位。共用项目标题区以 `.project-title-line` 将项目名与唯一的仓库地址按文字基线排列，横向间隔 14px，空间不足时整项换行；子项允许收缩并在长文本内部换行，项目名不保留下边距，仓库地址沿用原有次要文字样式。桌面导航列宽 150px、间距 28px，1000px 及以下为 130px/20px；740px 及以下改为上方横排。统计默认三列，1500px 起六列，740px 及以下两列。
 - `ProjectView` 先反转完整精确服务顺序，再按完整普通分量的汇总状态稳定排序，分类后生成一份近期投影，概览与任务列表共同消费。`overview-progress.ts` 读取普通分量的完整 `progress`，保留所有未完成组以及近期完成组，代表任务提供标题和导航 witness。独立任务以近期已知完成数作分子，与全部未完成数相加作分母，只要筛选集合非空就生成汇总行；全部完成为 `done`，部分完成或存在进行中任务为 `in_progress`，其余为 `todo`。`OverviewProgressCount.status` 携带进度状态，`ProjectOverview` 将任务链及独立汇总行按相同优先级稳定排序后再切页，同状态保留链序且汇总行在该组末尾。独立汇总仅有近期完成项时仍显示 100%。近期完成 Goal 同样显示 100%；六项项目统计仍读取完整 summary。统计口径由[需求](../spec/daynight-web.md#项目整体进度)拥有，当前范围与分页决策见[近期任务浏览](../../.agents/notes/implemented/feature/2026-10-27-recent-task-pages.md)，最初聚合与定位理由保留在[进度决策](../../.agents/notes/implemented/feature/2026-10-26-project-overview-progress.md)。
 - `task-status-rows.css` 通过 `data-task-status` 提供灰、蓝、绿底色及同色系悬停变量。`ProjectOverview` 直接使用既有 `OverviewProgressCount.status`，独立行、子任务和图卡片传自身状态，链标题使用分量状态。列表行由 `task-status-surface` 消费背景、边框及可读辅助文字；标题内展开按钮透明以覆盖完整标题行，展开容器保持中性。`TaskNode` 直接引入共享样式并由 `graph.css` 消费背景变量，保留图自身的状态边框、文字、虚线及检查轮廓；选中、前置检查和无关节点不写背景色。独立行及图卡片的卡住提醒共享橙色背景及悬停变量，各自保留告警边框和文字。详情不消费该属性，概览定位仅设置紫色轮廓和阴影。行为由[条目背景需求](../spec/daynight-web.md#任务条目状态背景)拥有，列表聚合取舍见[状态背景决策](../../.agents/notes/implemented/feature/2026-10-28-task-status-backgrounds.md)，图卡片复用及检查表达见[图卡片背景决策](../../.agents/notes/implemented/feature/2026-11-04-graph-status-backgrounds.md)。
@@ -276,13 +276,13 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 `TaskAssigneeSelect` 与状态控件组成同一个 24px 控制组，再排列平台和 ready/blocked；自动执行保持右侧。入口使用已确认详情，16px 头像配姓名，列表身份使用 17px 头像。`TaskAssigneeIdentity` 从项目人员 map 读取实际 nullable 姓名和头像，未载资料或无姓名显示短 UUID，图片失败保留身份替代形态；只有明确 `hasProjectAccess=false` 才显示失权状态，不生成邮箱。
 
-共享 `AssigneePicker` 拥有搜索、活动项、键盘与菜单定位；完整目录只在打开或 Retry 时读取，加载或失败时提交禁用。菜单以 fixed 定位并 portal 到 surface 的焦点所有者子树，按视口保留 12px 边界，随 scroll、resize、fullscreen 和进入动画更新锚点。Escape 关闭菜单并恢复入口；Tab 或外部点击关闭但保留后续焦点行为。详情任务、禁用状态或准入变化使菜单关闭。选择当前值不创建 mutation，其他选择直接交给详情会话，不增加确认层或规则说明文案。
+共享 `AssigneePicker` 拥有搜索、活动项、键盘与菜单定位；打开或 Retry 按当前在线清单补读缺失或变化的人员资料，加载或失败时提交禁用。新历史尚无在线清单时撤回旧目录的 ready 状态，已打开菜单等待加载，不读取完整头像目录。菜单以 fixed 定位并 portal 到 surface 的焦点所有者子树，按视口保留 12px 边界，随 scroll、resize、fullscreen 和进入动画更新锚点。Escape 关闭菜单并恢复入口；Tab 或外部点击关闭但保留后续焦点行为。详情任务、禁用状态或准入变化使菜单关闭。选择当前值不创建 mutation，其他选择直接交给详情会话，不增加确认层或规则说明文案。
 
 `TaskDetailSessions.setAssignedTo` 使用普通 PATCH 的 `setTaskAssignedTo`，只发送精确 version 与 nullable UUID。会话按原值是否等于规范目标预测版本 +0/+1；同值保留更新时间和许可，实际变化校验目标、`allowAgents=false` 与其余完整材料。所有其他 mutation 核验 assignedTo 保持不变。HTTP 200 的远端写确认先于完整正文安装；冲突只读刷新，未知结果沿现有 GET 核对队列，不重放 PATCH，旧 owner 或历史不能安装结果。pending、陈旧、unknown 和核对 gate 与其他任务操作共用。
 
-`TaskAssigneesProvider` 位于认证 `TaskCacheProvider` 内和详情 Provider 外，拥有该 scope 的会话内存资料；独立详情与项目页共用它。挂载行、详情和具体人员筛选以独立 symbol 登记 ID 需求，排序去重后分批最多 100 项，空集合不请求。项目页与独立详情按 graph-owner symbol 加正 revision 登记成功 receipt；重新挂载的 revision 不与另一 owner 的计数比较。限定请求在途时合并一次后继刷新，完整目录仅响应显式打开和重试，不增加轮询。
+`TaskAssigneesProvider` 位于认证 `TaskCacheProvider` 内和详情 Provider 外，按项目共享当前 scope 的人员需求和显示；独立详情与项目页共用它。每次成功 task-sync 提供完整 assigneeVersions 清单，不在任务摘要中嵌入姓名或头像。完成当前身份和项目在线准入后，scope 从 profiles store 恢复匹配版本内容；该 store 按查看者、项目、资料用户与 userFence 隔离，仅存 {userId,version,name,avatarUrl}。hasProjectAccess 始终来自在线清单，变化时无需重新下载相同头像。仅本地 preview 不恢复人员资格或在线准入。
 
-人员读取在 scope.ready 后捕获已授权内存 manifest 的 userFence/cacheGeneration，不调用 beginSync 重读持久摘要。每人独立的派发序号阻止旧目录覆盖较新限定读取，包括 unresolved；身份、ticket 和需求共同约束正向发布。可信同用户项目 404 先按 ticket 处理 scope 撤权，菜单关闭或需求变化不能丢失负向准入；旧历史仍不能撤回新历史。资料与错误不写入 Task 版本或 IDB，读取失败不改 Task.assignedTo。
+挂载行、详情和具体人员筛选登记需求，按清单筛选有资格且内容缺失或版本变化的 ID，每批最多 100 项；空集合不请求，nullable 姓名和头像仍是完整资料。选择器直接使用完整清单，普通打开复用匹配内容和在途工作，Retry 恢复缺失或失败项。限定读取共享在途工作，需求变化保留同历史有效结果；保存资料 GET 实际 version，不用旧清单版本覆盖，也不因交错观察立即循环读取。scope 的 readProfiles/writeProfiles 与发布均检查身份、userFence 和当前 cacheGeneration。缓存事件与读取捕获先采用当前 generation/userFence；新历史的 assigneeVersions 为 null 时也立即撤回旧人员显示、资格、访问标记和 ready 目录，已请求目录回到 loading，未请求目录为 idle。普通 epoch 更替只保留同 userFence 原始内容，等待新在线清单匹配后恢复显示；注销/换号/身份失效及项目撤权清除所属资料。可信同用户项目 404 先按捕获 ticket 处理 scope 撤权，菜单关闭或需求变化不能丢失负向准入，旧历史不能撤回新历史。资料不写入 Task 版本或任务记录；读取与存储失败保留可恢复错误且不改 Task.assignedTo。完整内容版本和缓存机制由[负责人设计](daynight-task-assignment.md)拥有。
 
 `TaskAssigneeFilter` 拥有 all/me/unassigned/user 显示条件。`ProjectPage` 在完整 index 上计算匹配 ID，与近期范围相交后分页；`StandaloneList` 只呈现匹配行，`ChainList` 保留匹配成员所在真实代表，显示匹配子任务及数量。链进度、上下文、ready、统计与图继续使用完整 component/index，task-sync 不携带此筛选；显式概览定位可回到 all。新增交互保留必要错误、访问状态和恢复入口。字段、人员与筛选的完整机制由[负责人设计](daynight-task-assignment.md)拥有。
 
@@ -322,7 +322,7 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 撤回可用性独立使用当前 `ProjectAccess` 的 effectiveRole、viewer 与 claim userId；仅在 access ready 且不处于刷新时提供本人或管理员操作。资料成功不授予权限，资料失败不撤销已验证权限。权限错误继续由既有 ProjectAccess 消费者表达，服务端保留最终成员及权限校验。
 
-包含归属的 `task-detail-heading` 保留 flex 收缩、零最小高度和自身 `overflow:auto`，最大高度为 `min(50%, max(32px, calc(100% - 120px)))`，相对详情 body 保留页签和阅读空间，同时给极短视口留下可操作的头部滚动窗口。头部可聚焦并支持键盘/滚轮滚动，用户名称、账号与机器名称保留完整文字，聚焦内部操作会带入可见区域。高度不超过 500px 的带归属详情隐藏静态说明 footer；普通视图复用短全屏的紧凑页签、附件内边距和预览标题布局；带归属独立页的辅助返回/语言栏使用较紧的内边距与间距，在 320px 宽度下保留中英文完整返回链接和语言选择器的同排布局，避免导航换行挤没正文。普通/全屏、弹窗/独立页使用相同的归属高度约束，完整信息与操作在头部局部滚动，概览和附件正文保留各自的阅读空间。
+包含归属的 `task-detail-heading` 保留 flex 收缩、零最小高度和自身 `overflow:auto`，最大高度为 `min(50%, max(32px, calc(100% - 120px)))`，相对详情 body 保留页签和阅读空间，同时给极短视口留下可操作的头部滚动窗口。头部可聚焦并支持键盘/滚轮滚动，用户名称、账号与机器名称保留完整文字，聚焦内部操作会带入可见区域。撤回按钮在该局部滚动区域内清除全局按钮的顶部滚动留白，使其在 32px 高度的窗口中聚焦后仍完整可见；不改变其它页面按钮的滚动留白。高度不超过 500px 的带归属详情隐藏静态说明 footer；普通视图复用短全屏的紧凑页签、附件内边距和预览标题布局；带归属独立页的辅助返回/语言栏使用较紧的内边距与间距，在 320px 宽度下保留中英文完整返回链接和语言选择器的同排布局，避免导航换行挤没正文。普通/全屏、弹窗/独立页使用相同的归属高度约束，完整信息与操作在头部局部滚动，概览和附件正文保留各自的阅读空间。
 
 Active/released 归属的原 owner 或项目管理员可以选择“强制撤回”。确认复用 TaskConfirmation，冻结完整 task/claim 和精确 version；说明返回 todo、清空归属与执行时间并设置 allowAgents=false，也明确远端 agent 无法保证立即停止，worker 下次成功同步后开始收尾。取消和 Escape 不提交；已知后台变化关闭失效确认。Completed 或缺失 worker 不提供撤回。操作成功后状态、许可和归属共同更新，不做乐观清空。
 
@@ -561,7 +561,7 @@ packages/daynight-web/
   src/api/{types,client,parse}.ts    DTO、请求、运行时解析与错误
   src/i18n/                         语言目录、格式化器、生产根 Provider 与共享选择器
   src/features/projects/           ProjectsPage、ProjectPage、ProjectTaskTabs、StandaloneList、偏好 hooks、统计卡
-  src/features/task-cache/         四 store、身份 scope、原子摘要合并及完整本地图投影
+  src/features/task-cache/         五个 store、身份 scope、原子摘要合并、人员内容及完整本地图投影
   src/features/task-graph/          model.ts、layout.ts、dashes.ts、ChainList、TaskGraph、TaskNode
   src/features/task-detail/         TaskDetailDialog、TaskDetailSession、详情请求 hook、PR 展示及 focus helper
   src/features/task-detail/attachments/  路径树、附件 hook、操作和内容预览
@@ -626,7 +626,7 @@ flowchart LR
 
 ### 前端数据和状态所有权
 
-认证身份下的 TaskCacheScope 拥有项目持久摘要及可发布投影，项目页面维护图加载与当前资源；Worker hooks 只持有页面内存观测并复用 scope 的认证生命周期，不进入项目缓存或建立全局注册表。不引入 Redux 或查询框架。专用 TaskDetailSession 保存项目/任务键对应的详情与任务写操作，纯图模型只计算派生内容。CurrentAccountProvider 将已有 session.user 与认证准入状态传给认证任务界面，不读取另一份账号或人员目录。TaskCacheProvider 包裹全部认证路由，内部依次放置 TaskAssigneesProvider 和详情 Provider；独立任务和附件路径页共享该 scope。Discussion 的当前账号展示来自外层账号上下文，历史作者仍来自消息快照，负责人资料不成为 Thread 的读取依赖。
+认证身份下的 TaskCacheScope 拥有项目持久摘要及可发布投影，项目页面维护图加载与当前资源；Worker hooks 只持有页面内存观测并复用 scope 的认证生命周期，不进入项目缓存或建立全局注册表。不引入 Redux 或查询框架。专用 TaskDetailSession 保存项目/任务键对应的详情与任务写操作，纯图模型只计算派生内容。CurrentAccountProvider 将已有 session.user 与认证准入状态传给认证任务界面，不读取另一份账号或人员目录。/me 的完整表示由浏览器 private,no-cache HTTP 缓存按身份绑定的强 ETag 重验，页面与前台核验仍实际认证，不另建 /me IndexedDB。TaskCacheProvider 包裹全部认证路由，内部依次放置 TaskAssigneesProvider 和详情 Provider；独立任务和附件路径页共享该 scope。Discussion 的当前账号展示来自外层账号上下文，历史作者仍来自消息快照，负责人资料不成为 Thread 的读取依赖。
 
 - Workspace 按认证身份保持正文和导航边界；`useSidebarPreference` 只拥有 origin-local 桌面折叠值和保存错误，手机覆盖导航为独立临时状态。二者不参与项目、缓存、详情或图的 key，也不触发业务读取。
 - 项目目录 Provider 在 Workspace 的认证身份边界拥有当前已加载页、nextCursor 和下一页错误；`useProjects` 在 Provider 内管理请求，`useProjectList` 向侧栏及项目列表提供同一份状态和操作。首次请求、加载更多和刷新有各自状态；刷新使旧游标及旧请求失效，卸载取消请求，身份变化重建目录。项目切换与侧栏折叠不重建目录或增加轮询。
@@ -778,58 +778,74 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 
 ### CI 构建归属
 
-同一个 Web 模块选择结果并行启用 `verify-web-quality` 与 `verify-web`，两个 job 各保留
-20分钟上限，最终`checks`同时依赖二者及其他已选择模块。浏览器消费的CLI `src/api/`、`src/session/`和精确的`src/platform/text.ts`变更同时选择CLI与Web；共享workflow变更仍选择全部模块，合并结果验证及未选择job的`skipped`语义保持。
+同一个 Web 模块选择结果启用独立的 `verify-web-quality` 与两个 `verify-web` 矩阵分片，
+每个 job 保留 20 分钟上限。浏览器消费的 CLI `src/api/`、`src/session/` 和精确的
+`src/platform/text.ts` 变更同时选择 CLI 与 Web；共享 workflow 变更仍选择全部模块。
+最终 `checks` 保留前置结果的 `success`/未选择 `skipped` 门禁，并要求已选择的 Web
+质量与矩阵实际成功，再验证两份分片摘要。路由和 main push 全量规则由
+[仓库 CI 路由](../../README.md#ci-selection)拥有。
 
-质量 job 使用 `scripts/ci.mts` 的内部 `quality` 模式，串行执行 `test:harness` 和
-`test:coverage`，每个命令分别限时 180 秒。后者执行常规 Vitest/V8 文件，保留完整产品源码清单与严格语句覆盖率
-检查；只有该子进程的复制环境设置 `VITEST_MAX_WORKERS=4`，`forks` pool 和文件隔离不变。
-该并发数按当前公开仓库的标准 `ubuntu-latest` 独立质量 runner 的 4 CPU 容量校准，依据和
-历史竞争条件见[worker 容量决策](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)。
-仅测试文件逐项通过不足以证明 V8 报告和严格 checker 完成。质量 job 归档原始覆盖率及
-完整源码清单摘要。
+质量 job 通过 `scripts/ci.mts quality` 串行执行 `test:harness`、完整 Vitest/V8 采集与
+`scripts/coverage.mts`。harness 限时 180 秒，采集限时 300 秒，最终源码清单与严格
+覆盖率校验独立限时 60 秒；已完成的采集不能耗尽最终 checker 的预算。阶段归属见
+[预算决策](../../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)。
+完整产品源码清单与严格语句覆盖率保持；只有 Vitest/V8 子进程的复制环境设置
+`VITEST_MAX_WORKERS=4`，`forks` pool 与文件隔离不变。并发数按公开标准 Linux 独立
+质量 runner 的四 CPU 校准，依据及历史竞争条件见
+[worker 容量决策](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)。
+质量产物保留原始覆盖率与完整源码清单摘要；测试文件逐项通过不能替代 V8 报告及
+严格 checker 完成。
 
-浏览器 job 和 `verify-server` 继续使用固定 Node/pnpm，在干净 checkout 从锁文件安装
-依赖并构建真实 UI。Go gate 仍负责 build/vet/race/go-cov。浏览器 job 运行原有 dev-ci
-生命周期 fixture；workflow 选择官方 Ubuntu package archives，随后通过 `scripts/ci.mts`
-的 `browser` 模式安装固定 Chromium 及 Linux 依赖，保留 600 秒命令上限，再调用普通
-core acceptance。镜像源选择由 [PR #148](https://github.com/codetreker/daynight/pull/148)
-拥有；命令或 job 超时仍使检查失败。
+两个浏览器 job 分别调用 `scripts/ci.mts browser --shard=1/2` 与 `--shard=2/2`。
+固定 Chromium/Linux 依赖安装保留 600 秒上限，Node/pnpm 与冻结锁文件安装保持。
+每个 runner 构建独立的真实 UI/Go、数据库、UniAuth、安装 CLI 和正常 dev-ci 容器目标。
+Go 相关 job 继续复用以 server `go.sum` 标识的模块/编译缓存，Go gate 仍失效测试结果缓存。
 
-CI 命令包装保留进程组所有权：命令结束后由 `requireGroupStopped` 确认其所属进程组已停止，
-不能仅凭 leader 退出认定清理完成。命令错误、取消和清理错误均传播，同时失败时保留
-完整原因。core 不再拥有质量/浏览器准备 callback、空成功阶段或覆盖率准入观察器。
-本地 acceptance 继续使用已安装浏览器，不因 CI 拆分增加质量命令或准备等待。
+Playwright 参数为 `--fully-parallel --workers=1 --retries=0 --shard=i/2`：
+fully-parallel 使内置分片按 case 选择，每套数据库的实际执行仍为单 worker 串行。
+当前规范清单为 32 个稳定 scenario ID，两份各 16 个、互不重叠。服务准备前，runner
+使用与执行相同的功能参数先收集完整规范清单，再收集所选分片；只把通过校验的 ID
+写入已有 evidence 的 `selection`，并记录 `shard: { current, total: 2 }`。
+功能 ID 与组合鉴权检查名由纯 `inventory.mts` 统一拥有。遗漏、重复、未知 ID、
+错误分片或收集错误均失败。容器 callback 从现有 run/source 绑定的父回执取得同一选择，
+原生和容器分别按该清单校验实际结果。
 
-core 并行准备原生 UI/Go/PostgreSQL 和正常 dev-ci 源码构建/启动。dev-ci 继续拥有本次
-唯一镜像、运行镜像身份校验与完整 shell 清理。原生功能阶段及其浏览器回收通过后，
-runner 原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的容器执行许可。
-容器 callback 登记身份后等待并验证该许可，保留 900 秒等待上限，再记录浏览器 inventory
-并执行原有全部功能场景。`ready.json` 保留准备时间的诊断用途，不授予浏览器执行权。
+每个分片内部继续并行准备原生 UI/Go/PostgreSQL 与正常 dev-ci 源码构建/启动。
+dev-ci 拥有唯一镜像、实际运行镜像身份校验和完整 shell 清理。原生准备完成安装 CLI
+后，runner 原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的容器许可。
+容器 callback 登记身份并验证许可，保留 900 秒等待上限，再记录浏览器 inventory；
+其功能浏览器与原生功能浏览器重叠，`ready.json` 只记录诊断时间。
+每个 phase 的 profile 留在独立私有根；命令结束后必须确认整个所属进程组停止。
+错误、取消、意外服务退出和清理失败都传播并排空已启动任务。两个目标结束后才做
+run-wide CLI 回收，避免清除另一活动目标的命令或凭据。
 
-普通 core 与 CI 在两目标功能、组合鉴权和清理结束后完成。显式本地 `--stress` 模式
-才在原生准备、功能阶段、完整 dev-ci 退出清理与容器浏览器回收结束后，于仍存活的
-原生 Go/PostgreSQL 上执行全部容量/超限场景。任何 core 失败都取消并排空已启动任务；
-原生进程意外退出同样取消其他任务。本地容量保留单浏览器 worker、零 retries、固定输入、
-几何与时间门槛，并与本 runner 的构建、功能检查和清理隔离。独立压力配置及原始
-Playwright 压力入口在非空 `CI` 环境下拒绝，默认发现排除容量 spec。
-质量命令位于另一个 runner，不分片功能场景，也不为容量增加跨 job 准入协议。
-[本地压力测试决策](../../.agents/notes/implemented/testing/2026-11-03-local-stress-suites.md)
-拥有常规 CI 与显式压力验证的划分。
+较轻的 shard 2 统一拥有全部 28 项 navigation-contract、部署生命周期 fixture、
+原生/容器各十一项 combined-auth，以及真实附件持久化与成对备份恢复。
+归属仅由分片身份推导。Shard 1 完成其功能和所有所属资源清理；两个分片都保留
+镜像身份、浏览器、CLI 与 dev-ci 清理证明。矩阵 `fail-fast` 为 false，使另一个分片在
+失败后仍能完成诊断和清理。默认本地普通入口继续单次执行完整 32+32 功能与两个
+combined-auth；本地 `--stress` 不分片，并在资源准备前拒绝 shard 组合及 CI 环境。
+本地容量只在完整功能、dev-ci、浏览器及共享 CLI 屏障之后运行，保留原预算与数据集。
 
-两个 Go-consuming job 继续复用以 server `go.sum` 为依赖身份的 Go 模块/编译缓存；
-Go gate 仍先失效测试结果缓存。浏览器 job 的恢复与产物归档绑定同一个实际验收步骤。
+质量产物仍为 `daynight-web-coverage`。完整浏览器产物分别为
+`daynight-web-acceptance-1` 与 `daynight-web-acceptance-2`，第二份含一次性检查回执。
+各分片还把已有 `acceptance/*/evidence.json` 作为固定名字
+`daynight-web-summary-1`/`daynight-web-summary-2` 上传，保留 `runID/evidence.json`
+层次，所有产物维持 30 天留存。最终 `checks` 在原有 job 结果门禁之后，仅对选中 Web
+检出当前源码、设置 Node 24、下载这两份小摘要，无需 pnpm 安装或传递二进制、镜像和
+资源归属。`report.mts --shards file1 file2` 要求不同 run ID、恰好 1/2 与 2/2、
+当前 `GITHUB_SHA` 与检出 tree、clean/pass、准确的双目标和 phase 清理、每份准确选择、
+两份规范并集各覆盖一次，且只有 shard 2 拥有两个完整十一项鉴权回执。
+缺摘要、选中 job 被跳过、错误来源、功能重复/缺失、鉴权错归属或清理不完整均使原门禁失败。
+
+[两分片决策](../../.agents/notes/implemented/testing/2026-11-04-web-ci-case-shards.md)
+记录重复准备、runner minutes 和估算时长的取舍；实际收益绑定被测源码、工作量及 runner。
+[功能目标决策](../../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
+继续拥有单个 runner 内的目标隔离和许可；
+[质量隔离决策](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
+拥有独立质量职责及命令预算。原有
 [流水线决策](../../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
-记录 core 阶段、目标和恢复的原始选择；
-[质量 job 隔离决策](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
-拥有两类 job 的职责、命令边界和替代方案。拆分不证明先前超时的 CPU/I/O 原因，也不保证
-hosted 运行更快；实际结果绑定被测源码、工作量和 runner。
-
-完整 core run 只准备一次已安装 CLI，在原生与容器附件功能场景中复用。生产浏览器与
-恢复结束后，Ubuntu 浏览器 job 继续执行既有 `deployment/dev-ci/tests/attachments.mts`，
-将附件卷和配套备份恢复回执归档到同一部署证据产物。质量与浏览器产物分别保留其身份和
-既有留存期限。最终 `checks` 只接受所有前置 job 的 `success` 或 `skipped`；失败、取消
-及其他结果使汇总失败。PR 路由和 main push 全量规则由[仓库 CI 路由](../../README.md#ci-selection)拥有。
+保留原始选择的历史依据。
 
 ## 执行耗时与提醒
 
@@ -873,18 +889,21 @@ access 恢复必须呈现已保存资源或触发明确重读。资源仍缺失�
 该读取先废弃更早的读取代际，防止创建前的列表覆盖已确认邀请，也不把局部追加当成完整目录。
 此读取失效不取消已发送写入，也不把未知结果视为未提交。
 
-Project、分页 Project 与图内 Project.settings 的版本通过专用 `project-json.ts` envelope 解码：
-复用鉴权与根版本读取的 `json-source.ts` 原始片段定位，只对已知 settings 子对象调用根版本解码，
-分别覆盖 root Project、items[] 和 graph.project；原生 JSON 先验证完整正文，未知嵌套对象保持原有语义。
-成员管理按真实 direct grant 的 role/version 编辑，不因其为最后一条 direct admin 而禁用。
-只有继承访问的 participant 没有可修改或删除的 grant。自删成功后复用当前 access owner 重验，
-只有权威 unavailable 才离开项目；继承权限仍存在时保留页面。网络、协议或服务错误保留读取重试，
-不推定已失权或重发原写入。
+Project、分页 Project 与图内 Project 的 settings.version 和 ownership.version 通过
+`project-json.ts` envelope 无损解码；root Project、items[]、graph.project 与 task-sync.project
+保持相同内在形状。GET Project 的 access、members.actorAccess 和 task-sync.actorAccess
+也解码其 ownership 与 directGrant 版本。Project、access 与 participant 解码器复用 json-source.ts 的原始片段定位，
+先验证完整 JSON，再为同层字段共用一次源码映射；settings、ownership 与权限来源增加时
+不重复扫描同一个对象。只处理声明的资源子树；未知嵌套对象和 task properties 保持原有语义，
+不要求浏览器提供 reviver source context。超过 `2^53` 的资源版本保持 bigint，写入时编码为
+JSON 数字；缺失或错误 settings/ownership 不补默认值。
 
-同一原始片段机制仅在已声明的 access.directGrant 与 task-sync.actorAccess.directGrant
-路径无损解码授权版本；不递归改写未知嵌套对象或 task properties 的 version。
-保留通用 parseApiJson 的其他语义，不要求较新浏览器的 reviver source context。
-超过 `2^53` 的 settings.version 保持 bigint，保存编码为 JSON 数字；缺失或错误 settings 不补默认值。
+成员管理按真实 direct grant 的 role/version 编辑，不因其为最后一条 direct admin 而禁用。
+只有继承访问的 participant 没有可修改或删除的 grant。members 的 items 与 actorAccess
+由同一快照返回；MembersPanel 通过既有 access owner 的请求观察次序和身份/project 屏障
+发布本人来源，不用独立请求的旧角色与新名册混合展示。claim-owner 资料读取继续只承担展示。
+自删成功后复用当前 access owner 重验，只有权威 unavailable 才离开项目；继承权限仍存在时
+保留页面。网络、协议或服务错误保留读取重试，不推定已失权或重发原写入。
 
 ## 完整项目图的本地投影
 
@@ -938,7 +957,7 @@ type TaskGraph = {
 ## 请求、刷新与故障
 
 项目目录请求归属认证 Workspace 内的 ProjectsProvider，导航与项目列表共享该请求所有者。图、详情和附件请求分别归属其页面或选择。项目任务页在 document 可见时
-每 5 秒读取 task-sync 并原子合并摘要；隐藏后停止定时触发，重新可见时立即读取并重新开始计时。自动
+每 15 秒读取 task-sync 并原子合并摘要；隐藏后停止定时触发，重新可见时立即读取并重新开始计时。自动
 触发遇到活动同步请求时跳过，返回可见时也沿用活动读取；手动刷新取消活动同步请求并
 立即开始新读取。隐藏不取消已发出的读取。导航和卸载清除定时器并取消所属请求，
 请求序号和资源身份检查阻止晚到结果覆盖当前数据；取消不展示失败通知。
@@ -983,7 +1002,7 @@ Worker 请求沿用 requestId 和当前账号/资源身份。页面取消请求�
 
 浏览器页面拥有可见性驱动的定时读取，不增加服务端调度、推送连接或浏览器遥测服务。请求经过既有浏览器 fetch、图布局与 HTTP/数据库机制；验收环境另包含 dev-ci 子命令和 Compose 资源的生命周期。
 
-- 浏览器的摘要同步由 cycle_id、projectId 和请求序号关联，记录 received/changed/duplicate、cache_hit、apply_ms 与错误分类；duplicate 包含相等与旧版行。四 store 的事务、通道和身份失效由 TaskCacheScope 拥有，详情由 projectId/taskId 和请求序号关联；组件卸载清理图定时器，组件卸载或选择变化负责取消请求。
+- 浏览器的摘要同步由 cycle_id、projectId 和请求序号关联，记录 received/changed/duplicate、cache_hit、apply_ms 与错误分类；duplicate 包含相等与旧版行。五个 store 的事务、通道和身份失效由 TaskCacheScope 拥有，详情由 projectId/taskId 和请求序号关联；组件卸载清理图定时器，组件卸载或选择变化负责取消请求。
 - dev-ci 验收按 run ID、Compose project 与 image ID 关联启动、健康、测试和清理阶段；资源所有权及取消后的清理由[dev-ci 契约](#dev-ci-验收部署)定义。通过该 run 的清单与 phase/result 字段核对容器、卷和网络的最终状态。
 - HTTP 入口沿用现有 requestId；图用例日志附 project_id、component、phase、耗时和 node_count/edge_count，禁止记录标题、描述、repoUrl、SQL 或完整响应。
 - 使用既有请求 context 进入 store。布局同步计算只属于当前快照；关闭图浮层后释放节点、边和视口，不保留其他图实例。
@@ -996,7 +1015,7 @@ Worker 请求沿用 requestId 和当前账号/资源身份。页面取消请求�
 
 自动刷新采用两类时间控制：`refresh-staleness` 使用真实服务变化验证周期更新与
 恢复；附件和双语隔离场景控制浏览器定时器，精确断言操作自身的读写次数。容量
-场景保留浏览器原生 5 秒定时器与性能时钟，按初始读取或定时回调标记每次 task-sync 请求，
+场景保留浏览器原生 15 秒 task-sync 定时器与性能时钟，按初始读取或定时回调标记每次 task-sync 请求，
 验证图浮层关闭和重新打开本身不触发图读取。请求归因与性能计时分别观测，周期请求
 继续计入实际浏览器工作。滚动恢复根据实际 `scrollTop` 连续 100ms 稳定判定，
 由测试进程的单调时钟约束在 3,000ms 内；浏览器定时器受控时也能完成观测。
@@ -1136,13 +1155,16 @@ dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty �
 起止时间、Playwright 进程/组、浏览器身份及 `browserCleanup`。
 `native/functional/`、`container/` 分别保留原始 Playwright JSON、场景截图和浏览器身份；
 本地压力模式另写 `native/capacity/`，容量的原 schema 1 性能回执位于
-`native/capacity/performance.json`。额外必需的 schema 1 `kind: auth-combined` 回执为
-`native/auth-combined/target.json` 和 `container/auth-combined/target.json`；每份
-严格要求十一项具名检查、源码/浏览器/安装包、重启前后进程身份及浏览器/资源清理。
+`native/capacity/performance.json`。本地普通/压力入口与 CI shard 2 必须包含 schema 1
+`kind: auth-combined` 的 `native/auth-combined/target.json` 和
+`container/auth-combined/target.json`；每份严格要求十一项具名检查、源码/浏览器/安装包、
+重启前后进程身份及浏览器/资源清理。Shard 1 不包含这两个鉴权回执。
+分片顶层 evidence 另记录 `shard` 与 `selection`；本地完整回执无分片元数据。
 回执不保存凭据、配置 body 或原始日志，私有日志扫描只记录安全结果；既有场景
-报告校验保持独立。CI 的 `daynight-web-acceptance` 产物同时归档
-这些文件与 `.tmp/dev-ci/`、`.tmp/attachment-deployment-*/`，独立 `daynight-web-coverage` 归档原始语句报告及源码
-清单。web job 被选中后，任何执行或清理失败必须让该 job 失败。
+报告校验保持独立。CI 的 `daynight-web-acceptance-1`/`daynight-web-acceptance-2`
+分别归档所属验收与 `.tmp/dev-ci/`，第二份还包含一次性 navigation 与
+`.tmp/attachment-deployment-*/`。独立 `daynight-web-coverage` 归档原始语句报告及源码
+清单，小摘要供原有最终门禁验证完整并集。已选择 job 的执行或清理失败必须使该 job 失败。
 
 恢复命令为 `node packages/daynight-web/scripts/acceptance.mts --cleanup [run-id]`，
 默认读取最近一次回执，缺失回执不操作资源。恢复只接受顶层 schema 3，schema 1、schema 2

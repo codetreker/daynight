@@ -10,7 +10,7 @@ const fourthTaskId = "55555555-5555-5555-5555-555555555555";
 const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const otherUserId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const time = "2026-10-20T01:02:03.123456789Z";
-const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
 const operations: Operation[] = [];
 const task = (id = taskId, assignedTo: string | null = null): Task => ({
   id, projectId, assignedTo, title: "Task", description: "", properties: {}, status: "todo", allowAgents: false, requiredPlatform: null,

@@ -32,7 +32,7 @@ and identity decision](2026-10-28-worker-workspace-names.md) uses task titles as
 mutable display prefixes and four stable UUIDs as owner identity, replacing the
 original origin/project/task/claim/worktree label and whole-label name hash.
 The [structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
-replaces the positive visible-composer layout gate and repeated input, discovery
+replaces the automatic positive visible-composer layout gate and repeated input, discovery
 and stop cwd comparisons with Herdr structured readiness, explicit known
 menu/disabled-input exclusions and the original workspace/pane/terminal binding. Fresh starts retain one canonical cwd check
 after caller admission and immediately before each `agent.start` attempt.
@@ -135,13 +135,16 @@ satisfy that positive predicate even when Herdr reported a ready agent.
 
 The [structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
 removes that positive visible-composer whitelist and repeated cwd metadata
-comparison. Current input uses Herdr's structured readiness, launch and blocked
+comparison. Current automatic input uses Herdr's structured readiness, launch and blocked
 states after original workspace/pane/terminal and agent identity verification.
 Codex and Claude then read complete bound-pane text solely to reject explicit
 known menus or disabled input; customized and unknown normal layouts proceed
 without waiting for a recognized composer. The final caller guard follows the
 read and binding/state recheck. Known blockers retain pending initial input or a
-continuation opportunity without consuming execution recovery attempts.
+continuation opportunity without consuming execution recovery attempts. On
+macOS, manual menu handling and resume-only empty-field proof remain separate
+purposes under the [input arbitration design](../../../../docs/design/herdr-input-arbitration.md);
+automatic inspection does not establish an empty composer.
 Workspace creation sets the shell's initial directory, and a fresh `agent.start`
 attempt checks the original pane's canonical cwd after caller admission and
 before submission. That launch-only precondition does not apply to a live-agent

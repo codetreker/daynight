@@ -136,13 +136,16 @@ it("holds newer detail until matching summary, without advancing the project wat
 });
 
 it("rejects a late pre-snapshot response without restoring the private body", async () => {
-  const detail = body(); const scope = await seed([detail]); const live = deferred<Response>(); const fetch = vi.fn().mockReturnValue(live.promise); vi.stubGlobal("fetch", fetch);
+  const detail = body({ description: "Private body from the previous history" }); const scope = await seed([detail]); const live = deferred<Response>(); const fetch = vi.fn().mockReturnValue(live.promise); vi.stubGlobal("fetch", fetch);
   const session = new TaskDetailSessions(scope); sessions.push(session); session.observe(projectId, taskId, node(scope)); session.load(projectId, taskId, 1, "open");
   await waitFor(() => expect(fetch).toHaveBeenCalledOnce()); const transactions = vi.spyOn(scope, "detailTransaction");
+  const parser = await import("../src/api/parse"); const parse = parser.parseTaskDetail; const decoded = deferred<void>();
+  vi.spyOn(parser, "parseTaskDetail").mockImplementation((...args) => { const parsed = parse(...args); decoded.resolve(); return parsed; });
   await apply(scope, [detail], true); live.resolve(resourceResponse(detail, TEST_VIEWER_ID));
-  await waitFor(() => expect(transactions).toHaveBeenCalledOnce());
-  await expect(transactions.mock.results[0]!.value).rejects.toMatchObject({ name: "AbortError" });
-  expect(session.snapshot(projectId, taskId).detail).toBeNull();
+  await decoded.promise;
+  // Drain the decoded response's consumer before inspecting its admission side effects.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0)); await scope.beginSync(projectId, signal());
+  expect(transactions).not.toHaveBeenCalled(); expect(session.snapshot(projectId, taskId).detail).toBeNull();
 });
 
 it("keeps a confirmed remote write distinct from a malformed successful body and reconciles only with GET", async () => {

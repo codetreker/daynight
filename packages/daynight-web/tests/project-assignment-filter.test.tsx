@@ -13,9 +13,9 @@ const formerUser = '00000000-0000-4000-8000-000000000203';
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const task = (value: number, assignedTo: string | null, changes: Partial<TaskDetail> = {}) => detailFixture(projectId, id(value), { assignedTo, title: `Task ${value}`, ...changes });
 const people: readonly ProjectPerson[] = [
-  { userId: TEST_VIEWER_ID, name: 'Current person', avatarUrl: null, hasProjectAccess: true },
-  { userId: otherUser, name: 'Other person', avatarUrl: null, hasProjectAccess: true },
-  { userId: formerUser, name: 'Former person', avatarUrl: null, hasProjectAccess: false },
+  { version: "a".repeat(64), userId: TEST_VIEWER_ID, name: 'Current person', avatarUrl: null, hasProjectAccess: true },
+  { version: "a".repeat(64), userId: otherUser, name: 'Other person', avatarUrl: null, hasProjectAccess: true },
+  { version: "a".repeat(64), userId: formerUser, name: 'Former person', avatarUrl: null, hasProjectAccess: false },
 ];
 const render = createLocaleRender('zh-CN');
 
@@ -29,6 +29,7 @@ const install = (initial: readonly TaskDetail[]) => {
   const fetcher = vi.fn(async (address: string, options?: RequestInit): Promise<Response> => {
     const url = new URL(address, location.origin);
     if (url.pathname === `/api/v1/projects/${projectId}/task-sync`) return taskSyncResponse(graphFixture([...tasks.values()]), {
+      assigneeVersions: people.map(({ userId, version, hasProjectAccess }) => ({ userId, version, hasProjectAccess })),
       viewerId: TEST_VIEWER_ID, query: taskSyncQuery(url), versionForTask: (value) => tasks.get(value.id)!.version,
       propertiesForTask: (value) => tasks.get(value.id)!.properties,
     });
@@ -89,7 +90,7 @@ describe('project assignee filtering', () => {
     expect(children).toHaveTextContent('1 个匹配子任务');
     expect(children.querySelectorAll('.goal-task-row')).toHaveLength(1);
     const child = document.getElementById(`chain-task-${id(1)}-${id(3)}`)!;
-    expect(child).toHaveTextContent('被阻塞');
+    expect(child.closest('.goal-task-row')).toHaveTextContent('被阻塞');
     fireEvent.click(child);
     const detail = screen.getByRole('dialog');
     await within(detail).findByRole('heading', { name: 'Task 3' });

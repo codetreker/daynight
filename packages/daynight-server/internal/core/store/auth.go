@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/jackc/pgx/v5"
 	"time"
@@ -55,9 +56,11 @@ func (s *Store) CreateIdentitySession(ctx context.Context, user core.User, sessi
 		if err != nil {
 			return err
 		}
-		if err := initializePersonalTeam(ctx, tx, result.ID, session.CreatedAt); err != nil {
+		teamID, err := initializePersonalTeam(ctx, tx, result.ID, session.CreatedAt)
+		if err != nil {
 			return err
 		}
+		result.PersonalTeam = core.TeamRef{ID: teamID, Kind: "personal"}
 		_, err = tx.Exec(ctx, `INSERT INTO sessions (id,user_id,token_hash,created_at,expires_at) VALUES ($1,$2,$3,$4,$5)`, session.ID, result.ID, session.TokenHash, session.CreatedAt, session.ExpiresAt)
 		return err
 	})
@@ -90,8 +93,23 @@ func (s *Store) Authenticate(ctx context.Context, kind core.CredentialKind, toke
 }
 
 func (s *Store) IdentityUser(ctx context.Context, userID string) (core.User, error) {
-	u, err := scanUser(s.Pool.QueryRow(ctx, `SELECT id::text,uniauth_id,email,email_verified,name,avatar_url,created_at,updated_at FROM users WHERE id=$1`, userID))
-	return u, authQueryError("read user", err)
+	var user core.User
+	var teamID *string
+	var validTeam bool
+	err := s.Pool.QueryRow(ctx, `SELECT u.id::text,u.uniauth_id,u.email,u.email_verified,u.name,u.avatar_url,u.created_at,u.updated_at,
+		t.id::text,t.name, (SELECT count(*)=1 AND bool_and(m.user_id=u.id AND m.role='admin') FROM team_members m WHERE m.team_id=t.id)
+		FROM users u LEFT JOIN teams t ON t.personal_user_id=u.id WHERE u.id=$1`, userID).Scan(
+		&user.ID, &user.UniAuthID, &user.Email, &user.EmailVerified, &user.Name, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt,
+		&teamID, &user.PersonalTeam.Name, &validTeam)
+	if err != nil {
+		return core.User{}, authQueryError("read user", err)
+	}
+	if teamID == nil || !validTeam {
+		return core.User{}, queryError("read user", fmt.Errorf("user Personal Team is missing or invalid"))
+	}
+	user.PersonalTeam.ID = *teamID
+	user.PersonalTeam.Kind = "personal"
+	return user, nil
 }
 
 func (s *Store) DeleteSession(ctx context.Context, p core.Principal) error {

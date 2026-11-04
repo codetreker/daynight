@@ -7,7 +7,8 @@ const userId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const otherId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const time = "2026-10-27T00:00:00Z";
 const grant: ProjectGrant = { projectId, userId, role: "member", version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time };
-const access: ProjectAccess = { effectiveRole: "admin", directGrant: grant };
+const ownerTeam = { id: otherId, kind: "personal" as const, name: null };
+const access: ProjectAccess = { projectId, ownerTeam, ownership: { teamId: otherId, version: 9_007_199_254_740_995n }, teamRole: "admin", canTransfer: true, effectiveRole: "admin", directGrant: grant };
 const operations: Operation[] = [];
 const api = (fetch: typeof globalThis.fetch) => {
   const operation = createOperation();
@@ -31,12 +32,16 @@ describe("current project access", () => {
   });
 
   it("accepts an explicitly absent direct grant without inventing a mutation version", async () => {
-    const inherited: ProjectAccess = { effectiveRole: "member", directGrant: null };
+    const inherited: ProjectAccess = { ...access, teamRole: "member", canTransfer: false, effectiveRole: "member", directGrant: null };
     await expect(api(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(inherited))).getProjectAccess(projectId)).resolves.toEqual(inherited);
   });
 
   it.each([
-    null, [], {}, { effectiveRole: "admin" }, { directGrant: grant }, { ...access, effectiveRole: "none" },
+    null, [], {}, { ...access, ownerTeam: null }, { ...access, projectId: otherId },
+    { ...access, ownership: { teamId: userId, version: 1n } }, { ...access, ownership: { teamId: otherId, version: 0 } },
+    { ...access, canTransfer: false }, { ...access, teamRole: null, canTransfer: false, effectiveRole: "admin" },
+    { ...access, ownerTeam: { ...ownerTeam, name: "Personal" } }, { ...access, ownerTeam: { ...ownerTeam, kind: "ordinary" } },
+    { effectiveRole: "admin" }, { directGrant: grant }, { ...access, effectiveRole: "none" },
     { ...access, directGrant: undefined }, { ...access, directGrant: [] }, { ...access, extra: true },
     { ...access, directGrant: { ...grant, projectId: otherId } }, { ...access, directGrant: { ...grant, userId: otherId } },
     { ...access, directGrant: { ...grant, projectId: "invalid" } }, { ...access, directGrant: { ...grant, userId: userId.toUpperCase() } },

@@ -15,7 +15,7 @@ const running: ExecutionTask = { allowAgents: true, status: "in_progress", start
 const input = (warningMinutes = 60): ClockInput => ({ observedAt: start, receivedMonotonic: 100, warningMinutes });
 const snapshot = (observedAt = start, receivedMonotonic = 0, warningMinutes = 60, id = projectId): GraphSnapshot => {
   const graph: TaskGraph = {
-    observedAt, project: { id, name: "Project", repoUrl: "https://example.com/repo", settings: { version: 1n, executionWarningMinutes: warningMinutes }, createdAt: start, updatedAt: start },
+    observedAt, project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id, name: "Project", repoUrl: "https://example.com/repo", settings: { version: 1n, executionWarningMinutes: warningMinutes }, createdAt: start, updatedAt: start },
     tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 },
   };
   return { graph, index: buildGraphIndex(graph), pausedTaskIds: new Set<string>(), observedAt, receivedMonotonic, receivedAt: 123456, revision: 1 };
