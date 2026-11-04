@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useBrowserLocation } from '../../src/app/browser-location';
 import { browserNavigation } from '../../src/app/navigation';
@@ -7,6 +7,7 @@ import { DraftNavigationConfirmation } from '../../src/features/task-detail/Task
 import { AttachmentDeleteDialog, type AttachmentActionTarget } from '../../src/features/task-detail/attachments/AttachmentActions';
 import { ThreadMessageDetails } from '../../src/features/task-thread/ThreadMessageDetails';
 import type { ThreadMessage } from '../../src/features/task-thread/contract';
+import { SessionFullscreenContext, useSessionFullscreen, type SessionFullscreenRegistration } from '../../src/features/task-agent-session/useSessionFullscreen';
 import { LocaleProvider, useI18n } from '../../src/i18n/LocaleProvider';
 import { resolveInitialLocale } from '../../src/i18n/locale';
 import { LanguageSelector } from '../../src/i18n/LanguageSelector';
@@ -14,6 +15,7 @@ import '../../src/styles/app.css';
 import '../../src/styles/task-detail.css';
 import '../../src/styles/task-discussion.css';
 import '../../src/styles/attachments.css';
+import '../../src/styles/task-session.css';
 
 const projectId = 'a0000000-0000-0000-0000-000000000001';
 const firstId = 'b0000000-0000-0000-0000-000000000001';
@@ -44,6 +46,15 @@ declare global {
 
 type Identity = { readonly token: object; readonly lifetime: AbortController };
 
+const SessionFullscreenProbe = ({ client }: { readonly client: object }) => {
+  const fullscreen = useSessionFullscreen({ client, userId: 'd0000000-0000-0000-0000-000000000001', active: true, identity: 'navigation-host-session' });
+  return <section ref={fullscreen.sectionRef} onKeyDown={fullscreen.onKeyDown} tabIndex={-1}
+    className={`task-agent-session${fullscreen.fullscreen ? ' session-fullscreen' : ''}`} data-testid="session-probe">
+    <button className="button" type="button" ref={fullscreen.buttonRef} onClick={fullscreen.toggle} aria-pressed={fullscreen.fullscreen}>Session fullscreen</button>
+    <label>Session probe input<textarea aria-label="Session probe input" defaultValue="Session input" style={{ width: '100%' }} /></label>
+  </section>;
+};
+
 // The host supplies only an editor and its lifetime. Routing, admission,
 // confirmation and history restoration are imported from production modules.
 const Draft = ({ taskId, identity, page, close, relation }: {
@@ -63,6 +74,11 @@ const Draft = ({ taskId, identity, page, close, relation }: {
   const [metadata, setMetadata] = useState(false);
   const [attachment, setAttachment] = useState<AttachmentActionTarget | null>(null);
   const metadataOpen = useRef(false);
+  const [sessionRegistration, setSessionRegistration] = useState<SessionFullscreenRegistration | null>(null);
+  const observeSessionRegistration = useCallback((registration: SessionFullscreenRegistration) => {
+    setSessionRegistration(registration);
+    return () => setSessionRegistration(null);
+  }, []);
   const scope = useMemo(() => ({ identity: identity.token, projectId, taskId }), [identity, taskId]);
 
   useLayoutEffect(() => {
@@ -109,6 +125,8 @@ const Draft = ({ taskId, identity, page, close, relation }: {
       </div>
       <output data-testid="fullscreen">{String(fullscreen)}</output>
       <LanguageSelector />
+      <SessionFullscreenContext value={observeSessionRegistration}><SessionFullscreenProbe client={identity.token} /></SessionFullscreenContext>
+      <output data-testid="session-registration">{sessionRegistration === null ? 'normal' : 'expanded'}</output>
     </section>
     {metadata && <ThreadMessageDetails message={message} messages={discussion} owner={container} fallbackFocus={editor}
       onClose={() => setMetadata(false)} onOpenChange={(open) => { metadataOpen.current = open; }}

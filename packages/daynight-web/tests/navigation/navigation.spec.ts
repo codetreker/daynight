@@ -376,6 +376,42 @@ test('native attachment deletion yields to history confirmation at 320px', async
   expect(await page.evaluate(() => history.length)).toBe(length);
 });
 
+test('production Session fullscreen preserves navigation confirmation and Escape layers at 320px', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.goto(first);
+  await go(page, second);
+  await edit(page);
+  const before = await counts(page);
+  const length = await page.evaluate(() => history.length);
+  const toggle = page.getByRole('button', { name: 'Session fullscreen', exact: true });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('session-registration')).toHaveText('expanded');
+  await page.evaluate(() => history.back());
+  await expect(dialog(page)).toBeVisible();
+  await expect(dialog(page).locator('footer button').first()).toBeFocused();
+  for (let index = 0; index < 5; index++) {
+    await page.keyboard.press('Tab');
+    expect(await dialog(page).evaluate((element) => element.contains(document.activeElement))).toBe(true);
+  }
+  await page.keyboard.press('Escape');
+  await expect(dialog(page)).toHaveCount(0);
+  await expect.poll(() => physical(page)).toBe(second);
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('session-registration')).toHaveText('expanded');
+  await expect(toggle).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('session-registration')).toHaveText('normal');
+  await expect(dialog(page)).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(dialog(page)).toBeVisible();
+  await cancel(page);
+  await expect(page.getByRole('textbox', { name: 'Draft' })).not.toHaveValue('');
+  expect(await counts(page)).toEqual(before);
+  expect(await page.evaluate(() => history.length)).toBe(length);
+});
+
 for (const locale of ['en', 'zh-CN']) {
   for (const width of [1280, 320]) {
     test(`${locale} ${width}px confirmation traps focus and Escape preserves lower layers`, async ({ page }, testInfo) => {
