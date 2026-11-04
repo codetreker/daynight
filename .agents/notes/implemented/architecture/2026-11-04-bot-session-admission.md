@@ -107,9 +107,10 @@ ordinary Test management routes. Reads and writes pay a Bot-row lock and binding
 check so deletion remains authoritative across relay caches.
 
 The unbound paths pay one additional credential query on successful completion.
-Migrated-database HTTP tests observe the exact Bot blocker, let the PAT naturally
-expire and compare complete Bot, Session and preference state after the 401;
-valid-PAT and exact-replay cases preserve their original version behavior.
+Migrated-database relay and HTTP tests observe the exact Bot blocker, let the PAT
+naturally expire and compare complete Bot, Session and preference state after
+refusal; the HTTP cases also require 401. Valid-PAT and exact-replay cases preserve
+their original version behavior.
 
 Readiness is local to the relay observation used to validate the report. Callers
 must not infer it from another instance's durable Snapshot. A persistent ready

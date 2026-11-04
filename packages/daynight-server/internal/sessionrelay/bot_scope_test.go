@@ -191,6 +191,130 @@ func TestBotPreflightFailureCannotInventSessionOrSuccessfulPreference(t *testing
 	}
 }
 
+func TestBotUnboundLifecycleRevalidatesCredentialAfterLockWait(t *testing.T) {
+	for _, operation := range []string{"register", "report", "report_replay"} {
+		for _, expired := range []bool{true, false} {
+			name := operation + "/valid"
+			if expired {
+				name = operation + "/expired"
+			}
+			t.Run(name, func(t *testing.T) {
+				f, bot, registration := botFixture(t)
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				code := "directory_missing"
+				report := BotReport{BotVersion: bot.Version, Result: core.BotStartupResult{State: "failed", Code: &code}}
+				if operation == "report_replay" {
+					var err error
+					bot, err = f.s.ReportBot(ctx, f.p, bot.WorkerID, bot.ID, report)
+					if err != nil {
+						t.Fatal(err)
+					}
+					report.BotVersion = bot.Version
+				}
+				stored := func() string {
+					var state string
+					if err := f.s.DB.Pool.QueryRow(ctx, `SELECT jsonb_build_object('bot',to_jsonb(b),'sessions',(SELECT COALESCE(jsonb_agg(to_jsonb(s) ORDER BY s.id),'[]'::jsonb) FROM task_sessions s WHERE s.bot_id=b.id),'workerPreferences',(SELECT COALESCE(jsonb_agg(to_jsonb(p)),'[]'::jsonb) FROM bot_worker_preferences p WHERE p.user_id=b.owner_user_id),'configurationPreferences',(SELECT COALESCE(jsonb_agg(to_jsonb(p) ORDER BY p.worker_id),'[]'::jsonb) FROM bot_configuration_preferences p WHERE p.user_id=b.owner_user_id))::text FROM bots b WHERE b.id=$1`, bot.ID).Scan(&state); err != nil {
+						t.Fatal(err)
+					}
+					return state
+				}
+				before := stored()
+				lock, err := f.s.DB.Pool.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer lock.Rollback(context.Background())
+				if _, err = lock.Exec(ctx, "SELECT id FROM bots WHERE id=$1 FOR UPDATE", bot.ID); err != nil {
+					t.Fatal(err)
+				}
+				if expired {
+					if _, err = f.s.DB.Pool.Exec(ctx, "UPDATE personal_access_tokens SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1", f.p.CredentialID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var out core.Bot
+				finished := make(chan struct{})
+				go func() {
+					defer close(finished)
+					if operation == "register" {
+						var result BotRegistrationResult
+						result, err = f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, registration)
+						out = result.Bot
+					} else {
+						out, err = f.s.ReportBot(ctx, f.p, bot.WorkerID, bot.ID, report)
+					}
+				}()
+				defer func() {
+					_ = lock.Rollback(context.Background())
+					cancel()
+					select {
+					case <-finished:
+					case <-time.After(3 * time.Second):
+						t.Error("Bot operation did not stop during cleanup")
+					}
+				}()
+				wait := func(expiry bool) {
+					t.Helper()
+					ticker := time.NewTicker(5 * time.Millisecond)
+					defer ticker.Stop()
+					for {
+						var observed bool
+						var e error
+						if expiry {
+							e = f.s.DB.Pool.QueryRow(ctx, "SELECT expires_at<=clock_timestamp() FROM personal_access_tokens WHERE id=$1", f.p.CredentialID).Scan(&observed)
+						} else {
+							e = f.s.DB.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1::integer=ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT id::text FROM bots WHERE id=%')`, int32(lock.Conn().PgConn().PID())).Scan(&observed)
+						}
+						if e != nil {
+							t.Fatal(e)
+						}
+						if observed {
+							return
+						}
+						select {
+						case <-finished:
+							t.Fatal("Bot operation ended before lock/expiry observation")
+						case <-ctx.Done():
+							t.Fatal("Bot lock/expiry observation timed out")
+						case <-ticker.C:
+						}
+					}
+				}
+				wait(false)
+				if expired {
+					wait(true)
+				}
+				// Releasing an unchanged Bot avoids disguising expiry as a version conflict.
+				if e := lock.Commit(ctx); e != nil {
+					t.Fatal(e)
+				}
+				select {
+				case <-finished:
+				case <-ctx.Done():
+					t.Fatal("Bot operation did not finish after lock release")
+				}
+				if expired {
+					botFault(t, err, "unauthenticated")
+					if stored() != before {
+						t.Fatal("expired PAT changed Bot, role, Session or preferences")
+					}
+				} else if err != nil || out.Version != 2 {
+					t.Fatalf("valid PAT changed lifecycle behavior: version=%d error=%v", out.Version, err)
+				} else if operation == "report_replay" && stored() != before {
+					t.Fatal("same-result report changed persisted state")
+				} else if operation == "register" {
+					if out.RoleConfiguration == nil || *out.RoleConfiguration != registration.RoleConfiguration || out.SessionID == nil || out.TestExecutionID == nil || *out.TestExecutionID != registration.Registration.TestExecutionID || stored() == before {
+						t.Fatal("valid PAT did not persist the frozen binding")
+					}
+				} else if !jsonEqual(encode(out.StartupResult), encode(report.Result)) || out.SessionID != nil || out.RoleConfiguration != nil {
+					t.Fatal("valid PAT changed preflight result behavior")
+				}
+			})
+		}
+	}
+}
+
 func TestBotRecoveryRequiresNativeIdentityAndExactOriginalStopProof(t *testing.T) {
 	f, out, _, _ := connectBot(t)
 	ctx := context.Background()

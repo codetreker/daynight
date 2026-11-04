@@ -107,3 +107,5 @@ ready 要求 code 为 null；failed 要求非空、良构 Unicode 错误码。re
 真实隔离 PostgreSQL 测试覆盖名字创建、稳定候选、显式离线拒绝、跨机器和 Provider 参数隔离、默认观测时效、反序成功偏好、失败不提交、偏好事务回滚、并发重复 ID、不同指纹、组合 Worker 归属、失效凭据、事务回滚、分页、精确 int64、删除重放和任务不变。Session 测试另覆盖并发与丢失响应登记、首次角色原子冻结、错误 Worker/owner/版本/native/fence、普通 Test 绕过拒绝、代际停证及精确重放、真实同步 ready、父 PAT 撤销、浏览器换身份和持久删除后所有旧入口拒绝。HTTP 测试覆盖认证、严格请求解析、真实绑定引用和删除后响应隐藏。完整服务端检查使用 [服务端验证命令](../../packages/daynight-server/README.md)，包含 race 与覆盖率门禁。这些检查不证明真实 Provider、Worker 托管或完整助手交互已交付。
 
 `TestBotRuntimeHTTPChecksCredentialAfterUnchangedBotLockWait` 使用完整迁移的隔离数据库，对首次登记、首次未绑定失败报告和同结果失败报告分别取得 Bot 行锁，并通过当前 schema 的 blocker PID 观测实际请求等待。锁持有者不修改 Bot 版本或其它字段；观测 PAT 按真实时钟自然过期后释放锁，要求 HTTP 返回 `401 unauthenticated`，并比较完整 Bot、关联 Session 和偏好持久值以证明没有提交副作用。对应有效 PAT 用例要求正常成功、一次版本推进或原版本无变更，以及精确重放返回原结果。
+
+relay 包内的 `TestBotUnboundLifecycleRevalidatesCredentialAfterLockWait` 直接调用生产服务入口，使用同样的实际 blocker 和自然过期观测，对三个操作分别验证过期拒绝、有效凭据成功及同结果持久值不变。HTTP 用例证明调用方可见的状态码与响应；包内用例独立验证事务拒绝和回滚。
