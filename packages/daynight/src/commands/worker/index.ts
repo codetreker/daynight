@@ -59,6 +59,13 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
     await dependencies.repository(request, context);
     return;
   }
+  if (command.command.name === "list" || command.command.name === "show") {
+    const request = command.command.name === "list"
+      ? { kind: "list" as const, json: command.options.has("--json") }
+      : { kind: "show" as const, workerId: uuid(command.values[0]!, "Worker ID"), json: command.options.has("--json") };
+    await (await import("./query.js")).runWorkerQuery(request, context);
+    return;
+  }
   const original = { taskId: uuid(command.values[0]!, "Task ID"), claimId: uuid(option("--claim-id"), "Claim ID"), ...(rawProject === undefined ? {} : { projectId: uuid(rawProject, "Project ID") }) };
   let request: WorkerControlRequest;
   if (command.command.name === "retry") request = { ...original, kind: "retry" };

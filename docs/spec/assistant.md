@@ -2,7 +2,7 @@
 
 ## 当前范围
 
-Bot 是当前用户拥有、绑定已有 Worker 的独立定义，不属于项目，也不生成 Task、claim 或 worktree。当前实现提供名字创建的默认解析、幂等定义存储、查询、删除意图，以及绑定 Worker 使用的独立 Session 登记、grant 和启动结果报告。服务端按实际 Session 同步事实提交成功偏好；Worker 原生执行托管、对话历史清理和助手页面入口由各自组件提供。创建成功只表示定义已持久化，启动状态为 `pending`，不表示完整助手已可用。
+Bot 是当前用户拥有、绑定已有 Worker 的独立定义，不属于项目，也不生成 Task、claim 或 worktree。当前实现提供公开 Bot CLI、远端 Worker 查询、名字创建的默认解析、幂等定义存储、查询、删除意图，以及绑定 Worker 使用的独立 Session 登记、grant 和启动结果报告。服务端按实际 Session 同步事实提交成功偏好；Worker 原生执行托管、对话历史清理和助手页面入口由各自组件提供。首次创建成功只表示定义已持久化，启动状态为 `pending`，不表示完整助手已可用；同请求重放保留原定义的当前启动结果。
 
 公开 `POST /api/v1/me/bots` 接受调用方先生成的 ID 和名字，可选显式 Worker、目录和 Provider；服务端解析并冻结配置。不能通过管理接口传入 model、args 或 resolvedConfiguration。Worker 的实际目录访问与 CLI/Provider 启动仍需执行前预检，服务端接受普通绝对目录不证明其存在。
 
@@ -54,6 +54,29 @@ defaults 响应为 `{observedAt,workerId,configuration,reason,workers}`。未找
 
 无效输入为 400，未认证或失效凭据为 401，非 owner 或不属于当前用户的 Worker 为 403，不存在的 Bot 为 404，版本或幂等请求冲突为 409。读库失败保持错误，不转换为空列表。
 
+## 公开 CLI
+
+`daynight bot list|show|create|delete` 和 `daynight worker list|show` 使用当前配置的服务与认证。所有命令支持 `--json`，无需项目或 Git 仓库，可从普通目录执行；不接受 `--project`，也不读取本地 Worker 库存来替代远端事实。
+
+| 命令 | 输入与结果 |
+|---|---|
+| `bot list` | 读取所有分页；JSON 为 Bot 数组，普通列表不含删除意图 |
+| `bot show <bot-id>` | 返回当前定义或最小删除责任；JSON 为 Bot 对象 |
+| `bot create --name <name>` | 可选 `--worker <uuid>`、`--cwd <path>`、`--agent <codex\|claude\|copilot>`、`--request-id <uuid>`；JSON 为实际创建或同请求重放所得 Bot |
+| `bot delete <bot-id> --if-version <version>` | 可选 `--request-id <uuid>`；只使用显式观察版本，JSON 为删除后的 Bot 责任对象 |
+| `worker list` | 读取所有分页；JSON 为 `{observedAt,items}` |
+| `worker show <worker-id>` | JSON 为 `{observedAt,worker}`，包括详细资源、任务库存及可选助手托管观测 |
+
+创建只需名字，CLI 不自行选择 Worker 或向服务端填入本地目录；服务端拥有默认解析和冻结配置。cwd 是目标 Worker 的绝对路径，不要求仓库，CLI 不创建或证明该目录存在。返回 pending 只证明定义已接受，不能报为 ready；持久 ready 也不能推导当前 Worker 在线。
+
+请求 ID 在写入前生成或使用显式值。创建请求 ID 就是 Bot ID；删除请求 ID 对应 `deletionId`，与目标 Bot ID 分开保留。提交后响应丢失、格式不合法或远端结果未知时，CLI 保留原业务 ID，提供 `daynight bot show <bot-id> --json` 核对指令，并以失败退出；不得自动重发 POST/DELETE 或生成新 ID。HTTP 响应关联 ID 不替代业务请求身份。版本冲突保留失败，不自动读取更新版本后再写入。
+
+Bot JSON 的 version、creationOrder 和 requestedVersion 始终为十进制字符串，不经浮点数转换。删除分别显示 Worker 和服务端清理状态；任一 pending 不构成完成，只有两方均 completed 才表示完成，failed 保留错误码。CLI 不绕过当前服务端对已绑定 Session 删除的拒绝，也不将列表隐藏解释为历史或原生进程已清理。
+
+列表在所有分页成功后才输出结果。权限错误、网络错误、格式错误或后续页失败不产生空列表或部分成功。Bot 和远端 Worker 操作失败时 `--json` 向 stderr 输出单个 `{error:{...}}` 对象，包含 operation、可取得的 botId/requestId 或 workerId、phase、HTTP status、code、serverRequestId 以及 outcomeUnconfirmed；未知写入另有 reconcile 核对命令。已知创建环境失败和请求冲突通过 reason 保留具体原因；缺少认证时给出 login_required。认证材料、原始传输异常和任意服务端错误正文不进入诊断。操作失败 exit 1，参数用法错误沿用文本诊断与 exit 2，不因 `--json` 改变。
+
+远端 Worker 保留服务端 observedAt、lastReportedAt 和库存观测状态。在线显示按服务端观测时间与最后报告的 120 秒间隔判断；它不证明空闲容量或 Provider 可启动。unavailable 库存的任务数与观察时间为 null，不能当作零任务；stale 和 offline 保留旧事实的时效边界。详情保留探测失败码和采样时间；缺少 assistantHost 不能推断支持助手托管。普通 Worker 查询沿用最近 72 小时窗口，超出窗口的单项查询返回不可用结果，不证明 Worker 从未存在。`worker repo list` 仍只列本机配置的仓库。
+
 ## 独立 Session 生命周期
 
 生命周期接口位于 `/api/v1/me/workers/{workerId}/bots/{botId}`，均为 POST，不接受 query 参数；请求拒绝未知/重复字段和非法类型。`botVersion` 为正 int64 十进制字符串，不能使用 JSON 数字。所有成功响应为 200。
@@ -101,5 +124,7 @@ ready 要求 code 为 null；failed 要求非空、良构 Unicode 错误码。re
 删除意图不停止原生进程、不删除历史、不清理 cwd 或 native home，也不修改任何独立任务。当前管理删除接口仍拒绝已绑定 Session 的定义；持久删除准入检查不等于已提供绑定 Session 的删除、停止和历史清理流程。完整清理必须按 Bot → Session → archive metadata 锁序扩展删除事务，并保留精确责任与重复请求核对。隐藏定义不能作为清理已完成的证据。
 
 ## 验证要求
+
+CLI 验证覆盖普通非仓库目录下的六个命令、help 与 JSON、名字创建的 pending、固定请求 ID、未知写入不重试及 show 核对、超安全整数的版本、删除阶段区别、分页及后页失败、401/403/404/409 和诊断认证材料隔离。Worker 查询验证在线与库存状态分别呈现，未知库存不假报零任务，远端查询不获取本地 runtime 锁。受控 HTTP 与命令测试只证明 CLI 契约，不证明真实 Provider、完整托管或历史清理。
 
 真实隔离 PostgreSQL 测试覆盖名字创建、稳定候选、显式离线拒绝、跨机器和 Provider 参数隔离、默认观测时效、反序成功偏好、失败不提交、偏好事务回滚、并发重复 ID、不同指纹、组合 Worker 归属、失效凭据、事务回滚、分页、精确 int64、删除重放和任务不变。Session 测试另覆盖并发与丢失响应登记、首次角色原子冻结、错误 Worker/owner/版本/native/fence、普通 Test 绕过拒绝、代际停证及精确重放、真实同步 ready、父 PAT 撤销、浏览器换身份和持久删除后所有旧入口拒绝。HTTP 测试覆盖认证、严格请求解析、真实绑定引用和删除后响应隐藏。完整服务端检查使用 [服务端验证命令](../../packages/daynight-server/README.md)，包含 race 与覆盖率门禁。这些检查不证明真实 Provider、Worker 托管或完整助手交互已交付。
