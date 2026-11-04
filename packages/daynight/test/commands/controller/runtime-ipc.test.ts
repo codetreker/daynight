@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
-import { createConnection } from "node:net";
+import { createConnection, Socket } from "node:net";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 const f = vi.hoisted(() => ({ send: vi.fn(), close: vi.fn() }));
@@ -30,19 +31,67 @@ const setup = async () => {
   return { ticket, running, stop: async () => { await requestController(ticket, { kind: "stop", deadline: Date.now() + 2000 }); await running; } };
 };
 
-test("an authenticated initial submission may finish after the 30-second admission window", async () => {
-  f.send.mockImplementation(async () => { await new Promise(resolve => setTimeout(resolve, 31_000)); return { disposition: "started", turnId: "same-turn" }; });
+test("authenticated input clears its admission deadline while incomplete frames still expire", async () => {
+  const nativeInput = Promise.withResolvers<{ disposition: "started"; turnId: string }>();
+  f.send.mockReturnValue(nativeInput.promise);
   const v = await setup();
+  const admitted: Socket[] = [];
+  const nativeSetTimeout = Socket.prototype.setTimeout;
+  const timeoutPolicy = vi.spyOn(Socket.prototype, "setTimeout").mockImplementation(function (this: Socket, milliseconds, callback) {
+    if (milliseconds === 30_000) admitted.push(this);
+    return nativeSetTimeout.call(this, milliseconds, callback);
+  });
   const incomplete = createConnection(v.ticket.ipcEndpoint);
-  const admissionClosed = new Promise<void>(resolve => incomplete.once("close", () => resolve()));
-  incomplete.on("error", () => {}); incomplete.once("connect", () => incomplete.write("{"));
+  incomplete.on("error", () => {});
+  let waiting: ReturnType<typeof requestController> | undefined;
+  let responseSettled = false;
   try {
-    const result = await requestController(v.ticket, { kind: "submit_initial", operationId: v.ticket.initialOperationId }, { timeoutMs: 65_000 });
-    await admissionClosed; expect(incomplete.destroyed).toBe(true);
+    await once(incomplete, "connect");
+    await vi.waitFor(() => expect(admitted).toHaveLength(1));
+    const incompletePeer = admitted[0]!;
+    const fragment = once(incompletePeer, "data");
+    incomplete.write("{");
+    expect((await fragment)[0]).toBe("{");
+    expect(incompletePeer.timeout).toBe(30_000);
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    waiting = requestController(v.ticket, { kind: "submit_initial", operationId: v.ticket.initialOperationId }, { timeoutMs: 65_000 });
+    void waiting.then(() => { responseSettled = true; }, () => { responseSettled = true; });
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledOnce());
+    expect(admitted).toHaveLength(2);
+    const authenticatedPeer = admitted[1]!;
+    expect(authenticatedPeer.timeout).toBe(0);
+    expect(responseSettled).toBe(false);
+
+    let admissionExpired = false;
+    let admissionClosed = false;
+    incompletePeer.once("timeout", () => { admissionExpired = true; });
+    incomplete.once("close", () => { admissionClosed = true; });
+    // Socket inactivity timers use Node internals, so exercise their native
+    // timeout event after shortening only the already-observed incomplete frame.
+    nativeSetTimeout.call(incompletePeer, 1);
+    await vi.waitFor(() => expect(admissionClosed).toBe(true), { timeout: 5_000 });
+    expect(admissionExpired).toBe(true);
+    expect(incomplete.destroyed).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(31_000);
+    vi.useRealTimers();
+    expect(authenticatedPeer.destroyed).toBe(false);
+    expect(responseSettled).toBe(false);
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.close).not.toHaveBeenCalled();
+    nativeInput.resolve({ disposition: "started", turnId: "same-turn" });
+    const result = await waiting;
     expect(result.operation?.state).toBe("confirmed");
     expect(result.snapshot.initialInputState).toBe("confirmed");
     expect(f.send).toHaveBeenCalledOnce(); expect(f.close).not.toHaveBeenCalled();
-  } finally { incomplete.destroy(); await v.stop(); }
+  } finally {
+    vi.useRealTimers(); timeoutPolicy.mockRestore();
+    nativeInput.resolve({ disposition: "started", turnId: "same-turn" });
+    incomplete.destroy();
+    await waiting?.catch(() => {});
+    for (const socket of admitted) socket.destroy();
+    await v.stop();
+  }
 }, 40_000);
 
 test("a lost IPC response does not prevent native acceptance from becoming observable", async () => {
