@@ -173,7 +173,6 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     });
     // Isolate attachment-triggered reads from the independently tested task polling timer.
     const clockTime = new Date('2030-01-01T00:00:00Z');
-    await page.clock.install({ time: clockTime });
     await page.clock.pauseAt(clockTime);
     await page.goto(`/projects/${project.id}`);
     await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();

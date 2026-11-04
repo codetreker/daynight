@@ -48,12 +48,23 @@ commit is confirmed, while a lost response remains unknown.
 recover a result after a lost response, but adds a stored lifecycle and protocol.
 The current contract retains the honest unknown state without that infrastructure.
 
+**Order authorization observations across all tabs.** A shared server revision
+and durable coordination could distinguish a late denial from a later grant even
+when cache generations change during an access read. The existing generation CAS
+instead avoids clearing a replacement it cannot order; a concurrent replacement
+can survive that denial until a later authorized check. A stronger guarantee would
+require changing the access protocol and cache lifecycle together. The grant
+receipt remains independent of that later read, and local suspension prevents the
+initiating scope from displaying its old content while the check is unresolved.
+
 ## Consequences
 
 Grant creation and replacement can be distinguished without invented versions,
 and deleted grants cannot be targeted through an old observation. The finite
 receipt allows confirmed self-demotion or removal to succeed even if later
 project reads are forbidden. Callers must still validate response identity and
-must not automatically replay unknown writes. Web controls and their first new
-grant client remain separate work; the server protocol preserves the real
-version and nullable actor result those consumers require.
+must not automatically replay unknown writes. Web displays all three role sources and uses these routes with real versions.
+The committed receipt updates the actor access and remains visible after access
+is lost. A fresh access read after the receipt determines current cache withdrawal
+or a later restoration; cache generation alone cannot establish server authorization
+order. A later read cannot turn an unknown result into a confirmed commit.

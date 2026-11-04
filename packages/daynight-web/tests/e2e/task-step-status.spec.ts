@@ -233,7 +233,7 @@ test('step status writes converge through real service resources', { annotation:
     expect(writes).toBe(11);
     await root(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
     const frozenTime = new Date('2030-01-01T00:00:00Z');
-    await page.clock.install({ time: frozenTime }); await page.clock.pauseAt(frozenTime);
+    await page.clock.pauseAt(frozenTime);
     await page.goto(`/projects/${project.id}`);
     await selectTaskList(page);
     await page.getByRole('tab', { name: '独立任务', exact: true }).click();
@@ -429,7 +429,7 @@ test('step resources retire after actual membership revocation', { annotation: {
     await browserAuthentication(context, baseURL, 'bob');
     const bobPage = await context.newPage();
     const now = new Date('2030-01-01T00:00:00Z');
-    await bobPage.clock.install({ time: now }); await bobPage.clock.pauseAt(now);
+    await bobPage.clock.pauseAt(now);
     const writes: string[] = [];
     const errors: string[] = [];
     bobPage.on('request', request => { if (!['GET', 'HEAD'].includes(request.method())) writes.push(`${request.method()} ${new URL(request.url()).pathname}`); });

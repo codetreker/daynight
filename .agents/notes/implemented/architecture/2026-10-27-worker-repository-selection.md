@@ -49,24 +49,21 @@ collapse those identities. Review retains its own configuration parser, YAML
 writes and lifecycle.
 
 The [foreground runtime](2026-10-27-foreground-worker-runtime.md) owns omission
-defaults and resource execution. Its public command passes an explicit
-preparation callback into the runtime. An empty selection is resolved before
-new task resources are created; configured Projects are registered locally
+defaults and resource execution. Configured Projects are registered locally
 before the first complete claim inventory, including with an empty database.
-The [simplification decision](../simplification/2026-10-27-worker-claim-records.md)
-removed the original promise that cleanup jobs continue while a restarted
-process waits for Project selection. The [cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md)
-preserves the original terminal deadline and retry policy, but starts no cleanup
-side effects during Project selection. The
-[resource-state decision](2026-11-04-worker-resource-state.md) removes notification
-progress storage while preserving this preparation boundary. Current-process cleanup jobs
-remain separate from normal reconciliation.
+The [Bot inventory decision](2026-11-04-worker-bot-inventory.md) replaces the
+original run-time selection callback: run accepts an empty repository list,
+while setup and repo commands retain explicit selection. Original task inventory
+and terminal cleanup schedules remain managed without configured repositories.
+The earlier six-column model removed cross-process cleanup intent; the
+[cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md) subsequently
+restored durable terminal deadlines and retry policy. Those responsibilities
+remain separate from acquiring new work.
 
-After preparation, service credentials and worker settings are validated from
-one captured configuration source. The service context must still match, and
-maxConcurrent uses that snapshot's prepared settings. An atomic file replacement
-after capture cannot supply different worker parameters under the original
-service context. Restarted native processes use current applicable agent settings.
+Startup service credentials and worker settings come from one captured
+configuration source. An atomic file replacement after capture cannot supply
+different worker parameters under the original service context. Restarted native
+processes use current applicable agent settings.
 
 A selection snapshot covers raw worker.repositoryRoot presence and value,
 worker.repositories and service credentials. Setup adds raw global native-field

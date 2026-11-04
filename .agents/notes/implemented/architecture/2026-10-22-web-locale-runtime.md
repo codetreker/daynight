@@ -36,9 +36,10 @@ issue produced during startup. Presentation values and preference errors have
 separate subscriptions, so a storage error does not replace the catalog or
 formatters. Missing Provider usage fails explicitly.
 
-The shared native selector has a bilingual visible label, language self-names,
+The shared native selector has a bilingual accessible name, language self-names,
 safe localized failure text and a save retry. Multiple instances share one
-Provider. Date and time formatting retains the local timezone and 24-hour clock;
+Provider. The [selector spacing decision](../bug-fix/2026-11-04-language-selector-spacing.md)
+records its label and arrow presentation. Date and time formatting retains the local timezone and 24-hour clock;
 byte formatting keeps the exact byte count. The language runtime has no domain
 requests and does not modify API, task, project or database data.
 

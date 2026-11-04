@@ -1,4 +1,5 @@
 import { validateWorkerAgentMode } from "./worker-mode.js";
+import { parseSessionStartupReport, type SessionStartupReport } from "../session/startup.js";
 import { array, fields, id, malformed, record, resourceVersion, text, timestamp } from "./validation.js";
 import type { JsonValue, PullRequestProperty, TaskProperties, TaskPropertyResource, TaskPropertySchema, TaskPlatform, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
 
@@ -16,6 +17,9 @@ export const readTaskPaused = (properties: TaskProperties): boolean | undefined 
   if (!Object.hasOwn(properties, "paused")) return undefined;
   return typeof properties.paused === "boolean" ? properties.paused : malformed();
 };
+
+export const readSessionStartupReport = (properties: TaskProperties): SessionStartupReport | undefined =>
+  Object.hasOwn(properties, "sessionStartup") ? parseSessionStartupReport(properties.sessionStartup) : undefined;
 
 export const readPullRequests = (properties: TaskProperties): readonly PullRequestProperty[] | undefined => {
   if (!Object.hasOwn(properties, "pullRequests")) return undefined;

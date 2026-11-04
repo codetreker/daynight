@@ -85,18 +85,26 @@ export type TeamRef = {
   readonly name: string | null;
 };
 
+export type TeamRole = "member" | "admin";
+export type TeamMember = {
+  readonly teamId: string;
+  readonly userId: string;
+  readonly role: TeamRole;
+  readonly version: bigint;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+export type TeamMemberWithProfile = TeamMember & {
+  readonly profile: { readonly name: string | null; readonly email: string | null; readonly avatarUrl: string | null };
+};
+export type TeamMemberRoleReceipt = { readonly membership: TeamMember; readonly actorRole: TeamRole };
+export type RemoveTeamMemberReceipt = { readonly teamId: string; readonly userId: string; readonly removed: true; readonly actorRole: TeamRole | null };
+
 export type Team = TeamRef & {
   readonly version: bigint;
   readonly createdAt: string;
   readonly updatedAt: string;
-  readonly membership: {
-    readonly teamId: string;
-    readonly userId: string;
-    readonly role: "member" | "admin";
-    readonly version: bigint;
-    readonly createdAt: string;
-    readonly updatedAt: string;
-  };
+  readonly membership: TeamMember;
 };
 
 export type ProjectOwnership = {
@@ -131,6 +139,31 @@ export type ProjectAccess = {
   readonly canTransfer: boolean;
   readonly effectiveRole: "admin" | "member";
   readonly directGrant: ProjectGrant | null;
+};
+
+export type InvitationScope = "project" | "team";
+export type TeamInvitationMember = Team["membership"];
+export type ProjectInvitationInspection = { readonly projectId: string; readonly projectName: string; readonly directGrant: ProjectGrant | null; readonly access: ProjectAccess | null };
+export type ProjectInvitationAcceptance = { readonly projectId: string; readonly directGrant: ProjectGrant; readonly access: ProjectAccess; readonly joined: boolean; readonly consumed: boolean };
+export type TeamInvitationInspection = { readonly team: TeamRef; readonly membership: TeamInvitationMember | null };
+export type TeamInvitationAcceptance = { readonly team: TeamRef; readonly membership: TeamInvitationMember; readonly joined: boolean; readonly consumed: boolean };
+export type InvitationInspection = ProjectInvitationInspection | TeamInvitationInspection;
+export type InvitationAcceptance = ProjectInvitationAcceptance | TeamInvitationAcceptance;
+
+export type ProjectTransferPreview = {
+  readonly sourceTeam: TeamRef;
+  readonly targetTeam: TeamRef & { readonly version: bigint };
+  readonly ownership: ProjectOwnership;
+  readonly actorRole: "admin" | "member" | null;
+};
+
+export type ProjectTransferReceipt = {
+  readonly projectId: string;
+  readonly changed: boolean;
+  readonly sourceTeam: TeamRef;
+  readonly ownerTeam: TeamRef;
+  readonly ownership: ProjectOwnership;
+  readonly actorAccess: ProjectAccess | null;
 };
 
 export type ProjectParticipant = {
@@ -326,6 +359,7 @@ export type UpdateWorkerClaimInput = {
   readonly phase?: WorkerPhase;
   readonly herdr?: WorkerHerdr | null;
   readonly nativeSessionId?: string | null;
+  readonly startupReport?: import("../session/startup.js").SessionStartupReport;
 };
 export type CompleteWorkerTaskInput = { readonly version: bigint; readonly claimId: string };
 export type ReleaseWorkerClaimInput = CompleteWorkerTaskInput & { readonly stoppedConfirmed: true };

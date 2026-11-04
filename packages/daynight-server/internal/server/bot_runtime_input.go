@@ -114,3 +114,30 @@ func botReportInput(raw []byte) (sessionrelay.BotReport, error) {
 	}
 	return input, nil
 }
+
+func botDeletionReceiptInput(raw []byte) (sessionrelay.BotDeletionReceipt, error) {
+	var input sessionrelay.BotDeletionReceipt
+	fields, err := botRuntimeObject(raw, "deletionId", "stop", "result")
+	if err != nil {
+		return input, err
+	}
+	if _, err = requiredString(fields, "deletionId"); err != nil {
+		return input, err
+	}
+	result, err := botRuntimeObject(fields["result"], "state", "code")
+	if err != nil {
+		return input, err
+	}
+	if _, err = requiredString(result, "state"); err != nil {
+		return input, err
+	}
+	if !bytes.Equal(bytes.TrimSpace(fields["stop"]), []byte("null")) {
+		if _, err = sp.DecodeTestStop(fields["stop"]); err != nil {
+			return input, invalidInput("Invalid Bot execution stop proof.")
+		}
+	}
+	if err = json.Unmarshal(raw, &input); err != nil {
+		return input, invalidInput("Invalid Bot deletion receipt values.")
+	}
+	return input, nil
+}

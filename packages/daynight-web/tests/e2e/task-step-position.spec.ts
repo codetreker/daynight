@@ -44,6 +44,9 @@ test('step positions use the complete real collection', { annotation: { type: 's
     else await fulfillAuthenticatedResponse(route, response);
   });
   const choose = async (label: string) => {
+    // The menu also permits opening an add draft while a write is reconciling.
+    // The status control shares the position write's admission state.
+    await expect(row(page, source).locator('.step-status')).toHaveAttribute('aria-disabled', 'false');
     await expect(menu(page)).toHaveAttribute('aria-disabled', 'false'); await menu(page).click();
     const receipt = mode === 'lost' || label === '移动到…' || label === 'Move to…' ? null : page.waitForResponse(response => response.url() === positionUrl && response.request().method() === 'PUT');
     await page.getByRole('menuitem', { name: label, exact: true }).click();

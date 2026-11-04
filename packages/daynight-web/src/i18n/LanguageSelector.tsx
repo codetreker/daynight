@@ -16,8 +16,7 @@ export const LanguageSelector = ({ renderNotice }: { readonly renderNotice?: (no
 
   return <div className="locale-preference">
     <label className="locale-control" htmlFor={id}>
-      <span>{messages.language.label}</span>
-      <select id={id} value={locale} aria-describedby={issue === null ? undefined : noticeId}
+      <select id={id} aria-label={messages.language.label} value={locale} aria-describedby={issue === null ? undefined : noticeId}
         onChange={(event) => selectLocale(parseLocale(event.currentTarget.value))}>
         <option value="en">{messages.language.options.en}</option>
         <option value="zh-CN">{messages.language.options["zh-CN"]}</option>

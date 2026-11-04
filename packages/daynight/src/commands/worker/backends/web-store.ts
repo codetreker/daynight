@@ -1,9 +1,10 @@
+import { parseStartupObservation, type StartupObservation, type SessionStartupReport } from "../../../session/startup.js";
 import { randomUUID } from "node:crypto";
 import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration, WorkerProject, ResourceOwner } from "../types.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState } from "./web-types.js";
+import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, RecoveryState } from "./web-types.js";
 import { webRecordInteger as integer, webRecordChoice as oneOf, webRecordText as text, webRecordId as id, parseWebWorktreeV1 as parseWorktree, parseWebExecutionV1 as parseWebExecution, parseWebCleanupV1 as parseCleanup, webClaimKey as key, parseWebTaskV1 as validate } from "./web-record.js";
 import { webExecutionStoreFormat } from "./web-store-format.js";
 
@@ -65,12 +66,13 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
       if (recovery.retryAuthorized) throw new Error("An explicit retry must consume its authorization with the original generation transition.");
       if (recovery.pauseReason !== null) return task;
       if (task.configuration === null) throw new Error("The original frozen execution configuration is missing.");
-      if (recovery.count >= task.configuration.recoveryLimit) return { ...task, recovery: { ...recovery, pauseReason: "The execution recovery budget is exhausted.", retryAuthorized: false } };
+      if (recovery.count >= task.configuration.recoveryLimit) return { ...task, recovery: { ...recovery, pauseReason: "The execution recovery budget is exhausted.", retryAuthorized: false, reasonCode: "recovery_limit" } };
       return { ...task, recovery: { count: integer(recovery.count + 1, "Recovery count"), pauseReason: null, retryAuthorized: false } };
     }),
-    pauseRecovery: (identity: ClaimIdentity, reason: string, now: number): LocalTask => change(identity, now, task => {
+    pauseRecovery: (identity: ClaimIdentity, reason: string, now: number, reasonCode?: RecoveryState["reasonCode"]): LocalTask => change(identity, now, task => {
       if (task.status !== "active") throw new Error("Only an active execution can pause recovery.");
-      return { ...task, recovery: { ...task.recovery, pauseReason: text(reason, "Recovery pause reason"), retryAuthorized: false } };
+      const { reasonCode: previousCode, ...recovery } = task.recovery; void previousCode;
+      return { ...task, recovery: { ...recovery, pauseReason: text(reason, "Recovery pause reason"), retryAuthorized: false, ...(reasonCode === undefined ? {} : { reasonCode }) } };
     }),
     authorizeRecoveryRetry: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => {
       requireOrdinary(task);
@@ -99,6 +101,21 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
       if (task.webExecution != null) return task;
       return { ...task, nativeExecution: null, webExecution: { executionId: randomUUID(), registrationId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), launchId: randomUUID(), sessionId: null, executionGeneration: "1", initialOperationId: randomUUID(), initialPrompt: null, launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [], restartAfterShutdown: false, cleanupOperationId: null, ticketPath: null, nativeHome: null, summary: null, initialInputState: "not_submitted", activity: "initializing" } };
     }),
+    observeStartup: (identity: ClaimIdentity & Partial<Pick<LocalTask, "webExecution">>, startup: StartupObservation, now: number): SessionStartupReport | null => atomic(() => {
+      const task = getTask(identity), execution = task?.webExecution;
+      if (task === null || execution == null || execution.sessionId === null || task.status === "done") return null;
+      if (identity.webExecution != null && (identity.webExecution.executionGeneration !== execution.executionGeneration || identity.webExecution.controllerInstanceId !== execution.controllerInstanceId || identity.webExecution.sessionId !== execution.sessionId)) throw new Error("Startup observation belongs to another execution generation.");
+      const observation = parseStartupObservation(startup);
+      const recovery: SessionStartupReport["recovery"] = task.recovery.pauseReason === null
+        ? { state: "none", reasonCode: null }
+        : { state: "blocked", reasonCode: task.recovery.reasonCode ?? "recovery_blocked" };
+      const previous = execution.startupReport;
+      if (previous !== undefined && same(previous.startup, observation) && same(previous.recovery, recovery)) return previous;
+      const report: SessionStartupReport = { schemaVersion: 1, source: "worker", sessionId: execution.sessionId, claimId: task.claimId,
+        executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId,
+        revision: String(BigInt(previous?.revision ?? "0") + 1n), observedAt: new Date(integer(now, "Startup observation time")).toISOString(), startup: observation, recovery };
+      return write({ ...task, updatedAt: now, webExecution: { ...execution, startupReport: report } }).webExecution!.startupReport!;
+    }),
     updateWebExecution: (identity: ClaimIdentity, patch: Partial<WebExecutionState>, now: number): LocalTask => change(identity, now, task => {
       if (task.configuration?.agentControlMode !== "web" || task.webExecution == null) throw new Error("The web execution identity is missing.");
       const previous = task.webExecution;
@@ -117,7 +134,8 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
       if (task.recovery.retryAuthorized && task.recovery.pauseReason === null) throw new Error("The authorized recovery generation is still awaiting a successful observation.");
       // Persist consumption and its sole replacement identity together across Worker interruption.
       const recovery = task.recovery.retryAuthorized ? { count: integer(task.recovery.count + 1, "Recovery count"), pauseReason: null, retryAuthorized: true } : task.recovery;
-      return { ...task, recovery, webExecution: { ...execution, executionGeneration: String(BigInt(execution.executionGeneration) + 1n), controllerInstanceId: randomUUID(), launchId: randomUUID(), launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [], restartAfterShutdown: false, cleanupOperationId: null, ticketPath: null, activity: "initializing" } };
+      const { startupReport: previousReport, ...previousExecution } = execution; void previousReport;
+      return { ...task, recovery, webExecution: { ...previousExecution, executionGeneration: String(BigInt(execution.executionGeneration) + 1n), controllerInstanceId: randomUUID(), launchId: randomUUID(), launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [], restartAfterShutdown: false, cleanupOperationId: null, ticketPath: null, activity: "initializing" } };
     }),
     retryUnsubmittedWebGeneration: (identity: ClaimIdentity, previous: ControllerSnapshot, now: number): LocalTask => change(identity, now, task => {
       requireOrdinary(task); const execution = task.webExecution;
