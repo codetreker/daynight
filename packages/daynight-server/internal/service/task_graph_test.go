@@ -175,7 +175,7 @@ func TestTaskGraphOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 		name, fragment                  string
 		missing, overLimit, cancelAfter bool
 	}{
-		{name: "project query", fragment: "FROM projects WHERE id ="},
+		{name: "project query", fragment: "SELECT p.id::text, p.name, p.repo_url"},
 		{name: "count query", fragment: "SELECT count(*) FROM selected"},
 		{name: "projection query", fragment: "left(t.title, $3)"},
 		{name: "clock query", fragment: "SELECT statement_timestamp()"},
