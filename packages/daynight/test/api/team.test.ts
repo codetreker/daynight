@@ -37,6 +37,18 @@ describe("Team read protocol", () => {
     const api = client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify(body), { status: 401, headers: { "content-type": "application/json" } })));
     await expect(api.getTeam(user, teamId)).rejects.toMatchObject({ phase: "response", code: "unauthenticated" });
   });
+  it("preserves a non-401 Team refusal when the principal header is absent", async () => {
+    const body = { error: { code: "not_found", message: "not found", requestId: "request" } };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify(body), { status: 404, headers: { "content-type": "application/json" } }));
+    await expect(client(fetch).getTeam(user, teamId)).rejects.toMatchObject({ phase: "response", status: 404, code: "not_found", confirmedRefusal: true, outcomeUnconfirmed: false });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it("rejects a 401 Team response that names another principal", async () => {
+    const body = { error: { code: "unauthenticated", message: "login", requestId: "request" } };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(body, other, 401));
+    await expect(client(fetch).getTeam(user, teamId)).rejects.toMatchObject({ phase: "protocol", status: 401, confirmedRefusal: false, outcomeUnconfirmed: false });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
   it.each([
     { ...team(), id: another },
     { ...team(), membership: { ...team().membership, userId: other } },

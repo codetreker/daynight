@@ -30,7 +30,7 @@ const user = async (request: AuthenticatedAPI): Promise<{ id: string; name: stri
   return await response.json() as { id: string; name: string; email: string };
 };
 const invitation = async (request: AuthenticatedAPI, projectId: string): Promise<{ id: string; token: string }> => {
-  const response = await request.post(`/api/v1/projects/${projectId}/invitations`, { data: {} });
+  const response = await request.post(`/api/v1/projects/${projectId}/invitations`, { data: { expectedUserId: (await user(request)).id } });
   expect(response.status()).toBe(201);
   const value = await response.json() as { id: string; link: string };
   return { id: value.id, token: new URL(value.link).hash.slice(1) };
@@ -183,7 +183,7 @@ test.describe('visible authentication protocol', () => {
   });
 });
 
-test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page, context, api: request, playwright }, info) => {
+test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page, context, api: request, playwright, allowBrowserWrites }, info) => {
   const baseURL = origin(info);
   const bob = await bearerContext(playwright.request, baseURL, 'bob');
   const anonymous = await playwright.request.newContext({ baseURL });
@@ -196,6 +196,27 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     const bobUser = await user(bob);
     expect(aliceUser.email).toBe(bobUser.email);
     expect(aliceUser.id).not.toBe(bobUser.id);
+    const rawName = `  Browser project ${randomUUID()}  `;
+    const rawRepo = `git@example.org:group/${randomUUID()}.git`;
+    allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 1 }]);
+    await page.goto('/projects');
+    await page.getByRole('button', { name: '＋ 创建项目' }).click();
+    const creation = page.getByRole('dialog', { name: '创建私有项目' });
+    await creation.getByLabel('项目名称').fill(rawName);
+    await creation.getByLabel('仓库地址').fill(rawRepo);
+    const responsePromise = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects` && response.request().method() === 'POST');
+    await creation.getByRole('button', { name: '创建项目', exact: true }).click();
+    const createdResponse = await responsePromise;
+    expect(createdResponse.status()).toBe(201);
+    expect(createdResponse.headers()['daynight-user-id']).toBe(aliceUser.id);
+    expect(createdResponse.request().postDataJSON()).toEqual({ name: rawName, repoUrl: rawRepo, expectedUserId: aliceUser.id });
+    const created = await createdResponse.json() as { id: string; name: string; repoUrl: string; ownership: { teamId: string }; access: { directGrant: { role: string } } };
+    expect(created.name).toBe(rawName);
+    expect(created.repoUrl).toBe(rawRepo);
+    expect(created.access.directGrant.role).toBe('admin');
+    const profile = await (await request.get('/api/v1/me')).json() as { personalTeam: { id: string } };
+    expect(created.ownership.teamId).toBe(profile.personalTeam.id);
+    await expect(page).toHaveURL(`${baseURL}/projects/${created.id}`);
     const task = await createTask(request, own.id, { title: 'Private resource boundary', description: 'Visible only to project members.', assignedTo: aliceUser.id });
     const file = attachmentDownloadUrl(own.id, task.id, 'site/index.html');
     const preview = attachmentPreviewUrl(own.id, task.id, 'site/index.html');
@@ -504,7 +525,7 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     const bobUser = await user(bob);
     const alice = await user(request);
     const invite = await invitation(request, project.id);
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: invite.token } })).status()).toBe(200);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: invite.token, expectedUserId: bobUser.id } })).status()).toBe(200);
     const target = `/api/v1/projects/${project.id}/members/${bobUser.id}`;
     allowBrowserWrites([{ method: 'PATCH', url: `${baseURL}${target}`, count: 2 },
       { method: 'DELETE', url: `${baseURL}/api/v1/projects/${project.id}/members/${alice.id}`, count: 1 }]);
@@ -628,10 +649,10 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   try {
     const identity = await user(bob);
     expect((await memberList(request, project.id)).items.find((member) => member.userId === identity.id)?.directGrant?.role).toBe('member');
-    expect((await bob.post('/api/v1/invitations/inspect', { data: { token: new URL(metadata.link).hash.slice(1) } })).status()).toBe(410);
+    expect((await bob.post('/api/v1/invitations/inspect', { data: { token: new URL(metadata.link).hash.slice(1) } })).status()).toBe(404);
     const revoked = await invitation(request, project.id);
-    expect((await request.delete(`/api/v1/projects/${project.id}/invitations/${revoked.id}`)).status()).toBe(204);
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: revoked.token } })).status()).toBe(410);
+    expect((await request.delete(`/api/v1/projects/${project.id}/invitations/${revoked.id}`, { data: { expectedUserId: (await user(request)).id } })).status()).toBe(204);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: revoked.token, expectedUserId: identity.id } })).status()).toBe(404);
     expect(await page.evaluate(() => sessionStorage.getItem('daynight.pendingInvitation') === null), 'Accepted invitation clears pending session storage').toBe(true);
     await picture(page, info, 'auth-invitations');
   } finally { await bob.dispose(); }

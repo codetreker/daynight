@@ -220,8 +220,11 @@ export type Task = {
 };
 
 export const createProject = async (request: AuthenticatedAPI, input: { name?: string; repoUrl?: string } = {}): Promise<Project> => {
+  const current = await request.get('/api/v1/me');
+  expect(current.status(), 'Project fixture identity succeeds').toBe(200);
+  const user = await current.json() as { id: string };
   const response = await request.post('/api/v1/projects', {
-    data: { name: input.name ?? `Browser ${randomUUID()}`, repoUrl: input.repoUrl ?? 'https://github.com/example/browser-fixture' },
+    data: { name: input.name ?? `Browser ${randomUUID()}`, repoUrl: input.repoUrl ?? 'https://github.com/example/browser-fixture', expectedUserId: user.id },
   });
   expect(response.status(), 'Project fixture creation succeeds').toBe(201);
   return await response.json() as Project;

@@ -6,6 +6,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonunicode"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -48,9 +49,13 @@ func projectResponse(project core.Project) api.Project {
 func (h *projectHandler) create(w http.ResponseWriter, request *http.Request, principal core.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", principal.UserID)
-	fields, err := decodeObject(w, request, "name", "repoUrl")
+	fields, err := decodeObject(w, request, "name", "repoUrl", "teamId", "expectedUserId")
 	if err != nil {
 		writeError(w, request, logger, "project", "create", err)
+		return
+	}
+	if !jsonunicode.Valid(fields["name"]) || !jsonunicode.Valid(fields["repoUrl"]) {
+		writeError(w, request, logger, "project", "create", invalidInput("name and repoUrl must contain valid Unicode text"))
 		return
 	}
 	name, err := requiredString(fields, "name")
@@ -63,15 +68,44 @@ func (h *projectHandler) create(w http.ResponseWriter, request *http.Request, pr
 		writeError(w, request, logger, "project", "create", err)
 		return
 	}
-	input := api.CreateProjectRequest{Name: name, RepoURL: repoURL}
-	project, err := h.projects.Create(request.Context(), principal, service.CreateProject{Name: input.Name, RepoURL: input.RepoURL})
+	teamID, err := optionalString(fields, "teamId")
 	if err != nil {
 		writeError(w, request, logger, "project", "create", err)
 		return
 	}
+	expected, err := requiredString(fields, "expectedUserId")
+	if err != nil {
+		writeError(w, request, logger, "project", "create", err)
+		return
+	}
+	input := api.CreateProjectRequest{Name: name, RepoURL: repoURL, TeamID: teamID, ExpectedUserID: expected}
+	project, access, err := h.projects.CreateWithAccess(request.Context(), principal, service.CreateProject{Name: input.Name, RepoURL: input.RepoURL, TeamID: input.TeamID, ExpectedUserID: input.ExpectedUserID})
+	if err != nil {
+		writeProjectCreateError(w, request, logger, err)
+		return
+	}
 	logger = logger.With("project_id", project.ID)
 	logger.InfoContext(request.Context(), "project created", "type", "resource", "component", "project", "phase", "create", "request_id", RequestID(request.Context()))
-	writeCreated(w, request, logger, "/api/v1/projects/"+project.ID, projectResponse(project))
+	w.Header().Set("Location", "/api/v1/projects/"+project.ID)
+	writeMutationJSON(w, request, logger, "project", http.StatusCreated, api.ProjectDocument{Project: projectResponse(project), Access: projectAccessResponse(access)})
+}
+
+func writeProjectCreateError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
+	if fault, classified := service.TeamResponseFault(err); classified {
+		if fault.Code == "write_outcome_unknown" || fault.Code == "internal_error" {
+			status := http.StatusInternalServerError
+			phase := "completion"
+			if fault.Code == "write_outcome_unknown" {
+				status, phase = http.StatusServiceUnavailable, "commit"
+				logger = logger.With("write_outcome", "unknown")
+			}
+			LogFailure(logger, r.Context(), "project", phase, fault)
+			writeJSON(w, r, logger, status, api.ErrorResponse{Error: api.Error{Code: fault.Code, Message: fault.Message, RequestID: RequestID(r.Context())}})
+			return
+		}
+		err = fault
+	}
+	writeError(w, r, logger, "project", "create", err)
 }
 
 func (h *projectHandler) list(w http.ResponseWriter, request *http.Request, principal core.Principal) {

@@ -19,7 +19,7 @@ func stepsHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTest
 	t.Helper()
 	database := projectTestStore(t)
 	handler := projectTestHandler(t, database, logs)
-	project := decodeResponse[api.Project](t, projectRequest(handler, "POST", "/api/v1/projects", `{"name":"Steps","repoUrl":"https://example.com/steps"}`), 201)
+	project := decodeResponse[api.Project](t, projectRequest(handler, "POST", "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Steps", RepoURL: "https://example.com/steps", ExpectedUserID: handler.principal.UserID})), 201)
 	task := decodeResponse[api.Task](t, projectRequest(handler, "POST", "/api/v1/projects/"+project.ID+"/tasks", `{"title":"Parent"}`), 201)
 	return database, handler, task
 }

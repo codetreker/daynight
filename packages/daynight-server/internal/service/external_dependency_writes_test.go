@@ -111,7 +111,7 @@ func TestExternalDependencyWritesRejectInvalidCandidatesAndAllEdgeCycles(t *test
 	ctx := context.Background()
 	a := createTask(t, tasks, principal, project.ID, "A")
 	b := createTask(t, tasks, principal, project.ID, "B")
-	foreignProject, err := NewProjects(database).Create(ctx, principal, CreateProject{Name: "Foreign", RepoURL: "https://example.com/foreign"})
+	foreignProject, err := NewProjects(database).Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Foreign", RepoURL: "https://example.com/foreign"})
 	if err != nil {
 		t.Fatal(err)
 	}

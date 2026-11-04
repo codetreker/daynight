@@ -25,7 +25,7 @@ func TestInstalledCLIPlatformAcceptance(t *testing.T) {
 
 func acceptanceCLIPlatforms(t *testing.T, cli *acceptanceCLI, process *acceptanceProcess) {
 	t.Helper()
-	project := acceptanceDecode[api.Project](t, process.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Installed task platforms", RepoURL: "https://github.com/example/platforms"}, "platform-installed-project"), http.StatusCreated)
+	project := acceptanceDecode[api.Project](t, process.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{ExpectedUserID: process.expectedUserID(t), Name: "Installed task platforms", RepoURL: "https://github.com/example/platforms"}, "platform-installed-project"), http.StatusCreated)
 	read := func(id string) api.Task {
 		return acceptanceCLITaskResource(t, cli.run(t, cli.caller, "task", "show", id, "--project", project.ID, "--json"))
 	}

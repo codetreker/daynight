@@ -102,16 +102,16 @@ it("waits for the previous request and samples again after an unconfirmed send f
   await reporter.stop();
 });
 
-it("deduplicates field and request categories, logs recovery, and never exposes raw error data", async () => {
+it.each(["codex", "assistantHost_codex", "assistantHost_claude", "assistantHost_copilot"] as const)("deduplicates %s and request categories, logs recovery, and never exposes raw error data", async (component) => {
   const f = fixture();
   const secret = "provider-secret-stdout-command";
   const failure = new ApiError({ operation: secret }, "response", { status: 503, cause: new Error(secret, { cause: new TypeError(secret) }) });
-  f.collect.mockResolvedValue({ telemetry, issues: [{ component: "codex", code: "command_failed", error: new Error(secret, { cause: new RangeError(secret) }) }] });
+  f.collect.mockResolvedValue({ telemetry, issues: [{ component, code: "command_failed", error: new Error(secret, { cause: new RangeError(secret) }) }] });
   f.send.mockRejectedValue(failure);
   const reporter = f.start(); await settle(); await vi.advanceTimersByTimeAsync(60_000);
   expect(f.emit).toHaveBeenCalledTimes(2);
   const events = f.emit.mock.calls.map(([event]) => event);
-  expect(events[0].message).toContain('"subsystem":"codex"');
+  expect(events[0].message).toContain(`"subsystem":"${component}"`);
   expect(events[1].message).toContain('"category":"http_response_503"');
   const describe = (error: Error): unknown => ({ name: error.name, message: error.message, ...(error.cause instanceof Error ? { cause: describe(error.cause) } : {}) });
   expect(JSON.stringify(events.map(event => ({ ...event, error: describe(event.error) })))).not.toContain(secret);

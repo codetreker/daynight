@@ -40,15 +40,15 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 	if response.Header.Get("Daynight-User-ID") != aliceUser.ID {
 		t.Fatal("PAT reporter ownership was not authenticated")
 	}
-	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Private project","repoUrl":"https://example.com/snapshot"}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Private project", RepoURL: "https://example.com/snapshot", ExpectedUserID: bobUser.ID}), origin, http.StatusCreated)
 	project := identityDecode[api.Project](t, data)
-	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", `{}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", invitationActorBody(bobUser.ID), origin, http.StatusCreated)
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
 	link, err := url.Parse(invitation.Link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	identityRequest(t, alice, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, http.StatusOK)
+	identityRequest(t, alice, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, aliceUser.ID), origin, http.StatusOK)
 	_, data = identityRequest(t, alice, http.MethodPost, integration.server.URL+taskCollection(project.ID), jsonBody(t, map[string]any{"title": "Hidden after revoke", "assignedTo": aliceUser.ID}), origin, http.StatusCreated)
 	task := identityDecode[api.Task](t, data)
 	_, data = identityRequest(t, alice, http.MethodPatch, integration.server.URL+taskPath(task), jsonBody(t, map[string]any{"version": task.Version, "allowAgents": true}), origin, http.StatusOK)

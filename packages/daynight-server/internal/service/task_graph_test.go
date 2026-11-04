@@ -57,7 +57,7 @@ func TestTaskGraphScopedProjectionAndSummary(t *testing.T) {
 	ctx := context.Background()
 	_, err := tasks.Graph(ctx, principal, strings.ToUpper(project.ID), "00000000-0000-4000-8000-000000000099")
 	requireFault(t, err, "not_found")
-	other, err := NewProjects(database).Create(ctx, principal, CreateProject{Name: "Other", RepoURL: "host:other"})
+	other, err := NewProjects(database).Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:other"})
 	if err != nil {
 		t.Fatal(err)
 	}

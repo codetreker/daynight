@@ -15,7 +15,7 @@ import (
 func TestProjectParticipantHTTPContractGrantWritesAndIdentity(t *testing.T) {
 	h := membershipTestHarness(t)
 	_, token := h.invitation(t)
-	decodeResponse[api.ProjectMember](t, h.call("POST", "/api/v1/invitations/accept", invitationBody(token), h.member), 200)
+	decodeResponse[api.ProjectInvitationAcceptance](t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(token, h.memberID), h.member), 200)
 	if _, err := h.database.Pool.Exec(context.Background(), `UPDATE project_grants SET version=9007199254740993 WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.memberID); err != nil {
 		t.Fatal(err)
 	}
