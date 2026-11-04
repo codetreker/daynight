@@ -5,7 +5,7 @@ foundation is implemented: explicit database and file-storage configuration,
 loopback-only HTTP binding, connection validation, structured request logs, cancellation, and bounded
 HTTP shutdown. Versioned migrations and transactional storage are implemented;
 project/task APIs and built-process acceptance are implemented. The current
-executable serves project, task, task-chain graph, task-summary synchronization
+executable serves Team lifecycle, project, task, task-chain graph, task-summary synchronization
 and account-owned Worker snapshot routes together with the embedded task dashboard.
 Generic bucket/path local storage, task attachment
 metadata and file/preview HTTP endpoints are implemented. Attachment addresses
@@ -349,7 +349,8 @@ diagnostics and cause categories.
 Wildcard, non-loopback, hostname, scoped IPv6, and malformed listen addresses are
 rejected. Callback paths that collide with application routes are rejected during
 configuration and startup validation before route registration; this includes
-`/login`, `/setup` and every descendant path. If an existing callback occupies that
+`/login`, `/setup`, `/teams` and every descendant path, together with the
+`/api/v1/teams` API namespace. If an existing callback occupies that
 namespace, choose another path and register its exact full URL in UniAuth before
 starting the server. Login return loops, including `/login`, are rejected before a
 login transaction is created. An absent return target defaults to `/projects`; a
@@ -688,9 +689,20 @@ Returning an error rolls back fields, properties, dependencies, version and
 timestamps together. Only expose a captured resource after the outer call
 succeeds.
 
+`Store.WriteTeam` locks the real Team row in a `READ COMMITTED` transaction,
+then rechecks the caller's current admin membership. Deletion reads ownership
+with a separate nonlocking `EXISTS` statement after that lock, so it observes
+commits made while waiting. A successful empty check is followed by deleting
+members and Team in the same transaction. Ownership writers lock and recheck
+the same Team before insertion; Team deletion does not acquire existing
+Project, Task or Thread head locks. Team creation atomically stores the creator
+admin membership. Captured write results are published only after confirmed
+transaction completion; the [Team design](../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
+owns the outcome and lock-order details.
+
 `Store.ReadSnapshot` uses read-only `REPEATABLE READ` for project/task queries and
 derived readiness, with membership and resource reads in the same snapshot.
-Project-list membership filtering precedes pagination. Pages use a validated limit and optional `(createdAt, id)`
+Project-list effective-access and scope filtering precedes pagination. Pages use a validated limit and optional `(createdAt, id)`
 position; status/readiness filters run before keyset pagination. Page lookahead
 is returned as `HasMore`; HTTP cursor encoding belongs to the API layer.
 
@@ -773,6 +785,46 @@ to both rows and counts. Completion or reassignment
 does not erase an otherwise visible historical observation. Liveness and recent
 visibility do not control claims or task state.
 
+## Team lifecycle API
+
+The authenticated Team API creates ordinary Teams and reads the caller's joined
+Teams. Current Team administrators can rename an ordinary Team or delete it only
+when no Project ownership references remain. Personal Teams are readable by
+their owner and reject rename and deletion.
+
+| Method | Path | Result |
+|---|---|---|
+| `POST` | `/api/v1/teams` | `201`, Team with creator admin membership and `Location` |
+| `GET` | `/api/v1/teams` | `200`, member-filtered `{items,nextCursor}` page |
+| `GET` | `/api/v1/teams/{teamId}` | `200`, Team and the caller's real membership |
+| `PATCH` | `/api/v1/teams/{teamId}` | `200`, Team after exact-version rename |
+| `DELETE` | `/api/v1/teams/{teamId}` | `200`, `{teamId,deleted:true}` after empty deletion |
+
+Create accepts `name` and `expectedUserId`; rename and delete also require a
+positive int64 `version`. The actor guard runs before domain SQL. Delete matches
+the observed name exactly. Ordinary names preserve valid Unicode and raw
+whitespace, refuse NUL and all-White_Space values, and may repeat. No character
+limit is added beyond the existing request-body limit. Team IDs and actor IDs
+must use canonical lowercase UUIDs. GET supports HEAD; authenticated method
+refusals retain `Allow`, `Daynight-User-ID` and no-store behavior.
+
+Full Team responses add metadata version and UTC timestamps to the stable
+`TeamRef`, plus the caller's real `membership` with its independent version and
+timestamps. The list applies membership before `(createdAt,id)` pagination and
+binds its cursor to the current user; it provides no search or total count.
+No-op rename requires the current version and preserves all metadata. Stale
+versions or a delete-name mismatch return `version_conflict`; Personal changes
+return `personal_team_immutable`, and nonempty deletion returns `team_not_empty`.
+A real rename at the maximum int64 version returns `version_exhausted`, while
+an exact-version same-name no-op still succeeds. An unconfirmed COMMIT returns `503 write_outcome_unknown`; cleanup failure
+retains `500 internal_error`. A lost response is not evidence of rollback and
+does not authorize automatic replay.
+
+The [authentication requirements](../../docs/spec/daynight-auth.md#team-生命周期)
+own the complete public contract. The
+[Team transaction design](../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
+owns existence locking, completion classification and independent versions.
+
 ## Project API
 
 | Method | Path | Result |
@@ -829,6 +881,14 @@ or hidden behind a pending domain refusal.
 Creation requires `application/json` (optionally UTF-8 charset), one object within
 1 MiB, exact field names and unique keys. Unknown/read-only fields, null required
 fields, wrong types, invalid UTF-8 and trailing JSON return `invalid_input`.
+
+Project lists default to all accessible projects. `teamId` selects a Team of which
+the principal is a member; `shared=true` selects direct grants outside the owner
+Team. The filters are mutually exclusive. Missing or inaccessible Teams return 404;
+database failures remain errors. Project cursor version 2 uses the scoped-projects
+kind and binds canonical principal, all/team/shared scope, Team ID and position;
+version 1 and cross-scope or cross-principal cursors are rejected. Cursors are not tamper-proof and are not authorization credentials; each request
+checks access independently. No count is returned.
 
 Lists accept `limit` (default 50 only when absent, range 1–100) and opaque
 `cursor`. Empty, repeated, malformed and unknown query parameters fail. Cursors
@@ -936,8 +996,8 @@ worker ownership is matched by decoding each candidate’s worker property row
 before collecting the final limit+1 matches; complete properties are batch-loaded
 for selected tasks. Assignee equality/IS NULL applies before this worker
 matching and final pagination. No bounded output page hides later matches, and
-opaque PR strings are not converted through PostgreSQL JSON types. Project and
-account-Worker cursors stay at version 1; old version-1 task cursors are refused.
+opaque PR strings are not converted through PostgreSQL JSON types. Account-Worker
+cursors stay at version 1; old version-1 task cursors are refused.
 The assignee filter is explicit and does not change automatic worker eligibility.
 
 ## Task-chain graph
@@ -1372,8 +1432,8 @@ query aggregated successfully across all relevant projects/pages supplies a comp
 ownership inventory. Partial pages, additional filters and failed traversals cannot
 authorize cleanup by absence. HTTP input retains strict query validation.
 Task cursor version 2 includes the resolved assignee scope; me and its concrete
-UUID may share that scope, but another account's me cannot. Project and
-account-owned Worker list cursors remain version 1.
+UUID may share that scope, but another account's me cannot. Account-owned Worker
+list cursors remain version 1.
 
 The project-scoped task-assignees GET returns `items` and `unresolvedUserIds`
 as non-null arrays. With no query it enumerates current members and assignees

@@ -28,6 +28,12 @@ type PageRequest struct {
 	Cursor *string
 }
 
+type ProjectListRequest struct {
+	Page   PageRequest
+	TeamID *string
+	Shared bool
+}
+
 type ProjectPage struct {
 	Items      []core.Project
 	NextCursor *string
@@ -96,26 +102,53 @@ func (s *Projects) GetWithAccess(ctx context.Context, principal core.Principal, 
 }
 
 func (s *Projects) List(ctx context.Context, principal core.Principal, request PageRequest) (ProjectPage, error) {
+	return s.ListScoped(ctx, principal, ProjectListRequest{Page: request})
+}
+
+func (s *Projects) ListScoped(ctx context.Context, principal core.Principal, request ProjectListRequest) (ProjectPage, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return ProjectPage{}, err
 	}
-	page, err := projectListPage(request)
+	userID, _ := CanonicalID(principal.UserID)
+	principal.UserID = userID
+	scope := store.ProjectScope{Kind: store.ProjectScopeAll}
+	if request.TeamID != nil {
+		if request.Shared {
+			return ProjectPage{}, invalidInput("teamId and shared are mutually exclusive.")
+		}
+		teamID, err := CanonicalID(*request.TeamID)
+		if err != nil {
+			return ProjectPage{}, err
+		}
+		scope = store.ProjectScope{Kind: store.ProjectScopeTeam, TeamID: teamID}
+	} else if request.Shared {
+		scope.Kind = store.ProjectScopeShared
+	}
+	page, err := projectListPage(request.Page, userID, scope)
 	if err != nil {
 		return ProjectPage{}, err
 	}
 	var result store.ProjectPage
+	var refusal error
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		var err error
-		result, err = snapshot.AccessibleProjects(ctx, principal, page)
+		result, err = snapshot.ScopedProjects(ctx, principal, scope, page)
+		if errors.Is(err, core.ErrNotFound) {
+			refusal = &Fault{Code: "not_found", Message: "Team was not found.", Cause: err}
+			return nil
+		}
 		return err
 	})
 	if err != nil {
 		return ProjectPage{}, fmt.Errorf("list projects: %w", err)
 	}
+	if refusal != nil {
+		return ProjectPage{}, refusal
+	}
 	response := ProjectPage{Items: result.Items}
 	if result.HasMore {
 		last := result.Items[len(result.Items)-1]
-		cursor, err := encodeProjectCursor(last)
+		cursor, err := encodeProjectCursor(last, userID, scope)
 		if err != nil {
 			return ProjectPage{}, fmt.Errorf("encode project cursor: %w", err)
 		}

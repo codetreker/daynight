@@ -213,8 +213,17 @@ func TestProjectHTTPPaginationWithTiedTimestamps(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wrongScope := strings.Replace(string(data), `"kind":"projects"`, `"kind":"tasks"`, 1)
-			assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?cursor="+base64.RawURLEncoding.EncodeToString([]byte(wrongScope)), ""), http.StatusBadRequest, "invalid_input")
+			var cursor map[string]any
+			if err := json.Unmarshal(data, &cursor); err != nil {
+				t.Fatal(err)
+			}
+			cursor["kind"] = "tasks"
+			wrongScope, err := json.Marshal(cursor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tampered := base64.RawURLEncoding.EncodeToString(wrongScope)
+			assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?cursor="+url.QueryEscape(tampered), ""), http.StatusBadRequest, "invalid_input")
 		}
 	}
 }
@@ -224,6 +233,8 @@ func TestProjectHTTPInvalidQueriesAndMissingResources(t *testing.T) {
 	for _, query := range []string{
 		"limit=", "limit=0", "limit=101", "limit=-1", "limit=1.5", "limit=invalid", "limit=1&limit=2",
 		"cursor=", "cursor=bad", "cursor=one&cursor=two", "status=todo", "limit=%xx", "limit=1;cursor=x",
+		"teamId=", "teamId=invalid", "teamId=one&teamId=two", "shared=", "shared=false", "shared=TRUE", "shared=1", "shared=true&shared=true",
+		"teamId=00000000-0000-4000-8000-000000000001&shared=true",
 	} {
 		assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?"+query, ""), http.StatusBadRequest, "invalid_input")
 	}
@@ -238,6 +249,124 @@ func TestProjectHTTPInvalidQueriesAndMissingResources(t *testing.T) {
 		if !strings.Contains(response.Header().Get("Allow"), "GET") || strings.Contains(response.Header().Get("Allow"), "POST") != (path == "/api/v1/projects") {
 			t.Fatalf("invalid Allow: %s", response.Header().Get("Allow"))
 		}
+	}
+}
+
+func TestProjectHTTPScopedPagination(t *testing.T) {
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
+	ctx := context.Background()
+	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"}
+	var teamID string
+	for _, id := range ids {
+		project, err := database.CreatePrivateProject(ctx, handler.principal, id, "project", "https://github.com/example/repo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		teamID = project.Ownership.TeamID
+	}
+	query := "teamId=" + strings.ToUpper(teamID)
+	first := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1&"+query, ""), http.StatusOK)
+	if len(first.Items) != 1 || first.NextCursor == nil {
+		t.Fatalf("first team page: %+v", first)
+	}
+	cursor := url.QueryEscape(*first.NextCursor)
+	second := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1&teamId="+teamID+"&cursor="+cursor, ""), http.StatusOK)
+	if len(second.Items) != 1 || second.Items[0].ID == first.Items[0].ID || second.NextCursor != nil {
+		t.Fatalf("second team page: %+v", second)
+	}
+	shared := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?shared=true", ""), http.StatusOK)
+	if len(shared.Items) != 0 || shared.Items == nil || shared.NextCursor != nil {
+		t.Fatalf("shared scope included team projects: %+v", shared)
+	}
+	for _, scope := range []string{"", "&shared=true", "&teamId=00000000-0000-4000-8000-000000000099"} {
+		assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?cursor="+cursor+scope, ""), http.StatusBadRequest, "invalid_input")
+	}
+	all := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?limit=1", ""), http.StatusOK)
+	if all.NextCursor == nil {
+		t.Fatal("all-accessible cursor missing")
+	}
+	assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects?"+query+"&cursor="+url.QueryEscape(*all.NextCursor), ""), http.StatusBadRequest, "invalid_input")
+}
+
+func TestProjectHTTPSharedPaginationRejectsOtherScopesAndPrincipals(t *testing.T) {
+	h := membershipTestHarness(t)
+	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
+	mux := http.NewServeMux()
+	h.auth.RegisterRoutes(mux)
+	projectRoutes(mux, service.NewProjects(h.database), h.auth, logger)
+	h.handler = RequestLogging(logger, mux)
+	ctx := context.Background()
+	admin, err := h.auth.identity.Authenticate(ctx, core.SessionCredential, h.admin.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.NewProjects(h.database).Create(ctx, admin, service.CreateProject{Name: "Second shared", RepoURL: "https://example.com/second.git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.outsider), http.StatusOK)
+	member := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.member), http.StatusOK)
+	for index, project := range []core.Project{h.project, second} {
+		if _, err := h.database.Pool.Exec(ctx, `UPDATE projects SET created_at='2024-01-01 00:00:00+00'::timestamptz + $2::int * interval '1 second' WHERE id=$1`, project.ID, index); err != nil {
+			t.Fatal(err)
+		}
+		for _, userID := range []string{h.memberID, other.ID} {
+			if _, err := h.database.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, userID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	first := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=1&shared=true", "", h.member), http.StatusOK)
+	if len(first.Items) != 1 || first.Items[0].ID != h.project.ID || first.NextCursor == nil {
+		t.Fatalf("first shared page: %+v", first)
+	}
+	cursor := url.QueryEscape(*first.NextCursor)
+	next := decodeResponse[api.ProjectPage](t, h.call(http.MethodGet, "/api/v1/projects?limit=1&shared=true&cursor="+cursor, "", h.member), http.StatusOK)
+	if len(next.Items) != 1 || next.Items[0].ID != second.ID || next.NextCursor != nil {
+		t.Fatalf("second shared page: %+v", next)
+	}
+	for _, query := range []string{"cursor=" + cursor, "teamId=" + member.PersonalTeam.ID + "&cursor=" + cursor} {
+		assertProjectError(t, h.call(http.MethodGet, "/api/v1/projects?"+query, "", h.member), http.StatusBadRequest, "invalid_input")
+	}
+	assertProjectError(t, h.call(http.MethodGet, "/api/v1/projects?shared=true&cursor="+cursor, "", h.outsider), http.StatusBadRequest, "invalid_input")
+}
+
+func TestProjectHTTPTeamScopeRefusesNonmembersAndExposesDatabaseFailure(t *testing.T) {
+	database := projectTestStore(t)
+	var logs bytes.Buffer
+	handler := projectTestHandler(t, database, &logs)
+	ctx := context.Background()
+	project, err := database.CreatePrivateProject(ctx, handler.principal, "00000000-0000-4000-8000-000000000189", "Externally shared", "https://example.com/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const externalTeam = "00000000-0000-4000-8000-000000000190"
+	const missingTeam = "00000000-0000-4000-8000-000000000191"
+	if _, err := database.Pool.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'External team')`, externalTeam); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE project_ownership SET team_id=$2 WHERE project_id=$1`, project.ID, externalTeam); err != nil {
+		t.Fatal(err)
+	}
+	shared := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects?shared=true", ""), http.StatusOK)
+	if len(shared.Items) != 1 || shared.Items[0].ID != project.ID {
+		t.Fatalf("direct grant should permit the shared project: %+v", shared)
+	}
+	nonmember := projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+externalTeam, "")
+	missing := projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+missingTeam, "")
+	assertProjectError(t, nonmember, http.StatusNotFound, "not_found")
+	assertProjectError(t, missing, http.StatusNotFound, "not_found")
+	if nonmember.Body.String() != missing.Body.String() {
+		t.Fatalf("nonmember and missing Team refusals differ: %s vs %s", nonmember.Body, missing.Body)
+	}
+	if _, err := database.Pool.Exec(ctx, `ALTER TABLE team_members RENAME TO private_membership_secret`); err != nil {
+		t.Fatal(err)
+	}
+	failed := projectRequest(handler, http.MethodGet, "/api/v1/projects?teamId="+externalTeam, "")
+	assertProjectError(t, failed, http.StatusInternalServerError, "internal_error")
+	if strings.Contains(failed.Body.String(), "secret") || strings.Contains(logs.String(), "private_membership_secret") || !strings.Contains(logs.String(), `"cause":"database"`) {
+		t.Fatalf("database failure was hidden or disclosed: response %s, logs %s", failed.Body, &logs)
 	}
 }
 

@@ -11,8 +11,13 @@ Current installed acceptance prepares one canonical default-shim installation
 per platform invocation, with private runtime state and writable package views;
 the [shared preparation decision](../../.agents/notes/implemented/testing/2026-11-04-shared-installed-cli-preparation.md)
 owns that separate optimization. Preparation command, source and cleanup evidence
-is retained in `.tmp/installed-cli-preparation.json`. Separate runs have different runner load, so historical variation
-is included rather than treating one measurement as a stable benchmark.
+is retained in `.tmp/installed-cli-preparation.json`. Worker worktree cases now
+reuse file-owned files/reftable starting repositories and copy independent
+subjects; the [Worker seed decision](../../.agents/notes/implemented/testing/2026-11-04-worker-git-fixture-seeds.md)
+records that lifetime and its native isolation checks. The historical review
+split measurements do not measure that Worker change. Separate runs have
+different runner load, so historical variation is included rather than treating
+one measurement as a stable benchmark.
 
 ## Baseline
 

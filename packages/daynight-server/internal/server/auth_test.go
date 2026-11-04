@@ -390,7 +390,7 @@ func TestIdentityHTTPInputAndOperationalFailures(t *testing.T) {
 	assertProjectError(t, h.request("GET", "/api/v1/me/tokens", "", cookies, nil, ""), 500, "internal_error")
 	assertProjectError(t, h.request("POST", "/api/v1/me/tokens", `{"name":"fails","expiresAt":null}`, cookies, nil, h.auth.origin), 500, "internal_error")
 	assertProjectError(t, h.request("DELETE", "/api/v1/me/tokens/00000000-0000-0000-0000-000000000001", "", cookies, nil, h.auth.origin), 500, "internal_error")
-	if _, err := h.database.Pool.Exec(context.Background(), `DROP TABLE users`); err != nil {
+	if _, err := h.database.Pool.Exec(context.Background(), `ALTER TABLE users RENAME TO unavailable_users`); err != nil {
 		t.Fatal(err)
 	}
 	assertProjectError(t, h.request("GET", "/api/v1/me", "", cookies, nil, ""), 500, "internal_error")
