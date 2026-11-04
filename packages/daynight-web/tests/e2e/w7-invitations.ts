@@ -60,8 +60,8 @@ export const verifyScopedInvitationManagement = async (page: Page, request: Auth
   await expect(page.getByText(created.id, { exact: true })).toHaveCount(0);
 
   // A browser history change must not discard an already dispatched result.
-  await page.locator(`a[href="/teams/${team.id}"]`).first().click();
-  await page.locator(`a[href="/teams/${team.id}/members"]`).first().click();
+  await page.locator(`a.nav-button[href="/teams/${team.id}"]`).click();
+  await page.locator(`a.nav-button[href="/teams/${team.id}/members"]`).click();
   const held = Promise.withResolvers<void>();
   const reached = Promise.withResolvers<void>();
   let retainedLink = '';
@@ -139,8 +139,8 @@ export const verifyScopedInvitationManagement = async (page: Page, request: Auth
   expect((await projectRevoked).status()).toBe(204);
   await expect(page.getByText(projectCreated.id, { exact: true })).toHaveCount(0);
 
-  await page.locator(`a[href="/projects/${project.id}"]`).first().click();
-  await page.locator(`a[href="/projects/${project.id}/members"]`).first().click();
+  await page.locator(`.project-management-nav a[href="/projects/${project.id}"]`).click();
+  await page.locator(`a[href="/projects/${project.id}/members"]:visible`).first().click();
   const projectHeld = Promise.withResolvers<void>();
   const projectReached = Promise.withResolvers<void>();
   let projectRetainedLink = '';
