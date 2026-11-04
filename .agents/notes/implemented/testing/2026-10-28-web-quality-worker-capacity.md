@@ -12,12 +12,18 @@ coverage workload.
 
 ## Decision
 
-The coverage child in `scripts/ci.mts quality` receives
-`VITEST_MAX_WORKERS=4`. The Node harness still runs first and retains its own
-180-second deadline. Coverage retains its separate 180-second deadline, `forks`
-pool, per-file isolation, complete product-source inventory and strict unrounded
-statement-coverage gate. The [local stress decision](2026-11-03-local-stress-suites.md)
-subsequently separates scale workloads from ordinary discovery while retaining
+The Vitest/V8 child in `scripts/ci.mts quality` receives
+`VITEST_MAX_WORKERS=4`. The Node harness runs first with its own 180-second
+deadline. The direct Vitest/V8 command has 180 seconds, followed by a direct strict
+checker command with 60 seconds, as owned by the
+[command-deadline decision](2026-11-04-web-quality-command-deadlines.md). That
+later decision replaces the composite coverage/checker 180-second limit retained
+by the worker-count calibration, increasing configured coverage allowance to 240
+seconds and aggregate quality command allowance from 360 to 420 seconds. The
+20-minute job, `forks` pool, per-file isolation, all ordinary cases, complete
+product-source inventory and strict unrounded statement-coverage gate remain.
+The [local stress decision](2026-11-03-local-stress-suites.md) separates scale
+workloads from ordinary discovery while retaining
 compact correctness cases and the same product coverage manifest.
 
 This budget targets the repository's public `ubuntu-latest` quality job. The
@@ -62,7 +68,7 @@ fork isolation contract. Worker-count calibration leaves the pool unchanged.
 ## Consequences
 
 The quality command can use its dedicated standard runner's four CPUs while
-preserving every command, coverage, process-group cleanup and browser gate.
+preserving the complete suite, strict coverage, process-group cleanup and browser gate.
 The browser job owns both complete functional targets with one browser worker
 and zero retries. Complete capacity inputs and their original budgets remain in
 the explicit local browser stress path. The historical worker-count comparison

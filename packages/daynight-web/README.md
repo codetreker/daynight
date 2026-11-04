@@ -1593,16 +1593,30 @@ main pushes run the full suite. The Web result enables two parallel jobs,
 and other results fail the gate. Shared workflow changes retain the existing
 all-module selection rule.
 
-`node packages/daynight-web/scripts/ci.mts quality` runs `test:harness` and the complete
-`test:coverage` command serially. Each retains a separate 180-second deadline,
-so harness duration cannot consume the coverage command's budget. Only the
-Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=4`, retaining
-its `forks` pool, per-file isolation, full product manifest and strict statement
-gate. The [worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
-calibrates this existing resource setting for the dedicated public standard
-Linux runner's four CPUs. The complete product-source coverage manifest and
-strict gate apply to the ordinary suite; scale workloads use the separate local
-stress configuration.
+`node packages/daynight-web/scripts/ci.mts quality` runs three commands serially,
+each with its own deadline:
+
+| Command | Deadline |
+| --- | --- |
+| `pnpm --filter @codetreker/daynight-web test:harness` | 180 seconds |
+| `pnpm --filter @codetreker/daynight-web exec vitest run --coverage` | 180 seconds |
+| `pnpm --filter @codetreker/daynight-web exec node scripts/coverage.mts` | 60 seconds |
+
+The Vitest/V8 suite and strict checker have separate process boundaries, so a
+successful suite cannot consume the checker's whole allowance. Their combined
+configured allowance increases from the former composite 180 seconds to 240
+seconds; the sum of quality command allowances increases from 360 to 420 seconds.
+The quality job retains its 20-minute limit. Local `test:coverage` and `web:test`
+keep their existing composition.
+
+Only the Vitest/V8 child receives a copied environment with
+`VITEST_MAX_WORKERS=4`. Its `forks` pool, per-file isolation, complete ordinary
+suite, full product-source manifest and strict unrounded greater-than-90%
+statement gate remain required. The [worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
+calibrates this setting for the dedicated public standard Linux runner's four
+CPUs. The [command-deadline decision](../../.agents/notes/implemented/testing/2026-11-04-web-quality-command-deadlines.md)
+owns the separate budgets and aggregate allowance. Scale workloads use the
+separate local stress configuration; browser and Go gates remain required.
 
 `node packages/daynight-web/scripts/ci.mts browser` installs pinned Chromium and
 Linux dependencies under the
