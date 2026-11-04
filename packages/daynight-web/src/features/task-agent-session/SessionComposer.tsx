@@ -71,12 +71,17 @@ export function SessionComposer({ state, connected, authPaused = false, active =
     };
     resize();
     let width = input.getBoundingClientRect().width;
+    let frame: number | null = null;
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
       const next = input.getBoundingClientRect().width;
-      if (next !== width) { width = next; resize(); }
+      if (next !== width) {
+        width = next;
+        // Changing the observed height during delivery can trigger a resize loop.
+        if (frame === null) frame = requestAnimationFrame(() => { frame = null; resize(); });
+      }
     });
     observer?.observe(input);
-    return () => observer?.disconnect();
+    return () => { observer?.disconnect(); if (frame !== null) cancelAnimationFrame(frame); };
   }, [text, active]);
   const snapshot = state.snapshot;
   const controls = snapshot?.controls;

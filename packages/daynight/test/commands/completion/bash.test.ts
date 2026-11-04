@@ -70,7 +70,7 @@ describe("Bash completion rendering", () => {
   it("discovers delivered Step commands with separate operation options", () => {
     const step = taskDefinition.commands!.find(({ name }) => name === "step")!;
     const script = renderBashCompletion(step);
-    expect(script).toContain("dn_children=('list' 'show' 'add' 'update' 'set-status')");
+    expect(script).toContain("dn_children=('list' 'show' 'add' 'update' 'set-status' 'move')");
     const list = renderBashCompletion(step.commands!.find(({ name }) => name === "list")!);
     expect(list).toContain("dn_options=('--project' '--json' '-h' '--help')");
     expect(list).not.toContain("'--if-version'");
@@ -82,7 +82,9 @@ describe("Bash completion rendering", () => {
     const update = renderBashCompletion(step.commands!.find(({ name }) => name === "update")!);
     expect(update).toContain("'--title' '--description' '--if-version'");
     expect(update).not.toContain("'--status'");
-    expect(script).not.toContain("'move'");
+    const move = renderBashCompletion(step.commands!.find(({ name }) => name === "move")!);
+    expect(move).toContain("'--before' '--after' '--first' '--last' '--if-version'");
+    expect(script).not.toContain("'delete'");
   });
 
   it("discovers Thread read/post options through the registered command tree", () => {

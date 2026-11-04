@@ -15,7 +15,7 @@ for (const alias of ["daynight", "dn"]) {
   const launcher = path.resolve(installed, "../../.bin", alias);
   assert.equal(execFileSync(launcher, ["--version"], { encoding: "utf8", timeout: 10_000 }).trim(), manifest.version);
 }
-for (const args of [["--help"], ["task", "--help"], ["task", "step", "--help"], ["task", "step", "list", "--help"], ["task", "step", "show", "--help"], ["task", "step", "add", "--help"], ["task", "step", "update", "--help"], ["task", "step", "set-status", "--help"], ["skill", "--help"], ["update", "--help"]]) {
+for (const args of [["--help"], ["task", "--help"], ["task", "step", "--help"], ["task", "step", "list", "--help"], ["task", "step", "show", "--help"], ["task", "step", "add", "--help"], ["task", "step", "update", "--help"], ["task", "step", "set-status", "--help"], ["task", "step", "move", "--help"], ["skill", "--help"], ["update", "--help"]]) {
   assert.match(execFileSync(process.execPath, [entry, ...args], { encoding: "utf8", timeout: 10_000 }), /Usage:/);
 }
 

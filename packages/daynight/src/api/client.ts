@@ -1,8 +1,8 @@
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
-import { canonicalStepId, confirmAddedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
+import { canonicalStepId, confirmAddedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
-import type { AddTaskStepInput, AddTaskStepOptions, SetTaskStepStatusInput, TaskStepWriteOptions, TaskStepsReadOptions, UpdateTaskStepInput, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
+import type { AddTaskStepInput, AddTaskStepOptions, MoveTaskStepInput, MoveTaskStepOptions, SetTaskStepStatusInput, TaskStepWriteOptions, TaskStepsReadOptions, UpdateTaskStepInput, StepsResource, StepResource, ThreadReadQuery, PostThreadMessageInput, ThreadMessage, ThreadPage } from "./types.js";
 import { isNonemptyText, isText } from "../platform/text.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
@@ -71,6 +71,7 @@ export type ApiClient = {
   addTaskStep(projectId: string, taskId: string, input: AddTaskStepInput, options: AddTaskStepOptions): Promise<StepsResource>;
   updateTaskStep(projectId: string, taskId: string, stepId: string, input: UpdateTaskStepInput, options: TaskStepWriteOptions): Promise<StepsResource>;
   setTaskStepStatus(projectId: string, taskId: string, stepId: string, input: SetTaskStepStatusInput, options: TaskStepWriteOptions): Promise<StepsResource>;
+  moveTaskStep(projectId: string, taskId: string, stepId: string, input: MoveTaskStepInput, options: MoveTaskStepOptions): Promise<StepsResource>;
   getTaskStep(projectId: string, taskId: string, stepId: string): Promise<StepResource>;
   readTaskThread(projectId: string, taskId: string, query: ThreadReadQuery): Promise<ThreadPage>;
   postTaskThreadMessage(projectId: string, taskId: string, input: PostThreadMessageInput): Promise<ThreadMessage>;
@@ -554,6 +555,41 @@ export const createApiClient = (options: {
     },
     updateTaskStep: (projectId, taskId, stepId, input, options) => updateStep("update", projectId, taskId, stepId, input, options),
     setTaskStepStatus: (projectId, taskId, stepId, input, options) => updateStep("set-status", projectId, taskId, stepId, input, options),
+    moveTaskStep: async (projectId, taskId, stepId, input, options) => {
+      const context: Context = { operation: "task.step.move", sentRequestId: options.requestId };
+      try {
+        const project = resourceId(projectId), task = resourceId(taskId), step = canonicalStepId(stepId);
+        if (step === null) throw new Error("Step ID must contain exactly eight hexadecimal characters.");
+        const target = { ...context, projectId: project, taskId: task, stepId: step };
+        try {
+          taskVersion(input.version);
+          if ([input.before, input.after, input.position].filter((value) => value !== undefined).length !== 1) throw new Error("Exactly one Step position is required.");
+          if (input.position !== undefined && input.position !== "first" && input.position !== "last") throw new Error("Step position must be first or last.");
+          const anchor = (value: string): string => {
+            const id = canonicalStepId(value);
+            if (id === null || id === step) throw new Error("Step anchor must be another eight-hex Step ID.");
+            return id;
+          };
+          const normalized: MoveTaskStepInput = { version: input.version,
+            ...(input.before === undefined ? {} : { before: anchor(input.before) }),
+            ...(input.after === undefined ? {} : { after: anchor(input.after) }),
+            ...(input.position === undefined ? {} : { position: input.position }) };
+          const previous = options.previous === undefined ? undefined : parseStepsResource(options.previous, project, task);
+          if (previous !== undefined && previous.version !== input.version) throw new Error("Previous Steps resource does not match the submitted version.");
+          return await exchange(target, resourcePath("projects", project, "tasks", task, "steps", step, "position"), "PUT", {
+            kind: "json", requirePrincipal: true, onPrincipal: bindStepsPrincipal, responseBytes: TASK_STEPS_RESPONSE_BYTES, decodeJsonSource: decodeStepsJsonSource,
+            parse: (value) => parseStepsResource(value, project, task),
+            confirmMutation: (result) => confirmMovedTaskStep(result, step, normalized, previous),
+          }, [200], { kind: "json", value: normalized, maxBytes: 1_048_576 }, true);
+        } catch (cause) {
+          if (cause instanceof ApiError) throw cause;
+          throw new ApiError(target, "prepare", { cause });
+        }
+      } catch (cause) {
+        if (cause instanceof ApiError) throw cause;
+        throw new ApiError(context, "prepare", { cause });
+      }
+    },
     readTaskThread: (projectId, taskId, query) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       if (!Number.isInteger(query.count) || query.count < 1 || query.count > 100 || typeof query.details !== "boolean" || query.beforeId !== undefined && query.afterId !== undefined) throw new Error("Invalid Thread page query.");

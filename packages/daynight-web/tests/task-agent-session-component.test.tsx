@@ -130,3 +130,30 @@ it('does not combine a new account with the previous client snapshot before its 
   expect(getItem.mock.calls.filter(([key]) => key.startsWith('daynight.web.session.display.v1:'))).toEqual([]);
   expect(screen.queryByRole('button', { name: 'Display' })).toBeNull();
 });
+
+it('retains the live client, channel and draft through Session fullscreen and layered Display Escape', async () => {
+  const f = fixture();
+  render(f.element());
+  await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+  f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: 'Fullscreen draft' } });
+  const currentReads = vi.mocked(f.api.current).mock.calls.length;
+  const timelineReads = vi.mocked(f.api.timeline).mock.calls.length;
+  const close = vi.mocked(f.api.channel).mock.results[0]!.value.close;
+  const trigger = screen.getByRole('button', { name: 'Enter Session fullscreen' });
+  fireEvent.click(trigger);
+  expect(screen.getByRole('textbox')).toBe(input);
+  expect(input).toHaveValue('Fullscreen draft');
+  fireEvent.click(screen.getByRole('button', { name: 'Display' }));
+  fireEvent.keyDown(screen.getByRole('menuitemradio', { name: 'Conversation' }), { key: 'Escape' });
+  expect(screen.getByRole('button', { name: 'Exit Session fullscreen' })).toBe(trigger);
+  fireEvent.keyDown(input, { key: 'Escape' });
+  expect(screen.getByRole('button', { name: 'Enter Session fullscreen' })).toBe(trigger);
+  expect(input).toHaveValue('Fullscreen draft');
+  expect(f.api.current).toHaveBeenCalledTimes(currentReads);
+  expect(f.api.timeline).toHaveBeenCalledTimes(timelineReads);
+  expect(f.api.channel).toHaveBeenCalledOnce();
+  expect(close).not.toHaveBeenCalled();
+  expect(f.api.command).not.toHaveBeenCalled();
+});

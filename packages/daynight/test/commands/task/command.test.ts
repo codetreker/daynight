@@ -27,6 +27,7 @@ const fixture = (operation = createOperation()) => {
   const api = {
     updateTaskStep: async () => { throw new Error("Unused Step API method"); },
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
+    moveTaskStep: vi.fn<ApiClient["moveTaskStep"]>(),
     addTaskStep: vi.fn<ApiClient["addTaskStep"]>(),
     listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),
     readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),

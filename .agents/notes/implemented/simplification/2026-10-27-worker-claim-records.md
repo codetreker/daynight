@@ -98,10 +98,12 @@ checkout's filesystem error must not suppress their progress. Pending startup
 and new acquisition still require successful full discovery to account for
 unknown managed resources before reserving another slot.
 
-Each successful slot allocation advances Project rotation, for both pending
-startup and new acquisition. Project-local pending order is stable, and new
-candidates retain server ready order. This keeps spare capacity from being
-consumed by one busy Project's entire batch.
+Pending startup advances Project rotation after each successful slot allocation
+and may use multiple free slots in one round. Project-local pending order is
+stable. New acquisition follows the [single-acquisition decision](../feature/2026-11-04-worker-single-acquisition.md):
+each round acquires at most one task across all configured Projects, then resumes
+rotation in the next round while preserving server ready order within each
+Project. A grant that remains pending still ends that round's acquisition.
 
 An ended index row without a global resource match enters the same serialized
 cleanup jobs as known owners. The target initially carries claim identity only;

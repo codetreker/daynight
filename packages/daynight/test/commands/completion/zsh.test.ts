@@ -66,6 +66,9 @@ describe("native zsh completion", () => {
     expect(add).toContain("skipped");
     expect(script).toContain("'set-status:");
     expect(script).toContain("'update:");
+    expect(script).toContain("'move:");
+    const move = renderZshCompletion(step.commands!.find(({ name }) => name === "move")!);
+    for (const option of ["--before=", "--after=", "--first", "--last", "--if-version="]) expect(move).toContain(option);
     expect(script).not.toContain("'delete:");
   });
 

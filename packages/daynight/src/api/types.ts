@@ -38,6 +38,13 @@ export type UpdateTaskStepInput = {
   readonly description?: string;
 };
 export type SetTaskStepStatusInput = { readonly version: bigint; readonly status: TaskStepStatus };
+export type MoveTaskStepInput = {
+  readonly version: bigint;
+  readonly before?: string;
+  readonly after?: string;
+  readonly position?: "first" | "last";
+};
+export type MoveTaskStepOptions = TaskStepWriteOptions;
 
 export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskPlatform = "windows" | "linux" | "macos";
