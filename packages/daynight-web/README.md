@@ -693,7 +693,7 @@ index. Overview positioning can clear a filter that hides its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
-## Steps reading and status
+## Steps reading, status and position
 
 Task details always expose Steps after Overview, in both the dialog and standalone
 page. `tab=steps` preserves the tab through direct access, reload and browser
@@ -712,7 +712,7 @@ admission so late responses cannot restore a deleted detail. First-read errors, 
 retained-content errors remain distinct and retryable. A Steps 404 checks the
 parent before retiring access; 403 remains a refusal, and parent 410 uses the
 existing deleted-task presentation. Retirement and the last active reader's
-unsubscribe release complete collections, including pending admission, unless a status operation still needs them. Steps never
+unsubscribe release complete collections, including pending admission, unless a Steps write operation still needs them. Steps never
 enter the TaskDetail LRU or IndexedDB.
 
 The list mounts at most 100 rows per page, with global numbering, previous/next
@@ -723,8 +723,11 @@ submits through the same owner as Task writes and retains the confirmed state
 until the response is validated. The owner reconciles the Steps resource, parent
 detail and authorized summary before allowing another write. Conflicts and
 unknown outcomes expose recovery without replaying the operation; a failed
-readback keeps the submission gate closed. Other Steps write controls are not
-exposed. At heights up to 500px, a single scrollable tab row reserves
+readback keeps the submission gate closed. Position controls move up, down, to
+either end or relative to a selected Step. The picker filters the complete
+collection by name or ID, mounts at most 100 candidates and retains selection
+across filtering and pages. Confirmed moves locate the actual page and preserve
+expansion and focus by ID. Other Steps write controls are not exposed. At heights up to 500px, a single scrollable tab row reserves
 reading space; the tab owner reveals its target after focus, selection styling
 and locale updates. At heights up to 600px, pagination scrolls with the list so
 its controls cannot cover the remaining reading area. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
@@ -1816,9 +1819,9 @@ pnpm web:acceptance
 pnpm web:acceptance:stress
 ```
 
-The ordinary local command requires thirty-four functional scenarios on each
-native/container target, sixty-eight in total. CI retains that complete inventory
-across two disjoint case shards, each running its seventeen selected scenarios on
+The ordinary local command requires thirty-five functional scenarios on each
+native/container target, seventy in total. CI retains that complete inventory
+across two disjoint case shards, running eighteen and seventeen selected scenarios on
 both targets. The explicit local stress command adds five native
 capacity/limit scenarios and their performance receipt. From this package, use
 `pnpm test:stress:browser`, or invoke `node scripts/acceptance.mts --stress`;
@@ -1863,7 +1866,7 @@ ownership revalidation. Uncertain ownership fails without recursive removal.
 Existing recovery commands remain available without opting into new attachment.
 
 The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same sixty-eight functional scenarios and
+macOS local acceptance runs the same seventy functional scenarios and
 additional combined authentication checks, with native filesystem coverage
 qualified by its recorded capability. Explicit local stress acceptance adds the
 same five capacity/limit scenarios and fixed performance budgets on Linux and
@@ -1880,7 +1883,7 @@ separate PostgreSQL container/volume and ephemeral loopback listener. In paralle
 the normal dev-ci runner builds and starts the actual production image. Browser
 execution overlaps the same selected functional scenarios in native and
 production-image stream-gateway targets. Local ordinary execution selects all
-thirty-four scenarios; each CI shard selects seventeen and the final gate requires
+thirty-five scenarios; CI shards select eighteen and seventeen and the final gate requires
 the complete disjoint union. Explicit local stress mode then runs five native
 capacity/limit scenarios. In
 that mode, the native process and PostgreSQL remain alive through capacity;
@@ -1997,7 +2000,7 @@ records the original data-sharing, rendering and independent-reading proof choic
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
 requires a separate eleven-check receipt on each runtime target, alongside the
-68 ordinary Playwright cases or 73 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
+70 ordinary Playwright cases or 75 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
 identities, records their initial project sets, and crosses browser and CLI data
 through shared/private projects, original-credential service restart, logout/PAT
 independence, revocation, admitted upload, real socket interruption and normally
@@ -2103,8 +2106,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (68 ordinary cases; local stress adds five native cases
-for 37 native / 32 container, 69 total), current manual/periodic refresh,
+The selected inventory (70 ordinary cases; local stress adds five native cases
+for 40 native / 35 container, 75 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -2144,6 +2147,7 @@ the remaining functional scenarios.
 | W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |
 | W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
 | Steps status | `task-step-status`, `task-step-access-retirement`: real-service status transitions, conflict, committed response loss and failed readback, malformed success, child 404 and parent deletion, late dialog receipt, bilingual desktop and narrow keyboard menus |
+| Steps position | `task-step-position`: real-service ordered moves, bounded search and paging, no-op, invalid anchor and self-reference, conflict and lost response, focus, bilingual narrow and touch controls |
 | W20 | `task-assignment`, `task-assignment-layout`: native field propagation, real exact-version assignment/clear PATCHes, same-value zero writes, conflict and committed-response-loss GET-only recovery, people identity/access presentation, local filters with full-chain facts, bilingual desktop/narrow menu, focus, scroll and fullscreen behavior |
 | W21 | `task-pause`: project/list/chain/graph pause discovery, complete-scope counts, common heading and Unpause, exact-version property PATCH with preserved task materials, duplicate protection, conflict and committed-response-loss GET-only recovery, bilingual narrow layouts |
 | W15 | `task-platform`: status-row selection and confirmation, zero-write dismissal and select-focus restoration, set/clear, shared status/permission gate, exact versions, stale/unknown GET-only recovery, cross-task late ownership, manual-start lock, field propagation and bilingual narrow layouts |
@@ -2192,9 +2196,9 @@ Full shard artifacts are `daynight-web-acceptance-1` and
 `daynight-web-acceptance-2`, separate from raw coverage and retained for 30 days.
 Inspect the artifact from the exact workflow run and tested checkout identity,
 which is normally a merge revision for PR runs. Complete ordinary validation
-requires thirty-four native and thirty-four container functional scenarios across
+requires thirty-five native and thirty-five container functional scenarios across
 the two CI shards or in one local run. Explicit local stress requires their
-strict native union with five capacity/limit scenarios and the same thirty-four
+strict native union with five capacity/limit scenarios and the same thirty-five
 container scenarios. Every selected phase rejects missing, extra or duplicate
 scenarios and skipped/flaky/retried results.
 Installed-CLI handoff, container callbacks and recovery require matching source

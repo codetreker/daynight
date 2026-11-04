@@ -15,6 +15,9 @@ export const inspection: InspectionMessages = {
     checkState: "读取当前步骤", checking: "正在读取当前步骤", checkFailed: "无法核对当前步骤，暂时不能修改。",
     statusRefused: "服务器拒绝了状态修改。", statusMissing: "未找到此步骤。请读取当前步骤后重新选择。", statusDenied: "你没有权限修改此步骤。",
     statusExhausted: "任务版本已耗尽，无法保存此修改。", statusCapacity: "此修改会超过步骤资源的大小上限。", statusInvalid: "服务器认为状态请求无效，已拒绝修改。",
+    moveMenu: (title) => `${title}的更多操作`, moveUnavailable: "请等待当前任务和步骤核对完成后再移动。", moveUp: "上移", moveDown: "下移", moveFirst: "移到开头", moveLast: "移到末尾", moveRelative: "移动到…",
+    moveTitle: "移动步骤", target: "目标步骤", searchTargets: "搜索名称或 ID", targetPagination: "目标分页", targetPage: "目标结果页码", targetResults: "匹配步骤", noTargets: "没有匹配的步骤", targetMissing: "目标步骤已不可用，请选择其他步骤。", placement: "相对位置", before: "之前", after: "之后", cancelMove: "取消", confirmMove: "移动",
+    moveConflict: "任务已变化。请读取当前步骤，再重新选择位置。", moveConflictReconciled: "任务已变化。已读取步骤，请重新选择位置。", moveUnknown: "移动结果未知。请读取当前步骤后再修改。", moveRefused: "服务器拒绝了移动。", moveMissing: "未找到此步骤或目标。请读取当前步骤后重新选择。", moveInvalid: "服务器认为移动请求无效，目标必须是其他步骤。",
     capacityDetails: (encoded, maximum) => `编码大小：${encoded} 字节；上限：${maximum} 字节。`,
   },
   draftNavigation: {

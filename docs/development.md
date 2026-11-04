@@ -536,12 +536,12 @@ Default CLI service acceptance retains two bounded deadline probes and
 `.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
 the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
 claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
-local functional mode requires thirty-two scenarios per target (64 total);
-CI partitions that inventory into two disjoint sixteen-case selections per
-target. Shard receipts additionally identify `shard` and `selection`, and the
+local functional mode requires thirty-five scenarios per target (70 total);
+CI partitions that inventory into disjoint eighteen- and seventeen-case selections
+per target. Shard receipts additionally identify `shard` and `selection`, and the
 final gate requires their complete canonical union. Stress mode remains local
-and unsharded, adds five native capacity scenarios (37 native / 32 container,
-69 total) and `native/capacity/performance.json`. Both local modes retain strict
+and unsharded, adds five native capacity scenarios (40 native / 35 container,
+75 total) and `native/capacity/performance.json`. Both local modes retain strict
 source/browser identity, combined authentication and owned-resource cleanup;
 CI shard 2 owns both combined journeys while each shard owns its full cleanup. Local measurements prove only their recorded source and host;
 they do not establish hosted PR latency.

@@ -1,7 +1,9 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError } from "../../../api/client";
 import { useI18n } from "../../../i18n/LocaleProvider";
 import { useTaskSteps } from "../useTaskSteps";
+import { StepMoveMenu, type MoveAction } from "./StepMoveMenu";
+import { StepMoveDialog } from "./StepTargetPicker";
 import { StepStatusMenu } from "./StepStatusMenu";
 import "../../../styles/task-steps.css";
 
@@ -17,6 +19,10 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const id = useId();
+  const workspace = useRef<HTMLElement>(null);
+  const submittedMove = useRef<string | null>(null);
+  const focusMove = useRef<string | null>(null);
+  const [movingId, setMovingId] = useState<string | null>(null);
   const resource = state.resource;
   const total = resource?.steps.length ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -41,17 +47,54 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
     : error.kind === "protocol" ? m.protocolError : error.status === 404 ? m.unavailable
       : error.status === 403 ? m.denied : m.requestFailed : m.requestFailed;
   const mutation = state.mutation;
-  const stepMutation = mutation.operation?.action === "stepStatus" ? mutation : null;
+  const isPosition = mutation.operation?.action === "stepPosition";
+  const stepMutation = mutation.operation?.action === "stepStatus" || isPosition ? mutation : null;
+  const moving = resource?.steps.find((step) => step.id === movingId) ?? null;
+  useLayoutEffect(() => {
+    if (!active || resource === null) {
+      setMovingId(null);
+      if (active) { submittedMove.current = null; focusMove.current = null; }
+    }
+  }, [active, resource]);
+  useLayoutEffect(() => {
+    if (!active || submittedMove.current === null || !isPosition || mutation.operation?.stepId !== submittedMove.current) return;
+    if (mutation.phase === "confirmed" && !mutation.reconciling && resource !== null) {
+      const index = resource.steps.findIndex((step) => step.id === submittedMove.current);
+      if (index >= 0) { focusMove.current = submittedMove.current; setPage(Math.floor(index / PAGE_SIZE) + 1); }
+      submittedMove.current = null;
+    } else if (["refused", "conflict", "unknown", "reconciled"].includes(mutation.phase)) submittedMove.current = null;
+  }, [active, isPosition, mutation, resource]);
+  useLayoutEffect(() => {
+    if (focusMove.current === null || resource === null) return;
+    const index = resource.steps.findIndex((step) => step.id === focusMove.current);
+    if (index < 0 || Math.floor(index / PAGE_SIZE) + 1 !== currentPage) return;
+    const row = Array.from(workspace.current?.querySelectorAll<HTMLElement>("[data-step-id]") ?? []).find((item) => item.dataset.stepId === focusMove.current);
+    const button = row?.querySelector<HTMLButtonElement>(".step-more");
+    if (button) { button.focus(); button.scrollIntoView?.({ block: "nearest" }); focusMove.current = null; }
+  });
+  const submitMove = (stepId: string, placement: { position: "first" | "last" } | { before: string } | { after: string }) => {
+    if (resource === null || !state.canMove) return;
+    submittedMove.current = stepId;
+    state.move(stepId, placement, resource.version);
+  };
+  const move = (stepId: string, index: number, action: MoveAction) => {
+    if (resource === null) return;
+    if (action === "relative") { setMovingId(stepId); return; }
+    if (action === "first" || action === "last") submitMove(stepId, { position: action });
+    else if (action === "up" && index > 0) submitMove(stepId, { before: resource.steps[index - 1]!.id });
+    else if (action === "down" && index + 1 < resource.steps.length) submitMove(stepId, { after: resource.steps[index + 1]!.id });
+  };
   const pendingStepId = mutation.operation?.action === "stepStatus" && mutation.phase === "pending" ? mutation.operation.stepId : null;
+  const pendingMoveId = isPosition && mutation.phase === "pending" ? mutation.operation.stepId : null;
   const unresolved = stepMutation?.phase === "unknown" || stepMutation?.phase === "conflict" || stepMutation?.reconciliationError != null;
   const mutationError = stepMutation?.error;
   const resolvedConflict = stepMutation?.phase === "reconciled" && stepMutation.reconciledFrom === "conflict";
   const resolvedUnknown = stepMutation?.phase === "reconciled" && stepMutation.reconciledFrom === "unknown";
-  const refusal = mutationError instanceof ApiError ? mutationError.status === 404 ? m.statusMissing : mutationError.status === 403 ? m.statusDenied
+  const refusal = mutationError instanceof ApiError ? mutationError.status === 404 ? isPosition ? m.moveMissing : m.statusMissing : mutationError.status === 403 ? m.statusDenied
     : mutationError.code === "version_exhausted" ? m.statusExhausted : mutationError.code === "steps_limit_exceeded" ? m.statusCapacity
-      : mutationError.code === "invalid_input" ? m.statusInvalid : m.statusRefused : m.statusRefused;
+      : mutationError.code === "invalid_input" ? isPosition ? m.moveInvalid : m.statusInvalid : isPosition ? m.moveRefused : m.statusRefused : isPosition ? m.moveRefused : m.statusRefused;
 
-  return <section className="steps-workspace" aria-label={m.title}>
+  return <section ref={workspace} className="steps-workspace" aria-label={m.title}>
     <div className="steps-toolbar">
       <strong className="steps-counts">{resource === null ? m.title : m.count(format.number(total))}</strong>
       <button className="button steps-refresh" type="button" aria-label={m.refresh} aria-busy={busy} disabled={busy || !active || unresolved} onClick={state.retry}>
@@ -65,9 +108,9 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
       <button className="button" type="button" disabled={busy || !active || unresolved} onClick={state.retry}>{m.retry}</button>
     </div>}
     {stepMutation !== null && (unresolved || resolvedConflict || resolvedUnknown || stepMutation.phase === "refused") && <div className="steps-error" role="alert">
-      {stepMutation.phase === "unknown" && <p>{m.unknown}</p>}
-      {stepMutation.phase === "conflict" && <p>{m.conflict}</p>}
-      {resolvedConflict && <p>{m.conflictReconciled}</p>}
+      {stepMutation.phase === "unknown" && <p>{isPosition ? m.moveUnknown : m.unknown}</p>}
+      {stepMutation.phase === "conflict" && <p>{isPosition ? m.moveConflict : m.conflict}</p>}
+      {resolvedConflict && <p>{isPosition ? m.moveConflictReconciled : m.conflictReconciled}</p>}
       {resolvedUnknown && <p>{m.unknownReconciled}</p>}
       {stepMutation.phase === "refused" && <p>{refusal}</p>}
       {stepMutation.phase === "refused" && mutationError instanceof ApiError && mutationError.stepsLimit !== undefined && <p>{m.capacityDetails(format.number(mutationError.stepsLimit.encodedBytes), format.number(mutationError.stepsLimit.maxEncodedBytes))}</p>}
@@ -96,7 +139,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
               <span className="step-chevron" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m6 3 5 5-5 5" /></svg></span>
               <span className="step-number" aria-hidden="true">{format.number(start + index + 1)}</span><span className="step-title">{step.title}</span>
             </button>
-            <div className="step-controls"><StepStatusMenu step={step} available={state.canSetStatus} busy={pendingStepId === step.id} onSelect={(status) => state.setStatus(step.id, status, resource.version)} /><code className="step-id">{step.id}</code></div>
+            <div className="step-controls"><StepStatusMenu step={step} available={state.canSetStatus} busy={pendingStepId === step.id} onSelect={(status) => state.setStatus(step.id, status, resource.version)} /><code className="step-id">{step.id}</code><StepMoveMenu step={step} index={start + index} total={total} available={state.canMove} busy={pendingMoveId === step.id} onSelect={(action) => move(step.id, start + index, action)} /></div>
           </div>
           <div id={bodyId} className="step-detail" hidden={!open}>
             {open && <>{step.description === "" ? <p className="step-detail-empty">{m.noDescription}</p> : renderMarkdown(step.description)}
@@ -106,5 +149,6 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown }: {
         </li>;
       })}
     </ol>}
+    {moving !== null && resource !== null && <StepMoveDialog step={moving} steps={resource.steps} available={state.canMove} onCancel={() => { setMovingId(null); requestAnimationFrame(() => workspace.current?.querySelector<HTMLButtonElement>(`[data-step-id="${moving.id}"] .step-more`)?.focus()); }} onConfirm={(target, placement) => { setMovingId(null); submitMove(moving.id, placement === "before" ? { before: target } : { after: target }); }} />}
   </section>;
 };
