@@ -38,14 +38,14 @@ const pauseAutomaticRefresh = async (page: Page): Promise<void> => {
 };
 const open = async (page: Page, project: string, task: string): Promise<void> => {
   const syncPath = `/api/v1/projects/${project}/task-sync`;
-  const response = page.waitForResponse((response) => new URL(response.url()).pathname === syncPath && response.status() === 200);
+  const completed = page.waitForEvent('requestfinished', { predicate: async (request) => request.method() === 'GET' && new URL(request.url()).pathname === syncPath && (await request.response())?.status() === 200 });
   if (new URL(page.url()).pathname !== `/projects/${project}`) await page.goto(`/projects/${project}`);
   else {
     if (await detail(page).count() > 0) await detail(page).getByRole('button', { name: /^(关闭任务详情|Close task details)$/, exact: true }).click();
     await closeChain(page);
     await page.getByRole('button', { name: /^(刷新|Refresh)$/, exact: true }).click();
   }
-  await (await response).finished();
+  await completed;
   const { graph } = await readProjectSnapshot(authenticatedAPI(page.context().request), project);
   const index = buildGraphIndex(graph); const representative = index.componentByTask.get(task)!;
   const standalone = index.components.get(representative)!.memberIds.size === 1;

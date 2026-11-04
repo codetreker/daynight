@@ -14,7 +14,7 @@ import (
 
 func TestMembershipExpectedActorRejectsBeforeDomainSQL(t *testing.T) {
 	_, database, databaseURL, actor := projectService(t)
-	project, err := NewProjects(database).Create(context.Background(), actor, CreateProject{Name: "Identity guard", RepoURL: "host:repo"})
+	project, err := NewProjects(database).Create(context.Background(), actor, CreateProject{ExpectedUserID: actor.UserID, Name: "Identity guard", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}

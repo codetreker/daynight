@@ -30,7 +30,10 @@ History markers contain a segment, index and exact URL. A native fragment can
 copy state without adding an application index, so a marker's URL must match.
 An application write from an unindexed position starts a new segment on the
 written entry. Older segments cannot supply a valid distance across unnumbered
-entries. No native entry is repaired or assigned an invented index.
+entries. Native traversal alone never repairs an entry or assigns an invented
+index. Capturing an invitation fragment is an explicit application replace: it
+removes the secret from the URL and marker, and starts a new segment when the
+arrived entry is unindexed.
 
 ## Alternatives
 

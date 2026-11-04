@@ -166,7 +166,8 @@ daynight project show <project-id> --json
 作为名称无效。名称和详情 UUID 的参数错误必须在配置读取及网络访问之前拒绝。
 
 创建在写入前必须读取配置 server 的全部 project 分页，将选定 repo 地址与每个
-`repoUrl` 按 PT3 的同一规则比较。零匹配时提交原始名称与所选原始地址；唯一匹配
+`repoUrl` 按 PT3 的同一规则比较。零匹配时读取当前用户并提交其真实 `expectedUserId`、
+原始名称与所选原始地址，未指定 Team 时在 Personal 创建；核对响应主体且不自动重放未知写入。唯一匹配
 时成功输出 `Project already exists.` 和既有 project，不发送创建或修改请求，保留
 其名称与地址。多个匹配时报告歧义及全部匹配 ID，不创建。任一分页、响应验证、
 Git、取消或期限错误均按实际原因失败，不得把查询失败视为零匹配；完整预检成功

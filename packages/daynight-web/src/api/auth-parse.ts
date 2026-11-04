@@ -2,7 +2,7 @@ import { array, boolean, id, malformed, nonemptyString, record, string, timestam
 import { parseTeamRef, parseProjectOwnership } from "./team-parse";
 import { parseApiJson } from "./json";
 import { jsonContainerSources, jsonObjectSources } from "./json-source";
-import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipant, ProjectParticipants, ProjectRole, ProjectAccess, ProjectGrant, User } from "./auth-types";
+import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipant, ProjectParticipants, ProjectRole, ProjectAccess, ProjectGrant, User, TeamInvitationMember, TeamInvitationInspection, TeamInvitationAcceptance } from "./auth-types";
 
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null => value === null ? null : parse(value);
 const unique = <T>(items: T[], key: (item: T) => string): T[] => {
@@ -147,6 +147,36 @@ export const parseInvitationAcceptance = (value: unknown, projectId: string, use
   const joined = boolean(data.joined), consumed = boolean(data.consumed);
   if (!sameGrant(directGrant, access.directGrant) || joined !== consumed) return malformed();
   return { projectId, directGrant, access, joined, consumed };
+};
+
+const parseTeamInvitationMember = (value: unknown, teamId: string, userId: string): TeamInvitationMember => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => !["teamId", "userId", "role", "version", "createdAt", "updatedAt"].includes(key))) return malformed();
+  const member = { teamId: id(data.teamId), userId: id(data.userId), role: parseRole(data.role),
+    version: parseMemberVersion(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
+  if (member.teamId !== teamId || member.userId !== userId) return malformed();
+  return member;
+};
+export const decodeTeamInvitationJson = async (response: Response): Promise<unknown> => {
+  const text = await response.text(), data = record(JSON.parse(text)), fields = jsonObjectSources(text);
+  if (Object.hasOwn(data, "membership")) data.membership = parseApiJson(fields.get("membership")!);
+  return data;
+};
+export const parseTeamInvitationInspection = (value: unknown, userId: string): TeamInvitationInspection => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => key !== "team" && key !== "membership")) return malformed();
+  const team = parseTeamRef(data.team);
+  if (team.kind !== "ordinary") return malformed();
+  return { team, membership: data.membership === null ? null : parseTeamInvitationMember(data.membership, team.id, userId) };
+};
+export const parseTeamInvitationAcceptance = (value: unknown, teamId: string, userId: string): TeamInvitationAcceptance => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => !["team", "membership", "joined", "consumed"].includes(key))) return malformed();
+  const team = parseTeamRef(data.team), joined = boolean(data.joined), consumed = boolean(data.consumed);
+  if (team.kind !== "ordinary" || team.id !== teamId || joined !== consumed) return malformed();
+  const membership = parseTeamInvitationMember(data.membership, teamId, userId);
+  if (joined && membership.role !== "member") return malformed();
+  return { team, membership, joined, consumed };
 };
 
 export const normalizeDeviceUserCode = (value: string): string | null => {

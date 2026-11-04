@@ -790,7 +790,7 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 			t.Fatal("installed exact maximum same-status confirmation changed the task")
 		}
 		cli.git(t, "-C", cli.repo, "remote", "set-url", "origin", "ssh://git@GIT.EXAMPLE:22/Org/Repo.git")
-		duplicate := acceptanceDecode[api.Project](t, process.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Later duplicate", RepoURL: "https://git.example/Org/Repo"}, ""), http.StatusCreated)
+		duplicate := acceptanceDecode[api.Project](t, process.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{ExpectedUserID: process.expectedUserID(t), Name: "Later duplicate", RepoURL: "https://git.example/Org/Repo"}, ""), http.StatusCreated)
 		if duplicate.ID == projectID {
 			t.Fatal("server duplicate fixture reused the original project")
 		}

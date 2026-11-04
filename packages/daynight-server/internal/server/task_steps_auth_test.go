@@ -15,7 +15,7 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	memberUser := integration.login(t, member, "bob")
 	integration.login(t, outsider, "nullable")
 	origin := map[string]string{"Origin": integration.server.URL}
-	_, data := identityRequest(t, admin, "POST", integration.server.URL+"/api/v1/projects", `{"name":"Steps auth","repoUrl":"https://example.com/steps"}`, origin, 201)
+	_, data := identityRequest(t, admin, "POST", integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Steps auth", RepoURL: "https://example.com/steps", ExpectedUserID: adminUser.ID}), origin, 201)
 	project := identityDecode[api.Project](t, data)
 	base := "/api/v1/projects/" + project.ID
 	_, data = identityRequest(t, admin, "POST", integration.server.URL+base+"/invitations", invitationActorBody(adminUser.ID), origin, 201)

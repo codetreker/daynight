@@ -385,7 +385,7 @@ return `Daynight-User-ID` from the admitted principal, including empty mutations
 and later resource errors. Failed authentication does not emit that header;
 caller-supplied values are not echoed. An unmatched route has an empty route template.
 UI and API requests use the same logging wrapper. Exact `/device`, `/account`,
-`/invitations`, `/`, `/login`, `/projects`, `/workers`, `/workers/{workerId}`, `/setup`,
+`/invitations`, `/team-invitations`, `/`, `/login`, `/projects`, `/workers`, `/workers/{workerId}`, `/setup`,
 `/projects/{projectId}`, `/projects/{projectId}/members`,
 `/projects/{projectId}/settings`, `/projects/{projectId}/tasks/{taskId}` and
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` page shapes return
@@ -852,6 +852,24 @@ own the complete public contract. The
 [Team transaction design](../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
 owns existence locking, completion classification and independent versions.
 
+## Team invitation API
+
+Current Team admins create, list and revoke invitations at
+`/api/v1/teams/{teamId}/invitations`. Create and revoke bind `expectedUserId`
+before domain SQL; Personal Teams reject creation. Creation returns a one-time
+`/team-invitations#<secret>` link. Metadata lists never contain the secret.
+Invitations expire after seven days and grant member once.
+
+Authenticated recipients inspect and accept through POST bodies at
+`/api/v1/team-invitations/inspect` and `/api/v1/team-invitations/accept`.
+Acceptance also binds `expectedUserId` and returns the actual membership and
+joined/consumed flags. Existing members retain their role without consuming the
+invitation. New membership and consumption commit together; revocation shares
+the Team and invitation locks. Deletion removes invitations in the same
+transaction. Invalid, expired, consumed, revoked or deleted targets all return
+`invitation_unavailable`. The [authentication requirements](../../docs/spec/daynight-auth.md#team-邀请)
+and [design](../../docs/design/daynight-auth.md#数据与并发) own the contract.
+
 ## Project transfer API
 
 `POST /api/v1/projects/{projectId}/transfer-preview` accepts `targetTeamId` and
@@ -882,9 +900,14 @@ error code and duration; names and credentials are excluded. The
 | `GET` | `/api/v1/projects/{projectId}` | `200`, project |
 | `PATCH` | `/api/v1/projects/{projectId}/settings` | `200`, full project with saved settings |
 
-Creation accepts `name` and `repoUrl`, locks and validates the caller's real
-Personal Team, then atomically writes Project, ownership and creator direct admin
-grant. Canonical login UPSERT, Personal initialization and session creation share
+Creation accepts `name`, `repoUrl`, required `expectedUserId` and optional
+`teamId`. The expected user must match the principal before domain SQL. The
+caller must be a current member of the target Team; omitting it selects the
+caller's Personal Team. Creation locks the Team and atomically writes Project,
+ownership and creator direct admin grant; the response includes access projected
+in that transaction. An unconfirmed commit returns
+`write_outcome_unknown` and must not be replayed automatically. Canonical login
+UPSERT, Personal initialization and session creation share
 one transaction; repeat and concurrent login reuse the unique Team and validate
 its owner admin. Authentication does not repair broken Personal state. Internal
 Project reads require real ownership and report integrity errors for a missing

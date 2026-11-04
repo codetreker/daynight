@@ -19,7 +19,7 @@ func TestTaskLifecycleAuthenticationAndMemberAccess(t *testing.T) {
 	integration.login(t, outsider, "nullable")
 	origin := map[string]string{"Origin": integration.server.URL}
 	_, data := identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects",
-		`{"name":"Lifecycle authorization","repoUrl":"https://example.com/lifecycle"}`, origin, http.StatusCreated)
+		jsonBody(t, api.CreateProjectRequest{Name: "Lifecycle authorization", RepoURL: "https://example.com/lifecycle", ExpectedUserID: adminUser.ID}), origin, http.StatusCreated)
 	project := identityDecode[api.Project](t, data)
 	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+taskCollection(project.ID), `{"title":"Completed external prerequisite"}`, origin, http.StatusCreated)
 	prerequisite := identityDecode[api.Task](t, data)

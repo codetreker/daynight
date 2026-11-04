@@ -43,7 +43,7 @@ export type AuthMessages = {
     readonly revalidationRetained: string;
     readonly revalidationRetry: string;
     readonly notice: Readonly<Record<"expired" | "signedOut" | "logoutFailed" | "loginFailed", string>>;
-    readonly documentTitle: Readonly<Record<"loading" | "error" | "login" | "setup" | "device" | "invitations" | "projects" | "project" | "workers" | "worker" | "members" | "settings" | "account" | "notFound", string>>;
+    readonly documentTitle: Readonly<Record<"loading" | "error" | "login" | "setup" | "device" | "invitations" | "teamInvitations" | "projects" | "project" | "workers" | "worker" | "members" | "settings" | "account" | "notFound", string>>;
   };
   readonly login: {
     readonly returnHome: string;
@@ -131,6 +131,12 @@ export type AuthMessages = {
     readonly cancel: string;
     readonly returnToProjects: string;
   };
+  readonly teamInvitation: {
+    readonly loading: string; readonly unavailableDetail: string; readonly invited: string; readonly alreadyMember: string;
+    readonly invitedDetail: string; readonly alreadyMemberDetail: string; readonly memberRole: string;
+    readonly currentRole: string; readonly joined: string; readonly alreadyJoined: string; readonly teamId: string;
+    readonly acceptUnknown: string; readonly checkInvitation: string;
+  };
   readonly createProject: {
     readonly open: string;
     readonly createFirst: string;
@@ -142,6 +148,13 @@ export type AuthMessages = {
     readonly repository: string;
     readonly repositoryHint: string;
     readonly error: string;
+    readonly unknown: string;
+    readonly checkProjects: string;
+    readonly observedProjects: string;
+    readonly checking: string;
+    readonly checkFailed: string;
+    readonly noProjects: string;
+    readonly loadMore: string;
     readonly cancel: string;
     readonly busy: string;
     readonly submit: string;

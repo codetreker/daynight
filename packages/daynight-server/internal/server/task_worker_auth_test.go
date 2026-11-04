@@ -15,7 +15,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	memberUser := integration.login(t, member, "bob")
 	integration.login(t, outsider, "nullable")
 	origin := map[string]string{"Origin": integration.server.URL}
-	_, data := identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Worker authorization","repoUrl":"https://example.com/worker"}`, origin, http.StatusCreated)
+	_, data := identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Worker authorization", RepoURL: "https://example.com/worker", ExpectedUserID: adminUser.ID}), origin, http.StatusCreated)
 	project := identityDecode[api.Project](t, data)
 	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", invitationActorBody(adminUser.ID), origin, http.StatusCreated)
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)

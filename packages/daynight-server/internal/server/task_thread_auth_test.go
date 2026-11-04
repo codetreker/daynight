@@ -31,7 +31,7 @@ func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
 		}
 		return response, data
 	}
-	_, data := request(admin, http.MethodPost, "/api/v1/projects", map[string]any{"name": "Thread authentication", "repoUrl": "https://example.com/thread-auth"}, origin, 201, "")
+	_, data := request(admin, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Thread authentication", RepoURL: "https://example.com/thread-auth", ExpectedUserID: adminUser.ID}, origin, 201, "")
 	project := identityDecode[api.Project](t, data)
 	_, data = request(admin, http.MethodPost, "/api/v1/projects/"+project.ID+"/invitations", map[string]any{"expectedUserId": adminUser.ID}, origin, 201, "")
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)

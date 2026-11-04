@@ -29,7 +29,7 @@ export const auth: AuthMessages = {
     documentTitle: {
       workers: "我的 Worker · Daynight", worker: "Worker · Daynight",
       setup: "使用引导 · Daynight",
-      loading: "正在确认登录 · Daynight", error: "登录暂不可用 · Daynight", login: "登录 · Daynight", device: "授权 CLI · Daynight", invitations: "项目邀请 · Daynight",
+      loading: "正在确认登录 · Daynight", error: "登录暂不可用 · Daynight", login: "登录 · Daynight", device: "授权 CLI · Daynight", invitations: "项目邀请 · Daynight", teamInvitations: "Team 邀请 · Daynight",
       projects: "我的项目 · Daynight", project: "项目任务 · Daynight", settings: "项目设置 · Daynight", members: "项目成员 · Daynight", account: "账户设置 · Daynight", notFound: "页面不存在 · Daynight",
     },
   },
@@ -37,7 +37,7 @@ export const auth: AuthMessages = {
     returnHome: "了解 Daynight",
     heroTitleFirst: "让任务有序推进，", heroTitleSecond: "让协作持续发生。", heroDetail: "在项目中整理任务、连接依赖、共享成果。与团队一起，把计划推进到完成。",
     heroCaption: "专注于你的项目，与团队共同前进。", milestones: ["明确目标", "连接工作", "交付成果"], welcome: "欢迎使用 DAYNIGHT", title: "登录你的工作空间",
-    subtitle: "通过 UniAuth 登录，访问你的项目与任务。", inviteSubtitle: "通过 UniAuth 登录后，继续确认项目邀请。", deviceSubtitle: "登录后确认 Daynight CLI 显示的授权码。",
+    subtitle: "通过 UniAuth 登录，访问你的项目与任务。", inviteSubtitle: "通过 UniAuth 登录后，继续确认邀请。", deviceSubtitle: "登录后确认 Daynight CLI 显示的授权码。",
     providersLoading: "正在读取登录方式…", providersError: "暂时无法读取登录方式，请重试。", providersEmpty: "当前没有可用的登录方式。请联系部署管理员。",
     providerButton: ({ provider }) => `使用 ${provider} 登录`, redirecting: "正在前往 UniAuth…", redirectStatus: "正在安全跳转，请稍候。",
     noteFirst: "登录后可以创建私有项目，或接受团队的项目邀请。", noteSecond: "你的身份由 UniAuth 验证。",
@@ -65,11 +65,18 @@ export const auth: AuthMessages = {
     currentlyUnavailable: "邀请目前不可用；原操作结果仍未确认。",
     accepting: "正在加入…", accept: "接受邀请并加入", open: "打开项目", cancel: "暂不加入", returnToProjects: "返回我的项目",
   },
+  teamInvitation: {
+    loading: "正在读取 Team 邀请", unavailableDetail: "此邀请可能已过期、被撤销或已使用。请联系 Team 管理员获取新的邀请。",
+    invited: "你受邀加入一个 Team", alreadyMember: "你已经是 Team 成员", invitedDetail: "请确认 Team 和当前账户后加入。",
+    alreadyMemberDetail: "你的现有角色将保留，邀请不会被消耗。", memberRole: "加入角色：成员",
+    currentRole: "当前角色", joined: "你已加入此 Team", alreadyJoined: "你已经是此 Team 的成员", teamId: "Team ID",
+    acceptUnknown: "加入结果尚未确认。可以查看邀请的当前状态，但这不能确认原操作的结果。", checkInvitation: "查看邀请状态",
+  },
   createProject: {
     open: "＋ 创建项目", createFirst: "创建第一个项目", emptyDetail: "创建私有项目来整理工作，或使用管理员发给你的邀请链接加入团队。",
     title: "创建私有项目", close: "关闭创建项目", intro: "项目仅对你和项目成员可见。创建后，你将成为项目管理员。",
     name: "项目名称", repository: "仓库地址", repositoryHint: "支持 HTTPS、SSH URL 或 git@host:team/project.git 格式。",
-    error: "项目创建失败，请检查输入后重试。", cancel: "取消", busy: "正在创建…", submit: "创建项目",
+    error: "项目创建失败，请检查输入后重试。", unknown: "创建结果未知。发起新的创建前请先查看项目列表；列表不能确认原请求的结果。", checkProjects: "查看项目", observedProjects: "当前项目", checking: "正在加载项目…", checkFailed: "无法加载项目。", noProjects: "未找到项目。", loadMore: "加载更多项目", cancel: "取消", busy: "正在创建…", submit: "创建项目",
   },
   management: {
     common: {
