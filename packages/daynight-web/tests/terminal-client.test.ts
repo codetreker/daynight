@@ -118,4 +118,97 @@ describe('terminal client control ownership', () => {
     vi.mocked(h.api.operation).mockResolvedValueOnce({ ...terminalEnvelope(command), type: 'operation_result', payload: { operationId: command.payload.operationId, state: 'transport_completed', errorCode: null } }); await h.client.checkOperation(); expect(window.sessionStorage.getItem(`daynight:terminal-operation:${owner.ownerUserId}:${r.claimId}`)).toBeNull(); expect(h.api.command).toHaveBeenCalledOnce(); h.client.close();
   });
 
+  it('bounds a stalled receipt GET by the original operation deadline without replaying it', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.publish();
+    let receiptSignal!: AbortSignal;
+    vi.mocked(h.api.operation).mockImplementation((_session, _operation, signal) => { receiptSignal = signal; return new Promise(() => {}); });
+    await h.client.control('acquire_control');
+    const command = vi.mocked(h.api.command).mock.calls[0]![2];
+    await vi.advanceTimersByTimeAsync(500); expect(h.client.getSnapshot().pending).toBe(true);
+    await vi.advanceTimersByTimeAsync(9500);
+    expect(h.client.getSnapshot()).toMatchObject({ pending: false, result: { operationId: command.payload.operationId, state: 'unknown' } });
+    expect(receiptSignal.aborted).toBe(true);
+    expect(h.api.command).toHaveBeenCalledOnce(); expect(h.api.operation).toHaveBeenCalledOnce();
+    expect(window.sessionStorage.getItem(`daynight:terminal-operation:${owner.ownerUserId}:${r.claimId}`)).toContain(command.payload.operationId);
+    h.client.close();
+  });
+  it('bounds explicit receipt readback even after the original deadline has elapsed', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    vi.mocked(h.api.command).mockRejectedValue(new Error('lost response')); await h.client.paste('one request');
+    await vi.advanceTimersByTimeAsync(11000);
+    let receiptSignal!: AbortSignal;
+    vi.mocked(h.api.operation).mockImplementation((_session, _operation, signal) => { receiptSignal = signal; return new Promise(() => {}); });
+    let finished = false; const checking = h.client.checkOperation().then(() => { finished = true; });
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(finished).toBe(true); expect(receiptSignal.aborted).toBe(true);
+    expect(h.client.getSnapshot().result?.state).toBe('unknown'); expect(h.api.command).toHaveBeenCalledOnce();
+    await checking; h.client.close();
+  });
+
+  it('keeps an absent receipt unknown after independently verifying the original Session', async () => {
+    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    vi.mocked(h.api.command).mockRejectedValue(new ApiError('server', 409, 'input_busy')); await h.client.paste('not accepted');
+    const command = vi.mocked(h.api.command).mock.calls[0]![2];
+    vi.mocked(h.api.operation).mockRejectedValue(new ApiError('server', 404, 'not_found')); await h.client.checkOperation();
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', pending: false, error: null, result: { operationId: command.payload.operationId, state: 'unknown' } });
+    expect(h.api.state).toHaveBeenCalledWith(command.sessionId, expect.any(AbortSignal));
+    expect(h.api.current).toHaveBeenCalledOnce(); expect(h.api.command).toHaveBeenCalledOnce();
+    h.client.acknowledgeUnknown(); expect(h.client.getSnapshot().unknownAcknowledged).toBe(true);
+    await h.client.paste('new intentional input'); expect(h.api.command).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(h.api.command).mock.calls[1]![2].payload.operationId).not.toBe(command.payload.operationId); h.client.close();
+  });
+  it('ignores a failed old receipt query after acknowledgement and a new operation', async () => {
+    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    vi.mocked(h.api.command).mockRejectedValueOnce(new Error('lost response')); await h.client.paste('old');
+    let reject!: (error: unknown) => void; vi.mocked(h.api.operation).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const checking = h.client.checkOperation(); h.client.acknowledgeUnknown(); await h.client.paste('new');
+    const command = vi.mocked(h.api.command).mock.calls[1]![2]; reject(new ApiError('server', 404, 'not_found')); await checking;
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', pending: true, result: { operationId: command.payload.operationId, state: 'queued' } });
+    expect(h.api.state).not.toHaveBeenCalled(); h.client.close();
+  });
+
+  it('does not continue automatic polling after an explicit missing-receipt readback', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.publish();
+    await h.client.control('acquire_control'); vi.mocked(h.api.operation).mockRejectedValue(new ApiError('server', 404, 'not_found'));
+    await h.client.checkOperation(); expect(h.client.getSnapshot().result?.state).toBe('unknown');
+    await vi.advanceTimersByTimeAsync(2000); expect(h.api.operation).toHaveBeenCalledOnce(); h.client.close();
+  });
+  it('bounds a missing-receipt Session verification that never finishes', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    vi.mocked(h.api.command).mockRejectedValue(new Error('lost response')); await h.client.paste('unknown');
+    vi.mocked(h.api.operation).mockRejectedValue(new ApiError('server', 404, 'not_found'));
+    let accessSignal!: AbortSignal; vi.mocked(h.api.state).mockImplementation((_id, signal) => { accessSignal = signal; return new Promise(() => {}); });
+    let finished = false; const checking = h.client.checkOperation().then(() => { finished = true; }); await vi.advanceTimersByTimeAsync(10000);
+    expect(finished).toBe(true); expect(accessSignal.aborted).toBe(true);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', pending: false, result: { state: 'unknown' } });
+    h.client.acknowledgeUnknown(); expect(h.client.getSnapshot().unknownAcknowledged).toBe(true); await checking; h.client.close();
+  });
+  it.each([401, 403, 404, 410])('invalidates when the original Session independently rejects access with %i', async status => {
+    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    vi.mocked(h.api.command).mockRejectedValue(new Error('lost response')); await h.client.paste('unknown');
+    vi.mocked(h.api.operation).mockRejectedValue(new ApiError('server', 404, 'not_found')); vi.mocked(h.api.state).mockRejectedValue(new ApiError('server', status, 'permission_denied'));
+    await h.client.checkOperation(); expect(h.client.getSnapshot()).toMatchObject({ phase: 'unavailable', session: null, ownsControl: false }); h.client.close();
+  });
+  it('ignores a late Session verification refusal after a new operation takes ownership', async () => {
+    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    vi.mocked(h.api.command).mockRejectedValueOnce(new Error('lost response')); await h.client.paste('old');
+    vi.mocked(h.api.operation).mockRejectedValue(new ApiError('server', 404, 'not_found'));
+    let reject!: (e: unknown) => void; vi.mocked(h.api.state).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const checking = h.client.checkOperation(); await vi.waitFor(() => expect(h.api.state).toHaveBeenCalledOnce());
+    h.client.acknowledgeUnknown(); await h.client.paste('new'); const command = vi.mocked(h.api.command).mock.calls[1]![2];
+    reject(new ApiError('server', 403, 'permission_denied')); await checking;
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', pending: true, result: { operationId: command.payload.operationId, state: 'queued' } }); h.client.close();
+  });
+
+  it('does not extend the pending operation deadline for a late explicit receipt query', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.publish();
+    await h.client.control('acquire_control'); await vi.advanceTimersByTimeAsync(9000);
+    let receiptSignal!: AbortSignal; vi.mocked(h.api.operation).mockImplementation((_session, _operation, signal) => { receiptSignal = signal; return new Promise(() => {}); });
+    let finished = false; const checking = h.client.checkOperation().then(() => { finished = true; });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(finished).toBe(true); expect(receiptSignal.aborted).toBe(true);
+    expect(h.client.getSnapshot()).toMatchObject({ pending: false, result: { state: 'unknown' } });
+    expect(h.api.command).toHaveBeenCalledOnce(); await checking; h.client.close();
+  });
+
 });

@@ -166,40 +166,73 @@ export class TerminalSessionClient {
     const operation = kind === 'paste' ? { ...base, kind, payload: payload as { text: string } } : { ...base, kind, payload: payload as { key: SessionV2Key } };
     await this.dispatch({ ...terminalEnvelope(state), type: 'operation', payload: operation });
   }
+  private markUnknown(pending: Pending, error: unknown = null) {
+    if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null;
+    this.publish({ pending: false, result: { operationId: pending.command.payload.operationId, state: 'unknown', errorCode: 'input_unknown' }, error });
+  }
+  private async boundedRequest<T>(controller: AbortController, timeoutMs: number, run: () => Promise<T>): Promise<T> {
+    // Abort must settle recovery even if a transport never acknowledges cancellation.
+    let abort!: () => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      abort = () => reject(controller.signal.reason);
+      controller.signal.addEventListener('abort', abort, { once: true });
+    });
+    const timeout = setTimeout(() => controller.abort(new Error('The operation receipt timed out.')), Math.max(0, timeoutMs));
+    try { return await Promise.race([run(), cancelled]); }
+    finally { clearTimeout(timeout); controller.signal.removeEventListener('abort', abort); }
+  }
   private async dispatch(command: TerminalCommand) {
     const pending = { command, generation: this.generation, startedAt: Date.now() }; if (!this.persist(pending)) return; this.pendingOperation = pending;
     this.publish({ pending: true, unknownAcknowledged: false, result: { operationId: command.payload.operationId, state: 'queued', errorCode: null }, error: null });
     const controller = this.request();
-    const timeout = setTimeout(() => controller.abort(new Error('The operation receipt timed out.')), SESSION_V2_LIMITS.inputTimeoutMs);
     try {
-      const result = await this.options.api.command(command.sessionId, this.browserClientId, command, controller.signal);
+      const result = await this.boundedRequest(controller, SESSION_V2_LIMITS.inputTimeoutMs, () => this.options.api.command(command.sessionId, this.browserClientId, command, controller.signal));
       if (this.live(pending.generation) && this.pendingOperation === pending) this.admitResult(result, pending);
     } catch (error) {
       if (this.live(pending.generation) && this.pendingOperation === pending) {
         if (error instanceof ApiError && ([401, 403, 404, 410].includes(error.status ?? 0) || error.code === 'principal_mismatch')) { this.invalidate(error); return; }
-        this.publish({ pending: false, result: { operationId: command.payload.operationId, state: 'unknown', errorCode: 'input_unknown' }, error });
+        this.markUnknown(pending, error);
       }
-    } finally { clearTimeout(timeout); this.forget(controller); }
+    } finally { this.forget(controller); }
   }
   private admitResult(result: TerminalResult, pending: Pending) {
     const command = pending.command;
     if (result.sessionId !== command.sessionId || result.claimId !== command.claimId || result.executionGeneration !== command.executionGeneration || result.payload.operationId !== command.payload.operationId) { this.invalidate(); return; }
-    if (!terminal(result.payload.state) && Date.now() - pending.startedAt >= SESSION_V2_LIMITS.inputTimeoutMs) { this.publish({ pending: false, result: { operationId: command.payload.operationId, state: 'unknown', errorCode: 'input_unknown' } }); return; }
+    if (!terminal(result.payload.state) && Date.now() - pending.startedAt >= SESSION_V2_LIMITS.inputTimeoutMs) { this.markUnknown(pending); return; }
     this.publish({ pending: !terminal(result.payload.state), result: result.payload });
-    if (terminal(result.payload.state)) { if (result.payload.state !== 'unknown') this.persist(null); void this.refresh(); return; }
+    if (terminal(result.payload.state)) { if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null; if (result.payload.state !== 'unknown') this.persist(null); void this.refresh(); return; }
     if (this.pollTimer !== null) clearTimeout(this.pollTimer);
-    this.pollTimer = setTimeout(() => { this.pollTimer = null; void this.checkOperation(); }, 500);
+    this.pollTimer = setTimeout(() => { this.pollTimer = null; void this.queryOperation(true); }, Math.min(500, SESSION_V2_LIMITS.inputTimeoutMs - (Date.now() - pending.startedAt)));
   }
-  checkOperation = async (): Promise<void> => {
+  checkOperation = (): Promise<void> => this.queryOperation(false);
+  private async queryOperation(automatic: boolean): Promise<void> {
     const pending = this.pendingOperation; if (!this.live() || pending === null) return;
-    const generation = this.generation, controller = this.request();
+    if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null;
+    const generation = this.generation, controller = this.request(), original = this.view.session;
+    const ownsQuery = () => this.live(generation) && this.pendingOperation === pending && (original === null || this.view.session !== null && sameFence(original, this.view.session) && (pending.command.type !== 'operation' || original.control?.controlEpoch === this.view.session.control?.controlEpoch));
+    const remaining = automatic || this.view.pending ? pending.startedAt + SESSION_V2_LIMITS.inputTimeoutMs - Date.now() : SESSION_V2_LIMITS.inputTimeoutMs;
     try {
-      const result = await this.options.api.operation(pending.command.sessionId, pending.command.payload.operationId, controller.signal);
-      if (this.live(generation) && this.pendingOperation === pending) this.admitResult(result, pending);
+      const result = await this.boundedRequest(controller, remaining, async () => {
+        try { return await this.options.api.operation(pending.command.sessionId, pending.command.payload.operationId, controller.signal); }
+        catch (error) {
+          if (controller.signal.aborted || !ownsQuery() || !(error instanceof ApiError) || error.status !== 404 || error.code === 'principal_mismatch') throw error;
+          // A receipt row may never have existed. Only the original Session read can establish access loss.
+          const session = await this.options.api.state(pending.command.sessionId, controller.signal);
+          if (!ownsQuery()) return null;
+          if (session.sessionId !== pending.command.sessionId || session.claimId !== pending.command.claimId || session.executionGeneration !== pending.command.executionGeneration) throw new ApiError('protocol', null, 'stale_fence');
+          return null;
+        }
+      });
+      if (!ownsQuery()) return;
+      if (result === null) this.markUnknown(pending);
+      else this.admitResult(result, pending);
     } catch (error) {
-      if (this.live(generation)) { this.publish({ pending: false, result: { operationId: pending.command.payload.operationId, state: 'unknown', errorCode: 'input_unknown' }, error }); if (error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0)) this.invalidate(error); }
+      if (ownsQuery()) {
+        this.markUnknown(pending, error);
+        if (error instanceof ApiError && ([401, 403, 404, 410].includes(error.status ?? 0) || error.code === 'principal_mismatch')) this.invalidate(error);
+      }
     } finally { this.forget(controller); }
-  };
+  }
   acknowledgeUnknown = (): void => { if (!this.owned() || this.view.result?.state !== 'unknown' || !this.persist(this.pendingOperation, true)) return; this.publish({ unknownAcknowledged: true, pending: false, error: null }); };
   invalidate = (reason: unknown = new ApiError('server', 403, 'permission_denied')): void => { this.ended = true; this.visible = false; this.stopTransport(); this.pendingOperation = null; this.publish({ phase: 'unavailable', session: null, pending: false, ownsControl: false, result: null, error: reason }); };
   close = (): void => { this.ended = true; this.visible = false; this.stopTransport(); this.listeners.clear(); };

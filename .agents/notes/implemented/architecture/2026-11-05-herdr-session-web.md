@@ -23,6 +23,13 @@ starve ordinary readers in short viewports. Switching to a recording hides and
 disables the retained file preview without discarding upload drafts or iframe
 state; selecting a file restores the ordinary reader.
 
+Operation submission and receipt polling share one deadline. Explicit reads of
+an already unknown operation have a separate bounded window without replaying
+input. A missing receipt is ambiguous because admission can fail before the
+operation row exists; the client verifies access to the original Session before
+treating a receipt 404 as access loss. Query results remain fenced to their
+operation and viewer binding.
+
 The terminal renderer uses text nodes and validated styles for both live and
 recorded frames. Playback orders complete frames and explicit gap nodes using
 integer segment-relative times. It stops at gaps rather than extending the last
@@ -45,6 +52,11 @@ connection behavior unchanged.
 **Treat recordings as ordinary attachments.** This would reuse the file tree but
 expose mutable-file actions and lose the original execution fence. A managed
 section shares discovery and rendering while withholding attachment mutations.
+
+**Treat a missing receipt as Session loss.** The relay maps both an absent
+operation row and an inaccessible Session to 404. Closing the viewer on that
+status alone removes recovery from valid Sessions; an independent original
+Session read preserves recovery without relaxing actual access denial.
 
 **Combine unknown disposition with resume.** The original control request could
 record disposition only while entering automation. That cannot represent a user
