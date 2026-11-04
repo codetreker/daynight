@@ -25,6 +25,8 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
+    updateTaskStep: async () => { throw new Error("Unused Step API method"); },
+    setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
     addTaskStep: vi.fn<ApiClient["addTaskStep"]>(),
     listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),
     readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),

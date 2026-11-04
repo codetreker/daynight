@@ -49,6 +49,8 @@ daynight task step
 daynight task step list <task-id> [--json] [--project <project-id>]
 daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step update <task-id> <step-id> [--title <text>] [--description <markdown>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped> [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task attachment
@@ -338,7 +340,8 @@ unknown 与已确认本地失败的事实。
 Add 的独立短 ID 与请求 UUID 在递交前确定；显式版本一次 POST，默认版本
 先 GET Steps 再 POST。完整 201/Location/principal/资源及 +1/目标/新时间/位置核对
 通过后保留 `confirmedMutationId`；同一 transport 标记也服务既有 Thread。
-未知 Add 只在同一仍有效的 ServerSession/Operation 内尝试一次 UUID.r1 GET，
+Update/Set-status 分别提交一次 PATCH/PUT，共用写入封装；完整 200 须匹配目标字段及原版本或 +1。有预读时验证省略字段、非目标、顺序和 no-op/真实变化的时间分支，显式版本不补加读取。
+未知写入只在同一仍有效的 ServerSession/Operation 内尝试一次 UUID.r1 GET，
 仍以 unknown 非零退出，报告当前版本与 found/absent，不作历史归因或重放。
 取消或耗尽不创建脱离读取；确认后的清理/输出失败不降为 unknown。
 当前读写契约与输出由[Steps 要求](../spec/daynight-task-steps.md#cli-添加与结果确认)拥有。

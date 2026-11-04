@@ -20,6 +20,11 @@ export const runTaskStepCommand = async (command: Command, context: CliContext, 
     await runTaskStepAddCommand(command, context, dependencies);
     return;
   }
+  if (command.command.name === "update" || command.command.name === "set-status") {
+    const { runTaskStepUpdateCommand } = await import("./step-update.js");
+    await runTaskStepUpdateCommand(command, context, dependencies);
+    return;
+  }
   const name = command.command.name as "list" | "show";
   let projectId: string | undefined, taskId: string | undefined, stepId: string | undefined;
   let phase: "prepare" | "request" | "render" | "output" = "prepare";

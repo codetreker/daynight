@@ -165,6 +165,8 @@ daynight task step
 daynight task step list <task-id> [--json] [--project <project-id>]
 daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step update <task-id> <step-id> [--title <text>] [--description <markdown>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped> [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
@@ -937,7 +939,7 @@ daynight task step show <task-id> <step-id> --json --project <project-id>
 
 Steps are an independent ordered resource owned by a Task. The
 [resource contract](../../docs/spec/daynight-task-steps.md#cli-读取) owns their
-fields and read behavior. The CLI provides `list`, `show` and `add`; the parent Task's
+fields and read behavior. The CLI provides `list`, `show`, `add`, `update` and `set-status`; the parent Task's
 ordinary show/list/graph does not contain the full Steps collection. Step status
 is `todo`, `in_progress`, `done` or `skipped`, independent from Task status.
 
@@ -972,7 +974,7 @@ output failure can still leave partial stdout and is reported as a failure.
 Errors go to stderr with exit status 1; argument errors use 2 and success uses 0.
 A 401 includes `daynight login` guidance without automatic login or retry.
 Help, Bash/zsh completion and the standalone manual expose the delivered
-list/show/add commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
+list/show/add/update/set-status commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 maps the real-service installed Node-entry read case, separate maximum-resource
 check and their normal fixture prerequisites. The packed CLI acceptance runner
 checks literal `daynight`/`dn` launchers through cross-spawn on native platforms.
@@ -1020,6 +1022,41 @@ flag. Once a full receipt is confirmed, later cleanup/render/output failure keep
 that confirmed fact and identity, with nonzero exit; output failure may leave
 partial stdout. The [Steps contract](../../docs/spec/daynight-task-steps.md#cli-添加与结果确认)
 owns these outcome rules and the server guide maps installed Add verification.
+
+### Update content or status
+
+```bash
+daynight task step update <task-id> <step-id> --title "Review round 2" --description "Findings and [result](result.md)" --project <project-id>
+daynight task step update <task-id> <step-id> --description="" --if-version <observed-version> --json --project <project-id>
+daynight task step set-status <task-id> <step-id> skipped --if-version <observed-version> --json --project <project-id>
+```
+
+Update requires --title or --description and saves both atomically when supplied.
+Omitted fields keep their values; an empty description explicitly clears it. Titles
+require a non-Unicode-White_Space character, including a valid standalone U+FEFF;
+standalone U+0085 is invalid. All text is preserved without trimming. Status uses
+the separate set-status command and accepts any of the four states directly,
+including the current state, independently from Task status or other Steps.
+
+An explicit project/version sends exactly one PATCH for content or one PUT to
+/status. Without --if-version, the command reads complete Steps once before that
+single write; failed pre-read prevents submission. Versions retain exact int64
+digits, and requests share Add's 1 MiB JSON bound and operation budgets.
+
+A complete valid 200 receipt must match scope, target ID and explicitly submitted
+fields, with parent version unchanged or increased by one. When a pre-read exists,
+confirmation also checks omitted fields, collection order, all non-target fields
+and target creation time. Equal values require unchanged version and timestamps;
+actual changes require version +1 and a changed target update time. An explicit
+version adds no hidden GET and cannot prove old values that were never read.
+Readable success prefixes the confirmed collection with `Step updated. ID: <id>`
+or `Step status set. ID: <id>`; --json prints only the complete resource and LF.
+
+These operations share Add's refusal, capacity-details, unknown-result and
+confirmed-local-failure handling. Stale versions are never replayed, and a later
+current-facts read cannot confirm the historical mutation. The
+[update contract](../../docs/spec/daynight-task-steps.md#cli-更新与状态确认)
+owns the complete confirmation rules.
 
 ## Task deletion
 
