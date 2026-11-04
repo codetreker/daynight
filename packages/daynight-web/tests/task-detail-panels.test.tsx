@@ -17,6 +17,7 @@ describe('task detail panels', () => {
   it('associates panels, supports automatic arrow/Home/End activation and native Enter/Space, and excludes hidden controls', async () => {
     const view = render(panels(fixture()));
     const overview = screen.getByRole('tab', { name: '概览' });
+    const steps = screen.getByRole('tab', { name: '步骤' });
     const attachments = screen.getByRole('tab', { name: '附件' });
     expect(overview).toHaveAttribute('aria-selected', 'true');
     expect(attachments).toHaveAttribute('tabindex', '-1');
@@ -26,7 +27,7 @@ describe('task detail panels', () => {
     overview.focus();
     for (const key of ['{ArrowRight}', '{Home}', '{ArrowLeft}', '{End}']) {
       await user.keyboard(key);
-      const target = key === '{Home}' ? overview : attachments;
+      const target = key === '{Home}' ? overview : key === '{ArrowRight}' ? steps : attachments;
       expect(target).toHaveFocus();
       expect(target).toHaveAttribute('aria-selected', 'true');
     }

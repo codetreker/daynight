@@ -713,28 +713,20 @@ browser acceptance run in parallel jobs, `verify-web-quality` and `verify-web`, 
 `checks` job requires both and every other selected module; shared workflow
 changes retain all-module selection.
 
-The internal `quality` mode of `scripts/ci.mts` serially runs the canonical Web
-`test:harness` with a 180-second deadline, direct `vitest run --coverage` with a
-180-second deadline, and direct `node scripts/coverage.mts` with a 60-second
-deadline, each through `pnpm --filter @codetreker/daynight-web`, using `exec` for
-the latter two commands. This separates
-V8 generation from the strict checker: the former composite coverage allowance
-of 180 seconds becomes 240 seconds, and configured quality command allowances
-sum to 420 seconds rather than 360. The job still has its 20-minute bound, and
-local `test:coverage`/`web:test` composition remains unchanged.
-
-Only the Vitest/V8 subprocess receives the copied `VITEST_MAX_WORKERS=4`
-environment. It retains the `forks` pool, per-file isolation, all ordinary cases,
-full product-source manifest and strict unrounded statement coverage greater
-than 90%. The [worker capacity decision](../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
-calibrates that setting for the dedicated public standard Linux runner's four
-CPUs. The [command-deadline decision](../.agents/notes/implemented/testing/2026-11-04-web-quality-command-deadlines.md)
-owns the separate process budgets; browser and Go gates remain mandatory.
-
+The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness,
+the ordinary Vitest/V8 suite and the strict statement checker serially. Harness
+has a 180-second deadline and collection has a 300-second deadline; final source-inventory and
+coverage verification has an independent 60-second deadline. The
+[stage budget decision](../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)
+keeps a completed collection from consuming its final verification budget.
+Only the Vitest/V8 subprocess uses four workers
+through its copied environment, retaining the `forks` pool and file isolation.
+The [worker capacity decision](../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
+calibrates that existing setting for the dedicated public standard Linux
+runner's four CPUs; it does not change inputs, assertions or coverage gates.
 The `browser` mode installs pinned Chromium and Linux dependencies under the
-existing 600-second bound, then runs the focused navigation-contract Playwright
-command under a separate 180-second bound before ordinary core acceptance. The
-job's deployment fixture checks remain required. The wrapper checks that each command's owned process
+existing 600-second bound, then invokes ordinary core acceptance after the job's
+deployment fixture checks. The wrapper checks that each command's owned process
 group stopped after settlement, preserving both command and cleanup failures.
 
 The core has no quality/browser preparation callbacks or readiness-admission

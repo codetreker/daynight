@@ -25,22 +25,19 @@ retain the existing all-module selection rule. This separates responsibilities,
 not browser scenarios or product scope.
 
 `scripts/ci.mts` exports `runCi(mode, cancellation, operations?)` for explicit
-internal `quality` and `browser` modes. Quality runs the canonical Node harness,
-direct complete Vitest/V8 command and direct strict statement checker serially,
-with respective deadlines of 180, 180 and 60 seconds. The
-[command-deadline decision](2026-11-04-web-quality-command-deadlines.md) replaces
-the original 180-second composite Vitest/checker boundary. The original isolation
-policy gave the harness its own 180 seconds; separating it prevented harness time
-from consuming coverage time. The later split increases configured quality
-command allowances from 360 to 420 seconds while keeping the 20-minute job limit.
-Only the Vitest/V8 child receives `VITEST_MAX_WORKERS=4`, calibrated for its
-dedicated public standard Linux runner by the [worker capacity
+internal `quality` and `browser` modes. Quality runs
+the canonical Node harness, complete Vitest/V8 collection and strict statement
+checker serially. Harness has a 180-second deadline and collection has a 300-second deadline; the
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) gives
+final inventory and coverage verification an independent 60-second deadline.
+Only the Vitest/V8
+child receives `VITEST_MAX_WORKERS=4`, calibrated for its dedicated public
+standard Linux runner by the [worker capacity
 decision](2026-10-28-web-quality-worker-capacity.md); its `forks` pool, file
-isolation, all ordinary cases and full product-source manifest remain unchanged.
+isolation and full product-source manifest remain unchanged.
 
 Browser mode installs pinned Chromium with Linux dependencies under the existing
-600-second bound, runs the focused navigation-contract Playwright command with
-its separate 180-second bound, then invokes ordinary core acceptance. That runner owns native
+600-second bound, then invokes ordinary core acceptance. That runner owns native
 and container preparation, atomic permission release, recovery and cleanup.
 The [functional target decision](2026-11-04-web-functional-target-overlap.md)
 replaces the original native-before-container functional browser order with
@@ -92,13 +89,11 @@ keeps quality and browser work on one job's critical path and adds an observer
 that ordinary acceptance does not need. Separate jobs remove that coupling;
 the selected core has no such gate or reader.
 
-**Increase the job or command allowance.** At the isolation decision, a larger
-allowance alone would not separate competing responsibilities. That delivery
-retained both 20-minute jobs and the existing harness/composite-coverage
-180-second boundaries. The later
-[command-deadline decision](2026-11-04-web-quality-command-deadlines.md) changes
-the coverage command boundaries and explicitly records its additional allowance;
-it retains the independent runners and browser limits.
+**Increase the job or command allowance.** Larger budgets change the validation
+contract without separating the competing responsibilities. The isolation decision kept both jobs at
+20 minutes and preserved their command and functional deadlines. The later
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) separately
+bounds final verification and calibrates collection for the larger suite.
 
 **Shard browser scenarios across runners.** Shards duplicate target preparation
 and require new scenario, artifact and permission aggregation. At the time of this choice, the full native, container and capacity journey

@@ -637,6 +637,39 @@ index. Overview positioning can clear a filter that hides its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
+## Steps reading
+
+Task details always expose Steps after Overview, in both the dialog and standalone
+page. `tab=steps` preserves the tab through direct access, reload and browser
+history, including details without a Session. Reading shows the ordered title,
+four-state status and task-local ID; multiple expanded rows render Task-root
+Markdown and timestamps through the same attachment controller as Overview.
+
+`TaskDetailSessions` owns a separate lazy Steps resource in memory. Summary,
+parent-detail and confirmed mutation versions invalidate it; identity, cache
+generation and version admission fence late responses. An ahead resource waits
+for summary admission and requests parent/project refresh, while stale responses
+are reread against the highest verified floor, including pending parent details.
+Refresh and reader release retain that scalar floor within the same cache
+generation. Confirmed parent deletion fences in-flight reads and asynchronous
+admission so late responses cannot restore a deleted detail. First-read errors, valid emptiness and
+retained-content errors remain distinct and retryable. A Steps 404 checks the
+parent before retiring access; 403 remains a refusal, and parent 410 uses the
+existing deleted-task presentation. Retirement and the last active reader's
+unsubscribe release complete collections, including pending admission. Steps never
+enter the TaskDetail LRU or IndexedDB.
+
+The list mounts at most 100 rows per page, with global numbering, previous/next
+buttons and a numeric page input. Paging makes no API requests; expansion remains
+bound to IDs across pages, same-task tabs and refresh reordering. Both languages
+and the 320px layout retain reading and recovery controls. Web writing controls
+are not exposed. At heights up to 500px, a single scrollable tab row reserves
+reading space; the tab owner reveals its target after focus, selection styling
+and locale updates. At heights up to 600px, pagination scrolls with the list so
+its controls cannot cover the remaining reading area. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
+and [design](../../docs/design/daynight-task-steps.md#web-资源与单一写入所有者)
+own the complete read lifecycle and the remaining write architecture.
+
 ## Session display
 
 Task, Test and readable archived Sessions share the Display menu beside Refresh.
@@ -653,7 +686,7 @@ owns identity binding, menu behavior and preference integration.
 
 ## Task discussions
 
-Task details always provide Overview, Attachments and Discussion tabs, followed
+Task details always provide Overview, Steps, Attachments and Discussion tabs, followed
 by Session when native execution content is available. Discussion works before
 execution starts, after completion and while an execution environment is offline.
 It reads and posts directly to the task Thread resource; ordinary browser posts
@@ -1578,6 +1611,13 @@ The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
 were never imported by a test. Empty, malformed and incomplete reports fail.
 
+The platform, pause, status and assignment controller session tests use
+`tests/helpers/waitForState.ts` for non-DOM state changes. It delegates to
+Testing Library with a 5ms default polling interval, preserving immediate
+checks, timeouts, errors and explicit options. DOM tests keep their existing
+waits. The [state polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-controller-state-polling.md)
+records the cadence and its limits.
+
 The focused navigation browser suite builds a minimal editor host from the
 production router, admitted-location owner and task confirmation. It checks draft
 admission independently of Steps forms and HTTP writes, including indexed
@@ -1603,36 +1643,24 @@ main pushes run the full suite. The Web result enables two parallel jobs,
 and other results fail the gate. Shared workflow changes retain the existing
 all-module selection rule.
 
-`node packages/daynight-web/scripts/ci.mts quality` runs three commands serially,
-each with its own deadline:
-
-| Command | Deadline |
-| --- | --- |
-| `pnpm --filter @codetreker/daynight-web test:harness` | 180 seconds |
-| `pnpm --filter @codetreker/daynight-web exec vitest run --coverage` | 180 seconds |
-| `pnpm --filter @codetreker/daynight-web exec node scripts/coverage.mts` | 60 seconds |
-
-The Vitest/V8 suite and strict checker have separate process boundaries, so a
-successful suite cannot consume the checker's whole allowance. Their combined
-configured allowance increases from the former composite 180 seconds to 240
-seconds; the sum of quality command allowances increases from 360 to 420 seconds.
-The quality job retains its 20-minute limit. Local `test:coverage` and `web:test`
-keep their existing composition.
-
-Only the Vitest/V8 child receives a copied environment with
-`VITEST_MAX_WORKERS=4`. Its `forks` pool, per-file isolation, complete ordinary
-suite, full product-source manifest and strict unrounded greater-than-90%
-statement gate remain required. The [worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
-calibrates this setting for the dedicated public standard Linux runner's four
-CPUs. The [command-deadline decision](../../.agents/notes/implemented/testing/2026-11-04-web-quality-command-deadlines.md)
-owns the separate budgets and aggregate allowance. Scale workloads use the
-separate local stress configuration; browser and Go gates remain required.
+`node packages/daynight-web/scripts/ci.mts quality` runs `test:harness`, complete
+Vitest/V8 collection and `scripts/coverage.mts` serially. Harness has a 180-second deadline and collection has a 300-second deadline;
+final source-inventory and strict coverage
+verification has its own 60-second deadline. Completed tests cannot consume the
+final checker's budget. The [stage budget decision](../../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)
+owns that separation. Only the
+Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=4`, retaining
+its `forks` pool, per-file isolation, full product manifest and strict statement
+gate. The [worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
+calibrates this existing resource setting for the dedicated public standard
+Linux runner's four CPUs. The complete product-source coverage manifest and
+strict gate apply to the ordinary suite; scale workloads use the separate local
+stress configuration.
 
 `node packages/daynight-web/scripts/ci.mts browser` installs pinned Chromium and
 Linux dependencies under the
-existing 600-second bound, runs the focused navigation-contract Playwright
-command with a separate 180-second bound, then calls the same ordinary core
-acceptance runner as `pnpm web:acceptance`. This job retains real embedded Go builds, both
+existing 600-second bound, then calls the same ordinary core acceptance runner
+as `pnpm web:acceptance`. This job retains real embedded Go builds, both
 native/container functional targets, dev-ci lifecycle fixtures, persistence
 checks and recovery. Capacity and timing workloads run through the explicit
 local stress command, which refuses CI. Browser installation precedes core preparation; the core has no

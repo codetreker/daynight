@@ -231,7 +231,7 @@
   .task-detail-columns { display: block; padding: 20px 19px 24px; }
   .task-detail-aside { margin-top: 24px; }
   .task-detail-footer { padding: 8px 17px; }
-  .task-detail-tabs { padding: 0 19px; }
+  .task-detail-tabs { padding: 0 19px; flex-wrap: wrap; column-gap: 16px; row-gap: 0; }
   .task-detail-panel-attachments { padding: 14px 12px 16px; }
 }
 
@@ -244,8 +244,8 @@
   .task-detail-retained { margin: 0; font-size: 9px; line-height: 1.5; }
   .task-detail-stale { margin: 0; padding: 4px 7px; font-size: 9px; }
   .task-detail-stale .button { margin-top: 2px; padding: 3px 5px; }
-  .task-detail-tabs { margin-top: 5px; padding: 0 18px; }
-  .task-detail-tab { padding: 7px 2px; }
+  .task-detail-tabs { margin-top: 5px; padding: 0 18px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+  .task-detail-tab { padding: 7px 2px; flex: 0 0 auto; white-space: nowrap; }
   .task-detail-panel-attachments { padding: 9px 16px 10px; }
   .task-detail-footer { padding: 4px 16px; font-size: 9px; }
 

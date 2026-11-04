@@ -4,7 +4,8 @@ Status: implemented
 
 ## Problem
 
-The complete Web Vitest/V8 command runs near its existing 180-second deadline.
+At worker-count calibration, the complete Web Vitest/V8 command ran near its
+180-second deadline.
 Its worker budget was selected while coverage shared a four-CPU runner with
 Docker preparation. Quality now has a dedicated runner, so retaining that
 contention reserve can leave available CPU unused without reducing the required
@@ -12,18 +13,14 @@ coverage workload.
 
 ## Decision
 
-The Vitest/V8 child in `scripts/ci.mts quality` receives
-`VITEST_MAX_WORKERS=4`. The Node harness runs first with its own 180-second
-deadline. The direct Vitest/V8 command has 180 seconds, followed by a direct strict
-checker command with 60 seconds, as owned by the
-[command-deadline decision](2026-11-04-web-quality-command-deadlines.md). That
-later decision replaces the composite coverage/checker 180-second limit retained
-by the worker-count calibration, increasing configured coverage allowance to 240
-seconds and aggregate quality command allowance from 360 to 420 seconds. The
-20-minute job, `forks` pool, per-file isolation, all ordinary cases, complete
-product-source inventory and strict unrounded statement-coverage gate remain.
-The [local stress decision](2026-11-03-local-stress-suites.md) separates scale
-workloads from ordinary discovery while retaining
+The coverage child in `scripts/ci.mts quality` receives
+`VITEST_MAX_WORKERS=4`. The Node harness still runs first and retains its own
+180-second deadline. Vitest/V8 collection has a separate 300-second command deadline;
+the [stage budget decision](2026-11-04-web-coverage-finalization-budget.md) gives
+the final inventory and coverage checker its own 60-second deadline. The `forks`
+pool, per-file isolation, complete product-source inventory and strict unrounded
+statement-coverage gate remain. The [local stress decision](2026-11-03-local-stress-suites.md)
+subsequently separates scale workloads from ordinary discovery while retaining
 compact correctness cases and the same product coverage manifest.
 
 This budget targets the repository's public `ubuntu-latest` quality job. The
@@ -68,7 +65,7 @@ fork isolation contract. Worker-count calibration leaves the pool unchanged.
 ## Consequences
 
 The quality command can use its dedicated standard runner's four CPUs while
-preserving the complete suite, strict coverage, process-group cleanup and browser gate.
+preserving every command, coverage, process-group cleanup and browser gate.
 The browser job owns both complete functional targets with one browser worker
 and zero retries. Complete capacity inputs and their original budgets remain in
 the explicit local browser stress path. The historical worker-count comparison
