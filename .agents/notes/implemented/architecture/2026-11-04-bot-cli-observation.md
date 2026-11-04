@@ -66,9 +66,12 @@ users can distinguish accepted definitions, startup states and deletion stages.
 The command owns bounded pagination and parsing overhead, and diagnostics expose
 less arbitrary server text while retaining actionable identity and error codes.
 
-Complete native hosting, UI entry enablement and bound-Session cleanup remain
-separate capabilities. The CLI preserves the service's current refusal of
-bound-Bot deletion, and pending intents may remain pending until cleanup
-consumers are available. Later cleanup producers must keep the same deletion
-identity and two-party completion semantics; command availability cannot be
-used as evidence that those producers or the whole assistant experience work.
+At the initial CLI design, the service refused deletion of Bots with bound
+Sessions. The command therefore consumed deletion stages without assuming that
+cleanup producers were available. The [history deletion decision](2026-11-04-bot-history-deletion.md)
+owns the implemented server barrier and cleanup; native stopping and Worker
+private cleanup remain the Worker's responsibility. These producers retain the
+same deletion identity and two-party completion semantics, so the CLI can
+consume their results without owning process control. Complete native hosting
+and UI entry enablement remain separate capabilities. Command availability does
+not establish that those producers or the whole assistant experience work.

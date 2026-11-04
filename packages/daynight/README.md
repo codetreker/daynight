@@ -1370,11 +1370,11 @@ and `serverCleanup` results. A pending stage means cleanup is unfinished; only
 both stages completed establish completion. A failed stage retains its error
 code. Deleted definitions disappear from `bot list`, while `bot show` returns
 only their minimal deletion responsibility. List disappearance is not proof of
-process termination or history removal. The current service accepts deletion
-intents only for Bots without a bound Session and refuses bound Bots; full
-Worker stopping and conversation cleanup remain separate capabilities. The CLI
-entry points do not enable the complete assistant UI or establish complete
-Bot hosting.
+process termination or history removal. The service commits a deletion barrier
+before cleanup, and requires the bound Worker's verified stop receipt before
+server history cleanup can complete. The CLI consumes those stages; it does not
+stop native processes or generate cleanup receipts. These entry points do not
+enable the complete assistant UI or establish complete Bot hosting.
 
 All four commands support `--json`. `list` emits an array; `show`, `create` and
 `delete` emit a Bot resource. Lists follow every page and produce output only
