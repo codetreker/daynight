@@ -871,8 +871,9 @@ access 恢复必须呈现已保存资源或触发明确重读。资源仍缺失�
 Project、分页 Project 与图内 Project 的 settings.version 和 ownership.version 通过
 `project-json.ts` envelope 无损解码；root Project、items[]、graph.project 与 task-sync.project
 保持相同内在形状。GET Project 的 access、members.actorAccess 和 task-sync.actorAccess
-也解码其 ownership 与 directGrant 版本。各解码器复用 json-source.ts 的原始片段定位，
-先验证完整 JSON，只处理声明的资源子树；未知嵌套对象和 task properties 保持原有语义，
+也解码其 ownership 与 directGrant 版本。Project、access 与 participant 解码器复用 json-source.ts 的原始片段定位，
+先验证完整 JSON，再为同层字段共用一次源码映射；settings、ownership 与权限来源增加时
+不重复扫描同一个对象。只处理声明的资源子树；未知嵌套对象和 task properties 保持原有语义，
 不要求浏览器提供 reviver source context。超过 `2^53` 的资源版本保持 bigint，写入时编码为
 JSON 数字；缺失或错误 settings/ownership 不补默认值。
 

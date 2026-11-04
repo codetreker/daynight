@@ -164,11 +164,12 @@ export const parseProjectAccess = (value: unknown, projectId: string, userId?: s
 };
 
 export const projectAccessSource = (text: string): unknown => {
-  const parsed = parseApiJson(text);
+  const parsed: unknown = JSON.parse(text);
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return parsed;
   const data = parsed as Record<string, unknown>;
-  if (Object.hasOwn(data, 'ownership')) data.ownership = parseApiJson(jsonObjectSources(text).get('ownership')!);
-  if (Object.hasOwn(data, 'directGrant')) data.directGrant = parseApiJson(jsonObjectSources(text).get('directGrant')!);
+  const fields = jsonObjectSources(text);
+  if (Object.hasOwn(data, 'ownership')) data.ownership = parseApiJson(fields.get('ownership')!);
+  if (Object.hasOwn(data, 'directGrant')) data.directGrant = parseApiJson(fields.get('directGrant')!);
   return parsed;
 };
 export const decodeProjectAccessJson = async (response: Response): Promise<unknown> => projectAccessSource(await response.text());
@@ -178,7 +179,8 @@ export const decodeMembersJson = async (response: Response): Promise<unknown> =>
   const parsed: unknown = JSON.parse(text);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return parsed;
   const data = parsed as Record<string, unknown>;
-  if (Object.hasOwn(data, "actorAccess")) data.actorAccess = projectAccessSource(jsonObjectSources(text).get("actorAccess")!);
-  if (Array.isArray(data.items)) data.items = jsonContainerSources(jsonObjectSources(text).get("items")!).map(projectAccessSource);
+  const fields = jsonObjectSources(text);
+  if (Object.hasOwn(data, "actorAccess")) data.actorAccess = projectAccessSource(fields.get("actorAccess")!);
+  if (Array.isArray(data.items)) data.items = jsonContainerSources(fields.get("items")!).map(projectAccessSource);
   return parsed;
 };

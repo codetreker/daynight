@@ -33,8 +33,11 @@ display without becoming an authority source. The CLI roster facade validates
 the complete envelope and retains its participant-array return value.
 
 Resource codecs require these fields and preserve nested positive int64 versions
-above 2^53. Web decodes only declared resource paths from raw JSON slices; opaque
-task properties keep their existing JSON semantics. Missing ownership, invalid
+above 2^53. Project, graph/sync and roster decoders validate complete JSON
+natively and share one source-field map per inspected object. Access and
+participant roots have no protocol version; only their declared ownership and
+grant subtrees receive version conversion. This avoids repeating source scans as
+the projection expands. Opaque task properties keep their existing JSON semantics. Missing ownership, invalid
 Personal references and inconsistent owner/source facts fail instead of receiving
 defaults. The [auth design](../../../../docs/design/daynight-auth.md) owns the
 public field definitions and snapshot boundaries.
@@ -63,6 +66,10 @@ fences without another authority owner.
 settings change independently. A later settings observation can contain an older
 owner, or the reverse. Independent versions preserve each relationship without
 inventing a shared ordering token.
+
+**Scan the same object separately for each resource field.** Each exposed field
+would repeat a complete source scan. Sharing its validated field map retains
+explicit version paths while reducing repeated work.
 
 ## Consequences
 

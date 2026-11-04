@@ -7,11 +7,12 @@ const object = (value: unknown): value is Record<string, unknown> =>
 
 const projectSource = (text: string): unknown => {
   const parsed: unknown = JSON.parse(text);
-  if (object(parsed) && Object.hasOwn(parsed, "settings")) {
-    parsed.settings = parseApiJson(jsonObjectSources(text).get("settings")!);
+  if (object(parsed)) {
+    const fields = jsonObjectSources(text);
+    if (Object.hasOwn(parsed, "settings")) parsed.settings = parseApiJson(fields.get("settings")!);
+    if (Object.hasOwn(parsed, "ownership")) parsed.ownership = parseApiJson(fields.get("ownership")!);
+    if (Object.hasOwn(parsed, "access")) parsed.access = projectAccessSource(fields.get("access")!);
   }
-  if (object(parsed) && Object.hasOwn(parsed, "ownership")) parsed.ownership = parseApiJson(jsonObjectSources(text).get("ownership")!);
-  if (object(parsed) && Object.hasOwn(parsed, "access")) parsed.access = projectAccessSource(jsonObjectSources(text).get("access")!);
   return parsed;
 };
 
@@ -29,11 +30,10 @@ export const decodeProjectPageJson = async (response: Response): Promise<unknown
 export const decodeTaskGraphJson = async (response: Response): Promise<unknown> => {
   const text = await response.text();
   const parsed: unknown = JSON.parse(text);
-  if (object(parsed) && Object.hasOwn(parsed, "project")) {
-    parsed.project = projectSource(jsonObjectSources(text).get("project")!);
-  }
-  if (object(parsed) && Object.hasOwn(parsed, "actorAccess")) {
-    parsed.actorAccess = projectAccessSource(jsonObjectSources(text).get("actorAccess")!);
+  if (object(parsed)) {
+    const fields = jsonObjectSources(text);
+    if (Object.hasOwn(parsed, "project")) parsed.project = projectSource(fields.get("project")!);
+    if (Object.hasOwn(parsed, "actorAccess")) parsed.actorAccess = projectAccessSource(fields.get("actorAccess")!);
   }
   return parsed;
 };
