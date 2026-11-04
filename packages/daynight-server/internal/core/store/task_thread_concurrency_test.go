@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -182,7 +183,7 @@ func TestThreadTaskShareLockAllowsAppendWhileProjectMutationWaits(t *testing.T) 
 			if _, err := thread.Credential(ctx, principal); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := thread.ProjectMember(ctx, principal, project.ID); err != nil {
+			if _, err := thread.LockProjectAuthorization(ctx, principal, project.ID); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := thread.LockHead(ctx, task.ID); err != nil {
@@ -205,8 +206,8 @@ func TestThreadTaskShareLockAllowsAppendWhileProjectMutationWaits(t *testing.T) 
 	}
 }
 
-func TestThreadCredentialAndMembershipLocksBlockRevocation(t *testing.T) {
-	for _, mutation := range []string{"credential", "membership"} {
+func TestThreadCredentialAndGrantLocksBlockRevocation(t *testing.T) {
+	for _, mutation := range []string{"credential", "grant"} {
 		t.Run(mutation, func(t *testing.T) {
 			database, principal, _, project := membershipFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -220,7 +221,7 @@ func TestThreadCredentialAndMembershipLocksBlockRevocation(t *testing.T) {
 			if _, err := thread.Credential(ctx, principal); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := thread.ProjectMember(ctx, principal, project.ID); err != nil {
+			if _, err := thread.LockProjectAuthorization(ctx, principal, project.ID); err != nil {
 				t.Fatal(err)
 			}
 			revoker, err := database.Pool.Acquire(ctx)
@@ -244,6 +245,65 @@ func TestThreadCredentialAndMembershipLocksBlockRevocation(t *testing.T) {
 			}
 			if err := <-completed; err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
+	for _, mutation := range []string{"role", "delete"} {
+		t.Run(mutation, func(t *testing.T) {
+			database, principal, _, project := membershipFixture(t)
+			task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			writer, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer writer.Rollback(context.Background())
+			var version int64
+			if mutation == "role" {
+				err = writer.QueryRow(ctx, `UPDATE project_members SET role='member',version=nextval('project_member_versions')
+ WHERE project_id=$1 AND user_id=$2 RETURNING version`, project.ID, principal.UserID).Scan(&version)
+			} else {
+				_, err = writer.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := make(chan uint32, 1)
+			completed := make(chan error, 1)
+			var access core.ProjectAccess
+			go func() {
+				completed <- database.WriteThread(ctx, func(thread *ThreadTx) error {
+					started <- thread.tx.Conn().PgConn().PID()
+					if _, err := thread.LockTaskPresence(ctx, project.ID, task.ID); err != nil {
+						return err
+					}
+					if _, err := thread.Credential(ctx, principal); err != nil {
+						return err
+					}
+					var err error
+					access, err = thread.LockProjectAuthorization(ctx, principal, project.ID)
+					return err
+				})
+			}()
+			waitThreadBackendLock(t, database, <-started)
+			if err := writer.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			err = <-completed
+			if mutation == "delete" {
+				if !errors.Is(err, core.ErrNotFound) {
+					t.Fatalf("revoked grant admitted: %#v %v", access, err)
+				}
+				return
+			}
+			if err != nil || access.ProjectID != project.ID || access.UserID != principal.UserID || access.Role != core.ProjectMemberRole ||
+				access.DirectGrant == nil || access.DirectGrant.ProjectID != project.ID || access.DirectGrant.UserID != principal.UserID ||
+				access.DirectGrant.Role != access.Role || access.DirectGrant.Version != version {
+				t.Fatalf("authorization retained pre-wait grant: %#v %v", access, err)
 			}
 		})
 	}

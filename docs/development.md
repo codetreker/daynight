@@ -83,6 +83,10 @@ Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/implemented/testing/2026-11-04-native-supervisor-fixture-clock.md)
 records the real-process proof and cleanup requirements.
+The native fsmonitor regression uses a real hook's invocation marker to qualify
+ordinary Git and verify protected-query suppression. Its
+[fixture decision](../.agents/notes/implemented/testing/2026-11-04-fsmonitor-fixture-marker.md)
+records why no idle delay is required after that marker is written.
 The pnpm dependency store is local to `.tmp/pnpm-store`. Native skill terminal
 acceptance uses the development-only `node-pty` dependency, including Windows
 ConPTY. The workspace build policy permits only the pinned node-pty hook and
@@ -466,8 +470,9 @@ and records cleanup failures.
 
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. It runs thirty-two native functional workflows, then the same
-container workflows and complete container cleanup. The explicit local
+parallel. After shared CLI preparation, it overlaps thirty-two native functional
+workflows with the same container workflows, then requires complete target and
+shared CLI cleanup. The explicit local
 `pnpm web:acceptance:stress` command adds the fixed native capacity cases after
 those phases. Both modes require Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and
 Playwright Chromium. The
@@ -513,15 +518,22 @@ records the workload split and retained correctness guarantees.
 
 ## Package versions
 
-Choose `packages/daynight/package.json`'s version when preparing a CLI release.
-PR and main CI validate affected code without comparing package versions between
-Git revisions. Source, dependency and build-input changes can merge while the
-package version stays unchanged.
+Ordinary change PRs keep `packages/daynight/package.json` version unchanged.
+PR and main CI validate affected code without comparing versions between Git
+revisions.
+Version selection and complete CLI publication belong to the repository's
+[release-daynight skill](../.agents/skills/release-daynight/SKILL.md). It analyzes
+CLI changes since the public npm `latest` source, selects patch or minor unless
+an explicit version is supplied, and retains an already prepared version when
+it meets the release requirements. The skill owns the classification rules,
+version PR delivery, release completion evidence, and interrupted-release
+reconciliation.
 
-Publication requires a valid stable SemVer. An existing exact Git tag or npm
-version produces a successful skip; a new publication must advance npm's
-`latest` version. The [publication guide](#npm-publication) defines these checks
-and the source-bound artifact guarantees. The
+Publication accepts stable `x.y.z` versions. A new release must advance public
+npm `latest`; existing npm versions and release tags are immutable. The
+[publication procedure](#npm-publication) describes the workflow's admission,
+validation, and existing-version skips. A successful skip alone does not prove
+that the requested source was published. The
 [version policy decision](../.agents/notes/implemented/simplification/2026-11-04-release-time-versioning.md)
 records why version selection belongs to release preparation.
 
@@ -545,7 +557,10 @@ successful publication within two days; npm requires an expired configuration
 to be recreated. These settings belong to npmjs and are not configured by the
 repository. See npm's [trusted publishing documentation](https://docs.npmjs.com/trusted-publishers).
 
-After merging a stable package version to `main`, run:
+For an authorized release, use the
+[release-daynight skill](../.agents/skills/release-daynight/SKILL.md) to select the
+version and complete any protected version PR. Its publication step dispatches
+the following workflow after the stable version is on `main`:
 
 ```bash
 gh workflow run publish.yml --ref main
@@ -629,18 +644,38 @@ The [root README routing table](../README.md#ci-selection) owns path selection.
 
 Every path under `packages/daynight/src/` selects CLI validation, including
 runtime Markdown such as the bundled review skill's `SKILL.md` or `README.md`.
-Every CLI source change also selects both Go server jobs, which install the CLI.
-The browser-consumed `src/api/` and `src/session/` trees and exact
-`src/platform/text.ts` path additionally select Web quality and browser validation.
-The exact manifest, build/configuration and acceptance-script inputs in
+The CLI command registry loads the implementations of `worker`, `controller`,
+`review`, `skill`, `update` and `completion` only when selected. Implementation
+and resource changes within those command directories select only CLI checks;
+their `definition.ts` files remain server inputs because the registry imports
+definitions at startup. Other CLI source conservatively selects both Go jobs,
+including the shared startup code and project/task/authentication commands used
+by installed-CLI acceptance. The browser-consumed `src/api/` and `src/session/`
+trees and exact `src/platform/text.ts` path additionally select Web quality and
+browser validation. Changes to these command-loading or shared-code relationships
+must keep the selector's ownership rules aligned with the actual imports.
+
+For a modified CLI `package.json`, detection reads the committed merge-base and
+PR head blobs, parses both JSON objects and compares them after removing only
+the top-level `version` field. Version, formatting and object-key-order changes
+select CLI checks without selecting server jobs. Any other semantic difference,
+including dependency versions, scripts, package contents or nested `version`
+fields, retains server selection; array order remains significant. Additions,
+deletions and file-type changes select server jobs conservatively. Invalid
+modified manifests and Git read failures fail detection. The checkout contents
+and changes made only on the target branch do not determine this comparison.
+Root manifests, the lockfile and workspace inputs keep all-module selection.
+
+The exact build/configuration and acceptance-script inputs in
 [the selector](../.github/scripts/ci-modules.mts) select CLI and both server jobs.
 Web source and its Dagre/XYFlow patches select both server jobs because those jobs
-build embedded Web assets.
-Other documentation exclusions apply before module selection. The `.gitignore`
-exclusion matches only the repository root; nested ignore files retain their
-module ownership or the unclassified-path fallback. An excluded path does not
-suppress jobs selected by other changed files. New modules and unclassified
-patches select all jobs until their consumers are explicitly assigned.
+build embedded Web assets. Documentation exclusions apply after CLI source
+ownership. The `.gitignore` exclusion matches only the repository root; nested
+ignore files retain their module ownership or the unclassified-path fallback.
+An excluded path does not suppress jobs selected by other changed files. New
+modules and unclassified patches select all jobs until their consumers are
+explicitly assigned. The [server input decision](../.agents/notes/implemented/testing/2026-11-04-server-ci-input-selection.md)
+records the dependency boundary and its maintenance cost.
 
 Selected jobs keep their ordinary functional checks, coverage thresholds,
 timeouts and cleanup requirements. Stress workloads have explicit local-only
@@ -676,13 +711,21 @@ group stopped after settlement, preserving both command and cleanup failures.
 
 The core has no quality/browser preparation callbacks or readiness-admission
 observer. Local acceptance uses its existing installed browser. Native and
-container preparation still overlap; native functional checks and browser cleanup
-precede the container browser permission release. The permission wait remains
-900 seconds. Ordinary CI completes after both functional targets, combined
-authentication, full container cleanup and browser recovery. Explicit local
+container preparation overlap. Once native preparation has installed the shared
+CLI, an atomic source/run-bound permission releases the container functional
+browser alongside the native functional browser. Each target retains one worker,
+zero retries and its complete inventory. The permission wait remains 900 seconds.
+Each browser phase uses a separate private profile root outside uploaded
+artifacts. Run-wide CLI recovery waits until both targets have drained, preserving
+active commands and credentials in the other target. Combined CLI commands
+receive cancellation and retain individual process-group checks.
+Ordinary CI completes after both functional targets, combined authentication,
+full container cleanup, browser recovery and shared CLI recovery. Explicit local
 stress acceptance adds native capacity only after those phases finish.
 Independent quality checks run on their own runner and do not add empty core
-phases or split functional browser scenarios.
+phases or split functional browser scenarios. The
+[functional target decision](../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
+records the isolation and scheduling constraints.
 The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
 records the responsibility and budget boundaries without claiming a measured
 CPU/I/O cause or guaranteed hosted speedup.

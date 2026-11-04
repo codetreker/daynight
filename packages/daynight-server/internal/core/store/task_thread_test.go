@@ -122,9 +122,11 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		member, err := tx.ProjectMember(ctx, principal, project.ID)
-		if err != nil || member.Grant.UserID != principal.UserID {
-			t.Fatalf("locked member: %#v %v", member, err)
+		access, err := tx.LockProjectAuthorization(ctx, principal, project.ID)
+		if err != nil || access.ProjectID != project.ID || access.UserID != principal.UserID || access.Role != core.ProjectAdmin ||
+			access.DirectGrant == nil || access.DirectGrant.ProjectID != project.ID || access.DirectGrant.UserID != principal.UserID ||
+			access.DirectGrant.Role != access.Role || access.DirectGrant.Version <= 0 {
+			t.Fatalf("locked authorization: %#v %v", access, err)
 		}
 		name, err := tx.AuthorName(ctx, principal.UserID)
 		if err != nil || name != nil {
@@ -302,7 +304,7 @@ func TestThreadClosedTransactionsKeepStoreFailures(t *testing.T) {
 			return err
 		},
 		func() error {
-			_, err := closed.ProjectMember(ctx, core.Principal{UserID: queryID(1)}, queryID(2))
+			_, err := closed.LockProjectAuthorization(ctx, core.Principal{UserID: queryID(1)}, queryID(2))
 			return err
 		},
 		func() error { _, err := closed.AuthorName(ctx, queryID(1)); return err },

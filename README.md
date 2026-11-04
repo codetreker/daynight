@@ -302,10 +302,12 @@ browser acceptance and complete validation commands.
 
 ## Package versions
 
-Choose the version in `packages/daynight/package.json` when preparing a CLI
-release. Code and build-input changes can merge without increasing that version;
-CI validates the affected modules independently of release numbering. The
-[version guide](docs/development.md#package-versions) explains release checks.
+Ordinary change PRs leave the version in `packages/daynight/package.json`
+unchanged. Use the repository's
+[release-daynight skill](.agents/skills/release-daynight/SKILL.md) to select a
+release version, deliver any version PR, publish, and verify the npm release.
+The [version guide](docs/development.md#package-versions) describes ownership and
+publication constraints.
 
 ### npm publication
 
@@ -323,8 +325,10 @@ from all changed paths, including deletions and both sides of renames:
 |---|---|
 | `packages/daynight/test/fixtures/installed-cli.ts` | Every module |
 | `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI, Go server coverage/E2E, Web quality and Web browser acceptance |
-| Other `packages/daynight/src/` paths | CLI and Go server coverage/E2E |
-| CLI manifest, TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
+| Implementation and resources under CLI `commands/worker/`, `controller/`, `review/`, `skill/`, `update/` or `completion/`, except `definition.ts` | CLI |
+| Other `packages/daynight/src/` paths, including command definitions | CLI and Go server coverage/E2E |
+| CLI `package.json` changes only to top-level `version`, JSON formatting or object key order | CLI |
+| Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
 | Other `packages/daynight/` paths | Linux, macOS ARM64 and Windows CLI, runtime compatibility, plus shell completion |
 | `packages/daynight-server/` | Go server coverage and E2E |
 | `packages/daynight-web/` and current Dagre and XYFlow patches | Go server coverage/E2E, Web quality and Web browser acceptance |
@@ -333,15 +337,21 @@ from all changed paths, including deletions and both sides of renames:
 | Root `.gitignore`, `docs/`, `.agents/`, `.claude/`, files named `README.md`, `AGENTS.md` or `CLAUDE.md`, manual `publish.yml` workflow | No application jobs |
 | CI routing/workflow changes and other unclassified paths | Every module |
 
-Runtime files under `packages/daynight/src/` always select CLI checks, including
-SQL resources and bundled Markdown, and select both Go server jobs because they
-install the CLI. The exact CLI preparation inputs are listed in
-[the selector](.github/scripts/ci-modules.mts). Other documentation exclusions
-apply before module selection; changes selecting several modules run their union. The Web selector enables
-parallel quality and browser jobs, each with a 20-minute bound. The server selector
-enables parallel coverage and E2E jobs, also bounded to 20 minutes each. All
-selected jobs are required by `checks` and retain their complete integration and
-coverage gates.
+Every path under `packages/daynight/src/` selects CLI checks, including SQL
+resources and bundled Markdown. The CLI loads the six independent commands above
+only when selected; their implementations and resources do not select Go jobs.
+Their `definition.ts` files are loaded at startup and retain server selection.
+Other CLI source remains a conservative server input. The manifest comparison
+uses committed merge-base and head contents, ignoring only the top-level
+`version` field. Manifest additions, deletions and file-type changes select both
+server jobs; malformed modified manifests fail detection. Exact preparation
+inputs are listed in [the selector](.github/scripts/ci-modules.mts).
+
+Documentation exclusions apply after CLI source ownership; changes selecting
+several modules run their union. The Web selector enables parallel quality and
+browser jobs, each with a 20-minute bound. The server selector enables parallel
+coverage and E2E jobs, also bounded to 20 minutes each. All selected jobs are
+required by `checks` and retain their complete integration and coverage gates.
 The final `checks` job uses `always()` and accepts only `success` or `skipped`
 from all preceding jobs. A newer PR run cancels the older run for that PR.
 New `main` pushes queue behind an active `main` run without cancelling it.

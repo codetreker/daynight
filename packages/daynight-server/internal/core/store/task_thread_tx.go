@@ -34,16 +34,6 @@ func (tx *ThreadTx) Credential(ctx context.Context, principal core.Principal) (T
 	return threadCredential(ctx, tx.tx, principal, " FOR SHARE")
 }
 
-func (tx *ThreadTx) ProjectMember(ctx context.Context, principal core.Principal, projectID string) (core.ProjectMember, error) {
-	member, err := scanMember(tx.tx.QueryRow(ctx, `SELECT `+memberProjection+` FROM project_members m
- JOIN users u ON u.id=m.user_id JOIN projects p ON p.id=m.project_id
- WHERE m.project_id=$1 AND m.user_id=$2 FOR SHARE OF m`, projectID, principal.UserID))
-	if err != nil {
-		return core.ProjectMember{}, queryError("lock thread project member", err)
-	}
-	return member, nil
-}
-
 func (tx *ThreadTx) AuthorName(ctx context.Context, userID string) (*string, error) {
 	var name *string
 	if err := tx.tx.QueryRow(ctx, `SELECT name FROM users WHERE id=$1`, userID).Scan(&name); err != nil {

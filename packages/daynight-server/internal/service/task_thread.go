@@ -79,7 +79,7 @@ func canonicalThreadID(id *string) (*string, error) {
 	return &value, err
 }
 
-func threadMemberError(err error) error {
+func threadAccessError(err error) error {
 	if errors.Is(err, core.ErrNotFound) {
 		return &Fault{Code: "forbidden", Message: "Project access is required.", Cause: err}
 	}
@@ -142,8 +142,8 @@ func (s *TaskThreads) Post(ctx context.Context, principal core.Principal, projec
 		if err != nil {
 			return threadCredentialError(err)
 		}
-		if _, err := tx.ProjectMember(ctx, principal, projectID); err != nil {
-			return threadMemberError(err)
+		if _, err := tx.LockProjectAuthorization(ctx, principal, projectID); err != nil {
+			return threadAccessError(err)
 		}
 		if err := threadPresence(presence); err != nil {
 			return err
@@ -268,7 +268,7 @@ func (s *TaskThreads) List(ctx context.Context, principal core.Principal, projec
 			return threadCredentialError(err)
 		}
 		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
-			return threadMemberError(err)
+			return threadAccessError(err)
 		}
 		presence, err := snapshot.TaskPresence(ctx, projectID, taskID)
 		if err != nil {

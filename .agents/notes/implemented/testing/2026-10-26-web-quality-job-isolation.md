@@ -35,8 +35,10 @@ isolation and full product-source manifest remain unchanged.
 
 Browser mode installs pinned Chromium with Linux dependencies under the existing
 600-second bound, then invokes ordinary core acceptance. That runner owns native
-and container preparation, functional browser order, atomic permission release,
-recovery and cleanup. The [local stress decision](2026-11-03-local-stress-suites.md)
+and container preparation, atomic permission release, recovery and cleanup.
+The [functional target decision](2026-11-04-web-functional-target-overlap.md)
+replaces the original native-before-container functional browser order with
+concurrent isolated targets and a shared CLI cleanup barrier. The [local stress decision](2026-11-03-local-stress-suites.md)
 partially supersedes the original mandatory capacity phase: ordinary CI runs the
 complete functional inventory, while explicit local stress acceptance adds
 capacity after the same preparation and cleanup barriers. It has no quality/browser preparation callbacks,
@@ -50,8 +52,9 @@ when the command leader exited successfully. A command failure, cancellation or
 process-group cleanup failure remains a failure; combined errors are preserved.
 This guard is not replaced by the command leader's exit status.
 
-The container's 900-second permission wait, native-before-container browser
-release, one browser worker and zero retries remain unchanged. Explicit local
+The container keeps its 900-second permission wait and source/run binding.
+Permission now follows native preparation so the independent functional targets
+can overlap; each retains one browser worker and zero retries. Explicit local
 stress acceptance retains complete capacity inputs and all geometry/performance
 thresholds. Its capacity phase waits for preparation, functional phases,
 complete container cleanup and browser recovery. Quality runs on a separate

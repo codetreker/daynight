@@ -1557,7 +1557,7 @@ acceptance keeps its preinstalled-browser behavior.
 The CI command wrapper requires its owned process group to stop after settlement,
 not merely its leader to exit. Command, cancellation and cleanup failures remain
 failures, including combined errors. The container browser keeps its 900-second
-permission wait and source/run-bound release. The normal dev-ci runner continues
+permission wait and source/run-bound release after native preparation. The normal dev-ci runner continues
 to own the built/running image identity and full stack cleanup. The
 [quality isolation decision](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
 owns the responsibility split and evidence limits. The browser job selects the
@@ -1565,12 +1565,19 @@ official Ubuntu archives before installation, as delivered in
 [PR #148](https://github.com/codetreker/daynight/pull/148).
 
 Native functional checks start after the native process and browser are ready.
-Their browser cleanup must pass before an atomic, run/source-bound permission
-releases the container's thirty-two functional checks. Ordinary acceptance
-finishes after those functional targets, combined authentication and cleanup.
-When explicitly requested locally, capacity runs last after all its preparation
-commands, container checks, full dev-ci cleanup and container browser recovery. Every browser phase retains one
-worker and zero retries. Browser CI runs controlled deployment fixtures before
+Native preparation installs the shared CLI before an atomic, run/source-bound
+permission releases the container's thirty-two functional checks. Native and
+container functional browsers then overlap against independent service,
+database, authentication and storage resources. Each phase has a separate
+private Chromium profile root. Run-wide CLI recovery waits until both targets
+have drained; combined CLI commands receive cancellation without terminating
+commands in the other target. Ordinary acceptance finishes after both functional
+targets, combined authentication, browser recovery, container cleanup and shared
+CLI recovery. When explicitly requested locally, capacity runs last after those
+barriers and all its preparation commands. Every browser phase retains one
+worker and zero retries. The
+[functional target decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
+records the scheduling constraints. Browser CI runs controlled deployment fixtures before
 core acceptance and keys outer recovery and its acceptance artifact upload to
 that attempt. The quality artifact upload follows the quality command attempt.
 After core acceptance and recorded recovery, the Ubuntu browser job runs `node deployment/dev-ci/tests/attachments.mts` once for real
@@ -1662,8 +1669,8 @@ npm registry unless the build variable is explicitly supplied.
 The command builds real embedded assets and a new Go executable and owns a
 separate PostgreSQL container/volume and ephemeral loopback listener. In parallel,
 the normal dev-ci runner builds and starts the actual production image. Browser
-execution proceeds through thirty-two native functional scenarios and the same
-thirty-two functional scenarios through the production image's stream gateway.
+execution overlaps thirty-two native functional scenarios with the same
+thirty-two scenarios through the production image's stream gateway.
 Explicit local stress mode then runs five native capacity/limit scenarios. In
 that mode, the native process and PostgreSQL remain alive through capacity;
 other preparation commands and the complete container stack finish before it
@@ -1992,13 +1999,20 @@ native process. Timeouts and cancellation stop owned command groups; browser
 receipts identify the detached Chromium group and project-local profile as well.
 A passing run requires confirmed native, browser/profile and dev-ci cleanup.
 Each phase verifies its Playwright group has stopped and recovers owned browser
-resources immediately. After the native functional phase, an atomically written
-`container/container-permission.json` binds its completed cleanup to the exact
+resources immediately. Profile roots are derived from the validated phase
+location under `acceptance-private/<run>/`, outside the uploaded acceptance
+artifacts. Playwright allocates profiles there; Chromium keeps the short relative
+`.tmp` directory for Unix sockets so the private path does not exceed socket
+path limits. Inventory and recovery inspect only that phase's root, preserving
+unknown-startup and process-identity failures without touching another target.
+After native preparation, an atomically written
+`container/container-permission.json` binds completed preparation to the exact
 acceptance run ID, dev-ci run ID and source SHA. The container callback records
 its identity before waiting, and inventories browsers only after permission;
-its `ready.json` is diagnostic timing, not browser permission. Any stage failure
-or unexpected native-server exit cancels sibling work, drains started tasks and
-preserves failures before final cleanup.
+its `ready.json` is diagnostic timing, not browser permission. Both functional
+targets drain before run-wide CLI recovery and optional local capacity. Any stage
+failure or unexpected native-server exit cancels sibling work, drains started
+tasks and preserves failures before unconditional final cleanup.
 
 After the original runner, callback/Playwright processes and their owned groups
 have stopped, run

@@ -8,7 +8,7 @@ import { command, type CommandOptions } from './process.mts';
 import { aggregateScenarios, readReport, type Scenario } from './report.mts';
 import { validatePerformance } from './performance.mts';
 import { processIdentity, requireGroupStopped, requireStopped, sameProcess, type ProcessIdentity } from './identity.mts';
-import { browserInventory, recoverBrowsers, type BrowserInventory } from './browser.mts';
+import { browserInventory, browserTemporaryRoot, recoverBrowsers, type BrowserInventory } from './browser.mts';
 import { waitForContainerPermission, writeContainerPermission } from './permission.mts';
 import { runPipeline } from './pipeline.mts';
 import { prepareStorage, cleanupStorage, type StorageReceipt } from './storage.mts';
@@ -228,14 +228,14 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
         || (!target.caseSensitiveStorage && (target.target !== 'native' || process.platform !== 'darwin'))) {
         throw new Error('Browser phase has invalid filesystem case-sensitivity coverage.');
       }
-      target.browserInventory = await browserInventory();
+      target.browserInventory = await browserInventory(directory);
       target.browserCleanup = 'pending';
       await json(join(directory, 'target.json'), target);
       await mkdir(join(packageRoot, '.tmp'), { recursive: true });
       await run('pnpm', ['exec', 'playwright', 'test', '--workers=1', '--retries=0', '--reporter=line,json',
         target.phase === 'capacity' ? '--grep' : '--grep-invert', '@capacity'], {
         cwd: packageRoot, timeoutMs: 900_000,
-        env: { ...process.env, TMPDIR: '.tmp', DAYNIGHT_BASE_URL: target.baseUrl, DAYNIGHT_ACCEPTANCE_TARGET: target.target,
+        env: { ...process.env, TMPDIR: browserTemporaryRoot(directory), DAYNIGHT_BASE_URL: target.baseUrl, DAYNIGHT_ACCEPTANCE_TARGET: target.target,
           DAYNIGHT_ACCEPTANCE_DIRECTORY: directory, DAYNIGHT_ACCEPTANCE_STRESS: target.phase === 'capacity' ? '1' : undefined,
           DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT: installed.receiptPath, PLAYWRIGHT_JSON_OUTPUT_FILE: join(directory, 'playwright.json') },
         onSpawn: (child) => {
@@ -280,8 +280,6 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
       if (target.playwrightGroup !== undefined) {
         try { requireGroupStopped(target.playwrightGroup); } catch (error) { failures.push(error); }
       }
-      try { await recoverCliProcesses(dirname(installed.receipt.root), installed.receiptPath, installed.receipt); }
-      catch (error) { failures.push(error); }
       if (target.browserInventory !== undefined) {
         try { await recoverBrowsers(directory, target.browserInventory); target.browserCleanup = 'passed'; }
         catch (error) { target.browserCleanup = 'failed'; failures.push(error); }
@@ -773,7 +771,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
         }
         return phase.scenarios;
       }), required);
-      const browsers = [...evidence.targets.filter((other) => other !== target).flatMap((other) => other.phases), ...target.phases]
+      const browsers = [...evidence.targets.filter((other) => other !== target).flatMap((other) => other.phases.filter((phase) => phase.result === 'passed')), ...target.phases]
         .map((phase) => phase.browser as Record<string, unknown>);
       const identity = (browser: Record<string, unknown>) => JSON.stringify([
         browser.name, browser.version, browser.platform, browser.executableOverride,
@@ -875,7 +873,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
         }),
         releaseContainer: () => stage('container-release', async () => {
           cancellation.signal.throwIfAborted();
-          if (devCiRunId === undefined) throw new Error('Dev-ci did not announce its owned run before browser release.');
+          while (devCiRunId === undefined) await wait(25);
           await writeContainerPermission(containerDirectory, { acceptanceRunId: runId, devCiRunId, sourceGitSha: evidence.source.gitSha });
         }),
         container: () => stage('container', async (ownedRun) => {
@@ -930,6 +928,10 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
           aggregate(target, functionalScenarios);
           evidence.targets.push(target);
           await save();
+        }),
+        functionalCleanup: () => stage('functional-cli-cleanup', async () => {
+          const installed = installedEvidence();
+          await recoverCliProcesses(directory, installed.receiptPath, installed.receipt);
         }),
         ...(stress ? {
           capacity: () => stage('native-capacity', async () => {
