@@ -294,6 +294,12 @@ flowchart TD
   J -- 失败或关联变化 --> F
 ```
 
+`repository/context.ts` 只在完整匹配结果为零或多项时产生纯
+`repository/discovery-error.ts` 的 `ProjectDiscoveryError`。它保留 missing/ambiguous
+类别和按原顺序复制、冻结的全部规范 project ID，不携带项目名称、repo URL、
+工作目录或凭据。类型校验 ID 的规范性、唯一性及非唯一匹配数量，公开 message
+仍表达不存在或列出匹配 ID 与 `--project <id>` 提示。
+
 列表先全量成功再判定；任何 repoUrl 无法按服务契约解析都作为响应错误，不能跳过
 以免制造“唯一匹配”。详情验证发现 404 或 repo 已变化时，不递归重新发现：本次
 发现已经用尽，报告目标变化并失败。有效缓存不再扫描完整列表，因此后来添加同 repo
@@ -527,6 +533,11 @@ Step 文本由 `step-rendering.ts` 输出 Task、精确父版本与总数，以�
 Step JSON 返回完整集合或单项 envelope，保留所有字段、原值字符串、精确 bigint
 数值和服务数组顺序。完整解析、scope 校验和渲染完成后才一次输出，错误遵守
 共享 stderr、0/1/2 退出码和 401 登录指导，不递归打印任意内部 cause 或增加重试。
+省略 project 时，Step 诊断识别 `ProjectDiscoveryError` 的可信类别与 ID 事实，
+包括 cause 或 AggregateError 包装中的该类型，分别输出不存在结果或全部候选 ID
+及显式 `--project <id>` 恢复提示。普通错误即使具有相似 message 也不取得公开权限；
+未选定单一项目时不把候选 ID 填入当前 project 上下文。原始 cause 保留，任意
+配置、Git stderr、地址、项目名称或清理错误消息不进入该公开文本。
 已完整渲染的结果经 stdoutBytes 输出；输出阶段错误可能留下部分正文，仍以非零
 退出和 stderr 暴露，不能被解释为完整成功。
 

@@ -170,7 +170,7 @@ Steps 错误分类先检查事务/cleanup 的内部故障，再映射纯业务 F
 
 `task step` 在通用 task handler 前分派，已交付 list/show 使用独立 step handler、renderer 与安全诊断。定义树同时生成仅含这两个读取命令的帮助与 Bash/zsh 补全；四种 Step 状态不扩展 Task 状态枚举。
 
-`listTaskSteps` 与 `getTaskStep` 复用 `runServerCommand`、`exchange`、精确 bigint JSON codec 和现有取消/预算。显式 project 各直接发一次对应资源 GET，省略时才发现项目，不预读父 Task。独立 parser 校验完整字段、作用域、唯一规范 ID、四状态和 UTC 微秒时间字符串，保留数组顺序与原值；完整校验、渲染后才输出。文本使用控制字符和 bidi 控制符的可见转义，JSON 保留完整资源与精确版本；安全诊断输出公开服务错误，原始 cause 仅在错误链中保留；失败不伪造空集合。独立 CLI usage 手册同步这一读取能力。
+`listTaskSteps` 与 `getTaskStep` 复用 `runServerCommand`、`exchange`、精确 bigint JSON codec 和现有取消/预算。显式 project 各直接发一次对应资源 GET，省略时才发现项目，不预读父 Task。独立 parser 校验完整字段、作用域、唯一规范 ID、四状态和 UTC 微秒时间字符串，保留数组顺序与原值；完整校验、渲染后才输出。文本使用控制字符和 bidi 控制符的可见转义，JSON 保留完整资源与精确版本；安全诊断输出公开服务错误及可信的项目发现不存在/歧义事实，后者保留规范候选 ID 和显式 `--project` 指导；任意内部 cause 仅在错误链中保留，失败不伪造空集合。独立 CLI usage 手册同步这一读取能力。
 
 其余五个写命令及 canonical skill 的 Step 指令指导保持以下目标机制，完整七命令的职责不变。
 

@@ -29,7 +29,23 @@ response budget using the smaller bound; total operation bytes remain charged
 and stricter limits and shared defaults remain intact.
 An explicit project selects the Steps path directly; it does not add project or
 parent GETs or fall back from a child 404. Normal repository project discovery
-runs only when the project is omitted. Each read validates the complete returned
+runs only when the project is omitted. Its complete zero/multiple-match results
+are represented by the pure repository-owned `ProjectDiscoveryError`: missing or
+ambiguous kind plus copied, frozen canonical project IDs in their original order.
+The producer validates distinct canonical IDs and the non-unique match count; it
+retains no project object, name, repository URL, working directory or credential.
+The type's normal message preserves the existing project-selection contract.
+
+Step diagnostics recognize that type directly or through cause/AggregateError
+wrapping and format its verified kind and ID facts. Missing matches retain
+`Project does not exist.`; ambiguity lists every candidate and directs explicit
+`--project <id>` selection. No candidate becomes the current project context.
+This expected failure text is separate from arbitrary prepare-error messages:
+text similarity grants no public-output authority, and configuration, Git,
+network and cleanup causes remain chained internally. Resolution request order,
+binding policy and explicit-project behavior remain with their existing owners.
+
+Each read validates the complete returned
 resource and requested scope, including unique canonical short IDs, all Step
 fields, four-state values, original text and UTC microsecond time strings. Array
 order and time spelling remain unchanged; no missing value is filled or broken
@@ -68,6 +84,12 @@ Floating-point versions lose int64 digits; timestamp reserialization can round
 or normalize the stored spelling. Bigint JSON and validated original strings
 preserve the actual resource facts.
 
+**Expose every prepare failure or parse discovery message prefixes.** Prepare
+errors can contain configuration, Git stderr, URLs or cleanup details, while
+ordinary text does not prove a trusted discovery result. A typed producer owns
+the verified match facts; Step diagnostics format those facts without promoting
+arbitrary cause messages or depending on message spelling.
+
 ## Consequences
 
 Installed list/show use the same parent version and ordered content as the
@@ -80,7 +102,10 @@ Full validation, rendering and output buffering remain linear in the response
 size and use the shared operation budgets. Byte output shares cancellation and
 can leave partial stdout on an output failure, which remains a nonzero result. Unit and installed-package behavior
 checks cover valid resources, malformed/scope failures, exact versions, safe
-output, project selection and help isolation. Real-server/PostgreSQL cases use
+output, project selection and help isolation. Discovery checks cover zero and
+multiple matches, complete candidate IDs and explicit-selection guidance, typed
+cause wrapping and arbitrary-message privacy through the same command path.
+Real-server/PostgreSQL cases use
 the receipt-verified installed Node entry, while the packed CLI acceptance runner
 uses its existing cross-spawn owner for literal daynight/dn launchers on native
 platforms. These are complementary checks with separate owners. Manual resource copying, frontmatter and byte-comparison checks establish

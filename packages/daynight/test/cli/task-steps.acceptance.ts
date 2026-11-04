@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -6,7 +7,7 @@ import path from "node:path";
 import crossSpawn from "cross-spawn";
 import { expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
-import type { StepsResource, TaskStep } from "../../src/api/types.js";
+import type { Project, StepsResource, TaskStep } from "../../src/api/types.js";
 import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
@@ -38,12 +39,32 @@ it("runs both packed launchers through Steps reads, help and safe read failures"
   const children = new Map<ChildProcess, Promise<unknown>>();
   const requests: { method: string; path: string }[] = [];
   const scenarios: string[] = [];
-  let mode: "resource" | "empty" | "scope" | "malformed" | "unauthenticated" | "unsupported" = "resource";
+  let mode: "resource" | "empty" | "scope" | "malformed" | "unauthenticated" | "unsupported" | "discovery-missing" | "discovery-ambiguous" = "resource";
+  const projectsPath = "/api/v1/projects";
+  const discoveryRepoUrl = "https://git.example/private-project-URL/Steps.git";
+  const lastMatchingId = "ffffffff-6666-4666-8666-666666666666";
+  const project = (id: string, name: string, repoUrl = discoveryRepoUrl): Project => ({
+    id, name, repoUrl, settings: { version: 1n, executionWarningMinutes: 60 },
+    createdAt: "2026-11-03T10:11:12.123456Z", updatedAt: "2026-11-03T10:11:12.123456Z",
+  });
+  const matchingProjects = [project(projectId, "private-name-one\u001b[31m\u202e"), project(otherId, "private-name-two"), project(lastMatchingId, "private-name-three")];
+  const unrelatedProject = project("eeeeeeee-5555-4555-8555-555555555555", "private-unrelated-name", "https://other.example/unrelated-private-repo.git");
   const collectionPath = `/api/v1/projects/${projectId}/tasks/${taskId}/steps`;
   const itemPath = `${collectionPath}/${step.id}`;
   const server = createServer((request, response) => {
     requests.push({ method: request.method!, path: request.url! });
     response.setHeader("Content-Type", "application/json");
+    if (mode === "discovery-missing" || mode === "discovery-ambiguous") {
+      const url = new URL(request.url!, "http://localhost");
+      const cursor = url.searchParams.get("cursor");
+      if (request.method !== "GET" || url.pathname !== projectsPath || url.searchParams.get("limit") !== "100" || cursor !== null && cursor !== "steps-page-two" || request.headers.authorization !== "Bearer fixture-token") {
+        response.writeHead(500); response.end(stringifyApiJson({ error: { code: "internal_error", message: "Unexpected discovery request.", requestId: "steps-discovery-unexpected" } })); return;
+      }
+      response.setHeader("Daynight-User-ID", userId);
+      if (mode === "discovery-missing") response.end(stringifyApiJson({ items: [unrelatedProject], nextCursor: null }));
+      else response.end(stringifyApiJson(cursor === null ? { items: [matchingProjects[0], unrelatedProject], nextCursor: "steps-page-two" } : { items: matchingProjects.slice(1), nextCursor: null }));
+      return;
+    }
     if (request.method !== "GET" || ![collectionPath, itemPath].includes(request.url!)) {
       response.writeHead(500); response.end(stringifyApiJson({ error: { code: "internal_error", message: "Unexpected launcher request.", requestId: "steps-unexpected" } })); return;
     }
@@ -58,8 +79,8 @@ it("runs both packed launchers through Steps reads, help and safe read failures"
     response.end(stringifyApiJson(mode === "scope" ? { ...value, projectId: otherId } : mode === "malformed" ? { ...value, version: "1" } : value));
   });
   let failure: unknown;
-  const invoke = async (launcher: string, args: readonly string[], expected = 0): Promise<Result> => {
-    const child = crossSpawn(launcher, [...args], { cwd: outside, env: environment, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+  const invoke = async (launcher: string, args: readonly string[], expected = 0, cwd = outside): Promise<Result> => {
+    const child = crossSpawn(launcher, [...args], { cwd, env: environment, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "", launchFailure: unknown;
     child.stdout!.setEncoding("utf8").on("data", (value: string) => { stdout += value; });
     child.stderr!.setEncoding("utf8").on("data", (value: string) => { stderr += value; });
@@ -136,6 +157,53 @@ it("runs both packed launchers through Steps reads, help and safe read failures"
     expect(requests.every(({ method, path: pathname }) => method === "GET" && [collectionPath, itemPath].includes(pathname))).toBe(true);
     expect(createHash("sha256").update(await readFile(receipt.entryPath)).digest("hex")).toBe(receipt.entrySha256);
     scenarios.push("both-literal-launchers-outside-git-one-get-lossless-json-order-show-empty-and-safe-read-errors");
+    const repository = path.join(fixture, "discovery repository 中文");
+    await mkdir(repository);
+    const git = (args: readonly string[]): void => { execFileSync("git", ["-C", repository, ...args], { env: environment, encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] }); };
+    git(["init", "--initial-branch=main"]);
+    git(["remote", "add", "origin", "git@git.example:private-project-URL/Steps.git"]);
+    const privateFacts = ["private-name-one", "private-name-two", "private-name-three", "private-unrelated-name", "private-project-URL", "unrelated-private-repo", "fixture-token", "\u001b", "\u202e"];
+    const failureRequests = (at: number) => requests.slice(at).map(({ method, path: pathname }) => {
+      const url = new URL(pathname, "http://localhost");
+      return { method, path: url.pathname, query: Object.fromEntries(url.searchParams) };
+    });
+    const noDiscoveryMetadata = async (): Promise<void> => {
+      await expect(lstat(path.join(repository, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(lstat(path.join(repository, ".gitignore"))).rejects.toMatchObject({ code: "ENOENT" });
+    };
+    for (const launcher of launchers) {
+      for (const operation of ["list", "show"] as const) {
+        const args = ["task", "step", operation, taskId, ...(operation === "show" ? [step.id] : [])];
+        mode = "discovery-missing";
+        let at = requests.length;
+        const missing = await invoke(launcher, args, 1, repository);
+        expect(missing.stderr).toContain("Project does not exist.");
+        expect(missing.stderr).not.toMatch(/login|configuration|authentication/);
+        expect(missing.stderr).toContain(`operation=task.step.${operation} phase=prepare`);
+        expect(failureRequests(at)).toEqual([{ method: "GET", path: projectsPath, query: { limit: "100" } }]);
+        for (const value of privateFacts) expect(missing.stderr).not.toContain(value);
+        await noDiscoveryMetadata();
+        mode = "discovery-ambiguous";
+        at = requests.length;
+        const ambiguous = await invoke(launcher, args, 1, repository);
+        expect(ambiguous.stderr).toContain("Multiple projects match this repository");
+        expect(ambiguous.stderr).toContain("--project <id>");
+        expect(ambiguous.stderr).not.toMatch(/login|configuration|authentication/);
+        expect(ambiguous.stderr).not.toContain("projectId=");
+        for (const { id } of matchingProjects) expect(ambiguous.stderr).toContain(id);
+        expect(ambiguous.stderr.indexOf(projectId)).toBeLessThan(ambiguous.stderr.indexOf(otherId));
+        expect(ambiguous.stderr.indexOf(otherId)).toBeLessThan(ambiguous.stderr.indexOf(lastMatchingId));
+        expect(failureRequests(at)).toEqual([
+          { method: "GET", path: projectsPath, query: { limit: "100" } },
+          { method: "GET", path: projectsPath, query: { limit: "100", cursor: "steps-page-two" } },
+        ]);
+        for (const value of privateFacts) expect(ambiguous.stderr).not.toContain(value);
+        await noDiscoveryMetadata();
+      }
+    }
+    expect(requests.every(({ method }) => method === "GET")).toBe(true);
+    scenarios.push("both-launchers-list-and-show-native-git-zero-and-cross-page-ambiguous-project-recovery-without-binding-writes");
+
   } catch (cause) { failure = cause; }
   const cleanup: unknown[] = [];
   for (const [child, closed] of children) { try { await terminateInstalledProcess(child, closed); } catch (cause) { cleanup.push(cause); } }

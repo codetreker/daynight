@@ -2,6 +2,7 @@ import type { Operation, Project } from "../api/index.js";
 import { persistProjectBinding, projectRepositoryIdentity, readProjectBinding, verifyProjectBinding } from "./binding.js";
 import type { ProjectApi } from "./binding.js";
 import { discoverRepository } from "./git.js";
+import { ProjectDiscoveryError } from "./discovery-error.js";
 
 export type ResolveProjectOptions = {
   readonly serverUrl: string;
@@ -29,8 +30,7 @@ export const resolveProject = async (options: ResolveProjectOptions): Promise<Pr
   operation.check();
   const matches = projects.filter((project) => projectRepositoryIdentity(project) === repository.identity);
   operation.check();
-  if (matches.length === 0) throw new Error("Project does not exist.");
-  if (matches.length !== 1) throw new Error(`Multiple projects match this repository (${matches.map(({ id }) => id).join(", ")}); specify --project <id>.`);
+  if (matches.length !== 1) throw new ProjectDiscoveryError(matches.map(({ id }) => id));
   const selected = await api.getProject(matches[0]!.id);
   operation.check();
   if (projectRepositoryIdentity(selected) !== repository.identity) throw new Error(`Project ${selected.id} changed during repository discovery; retry the command to discover its current association.`);

@@ -105,6 +105,7 @@ src/
     identity.ts
     git.ts
     binding.ts
+    discovery-error.ts
     context.ts
   commands/
     skill/
@@ -316,7 +317,9 @@ Task 的 definition、command 和 rendering 分别拥有共享语法、操作组
 `task step` 在普通 Task 操作前分派至独立 `step.ts`，仅组合 list/show 读取；
 `step-rendering.ts` 保留服务顺序和全部展示内容，JSON 使用精确 bigint codec，
 文本将控制字符与 bidi 控制符转义为可见文本。`step-diagnostics.ts` 仅输出安全的
-公开服务错误与资源/阶段上下文，原始内部原因通过 cause 保留。
+公开服务错误、结构化的项目发现失败及资源/阶段上下文，原始内部原因通过 cause 保留。
+`repository/discovery-error.ts` 只携带不存在/歧义类别与经验证的规范项目 ID；Step
+诊断从该类型生成恢复文本，不公开任意配置、Git、网络或清理错误的消息。
 `api/task-steps.ts` 拥有独立四状态 DTO 的严格资源解析和短 ID 输入正规化；
 客户端直接读取指定 Steps 路径，复用同一 server 操作的配置、认证、取消及字节/期限预算。
 显式 project 不触发项目发现或父 Task GET，帮助在加载这些依赖前完成。

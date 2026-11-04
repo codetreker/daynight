@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, createOperation } from "../../src/api/index.js";
 import type { Operation, Project } from "../../src/api/index.js";
 import { resolveProject } from "../../src/repository/context.js";
+import { ProjectDiscoveryError } from "../../src/repository/discovery-error.js";
 import type { ProjectApi, ProjectBinding } from "../../src/repository/binding.js";
 import { formatError } from "../../src/platform/diagnostics.js";
 
@@ -138,7 +139,10 @@ describe("repository project selection", () => {
   it.each([0, 2])("rejects %i discovery matches without preparing local files", async (count) => {
     const root = await fixture();
     const client = api(count === 0 ? [] : [project, { ...project, id: otherId }]);
-    await expect(resolveProject({ serverUrl, operation: operation(), api: client, workingDirectory: root })).rejects.toThrow(count === 0 ? "Project does not exist" : `Multiple projects match this repository (${id}, ${otherId})`);
+    const failure = await resolveProject({ serverUrl, operation: operation(), api: client, workingDirectory: root }).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(ProjectDiscoveryError);
+    expect(failure).toMatchObject({ kind: count === 0 ? "missing" : "ambiguous", projectIds: count === 0 ? [] : [id, otherId] });
+    expect((failure as Error).message).toBe(count === 0 ? "Project does not exist." : `Multiple projects match this repository (${id}, ${otherId}); specify --project <id>.`);
     expect(client.getProject).not.toHaveBeenCalled();
     await expect(readdir(path.join(root, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" });
   });

@@ -2,6 +2,7 @@ import { ApiError } from "../../api/client.js";
 import { OperationError } from "../../api/operation.js";
 import { UsageError } from "../../cli/context.js";
 import { PublicDiagnosticError } from "../../platform/diagnostics.js";
+import { ProjectDiscoveryError } from "../../repository/discovery-error.js";
 import { stepText } from "./step-rendering.js";
 
 type ReadPhase = "prepare" | "request" | "render" | "output";
@@ -18,11 +19,29 @@ const apiFailure = (cause: unknown, seen = new Set<unknown>()): ApiError | undef
   return apiFailure(cause.cause, seen);
 };
 
+const projectDiscoveryFailure = (cause: unknown, seen = new Set<unknown>()): ProjectDiscoveryError | undefined => {
+  if (!(cause instanceof Error) || seen.has(cause)) return undefined;
+  seen.add(cause);
+  if (cause instanceof ProjectDiscoveryError) return cause;
+  if (cause instanceof AggregateError) {
+    for (const child of cause.errors as readonly unknown[]) {
+      const failure = projectDiscoveryFailure(child, seen);
+      if (failure !== undefined) return failure;
+    }
+  }
+  return projectDiscoveryFailure(cause.cause, seen);
+};
+
+const discoveryMessage = (failure: ProjectDiscoveryError): string => failure.kind === "missing" ? "Project does not exist."
+  : `Multiple projects match this repository (${failure.projectIds.map(stepText).join(", ")}); specify --project <id>.`;
+
 export class StepReadCommandError extends PublicDiagnosticError {
   constructor(cause: unknown, operation: "list" | "show", phase: ReadPhase, projectId?: string, taskId?: string, stepId?: string) {
-    const api = apiFailure(cause);
+    const discovery = projectDiscoveryFailure(cause);
+    const api = discovery === undefined ? apiFailure(cause) : undefined;
     const operationFailure = api?.cause instanceof OperationError ? api.cause : cause instanceof OperationError ? cause : undefined;
     const message = cause instanceof UsageError ? `${cause.message} Run ${cause.helpCommand} for usage.`
+      : discovery !== undefined ? discoveryMessage(discovery)
       : api?.serverMessage !== undefined ? `${api.code}: ${stepText(api.serverMessage)}`
       : operationFailure !== undefined ? operationFailure.message
       : phase === "prepare" ? "Could not prepare the Steps read. Check configuration and authentication; run daynight login if needed."
