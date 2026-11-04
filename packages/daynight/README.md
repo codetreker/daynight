@@ -163,6 +163,8 @@ daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [-
 daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
+daynight invitation inspect [--stdin] [--json]
+daynight invitation accept [--stdin] [--confirm] [--json]
 daynight task
 daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
@@ -606,6 +608,29 @@ conflicts require a fresh decision, and unknown outcomes are never replayed.
 Reading current facts does not recover a lost receipt. A later output or cleanup
 failure retains a confirmed receipt. Use `--json` for the confirmed resource or
 deletion receipt.
+
+## Accept an invitation
+
+Use `invitation inspect` to preview a Project or Team invitation without
+consuming it. Use `invitation accept` to accept for the currently signed-in
+account; neither command resolves the configured default Team. Supply the
+same-service invitation link through the hidden terminal prompt, or through
+standard input with `--stdin`. Standard input is read to EOF, accepts up to
+4096 bytes and may end in one LF or CRLF. Do not put links or tokens in
+arguments, flags, shell history, or logs. The CLI does not persist the secret.
+The link fragment is sent only in the request body.
+
+Acceptance displays the target and current account for confirmation. A
+non-interactive acceptance requires `--confirm`; without confirmation it does
+not write. An existing direct Project grant or Team membership retains its
+role and does not consume the invitation. Inherited-only Project access does
+not replace a direct grant: accepting creates a direct member grant. Invalid,
+expired, revoked, consumed or deleted-target invitations are unavailable.
+
+Identity mismatch is a refusal. A lost or malformed acceptance response may
+follow a commit and is reported as an unknown outcome; the CLI does not replay
+it automatically. Reading current membership cannot recover the original
+receipt. Use `--json` for the validated preview or acceptance receipt.
 
 ## Task management
 
