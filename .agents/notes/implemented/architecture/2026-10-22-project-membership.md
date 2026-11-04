@@ -26,11 +26,13 @@ member JSON. Explicit direct-relation reads determine invitation no-ops and
 versioned mutation targets without extra profile queries.
 
 Read admission returns `ProjectAccess` within the existing read snapshot. This
-computed projection has project/user IDs and the current role, without profile,
-version or storage timestamps. Point admission and accessible-project filtering
+computed projection has project/user IDs, the current role and an optional actual
+direct grant. It has no independent writable version or storage timestamps; the
+embedded grant retains its own facts. Point admission and accessible-project filtering
 use the same canonical direct-authorization source. Resource services and Worker
 non-owner administrator checks consume access; claim ownership and task-assignee
-requirements keep their separate rules.
+requirements keep their separate rules. The [actor access projection](2026-11-03-project-access-projection.md)
+owns public reads, same-snapshot task-sync publication and client freshness.
 
 Writes use the existing project row lock before checking actor access, the target
 grant's observed version and administrator count. The same project lock orders

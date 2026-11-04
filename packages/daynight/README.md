@@ -1717,6 +1717,10 @@ daynight worker resume <task-id> --claim-id <released-claim-id> --if-version <ve
 ```
 
 Resume requires the previous released claim, ready task and original owner/admin.
+Remote Worker control reads the caller's current `/projects/{id}/access`
+projection for administrator authority and verifies its project/principal binding;
+member profile reads retain their separate directory responsibility. Grant
+versions preserve the full positive int64 range.
 It preserves the explicit manual permission/platform exception, obtains fresh
 claim/worktree identities with current settings, and registers pending with a
 NULL native session ID. Start run to execute it.

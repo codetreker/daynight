@@ -1,10 +1,11 @@
+import { ProjectAccessBoundary } from "../projects/ProjectAccess";
 import type { CurrentUser } from "../../api/auth";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { ManagementError } from "./feedback";
 import { useProjectSettings } from "./useProjectSettings";
 
 export const ProjectSettingsPanel = ({ projectId, user }: { readonly projectId: string; readonly user: CurrentUser }) =>
-  <ProjectSettingsContent key={`${user.id}:${projectId}`} projectId={projectId} user={user} />;
+  <ProjectAccessBoundary projectId={projectId} initialRead><ProjectSettingsContent key={`${user.id}:${projectId}`} projectId={projectId} user={user} /></ProjectAccessBoundary>;
 
 const ProjectSettingsContent = ({ projectId, user }: { readonly projectId: string; readonly user: CurrentUser }) => {
   const { messages: { auth: { management: { settings: m, common } } } } = useI18n();

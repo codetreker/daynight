@@ -86,9 +86,8 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
     },
     readTask: (projectId, taskId, signal) => request(signal, (api) => api.getTask(projectId, taskId)),
     authorizeControl: async (projectId, originalUserId, signal) => {
-      const members = await request(signal, (api) => api.listProjectMembers(projectId));
-      const current = members.find((member) => member.userId === verifiedUserId());
-      if (current === undefined || (current.userId !== originalUserId && current.role !== "admin")) throw new Error("Source management requires its original owner or a current project administrator.");
+      const access = await request(signal, (api) => api.getProjectAccess(projectId));
+      if (verifiedUserId() !== originalUserId && access.effectiveRole !== "admin") throw new Error("Source management requires its original owner or a current project administrator.");
     },
     release: (projectId, taskId, input, signal) => request(signal, (api) => api.releaseWorkerClaim(projectId, taskId, input)),
     resume: (projectId, taskId, input, signal) => request(signal, (api) => api.resumeWorkerTask(projectId, taskId, input)),

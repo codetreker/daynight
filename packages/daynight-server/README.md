@@ -39,7 +39,14 @@ callable HTTP handlers. NewIdentity/NewAuthentication/RegisterRoutes are compose
 adds NewMemberships/NewMembershipRoutes, transaction-scoped access checks, private
 project creation, filtered project lists, administrator changes and invitations.
 Stored `ProjectGrant` facts and their real observation versions are distinct from
-computed `ProjectAccess`. Resource admission and accessible-project filtering use
+computed `ProjectAccess`. The authenticated
+`GET /api/v1/projects/{projectId}/access` returns exactly
+`{effectiveRole,directGrant}`. Both keys are required; a present grant contains
+only its project/user IDs, stored role, int64 JSON-number version and UTC creation
+and update times. The current direct source returns the actual grant; failed
+admission remains an error. It returns no member profiles, accepts no query
+parameters, supports GET/HEAD and preserves the principal response header and
+no-store policy. Resource admission and accessible-project filtering use
 the canonical direct-authorization source; the existing member response joins
 grant facts with nullable profile fields without changing its public JSON.
 Worker administrator checks consume access, while claim ownership and acquisition
@@ -67,7 +74,12 @@ watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
 exact decimal strings; each intrinsic summary includes explicit nullable
 assignedTo and the complete current properties object, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and batched property rows share one
-repeatable-read snapshot. Missing keys propagate removal through whole-summary
+repeatable-read snapshot. Every snapshot and delta, including an empty delta,
+also returns required top-level `actorAccess` using the access endpoint's DTO.
+The existing admission result supplies it in the same snapshot; its nested grant
+version remains an exact int64 JSON number. Browser consumers publish access only
+to the current identity/project memory owner, outside persistent Project and Task
+records. Missing keys propagate removal through whole-summary
 replacement; ordinary property changes preserve the epoch. Invalid stored
 properties fail the complete request with 400 invalid_input. Database and
 transaction-completion faults remain 500 internal_error and take precedence over

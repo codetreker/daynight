@@ -151,6 +151,11 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 	ctx := context.Background()
 	a := createTask(t, tasks, principal, project.ID, "Before")
 	createTask(t, tasks, principal, project.ID, "Dependent", a.ID)
+	reader := workerMember(t, database, project.ID)
+	beforeAccess, err := NewProjects(database).Access(ctx, reader, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var oldEpoch string
 	if err := database.Pool.QueryRow(ctx, "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project.ID).Scan(&oldEpoch); err != nil {
 		t.Fatal(err)
@@ -165,13 +170,16 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 		if _, err := database.Pool.Exec(ctx, "UPDATE projects SET task_cache_epoch=gen_random_uuid(), execution_warning_minutes=31 WHERE id=$1", project.ID); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := database.Pool.Exec(ctx, `UPDATE project_members SET role='admin',version=9007199254740993,updated_at=statement_timestamp() WHERE project_id=$1 AND user_id=$2`, project.ID, reader.UserID); err != nil {
+			t.Fatal(err)
+		}
 	}})
-	old, err := NewTaskSync(traced.store, 10*time.Second).Get(ctx, principal, project.ID, TaskSyncRequest{Epoch: oldEpoch})
-	if err != nil || old.Epoch != oldEpoch || old.Project != project || len(old.Tasks) != 2 || old.Tasks[0].TitlePreview != "Before" || old.Tasks[0].Version != 1 || !slices.Equal(old.Tasks[1].DependsOn, []string{a.ID}) {
+	old, err := NewTaskSync(traced.store, 10*time.Second).Get(ctx, reader, project.ID, TaskSyncRequest{Epoch: oldEpoch})
+	if err != nil || old.Epoch != oldEpoch || old.Project != project || !reflect.DeepEqual(old.ActorAccess, beforeAccess) || len(old.Tasks) != 2 || old.Tasks[0].TitlePreview != "Before" || old.Tasks[0].Version != 1 || !slices.Equal(old.Tasks[1].DependsOn, []string{a.ID}) {
 		t.Fatalf("mixed snapshot: %#v %v", old, err)
 	}
-	fresh, err := NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, TaskSyncRequest{Epoch: oldEpoch})
-	if err != nil || fresh.Mode != "snapshot" || fresh.Epoch == oldEpoch || fresh.Tasks[0].TitlePreview != "After" || fresh.Project.Settings.ExecutionWarningMinutes != 31 {
+	fresh, err := NewTaskSync(database, 10*time.Second).Get(ctx, reader, project.ID, TaskSyncRequest{Epoch: oldEpoch})
+	if err != nil || fresh.Mode != "snapshot" || fresh.Epoch == oldEpoch || fresh.Tasks[0].TitlePreview != "After" || fresh.Project.Settings.ExecutionWarningMinutes != 31 || fresh.ActorAccess.Role != core.ProjectAdmin || fresh.ActorAccess.DirectGrant == nil || fresh.ActorAccess.DirectGrant.Version != 9007199254740993 {
 		t.Fatalf("fresh history: %#v %v", fresh, err)
 	}
 }

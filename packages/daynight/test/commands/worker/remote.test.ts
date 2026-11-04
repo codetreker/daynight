@@ -112,8 +112,61 @@ describe("worker remote API", () => {
     await expect(remote.resolveProject({ repoUrl: project().repoUrl, projectId }, signal())).rejects.toThrow("verify its authenticated user");
     await expect(remote.ownInventory([], workerId, signal())).rejects.toThrow("verify its authenticated user");
     await expect(remote.claim(task(), descriptor, signal())).rejects.toThrow("verify its authenticated user");
+    await expect(remote.authorizeControl(projectId, worker.userId, signal())).rejects.toThrow("verify its authenticated user");
     await expect(Array.fromAsync(remote.candidates(projectId, "linux", signal()))).rejects.toThrow("verify its authenticated user");
     expect(requests).toBe(0);
+  });
+
+  it.each([
+    { role: "member", originalUserId: worker.userId },
+    { role: "admin", originalUserId: uuid(80) },
+  ])("authorizes the current $role actor against project access for original owner $originalUserId", async ({ role, originalUserId }) => {
+    const requests: string[] = [];
+    const serverUrl = await listen((request, response) => {
+      requests.push(request.url!);
+      respond(response, { effectiveRole: role, directGrant: {
+        projectId, userId: worker.userId, role, version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time,
+      } });
+    });
+    const remote = await verifiedRemote(serverUrl);
+    await expect(remote.authorizeControl(projectId, originalUserId, signal())).resolves.toBeUndefined();
+    expect(requests).toEqual([`/api/v1/projects/${projectId}/access`]);
+  });
+
+  it("denies another execution's member operator using the effective access role", async () => {
+    const requests: string[] = [];
+    const serverUrl = await listen((request, response) => {
+      requests.push(request.url!);
+      respond(response, { effectiveRole: "member", directGrant: {
+        projectId, userId: worker.userId, role: "member", version: 1n, createdAt: time, updatedAt: time,
+      } });
+    });
+    const remote = await verifiedRemote(serverUrl);
+    await expect(remote.authorizeControl(projectId, uuid(80), signal())).rejects.toThrow("original owner or a current project administrator");
+    expect(requests).toEqual([`/api/v1/projects/${projectId}/access`]);
+  });
+
+  it("requires current project access even for the original execution owner", async () => {
+    let requests = 0;
+    const serverUrl = await listen((_request, response) => {
+      requests++;
+      respond(response, { error: { code: "not_found", message: "No current project access.", requestId: "operator-access" } }, 404);
+    });
+    const remote = await verifiedRemote(serverUrl);
+    await expect(remote.authorizeControl(projectId, worker.userId, signal())).rejects.toMatchObject({ operation: "project.access", status: 404 });
+    expect(requests).toBe(1);
+  });
+
+  it("rejects an operator access response from a changed authenticated account", async () => {
+    let requests = 0;
+    const serverUrl = await listen((_request, response) => {
+      requests++;
+      response.setHeader("Daynight-User-ID", uuid(80));
+      respond(response, { effectiveRole: "admin", directGrant: null });
+    });
+    const remote = await verifiedRemote(serverUrl);
+    await expect(remote.authorizeControl(projectId, uuid(80), signal())).rejects.toMatchObject({ operation: "project.access", phase: "protocol", outcomeUnconfirmed: false });
+    expect(requests).toBe(1);
   });
 
   it("identifies different accounts even when both own inventories are empty", async () => {

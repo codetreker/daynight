@@ -26,9 +26,10 @@ type ProjectMember struct {
 }
 
 type ProjectAccess struct {
-	ProjectID string
-	UserID    string
-	Role      ProjectRole
+	ProjectID   string
+	UserID      string
+	Role        ProjectRole
+	DirectGrant *ProjectGrant
 }
 
 type ProjectInvitation struct {
