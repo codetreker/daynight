@@ -203,9 +203,9 @@ func writeError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 		case "rate_limited":
 			status = http.StatusTooManyRequests
 			w.Header().Set("Retry-After", "60")
-		case "invitation_unavailable", "task_deleted":
+		case "task_deleted":
 			status = http.StatusGone
-		case "not_found", "message_not_found":
+		case "not_found", "message_not_found", "invitation_unavailable":
 			status = http.StatusNotFound
 		case "clock_not_advanced", "message_outcome_unknown", "write_outcome_unknown":
 			status = http.StatusServiceUnavailable

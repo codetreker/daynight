@@ -17,13 +17,13 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	origin := map[string]string{"Origin": integration.server.URL}
 	_, data := identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Worker authorization","repoUrl":"https://example.com/worker"}`, origin, http.StatusCreated)
 	project := identityDecode[api.Project](t, data)
-	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", `{}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", invitationActorBody(adminUser.ID), origin, http.StatusCreated)
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
 	link, err := url.Parse(invitation.Link)
 	if err != nil || link.Fragment == "" {
 		t.Fatal("project invitation did not contain an acceptance token")
 	}
-	identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, http.StatusOK)
+	identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, memberUser.ID), origin, http.StatusOK)
 	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Worker owner","expiresAt":null}`, origin, http.StatusCreated)
 	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
 	integration.secrets = append(integration.secrets, token.Token)

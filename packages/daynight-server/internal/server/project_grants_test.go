@@ -154,7 +154,7 @@ func TestProjectGrantHTTPSelfRemovalReportsLostAccess(t *testing.T) {
 	h := membershipTestHarness(t)
 	base := "/api/v1/projects/" + h.project.ID
 	_, token := h.invitation(t)
-	member := decodeResponse[api.ProjectMember](t, h.call("POST", "/api/v1/invitations/accept", invitationBody(token), h.member), 200)
+	member := decodeResponse[api.ProjectInvitationAcceptance](t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(token, h.memberID), h.member), 200).DirectGrant
 	path := base + "/grants/" + h.memberID
 	promote := fmt.Sprintf(`{"version":%d,"role":"admin","expectedUserId":%q}`, member.Version, h.adminID)
 	grant := decodeResponse[api.ProjectGrantResult](t, h.call("PUT", path, promote, h.admin), 200)

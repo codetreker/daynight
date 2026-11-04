@@ -81,7 +81,7 @@ access relation 的有效角色，再 LEFT JOIN users；缺少或不匹配的规
 `{id,kind,name}`：kind 为 personal/ordinary，Personal name 为 null，普通 Team 保留原始名称。
 
 `ProjectMember` 仍是 grant 与 nullable 资料的内部直接关系投影，供现有授权目标检查、
-邀请及其他尚未改变的运行时调用使用；邀请 HTTP 结果保留其既有扁平 DTO。
+邀请及其他运行时调用使用；邀请 HTTP 结果分别返回真实 grant 与有效 access。
 既有成员角色 PATCH 成功直接返回 ProjectGrant，删除保留 204；它们不返回 participant 或有效角色。
 新的 grants 路径通过 `version:null` 表示必须不存在，通过正版本比较真实 grant；新建目标须已有
 有效项目准入。PUT 成功返回指定 grant 与 actorAccess，DELETE 返回项目和目标 ID、deleted 与
@@ -314,10 +314,12 @@ grant，grant 变更不改 task.version。[grant 管理决策](../../.agents/not
 拥有存在性条件、有限回执与外部加入范围的取舍。
 
 邀请七天有效、只授予 member、可撤销。邀请属于项目，创建者离任不自动作废。
-接受按项目→邀请顺序加锁，验证状态、插入成员后消费。已有成员返回当前成员状态而
-不消费，两个非成员并发仅一个成功，另一个 410 invitation_unavailable。inspect 只
-返回名称等最小摘要。到期查询即时拒绝，不依赖后台任务；写入时有界清理到期记录，
-不新增调度器。过期索引支持每次最多清理 100 条记录。
+接受按项目→邀请顺序加锁，验证状态后检查真实 direct grant。已有 grant 保持原角色且
+不消费；只有继承权限时插入 direct member 并消费。新 grant 与消费原子提交，两个
+无 direct grant 的接收者并发仅一个成功。inspect 返回项目 ID、名称及当前主体的可空
+directGrant/access；accept 返回 projectId、真实 directGrant、提交后 access、joined 和
+consumed。无效、到期、消费、撤销和目标删除统一为 404 invitation_unavailable。到期
+查询即时拒绝，不依赖后台任务；写入时有界清理到期记录，过期索引支持每次最多清理 100 条。
 
 HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在自身 Snapshot 或
 项目写锁内检查成员；凭据认证与业务事务是各自的准入时点，不额外把凭据撤销和业务
@@ -356,12 +358,13 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | PATCH .../projects/{id}/settings | admin，锁后复核角色与精确设置 version，返回完整 Project。 |
 | PUT/DELETE .../projects/{id}/grants/{userId} | 有效 admin；PUT 的 version 为 null 或正版本，DELETE 为正版本，均携带 expectedUserId；新建目标须已有项目准入。成功返回有限回执与可空 actorAccess。 |
 | PATCH/DELETE .../members/{userId} | admin；携带真实 grant version 与必填 expectedUserId，PATCH 另含存储 role；成功分别返回 ProjectGrant / 204。 |
-| GET/POST .../projects/{id}/invitations、DELETE .../{inviteId} | admin，创建一次显示链接，删除撤销。 |
-| POST /api/v1/invitations/inspect、POST .../accept | 已登录用户，body 携带秘密；明确 accept 才入会。 |
+| GET/POST .../projects/{id}/invitations、DELETE .../{inviteId} | admin；创建和撤销携带 expectedUserId，创建一次显示链接。 |
+| POST /api/v1/invitations/inspect、POST .../accept | 已登录用户，body 携带秘密；accept 另携带 expectedUserId，由本人明确提交。 |
 
 unauthenticated/forbidden/invitation_unavailable 保留原 envelope/requestId。
-Team 管理的 expectedUserId guard 在 Teams 领域查询或事务之前执行；项目转移及授权新增/修改/移除的
-guard 在 Project 事务及其行锁之前执行。错主体返回 409 identity_mismatch；认证与独立请求日志不属于领域 SQL。
+Team 管理的 expectedUserId guard 在 Teams 领域查询或事务之前执行；项目转移、授权新增/修改/移除及
+邀请创建、撤销、接受的 guard 在领域事务及 Project 行锁之前执行。错主体返回 409 identity_mismatch；
+认证与独立请求日志不属于领域 SQL。
 该 fault 同时进入 HTTP 409 映射和日志已知类型集合，避免误变为 internal_error。
 非成员与不存在的 Team/项目均 not_found。Team 生命周期的 personal_team_immutable、
 team_not_empty、version_exhausted 与 version_conflict 同时进入 HTTP 409 映射和日志已知类型集合；
@@ -394,6 +397,8 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 仅权限核验失败的重试保留有效资源和设置草稿；完整资源核对仍用于资源错误、缺失及写结果不确定。
 具体数据和读取机制由[计时架构](daynight-task-timing.md)与[Web 架构](daynight-web.md#项目执行提醒设置)拥有。
 成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。
+邀请的读取和写入响应核对主体；接受页按 directGrant 展示真实关系，确认后消费回执并进入原项目。
+未确认的写入不自动重放，创建结果未知时一次性秘密无法恢复。
 401/换账号使共享请求 generation 失效并卸载旧项目和附件内容，
 失败不伪装成空列表。ownership.version、settings.version 与 nested directGrant.version 只在声明的资源路径无损解码，
 角色修改/移除以 bigint 提交真实 grant 观察值。其 JSON 与 204 响应均核对当前请求绑定的 principal；
