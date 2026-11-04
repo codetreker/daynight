@@ -13,7 +13,7 @@ export const auth: AuthMessages = {
     workers: "我的 Worker", worker: "Worker",
     projectSettings: "项目设置",
     myProjects: "我的项目", accountSettings: "账户设置", members: "项目成员", teamWorkspace: "团队工作空间",
-    accountLink: ({ name }) => `账户设置：${name}`, currentAccount: "当前账户", genericProject: "项目",
+    accountMenu: ({ name }) => `账户菜单：${name}`, currentAccount: "当前账户", genericProject: "项目",
     accessUnavailable: "项目不存在或你没有访问权限", accessUnavailableDetail: "如果你认为应该可以访问，请联系项目管理员获取邀请。",
     permissionsError: "暂时无法读取项目权限。", retryPermissions: "重试读取权限", identityLoading: "正在确认登录状态", identityError: "暂时无法确认登录状态",
     networkRetry: "请检查网络连接后重试。", signOut: "退出登录", retryLogout: "重试退出登录",
