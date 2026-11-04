@@ -53,6 +53,8 @@ const optionalText = (value: unknown, name: string): string | null => value === 
 const optionalBoolean = (value: unknown, name: string): boolean => { if (value === undefined) return false; if (typeof value !== "boolean") throw new TypeError(`${name} must be boolean.`); return value; };
 const pid = (value: unknown): number => { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647) throw new TypeError("Herdr process ID must be a positive process identifier."); return value; };
 const counter = (value: unknown, name: string): number => { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a nonnegative safe integer.`); return value; };
+const paneShellNames = new Set(["sh", "bash", "dash", "zsh", "fish", "ksh", "mksh", "csh", "tcsh", "elvish", "xonsh", "nu", "pwsh", "powershell", "cmd"]);
+const paneShellName = (value: unknown): boolean => typeof value === "string" && paneShellNames.has(value.split(/[\\/]/).at(-1)!.replace(/^-+/, "").replace(/\.exe$/, "").toLowerCase());
 const expectedResult = (value: HerdrRpcResult, type: string): HerdrRpcResult => { if (value.type !== type) throw new TypeError(`Expected Herdr ${type} result; received ${value.type}.`); return value; };
 const labelSeparator = " | daynight:";
 const unsafeTitleCharacter = /[\p{Cc}\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/u;
@@ -129,10 +131,10 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       return await action();
     } finally { release(); }
   };
-  const wait = (operation: Operation): Promise<void> => new Promise((resolve, reject) => {
+  const wait = (operation: Operation, maximumMs = pollInterval): Promise<void> => new Promise((resolve, reject) => {
     operation.check();
     const abort = (): void => { clearTimeout(timer); operation.signal.removeEventListener("abort", abort); reject(operation.signal.reason); };
-    const timer = setTimeout(() => { operation.signal.removeEventListener("abort", abort); resolve(); }, Math.min(pollInterval, Math.max(1, operation.remainingMs())));
+    const timer = setTimeout(() => { operation.signal.removeEventListener("abort", abort); resolve(); }, Math.min(pollInterval, maximumMs, Math.max(1, operation.remainingMs())));
     operation.signal.addEventListener("abort", abort, { once: true });
     if (operation.signal.aborted) abort();
   });
@@ -207,6 +209,42 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   const mutation = async (method: string, params: Record<string, unknown>, type: string, operation: Operation): Promise<HerdrRpcResult> => {
     try { return expectedResult(await options.rpc.request(method, params, operation), type); }
     catch (cause) { throw classifyMutationError(method, cause); }
+  };
+  const shellInitializing = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation): Promise<boolean> => {
+    const current = await observation(context, binding, operation);
+    if (current.kind !== null || current.name !== null || current.launchPending || current.interactiveReady) return false;
+    const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info");
+    const info = object(result.process_info, "Shell initialization process observation");
+    if (info.pane_id !== binding.paneId) throw new Error("The shell initialization observation belongs to another pane.");
+    if (info.shell_pid === undefined || info.foreground_process_group_id === undefined || info.foreground_processes === undefined) return false;
+    const shellPid = pid(info.shell_pid);
+    if (pid(info.foreground_process_group_id) !== shellPid) return false;
+    return array(info.foreground_processes, "Shell initialization foreground processes").some((entry) => {
+      const foreground = object(entry, "Shell initialization foreground process");
+      if (pid(foreground.pid) !== shellPid) return false;
+      const argv = foreground.argv === undefined ? [] : array(foreground.argv, "Shell initialization process arguments");
+      return paneShellName(foreground.name) || paneShellName(argv[0]);
+    });
+  };
+  const startNative = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, args: string[], operation: Operation): Promise<HerdrRpcResult> => {
+    let readiness: { deadline: number; rejection: HerdrAgentActionError } | undefined;
+    while (true) {
+      operation.check();
+      if (readiness !== undefined && performance.now() >= readiness.deadline) throw readiness.rejection;
+      const timeout = Math.floor(Math.min(30_000, operation.remainingMs()));
+      if (timeout <= 3000) throw readiness === undefined ? new HerdrAgentActionError("The remaining operation budget cannot start a native agent.", "agent.start", "not-submitted") : readiness.rejection;
+      try { return await mutation("agent.start", { name: herdrExecutionAgentName(context), kind: context.agent, pane_id: binding.paneId, args, timeout_ms: timeout }, "agent_started", operation); }
+      catch (error) {
+        if (!(error instanceof HerdrAgentActionError) || error.submission !== "rejected" || !(error.cause instanceof HerdrRpcError) || error.cause.method !== "agent.start" || error.cause.code !== "agent_pane_busy") throw error;
+        // A new shell can still be running its startup scripts. Herdr's CLI retries
+        // this definite rejection with the same terminal and shell-process proof.
+        // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/cli/agent.rs#L358-L403
+        readiness = { deadline: readiness === undefined ? performance.now() + 2000 : readiness.deadline, rejection: error };
+        if (performance.now() >= readiness.deadline || !await shellInitializing(context, binding, operation)) throw error;
+        await wait(operation, readiness.deadline - performance.now());
+        if (performance.now() >= readiness.deadline || !await shellInitializing(context, binding, operation)) throw error;
+      }
+    }
   };
   const visibleCodexSurface = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation) => {
     const owned = await readOwned(context, binding, operation);
@@ -364,9 +402,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const overrides = codexAgentCliOverrides({ ...workspaceEnvironment, PATH: workspaceEnvironment.PATH }, effective);
         for (const [key, value] of Object.entries(overrides)) args.push("-c", `${key}=${JSON.stringify(value)}`);
       }
-      const timeout = Math.floor(Math.min(30_000, operation.remainingMs()));
-      if (timeout <= 3000) throw new HerdrAgentActionError("The remaining operation budget cannot start a native agent.", "agent.start", "not-submitted");
-      const started = await mutation("agent.start", { name: herdrExecutionAgentName(context), kind: context.agent, pane_id: binding.paneId, args, timeout_ms: timeout }, "agent_started", operation);
+      const started = await startNative(context, binding, args, operation);
       const acknowledged = object(started.agent, "Started native agent");
       const argv = array(started.argv, "Native launch arguments");
       const expectedArgv = [context.agent, ...args];

@@ -14,9 +14,10 @@ one account can otherwise submit after its browser credential changes accounts.
 
 The existing project-members route returns one `ProjectParticipant` per source
 user: `userId`, a required `profile` object with nullable name/email/avatarUrl,
-`effectiveRole` and nullable `directGrant`. The current direct source supplies its
-real nonnull grant. Raw source identities survive a LEFT JOIN to users; missing
-or mismatched canonical identity fails the complete roster. Existing canonical
+`effectiveRole` and nullable `directGrant`. Real owner Team members and direct
+grants supply the source identities; inherited-only participants have a null
+direct grant. Raw source identities survive a LEFT JOIN to users; missing or
+mismatched canonical identity fails the complete roster. Existing canonical
 access SQL owns the effective role, while the stored grant owns its independent
 role, exact positive int64 version and timestamps.
 
@@ -33,7 +34,8 @@ Caller authority remains with the existing access owner. Claim-owner names,
 email, loading, failure/retry and former-user display remain project-scoped
 profile observations. Current invitation DTOs and direct-relation readers keep
 their actual consumers; they do not supply a second roster or a fallback decoder.
-The direct-only schema and last-direct-administrator policy remain in effect.
+The [Personal ownership decision](2026-11-04-personal-project-ownership.md)
+activates real inherited access and permits removal of the final direct admin.
 
 The roster envelope currently contains only items. Adding actor metadata from
 the roster snapshot requires one coordinated producer, codec and live access
@@ -69,7 +71,7 @@ Profiles can be unavailable without becoming authorization decisions. Versioned
 writes use real grant observations and cannot cross a changed actor identity.
 The CLI keeps its existing roster facade with a participant result, and Web's
 lossless decoder handles grant versions only at the declared resource path.
-Current invitations retain their public contract. No Team data, source
-placeholder, compatibility roster, new command or persistent actor cache is
-needed. A future complete roster/access envelope must update its actual
+Current invitations retain their public contract. The original projection introduced no Team data or source placeholders.
+Real inheritance now uses the same nullable-grant shape; no compatibility roster,
+new command or persistent actor cache is needed. A future complete roster/access envelope must update its actual
 consumers together, while retaining these identity and publication fences.

@@ -165,6 +165,7 @@ daynight task step
 daynight task step list <task-id> [--json] [--project <project-id>]
 daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step move <task-id> <step-id> (--before <step-id> | --after <step-id> | --first | --last) [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
@@ -937,7 +938,7 @@ daynight task step show <task-id> <step-id> --json --project <project-id>
 
 Steps are an independent ordered resource owned by a Task. The
 [resource contract](../../docs/spec/daynight-task-steps.md#cli-读取) owns their
-fields and read behavior. The CLI provides `list`, `show` and `add`; the parent Task's
+fields and read behavior. The CLI provides `list`, `show`, `add` and `move`; the parent Task's
 ordinary show/list/graph does not contain the full Steps collection. Step status
 is `todo`, `in_progress`, `done` or `skipped`, independent from Task status.
 
@@ -972,7 +973,7 @@ output failure can still leave partial stdout and is reported as a failure.
 Errors go to stderr with exit status 1; argument errors use 2 and success uses 0.
 A 401 includes `daynight login` guidance without automatic login or retry.
 Help, Bash/zsh completion and the standalone manual expose the delivered
-list/show/add commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
+list/show/add/move commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 maps the real-service installed Node-entry read case, separate maximum-resource
 check and their normal fixture prerequisites. The packed CLI acceptance runner
 checks literal `daynight`/`dn` launchers through cross-spawn on native platforms.
@@ -1020,6 +1021,37 @@ flag. Once a full receipt is confirmed, later cleanup/render/output failure keep
 that confirmed fact and identity, with nonzero exit; output failure may leave
 partial stdout. The [Steps contract](../../docs/spec/daynight-task-steps.md#cli-添加与结果确认)
 owns these outcome rules and the server guide maps installed Add verification.
+
+### Move a Step
+
+```bash
+daynight task step move <task-id> <step-id> --first --project <project-id>
+daynight task step move <task-id> <step-id> --after <anchor-id> --if-version <observed-version> --json --project <project-id>
+```
+
+Exactly one of `--before`, `--after`, `--first` or `--last` is required. Target
+and anchor IDs are complete Task-local eight-hex values, normalized to lowercase
+with leading zeros preserved. A relative anchor must be another Step in the same
+Task. Invalid combinations and self-reference fail before configuration or network
+access. Movement preserves every Step's identity, content, status and timestamps.
+Moving to the current position is a no-op; it still checks the submitted version.
+
+Explicit project/version sends one PUT to the target's position resource. Without
+`--if-version`, one complete Steps GET supplies the version before one PUT; failed
+pre-read prevents submission. Confirmation requires a complete valid resource,
+matching requested position and either the submitted version or version +1.
+With an actual pre-read, confirmation also checks every record and its times,
+all surviving relative order, and exactly no-op versus +1. Explicit versions
+retain the one-write budget and cannot compare an unobserved earlier collection.
+
+Readable success prints `Step moved. ID: <id>` and the service-confirmed order;
+`--json` emits only the complete resource and LF. Known refusals preserve service
+codes, request IDs and capacity details. Unknown Move results retain the original
+Project/Task/Step identity and request UUID, use at most one same-live-operation
+`.r1` GET to report current facts, and remain unknown with exit 1 and empty
+success stdout. No PUT is replayed. Cancellation or exhausted operation budgets
+prevent detached recovery; confirmed local output/cleanup failures retain the
+confirmed result and nonzero exit, as with Add.
 
 ## Task deletion
 
@@ -1488,10 +1520,13 @@ An unknown claim response emits Warning and creates no resources. The worker
 finds the actual grant in a later complete inventory instead of replaying the
 request. A late grant can remain pending while local active slots are full.
 
-Pending startup and new acquisition both rotate Projects after each successful
-slot allocation. Pending rows have priority, with stable task-ID order inside
-each Project; new candidates retain server ready order. A busy Project does not
-fill every free slot before another Project gets its turn.
+Each reconciliation round acquires at most one new task across all configured
+Projects, even when more slots remain free or the granted task must stay pending.
+The next acquisition waits until the next round after `pollIntervalMs`, continuing
+Project rotation and preserving server ready order within each Project. Empty
+Projects are skipped. Existing pending rows have startup priority, with stable
+task-ID order inside each Project; they can use multiple free slots in one round,
+rotating Projects after each successful slot allocation.
 
 Native recovery uses current resources and the recorded session ID:
 
@@ -1501,13 +1536,23 @@ Native recovery uses current resources and the recorded session ID:
 | Agent needs starting, session_id is present | Resume that native session using the recorded agent type. |
 | Agent needs starting, session_id is NULL | Emit `info`, start a fresh native conversation, and save its ID in the same row. |
 
-When a native process must restart, the worker stops/closes an existing
-inactive workspace and creates a new one with the current native environment
-and an empty pane-level session reference. Herdr restore can retain the old
-native reference while restoring the shell without its extra launch environment.
-The saved SQLite session_id still selects resume or fresh startup; an inactive
-pane's retained reference is not saved as a newly observed session ID. A live
-agent keeps its current connection.
+When a native Agent exits unexpectedly and current resources confirm its pane
+is inactive, normal patrol automatically stops/closes that workspace and creates
+a new one with the current native environment and an empty pane-level session
+reference. Herdr restore can retain the old native reference while restoring the
+shell without its extra launch environment. The saved SQLite session_id selects
+resume or fresh startup; an inactive pane's retained reference is not saved as a
+newly observed session ID. A live agent keeps its current connection.
+
+A replacement shell can still be initializing when Herdr rejects `agent.start`
+with `agent_pane_busy`. The adapter retries this explicit rejection for at most
+two seconds while the original workspace, pane, terminal and cwd remain owned,
+no Agent has appeared, and foreground process evidence confirms shell
+initialization. Cancellation and the original operation deadline still apply.
+Recovery within that call does not consume an execution failure attempt. Busy
+foreground programs, missing process evidence, changed identities and unknown
+launch outcomes remain visible errors; unknown launches are observed before
+another decision.
 
 Startup, recovery and continuation prompts require autonomous decisions within
 the task scope and existing authorization. Human intervention requires specific

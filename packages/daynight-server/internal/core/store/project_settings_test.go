@@ -36,11 +36,9 @@ func TestProjectSettingsMigrationPreservesHistoricalMetadataAndTiming(t *testing
 		t.Fatal(err)
 	}
 	var migrated core.Project
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		var err error
-		migrated, err = snapshot.Project(ctx, project.ID)
-		return err
-	}); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT id::text,name,repo_url,created_at,updated_at,settings_version,execution_warning_minutes
+		FROM projects WHERE id=$1`, project.ID).Scan(&migrated.ID, &migrated.Name, &migrated.RepoURL, &migrated.CreatedAt,
+		&migrated.UpdatedAt, &migrated.Settings.Version, &migrated.Settings.ExecutionWarningMinutes); err != nil {
 		t.Fatal(err)
 	}
 	if migrated.ID != project.ID || migrated.Name != project.Name || migrated.RepoURL != project.RepoURL || !migrated.CreatedAt.Equal(stamp) || !migrated.UpdatedAt.Equal(stamp.Add(time.Hour)) || migrated.Settings != (core.ProjectSettings{Version: 1, ExecutionWarningMinutes: 60}) || taskMetadata() != beforeTask {

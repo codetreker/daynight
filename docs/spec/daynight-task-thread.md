@@ -63,7 +63,7 @@ beforeId/afterId 互斥。fromBeginning 出现时不能同时提供任一边界�
 
 服务入口最多 10 秒，覆盖 pool acquire、事务、权限、锁、查询、编码后的取消检查及 commit；更短父 deadline 优先。这不是整个 HTTP handler 的总延迟承诺。rollback 使用独立最多 5 秒的清理 context，释放或丢弃连接后结束生命周期。
 
-读取在同一个只读 Repeatable Read 快照中重验 credential、项目权限和父任务，回查边界时间、选页及查询方向标记。不锁 head。快照授权后发生的撤权/删除不撤回在途已读取内容，新快照须拒绝。写入依次锁定父任务、credential、实际提供项目准入的授权行和 head，授权行保持到事务结束；撤销先提交时新准入须拒绝。在等待及编码完成后再次检查凭据自然过期；拒绝与 head/消息回滚一致。
+读取在同一个只读 Repeatable Read 快照中重验 credential、项目权限和父任务，回查边界时间、选页及查询方向标记。不锁 head。快照授权后发生的撤权/删除不撤回在途已读取内容，新快照须拒绝。写入依次锁定父任务、credential、真实 ownership、当前 owner Team member、direct grant 和 head，只锁实际存在的来源。归属与来源保持到事务结束；等待后以当前来源重新合并有效角色，至少一个来源仍须提供访问。来源撤销先提交时，只有另一来源仍授予权限才可准入；缺失 ownership 是完整性错误。在等待及编码完成后再次检查凭据自然过期；拒绝与 head/消息回滚一致。
 
 ## 提交结果与错误
 

@@ -99,6 +99,7 @@ describe("worker runtime reporting integration", () => {
     mocks.delay.mockImplementation(async milliseconds => { expect(milliseconds).toBe(pollIntervalMs ?? 60_000); now += milliseconds; });
     mocks.coordinator.mockImplementation(() => ({ tick: async () => {
       expect(attempts.length).toBeLessThanOrEqual(rounds);
+      expect(now).toBe(rounds * (pollIntervalMs ?? 60_000));
       if (++rounds === 5) f.signal.abort();
     }, shutdown }));
     await runWorker({ ...f, signal: f.signal.signal });

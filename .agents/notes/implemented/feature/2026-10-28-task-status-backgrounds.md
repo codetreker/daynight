@@ -17,7 +17,9 @@ green for done, with darker same-hue hover colors. Text remains visible; complet
 rows retain full opacity. Auxiliary text uses a darker shared color to meet the
 4.5:1 text contrast requirement on default and hover backgrounds. Status labels
 within these rows retain their text and use the palette's darker status colors.
-Graph cards and task details keep their own styles.
+The original row delivery left graph cards and task details outside its scope.
+The [graph background decision](2026-11-04-graph-status-backgrounds.md) extends
+the shared palette to graph cards; task details retain their own styles.
 
 Task rows use their own status. Chain headers and overview chain rows use the
 existing ordinary-component aggregate, including completed members and excluding
@@ -43,9 +45,12 @@ the [Web design](../../../../docs/design/daynight-web.md) owns composition.
 
 ## Alternatives
 
-**Reuse the global graph status palette.** Those selectors also own graph-card
-presentation, outside this task's scope. A row-specific attribute and stylesheet
-allow the browsing palette and text contrast to change without recoloring cards.
+**Reuse the global graph status palette.** At the original row delivery, those
+selectors also owned graph-card presentation outside the delivery scope. A
+row-specific attribute and stylesheet allowed the browsing palette and text
+contrast to change independently. Graph cards now consume its background
+variables under the graph background decision while retaining graph borders
+and text styles.
 
 **Infer aggregate state from executing count.** A chain with completed and todo
 members but no running member would appear todo, contradicting existing chain
@@ -61,6 +66,6 @@ The palette gives whole-row status cues without introducing API fields or
 lifecycle states. The standalone aggregate can change color as recent work ages
 out, even without a new snapshot. Regression checks must cover that boundary,
 mixed-state chains, warning priority, computed browser styles, focus/navigation
-outlines and narrow layouts. Pagination, compact layout, graph canvases and
-task-detail presentation retain their independent owners; future changes there
-can extend their existing components without changing this row palette.
+outlines and narrow layouts. Graph cards share the palette without adopting
+list typography or borders. Pagination, compact layout, graph canvases and
+task-detail presentation retain their independent owners.

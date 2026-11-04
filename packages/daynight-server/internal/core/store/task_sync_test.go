@@ -71,6 +71,9 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 	if _, err := pool.Exec(ctx, "INSERT INTO projects(id,name,repo_url) VALUES ($1,'Existing','repo')", queryID(1)); err != nil {
 		t.Fatal(err)
 	}
+	if err := seedHistoricalProjectAdmin(ctx, &Store{Pool: pool}, queryID(1)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, "INSERT INTO tasks(id,project_id,title) VALUES ($1,$2,'Existing task')", queryID(11), queryID(1)); err != nil {
 		t.Fatal(err)
 	}

@@ -67,10 +67,10 @@ describe("Bash completion rendering", () => {
     expect(update).toContain("'--external-depends-on'");
   });
 
-  it("discovers only delivered Step reads and Add with separate operation options", () => {
+  it("discovers delivered Step reads, Add and Move with separate operation options", () => {
     const step = taskDefinition.commands!.find(({ name }) => name === "step")!;
     const script = renderBashCompletion(step);
-    expect(script).toContain("dn_children=('list' 'show' 'add')");
+    expect(script).toContain("dn_children=('list' 'show' 'add' 'move')");
     const list = renderBashCompletion(step.commands!.find(({ name }) => name === "list")!);
     expect(list).toContain("dn_options=('--project' '--json' '-h' '--help')");
     expect(list).not.toContain("'--if-version'");
@@ -78,7 +78,8 @@ describe("Bash completion rendering", () => {
     expect(add).toContain("'--id' '--before' '--after' '--if-version'");
     expect(add).toContain("dn_value_choices=('todo' 'in_progress' 'done' 'skipped')");
     expect(script).not.toContain("'set-status'");
-    expect(script).not.toContain("'move'");
+    const move = renderBashCompletion(step.commands!.find(({ name }) => name === "move")!);
+    expect(move).toContain("'--before' '--after' '--first' '--last' '--if-version'");
   });
 
   it("discovers Thread read/post options through the registered command tree", () => {

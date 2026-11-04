@@ -215,7 +215,7 @@ func TestTerminalArchiveRejectsEvidenceMismatchAndRevokedAuthority(t *testing.T)
 	if _, err := f.s.PutTerminalArchive(ctx, other, f.project, f.task, m.SessionID, encode(doc)); err == nil {
 		t.Fatal("browser finalized archive")
 	}
-	if _, err := f.s.DB.Pool.Exec(ctx, `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
+	if _, err := f.s.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, encode(doc)); err == nil {
