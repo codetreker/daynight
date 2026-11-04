@@ -174,8 +174,8 @@ Git、取消或期限错误均按实际原因失败，不得把查询失败视�
 并确认剩余预算后才能发送创建请求。该客户端预检不承诺并发创建的原子唯一性，
 服务继续允许同一仓库有多个 project。
 
-所有 project 操作均不读取或改写当前仓库关联、不写 ignore 规则、不 clone 仓库、
-不启动 review。列表查询配置 server 中主体可访问的全部 project，不按当前仓库或 Team 筛选。详情使用
+创建、列表和详情不读取或改写当前仓库关联；转移可读取关联或通过仓库发现项目，
+但不改写关联或 ignore 规则。Project 操作不 clone 仓库，也不启动 review。列表查询配置 server 中主体可访问的全部 project，不按当前仓库或 Team 筛选。详情使用
 显式的连字符 UUID，接受大小写输入并使用规范 ID 查询。列表及详情可在 Git 仓库之外
 执行，不查询当前工作目录；命令组及操作帮助遵守 PT1 的依赖隔离。
 
@@ -185,6 +185,20 @@ Project 创建、详情、分页条目及图中的 Project 必须包含 `ownersh
 前者为完整正 int64，后者为 `1..2147483647` 的整数分钟，初始分别为 `1` 和 `60`。
 缺失或不合法字段是协议错误，不能由 CLI 补默认值；JSON 必须无损保留超过 `2^53` 的嵌套版本。
 可读 Project 输出保留既有字段，当前没有新增设置修改命令，设置通过 Web 或既有服务 API 修改。
+
+## 项目转移
+
+`daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] [--if-version <version>] [--confirm] [--json]`
+使用显式 Project 或现有仓库发现规则确定项目，不修改仓库绑定或默认 Team。目标必须是
+规范 Team UUID，或当前服务 origin 下路径恰为 `/teams/<uuid>` 的链接；userinfo、query、
+fragment、其他路径和其他服务均被拒绝。只有当前 owner Team admin 能转出，目标无需
+操作者的成员资格；单独 Project admin 不足以转出。
+
+命令预览项目、来源和目标及转移后操作者的预期角色，确认后提交该预览的精确 ownership
+与目标版本和当前用户身份。`--if-version` 指定的正 int64 必须与预览归属版本相等，
+不符时本地拒绝。无 `--confirm` 时须交互确认，非 TTY、取消和拒绝不提交。
+冲突须重新预览和决定；提交结果未知不得自动重放，后续 GET 返回 404 也不能证明成功。
+成功直接使用回执，actorAccess 为 null 仍是成功。转移保留项目身份、单独授权与邀请。
 
 ## Team 读取与上下文
 
