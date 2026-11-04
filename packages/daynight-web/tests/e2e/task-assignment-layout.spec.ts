@@ -285,7 +285,7 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     await expect(goalRow.locator('.root-progress-label')).toHaveText('0/3 completed'); await goalRow.locator('.goal-toggle').click();
     await expect(goalRow.getByText('1 matching child tasks', { exact: true })).toBeVisible();
     await expect(page.locator(`#chain-task-${goal.id}-${child.id}`)).toBeVisible();
-    await expect(page.locator(`#chain-task-${goal.id}-${child.id} .graph-blocked-badge`)).toBeVisible();
+    await expect(page.locator(`#chain-task-${goal.id}-${child.id}`).locator('..').locator('.graph-blocked-badge')).toBeVisible();
     await expect(page.locator(`#chain-task-${goal.id}-${hiddenSibling.id}`)).toHaveCount(0);
     await page.locator(`#chain-task-${goal.id}-${child.id}`).click();
     await expect(detail(page).locator('.task-detail-blocked')).toBeVisible();
