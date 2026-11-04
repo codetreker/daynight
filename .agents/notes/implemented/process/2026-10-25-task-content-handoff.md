@@ -66,8 +66,9 @@ Known, already-confirmed information can organize a not-yet-enabled todo;
 missing decisions remain concrete blockers. A blocked todo may be handed off when
 its design and interfaces are sufficient, while its dependencies still prevent
 execution. The [account-owned handoff decision](2026-11-04-cli-create-default-assignee.md)
-also requires verifying assignment to the authenticated account through the
-complete self-filtered task list. Only after content and responsibility review
+also requires comparing the explicitly selected task's assignment with the
+independently confirmed authenticated account. Ownership checks do not enumerate
+other tasks; unknown identity remains an unconfirmed prerequisite. Only after content and responsibility review
 does an exact-observed-version update enable `allowAgents`; creation, breakdown, automatic discovery and execution never
 supply that authorization themselves.
 
