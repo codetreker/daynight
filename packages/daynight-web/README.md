@@ -273,8 +273,10 @@ The list uses only the actual summary: machine name, platform, last report time,
 task observation state and currently visible task count. It does not infer an OS
 release or load every detail. `null` task count means information unavailable;
 observed zero means idle. Stale task information retains its observation time.
-The complete collection sorts online first, latest report next and Worker ID as
-the stable tie-breaker.
+The last report label and localized absolute date and time share one line; the
+time uses the browser time zone and includes seconds. The complete collection
+groups online first and retains the service's creation-time and Worker ID order
+within each group.
 
 Detail resource cards render actual OS type/release/version/architecture, CPU
 model/logical processor count/use, used/total memory and available/total capacity
