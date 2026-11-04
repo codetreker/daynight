@@ -138,7 +138,7 @@ review 的目录 `--path` 保留原有拒绝规则。`project create` 接受一�
 `--status` 调整所选状态；`--ready` 与所选状态取交集。列表按 `in_progress`、ready、
 其余 `todo`、`done` 稳定分组。文本列表省略描述、版本和时间；所有筛选形式的 JSON
 列表仅省略 `description`，保留其余 API 字段、原始 PR 字符串、精确版本和时间戳。
-详情、ready、创建和更新结果仍保留完整 task 资源。Task和graph必填nullable assignedTo，文本显示当前ID或unassigned；create/update的--assigned-to及update的--clear-assigned-to负责设置/清空。list的UUID/me/unassigned筛选可组合--ready并保留到每页；ready命令和worker自动调用不增加该参数。me以成功响应身份校验全部页，不额外查询身份。
+详情、ready、创建和更新结果仍保留完整 task 资源。Task和graph必填nullable assignedTo，文本显示当前ID或unassigned；create/update的--assigned-to及update的--clear-assigned-to负责设置/清空。CLI 创建省略 --assigned-to 时读取当前认证账号并提交其 UUID，身份读取失败或取消时不创建；显式负责人跳过身份查询。list的UUID/me/unassigned筛选可组合--ready并保留到每页；ready命令和worker自动调用不增加该参数。me以成功响应身份校验全部页，不额外查询身份。
 `ready` 的参数、服务排序及响应校验
 由[project/task 需求](daynight-project-task.md#pt7-task-命令与更新语义)拥有。`task` 显式指定 project
 时只需要 server 配置和 HTTP；自动选择时才加载 Git 与仓库关联模块。任务写入必须晚于本地

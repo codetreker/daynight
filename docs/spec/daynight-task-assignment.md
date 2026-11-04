@@ -8,7 +8,7 @@
 
 完整 Task、任务分页、task-sync snapshot/delta 和任务链图节点都显式返回 `assignedTo: null` 或规范本地用户 UUID。字段缺失不是未分配。姓名、头像和成员资格不进入该版本化字段。
 
-新任务省略或明确提供 null 时未分配。迁移 028 为全部既有任务（包括软删除任务）增加 NULL 值，保持任务版本、业务时间、properties、依赖、worker 与 Session。服务不推断历史创建者或执行者。
+HTTP 创建请求省略或明确提供 assignedTo:null 时未分配。迁移 028 为全部既有任务（包括软删除任务）增加 NULL 值，保持任务版本、业务时间、properties、依赖、worker 与 Session。服务不推断历史创建者或执行者。
 
 ## 创建与更新
 
@@ -105,6 +105,6 @@ Web Task、summary和GraphTask严格要求assignedTo:null或规范UUID，所有�
 
 ## 当前交付边界与验证
 
-本契约的服务端字段、POST/PATCH、任务筛选、人员资源，以及 Web 负责人交互和 schema 4 消费已实现。CLI 已消费必填 nullable assignedTo，支持设置/清空、当前 ID 展示及 UUID/me/unassigned 的 list 筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有。本人自动领取规则已实现，其资格与既有执行授权分离由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有。
+本契约的服务端字段、POST/PATCH、任务筛选、人员资源，以及 Web 负责人交互和 schema 4 消费已实现。CLI 已消费必填 nullable assignedTo，创建时省略负责人默认使用当前认证账号，显式 UUID 可指定其他人；服务端不强制这个默认值。CLI 还支持设置/清空、当前 ID 展示及 UUID/me/unassigned 的 list 筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有。本人自动领取规则已实现，其资格与既有执行授权分离由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有。
 
 验证覆盖原始 JSON 字段与白名单、三套任务投影、nullable 及规范化、实际/等值/陈旧版本、执行中拒绝、全部保留写入、真实项目锁竞态及回滚。查询验证多页过滤、完整游标 scope、版本隔离和权限；目录验证两种模式的资格、覆盖、隐私、资料缺失、快照一致性及失败优先级。完整规模的查询计划和响应样本由显式本地压力入口运行，绑定被测修订；常规 CI 保留查询正确性验证，不把样本量当作生产容量上限。Web还验证字段/schema4一并升级、迟到与失权fence、未知结果只读核对、完整图筛选及双语桌面/390px/320px交互。CLI 验证严格 nullable 字段、设置/清空参数、list 筛选与逐页 principal 绑定、精确版本和 JSON/可读输出。适用 Go、CLI 与 Web 门禁，以及 Go 严格大于 90% 的总语句覆盖率由仓库验证命令拥有。

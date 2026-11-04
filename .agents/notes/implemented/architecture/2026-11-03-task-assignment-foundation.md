@@ -80,8 +80,10 @@ never enters Task versions or persistent task records.
 
 The CLI requires nullable assignedTo on every Task and graph input, preserves it
 in JSON and shows its current UUID or unassigned in text. Ordinary create/update
-flags own assignment and null clearing; list alone accepts UUID/me/unassigned
-filters. Ready has no assignee command option. Automatic worker candidates use
+flags own assignment and null clearing; the
+[CLI creation default](../process/2026-11-04-cli-create-default-assignee.md)
+uses the authenticated account when creation omits its assignee, while direct API
+creation retains optional assignment. List alone accepts UUID/me/unassigned filters. Ready has no assignee command option. Automatic worker candidates use
 me, while complete existing-claim inventory remains unfiltered by responsibility;
 the [self-assigned acquisition decision](2026-11-03-worker-self-assigned-claims.md)
 owns that runtime rule.
