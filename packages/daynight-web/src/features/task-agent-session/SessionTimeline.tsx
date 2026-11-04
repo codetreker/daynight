@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, type ReactNode } from 'react';
-import { codexSubagentActivity } from '../../../../daynight/src/session/codex-subagent-activity';
+import { legacySubagentActivity } from './legacy-subagent-activity';
 import '../../styles/markdown.css';
 import './session-timeline.css';
 import { SessionMarkdown } from './SessionMarkdown';
@@ -78,12 +78,3 @@ const SessionEntry = memo(function SessionEntry({ entry, resources, active, canR
       case 'todo': return <section aria-label={m.todo}><ul className="session-todos">{entry.items.map((todo) => <li key={todo.id} data-status={todo.status}><span aria-hidden="true">{todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○'}</span> {todo.text}</li>)}</ul></section>;
   }
 });
-
-function legacySubagentActivity(entry: Extract<TimelineEntry, { kind: 'error' }>) {
-  const prefix = 'Unsupported native timeline item: subAgentActivity. ';
-  if (entry.code !== 'unsupported_native_item' || !entry.message.startsWith(prefix)) return null;
-  // Persisted errors do not retain the item lifecycle. Show the operation
-  // without inferring either its completion or the child session's state.
-  try { return codexSubagentActivity(JSON.parse(entry.message.slice(prefix.length))); }
-  catch { return null; }
-}
