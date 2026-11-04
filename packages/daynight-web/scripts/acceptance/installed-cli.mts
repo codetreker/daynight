@@ -148,7 +148,7 @@ export const recoverCliProcesses = async (directory: string, receiptPath: string
 };
 
 export const createAcceptanceCli = async (baseURL: string, directory: string, serverToken?: string,
-  receiptPath = process.env.DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT) => {
+  receiptPath = process.env.DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT, signal?: AbortSignal) => {
   if (receiptPath === undefined || !isAbsolute(receiptPath)) throw new Error('Acceptance requires an absolute installed CLI receipt path.');
   const raw = await readJson(receiptPath) as InstalledCliReceipt;
   if (typeof raw.root !== 'string' || !isAbsolute(raw.root)) throw new Error('Invalid installed CLI root.');
@@ -187,7 +187,7 @@ export const createAcceptanceCli = async (baseURL: string, directory: string, se
     delete env.FORCE_COLOR;
     try {
       const result = await commandBytes(receipt.nodePath, [receipt.entryPath, ...args], {
-        cwd, timeoutMs: 60_000,
+        cwd, timeoutMs: 60_000, ...(signal === undefined ? {} : { signal }),
         env,
         onSpawn: (child) => { group = child.pid; return recordCliProcess(runDirectory, receiptPath, child); },
       });

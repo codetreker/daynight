@@ -1,18 +1,31 @@
 import { createRequire } from 'node:module';
-import { access, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { access, mkdir, readFile, readdir, realpath, rm, rmdir, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ownedBrowserProcesses, processArguments, processIdentity, requireGroupStopped, sameProcess, type ProcessIdentity } from './identity.mts';
+import { isGroupStopped, ownedBrowserProcesses, processArguments, processIdentity, requireGroupStopped, sameProcess, type ProcessIdentity } from './identity.mts';
 import type { Browser } from '@playwright/test';
 
 export type BrowserOwnership = { directory: string; identity: ProcessIdentity; profile: string; companions: ProcessIdentity[] };
 export type BrowserInventory = { executables: string[]; profilesBefore: string[] };
 const temporaryRoot = resolve(fileURLToPath(new URL('../../', import.meta.url)), '.tmp');
-const profiles = async (): Promise<string[]> => (await readdir(temporaryRoot))
-  .filter((entry) => entry.startsWith('playwright_chromiumdev_profile-')).map((entry) => join(temporaryRoot, entry));
+const privateRoot = join(temporaryRoot, 'acceptance-private');
+export const browserTemporaryRoot = (directory: string): string => {
+  const parts = relative(join(temporaryRoot, 'acceptance'), directory).split(sep);
+  if (resolve(directory) !== directory || !/^\d{14}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(parts[0]!)
+    || !['native/functional', 'native/capacity', 'native/auth-combined', 'container', 'container/auth-combined'].includes(parts.slice(1).join('/'))) {
+    throw new Error('Browser phase is outside an owned acceptance run.');
+  }
+  return join(privateRoot, ...parts, 'browser');
+};
+const profiles = async (directory: string): Promise<string[]> => {
+  const root = browserTemporaryRoot(directory);
+  try { return (await readdir(root)).filter((entry) => entry.startsWith('playwright_chromiumdev_profile-')).map((entry) => join(root, entry)); }
+  catch (error) { if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return []; throw error; }
+};
 
-export const browserProfile = (arguments_: readonly string[] | null, workingDirectory = process.cwd()): string => {
+export const browserProfile = (arguments_: readonly string[] | null, directory: string, workingDirectory = process.cwd()): string => {
+  const root = browserTemporaryRoot(directory);
   let values = arguments_?.length === 1 ? [] : arguments_?.filter((argument) => argument.startsWith('--user-data-dir='))
     .map((argument) => argument.slice('--user-data-dir='.length)) ?? [];
   if (arguments_?.length === 1) {
@@ -30,7 +43,7 @@ export const browserProfile = (arguments_: readonly string[] | null, workingDire
   }
   if (values.length !== 1) throw new Error('Chromium profile identity is missing or ambiguous.');
   const profile = resolve(workingDirectory, values[0]!);
-  if (dirname(profile) !== temporaryRoot || !profile.startsWith(join(temporaryRoot, 'playwright_chromiumdev_profile-'))) throw new Error('Chromium profile is outside the owned temporary directory.');
+  if (dirname(profile) !== root || !profile.startsWith(join(root, 'playwright_chromiumdev_profile-'))) throw new Error('Chromium profile is outside the owned temporary directory.');
   return profile;
 };
 
@@ -42,7 +55,7 @@ export const recordBrowserOwnership = async (browser: Browser, directory: string
   if (browserPid === undefined) throw new Error('Chromium did not expose its operating-system process identity.');
   const identity = await processIdentity(browserPid);
   if (identity === null || identity.group !== identity.pid) throw new Error('Chromium browser group identity is not isolated.');
-  const profile = browserProfile(await processArguments(identity.pid));
+  const profile = browserProfile(await processArguments(identity.pid), directory);
   if (!sameProcess(identity, await processIdentity(identity.pid))) throw new Error('Chromium identity changed before ownership recording.');
   const executables = await browserExecutables(identity.executable);
   const companions = (await ownedBrowserProcesses(directory, executables)).filter((process) => process.group !== identity.group);
@@ -84,7 +97,8 @@ export const browserExecutables = async (executable: string): Promise<string[]> 
   return [...new Set(result)];
 };
 
-export const browserInventory = async (): Promise<BrowserInventory> => {
+export const browserInventory = async (directory: string): Promise<BrowserInventory> => {
+  await mkdir(browserTemporaryRoot(directory), { recursive: true });
   const testRequire = createRequire(import.meta.resolve('@playwright/test'));
   const playwrightRequire = createRequire(testRequire.resolve('playwright'));
   const registry = (playwrightRequire('playwright-core/lib/coreBundle') as {
@@ -94,7 +108,7 @@ export const browserInventory = async (): Promise<BrowserInventory> => {
     ? [registry.findExecutable('chromium').executablePath()]
     : [process.env.DAYNIGHT_BROWSER_EXECUTABLE];
   const executables = (await Promise.all(executablePaths.map(browserExecutables))).flat();
-  return { executables: [...new Set(executables)], profilesBefore: await profiles() };
+  return { executables: [...new Set(executables)], profilesBefore: await profiles(directory) };
 };
 
 const sameOwnership = (expected: BrowserOwnership, observed: BrowserOwnership): boolean =>
@@ -124,6 +138,7 @@ const stopCompanion = async (identity: ProcessIdentity, directory: string, execu
 const pause = async (): Promise<void> => { await new Promise((done) => setTimeout(done, 100)); };
 
 export const recoverBrowsers = async (directory: string, inventory: BrowserInventory): Promise<void> => {
+  const root = browserTemporaryRoot(directory);
   if (!Array.isArray(inventory.executables) || inventory.executables.length === 0
     || inventory.executables.some((path) => typeof path !== 'string' || !path.startsWith('/'))
     || !Array.isArray(inventory.profilesBefore)) throw new Error('Invalid browser inventory for recovery.');
@@ -145,7 +160,7 @@ export const recoverBrowsers = async (directory: string, inventory: BrowserInven
         || !Number.isSafeInteger(companion.pid) || companion.pid <= 1 || !Number.isSafeInteger(companion.group) || companion.group <= 0
         || companion.group === identity.group || !inventory.executables.includes(companion.executable) || !/^\d+$/.test(companion.startTicks))
       || !inventory.executables.includes(identity.executable) || !/^\d+$/.test(identity.startTicks)
-      || dirname(record.profile) !== temporaryRoot || !record.profile.startsWith(join(temporaryRoot, 'playwright_chromiumdev_profile-'))) {
+      || dirname(record.profile) !== root || !record.profile.startsWith(join(root, 'playwright_chromiumdev_profile-'))) {
       throw new Error('Browser recovery receipt ownership differs from this run.');
     }
     let marker: BrowserOwnership | undefined;
@@ -154,15 +169,18 @@ export const recoverBrowsers = async (directory: string, inventory: BrowserInven
     const active = await processIdentity(identity.pid);
     const members = observed.filter((process) => process.group === identity.group);
     if (active !== null && active.startTicks === identity.startTicks && !sameProcess(identity, active)) throw new Error('Browser executable changed during recovery.');
-    if (members.length > 0) {
+    // The recorded leader stays owned even if Chromium has replaced its launch environment.
+    if (members.length > 0 || sameProcess(identity, active)) {
       if (marker === undefined || !sameOwnership(record, marker)) throw new Error('Active browser profile lacks its ownership marker.');
       // A live leader is required before signaling its detached group; orphan-only groups remain uncertain.
       if (!sameProcess(identity, active)) throw new Error('Browser group leader is absent; refusing uncertain group recovery.');
       const membersNow = await ownedBrowserProcesses(directory, inventory.executables);
       if (members.some((member) => !membersNow.some((current) => sameProcess(member, current)))) throw new Error('Browser process identities changed during recovery.');
+      if (!sameProcess(identity, await processIdentity(identity.pid))) throw new Error('Browser group leader changed before recovery signal.');
       process.kill(-identity.group, 'SIGTERM');
       let deadline = Date.now() + 10_000;
-      while ((await ownedBrowserProcesses(directory, inventory.executables)).some((process) => process.group === identity.group) && Date.now() < deadline) await pause();
+      while (Date.now() < deadline && ((await ownedBrowserProcesses(directory, inventory.executables)).some((process) => process.group === identity.group)
+        || !isGroupStopped(identity.group))) await pause();
       const remaining = (await ownedBrowserProcesses(directory, inventory.executables)).filter((process) => process.group === identity.group);
       if (remaining.length > 0) {
         for (const process of remaining) {
@@ -170,7 +188,8 @@ export const recoverBrowsers = async (directory: string, inventory: BrowserInven
           globalThis.process.kill(process.pid, 'SIGKILL');
         }
         deadline = Date.now() + 5_000;
-        while ((await ownedBrowserProcesses(directory, inventory.executables)).some((process) => process.group === identity.group) && Date.now() < deadline) await pause();
+        while (Date.now() < deadline && ((await ownedBrowserProcesses(directory, inventory.executables)).some((process) => process.group === identity.group)
+          || !isGroupStopped(identity.group))) await pause();
       }
     }
     for (const companion of record.companions) {
@@ -182,15 +201,23 @@ export const recoverBrowsers = async (directory: string, inventory: BrowserInven
     requireGroupStopped(identity.group);
     if (marker !== undefined) {
       if (!sameOwnership(record, marker)) throw new Error('Browser profile marker changed before cleanup.');
-      await rm(record.profile, { recursive: true });
+      await rm(record.profile, { recursive: true, force: true });
     }
   }
   if ((await ownedBrowserProcesses(directory, inventory.executables)).length > 0) throw new Error('Owned Chromium processes remain after recovery.');
   const known = new Set(records.map((record) => record.profile));
-  if ((await profiles()).some((profile) => !inventory.profilesBefore.includes(profile) && !known.has(profile))) {
+  if ((await profiles(directory)).some((profile) => !inventory.profilesBefore.includes(profile) && !known.has(profile))) {
     throw new Error('Unrecorded Chromium profile remains from a startup window; recovery ownership is uncertain.');
   }
   for (const profile of known) {
-    if ((await profiles()).includes(profile)) throw new Error('Owned Chromium profile remains after recovery.');
+    if ((await profiles(directory)).includes(profile)) throw new Error('Owned Chromium profile remains after recovery.');
+  }
+  for (let path = root; path !== privateRoot; path = dirname(path)) {
+    try { await rmdir(path); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOTEMPTY') break;
+      if (code !== 'ENOENT') throw error;
+    }
   }
 };

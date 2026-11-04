@@ -3,6 +3,7 @@ type PipelinePhases = {
   nativeFunctional(): Promise<void>;
   container(): Promise<void>;
   releaseContainer(): Promise<void>;
+  functionalCleanup(): Promise<void>;
   capacity?(): Promise<void>;
 };
 
@@ -32,10 +33,15 @@ export const runPipeline = async (cancellation: AbortController, phases: Pipelin
       await nativePreparation;
       cancellation.signal.throwIfAborted();
       await phases.nativeFunctional();
+    });
+    const containerRelease = start(async () => {
+      await nativePreparation;
       cancellation.signal.throwIfAborted();
       await phases.releaseContainer();
     });
-    await Promise.all([nativePreparation, nativeFunctional, container]);
+    await Promise.all([nativePreparation, nativeFunctional, container, containerRelease]);
+    cancellation.signal.throwIfAborted();
+    await start(phases.functionalCleanup);
     cancellation.signal.throwIfAborted();
     if (phases.capacity !== undefined) await start(phases.capacity);
   } catch (error) {

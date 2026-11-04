@@ -12,7 +12,7 @@ const identity: ContainerPermissionIdentity = {
   devCiRunId: '20261021123457-1234-56789',
   sourceGitSha: '0123456789abcdef0123456789abcdef01234567',
 };
-const receipt = { schemaVersion: 1, phase: 'native-functional-cleaned', ...identity };
+const receipt = { schemaVersion: 1, phase: 'native-prepared', ...identity };
 const timeoutCount = (): number => process.getActiveResourcesInfo().filter((type) => type === 'Timeout').length;
 const withDirectory = async (run: (directory: string) => Promise<void>): Promise<void> => {
   const temporaryRoot = new URL('../../.tmp/', import.meta.url);

@@ -26,6 +26,7 @@ const fixture = async (run: (value: { directory: string; receiptPath: string; re
     else if(process.argv[2]==='missing'){process.stderr.write('not_found\\n');process.exitCode=1;}
     else if(process.argv[2]==='leak'){const{readFileSync}=await import('node:fs');process.stderr.write(readFileSync(process.env.HOME+'/.daynight/config.yml'));process.exitCode=1;}
     else if(process.argv[2]==='colors'){const{WriteStream}=await import('node:tty');WriteStream.prototype.getColorDepth();process.stdout.write('color-safe\\n');}
+    else if(process.argv[2]==='wait'){const{writeFileSync}=await import('node:fs');writeFileSync(process.argv[3],String(process.pid));setInterval(()=>{},1000);}
     else {process.stdout.write(JSON.stringify({cwd:process.cwd(),home:process.env.HOME})+'\\n');}
   `);
   await writeFile(tarballPath, 'packed fixture');
@@ -360,6 +361,45 @@ test('CLI recovery removes private credentials while preserving installed eviden
     } finally {
       await cli.close();
       await rm(join(privateRoot, unrelated.slice(privateRoot.length + 1).split('/')[0]!), { recursive: true, force: true });
+    }
+  });
+});
+
+test('CLI cancellation stops its command group while a sibling target keeps its process and credentials', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
+  await fixture(async ({ directory, receiptPath, receipt }) => {
+    const controllers = [new AbortController(), new AbortController()];
+    const clients = await Promise.all(['native/auth-combined', 'container/auth-combined'].map((target, index) =>
+      createAcceptanceCli('http://127.0.0.1:12345', join(directory, target, 'cli'), 'dnpat_cancel-test-token', receiptPath, controllers[index]!.signal)));
+    const ready = controllers.map((_controller, index) => join(directory, `waiting-${index}`));
+    const runs = clients.map((client, index) => client.run(['wait', ready[index]!]).then(() => ({ error: undefined }), (error: unknown) => ({ error })));
+    const waitForPid = async (path: string): Promise<number> => {
+      const deadline = performance.now() + 5_000;
+      for (;;) {
+        try { return Number(await readFile(path, 'utf8')); }
+        catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
+        if (performance.now() >= deadline) throw new Error('CLI command did not start.');
+        await new Promise((done) => setTimeout(done, 10));
+      }
+    };
+    try {
+      const pids = await Promise.all(ready.map(waitForPid));
+      const sibling = await processIdentity(pids[1]!);
+      assert.ok(sibling);
+      const reason = new Error('Cancel native combined acceptance.');
+      controllers[0]!.abort(reason);
+      const { error } = await within(runs[0]!, 'cancelled CLI settlement');
+      assert.ok(error instanceof Error);
+      assert.equal(error.cause, reason);
+      requireGroupStopped(pids[0]!);
+      assert.deepEqual(await processIdentity(pids[1]!), sibling);
+      assert.deepEqual(await clients[1]!.read(['bytes']), Buffer.from([0, 255, 128, 10]));
+      const homes = await readdir(join(privateRoot, basename(directory), 'cli'));
+      assert.equal(homes.length, 2);
+    } finally {
+      controllers.forEach((controller) => controller.abort());
+      await Promise.all(runs);
+      await Promise.all(clients.map((client) => client.close()));
+      await recoverCliProcesses(directory, receiptPath, receipt);
     }
   });
 });

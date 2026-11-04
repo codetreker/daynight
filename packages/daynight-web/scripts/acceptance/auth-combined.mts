@@ -7,8 +7,8 @@ import { chromium, expect, request as playwrightRequest, type Browser, type Brow
 import { authenticatedAPI, browserFetch, tokenContext, type AuthenticatedAPI } from '../../tests/e2e/authentication.ts';
 import { stringifyApiJson } from '../../src/api/json.ts';
 import { login } from './auth-fixture.mts';
-import { browserInventory, recordBrowserOwnership, recoverBrowsers, type BrowserInventory } from './browser.mts';
-import { createAcceptanceCli, recoverCliProcesses, validateInstalledCli } from './installed-cli.mts';
+import { browserInventory, browserTemporaryRoot, recordBrowserOwnership, recoverBrowsers, type BrowserInventory } from './browser.mts';
+import { createAcceptanceCli, validateInstalledCli } from './installed-cli.mts';
 import { command } from './process.mts';
 import { processIdentity, requireGroupStopped, type ProcessIdentity } from './identity.mts';
 import { createAuthCombinedTarget, type CombinedCommand, type CombinedTarget, type UploadObservation } from './auth-combined-target.mts';
@@ -428,7 +428,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   };
   const cli = async (token: string, name: string): Promise<Cli> => {
     secrets.add(token);
-    const client = await createAcceptanceCli(options.target.baseUrl, join(options.directory, name), token, options.installedReceiptPath);
+    const client = await createAcceptanceCli(options.target.baseUrl, join(options.directory, name), token, options.installedReceiptPath, signal);
     clients.push(client); return client;
   };
   const pat = async (api: AuthenticatedAPI, name: string): Promise<Token> => {
@@ -438,24 +438,19 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   const origin = options.target.baseUrl;
   let failure: unknown;
   let abortClose: Promise<void> | undefined;
-  let abortCliRecovery: Promise<void> | undefined;
   const closeOnAbort = (): void => {
     abortClose = browser?.close(); void abortClose?.catch(() => {});
-    if (clients.length > 0) {
-      abortCliRecovery = recoverCliProcesses(options.target.acceptanceDirectory, options.installedReceiptPath, installed);
-      void abortCliRecovery.catch(() => {});
-    }
   };
   signal.addEventListener('abort', closeOnAbort, { once: true });
   try {
     await save();
     signal.throwIfAborted();
     const controls = createAuthCombinedTarget(options.target, run);
-    receipt.browserInventory = await browserInventory(); receipt.browserCleanup = 'pending'; await save();
-    // Playwright creates profiles from the parent os.tmpdir(), while launch env
-    // configures only Chromium. The preceding browser/CLI phase has drained;
-    // concurrent container preparation already runs in a separate process.
-    browser = await launchAuthCombinedBrowser(join(options.target.acceptanceDirectory, '../..'), async () => chromium.launch({
+    receipt.browserInventory = await browserInventory(options.directory); receipt.browserCleanup = 'pending'; await save();
+    // Playwright allocates private profiles from the parent's os.tmpdir().
+    // Chromium's separate socket directory keeps a short relative path for AF_UNIX.
+    const temporaryRoot = browserTemporaryRoot(options.directory);
+    browser = await launchAuthCombinedBrowser(temporaryRoot, async () => chromium.launch({
       headless: true, channel: 'chromium', env: { ...process.env, TMPDIR: '.tmp', DAYNIGHT_ACCEPTANCE_DIRECTORY: options.directory },
       ...(process.env.DAYNIGHT_BROWSER_EXECUTABLE === undefined ? {} : { executablePath: process.env.DAYNIGHT_BROWSER_EXECUTABLE }) }));
     await recordBrowserOwnership(browser, options.directory);
@@ -660,14 +655,12 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   } finally {
     signal.removeEventListener('abort', closeOnAbort);
     const cleanupErrors: string[] = [];
-    try { await abortCliRecovery; } catch { cleanupErrors.push('Cancelled CLI recovery failed.'); }
     for (const upload of uploads) { try { await upload.close(); } catch { cleanupErrors.push('HTTP transfer cleanup failed.'); } }
     for (const client of tokenClients) { try { await client.dispose(); } catch { cleanupErrors.push('API context cleanup failed.'); } }
     for (const context of contexts) { try { await context.close(); } catch { cleanupErrors.push('Browser context cleanup failed.'); } }
     try { await browser?.close(); } catch { cleanupErrors.push('Browser close failed.'); }
     try { await abortClose; } catch { cleanupErrors.push('Cancelled browser close failed.'); }
     for (const client of clients) { try { await client.close(); } catch { cleanupErrors.push('CLI private-home cleanup failed.'); } }
-    try { await recoverCliProcesses(options.target.acceptanceDirectory, options.installedReceiptPath, installed); } catch { cleanupErrors.push('CLI process recovery failed.'); }
     if (receipt.browserInventory !== undefined) {
       try { await recoverBrowsers(options.directory, receipt.browserInventory); receipt.browserCleanup = 'passed'; }
       catch { receipt.browserCleanup = 'failed'; cleanupErrors.push('Browser process/profile recovery failed.'); }
