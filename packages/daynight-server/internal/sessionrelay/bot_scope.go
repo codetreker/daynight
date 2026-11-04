@@ -271,6 +271,11 @@ func (s *Service) ReportBot(ctx context.Context, p core.Principal, workerID, id 
 				if err = onlineContent(r, s.now()); err != nil {
 					return err
 				}
+				// A replacement grant does not transfer the existing connection's
+				// synchronization proof to its new parent credential.
+				if err = credential(ctx, tx, core.Principal{Kind: core.PATCredential, UserID: r.Owner, CredentialID: r.ConnectionParent}, s.now()); err != nil {
+					return err
+				}
 			}
 		}
 		if jsonEqual(encode(input.Result), encode(bot.StartupResult)) {

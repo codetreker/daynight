@@ -46,7 +46,7 @@ Bot grant 在锁住 Bot 和 Session 后检查版本、Worker、独立执行身�
 
 `ReportBot` 先锁 Bot 并验证当前版本、Worker 与凭据。尚未绑定时仅允许没有 Session/Controller 身份的预检失败。绑定后读取原 Session，并比对完整 ControllerFence、controllerId、controllerInstanceId 和 nativeSessionId；failed 报告同样不能来自旧连接或旧代。
 
-ready 依赖当前 relay 的 live 同步状态、当前连接及有效心跳，不能从 durable Snapshot 推导。durableSnapshot 不保存可被另一个实例误用的实时同步事实，因此没有本地同步证据的实例拒绝 ready。独立无首条输入的 Session 允许 native ID 尚未生成；报告中的 null 只在当前已同步快照同为 null 时成立，之后恢复仍需明确的原 native ID。
+ready 依赖当前 relay 的 live 同步状态、当前连接及有效心跳，不能从 durable Snapshot 推导。报告事务还验证 `ConnectionParent` 对应的实际连接父 PAT；同代新 grant 可以更新 `Parent`，但尚未重新连接的 live 状态仍属于原 `ConnectionParent`，因此只验证报告者与最新 grant 的凭据不足以确认连接授权。durableSnapshot 不保存可被另一个实例误用的实时同步事实，因此没有本地同步证据的实例拒绝 ready。独立无首条输入的 Session 允许 native ID 尚未生成；报告中的 null 只在当前已同步快照同为 null 时成立，之后恢复仍需明确的原 native ID。
 
 报告先校验版本、身份和适用的同步条件；结果与持久值相同则返回原 Bot。结果变化时，`store.SetBotStartup` 以当前版本及未删除状态更新结果并推进版本；ready 随后在同一事务调用 `CommitBotPreferences`。成功结果与偏好不可分别提交，数据库失败必须一起回滚。持久 ready 只记录已确认的启动结果；在线状态继续由 Session Snapshot 和新鲜观测拥有。
 

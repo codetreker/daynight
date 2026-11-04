@@ -46,8 +46,11 @@ Controller, content-return and archive paths therefore share one Bot-before-
 Session admission rule rather than depending on per-endpoint checks.
 
 A ready report matches the current Controller fence and native identity and
-requires synchronization observed by the handling relay instance. It commits
-startup state and explicit successful preferences in the same transaction.
+requires synchronization observed by the handling relay instance. The same
+transaction revalidates the live connection's original parent PAT: issuing a new
+same-generation grant can replace the grant parent without replacing the active
+connection's credential. It commits startup state and explicit successful
+preferences in that transaction only while the original connection remains authorized.
 A nullable native ID matches only an actually synchronized nullable snapshot,
 preserving providers that create the native conversation on first input; it does
 not authorize recovery without a known native ID.

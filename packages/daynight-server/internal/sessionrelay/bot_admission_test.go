@@ -245,3 +245,85 @@ func TestBotDeletionCommitPrecedesWaitingBrowserAndControllerAdmission(t *testin
 		})
 	}
 }
+
+func TestBotReadyReportRequiresCurrentConnectionCredentialAfterGrantReplacement(t *testing.T) {
+	for _, invalidation := range []string{"revoked", "expired"} {
+		for _, alreadyReady := range []bool{false, true} {
+			name := "pending"
+			if alreadyReady {
+				name = "already ready"
+			}
+			t.Run(invalidation+"/"+name, func(t *testing.T) {
+				f, out, _, _ := connectBot(t)
+				ctx := context.Background()
+				v := out.Session
+				state := sp.State{InitialInputState: "not_required", Synchronized: true, Activity: "idle"}
+				if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
+					t.Fatal(err)
+				}
+				if alreadyReady {
+					ready, err := f.s.ReportBot(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
+					if err != nil {
+						t.Fatal(err)
+					}
+					out.Bot = ready
+				}
+				replacement := f.p
+				replacement.CredentialID = uuid.NewString()
+				if _, err := f.s.DB.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'replacement',now())`, replacement.CredentialID, replacement.UserID, []byte("01234567890123456789012345678901")); err != nil {
+					t.Fatal(err)
+				}
+				grant, err := f.s.GrantBot(ctx, replacement, out.Bot.WorkerID, out.Bot.ID, BotGrant{BotVersion: out.Bot.Version, Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, ExecutionGeneration: v.ExecutionGeneration, Kind: "reconnect"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if invalidation == "revoked" {
+					_, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, f.p.CredentialID)
+				} else {
+					_, err = f.s.DB.Pool.Exec(ctx, `UPDATE personal_access_tokens SET created_at=now()-interval '2 hours',expires_at=now()-interval '1 hour' WHERE id=$1`, f.p.CredentialID)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := f.s.ReportBot(ctx, replacement, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
+				if err == nil {
+					t.Fatalf("replacement grant accepted synchronization from a revoked connection: startup=%s version=%d", result.StartupResult.State, result.Version)
+				}
+				botFault(t, err, "unauthenticated")
+				current, err := service.NewBots(f.s.DB).Get(ctx, replacement, out.Bot.ID)
+				if err != nil || current.Version != out.Bot.Version || current.StartupResult.State != out.Bot.StartupResult.State {
+					t.Fatalf("rejected report changed startup: %+v %v", current, err)
+				}
+				var preferences int
+				if err = f.s.DB.Pool.QueryRow(ctx, `SELECT count(*) FROM bot_worker_preferences WHERE user_id=$1`, f.p.UserID).Scan(&preferences); err != nil {
+					t.Fatal(err)
+				}
+				expectedPreferences := 0
+				if alreadyReady {
+					expectedPreferences = 1
+				}
+				if preferences != expectedPreferences {
+					t.Fatalf("rejected report changed preferences: got %d want %d", preferences, expectedPreferences)
+				}
+
+				// A replacement PAT grants readiness only after its own connection consumes
+				// the grant and publishes a new synchronization observation.
+				var sourceEpoch string
+				if err = f.s.DB.Pool.QueryRow(ctx, `SELECT source_epoch::text FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&sourceEpoch); err != nil {
+					t.Fatal(err)
+				}
+				out.Session, err = f.s.Connect(ctx, grant.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, Provider: v.Identity.Provider, SourceEpoch: sourceEpoch, LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = f.s.Handle(ctx, sp.ControllerMessage{Type: "sync_state", ControllerFence: out.Session.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
+					t.Fatal(err)
+				}
+				result, err = f.s.ReportBot(ctx, replacement, out.Bot.WorkerID, out.Bot.ID, readyBotReport(out))
+				if err != nil || result.StartupResult.State != "ready" {
+					t.Fatalf("replacement connection's synchronization was rejected: %+v %v", result, err)
+				}
+			})
+		}
+	}
+}

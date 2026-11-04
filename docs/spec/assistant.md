@@ -84,7 +84,7 @@ defaults 响应为 `{observedAt,workerId,configuration,reason,workers}`。未找
 
 未绑定 Session 的预检失败仅接受 failed 结果、null fence、空 Controller 身份和 null nativeSessionId，不提交成功偏好。绑定后的 ready 或 failed 报告均须匹配当前完整 Controller fence、Controller 身份和 native ID；旧 generation 或 connectionEpoch 的报告被拒绝。
 
-ready 还要求处理请求的 relay 已实际同步该 Session，连接与心跳仍有效。另一个实例没有当前 live 同步事实时不得凭数据库快照或已有 startupResult 推断成功。首次输入前惰性创建 native ID 的 Provider 可以报告 null，但仅当真实同步快照也为 null；该规则不放宽代际恢复对已知 native ID 的要求。
+ready 还要求处理请求的 relay 已实际同步该 Session，连接与心跳仍有效，且实际连接的原父 PAT 在报告事务内仍有效。同代新 grant 使用另一 PAT 不能替代对原连接凭据的验证；原 PAT 撤销或过期后，报告不得提交 ready 或成功偏好。另一个实例没有当前 live 同步事实时不得凭数据库快照或已有 startupResult 推断成功。首次输入前惰性创建 native ID 的 Provider 可以报告 null，但仅当真实同步快照也为 null；该规则不放宽代际恢复对已知 native ID 的要求。
 
 ready 要求 code 为 null；failed 要求非空、良构 Unicode 错误码。ready 与成功显式偏好在同一事务内提交，failed 不写成功偏好。报告必须使用当前 Bot 版本；结果变化时推进版本，当前版本下的相同结果经身份和同步核验后返回原 Bot，不重复推进版本。响应丢失后先查询原 Bot 及其版本，不盲重放旧版本。startupResult 描述启动结果，不是第二套在线状态机：持久 ready 不保证当前 Worker 在线，消费者须结合 Session 连接与同步观测判断当前可用性。
 
