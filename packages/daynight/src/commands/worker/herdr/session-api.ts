@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { assertTerminalBinding, parseSessionV2Message, parseSessionV2Owner, parseSessionV2Runs, parseTerminalBinding } from "../../../session/v2/protocol.js";
 import { bool, canonicalSessionJson, choice, decodeStrictSessionJson, exact, integer, list, nullable, origin, seq, SESSION_V2_PROTOCOL, uuid } from "../../../session/v2/values.js";
 import type { SessionV2Message, SessionV2Owner, SessionV2Payloads, TerminalBinding } from "../../../session/v2/types.js";
@@ -104,7 +105,47 @@ export const createHerdrSessionApi = (serverOrigin: string, serverToken: string,
     if (parsed.serverOrigin !== targetOrigin) return reject("The Herdr Session owner is bound to another service.");
     return `/api/v1/projects/${parsed.projectId}/tasks/${parsed.taskId}/sessions`;
   };
+  const ownedMessage = (expected: HerdrSessionStateIdentity, raw: SessionV2Message): SessionV2Message => {
+    const message = parseSessionV2Message(raw);
+    prefix(expected.owner);
+    if (message.sessionId !== uuid(expected.sessionId) || message.claimId !== uuid(expected.claimId)) return reject("The recovery request belongs to another original execution.");
+    return message;
+  };
+  const recoveryReceipt = (raw: unknown, expected: HerdrSessionStateIdentity, recoveryId: string): Message<"automation_recovery_state"> => {
+    const message = parseSessionV2Message(raw);
+    if (message.type !== "automation_recovery_state" || message.sessionId !== uuid(expected.sessionId) || message.claimId !== uuid(expected.claimId) || message.payload.recoveryId !== uuid(recoveryId)) return reject("The recovery receipt belongs to another original intent.");
+    return message;
+  };
+  const digest = (message: SessionV2Message) => createHash("sha256").update(canonicalSessionJson(message)).digest("hex");
   return {
+    publishControl: async (expected: HerdrSessionStateIdentity, input: Message<"control_state">, signal?: AbortSignal): Promise<Message<"control_state">> => {
+      const message = ownedMessage(expected, input);
+      if (message.type !== "control_state") return reject("Expected the original control snapshot.");
+      const reply = parseSessionV2Message(await request(`${prefix(expected.owner)}/${message.sessionId}/worker-messages`, message, signal, message.payload.connectionEpoch));
+      if (reply.type !== "control_state" || !same(message, reply)) return reject("The control acknowledgement differs from the original snapshot.");
+      return reply;
+    },
+    prepareRecovery: async (expected: HerdrSessionStateIdentity, input: Message<"automation_recovery_prepare">, signal?: AbortSignal): Promise<Message<"automation_recovery_state">> => {
+      const message = ownedMessage(expected, input);
+      if (message.type !== "automation_recovery_prepare") return reject("Expected a persisted original shutdown intent.");
+      const p = message.payload;
+      const reply = recoveryReceipt(await request(`${prefix(expected.owner)}/${message.sessionId}/worker-messages`, message, signal, p.connectionEpoch), expected, p.recoveryId);
+      const actual = reply.payload;
+      if (actual.prepareDigest !== digest(message) || actual.sourceGeneration !== message.executionGeneration || actual.sourceConnectionEpoch !== p.connectionEpoch || actual.sourceControlEpoch !== p.controlEpoch || actual.closingControlEpoch !== p.closingControlEpoch || actual.stopOperationId !== p.stopOperationId || actual.nativeSessionId !== p.binding.nativeSessionId || actual.consumed !== null) return reject("The shutdown acknowledgement differs from the original recovery intent.");
+      return reply;
+    },
+    recoverAutomation: async (expected: HerdrSessionStateIdentity, input: Message<"automation_recovery">, signal?: AbortSignal): Promise<Message<"automation_recovery_state">> => {
+      const message = ownedMessage(expected, input);
+      if (message.type !== "automation_recovery") return reject("Expected a persisted original automation recovery decision.");
+      const p = message.payload;
+      const reply = recoveryReceipt(await request(`${prefix(expected.owner)}/${message.sessionId}/worker-messages`, message, signal, p.connectionEpoch), expected, p.recoveryId);
+      const actual = reply.payload, consumed = actual.consumed;
+      if (reply.executionGeneration !== message.executionGeneration || actual.sourceGeneration !== p.previousGeneration || actual.stopOperationId !== p.stopOperationId || actual.nativeSessionId !== p.binding.nativeSessionId || consumed === null || consumed.executionGeneration !== message.executionGeneration || consumed.connectionEpoch !== p.connectionEpoch || consumed.controlEpoch !== p.controlEpoch || consumed.requestDigest !== digest(message)) return reject("The recovery acknowledgement differs from the original consume decision.");
+      return reply;
+    },
+    // An immutable receipt describes a past decision, never current permission.
+    // The caller must reconcile it with its persisted intent and live Session fence.
+    readRecovery: async (expected: HerdrSessionStateIdentity, recoveryId: string, signal?: AbortSignal): Promise<Message<"automation_recovery_state">> => recoveryReceipt(await request(`${prefix(expected.owner)}/${uuid(expected.sessionId)}/automation-recovery/${uuid(recoveryId)}`, undefined, signal), expected, recoveryId),
     verifySupport: async (signal?: AbortSignal): Promise<void> => {
       const o = exact(await request("/api/v1/session-capabilities", undefined, signal), ["protocol", "schemaVersion", "projectionVersion", "providers", "backends", "recordingResponsibilityVersion", "controlDispatchVersion", "workerCapabilitiesRequired"]);
       if (o.protocol !== SESSION_V2_PROTOCOL || o.schemaVersion !== 2 || o.projectionVersion !== 1 || o.recordingResponsibilityVersion !== 1 || o.controlDispatchVersion !== 1 || o.workerCapabilitiesRequired !== true) return reject("The service does not support the required Herdr Session v2 contract.");

@@ -260,6 +260,24 @@ describe("authentication language changes", () => {
     expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
   });
 
+  it.each(["direct", "inherited"] as const)("shows the %s invitation relationship in both languages", async (kind) => {
+    window.history.replaceState(null, "", "/invitations#relationship-secret");
+    const direct = directAccessFixture(projectId, userId, "admin");
+    const inherited = { ...direct, directGrant: null, teamRole: "admin", canTransfer: true };
+    const access = kind === "direct" ? direct : inherited;
+    const fetcher = install((url) => url === "/api/v1/invitations/inspect" ? json({ projectId, projectName: "Project", directGrant: access.directGrant, access }) : defaults(url));
+    const interaction = userEvent.setup();
+    renderWithLocale(<AuthenticatedApp />, { locale: "en" });
+    await screen.findByText(kind === "direct" ? en.auth.invitation.preserveDirect : en.auth.invitation.inheritedAdmin);
+    if (kind === "direct") expect(screen.getByText(`${en.auth.invitation.currentDirectRole}: ${en.auth.roles.admin}`)).toBeVisible();
+    else expect(screen.getByText(en.auth.invitation.memberRole)).toBeVisible();
+    await interaction.selectOptions(language(), "zh-CN");
+    expect(screen.getByText(kind === "direct" ? zhCN.auth.invitation.preserveDirect : zhCN.auth.invitation.inheritedAdmin)).toBeVisible();
+    if (kind === "direct") expect(screen.getByText(`${zhCN.auth.invitation.currentDirectRole}: ${zhCN.auth.roles.admin}`)).toBeVisible();
+    else expect(screen.getByText(zhCN.auth.invitation.memberRole)).toBeVisible();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
+  });
+
   it("keeps invitation inspection pending across a language change without accepting or losing the fragment secret", async () => {
     window.history.replaceState(null, "", "/invitations#raw-invitation-secret");
     const pending = deferred<Response>();
@@ -275,7 +293,7 @@ describe("authentication language changes", () => {
     expect(window.sessionStorage.getItem(invitationStorageKey)).toBe("raw-invitation-secret");
     expect(document.title).toBe(zhCN.auth.shell.documentTitle.invitations);
     expect(fetcher).toHaveBeenCalledTimes(requests);
-    await act(async () => pending.resolve(json({ projectId, projectName: "项目 Raw" })));
+    await act(async () => pending.resolve(json({ projectId, projectName: "项目 Raw", directGrant: null, access: null })));
     expect(screen.getByRole("heading", { name: zhCN.auth.invitation.invited })).toBeVisible();
     expect(screen.getByRole("heading", { name: "项目 Raw" })).toBeVisible();
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/invitations/accept")).toHaveLength(0);

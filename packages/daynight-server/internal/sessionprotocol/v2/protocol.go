@@ -77,6 +77,12 @@ func DecodeMessage(data []byte) (Message, error) {
 	switch out.Type {
 	case "registration":
 		out.Payload, err = decodeValue[Registration](p)
+	case "automation_recovery_prepare":
+		out.Payload, err = decodeValue[AutomationRecoveryPrepare](p)
+	case "automation_recovery":
+		out.Payload, err = decodeValue[AutomationRecovery](p)
+	case "automation_recovery_state":
+		out.Payload, err = decodeValue[AutomationRecoveryState](p)
 	case "registration_ack":
 		out.Payload, err = decodeValue[RegistrationAck](p)
 	case "snapshot":
@@ -150,6 +156,8 @@ func validPayload(kind string, v any, generation string) bool {
 		}
 		c := mapAt(m["capabilities"])
 		return (m["mode"] == "register") == (m["connectionEpoch"] == nil) && !(c["control"] == true && c["observe"] == false)
+	case "automation_recovery_prepare", "automation_recovery", "automation_recovery_state":
+		return validAutomationRecovery(kind, v, generation)
 	case "registration_ack":
 		return object(v, fields{"registrationId": uuid, "connectionEpoch": positive})
 	case "snapshot":

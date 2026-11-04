@@ -98,7 +98,10 @@ lease 为 30 秒，10 秒续约，授予和续约必须收到关联原请求的 
 `transport_completed` 只证明传输流程完成。重启把遗留 `dispatching` 收敛为
 `unknown`；幂等记录保留到最终封存并撤销所有写权限。
 
-首次 assignment 为独立稳定操作，只有 `pending` 能自动发送。首次派发与人工
+首次 assignment 为独立稳定操作，只有 `pending` 能自动发送。
+已确认零写入的拒绝必须保留原 receipt，并允许
+Worker 将首次进度从 `dispatching` 发布回 `pending` 后重新准入；
+`unknown`、`unconfirmed` 和 `transport_completed` 不得因此变为可重发状态。首次派发与人工
 接管互斥；`unknown` 或旧运行的 `unconfirmed` 不得自动补发任务说明。
 恢复自动执行需要用户确认已处理终端草稿；未知首次输入还需要显式
 `delivered_continue` 决定。Worker 重新核对 readiness、原 fence、最新 epoch 和
@@ -110,6 +113,33 @@ lease 为 30 秒，10 秒续约，授予和续约必须收到关联原请求的 
 ACK 不能授予 lease。`renew_control` 只续期当前 holder/browser 的同一 lease 和
 controlEpoch；过期后不能复活。补充消息需要明确能力匹配，旧 v2 producer 不能
 因协议名称相同而被当作具备这些行为。
+
+## 干净 shutdown 的自动输入恢复
+
+普通断线或重连不能恢复自动输入。计划 shutdown 可以在旧连接仍在线时申请单次
+服务端许可：Worker 必须已经持久关闭本地输入，确认无草稿、未知输入或在途批次，
+并将原自动状态的初始完成结果发布给服务端。服务端同时核验原 owner、active claim、
+allowAgents、非 paused、旧 fence、无 lease/未决操作和未停止运行；确认许可的同一
+事务将旧控制冻结为 closing。停止证明本身不产生自动输入权限。
+
+Worker 使用 `automation_recovery_prepare` 请求许可、`automation_recovery` 消费许可，
+服务端返回 `automation_recovery_state`。原始请求和回执字段由
+[契约设计](../design/session-v2-contract.md#消息外层与-payload)拥有。
+
+消息通过现有 `POST /api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}/worker-messages`
+发送，使用 v2 请求头和当前 Daynight-Connection-Epoch。摘要为完整请求的规范 JSON
+SHA-256。发送前持久原请求；请求响应丢失后，通过
+`GET /api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}/automation-recovery/{recoveryId}`
+读取原记录，不自动重发。GET 沿用 owner 读取授权，未登记返回 not_found；它只读取
+历史记录，不签发新许可。registration、control_state 和原 state 的字段保持不变；
+不支持新消息或 GET 的旧服务必须使恢复失败关闭，不能降级到普通状态发布。
+
+消费要求旧 stopProof.recordId 与 stopOperationId 一致、同一原生会话、精确相邻
+新代次和当前在线 Worker。许可最多消费一次；同请求只能读取原结果，异正文同 ID
+拒绝。旧消费回执不能授权后来的 connection/control epoch，Worker 必须再读当前
+服务状态确认仍 automation。manual、unknown、终态 cleanup 和缺许可都不能借
+下一代运行解除暂停。原许可及消费记录保留至 Session 最终撤权，受 MaxRuns 限额
+约束；容量满则拒绝新许可，不能淘汰旧身份后重用。
 
 ## 封存、归档与回执
 

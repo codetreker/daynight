@@ -1,6 +1,6 @@
 # macOS Herdr Worker 持久运行生命周期
 
-本文拥有 macOS `herdr` 模式的运行身份、输入准入、停止证明和恢复机制。[Worker 需求](../spec/daynight-worker.md)定义必须满足的结果，[Worker 架构](daynight-worker.md)定义调度、claim 与 Git 工作区。Linux、Windows 继续使用共享私有 Herdr 的既有路径；Web Controller 的 ticket、journal 与恢复契约由 [Task Session 设计](task-session-protocol.md)拥有，不能充当 Herdr 的执行证据。
+本文拥有 macOS `herdr` 模式的运行身份、输入准入、停止证明和恢复机制；[输入仲裁设计](herdr-input-arbitration.md)拥有持久操作、人工控制和严格终端传输。[Worker 需求](../spec/daynight-worker.md)定义必须满足的结果，[Worker 架构](daynight-worker.md)定义调度、claim 与 Git 工作区。Linux、Windows 继续使用共享私有 Herdr 的既有路径；Web Controller 的 ticket、journal 与恢复契约由 [Task Session 设计](task-session-protocol.md)拥有，不能充当 Herdr 的执行证据。
 
 ## 隔离与能力范围
 
@@ -8,7 +8,7 @@
 
 独占 daemon 是停止范围的一部分。Herdr 的普通 workspace 关闭会触发上游自行发现进程并发送信号，不能替代客户端对原进程实例的校验。受控停止先验证并冻结原运行，在确认资源范围后先停止独占 daemon，再停止原 shell、native agent 与已证明归属的后代，避免 daemon 收尾再次使用变化后的 PID。
 
-Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller ticket。注册能力始终为 `observe=false`、`control=false`、`archive=false`。运行 ledger 与采集段元数据是后续消费者的接口；当前没有终端内容采集、网页预览、网页输入仲裁或最终录制归档，不能把注册成功解释为这些能力可用。
+Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller ticket。注册能力始终为 `observe=false`、`control=false`、`archive=false`。运行 ledger 与采集段元数据是后续消费者的接口；当前没有终端内容采集、网页预览或最终录制归档，输入仲裁与桥接保持组合能力门禁，不能把注册成功解释为这些能力可用。
 
 ## 身份与存储
 
@@ -37,9 +37,9 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 
 `prepared` 运行可以重新接入，但在 `agent.start` 前必须核对原 daemon、shell 和端点。随后先持久化 `launch_requested`，再调用 `HerdrAgentManager.launch`；该调用只启动原生进程，不发送 assignment，也不以 `nativeSessionId` 出现作为启动成功的前提。每次实际 `agent.start`（包括明确 shell busy 后的重试）之前，再核对原 claim、daemon、端点与 shell 出生身份；变化时不发出下一次启动请求。取得原 native agent 的进程身份并保存为 `active`、建立采集段后，才进入输入阶段。启动结果尚未持久确认的崩溃恢复为 `stop_unknown`，不能再次启动。
 
-首次 assignment 保存为 `pending`，递交前写 `dispatching` 和本次 admission。`submitInitialPrompt` 与后续 `submitPrompt` 在原生输入界面就绪之后、实际 mutation 之前再次核对原 claim、paused、运行身份和 admission。明确未发送可回到 pending；成功传输保存为 `transport_completed`；未知结果保存为 unknown 并阻断重放。这里的成功仅表示输入传输完成，不证明业务完成或模型已处理正文。
+首次 assignment 保存为 `pending`，递交前写 `dispatching` 和本次 admission。`submitInitialPrompt`、后续 `submitPrompt`、网页输入和 cleanup 进入同一持久仲裁器；`durable.ts` 不使用 legacy `agent.prompt` 递交正文。严格 terminal 输入每帧之前再次核对原 claim、paused、运行身份、服务端控制状态和 admission。明确未发送可回到 pending；成功传输保存为 `transport_completed`；未知结果保存为 unknown 并阻断重放。独立人工处置可以授权继续，但不会改写原始 unknown。这里的成功仅表示输入传输完成，不证明业务完成或模型已处理正文。
 
-`nativeSessionId` 可以在首次输入之后补齐，但已知值不可更换。重连不重发 assignment；恢复已确认停止的运行时只向原 native conversation 发送继续原任务的输入。自动输入未知、原生 ID 未知或原运行未确认停止，都不能通过新开对话规避。
+`nativeSessionId` 可以在首次输入之后补齐，但已知值不可更换。重连不重发 assignment；恢复已确认停止的运行时仍使用原 native conversation；只有原自动状态安全且身份有效时才发送 continuation，人工状态继续 suspended。自动输入未知、原生 ID 未知或原运行未确认停止，都不能通过新开对话规避。
 
 ## Session 连接与采集段
 
@@ -72,15 +72,15 @@ Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdow
 
 终态清理由共享 `cleanup_schedules` 保存原资源身份、首个期限和每 claim 重试策略，不能用 schedule 中的步骤标记替代 lifecycle 原身份、停止证明或服务端 ledger 确认。失败按 1、2、4、8、16、32 秒及最多 60 秒退避，到期后的正常对账才重试；不会消耗业务恢复预算，也不能清除尚未确认的停止责任。调度写失败保留原错误与 SQLite 错误，进程内继续有界退避，不能宣称本次调度已持久保存。
 
-共享清理操作的单次预算为 5 分钟，内部 RPC、HTTP 和原生停止继续受外层取消与期限约束；原生停止的信号升级间隔保持自身语义。Session HTTP 使用当前 `Operation.limits.requestMs`：普通操作为 30 秒，清理操作为 5 分钟，外层 `Operation.signal` 仍可提前取消。macOS 不发送建议性 cleanup prompt，因此不以十分钟通知期限或 native idle 代替原进程停止证明。封段或 ledger 失败只补对应收尾，不重新停止已确认的原运行、不启动新业务执行。未确认的 ledger 请求仍只允许读回，退避到期不会赋予重发权限。Linux/Windows legacy Herdr 的建议性通知、原十分钟期限和 Git 删除规则由 [Worker 架构](daynight-worker.md#结束清理与退出)拥有。
+共享清理操作的单次预算为 5 分钟，内部 RPC、HTTP 和原生停止继续受外层取消与期限约束；原生停止的信号升级间隔保持自身语义。Session HTTP 使用当前 `Operation.limits.requestMs`：普通操作为 30 秒，清理操作为 5 分钟，外层 `Operation.signal` 仍可提前取消。macOS 终态 cleanup 先持久撤销旧输入；仅此前安全 automation 且界面可用时，通过同一仲裁器发送一次有界 cleanup prompt。人工草稿或未知输入时跳过提示并受控停止，不以通知回执或 native idle 代替原进程停止证明。封段或 ledger 失败只补对应收尾，不重新停止已确认的原运行、不启动新业务执行。未确认的 ledger 请求仍只允许读回，退避到期不会赋予重发权限。Linux/Windows legacy Herdr 的建议性通知、原十分钟期限和 Git 删除规则由 [Worker 架构](daynight-worker.md#结束清理与退出)拥有。
 
-Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal，不发送额外 cleanup prompt。当前未接入 Herdr archive finalization，因此终态停止、封段及同步确认后可以结束本机执行行并释放槽，但必须继续保留 worktree 和独立 archive 责任。
+Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。当前未接入 Herdr archive finalization，因此终态停止、封段及同步确认后可以结束本机执行行并释放槽，但必须继续保留 worktree 和独立 archive 责任。
 
 `worker attach` 在 macOS 有 lifecycle journal 时只读校验当前 schema 并读取未停止的原运行；多个候选交互显示 task、claim 和 provider。连接前后核对原 daemon 以及 API/client 两个端点，再使用原实例目录打开 Herdr client。不恢复数据库、不迁移、不增加 epoch、不请求服务端放行，也不需要解除任务暂停。journal 不可读或没有候选时拒绝，不转接未知旧 daemon；没有 journal 的安装保留 legacy attach。
 
 ## 实现接口与验证
 
-- `herdr/durable.ts` 组合 lifecycle store、Session 客户端、原生进程控制与现有 Herdr adapter；`WorkerHerdrLifecycle` 向协调器提供登记、准入、责任查询、停止和停止确认。
+- `herdr/durable.ts` 组合 lifecycle store、Session 客户端、原生进程控制与现有 Herdr adapter；`WorkerHerdrLifecycle` 向协调器提供登记、准入、责任查询、条件 cleanup、停止和停止确认；`WorkerHerdrInput` 提供控制状态、授权控制请求及输入操作入口。
 - `herdr/agents.ts` 提供分离的 `launch`、`processInfo`、`submitInitialPrompt` 和 `submitPrompt`；legacy `start` 保留其他平台调用路径。
 - `herdr/lifecycle-store.ts` 校验不可变身份、状态迁移和追加历史，并提供 attach 专用只读读取；`session-connection.ts` 拥有注册、读回和 ledger 确认。
 - `herdr/native-macos.ts` 拥有原进程身份与独占停止；`execution.ts`、`cleanup.ts`、`coordinator.ts` 消费持久准入和停止结果。

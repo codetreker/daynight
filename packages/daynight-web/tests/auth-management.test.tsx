@@ -331,22 +331,41 @@ describe('authoritative project management', () => {
     vi.mocked(auth.revokeInvitation).mockImplementation(async (_projectId, invitationId) => { catalogue = catalogue.filter((item) => item.id !== invitationId); });
     members(); await readyMembers(); expect(screen.getByText(/还没有有效邀请/)).toBeInTheDocument();
     click('邀请成员'); expect(screen.getByText('7 天后到期 · 单次使用 · 加入角色：成员')).toBeInTheDocument(); await dialogClick('创建邀请链接');
-    await screen.findByLabelText('一次性邀请链接'); expect(auth.createInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', expect.any(AbortSignal));
+    await screen.findByLabelText('一次性邀请链接'); expect(auth.createInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', user.id, expect.any(AbortSignal), expect.any(Function));
     expect(screen.getByLabelText('一次性邀请链接')).toHaveValue('https://daynight.test/invitations#once-secret'); await dialogClick('我已保存，关闭');
     expect(screen.queryByDisplayValue(/once-secret/)).toBeNull();
     await clickWhenReady('撤销邀请 invitation-a');
     expect(screen.getByText(/这个邀请链接将立即失效/)).toBeInTheDocument(); await dialogClick('撤销邀请');
-    await screen.findByText(/还没有有效邀请/); expect(auth.revokeInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'invitation-a', expect.any(AbortSignal));
+    await screen.findByText(/还没有有效邀请/); expect(auth.revokeInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'invitation-a', user.id, expect.any(AbortSignal), expect.any(Function));
   });
 
-  it('retains invitation failures in the dialog and can retry or cancel safely', async () => {
+  it('preserves unknown invitation results and requires a fresh catalogue before another action', async () => {
     vi.mocked(auth.createInvitation).mockRejectedValueOnce(new Error('secret-link-error')).mockResolvedValueOnce({ ...invitation, id: 'invitation-b', link: 'https://example.com/invitations#secret' });
-    vi.mocked(auth.revokeInvitation).mockRejectedValueOnce(new Error('internal secret'));
     vi.mocked(auth.listInvitations).mockResolvedValue([invitation]);
     members(); await readyMembers(); click('邀请成员'); await dialogClick('创建邀请链接'); await screen.findByRole('alert');
-    expect(screen.queryByText('secret-link-error')).toBeNull(); await dialogClick('创建邀请链接'); await screen.findByLabelText('一次性邀请链接');
-    fireEvent.keyDown(document, { key: 'Escape' }); expect(screen.getByRole('alert')).toHaveTextContent('邀请链接'); await dialogClick('确认已保存，关闭');
-    await clickWhenReady('撤销邀请 invitation-a'); await dialogClick('撤销邀请'); await screen.findByRole('alert'); await dialogClick('取消'); expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText('secret-link-error')).toBeNull();
+    expect(screen.getByRole('button', { name: '邀请成员' })).toBeDisabled();
+    expect(auth.createInvitation).toHaveBeenCalledTimes(1);
+    await clickWhenReady('读取当前邀请');
+    await screen.findByText(/原操作结果仍未确认/);
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接'); await screen.findByLabelText('一次性邀请链接');
+    expect(auth.createInvitation).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps both unknown invitation revocations disabled after reading the catalogue', async () => {
+    vi.mocked(auth.listInvitations).mockResolvedValue([invitation, { ...invitation, id: 'invitation-b' }]);
+    vi.mocked(auth.revokeInvitation).mockRejectedValue(new ApiError('network'));
+    members(); await readyMembers();
+    await clickWhenReady('撤销邀请 invitation-a'); await dialogClick('撤销邀请');
+    await screen.findByText(/邀请变更结果尚未确认/);
+    await clickWhenReady('读取当前邀请'); await screen.findByText(/原操作结果仍未确认/);
+    expect(screen.getByRole('button', { name: '撤销邀请 invitation-a' })).toBeDisabled();
+    await clickWhenReady('撤销邀请 invitation-b'); await dialogClick('撤销邀请');
+    await screen.findByText(/邀请变更结果尚未确认/);
+    await clickWhenReady('读取当前邀请'); await screen.findByText(/原操作结果仍未确认/);
+    expect(screen.getByRole('button', { name: '撤销邀请 invitation-a' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '撤销邀请 invitation-b' })).toBeDisabled();
+    expect(vi.mocked(auth.revokeInvitation).mock.calls.map((call) => call[1])).toEqual(['invitation-a', 'invitation-b']);
   });
 
   it('recovers ordinary member state when invitation access races a role loss', async () => {

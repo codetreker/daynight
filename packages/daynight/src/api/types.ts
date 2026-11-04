@@ -85,6 +85,20 @@ export type TeamRef = {
   readonly name: string | null;
 };
 
+export type Team = TeamRef & {
+  readonly version: bigint;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly membership: {
+    readonly teamId: string;
+    readonly userId: string;
+    readonly role: "member" | "admin";
+    readonly version: bigint;
+    readonly createdAt: string;
+    readonly updatedAt: string;
+  };
+};
+
 export type ProjectOwnership = {
   readonly teamId: string;
   readonly version: bigint;
@@ -163,6 +177,21 @@ export type WorkerVersions = {
   readonly codex: WorkerExecutableProbe;
   readonly copilot: WorkerExecutableProbe;
 };
+export type WorkerAssistantHostReason = "unsupported_arguments" | "invalid_cwd" | "not_found" | "permission_denied" | "timeout" | "command_failed" | "invalid_output" | "unavailable";
+export type WorkerAssistantProvider = {
+  readonly provider: WorkerAgent;
+  readonly available: boolean;
+  readonly reason: WorkerAssistantHostReason | null;
+  readonly model: string | null;
+  readonly args: readonly string[];
+};
+export type WorkerAssistantHost = {
+  readonly protocolVersion: 1;
+  readonly observedAt: string;
+  readonly defaultCwd: string;
+  readonly defaultProvider: WorkerAgent;
+  readonly providers: readonly WorkerAssistantProvider[];
+};
 export type WorkerTelemetry = {
   readonly machine: WorkerMachine;
   readonly platform: TaskPlatform;
@@ -173,6 +202,7 @@ export type WorkerTelemetry = {
   readonly memory: WorkerProbe<WorkerMemory>;
   readonly disk: WorkerProbe<WorkerDisk>;
   readonly versions: WorkerVersions;
+  readonly assistantHost?: WorkerAssistantHost;
 };
 export type WorkerTaskReference = { readonly projectId: string; readonly taskId: string; readonly claimId: string };
 export type WorkerTaskInventory = { readonly observedAt: string; readonly claims: readonly WorkerTaskReference[] };

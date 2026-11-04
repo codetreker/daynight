@@ -6,7 +6,7 @@ loopback-only HTTP binding, connection validation, structured request logs, canc
 HTTP shutdown. Versioned migrations and transactional storage are implemented;
 project/task APIs and built-process acceptance are implemented. The current
 executable serves Team lifecycle, project, task, task-chain graph, task-summary synchronization
-and account-owned Worker snapshot routes together with the embedded task dashboard.
+and account-owned Worker snapshot/configuration routes together with the embedded task dashboard.
 Generic bucket/path local storage, task attachment
 metadata and file/preview HTTP endpoints are implemented. Attachment addresses
 are grouped by project and the first two canonical task UUID characters; an
@@ -69,14 +69,29 @@ missing user rows fail the whole roster instead of disappearing. Inherited-only
 participants have a null grant, while any direct grant retains its own real
 role, version and timestamps. Legacy role PATCH requires `expectedUserId`, stored role and the exact
 grant version, and returns `ProjectGrant`; DELETE requires the actor and version
-and retains 204. The actor guard precedes domain SQL and reports 409
-`identity_mismatch`. Invitation result DTOs retain their existing contract.
+and retains 204. `PUT /api/v1/projects/{projectId}/grants/{userId}` accepts
+`{version:null|positive int64,role,expectedUserId}`: null requires no existing
+grant, while a positive version must match the stored grant. A new grant target
+must already have effective Project access. The 200 response contains `grant`
+and nullable `actorAccess`. DELETE on the same path accepts a positive version
+and expectedUserId and returns `{projectId,userId,deleted:true,actorAccess}`.
+The access projection reflects the actor after the mutation in the transaction;
+null means the confirmed operation removed their access. Effective admins may
+manage their own and other admins' grants, including the last direct admin.
+Mismatched existence/version returns 409 `version_conflict`; a target without
+Project access returns 404 `not_found`. The actor guard precedes domain SQL and
+reports 409 `identity_mismatch`. A commit whose result cannot be confirmed
+returns 503 `write_outcome_unknown`; a later read establishes current facts, not
+the original outcome, and callers must not automatically replay the write.
+Invitation inspection returns the current direct grant and effective access; acceptance
+returns the real grant, post-write access and joined/consumed flags. Create, revoke
+and accept bind `expectedUserId` before domain SQL.
 Worker administrator checks consume access, while claim ownership and acquisition
 assignment requirements retain their separate rules.
 The project settings API provides a versioned execution-warning threshold that
 administrators save and members read.
 The application mux mounts all of these modules and requires authentication for
-every project, task, graph, attachment and Worker snapshot route. The production Web entry separates
+every project, task, graph, attachment and Worker route. The production Web entry separates
 the public introduction at `/`, the zero-API guide at `/setup`, and the existing
 `AuthenticatedApp` lifecycle for `/login`, `/projects` and private pages.
 `daynight login` uses Daynight device authorization to obtain
@@ -771,6 +786,31 @@ saved observations while applying current access and undeleted-task filtering
 to both rows and counts. Completion or reassignment
 does not erase an otherwise visible historical observation. Liveness and recent
 visibility do not control claims or task state.
+
+## Worker cloud configuration
+
+The account owns a desired configuration and a separately versioned application
+observation on its existing Worker row. The [contract](../../docs/spec/daynight-worker-configuration.md)
+defines exact fields and refusals; the [design](../../docs/design/daynight-worker-configuration.md)
+defines row transactions and representation.
+
+| Method | Path | Result |
+|---|---|---|
+| `GET, HEAD` | `/api/v1/me/workers/{workerId}/configuration` | Desired settings, observation revision and retained application results |
+| `PUT` | `/api/v1/me/workers/{workerId}/configuration` | Exact-revision replacement of an initialized target |
+
+Clients opt into configuration exchange on the report endpoint with
+`Daynight-Worker-Configuration: 1`. The first valid local candidate creates an
+absent target; later candidates cannot overwrite it. Target edits and machine
+application reports have separate CAS revisions. Partial outcomes preserve real
+applied values and closed failure metadata; a target save does not claim that
+the machine applied it. Reports without the marker keep their original format.
+
+Configuration reads do not use the snapshot recent window or renew liveness.
+The authenticated account owns admission; active task claims are not a
+configuration prerequisite. No task fields, acquisition constraints or recovery
+semantics change. This service validates and exchanges settings; native
+preparation and resource stopping remain machine-side runtime responsibilities.
 
 ## Team lifecycle API
 
