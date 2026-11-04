@@ -185,6 +185,29 @@ Project 创建、详情、分页条目及图中的 Project 必须包含 `ownersh
 缺失或不合法字段是协议错误，不能由 CLI 补默认值；JSON 必须无损保留超过 `2^53` 的嵌套版本。
 可读 Project 输出保留既有字段，当前没有新增设置修改命令，设置通过 Web 或既有服务 API 修改。
 
+## Team 读取与上下文
+
+```bash
+daynight team list [--json]
+daynight team show [--team <uuid|personal>] [--json]
+daynight team projects [--team <uuid|personal>] [--json]
+daynight team default show [--json]
+```
+
+`team list` 读取当前用户加入的全部 Team；`show` 读取目标 Team 与本人角色，
+`projects` 读取目标 Team 的全部项目。显式 `--team` 优先；否则按规范服务 origin
+和当前 `/me` 用户 ID 读取配置 `teamDefaults`，当前 pair 缺失时使用 `/me` 的真实
+Personal Team ID。配置值无效、目标不存在或无权时明确失败，不静默切换 Personal。
+`default show` 验证配置目标，失效时失败；`team list` 和显式目标不依赖旧默认，
+因此仍可用于检查和修复失效配置。读取不写配置或远程资源。默认只影响 Team 上下文，
+不改变显式 Project、Task 或现有仓库发现，`project list` 仍读取全部可访问项目。
+
+Team 与项目列表完整读取并验证全部页面后才输出；重复 ID、游标循环、预算或任何一页
+失败都不能输出部分成功结果。Team 资源及响应主体必须与当前用户和目标一致，项目列表
+必须属于所选 Team。`--json` 保留完整资源与精确版本；`default show` 返回 `configured`
+（配置 ID 或 `null`）和已验证的 `team`。可读文本遵守终端转义规则。
+帮助及参数校验先于配置与网络读取。
+
 ## PT7. Task 命令与更新语义
 
 ```bash

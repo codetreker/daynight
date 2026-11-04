@@ -33,6 +33,7 @@ const fixture = (operation = createOperation()) => {
     listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),
     readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(currentUser),
+    getTeamCurrentUser: vi.fn<ApiClient["getTeamCurrentUser"]>(), listTeams: vi.fn<ApiClient["listTeams"]>(), getTeam: vi.fn<ApiClient["getTeam"]>(), listTeamProjects: vi.fn<ApiClient["listTeamProjects"]>(),
     getProjectAccess: vi.fn<ApiClient["getProjectAccess"]>(),
     reportWorker: vi.fn<ApiClient["reportWorker"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),

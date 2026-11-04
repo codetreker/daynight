@@ -6,6 +6,7 @@ import { reviewDefinition } from "../commands/review/definition.js";
 import { workerDefinition } from "../commands/worker/definition.js";
 import { projectDefinition } from "../commands/project/definition.js";
 import { taskDefinition } from "../commands/task/definition.js";
+import { teamDefinition } from "../commands/team/definition.js";
 import { updateDefinition } from "../commands/update/definition.js";
 import { skillDefinition } from "../commands/skill/definition.js";
 import { loginDefinition, logoutDefinition } from "../commands/auth/definition.js";
@@ -36,6 +37,7 @@ export const commands: readonly CommandRegistration[] = [
     ...projectDefinition,
     load: async () => ({ run: (await import("../commands/project/command.js")).runProjectCommand }),
   },
+  { ...teamDefinition, load: async () => ({ run: (await import("../commands/team/command.js")).runTeamCommand }) },
   {
     ...taskDefinition,
     load: async () => ({ run: (await import("../commands/task/command.js")).runTaskCommand }),
