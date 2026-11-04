@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,7 +74,7 @@ type sessionHTTPFixture struct {
 	grant        sessionrelay.GrantResult
 }
 
-func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
+func sessionHTTPSetup(t *testing.T, configureRoutes ...func(*sessionRoutes)) *sessionHTTPFixture {
 	t.Helper()
 	f := &sessionHTTPFixture{db: projectTestStore(t)}
 	f.handler = projectTestHandler(t, f.db, io.Discard)
@@ -96,6 +97,9 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 		t.Fatal(err)
 	}
 	f.application = application.(*sessionApplication)
+	for _, configure := range configureRoutes {
+		configure(f.application.relay)
+	}
 	// Live relay state is process-local: HTTP control and WebSocket traffic share the same application.
 	f.handler.Handler = RequestLogging(testLogger(), application)
 	extendedWorkerTestHandler(f.handler)
@@ -116,6 +120,10 @@ func (f *sessionHTTPFixture) mint(t *testing.T, kind string) sessionrelay.GrantR
 }
 func sessionDial(t *testing.T, serverURL, path, token string, extra http.Header) *websocket.Conn {
 	t.Helper()
+	return sessionDialOptions(t, serverURL, path, token, extra, websocket.DialOptions{})
+}
+func sessionDialOptions(t *testing.T, serverURL, path, token string, extra http.Header, options websocket.DialOptions) *websocket.Conn {
+	t.Helper()
 	header := extra.Clone()
 	if header == nil {
 		header = make(http.Header)
@@ -125,7 +133,8 @@ func sessionDial(t *testing.T, serverURL, path, token string, extra http.Header)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, response, err := websocket.Dial(ctx, strings.Replace(serverURL, "http://", "ws://", 1)+path, &websocket.DialOptions{HTTPHeader: header})
+	options.HTTPHeader = header
+	conn, response, err := websocket.Dial(ctx, strings.Replace(serverURL, "http://", "ws://", 1)+path, &options)
 	if err != nil {
 		status := 0
 		if response != nil {
@@ -370,11 +379,23 @@ func TestSessionRoutesRejectInvalidHTTPInputs(t *testing.T) {
 }
 
 func TestSessionRoutesBrowserRespondsToPingAndContinuesReceivingEvents(t *testing.T) {
-	f := sessionHTTPSetup(t)
+	f := sessionHTTPSetup(t, func(routes *sessionRoutes) {
+		if routes.pingInterval != 10*time.Second {
+			t.Fatal("browser ping period differs from the production default")
+		}
+		routes.pingInterval = 10 * time.Millisecond
+	})
+	pingSeen := make(chan struct{})
+	var firstPing sync.Once
 	sourceEpoch := uuid.NewString()
 	controller, snapshot := f.controller(t, sourceEpoch)
 	path := f.base + "/" + snapshot.SessionID + "/channel"
-	browser := sessionDial(t, f.server.URL, path, f.handler.token, nil)
+	browser := sessionDialOptions(t, f.server.URL, path, f.handler.token, nil, websocket.DialOptions{
+		OnPingReceived: func(context.Context, []byte) bool {
+			firstPing.Do(func() { close(pingSeen) })
+			return true
+		},
+	})
 	sessionWSKind(t, browser, "snapshot")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -392,7 +413,7 @@ func TestSessionRoutesBrowserRespondsToPingAndContinuesReceivingEvents(t *testin
 	select {
 	case early := <-result:
 		t.Fatalf("idle browser closed or received unexpected data before ping: %s, %v", early.data, early.err)
-	case <-time.After(11 * time.Second):
+	case <-pingSeen:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}

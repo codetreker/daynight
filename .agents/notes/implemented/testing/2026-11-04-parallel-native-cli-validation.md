@@ -12,17 +12,25 @@ both phases, coupling runtime checks to unrelated installed behavior.
 
 ## Decision
 
-The checks workflow runs two independent native matrices on Ubuntu, macOS ARM64
-and Windows. Both depend only on module detection and use the same CLI-selection
-condition. Each prepares its own checkout, Node.js 24, pinned pnpm, workspace
-dependencies, native environment/probes and compiled current-source output.
-Both macOS entries assert Darwin ARM64 before validation. Fail-fast remains
-disabled, and worker settings and case deadlines remain unchanged.
+At adoption, the checks workflow ran two independent native matrices on Ubuntu,
+macOS ARM64 and Windows. This allowed suites without an output dependency to
+overlap and released runtime compatibility from installed acceptance. Each job
+prepared its own checkout, Node.js 24, pinned pnpm, workspace dependencies,
+environment/probes and compiled source.
+
+The [single macOS allocation decision](2026-11-05-single-macos-native-allocation.md)
+partially supersedes that physical topology after repeated hosted acquisition
+failure. Linux and Windows retain the independent matrices; macOS uses one
+required allocation with complete ordinary then installed phases. All six logical
+OS phases remain required. Fail-fast, worker settings and case deadlines retain
+their existing values.
 
 The `verify` matrix owns type checking, the local development installer and all
 ordinary compiled CLI tests. Its Ubuntu entry packs and uploads the unchanged
 `daynight-runtime-package` artifact. Runtime compatibility depends on this
-ordinary producer matrix and module detection, without an installed dependency.
+ordinary Linux/Windows producer matrix and module detection, without an installed
+or macOS dependency. The Ubuntu entry remains the package producer; macOS remains
+mandatory at the final gate.
 The `verify-installed` matrix runs the complete installed configuration, which
 retains its single canonical package preparation and real npm-update scenarios.
 
@@ -34,8 +42,8 @@ each phase and platform exclusive artifact ownership. Environment receipts are
 retained after environment discovery succeeds; diagnostic upload still runs
 when that discovery fails.
 
-The final `checks` job uses `always()`, waits for both matrices and every existing
-job, and rejects any failed or cancelled result. Unaffected jobs may skip.
+The final `checks` job uses `always()`, waits for both Linux/Windows matrices,
+`verify-macos` and every existing job, and rejects any failed or cancelled result. Unaffected jobs may skip.
 Selected Web success guards, source-bound shard summary verification and the
 main/PR cancellation policy retain their existing behavior. Builtin Node
 workflow tests run the actual aggregate shell gate for each independent native
@@ -77,12 +85,16 @@ They do not require a separate composite action or cache protocol.
 
 ## Consequences
 
-Each phase keeps a 10-minute job limit. Two independent phase limits replace
-the former combined platform limit and expand the aggregate budget. Checkout, tool discovery, installation and build are duplicated on a second
-runner for each platform. Actual wall-clock
-and runner execution-minute observations must report that additional cost.
+The original split gave each phase a 10-minute job limit, replacing the former
+combined platform limit and expanding the aggregate budget. It duplicated
+checkout, tool discovery, installation and build on another runner for each
+platform. Linux and Windows retain that model. macOS now shares an allocation
+with a 20-minute outer limit and separate 10-minute validation bounds, as owned
+by the later decision. Wall-clock and runner execution-minute observations must
+report the different preparation and scheduling costs.
 
-The phases may overlap when runners are available. Queue delay, hosted load and
+The independent Linux/Windows phases may overlap when runners are available;
+macOS validation phases execute in sequence. Queue delay, hosted load and
 other selected modules can still dominate end-to-end workflow time. Successful
 individual suites or theoretical overlap do not establish native hosted job
 completion or a fixed speedup. Runtime checks follow the ordinary producer;

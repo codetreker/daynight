@@ -31,6 +31,7 @@ type sessionRoutes struct {
 	auth            *Authentication
 	logger          *slog.Logger
 	instance        string
+	pingInterval    time.Duration
 	mutex           sync.Mutex
 	closing         bool
 	reserved        int
@@ -49,7 +50,7 @@ func newSessionRoutes(s *sessionrelay.Service, auth *Authentication, logger *slo
 	if s != nil && auth != nil {
 		s.Origin = auth.origin
 	}
-	return &sessionRoutes{service: s, auth: auth, logger: logger, instance: uuid.NewString(), connections: make(map[*websocket.Conn]context.CancelFunc)}
+	return &sessionRoutes{service: s, auth: auth, logger: logger, instance: uuid.NewString(), pingInterval: 10 * time.Second, connections: make(map[*websocket.Conn]context.CancelFunc)}
 }
 func (h *sessionRoutes) register(mux *http.ServeMux) {
 	h.registerTerminalRoutes(mux)
@@ -644,7 +645,7 @@ func (h *sessionRoutes) browserChannel(w http.ResponseWriter, r *http.Request, p
 	}
 	ticker := time.NewTicker(sessionrelay.PollInterval)
 	defer ticker.Stop()
-	ping := time.NewTicker(10 * time.Second)
+	ping := time.NewTicker(h.pingInterval)
 	defer ping.Stop()
 	for {
 		select {

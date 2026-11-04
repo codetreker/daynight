@@ -790,5 +790,5 @@ compositor 像素中的 fixture 专用色块。判断器将匹配像素按连通
 
 各实现任务运行所影响模块的既有检查；CLI 使用 `pnpm typecheck`、`pnpm test`、
 `pnpm build` 及相关安装验收，Web 使用 README 拥有的 `web:*` 验证，Go 服务使用
-隔离 PostgreSQL 下的 `bash scripts/check.sh`。服务既有 build、vet、race、go-cov
+隔离 PostgreSQL 下的 `bash scripts/check.sh`。服务既有 build、vet、按[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)选择的 race、go-cov
 及未取整总语句覆盖率严格大于 90% 的门槛保持不变。
