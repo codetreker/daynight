@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -312,6 +313,102 @@ func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 				t.Fatalf("authorization retained pre-wait grant: %#v %v", access, err)
 			}
 		})
+	}
+}
+
+func TestThreadAuthorizationUsesDestinationAfterOwnershipLockWait(t *testing.T) {
+	for _, destinationCreatedLate := range []bool{false, true} {
+		for _, destinationMember := range []bool{false, true} {
+			t.Run(fmt.Sprintf("late=%t/member=%t", destinationCreatedLate, destinationMember), func(t *testing.T) {
+				database, _, principal, project := membershipFixture(t)
+				sourceID := ordinaryProjectTeam(t, database, project.ID)
+				mustQueryExec(t, database, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, sourceID, principal.UserID)
+				task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+				destinationID := uuid.NewString()
+				if !destinationCreatedLate {
+					mustQueryExec(t, database, `INSERT INTO teams(id,name) VALUES($1,'Destination')`, destinationID)
+					if destinationMember {
+						mustQueryExec(t, database, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, destinationID, principal.UserID)
+					}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				writer, err := database.Pool.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer writer.Rollback(context.Background())
+				var locked string
+				if err := writer.QueryRow(ctx, `SELECT team_id::text FROM project_ownership WHERE project_id=$1 FOR UPDATE`, project.ID).Scan(&locked); err != nil || locked != sourceID {
+					t.Fatalf("lock source ownership: %s %v", locked, err)
+				}
+				if destinationCreatedLate {
+					if _, err := writer.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'Destination')`, destinationID); err != nil {
+						t.Fatal(err)
+					}
+					if destinationMember {
+						if _, err := writer.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, destinationID, principal.UserID); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				var destinationVersion int64
+				if err := writer.QueryRow(ctx, `UPDATE project_ownership SET team_id=$2,version=version+1 WHERE project_id=$1 RETURNING version`, project.ID, destinationID).Scan(&destinationVersion); err != nil {
+					t.Fatal(err)
+				}
+				started := make(chan uint32, 1)
+				completed := make(chan error, 1)
+				var access core.ProjectAccess
+				go func() {
+					completed <- database.WriteThread(ctx, func(thread *ThreadTx) error {
+						started <- thread.tx.Conn().PgConn().PID()
+						if _, err := thread.LockTaskPresence(ctx, project.ID, task.ID); err != nil {
+							return err
+						}
+						if _, err := thread.Credential(ctx, principal); err != nil {
+							return err
+						}
+						var err error
+						access, err = thread.LockProjectAuthorization(ctx, principal, project.ID)
+						return err
+					})
+				}()
+				var readerPID uint32
+				select {
+				case readerPID = <-started:
+				case err := <-completed:
+					t.Fatalf("thread failed before admission: %v", err)
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				// The blocked ownership statement has its old snapshot before
+				// the writer publishes the destination.
+				waitThreadBackendLock(t, database, readerPID)
+				var waitingOnOwnership bool
+				err = database.Pool.QueryRow(ctx, `SELECT query LIKE '%FROM project_ownership%' AND $2=ANY(pg_blocking_pids(pid))
+ FROM pg_stat_activity WHERE pid=$1`, readerPID, writer.Conn().PgConn().PID()).Scan(&waitingOnOwnership)
+				if err != nil || !waitingOnOwnership {
+					t.Fatalf("thread did not wait for the ownership writer: %v", err)
+				}
+				if err := writer.Commit(ctx); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err = <-completed:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				if !destinationMember {
+					if !errors.Is(err, core.ErrNotFound) {
+						t.Fatalf("source-only access retained: %#v %v", access, err)
+					}
+				} else if err != nil || access.OwnerTeam.ID != destinationID || access.OwnerTeam.Name == nil || *access.OwnerTeam.Name != "Destination" ||
+					access.Ownership.TeamID != destinationID || access.Ownership.Version != destinationVersion || access.Role != core.ProjectMemberRole ||
+					access.DirectGrant != nil || access.TeamRole == nil || *access.TeamRole != core.ProjectMemberRole || access.CanTransfer {
+					t.Fatalf("destination-only access: %#v %v", access, err)
+				}
+			})
+		}
 	}
 }
 

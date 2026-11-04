@@ -290,6 +290,15 @@ ownership 与 creator direct admin grant。`core.Project.Ownership` 是真实内
 Project 点读通过 LEFT JOIN 投影并校验必需归属；缺行是完整性错误，没有运行时旧数据回退。
 当前公开 Project 与 `/me` 合同保持，归属与完整来源的公开字段由其实际协议转换拥有。
 
+项目转移预览使用 Repeatable Read 快照，先验证当前 owner Team admin，再按目标 UUID
+读取最小 Team 引用与元数据版本，并结合目标成员角色和现存 direct grant 计算预期角色。
+转移使用 Read Committed，先锁 Project，再锁 ownership，最后按 UUID 升序锁 source/target
+Team（相同时只锁一次）；锁后重新检查主体、归属及版本。Team 删除持有同一 Team 锁，
+随后以新语句检查 ownership，因此转入和删除不会留下悬空归属。转移不取得 Task、credential
+或 Thread head 锁，不修改 grant 或邀请；回执中的当前 access 在事务内计算，提交确认后发送。
+Thread 强准入在 ownership share 锁返回后，以新语句读取稳定 team_id 对应的 Team，再锁
+实际成员及 grant；等待期间提交的新目标不会被旧语句快照中的连接行误判为完整性错误。
+
 独立授权管理提交观察版本，锁项目后重查有效 admin 与 grant 版本。真实角色变更与新加入
 从 `project_grant_versions` sequence 取得新版本，观察值不要求连续或每次恰好加一；
 无变化保持版本。移除后重加入不复用旧版本，过期返回 version_conflict。有效 admin
@@ -335,6 +344,7 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | POST /api/v1/auth/device/logout | 当前 Bearer PAT 撤销自身，浏览器会话不能调用。 |
 | 现有 project/task/graph/property/attachment API | session 或 PAT；业务 service 检查当前项目成员。 |
 | PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与三状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
+| POST .../projects/{id}/transfer-preview、POST .../transfer | owner Team admin；最小目标预览及按 ownership/目标版本确认转移。 |
 | GET .../projects/{id}/access | 当前主体的真实归属、owner Team、双来源有效角色与 canTransfer；要求当前项目准入。 |
 | GET .../projects/{id}/members | 任一有效成员读取 items participant 和同快照 actorAccess；资料与继承来源不授予 Team 目录访问权。 |
 | PATCH .../projects/{id}/settings | admin，锁后复核角色与精确设置 version，返回完整 Project。 |
@@ -606,7 +616,6 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 ## 交付边界
 
 真实 Personal 归属、存量迁移、登录与项目 writer、双来源准入及 Thread 强 fence 共同成立。
-普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；成员管理、邀请与转移保持
-各自的功能所有权。当前 Project、access 与 participant
+普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；项目转移提供服务端预览和提交。成员管理、邀请及转移客户端保持各自的功能所有权。当前 Project、access 与 participant
 公开真实 ownership 和完整权限来源，无占位来源或旧格式回退。
 可信同源 HTML 保持原权限模型，不引入预览安全系统。K1 和已准入传输语义保持。
