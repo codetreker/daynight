@@ -1,4 +1,4 @@
-import { readWorkerClaim } from "./task-properties";
+import { readTaskPaused, readWorkerClaim } from "./task-properties";
 import mime from "mime";
 import { parseTaskSync } from "./task-sync";
 import { timestamp } from "./parse";
@@ -290,6 +290,27 @@ export const setTaskAgentPermission = async (
   return json(response, signal, (data) => {
     const result = parseTaskDetail(data, project, task);
     if (response.status !== 200 || result.allowAgents !== allowAgents || result.version !== exactVersion && result.version !== exactVersion + 1n) {
+      throw new ApiError("protocol", response.status);
+    }
+    return result;
+  });
+};
+
+export const unpauseTask = async (
+  projectId: string, taskId: string, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
+): Promise<TaskDetail> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  if (!isTaskVersion(exactVersion)) throw new ApiError("protocol");
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
+    method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: stringifyApiJson({ version: exactVersion, properties: { paused: false } }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
+  return json(response, signal, (data) => {
+    const result = parseTaskDetail(data, project, task);
+    if (response.status !== 200 || readTaskPaused(result.properties) !== false || result.version !== exactVersion && result.version !== exactVersion + 1n) {
       throw new ApiError("protocol", response.status);
     }
     return result;
