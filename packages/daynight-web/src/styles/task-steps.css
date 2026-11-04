@@ -53,3 +53,6 @@
   .steps-pagination { flex-wrap: wrap; gap: 8px; }
   .steps-page-controls { width: 100%; justify-content: space-between; gap: 5px; }
 }
+@media (max-height: 600px) {
+  .steps-pagination { position: static; }
+}

@@ -38,6 +38,8 @@ Narrow layouts wrap the expanded tab set when height permits. At heights up to
 reveals the target both on activation and after selection or locale layout;
 native focus alone can leave a partly visible tab clipped when selected text
 becomes wider. The tab scroller does not widen the page.
+At heights up to 600px, the pagination controls scroll with the Steps list;
+a sticky two-row control area can otherwise cover almost all of a short panel.
 
 ## Alternatives
 
