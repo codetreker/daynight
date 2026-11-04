@@ -16,6 +16,8 @@ const sameScope = (a: DraftScope, b: DraftScope) => a.identity === b.identity &&
 /** Owns admitted locations for one window. Raw popstate must never mount routes directly. */
 export class BrowserNavigation {
   private session = crypto.randomUUID();
+  // Browser history state is serialized; exact URL checks stay in this window's memory.
+  private readonly urls = new Map<number, string>();
   private accepted: Entry;
   private observed: Entry;
   private location: BrowserLocation;
@@ -44,13 +46,33 @@ export class BrowserNavigation {
     const url = new URL(this.browser.location.href);
     const marker: unknown = this.browser.history.state?.[namespace];
     const valid = typeof marker === 'object' && marker !== null && 'session' in marker && marker.session === this.session &&
-      'index' in marker && Number.isSafeInteger(marker.index) && 'href' in marker && marker.href === url.href;
+      'index' in marker && typeof marker.index === 'number' && Number.isSafeInteger(marker.index) && this.urls.get(marker.index) === url.href;
     return { url, index: valid ? (marker as { index: number }).index : null };
   }
   private writeState(method: 'pushState' | 'replaceState', url: URL, index: number): void {
     const state: unknown = this.browser.history.state;
     this.browser.history[method]({ ...(typeof state === 'object' && state !== null ? state : {}),
-      [namespace]: { session: this.session, index, href: url.href } }, '', url.href);
+      [namespace]: { session: this.session, index } }, '', url.href);
+    this.urls.set(index, url.href);
+  }
+  /** Scrub a consumed fragment without treating cleanup as a new route or numbering native entries. */
+  clearFragment(): void {
+    const current = this.readEntry();
+    if (current.url.hash === '') return;
+    const url = new URL(current.url);
+    url.hash = '';
+    if (current.index !== null) this.writeState('replaceState', url, current.index);
+    else {
+      let state: unknown = this.browser.history.state;
+      if (typeof state === 'object' && state !== null) {
+        const preserved: Record<string, unknown> = { ...state };
+        delete preserved[namespace];
+        state = preserved;
+      }
+      this.browser.history.replaceState(state, '', url.href);
+    }
+    this.observed = this.readEntry();
+    this.adopt(this.observed);
   }
   private adopt(entry: Entry): void {
     this.accepted = entry;
@@ -98,7 +120,7 @@ export class BrowserNavigation {
     this.request(() => {
       const current = this.readEntry();
       // Only application writes allocate an index. Unindexed traversal itself is never repaired.
-      if (current.index === null) this.session = crypto.randomUUID();
+      if (current.index === null) { this.session = crypto.randomUUID(); this.urls.clear(); }
       const index = current.index === null ? 0 : replace ? current.index : current.index + 1;
       this.writeState(replace ? 'replaceState' : 'pushState', url, index);
       this.observed = this.readEntry();
@@ -179,7 +201,7 @@ export class BrowserNavigation {
     this.browser.removeEventListener('popstate', this.traversed);
     this.browser.removeEventListener('hashchange', this.traversed);
     this.browser.removeEventListener('beforeunload', this.beforeUnload);
-    this.drafts.clear(); this.listeners.clear(); this.decisions.clear();
+    this.urls.clear(); this.drafts.clear(); this.listeners.clear(); this.decisions.clear();
     if (owner === this) owner = undefined;
   }
 }

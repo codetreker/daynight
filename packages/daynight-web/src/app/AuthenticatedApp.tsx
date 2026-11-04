@@ -18,6 +18,7 @@ import { InvitationPage } from "../features/auth/InvitationPage";
 import { LoginPage } from "../features/auth/LoginPage";
 import { DeviceAuthorizationPage } from "../features/auth/DeviceAuthorizationPage";
 import { captureInvitation, clearInvitation } from "../features/auth/invitation";
+import type { PendingInvitation } from "../features/auth/invitation";
 import { TaskDetailSessionProvider } from "../features/task-detail/TaskDetailSession";
 import { TaskAssigneesProvider } from "../features/task-assignees/TaskAssignees";
 import { ProjectPage } from "../features/projects/ProjectPage";
@@ -133,9 +134,9 @@ const assignLogin = (url: string) => window.location.assign(url);
 export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly navigateToLogin?: (url: string) => void }) => {
   const { locale, messages: { auth: { shell: m }, workspace: { app, projects } } } = useI18n();
   const testMessages = useTestSessionListMessages();
-  const [invitation, setInvitation] = useState(captureInvitation);
+  const [invitation, setInvitation] = useState<PendingInvitation>({ token: null, storageUnavailable: false });
   const location = useBrowserLocation();
-  const invitationLocationSeen = useRef(location);
+  const invitationLocationSeen = useRef<typeof location | null>(null);
   const { pathname, search } = location;
   const [invitationRevision, setInvitationRevision] = useState(0);
   const invitationLifetime = useRef(new AbortController());
@@ -184,11 +185,12 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     mounted.current = true;
     return () => { mounted.current = false; active.current?.abort(); invitationLifetime.current.abort(); cacheScope.current?.dispose(); invalidateAuthRequests(); };
   }, []);
-  useEffect(() => {
-    // The initial state already consumed the first secret, even when storage is unavailable.
+  useLayoutEffect(() => {
+    const initial = invitationLocationSeen.current === null;
     if (invitationLocationSeen.current === location) return;
     invitationLocationSeen.current = location;
-    if (location.pathname === "/invitations" && location.hash !== "") {
+    // Capture before API effects; the scrubbed snapshot must not recapture a memory-only invitation.
+    if (initial || location.pathname === "/invitations" && location.hash !== "") {
       const incoming = captureInvitation();
       invitationLifetime.current.abort();
       invitationLifetime.current = new AbortController();

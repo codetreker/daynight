@@ -1,3 +1,4 @@
+import { browserNavigation } from "../../app/navigation";
 import { invitationLocation } from "../../app/router";
 
 export const invitationStorageKey = "daynight.pendingInvitation";
@@ -12,7 +13,7 @@ export const captureInvitation = (): PendingInvitation => {
     return { token: null, storageUnavailable: false };
   }
   const token = window.location.pathname === "/invitations" ? window.location.hash.slice(1) : "";
-  if (token !== "") window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+  if (token !== "") browserNavigation().clearFragment();
   try {
     if (token !== "") window.sessionStorage.setItem(invitationStorageKey, token);
     const stored = token === "" ? window.sessionStorage.getItem(invitationStorageKey) : token;

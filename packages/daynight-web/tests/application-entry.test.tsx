@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Application } from "../src/app/Application";
 import { navigate } from "../src/app/router";
+import { browserNavigation } from "../src/app/navigation";
 import { invitationStorageKey } from "../src/features/auth/invitation";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 
@@ -45,11 +46,14 @@ describe("public and authenticated entry ownership", () => {
 
   it.each(["/", "/setup"])("clears an invitation on deliberate public departure to %s and aborts old identity work", async (path) => {
     window.history.replaceState(null, "", "/invitations#pending-invitation");
+    const writes = vi.spyOn(history, "replaceState");
     const pending = Promise.withResolvers<Response>();
     const fetcher = vi.fn((_url: string, _init?: RequestInit) => pending.promise);
     vi.stubGlobal("fetch", fetcher);
     mount();
     expect(window.location.hash).toBe("");
+    expect(writes.mock.calls.every(([state]) => !JSON.stringify(state).includes("pending-invitation"))).toBe(true);
+    expect(browserNavigation().snapshot()).toEqual({ pathname: "/invitations", search: "", hash: "" });
     expect(window.sessionStorage.getItem(invitationStorageKey)).not.toBeNull();
     await act(async () => navigate(path));
     expect(window.sessionStorage.getItem(invitationStorageKey)).toBeNull();
@@ -57,6 +61,11 @@ describe("public and authenticated entry ownership", () => {
     await act(async () => pending.resolve(json(user)));
     expect(screen.queryByText("Alice")).toBeNull();
     expect(fetcher).toHaveBeenCalledTimes(1);
+    await historyMove("back");
+    expect(location.pathname).toBe("/invitations");
+    expect(location.hash).toBe("");
+    expect(JSON.stringify(history.state)).not.toContain("pending-invitation");
+    expect(sessionStorage.getItem(invitationStorageKey)).toBeNull();
   });
 
   it("keeps invitation cleanup errors visible after the authenticated branch unmounts", async () => {
@@ -81,6 +90,70 @@ describe("public and authenticated entry ownership", () => {
     await screen.findByRole('button', { name: 'Accept invitation and join' });
     expect(fetcher).toHaveBeenCalledWith('/api/v1/invitations/inspect', expect.objectContaining({ body: JSON.stringify({ token: 'memory-only-invitation' }) }));
     expect(location.hash).toBe('');
+    expect(JSON.stringify(history.state)).not.toContain('memory-only-invitation');
+    expect(browserNavigation().snapshot().hash).toBe('');
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
+    await screen.findByRole('heading', { name: 'Projects' });
+    await historyMove('back');
+    await screen.findByRole('heading', { name: 'Invitation unavailable' });
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/inspect'))).toHaveLength(1);
+    expect(JSON.stringify(history.state)).not.toContain('memory-only-invitation');
+  });
+
+  it("does not recover a cancelled invitation from history", async () => {
+    history.replaceState(null, "", "/invitations#cancelled-invitation");
+    const fetcher = vi.fn((url: string) => Promise.resolve(url.endsWith("/inspect")
+      ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project" }) : defaultResponse(url)));
+    vi.stubGlobal("fetch", fetcher);
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+    await screen.findByRole("heading", { name: "Projects" });
+    expect(sessionStorage.getItem(invitationStorageKey)).toBeNull();
+    await historyMove("back");
+    await screen.findByRole("heading", { name: "Invitation unavailable" });
+    expect(location.hash).toBe("");
+    expect(JSON.stringify(history.state)).not.toContain("cancelled-invitation");
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/inspect"))).toHaveLength(1);
+  });
+
+  it("scrubs an application invitation without serializing its fragment and keeps indexed Back admission", async () => {
+    history.replaceState(null, "", "/");
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    mount();
+    const writes = vi.spyOn(history, "pushState");
+    await act(async () => navigate("/invitations#incoming-invitation"));
+    expect(location.hash).toBe("");
+    expect(browserNavigation().snapshot().hash).toBe("");
+    expect(writes.mock.calls.every(([state]) => !JSON.stringify(state).includes("incoming-invitation"))).toBe(true);
+    const discard = vi.fn();
+    const release = browserNavigation().register({ scope: { identity: {}, projectId: "project", taskId: "task" }, isDirty: () => true, discard, survives: () => false });
+    await historyMove("back");
+    expect(browserNavigation().decision()?.kind).toBe("history");
+    expect(browserNavigation().snapshot().pathname).toBe("/invitations");
+    await act(async () => browserNavigation().cancel());
+    await waitFor(() => expect(location.pathname).toBe("/invitations"));
+    expect(discard).not.toHaveBeenCalled();
+    expect(JSON.stringify(history.state)).not.toContain("incoming-invitation");
+    release();
+  });
+
+  it.each(["hashchange", "popstate"])("keeps a copied native invitation entry unindexed after cleanup on %s", async (eventName) => {
+    history.replaceState({ reader: { offset: 7 } }, "", "/invitations#first-invitation");
+    const fetcher = vi.fn((url: string, _options?: RequestInit) => {
+      expect(location.hash).toBe("");
+      return Promise.resolve(url.endsWith("/inspect")
+        ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project" }) : defaultResponse(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    mount();
+    await screen.findByRole("button", { name: "Accept invitation and join" });
+    history.pushState(history.state, "", "/invitations#native-invitation");
+    fireEvent(window, new Event(eventName));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/api/v1/invitations/inspect", expect.objectContaining({ body: JSON.stringify({ token: "native-invitation" }) })));
+    expect(location.hash).toBe("");
+    expect(browserNavigation().snapshot().hash).toBe("");
+    expect(history.state).toEqual({ reader: { offset: 7 } });
+    expect(sessionStorage.getItem(invitationStorageKey)).toBe("native-invitation");
   });
 
   it("preserves a direct attachment and selected tab through the independent login entry", async () => {

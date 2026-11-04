@@ -26,8 +26,12 @@ its synchronous continuation can reuse that admission before React renders the
 discarded state. Identity abort and proven resource retirement clear private
 content immediately rather than offering a cancellable security decision.
 
-History markers contain a segment, index and exact URL. A native fragment can
-copy state without adding an application index, so a marker's URL must match.
+History markers contain a segment and index; exact URLs live only in the
+navigation owner's memory. A native fragment can copy state without adding an
+application index, so its URL must match the in-memory entry. The
+[invitation cleanup decision](../bug-fix/2026-11-04-invitation-history-state.md)
+records why URLs are excluded from serialized markers and how fragment cleanup
+keeps indexed and native entries coherent.
 An application write from an unindexed position starts a new segment on the
 written entry. Older segments cannot supply a valid distance across unnumbered
 entries. No native entry is repaired or assigned an invented index.
