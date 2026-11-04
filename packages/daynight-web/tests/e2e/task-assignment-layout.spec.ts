@@ -80,22 +80,27 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
   type WireReceipt = { readonly path: string; validator: boolean; wireStatus: number | null; wireBytes: number | null };
   const wire = new Map<string, WireReceipt>();
   const validators = new Map<string, boolean>();
+  const networkEvents: Record<string, string | number | boolean | null>[] = [];
   const network = await page.context().newCDPSession(page);
   await network.send('Network.enable');
   // Routing disables Chromium's HTTP cache, so this phase observes the real network without intercepting requests.
   network.on('Network.requestWillBeSent', (event) => {
     const path = new URL(event.request.url).pathname;
+    networkEvents.push({ type: 'request', requestId: event.requestId, timestamp: event.timestamp, resource: path === '/api/v1/me' ? 'me' : path === peoplePath ? 'people' : 'other' });
     if (path === '/api/v1/me' || path === peoplePath) wire.set(event.requestId, {
       path, validator: validators.get(event.requestId) ?? Object.keys(event.request.headers).some((name) => name.toLowerCase() === 'if-none-match'), wireStatus: null, wireBytes: null,
     });
   });
   network.on('Network.requestWillBeSentExtraInfo', (event) => {
     const validator = Object.keys(event.headers).some((name) => name.toLowerCase() === 'if-none-match');
+    networkEvents.push({ type: 'request-extra', requestId: event.requestId, validator });
     validators.set(event.requestId, validator);
     const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.validator = validator;
   });
-  network.on('Network.responseReceivedExtraInfo', (event) => { const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireStatus = event.statusCode; });
-  network.on('Network.loadingFinished', (event) => { const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireBytes = event.encodedDataLength; });
+  network.on('Network.responseReceived', (event) => { networkEvents.push({ type: 'response', requestId: event.requestId, timestamp: event.timestamp, status: event.response.status, fromDiskCache: event.response.fromDiskCache ?? false, fromServiceWorker: event.response.fromServiceWorker ?? false }); });
+  network.on('Network.responseReceivedExtraInfo', (event) => { networkEvents.push({ type: 'response-extra', requestId: event.requestId, status: event.statusCode }); const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireStatus = event.statusCode; });
+  network.on('Network.loadingFinished', (event) => { networkEvents.push({ type: 'finished', requestId: event.requestId, timestamp: event.timestamp, bytes: event.encodedDataLength }); const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireBytes = event.encodedDataLength; });
+  network.on('Network.loadingFailed', (event) => { networkEvents.push({ type: 'failed', requestId: event.requestId, timestamp: event.timestamp, canceled: event.canceled ?? false, error: /^net::ERR_[A-Z_]+$/.test(event.errorText) ? event.errorText : 'other' }); });
   const meReceipts = () => [...wire.values()].filter((receipt) => receipt.path === '/api/v1/me');
   const expectMe = async (index: number, status: number) => {
     await expect.poll(() => meReceipts()[index]?.wireStatus).toBe(status);
@@ -211,9 +216,12 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
     await info.attach('assignment-people-cache', { body: JSON.stringify({ projectId: project.id, avatarBytes: Buffer.byteLength(avatar), requests, payloads, wire: [...wire.values()] }), contentType: 'application/json' });
   } finally {
     page.off('request', observeRequest); page.off('response', observeResponse);
-    await page.clock.resume(); await network.detach();
-    await Promise.all(payloadReads);
-    await seedUserProfile(missingProfile.id, { name: missingProfile.name, avatarUrl: missingProfile.avatarUrl });
+    try {
+      try { await page.clock.resume(); } finally {
+        try { await network.detach(); } finally { await info.attach('assignment-network-events', { body: JSON.stringify(networkEvents), contentType: 'application/json' }); }
+      }
+      await Promise.all(payloadReads);
+    } finally { await seedUserProfile(missingProfile.id, { name: missingProfile.name, avatarUrl: missingProfile.avatarUrl }); }
   }
 };
 
