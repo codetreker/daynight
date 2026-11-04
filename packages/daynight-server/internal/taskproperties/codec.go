@@ -83,6 +83,7 @@ func WithWorker(properties core.TaskProperties, worker *core.WorkerClaim) (core.
 	result := Clone(properties)
 	if worker == nil {
 		delete(result, "worker")
+		delete(result, "sessionStartup")
 		return result, nil
 	}
 	raw, err := json.Marshal(encodeWorker(worker))

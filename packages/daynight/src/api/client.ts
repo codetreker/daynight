@@ -1,8 +1,9 @@
+import { sameStartupReport } from "../session/startup.js";
 import { parseBot, botName, botVersion } from "../commands/bot/api.js";
 import type { Bot, CreateBotInput, DeleteBotInput } from "../commands/bot/api.js";
 import { parseWorkerPage, parseWorkerDetail } from "../commands/worker/query-api.js";
 import type { WorkerList, WorkerDetailResponse, WorkerSummary } from "../commands/worker/query-api.js";
-import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim } from "./task-properties.js";
+import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim, readSessionStartupReport } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
 import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
@@ -1048,7 +1049,7 @@ export const createApiClient = (options: {
       } }, [200], { kind: "json", value: { version: input.version, status: input.status } }, true);
     },
     claimWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.claim", "/worker-claim", "POST", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
-    updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.herdr === undefined || herdrMatches(worker.herdr, input.herdr)) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId), true),
+    updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.herdr === undefined || herdrMatches(worker.herdr, input.herdr)) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId) && (input.startupReport === undefined || sameStartupReport(readSessionStartupReport(task.properties), input.startupReport)), true),
     completeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.complete", "/status", "PUT", { ...input, status: "done" }, (task, worker) => worker !== undefined && task.status === "done" && worker.state === "completed" && worker.claimId === canonicalId(input.claimId), true),
     releaseWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.release", "/worker-claim/release", "POST", input, (task, worker) => worker !== undefined && task.status === "todo" && worker.state === "released" && worker.claimId === canonicalId(input.claimId)),
     withdrawWorkerClaim: (projectId, taskId, input) => {

@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { ControllerStartupError } from "../../controller/startup.js";
+import { spawn, type ChildProcess } from "node:child_process";
 import { open, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -69,8 +70,16 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
       try {
         signal.throwIfAborted();
         task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now());
-        const child = spawn(process.execPath, [path.join(options.packageDirectory, "dist", "main.js"), "controller", ticket.provider, "--launch-id", ticket.launchId], { cwd: ticket.cwd, env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(options.homeDirectory).stateDirectory }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true });
-        await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+        let child: ChildProcess;
+        try {
+          child = spawn(process.execPath, [path.join(options.packageDirectory, "dist", "main.js"), "controller", ticket.provider, "--launch-id", ticket.launchId], { cwd: ticket.cwd, env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(options.homeDirectory).stateDirectory }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true });
+        } catch (cause) {
+          throw new ControllerStartupError({ state: "failed", reasonCode: "controller_launch_failed" }, "The operating system rejected the controller launch.", { cause });
+        }
+        await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", cause => {
+          const observation = { state: "failed", reasonCode: "controller_launch_failed" } as const;
+          reject(new ControllerStartupError(observation, "The operating system rejected the controller launch.", { cause }));
+        }); });
         child.unref();
         if (child.pid === undefined) throw new Error("Controller spawn did not establish its process identity.");
         const proof = await captureProcessProof(child.pid);
@@ -80,14 +89,18 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
           signal.throwIfAborted();
           let response: Awaited<ReturnType<typeof requestController>> | undefined;
           try { response = await requestController(ticket, { kind: "observe" }, { signal, timeoutMs: 1000 }); }
-          catch { if (child.exitCode !== null || child.signalCode !== null) throw new Error("Controller exited before its authenticated initialization; inspect its private log."); }
+          catch { if (child.exitCode !== null || child.signalCode !== null) throw new ControllerStartupError({ state: "unknown", reasonCode: "controller_start_unknown" }, "Controller exited before its authenticated initialization; inspect its private log."); }
           if (response !== undefined) {
             options.store.updateWebExecution(task, { launchSubmission: "acknowledged", nativeProcesses: response.snapshot.nativeProcesses }, options.now());
             return;
           }
           await new Promise(resolve => setTimeout(resolve, 100));
         }
-        throw new Error("Controller startup outcome is unknown; the original process and launch intent are retained.");
+        throw new ControllerStartupError({ state: "unknown", reasonCode: "controller_start_unknown" }, "Controller startup outcome is unknown; the original process and launch intent are retained.");
+      } catch (error) {
+        if (error instanceof ControllerStartupError) options.store.observeStartup(task, error.observation, options.now());
+        else if (!signal.aborted) options.store.observeStartup(task, { state: "unknown", reasonCode: "controller_start_unknown" }, options.now());
+        throw error;
       } finally { await log.close(); }
     },
     refreshGrant: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {

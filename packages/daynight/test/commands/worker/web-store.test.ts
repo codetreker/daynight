@@ -248,7 +248,7 @@ it("commits an exhausted recovery pause and preserves it across reopen and shutd
   store.bindNativeSession(claim, { source: "controller", sessionId: id(7) }, 3);
   store.beginRecovery(claim, 4);
   const paused = store.beginRecovery(claim, 5);
-  expect(paused.recovery).toEqual({ count: 1, pauseReason: "The execution recovery budget is exhausted.", retryAuthorized: false });
+  expect(paused.recovery).toEqual({ count: 1, pauseReason: "The execution recovery budget is exhausted.", retryAuthorized: false, reasonCode: "recovery_limit" });
   close(store);
   const reopened = open(file);
   expect(reopened.getTask(claim)?.recovery).toEqual(paused.recovery);
@@ -262,7 +262,7 @@ it("commits an exhausted recovery pause and preserves it across reopen and shutd
   const execution = restored.webExecution!;
   const proof = { executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, nativeSessionId: id(7), nativeStopped: true };
   expect(() => reopened.beginWebGeneration(claim, { ...proof, nativeSessionId: id(8) }, 11)).toThrow("native identity");
-  expect(reopened.getTask(claim)?.recovery).toEqual({ count: 1, pauseReason: paused.recovery.pauseReason, retryAuthorized: true });
+  expect(reopened.getTask(claim)?.recovery).toEqual({ count: 1, pauseReason: paused.recovery.pauseReason, retryAuthorized: true, reasonCode: "recovery_limit" });
   const pending = reopened.beginWebGeneration(claim, proof, 12);
   expect(pending.recovery).toEqual({ count: 2, pauseReason: null, retryAuthorized: true });
   expect(pending.webExecution?.executionGeneration).toBe("2");
@@ -295,4 +295,25 @@ it("atomically consumes an explicit retry for the same unsubmitted intent across
   expect(reopened.getTask(claim)?.recovery).toEqual(retried.recovery);
   expect(() => reopened.retryUnsubmittedWebGeneration(claim, previous, 11)).toThrow("preceding stopped generation");
   expect(reopened.getTask(claim)?.recovery.count).toBe(2);
+});
+
+
+it("retains startup revision through reopen, rejects invalid persisted evidence, and resets it at a proven generation change", () => {
+  const { file, store, project, claim } = fixture();
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  store.initializeWebExecution(claim, 2);
+  const task = store.updateWebExecution(claim, { sessionId: id(8) }, 3);
+  store.bindNativeSession(claim, { source: "controller", sessionId: id(7) }, 4);
+  const first = store.observeStartup(claim, { state: "unknown", reasonCode: "native_timeout" }, 20)!;
+  close(store); const reopened = open(file);
+  expect(reopened.observeStartup(claim, first.startup, 30)).toEqual(first);
+  const next = reopened.beginWebGeneration(claim, { executionGeneration: task.webExecution!.executionGeneration, controllerInstanceId: task.webExecution!.controllerInstanceId, nativeSessionId: id(7), nativeStopped: true }, 31);
+  expect(next.webExecution?.startupReport).toBeUndefined();
+  expect(() => reopened.observeStartup(task, { state: "ready", reasonCode: "ready" }, 32)).toThrow("generation");
+  expect(reopened.observeStartup(claim, { state: "starting", reasonCode: "initializing" }, 32)).toMatchObject({ executionGeneration: "2", revision: "1", recovery: { state: "none", reasonCode: null } });
+  const db = connect(file);
+  const row = db.prepare("SELECT identity,data FROM executions").get() as { identity: string; data: string };
+  const data = JSON.parse(row.data); data.webExecution.startupReport.startup = { state: "failed", reasonCode: "native_timeout" };
+  db.prepare("UPDATE executions SET data=? WHERE identity=?").run(JSON.stringify(data), row.identity);
+  expect(() => reopened.getTask(claim)).toThrow();
 });

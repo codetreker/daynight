@@ -21,9 +21,9 @@ flowchart LR
 
 core 使用通用 TaskProperties map。internal/taskproperties 依赖 core 并拥有静态注册表、值 codec、规范化与 typed business accessors；core 不反向依赖 codec。HTTP DTO 使用同样的属性对象，不增加每属性字段。服务端添加一个预定义属性只需定义与对应业务消费，不要求更改 SQL schema、通用命令或完整资源字段投影。
 
-定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。已注册属性为 pullRequests、paused 与 worker。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
+定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。已注册属性为 pullRequests、paused、worker 与 sessionStartup。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
 
-properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组，paused 必须是布尔值，worker 必须是合法归属对象；整个属性值均不允许 null。worker 内部 nullable 字段不受此规则改变。
+properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组，paused 必须是布尔值，worker 必须是合法归属对象，sessionStartup 必须是合法执行观察对象；整个属性值均不允许 null。worker 内部 nullable 字段不受此规则改变。
 
 ## 值解析与规范化
 
@@ -102,7 +102,7 @@ Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。�
 
 ## 客户端与现有入口
 
-CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、paused 与 Worker reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 键。
+CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、paused、Worker 与 Session startup reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 与 sessionStartup 键。
 
 CLI 使用 properties 查看当前值或 --schema 定义，以 set-property/remove-property 修改一个完整属性；create/update 没有 PR 专用参数。property dispatch 在项目发现之前处理 schema 模式，修改只把原始参数作为 valueText 交给既有 ApiClient exchange。显式版本直接写，默认先读属性资源；不先取得 schema，不解析值或拆分字面属性名。参数、补全和 PropertyResource 输出由 [CLI 设计](daynight-project-task.md)拥有，[命令决策](../../.agents/notes/implemented/architecture/2026-10-30-generic-task-property-commands.md)保存取舍。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
 
@@ -125,3 +125,7 @@ task-sync 的 snapshot/delta 使用共同批量读取器，在父任务的同一
 每属性一行对应设置/删除单位，付出的成本是批量装配；整任务 JSON 行仍耦合写入单位，继续拆 PR 项又会引入独立项身份和顺序机制。文本值保留既有字符语义，当前没有任意 JSON 内容 SQL 查询需求。静态 native validator 明确业务规则，schema 只负责发现；对动态属性、全文查询或属性级版本的支持需要独立契约。
 
 验证由需求 TP-V1–TP-V9 约束，覆盖真实 PostgreSQL 的迁移、快照、并发与回滚，HTTP 的 schema/版本/严格值/400 与 500，CLI/Web 的完整对象和缺失读取，Worker inventory/reporting 与 Session 锁交错。保留现有 Go build/vet/go-cov、CLI typecheck/test/build 和 Web 覆盖/生产浏览器门禁，Go race 采用[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)的本地默认/main 开启、PR 关闭，不以绿灯代替生命周期证据。文档验证包括本地链接、当前事实/历史记录的界限和新文件。
+
+## 启动观察属性
+
+只读 sessionStartup 由 registry 定义并使用严格 Session startup decoder 验证。通用 codec 的允许键来自 registry，普通 create/PATCH 与单属性写仍依据 readOnly 拒绝，内部 Worker 更新在原任务事务内保存该属性。其 generation/revision fence、current 协商投影及旧版本边界由[Session 协议](task-session-protocol.md#启动观察的独立上报)拥有。

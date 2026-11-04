@@ -1650,6 +1650,49 @@ it("persists Web failure exhaustion, reconciles waiting with fresh versions, and
   } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
 });
 
+it.each(["supported", "legacy", "unavailable"])("reconciles paused summaries with %s startup reporting without advancing recovery", async support => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(), webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 0 };
+  const advance = vi.fn(async (input: WebTask) => {
+    webStore.pauseRecovery(input, "No original identity.", 2);
+    return webStore.getTask(input)!;
+  });
+  const observeStartupReport = vi.fn((input: WebTask) => ({ schemaVersion: 1 as const, source: "worker" as const,
+    sessionId: uuid(888), claimId: input.claimId, executionGeneration: "1", controllerInstanceId: uuid(889), revision: "1",
+    observedAt: "2026-11-05T00:00:00.000Z", startup: { state: "unknown" as const, reasonCode: "native_timeout" as const },
+    recovery: { state: "blocked" as const, reasonCode: "native_identity_missing" as const } }));
+  let calls = 0;
+  vi.mocked(f.remote.update).mockImplementation(async (current, input) => {
+    calls++;
+    if (calls === 1) {
+      f.grants.set(readWorkerClaim(current.properties)!.claimId, { ...current, version: 17n });
+      throw new Error("Unconfirmed report response.");
+    }
+    const { startupReport, ...summary } = input;
+    const updated = { ...current, properties: { ...current.properties, ...(startupReport ? { sessionStartup: startupReport } : {}), worker: { ...readWorkerClaim(current.properties)!, ...summary } } };
+    f.grants.set(readWorkerClaim(current.properties)!.claimId, updated); return updated;
+  });
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration,
+    webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, verifyWebStartupReporting: async () => {
+      if (support === "unavailable") throw new Error("Capabilities response unavailable.");
+      return support === "supported";
+    },
+    webBackend: { advance, cleanup: vi.fn(), observeStartupReport } });
+  const tick = async () => { await coordinator.tick(); await new Promise<void>(resolve => setImmediate(resolve)); };
+  try {
+    await tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    await tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(f.remote.update).mock.calls[1]![0].version).toBe(17n);
+    if (support === "supported") expect(vi.mocked(f.remote.update).mock.calls[1]![1]).toHaveProperty("startupReport.startup.reasonCode", "native_timeout");
+    else expect(vi.mocked(f.remote.update).mock.calls[1]![1]).not.toHaveProperty("startupReport");
+    await tick(); await tick();
+    expect(advance).toHaveBeenCalledOnce();
+    expect(f.remote.update).toHaveBeenCalledTimes(2);
+    expect(webStore.getTask(f.store.listTasks()[0]!)?.recovery.count).toBe(0);
+  } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
+});
+
 it.each(["claim", "worktree"])("rejects Web retry after original %s loss without authorizing or advancing it", async field => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const f = await fixture(), webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));

@@ -38,7 +38,7 @@ func TestSessionRoutesExposeOnlyCurrentClaim(t *testing.T) {
 func TestSessionRoutesCapabilitiesRequireAuthentication(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	response := decodeResponse[map[string]any](t, projectRequest(handler, http.MethodGet, "/api/v1/session-capabilities", ""), http.StatusOK)
-	if response["protocol"] != sp.Protocol || response["schemaVersion"] != float64(1) || response["projectionVersion"] != float64(1) || len(response) != 4 {
+	if response["protocol"] != sp.Protocol || response["schemaVersion"] != float64(1) || response["projectionVersion"] != float64(1) || len(response) != 5 || response["startupReportVersion"] != float64(1) {
 		t.Fatalf("unexpected capabilities: %v", response)
 	}
 	providers, ok := response["providers"].([]any)

@@ -1,6 +1,7 @@
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
-import { readWorkerClaim } from "../../api/task-properties.js";
-import type { WebExecutionBackend } from "./backends/web.js";
+import { readWorkerClaim, readSessionStartupReport } from "../../api/task-properties.js";
+import { sameStartupReport, type SessionStartupReport } from "../../session/startup.js";
+import { WebRecoveryBlockedError, type WebExecutionBackend } from "./backends/web.js";
 import type { WebExecutionStore } from "./backends/web-store.js";
 import type { WorkerSessionApi } from "./backends/session-api.js";
 import { requireImplementedWorkerBackend } from "./backend.js";
@@ -25,7 +26,9 @@ import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, W
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
 export type WorkerCoordinatorOptions = {
   hasHerdrJournal?: boolean;
-  webBackend?: WebExecutionBackend; webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
+  webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup"> & Partial<Pick<WebExecutionBackend, "observeStartupReport">>;
+  webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
+  verifyWebStartupReporting?: WorkerSessionApi["supportsStartupReports"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
   serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
   repositories: readonly WorkerRepositoryAssignment[]; globalConfiguration: ExecutionConfiguration; maxConcurrent: number;
@@ -348,7 +351,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       let observed = false;
       try {
         if (!execute) {
-          if (record !== null && record.recovery.pauseReason === null) record = options.webStore.pauseRecovery(record, "The Web execution failure limit was reached; explicit retry is required.", now());
+          if (record !== null && record.recovery.pauseReason === null) record = options.webStore.pauseRecovery(record, "The Web execution failure limit was reached; explicit retry is required.", now(), "recovery_limit");
         } else if (record === null || record.recovery.pauseReason === null || record.recovery.retryAuthorized) {
           requireImplementedWorkerBackend(configuration);
           await options.verifyWebServer?.(configuration.agent, signal);
@@ -366,21 +369,29 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (isWorkerCancellation(error, signal)) throw error;
         record = options.webStore.getTask(task);
         if (record !== null && record.cleanup === null && (record.recovery.retryAuthorized || (failures.get(key(task)) ?? 0) + 1 > configuration.recoveryLimit)) {
-          record = options.webStore.pauseRecovery(record, error instanceof Error ? error.message : String(error), now());
+          record = options.webStore.pauseRecovery(record, error instanceof Error ? error.message : String(error), now(), error instanceof WebRecoveryBlockedError ? error.reasonCode : record.recovery.retryAuthorized ? "recovery_blocked" : "recovery_limit");
         }
         throw error;
       } finally {
         // Summary transport is independent of native recovery and must remain live while paused.
         record = options.webStore.getTask(task);
-        if (!signal.aborted && (observed || !execute || record?.recovery.pauseReason != null)) {
+        if (!signal.aborted && (observed || !execute || record !== null)) {
           const nativeSessionId = record?.resources.nativeSession?.sessionId ?? task.sessionId ?? worker.nativeSessionId;
           if (nativeSessionId !== null) options.store.setSessionId(task, nativeSessionId);
           const phase = !execute || record?.recovery.pauseReason != null || record?.recovery.retryAuthorized
             || record?.webExecution?.activity === "initializing" ? "waiting" as const : "executing" as const;
-          if (worker.phase !== phase || worker.nativeSessionId !== nativeSessionId || worker.herdr !== null) {
-            try { await options.remote.update(remoteTask, { phase, nativeSessionId, herdr: null }, signal); }
-            catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The Web execution summary was not confirmed; the next round will read it again.", error }); }
-          }
+          let startupReport: SessionStartupReport | undefined;
+          try {
+            // Observation and transport must never become another native recovery attempt.
+            const report = record === null ? null : options.webBackend.observeStartupReport?.(record) ?? null;
+            const changedReport = report !== null && !sameStartupReport(readSessionStartupReport(remoteTask.properties), report);
+            startupReport = changedReport && await options.verifyWebStartupReporting?.(signal) ? report : undefined;
+          } catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The startup report could not be prepared; ordinary execution summary reconciliation remains available.", error }); }
+          try {
+            if (worker.phase !== phase || worker.nativeSessionId !== nativeSessionId || worker.herdr !== null || startupReport !== undefined) {
+              await options.remote.update(remoteTask, { phase, nativeSessionId, herdr: null, ...(startupReport === undefined ? {} : { startupReport }) }, signal);
+            }
+          } catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The Web execution summary was not confirmed; the next round will read it again.", error }); }
         }
       }
       return;
