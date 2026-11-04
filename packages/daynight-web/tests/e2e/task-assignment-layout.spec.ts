@@ -1,3 +1,5 @@
+import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
+import { stringifyApiJson } from "../../src/api/json";
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { bearerContext, type AuthenticatedAPI } from './authentication';
 import { createProject, createTask, expect, seedUserProfile, test } from './fixtures';
@@ -143,9 +145,9 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     await expect(page.locator('.task-assignee-filter .assignee-trigger')).toHaveText('Everyone'); await expect(goalRow).toBeVisible();
 
     const membersResponse = await api.get(`/api/v1/projects/${project.id}/members`); expect(membersResponse.status()).toBe(200);
-    const former = (await membersResponse.json() as { items: { userId: string; version: number }[] }).items.find((member) => member.userId === bobProfile.id);
+    const former = parseMembers(await decodeMembersJson(new Response(await membersResponse.text())), project.id).find((member) => member.userId === bobProfile.id);
     if (former === undefined) throw new Error('Former-assignee acceptance requires the exact current Bob membership.');
-    expect((await api.delete(`/api/v1/projects/${project.id}/members/${bobProfile.id}`, { data: { version: former.version } })).status()).toBe(204);
+    expect((await api.delete(`/api/v1/projects/${project.id}/members/${bobProfile.id}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: former.directGrant!.version, expectedUserId: aliceProfile.id }) })).status()).toBe(204);
     await page.reload();
     for (const { locale, width } of layouts) {
       await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale); await page.setViewportSize({ width, height: 900 }); await standalone(page);

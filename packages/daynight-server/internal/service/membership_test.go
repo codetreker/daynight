@@ -147,35 +147,35 @@ func TestMembershipRoleAuthorizationAndObservedVersions(t *testing.T) {
 	}
 	_, err := f.memberships.List(ctx, outsider, p.ID)
 	requireFault(t, err, "not_found")
-	_, err = f.memberships.SetRole(ctx, member, p.ID, owner.UserID, f.member(t, owner, p.ID).Grant.Version, core.ProjectMemberRole)
+	_, err = f.memberships.SetRole(ctx, member, p.ID, owner.UserID, SetProjectMemberRole{Version: f.member(t, owner, p.ID).Grant.Version, Role: core.ProjectMemberRole, ExpectedUserID: member.UserID})
 	requireFault(t, err, "forbidden")
-	_, err = f.memberships.SetRole(ctx, outsider, p.ID, member.UserID, joined.Grant.Version, core.ProjectAdmin)
+	_, err = f.memberships.SetRole(ctx, outsider, p.ID, member.UserID, SetProjectMemberRole{Version: joined.Grant.Version, Role: core.ProjectAdmin, ExpectedUserID: outsider.UserID})
 	requireFault(t, err, "not_found")
-	unchanged, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Grant.Version, core.ProjectMemberRole)
-	if err != nil || !reflect.DeepEqual(unchanged, joined) {
+	unchanged, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, SetProjectMemberRole{Version: joined.Grant.Version, Role: core.ProjectMemberRole, ExpectedUserID: owner.UserID})
+	if err != nil || !reflect.DeepEqual(unchanged, joined.Grant) {
 		t.Fatalf("same role: %#v %v", unchanged, err)
 	}
-	promoted, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Grant.Version, core.ProjectAdmin)
-	if err != nil || promoted.Grant.Version <= joined.Grant.Version {
+	promoted, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, SetProjectMemberRole{Version: joined.Grant.Version, Role: core.ProjectAdmin, ExpectedUserID: owner.UserID})
+	if err != nil || promoted.Version <= joined.Grant.Version {
 		t.Fatalf("promotion: %#v %v", promoted, err)
 	}
-	_, err = f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Grant.Version, core.ProjectMemberRole)
+	_, err = f.memberships.SetRole(ctx, owner, p.ID, member.UserID, SetProjectMemberRole{Version: joined.Grant.Version, Role: core.ProjectMemberRole, ExpectedUserID: owner.UserID})
 	requireFault(t, err, "version_conflict")
-	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, joined.Grant.Version), "version_conflict")
-	if err := f.memberships.Remove(ctx, owner, p.ID, member.UserID, promoted.Grant.Version); err != nil {
+	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: owner.UserID}), "version_conflict")
+	if err := f.memberships.Remove(ctx, owner, p.ID, member.UserID, RemoveProjectMember{Version: promoted.Version, ExpectedUserID: owner.UserID}); err != nil {
 		t.Fatal(err)
 	}
 	rejoined := f.join(t, owner, member, p.ID)
-	if rejoined.Grant.Version <= promoted.Grant.Version {
+	if rejoined.Grant.Version <= promoted.Version {
 		t.Fatal("rejoin reused an observed version")
 	}
-	_, err = f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Grant.Version, core.ProjectAdmin)
+	_, err = f.memberships.SetRole(ctx, owner, p.ID, member.UserID, SetProjectMemberRole{Version: joined.Grant.Version, Role: core.ProjectAdmin, ExpectedUserID: owner.UserID})
 	requireFault(t, err, "version_conflict")
-	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, promoted.Grant.Version), "version_conflict")
+	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, RemoveProjectMember{Version: promoted.Version, ExpectedUserID: owner.UserID}), "version_conflict")
 	if f.member(t, member, p.ID).Grant.Role != core.ProjectMemberRole {
 		t.Fatal("stale observation changed rejoined member")
 	}
-	if err := f.memberships.Remove(ctx, owner, p.ID, member.UserID, rejoined.Grant.Version); err != nil {
+	if err := f.memberships.Remove(ctx, owner, p.ID, member.UserID, RemoveProjectMember{Version: rejoined.Grant.Version, ExpectedUserID: owner.UserID}); err != nil {
 		t.Fatal(err)
 	}
 	_, err = f.memberships.List(ctx, member, p.ID)
@@ -183,10 +183,10 @@ func TestMembershipRoleAuthorizationAndObservedVersions(t *testing.T) {
 	_, err = f.memberships.CreateInvitation(ctx, member, p.ID)
 	requireFault(t, err, "not_found")
 	ownerMember := f.member(t, owner, p.ID)
-	_, err = f.memberships.SetRole(ctx, owner, p.ID, owner.UserID, ownerMember.Grant.Version, core.ProjectMemberRole)
+	_, err = f.memberships.SetRole(ctx, owner, p.ID, owner.UserID, SetProjectMemberRole{Version: ownerMember.Grant.Version, Role: core.ProjectMemberRole, ExpectedUserID: owner.UserID})
 	requireFault(t, err, "last_admin")
-	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, owner.UserID, ownerMember.Grant.Version), "last_admin")
-	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, rejoined.Grant.Version), "not_found")
+	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, owner.UserID, RemoveProjectMember{Version: ownerMember.Grant.Version, ExpectedUserID: owner.UserID}), "last_admin")
+	requireFault(t, f.memberships.Remove(ctx, owner, p.ID, member.UserID, RemoveProjectMember{Version: rejoined.Grant.Version, ExpectedUserID: owner.UserID}), "not_found")
 	_, err = f.memberships.List(ctx, owner, uuid.NewString())
 	requireFault(t, err, "not_found")
 	legacy, err := f.database.CreateProject(ctx, uuid.NewString(), "Legacy", "host:repo")
@@ -203,8 +203,8 @@ func TestMembershipConcurrentLastAdministratorChanges(t *testing.T) {
 			f := newMembershipFixture(t)
 			a, b := f.user(t), f.user(t)
 			p := f.project(t, a, "Admin race")
-			bm := f.join(t, a, b, p.ID)
-			bm, err := f.memberships.SetRole(context.Background(), a, p.ID, b.UserID, bm.Grant.Version, core.ProjectAdmin)
+			bm := f.join(t, a, b, p.ID).Grant
+			bm, err := f.memberships.SetRole(context.Background(), a, p.ID, b.UserID, SetProjectMemberRole{Version: bm.Version, Role: core.ProjectAdmin, ExpectedUserID: a.UserID})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -212,16 +212,16 @@ func TestMembershipConcurrentLastAdministratorChanges(t *testing.T) {
 			results := competeTaskWrites(t, f.database, p.ID,
 				func(ctx context.Context) (core.Task, error) {
 					if remove {
-						return core.Task{}, f.memberships.Remove(ctx, a, p.ID, a.UserID, am.Grant.Version)
+						return core.Task{}, f.memberships.Remove(ctx, a, p.ID, a.UserID, RemoveProjectMember{Version: am.Grant.Version, ExpectedUserID: a.UserID})
 					}
-					_, err := f.memberships.SetRole(ctx, a, p.ID, a.UserID, am.Grant.Version, core.ProjectMemberRole)
+					_, err := f.memberships.SetRole(ctx, a, p.ID, a.UserID, SetProjectMemberRole{Version: am.Grant.Version, Role: core.ProjectMemberRole, ExpectedUserID: a.UserID})
 					return core.Task{}, err
 				},
 				func(ctx context.Context) (core.Task, error) {
 					if remove {
-						return core.Task{}, f.memberships.Remove(ctx, b, p.ID, b.UserID, bm.Grant.Version)
+						return core.Task{}, f.memberships.Remove(ctx, b, p.ID, b.UserID, RemoveProjectMember{Version: bm.Version, ExpectedUserID: b.UserID})
 					}
-					_, err := f.memberships.SetRole(ctx, b, p.ID, b.UserID, bm.Grant.Version, core.ProjectMemberRole)
+					_, err := f.memberships.SetRole(ctx, b, p.ID, b.UserID, SetProjectMemberRole{Version: bm.Version, Role: core.ProjectMemberRole, ExpectedUserID: b.UserID})
 					return core.Task{}, err
 				})
 			assertOneTaskWinner(t, results, "last_admin")
@@ -281,15 +281,15 @@ func TestInvitationsLifecycleAndProjectOwnership(t *testing.T) {
 		t.Fatalf("consumed list: %#v %v", active, err)
 	}
 	replacement := f.invite(t, owner, p.ID)
-	promoted, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, joined.Grant.Version, core.ProjectAdmin)
+	promoted, err := f.memberships.SetRole(ctx, owner, p.ID, member.UserID, SetProjectMemberRole{Version: joined.Grant.Version, Role: core.ProjectAdmin, ExpectedUserID: owner.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.memberships.Remove(ctx, member, p.ID, owner.UserID, f.member(t, owner, p.ID).Grant.Version); err != nil {
+	if err := f.memberships.Remove(ctx, member, p.ID, owner.UserID, RemoveProjectMember{Version: f.member(t, owner, p.ID).Grant.Version, ExpectedUserID: member.UserID}); err != nil {
 		t.Fatal(err)
 	}
 	inspection, err := f.memberships.InspectInvitation(ctx, member, replacement.Secret)
-	if err != nil || inspection.Member == nil || inspection.Member.Grant.Version != promoted.Grant.Version {
+	if err != nil || inspection.Member == nil || inspection.Member.Grant.Version != promoted.Version {
 		t.Fatalf("member inspection: %#v %v", inspection, err)
 	}
 	if _, err := f.memberships.AcceptInvitation(ctx, other, replacement.Secret); err != nil {
@@ -372,9 +372,9 @@ func TestMembershipRejectsMissingPrincipalsAndInvalidInputs(t *testing.T) {
 		requireFault(t, err, "unauthenticated")
 		_, err = memberships.List(ctx, p, id)
 		requireFault(t, err, "unauthenticated")
-		_, err = memberships.SetRole(ctx, p, id, id, 1, core.ProjectAdmin)
+		_, err = memberships.SetRole(ctx, p, id, id, SetProjectMemberRole{Version: 1, Role: core.ProjectAdmin, ExpectedUserID: p.UserID})
 		requireFault(t, err, "unauthenticated")
-		requireFault(t, memberships.Remove(ctx, p, id, id, 1), "unauthenticated")
+		requireFault(t, memberships.Remove(ctx, p, id, id, RemoveProjectMember{Version: 1, ExpectedUserID: p.UserID}), "unauthenticated")
 		_, err = memberships.CreateInvitation(ctx, p, id)
 		requireFault(t, err, "unauthenticated")
 		_, err = memberships.ListInvitations(ctx, p, id)
@@ -394,10 +394,21 @@ func TestMembershipRejectsMissingPrincipalsAndInvalidInputs(t *testing.T) {
 		func() error { _, err := memberships.List(ctx, p, "bad"); return err },
 		func() error { _, err := RequireProjectRead(ctx, nil, p, "bad"); return err },
 		func() error { _, err := memberships.CreateInvitation(ctx, p, "bad"); return err },
-		func() error { _, err := memberships.SetRole(ctx, p, id, "bad", 1, core.ProjectAdmin); return err },
-		func() error { _, err := memberships.SetRole(ctx, p, id, id, 0, core.ProjectAdmin); return err },
-		func() error { _, err := memberships.SetRole(ctx, p, id, id, 1, "owner"); return err },
-		func() error { return memberships.Remove(ctx, p, id, id, 0) },
+		func() error {
+			_, err := memberships.SetRole(ctx, p, id, "bad", SetProjectMemberRole{Version: 1, Role: core.ProjectAdmin, ExpectedUserID: p.UserID})
+			return err
+		},
+		func() error {
+			_, err := memberships.SetRole(ctx, p, id, id, SetProjectMemberRole{Version: 0, Role: core.ProjectAdmin, ExpectedUserID: p.UserID})
+			return err
+		},
+		func() error {
+			_, err := memberships.SetRole(ctx, p, id, id, SetProjectMemberRole{Version: 1, Role: "owner", ExpectedUserID: p.UserID})
+			return err
+		},
+		func() error {
+			return memberships.Remove(ctx, p, id, id, RemoveProjectMember{Version: 0, ExpectedUserID: p.UserID})
+		},
 		func() error { return memberships.RevokeInvitation(ctx, p, id, "bad") },
 		func() error {
 			_, err := projects.Create(ctx, p, CreateProject{Name: "", RepoURL: "host:repo"})

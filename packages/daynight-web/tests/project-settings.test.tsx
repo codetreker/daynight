@@ -18,7 +18,7 @@ const now = "2026-10-23T10:00:00Z";
 let serverActor = userId;
 const user = { id: userId, name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
 const project = (minutes = 60, version = 9_007_199_254_740_993n) => ({ id, name: "私有项目 Alpha", repoUrl: "https://github.com/example/repo", createdAt: now, updatedAt: now, settings: { version, executionWarningMinutes: minutes } });
-const members = (role = "admin", actor = userId) => ({ items: [{ projectId: id, userId: actor, name: "Alice", email: "alice@example.com", avatarUrl: null, role, version: 1n, createdAt: now, updatedAt: now }] });
+const members = (role = "admin", actor = userId) => ({ items: [{ userId: actor, profile: { name: "Alice", email: "alice@example.com", avatarUrl: null }, effectiveRole: role, directGrant: { projectId: id, userId: actor, role, version: 1n, createdAt: now, updatedAt: now } }] });
 const json = (body: unknown, status = 200) => wireResponse(body, { status });
 const fail = (status: number, code = "internal_error") => json({ error: { code, message: "private server diagnostic", requestId: "safe-request" } }, status);
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -28,7 +28,7 @@ const install = (handler: (url: string, init: RequestInit) => Response | Promise
     if (!url.endsWith("/access")) { if (url === "/api/v1/me" && response.ok) serverActor = (await response.clone().json()).id; return response; }
     if (!response.ok) { response.headers.set("Daynight-User-ID", userId); return response; }
     const row = (await response.json()).items.find((item: { userId: string }) => item.userId === serverActor);
-    return row === undefined ? wireResponse({ error: { code: "not_found", message: "Denied", requestId: "missing-project-access" } }, { status: 404, headers: { "Daynight-User-ID": serverActor } }) : wireResponse({ effectiveRole: row.role, directGrant: { projectId: row.projectId, userId: row.userId, role: row.role, version: BigInt(row.version), createdAt: row.createdAt, updatedAt: row.updatedAt } }, { headers: { "Daynight-User-ID": row.userId } });
+    return row === undefined ? wireResponse({ error: { code: "not_found", message: "Denied", requestId: "missing-project-access" } }, { status: 404, headers: { "Daynight-User-ID": serverActor } }) : wireResponse({ effectiveRole: row.effectiveRole, directGrant: { ...row.directGrant, version: BigInt(row.directGrant.version) } }, { headers: { "Daynight-User-ID": row.userId } });
   });
   vi.stubGlobal("fetch", fetcher); return fetcher;
 };

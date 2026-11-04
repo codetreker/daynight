@@ -25,6 +25,19 @@ type ProjectMember struct {
 	AvatarURL *string
 }
 
+type ProjectParticipantProfile struct {
+	Name      *string
+	Email     *string
+	AvatarURL *string
+}
+
+type ProjectParticipant struct {
+	UserID        string
+	Profile       ProjectParticipantProfile
+	EffectiveRole ProjectRole
+	DirectGrant   *ProjectGrant
+}
+
 type ProjectAccess struct {
 	ProjectID   string
 	UserID      string

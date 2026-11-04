@@ -14,7 +14,7 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 	integration := newIdentityIntegration(t)
 	alice, bob, anonymous := identityBrowser(t), identityBrowser(t), identityBrowser(t)
 	aliceUser := integration.login(t, alice, "alice")
-	integration.login(t, bob, "bob")
+	bobUser := integration.login(t, bob, "bob")
 	origin := map[string]string{"Origin": integration.server.URL}
 	id := uuid.NewString()
 	path := "/api/v1/me/workers/" + id
@@ -64,17 +64,17 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 		t.Fatal("current member task missing")
 	}
 	_, data = identityRequest(t, bob, http.MethodGet, integration.server.URL+"/api/v1/projects/"+project.ID+"/members", "", nil, http.StatusOK)
-	members := identityDecode[api.ProjectMemberList](t, data)
+	members := identityDecode[api.ProjectParticipantList](t, data)
 	var membershipVersion int64
 	for _, member := range members.Items {
 		if member.UserID == aliceUser.ID {
-			membershipVersion = member.Version
+			membershipVersion = member.DirectGrant.Version
 		}
 	}
 	if membershipVersion == 0 {
 		t.Fatal("observed member missing before revocation")
 	}
-	identityRequest(t, bob, http.MethodDelete, integration.server.URL+"/api/v1/projects/"+project.ID+"/members/"+aliceUser.ID, jsonBody(t, map[string]any{"version": membershipVersion}), origin, http.StatusNoContent)
+	identityRequest(t, bob, http.MethodDelete, integration.server.URL+"/api/v1/projects/"+project.ID+"/members/"+aliceUser.ID, jsonBody(t, api.RemoveProjectMemberRequest{Version: membershipVersion, ExpectedUserID: bobUser.ID}), origin, http.StatusNoContent)
 	_, data = identityRequest(t, alice, http.MethodGet, integration.server.URL+path, "", nil, http.StatusOK)
 	if detail := identityDecode[api.WorkerDetailResponse](t, data); len(detail.Worker.Tasks) != 0 || detail.Worker.ActiveTaskCount == nil || *detail.Worker.ActiveTaskCount != 0 || strings.Contains(string(data), "Hidden after revoke") {
 		t.Fatal("revoked task row, title or count leaked")

@@ -155,11 +155,11 @@ func (s *Memberships) write(ctx context.Context, principal core.Principal, proje
 	return nil
 }
 
-func (s *Memberships) List(ctx context.Context, principal core.Principal, projectID string) ([]core.ProjectMember, error) {
-	var members []core.ProjectMember
+func (s *Memberships) List(ctx context.Context, principal core.Principal, projectID string) ([]core.ProjectParticipant, error) {
+	var members []core.ProjectParticipant
 	err := s.read(ctx, principal, projectID, false, func(snapshot *store.Snapshot) error {
 		var err error
-		members, err = snapshot.ProjectMembers(ctx, projectID)
+		members, err = snapshot.ProjectParticipants(ctx, projectID)
 		return err
 	})
 	return members, err
@@ -204,46 +204,78 @@ func preserveProjectAdmin(ctx context.Context, tx *store.ProjectTx, member core.
 	return nil
 }
 
-func (s *Memberships) SetRole(ctx context.Context, principal core.Principal, projectID, userID string, version int64, role core.ProjectRole) (core.ProjectMember, error) {
-	if err := requirePrincipal(principal); err != nil {
-		return core.ProjectMember{}, err
-	}
-	id, err := validateMemberMutation(userID, version)
+type SetProjectMemberRole struct {
+	Version        int64
+	Role           core.ProjectRole
+	ExpectedUserID string
+}
+
+type RemoveProjectMember struct {
+	Version        int64
+	ExpectedUserID string
+}
+
+func requireMembershipActor(principal core.Principal, expectedUserID string) error {
+	expected, err := CanonicalID(expectedUserID)
 	if err != nil {
-		return core.ProjectMember{}, err
+		return err
 	}
-	if role != core.ProjectAdmin && role != core.ProjectMemberRole {
-		return core.ProjectMember{}, invalidInput("Role must be admin or member.")
+	if expected != expectedUserID {
+		return invalidInput("expectedUserId must be a canonical user UUID")
 	}
-	var result core.ProjectMember
+	if expected != principal.UserID {
+		return &Fault{Code: "identity_mismatch", Message: "The signed-in account changed. Review the project authorization again."}
+	}
+	return nil
+}
+
+func (s *Memberships) SetRole(ctx context.Context, principal core.Principal, projectID, userID string, input SetProjectMemberRole) (core.ProjectGrant, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return core.ProjectGrant{}, err
+	}
+	if err := requireMembershipActor(principal, input.ExpectedUserID); err != nil {
+		return core.ProjectGrant{}, err
+	}
+	id, err := validateMemberMutation(userID, input.Version)
+	if err != nil {
+		return core.ProjectGrant{}, err
+	}
+	if input.Role != core.ProjectAdmin && input.Role != core.ProjectMemberRole {
+		return core.ProjectGrant{}, invalidInput("Role must be admin or member.")
+	}
+	var result core.ProjectGrant
 	err = s.write(ctx, principal, projectID, func(tx *store.ProjectTx) error {
-		member, err := memberMutationTarget(ctx, tx, id, version)
+		member, err := memberMutationTarget(ctx, tx, id, input.Version)
 		if err != nil {
 			return err
 		}
-		if member.Grant.Role == role {
-			result = member
+		if member.Grant.Role == input.Role {
+			result = member.Grant
 			return nil
 		}
 		if err := preserveProjectAdmin(ctx, tx, member); err != nil {
 			return err
 		}
-		result, err = tx.SetMemberRole(ctx, id, role)
+		member, err = tx.SetMemberRole(ctx, id, input.Role)
+		result = member.Grant
 		return err
 	})
 	return result, err
 }
 
-func (s *Memberships) Remove(ctx context.Context, principal core.Principal, projectID, userID string, version int64) error {
+func (s *Memberships) Remove(ctx context.Context, principal core.Principal, projectID, userID string, input RemoveProjectMember) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
-	id, err := validateMemberMutation(userID, version)
+	if err := requireMembershipActor(principal, input.ExpectedUserID); err != nil {
+		return err
+	}
+	id, err := validateMemberMutation(userID, input.Version)
 	if err != nil {
 		return err
 	}
 	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) error {
-		member, err := memberMutationTarget(ctx, tx, id, version)
+		member, err := memberMutationTarget(ctx, tx, id, input.Version)
 		if err != nil {
 			return err
 		}

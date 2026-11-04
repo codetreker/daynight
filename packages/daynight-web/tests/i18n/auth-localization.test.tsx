@@ -18,6 +18,7 @@ const memberId = "00000000-0000-4000-8000-000000000004";
 const timestamp = "2026-10-22T12:34:56Z";
 const user = { id: userId, name: "Raw 用户", email: "raw@example.com", emailVerified: true, avatarUrl: null };
 const member = (id = userId, role = "admin") => ({ projectId, userId: id, name: id === userId ? user.name : "协作者 Raw", email: `${id}@example.com`, avatarUrl: null, role, version: 12, createdAt: timestamp, updatedAt: timestamp });
+const participant = (id = userId, role = "admin") => { const { name, email, avatarUrl, ...directGrant } = member(id, role); return { userId: id, profile: { name, email, avatarUrl }, effectiveRole: role, directGrant }; };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
 const failure = (status: number, code: string) => json({ error: { code, message: "Untrusted server detail", requestId: "auth-locale-request" } }, status);
 const deferred = <T,>() => {
@@ -34,7 +35,7 @@ const defaults = (url: string): Response => {
     const { email: _email, name: _name, avatarUrl: _avatarUrl, ...directGrant } = member();
     return json({ effectiveRole: directGrant.role, directGrant });
   }
-  if (url === `/api/v1/projects/${projectId}/members`) return json({ items: [member(), member(memberId, "member")] });
+  if (url === `/api/v1/projects/${projectId}/members`) return json({ items: [participant(), participant(memberId, "member")] });
   if (url === `/api/v1/projects/${projectId}/invitations`) return json({ items: [] });
   throw new Error(`Unexpected test request: ${url}`);
 };
@@ -212,11 +213,14 @@ describe("authentication language changes", () => {
     expect(within(dialog).getByRole("button", { name: zhCN.auth.management.common.submitPending })).toBeDisabled();
     expect(fetcher).toHaveBeenCalledTimes(requests);
     const mutation = fetcher.mock.calls.find(([, init]) => init?.method === "PATCH")!;
-    expect(mutation[1]!.body).toBe('{"version":12,"role":"admin"}');
+    expect(mutation[1]!.body).toBe(`{"version":12,"role":"admin","expectedUserId":"${userId}"}`);
     expect(mutation[1]!.signal!.aborted).toBe(false);
     await act(async () => pending.resolve(failure(503, "internal_error")));
-    expect(within(dialog).getByRole("alert")).toHaveTextContent(zhCN.auth.management.common.operationFailed);
-    expect(within(dialog).getByText("auth-locale-request")).toBeVisible();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText(zhCN.auth.management.members.grantUnknown)).toBeVisible();
+    expect(screen.getByRole("button", { name: zhCN.auth.management.members.readCurrentMembers })).toBeVisible();
+    expect(screen.getByText("auth-locale-request")).toBeVisible();
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
   });
 
   it.each(["token", "member", "invitation"] as const)("keeps the %s revocation target while translating confirmation and cancellation", async (kind) => {

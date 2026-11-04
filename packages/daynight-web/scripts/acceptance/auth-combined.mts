@@ -1,3 +1,4 @@
+import type { ProjectParticipant } from "../../src/api/auth-types";
 import { selectTaskList } from '../../tests/e2e/project-view.ts';
 import { attachmentFileButton, attachmentFileActions } from '../../tests/e2e/attachment-tree.ts';
 import { createHash, randomUUID } from 'node:crypto';
@@ -99,7 +100,7 @@ const previewUrl = (project: string, task: string, path: string): string => `/ap
 type User = { id: string; name: string; email: string };
 type Project = { id: string; name: string };
 type Task = { id: string; title: string; version: bigint; properties: { pullRequests: { url: string; title: string }[] }; updatedAt: string };
-type Member = { userId: string; role: string; version: bigint };
+type Member = ProjectParticipant;
 type Token = { id: string; token: string };
 type Invitation = { id: string; link: string };
 type Cli = Awaited<ReturnType<typeof createAcceptanceCli>>;
@@ -487,14 +488,14 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await request(alice, origin, 'GET', `/api/v1/projects/${privateProject.id}`, 404);
     const members = await request<{ items: Member[] }>(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200);
     const bobMember = members.items.find((member) => member.userId === bobUser.id);
-    check(bobMember?.role === 'member', 'Invitation did not create a normal member.');
+    check(bobMember?.directGrant?.role === 'member', 'Invitation did not create a normal member.');
     await record('partial-sharing', { aliceId: aliceUser.id, bobId: bobUser.id, sharedProject: shared.id, privateProject: privateProject.id, baselineAlice: a0, baselineBob: b0, pageLimit: 1 });
     const reading = `# Fullscreen reading\n\n${'Browser and installed CLI share this long reading task.\n\n'.repeat(120)}`;
     const task = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${shared.id}/tasks`, 201, { title: 'Combined member task', description: reading });
     const privateTask = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${privateProject.id}/tasks`, 201, { title: 'Private authority control' });
     await request(bob, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 403, {});
-    await request(bob, origin, 'PATCH', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 403, { version: bobMember.version, role: 'admin' });
-    await record('normal-member-writes', { taskId: task.id, privateTaskId: privateTask.id, memberVersion: bobMember.version.toString(), administratorDenial: 403 });
+    await request(bob, origin, 'PATCH', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 403, { version: bobMember.directGrant.version, role: 'admin', expectedUserId: bobUser.id });
+    await record('normal-member-writes', { taskId: task.id, privateTaskId: privateTask.id, memberVersion: bobMember.directGrant.version.toString(), administratorDenial: 403 });
     const originalToken = await bilingualToken(bobPage, bobContext, origin, secrets, signal);
     await screenshots(bobPage, 'account-english-after-secret-close');
     await record('bilingual-token', { tokenId: originalToken.id, requests: 1, pendingInputRetained: true, revealedElementRetained: true, locales: ['en', 'zh-CN', 'en'] });
@@ -602,9 +603,9 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await waitFor(async () => incomplete(await controls.observeUpload(probe(admittedPath)), 1), signal, 'real upload admission');
     check(!admitted.completed && admitted.sentBytes === prefixBytes, 'Admitted upload body was not incomplete.');
     const currentMembers = await request<{ items: Member[] }>(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200);
-    const currentMember = currentMembers.items.find((member) => member.userId === bobUser.id); check(currentMember !== undefined, 'Current member is missing before removal.');
+    const currentMember = currentMembers.items.find((member) => member.userId === bobUser.id); check(currentMember !== undefined && currentMember.directGrant !== null, 'Current direct grant is missing before removal.');
     const removalStarted = performance.now();
-    await request(alice, origin, 'DELETE', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 204, { version: currentMember.version });
+    await request(alice, origin, 'DELETE', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 204, { version: currentMember.directGrant.version, expectedUserId: aliceUser.id });
     const removalMs = performance.now() - removalStarted;
     check(removalMs < 5_000 && !admitted.completed && admitted.sentBytes === prefixBytes, 'Member removal waited for the held upload IO.');
     const removedDuringIO = await controls.observeUpload(probe(admittedPath));

@@ -87,6 +87,9 @@ export const auth: AuthMessages = {
       revokeBody: ({ name }) => `“${name}”将立即无法发起新的请求。使用它的 CLI 或 Agent 需要配置新的令牌。`, revokeLabel: ({ name }) => `撤销令牌 ${name}`,
     },
     members: {
+      grantUnknown: "服务端未确认这次成员变更。请先读取当前成员，再审阅新的变更。",
+      grantObserved: "已读取当前成员；原写入结果仍未确认。请审阅当前单独授权后再操作。",
+      readCurrentMembers: "读取当前成员",
       eyebrow: "项目设置", title: "项目成员", subtitle: ({ projectName }) => `${projectName} · 管理协作成员与加入邀请`, invite: "邀请成员", loading: "正在加载项目成员…",
       memberNotice: "你可以读写项目中的任务和附件。成员与邀请由项目管理员管理。", membersTitle: "成员", accessDescription: "所有成员都可以读写项目资源。", memberColumn: "成员", roleColumn: "项目角色", actionColumn: "操作",
       roleLabel: ({ name }) => `${name} 的项目角色`, removeLabel: ({ name }) => `移除 ${name}`, remove: "移除", lastAdminTitle: "项目必须至少保留一名管理员",
@@ -97,7 +100,7 @@ export const auth: AuthMessages = {
       roleAdminBody: "管理员可以管理项目成员和邀请，并保留全部项目读写权限。", roleMemberBody: "成员可以继续读写项目资源，成员和邀请由管理员管理。", selfDemotionBody: "变更后，你将失去成员管理权限。",
       selfRemovalBody: "移除后，你将无法继续访问这个项目。重新加入需要管理员邀请。", otherRemovalBody: "移除后，对方的浏览器和访问令牌将无法继续访问这个项目。",
       inviteBody: "创建一个单次使用的邀请链接，分享给你希望加入项目的人。对方登录并确认后，以成员身份加入。", inviteTerms: "7 天后到期 · 单次使用 · 加入角色：成员", revokeBody: "撤销后，这个邀请链接将立即失效。",
-      notice: { permissionReloaded: "项目权限已变化，已重新加载最新权限。", conflictReloaded: "成员状态已变化，已重新加载最新权限。请检查后再操作。", permissionChecked: "项目权限已变化，已重新检查你的访问权限。" },
+      notice: { identityChanged: "登录账号已变化。请先确认账号，再管理成员。", permissionReloaded: "项目权限已变化，已重新加载最新权限。", conflictReloaded: "成员状态已变化，已重新加载最新权限。请检查后再操作。", permissionChecked: "项目权限已变化，已重新检查你的访问权限。" },
     },
     settings: {
       eyebrow: "项目设置",

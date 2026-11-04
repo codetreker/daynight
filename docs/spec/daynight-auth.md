@@ -142,15 +142,29 @@ Cookie Origin 准入失败不输出未经准入的用户 ID。该头用于客户
 不增加状态专属角色。生命周期状态、版本和依赖条件由服务需求拥有；项目访问权
 不等同于 Agent 执行或交付的会话授权。
 
-项目/任务 ID、仓库地址与本地绑定不是凭据。成员管理携带所观察到的成员版本，过期
-修改返回 version_conflict；成员版本是独立于 task.version 的不连续正整数观察标识。
-移除后重新加入获得新版本，旧观察仍冲突；无变化角色更新保留版本。最后一位 admin 不能删除或
-降级。旧项目内容、版本、时间、路径和依赖不改变，后续手工添加成员即可使用。
+项目/任务 ID、仓库地址与本地绑定不是凭据。`GET /api/v1/projects/{projectId}/members`
+返回 `{items: ProjectParticipant[]}`。每项包含 `userId`、必填 `profile` 对象、
+`effectiveRole` 和必填可空 `directGrant`；profile 的 name/email/avatarUrl 三个字段必填且可为 null。
+缺少规范用户行是完整性错误，整个读取失败，不能静默删去该来源或伪装成空资料。
+当前直接授权数据返回每人的真实 grant；成员列表中的有效角色不等于可写授权记录。
+
+角色修改与移除读取 `directGrant.role/version`，不使用 effectiveRole 或合成版本。
+grant 版本是独立于 task.version 的不连续正 int64 JSON number；大于 `2^53` 仍须无损。
+`PATCH .../members/{userId}` 接受 `{version,role,expectedUserId}` 并返回真实 ProjectGrant；
+`DELETE` 接受 `{version,expectedUserId}`，成功仍为 204 无正文。服务端在任何领域 SQL 前
+验证 expectedUserId 与实际 principal；错主体返回 409 identity_mismatch，领域行和版本零变化。
+客户端核对成功、拒绝及空响应的 `Daynight-User-ID`，错主体触发现有身份重验，不安装结果。
+未确认的已发送写入保留结果未知与只读核对入口，不自动重放或重新启用原确认；后续读取只证明当前事实。
+
+过期修改返回 version_conflict；移除后重新加入获得新版本，旧观察仍冲突，
+无变化角色更新保留版本。当前最后一位直接 admin 不能删除或降级。
+旧项目内容、版本、时间、路径和依赖不改变，后续手工添加成员即可使用。
 
 邀请固定七天，属于项目，创建者离任不自动撤销。创建时一次显示可复制链接；列表
 只显示元数据和撤销入口。有效期至消费、到期或管理员撤销。接受者必须登录并明确
 确认，GET、链接预览、inspect 和登录跳转不消费。有效邀请只允许查看项目名称等最小
-摘要。接受与消费原子提交，并发只增加一名新成员；已有成员不升级角色且不消费邀请。
+摘要。接受与消费原子提交，并发只增加一名新成员；已有直接成员关系不升级角色且不消费邀请。
+邀请 inspect/accept 保留现有成员结果 DTO，与 participant 名册的读取合同分开。
 
 ## 当前主体的项目权限
 
@@ -291,6 +305,7 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | 缺失、无效、撤销或到期用户凭据 | 401 unauthenticated JSON |
 | 项目不存在或不是成员 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
+| 修改/移除独立项目授权时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
 | 观察版本过期、最后 admin 条件不满足 | 409 version_conflict / last_admin |
 | 生命周期前态不符或前置未完成 | 409 invalid_transition / dependency_unsatisfied |
 | 邀请已消费、到期或撤销 | 410 invitation_unavailable |
