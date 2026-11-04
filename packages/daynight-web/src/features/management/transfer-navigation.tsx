@@ -19,6 +19,7 @@ type TransferResult = {
 export const useTransferNavigation = (admission: TaskCacheScope, user: CurrentUser, refreshProjects: () => void) => {
   const [result, setResult] = useState<TransferResult | null>(null);
   const current = useRef(0);
+  const refresh = useRef(refreshProjects); refresh.current = refreshProjects;
   const active = useRef<AbortController | null>(null);
   useEffect(() => () => { ++current.current; active.current?.abort(); }, []);
 
@@ -57,7 +58,7 @@ export const useTransferNavigation = (admission: TaskCacheScope, user: CurrentUs
     active.current?.abort(); active.current = null;
     const generation = ++current.current;
     const location = window.location.pathname === `/projects/${receipt.projectId}/settings` ? window.location.pathname + window.location.search + window.location.hash : null;
-    refreshProjects();
+    refresh.current();
     setResult({ receipt, navigation: receipt.actorAccess === null ? "checking" : "none", destination: null, error: null });
     if (receipt.actorAccess === null) resolveSource(receipt, generation, location);
   };
