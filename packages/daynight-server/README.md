@@ -5,7 +5,7 @@ foundation is implemented: explicit database and file-storage configuration,
 loopback-only HTTP binding, connection validation, structured request logs, cancellation, and bounded
 HTTP shutdown. Versioned migrations and transactional storage are implemented;
 project/task APIs and built-process acceptance are implemented. The current
-executable serves project, task, task-chain graph, task-summary synchronization
+executable serves Team lifecycle, project, task, task-chain graph, task-summary synchronization
 and account-owned Worker snapshot routes together with the embedded task dashboard.
 Generic bucket/path local storage, task attachment
 metadata and file/preview HTTP endpoints are implemented. Attachment addresses
@@ -336,7 +336,8 @@ diagnostics and cause categories.
 Wildcard, non-loopback, hostname, scoped IPv6, and malformed listen addresses are
 rejected. Callback paths that collide with application routes are rejected during
 configuration and startup validation before route registration; this includes
-`/login`, `/setup` and every descendant path. If an existing callback occupies that
+`/login`, `/setup`, `/teams` and every descendant path, together with the
+`/api/v1/teams` API namespace. If an existing callback occupies that
 namespace, choose another path and register its exact full URL in UniAuth before
 starting the server. Login return loops, including `/login`, are rejected before a
 login transaction is created. An absent return target defaults to `/projects`; a
@@ -675,6 +676,17 @@ Returning an error rolls back fields, properties, dependencies, version and
 timestamps together. Only expose a captured resource after the outer call
 succeeds.
 
+`Store.WriteTeam` locks the real Team row in a `READ COMMITTED` transaction,
+then rechecks the caller's current admin membership. Deletion reads ownership
+with a separate nonlocking `EXISTS` statement after that lock, so it observes
+commits made while waiting. A successful empty check is followed by deleting
+members and Team in the same transaction. Ownership writers lock and recheck
+the same Team before insertion; Team deletion does not acquire existing
+Project, Task or Thread head locks. Team creation atomically stores the creator
+admin membership. Captured write results are published only after confirmed
+transaction completion; the [Team design](../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
+owns the outcome and lock-order details.
+
 `Store.ReadSnapshot` uses read-only `REPEATABLE READ` for project/task queries and
 derived readiness, with membership and resource reads in the same snapshot.
 Project-list membership filtering precedes pagination. Pages use a validated limit and optional `(createdAt, id)`
@@ -759,6 +771,46 @@ saved observations while applying current access and undeleted-task filtering
 to both rows and counts. Completion or reassignment
 does not erase an otherwise visible historical observation. Liveness and recent
 visibility do not control claims or task state.
+
+## Team lifecycle API
+
+The authenticated Team API creates ordinary Teams and reads the caller's joined
+Teams. Current Team administrators can rename an ordinary Team or delete it only
+when no Project ownership references remain. Personal Teams are readable by
+their owner and reject rename and deletion.
+
+| Method | Path | Result |
+|---|---|---|
+| `POST` | `/api/v1/teams` | `201`, Team with creator admin membership and `Location` |
+| `GET` | `/api/v1/teams` | `200`, member-filtered `{items,nextCursor}` page |
+| `GET` | `/api/v1/teams/{teamId}` | `200`, Team and the caller's real membership |
+| `PATCH` | `/api/v1/teams/{teamId}` | `200`, Team after exact-version rename |
+| `DELETE` | `/api/v1/teams/{teamId}` | `200`, `{teamId,deleted:true}` after empty deletion |
+
+Create accepts `name` and `expectedUserId`; rename and delete also require a
+positive int64 `version`. The actor guard runs before domain SQL. Delete matches
+the observed name exactly. Ordinary names preserve valid Unicode and raw
+whitespace, refuse NUL and all-White_Space values, and may repeat. No character
+limit is added beyond the existing request-body limit. Team IDs and actor IDs
+must use canonical lowercase UUIDs. GET supports HEAD; authenticated method
+refusals retain `Allow`, `Daynight-User-ID` and no-store behavior.
+
+Full Team responses add metadata version and UTC timestamps to the stable
+`TeamRef`, plus the caller's real `membership` with its independent version and
+timestamps. The list applies membership before `(createdAt,id)` pagination and
+binds its cursor to the current user; it provides no search or total count.
+No-op rename requires the current version and preserves all metadata. Stale
+versions or a delete-name mismatch return `version_conflict`; Personal changes
+return `personal_team_immutable`, and nonempty deletion returns `team_not_empty`.
+A real rename at the maximum int64 version returns `version_exhausted`, while
+an exact-version same-name no-op still succeeds. An unconfirmed COMMIT returns `503 write_outcome_unknown`; cleanup failure
+retains `500 internal_error`. A lost response is not evidence of rollback and
+does not authorize automatic replay.
+
+The [authentication requirements](../../docs/spec/daynight-auth.md#team-生命周期)
+own the complete public contract. The
+[Team transaction design](../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
+owns existence locking, completion classification and independent versions.
 
 ## Project API
 
