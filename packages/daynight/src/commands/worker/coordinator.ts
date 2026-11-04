@@ -193,7 +193,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     return options.store.registerPending({ ...owner, agent, sessionId: pane !== undefined && liveAgent(pane) && pane.nativeSession !== null ? pane.nativeSession.sessionId : null });
   };
   const runCleanup = async (owner: ResourceOwner, deleteWorktree: boolean, signal?: AbortSignal): Promise<void> => {
-    if (deleteWorktree) ensureCleanupSchedule(options.store, owner, now());
+    const schedule = deleteWorktree ? ensureCleanupSchedule(options.store, owner, now()) : null;
     const local = options.store.getTask(owner);
     const webRecord = options.webStore?.getTask(owner);
     if (webRecord != null && webRecord.worktreeId !== owner.worktreeId) throw new Error("The Web cleanup claim has conflicting worktree identities.");
@@ -219,7 +219,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         return;
       }
       while (true) {
-        const result = await options.webBackend.cleanup(webRecord, deleteWorktree ? "terminal" : "shutdown", now() + 600_000, signal);
+        const result = await options.webBackend.cleanup(webRecord, deleteWorktree ? "terminal" : "shutdown", schedule?.deadline ?? now() + 600_000, signal);
         if (result.cleanup?.agentStopped && result.cleanup.backendResourcesClosed && (!deleteWorktree || result.cleanup.worktreeDeleted)) {
           if (deleteWorktree) { options.webStore.completeTask(owner, now()); if (local) options.store.completeTask(owner); }
           return;

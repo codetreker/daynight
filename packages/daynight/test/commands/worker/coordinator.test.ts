@@ -1365,6 +1365,49 @@ describe("terminal cleanup retry scheduling", () => {
 });
 
 
+it.each([
+  { state: "unexpired schedule", restartedAt: 1000, existingDeadline: null, expectedDeadline: 600_001 },
+  { state: "expired schedule", restartedAt: 600_002, existingDeadline: null, expectedDeadline: 600_002 },
+  { state: "initialized Web cleanup", restartedAt: 1000, existingDeadline: 500, expectedDeadline: 500 },
+])("restores the original Web cleanup budget from an $state after reopening both stores", async ({ restartedAt, existingDeadline, expectedDeadline }) => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
+  const { ensureCleanupSchedule } = await import("../../../src/commands/worker/cleanup-schedule.js");
+  const f = await fixture(), webFile = path.join(f.root, "web.sqlite");
+  let webStore = openWebExecutionStore(webFile);
+  const owner = { projectId: f.project.projectId, taskId: uuid(810), claimId: uuid(811), worktreeId: uuid(812) };
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 0 };
+  f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+  webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration }, 1);
+  const schedule = ensureCleanupSchedule(f.store, owner, 1);
+  if (existingDeadline !== null) webStore.beginCleanup(owner, { kind: "terminal", deadline: existingDeadline }, 2);
+  // A crash may follow the schedule commit before the separate Web cleanup commit.
+  webStore.close();
+  f.reopenStore();
+  webStore = openWebExecutionStore(webFile);
+  expect(f.store.getCleanupSchedule(owner)).toEqual(schedule);
+  expect(webStore.getTask(owner)?.cleanup?.deadline ?? null).toBe(existingDeadline);
+  f.clock(restartedAt);
+  f.candidates.splice(0);
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => restartedAt });
+  const advance = vi.spyOn(backend, "advance");
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [], globalConfiguration: configuration, webStore, webBackend: backend });
+  try {
+    await coordinator.tick();
+    await eventually(() => {
+      expect(f.store.getTask(owner)?.status).toBe("done");
+      expect(f.store.getCleanupSchedule(owner)).toBeNull();
+    });
+    expect(webStore.getTask(owner)).toMatchObject({ status: "done", cleanup: { deadline: expectedDeadline, agentStopped: true, backendResourcesClosed: true, worktreeDeleted: true } });
+    expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+    expect(advance).not.toHaveBeenCalled();
+    expect(launcher.launch).not.toHaveBeenCalled();
+    expect(f.tasks.start).not.toHaveBeenCalled();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+  } finally { await coordinator.shutdown(); webStore.close(); }
+});
+
 it("reuses completed Web stop proof when shutdown follows an interrupted schedule removal", async () => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");

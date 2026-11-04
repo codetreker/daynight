@@ -33,8 +33,11 @@ notification intent before submission and its successful receipt afterward. An
 unknown result cannot be replayed. Failure and restart retain the same deadline
 and submission decision; restart restores cleanup responsibility and verifies
 ownership without starting business execution for an ended claim. Web retains
-its own native cleanup operation, result and deadline; cleanup.error keeps its
-native-result meaning and does not store scheduler failures.
+its own native cleanup operation, result and deadline. Its first cleanup uses
+the saved schedule deadline, including after an interruption between the two
+database commits; an elapsed deadline leaves zero grace time. Already initialized
+Web cleanup keeps its original deadline. cleanup.error keeps its native-result
+meaning and does not store scheduler failures.
 
 Claims retry independently after 1, 2, 4, 8, 16, 32 and then at most 60 seconds.
 Normal reconciliation starts eligible work without sleeping inside a job or
