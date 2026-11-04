@@ -1,0 +1,107 @@
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, expect, it, vi } from "vitest";
+import { AuthenticatedApp } from "../src/app/AuthenticatedApp";
+import { navigate } from "../src/app/router";
+import { createLocaleRender } from "./helpers/renderWithLocale";
+import { personalTeamPage } from "./helpers/team";
+import { directAccessFixture, viewerHeaders } from "./helpers/taskSync";
+import { stringifyWireJson } from "./helpers/wireJson";
+
+const userId = "00000000-0000-4000-8000-000000000001", projectId = "00000000-0000-4000-8000-000000000003", source = "00000000-0000-4000-8000-000000000701", target = "00000000-0000-4000-8000-000000000702";
+const personal = { id: source, kind: "personal" as const, name: null }, targetTeam = { id: target, kind: "ordinary" as const, name: "Destination" };
+const time = "2026-10-22T10:00:00Z";
+const access = { ...directAccessFixture(projectId, userId, "admin"), teamRole: "admin", canTransfer: true };
+const project = { id: projectId, name: "Project", repoUrl: "https://github.com/example/repo", createdAt: time, updatedAt: time, ownership: { teamId: source, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 } };
+const user = { id: userId, name: "Alice", email: null, emailVerified: null, avatarUrl: null, personalTeam: personal };
+const json = (body: unknown, status = 200) => new Response(stringifyWireJson(body), { status, headers: viewerHeaders(userId, { "Content-Type": "application/json" }) });
+const render = createLocaleRender("en");
+beforeEach(() => {
+  window.localStorage.clear(); window.sessionStorage.clear();
+  window.history.replaceState(null, "", `/projects/${projectId}/settings`);
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+});
+
+it("retains an unknown transfer across route changes without replaying it", async () => {
+  const pending = Promise.withResolvers<Response>();
+  let transferSignal: AbortSignal | undefined;
+  const fetcher = vi.fn((url: string, init?: RequestInit) => {
+    if (url === "/api/v1/me") return Promise.resolve(json(user));
+    if (url.startsWith("/api/v1/teams?")) return Promise.resolve(json(personalTeamPage(userId)));
+    if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: [project], nextCursor: null }));
+    if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
+    if (url === `/api/v1/projects/${projectId}/access`) return Promise.resolve(json(access));
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return Promise.resolve(json({ sourceTeam: personal, targetTeam: { ...targetTeam, version: 1n }, ownership: project.ownership, actorRole: null }));
+    if (url === `/api/v1/projects/${projectId}/transfer`) { transferSignal = init?.signal as AbortSignal; return pending.promise; }
+    if (url.startsWith("/api/v1/workers")) return Promise.resolve(json({ items: [], nextCursor: null }));
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher);
+  render(<AuthenticatedApp />);
+  fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }));
+  const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
+  fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target } });
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Confirm transfer" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Confirm transfer" }));
+  await waitFor(() => expect(transferSignal).toBeDefined());
+  act(() => navigate("/workers"));
+  expect(transferSignal!.aborted).toBe(false);
+  await act(async () => pending.reject(new Error("lost response")));
+  expect(window.location.pathname).toBe("/workers");
+  act(() => navigate(`/projects/${projectId}/settings`));
+  const reopened = await screen.findByRole("dialog", { name: "Transfer project" });
+  expect(within(reopened).getByRole("alert")).toHaveTextContent("transfer result is unknown");
+  expect(within(reopened).queryByRole("button", { name: "Confirm transfer" })).toBeNull();
+  expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
+});
+
+it("discards an ordinary settings draft when leaving and reloads on return", async () => {
+  const fetcher = vi.fn((url: string) => {
+    if (url === "/api/v1/me") return Promise.resolve(json(user));
+    if (url.startsWith("/api/v1/teams?")) return Promise.resolve(json(personalTeamPage(userId)));
+    if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: [project], nextCursor: null }));
+    if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
+    if (url === `/api/v1/projects/${projectId}/access`) return Promise.resolve(json(access));
+    if (url.startsWith("/api/v1/workers")) return Promise.resolve(json({ items: [], nextCursor: null }));
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
+  const field = await screen.findByLabelText("Alert threshold"); await waitFor(() => expect(field).toBeEnabled());
+  fireEvent.change(field, { target: { value: "90" } });
+  act(() => navigate("/workers")); act(() => navigate(`/projects/${projectId}/settings`));
+  const restored = await screen.findByLabelText("Alert threshold"); await waitFor(() => expect(restored).toHaveValue(60));
+  expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`)).toHaveLength(2);
+});
+
+it("retains a definite rejection that arrives after leaving the settings page", async () => {
+  const pending = Promise.withResolvers<Response>();
+  const fetcher = vi.fn((url: string) => {
+    if (url === "/api/v1/me") return Promise.resolve(json(user));
+    if (url.startsWith("/api/v1/teams?")) return Promise.resolve(json(personalTeamPage(userId)));
+    if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: [project], nextCursor: null }));
+    if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
+    if (url === `/api/v1/projects/${projectId}/access`) return Promise.resolve(json(access));
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return Promise.resolve(json({ sourceTeam: personal, targetTeam: { ...targetTeam, version: 1n }, ownership: project.ownership, actorRole: null }));
+    if (url === `/api/v1/projects/${projectId}/transfer`) return pending.promise;
+    if (url.startsWith("/api/v1/workers")) return Promise.resolve(json({ items: [], nextCursor: null }));
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
+  fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }));
+  const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
+  fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target } });
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Confirm transfer" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Confirm transfer" }));
+  await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.endsWith("/transfer"))).toBe(true));
+  act(() => navigate("/workers"));
+  await act(async () => pending.resolve(json({ error: { code: "forbidden", message: "No permission", requestId: "request-denied" } }, 403)));
+  expect(window.location.pathname).toBe("/workers");
+  act(() => navigate(`/projects/${projectId}/settings`));
+  const reopened = await screen.findByRole("dialog", { name: "Transfer project" });
+  expect(within(reopened).getByRole("alert")).toHaveTextContent("request-denied");
+  expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
+});
