@@ -1,5 +1,6 @@
 import { assertResponsePrincipal, json, request, requestId, type TaskResponseAdmission } from "./client";
-import { isTaskVersion } from "./json";
+import { isTaskVersion, stringifyApiJson } from "./json";
+import { ApiError } from "./client";
 import { id, malformed, record, string, timestamp } from "./validation";
 
 export type StepStatus = "todo" | "in_progress" | "done" | "skipped";
@@ -46,13 +47,30 @@ export const parseTaskSteps = (value: unknown, projectId: string, taskId: string
   return { projectId, taskId, version: data.version, steps };
 };
 
-export const getTaskSteps = async (projectId: string, taskId: string, signal: AbortSignal, admission: TaskResponseAdmission): Promise<StepsResource> => {
+export const getTaskSteps = async (projectId: string, taskId: string, signal: AbortSignal, admission: TaskResponseAdmission, correlationId?: string): Promise<StepsResource> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
-  const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps`, signal, { headers: { Accept: "application/json" } });
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps`, signal, { headers: { Accept: "application/json", ...(correlationId === undefined ? {} : { "X-Request-ID": correlationId }) } });
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   return json(response, signal, (value) => {
     if (response.status !== 200) return malformed();
     return parseTaskSteps(value, project, task);
+  }, undefined, true);
+};
+
+export const setTaskStepStatus = async (projectId: string, taskId: string, stepId: string, status: StepStatus, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission, correlationId: string): Promise<StepsResource> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  const target = stepId.toLowerCase();
+  if (!/^[0-9a-f]{8}$/.test(target) || !isTaskVersion(version) || !["todo", "in_progress", "done", "skipped"].includes(status)) throw new ApiError("protocol");
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}/steps/${target}/status`, signal, {
+    method: "PUT", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Request-ID": correlationId }, body: stringifyApiJson({ version, status }),
   });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
+  return json(response, signal, (value) => {
+    const result = parseTaskSteps(value, project, task);
+    if (response.status !== 200 || result.version !== version && result.version !== version + 1n || result.steps.find((step) => step.id === target)?.status !== status) throw new ApiError("protocol", response.status);
+    return result;
+  }, undefined, true);
 };
