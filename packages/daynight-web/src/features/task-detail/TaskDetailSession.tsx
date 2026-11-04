@@ -944,8 +944,12 @@ export class TaskDetailSessions {
             entry.steps.parentRequested = floor === null ? null : { floor, opening: entry.openingGeneration };
             this.publish(entry, { ...entry.state, requiresFreshRead: true, mutation: { operation, phase: "confirmed", error: null, reconciling: true, reconciliationError: null } });
             await this.acceptSteps(entry, result, requestTicket, entry.steps.generation, signal);
-            this.refreshProject(projectId);
-            void this.read(projectId, taskId, entry.state.revision, false, true);
+            await this.runMutationStage(projectId, taskId, operation, () => {
+              if (this.disposed || entry.state.status === "deleted" || !entry.admitted ||
+                entry.observedGeneration !== requestTicket.cacheGeneration || !this.mutationIsCurrent(projectId, entry, operation, requestTicket)) return;
+              this.refreshProject(projectId);
+              void this.read(projectId, taskId, entry.state.revision, false, true);
+            });
           });
           return;
         }
