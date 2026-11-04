@@ -11,8 +11,8 @@ type State = { readonly key: string | null; readonly detail: Detail };
 export type TeamPreference = ReturnType<typeof useTeamPreference>;
 const PreferenceContext = createContext<TeamPreference | null>(null);
 
-export const TeamPreferenceProvider = ({ personal, routeKey, admission, blocked, preserveOnRevalidation = false, children }: { readonly personal: TeamRef; readonly routeKey: string | null; readonly admission: TaskCacheScope; readonly blocked: boolean; readonly preserveOnRevalidation?: boolean; readonly children: ReactNode }) => {
-  const preference = useTeamPreference(personal, routeKey, admission, blocked, preserveOnRevalidation);
+export const TeamPreferenceProvider = ({ personal, routeKey, admission, blocked, preserveOnRevalidation = false, guardUnavailable, children }: { readonly personal: TeamRef; readonly routeKey: string | null; readonly admission: TaskCacheScope; readonly blocked: boolean; readonly preserveOnRevalidation?: boolean; readonly guardUnavailable?: (teamId: string) => boolean; readonly children: ReactNode }) => {
+  const preference = useTeamPreference(personal, routeKey, admission, blocked, preserveOnRevalidation, guardUnavailable);
   return createElement(PreferenceContext.Provider, { value: preference }, children);
 };
 export const useCurrentTeamPreference = () => {
@@ -24,7 +24,7 @@ export const useCurrentTeamPreference = () => {
 // The key is scoped to the authenticated user; localStorage is already origin-scoped.
 export const teamPreferenceKey = (userId: string) => `daynight.selectedTeam:${userId}`;
 
-export const useTeamPreference = (personal: TeamRef, routeKey: string | null, admission: TaskCacheScope, blocked: boolean, preserveOnRevalidation = false) => {
+export const useTeamPreference = (personal: TeamRef, routeKey: string | null, admission: TaskCacheScope, blocked: boolean, preserveOnRevalidation = false, guardUnavailable?: (teamId: string) => boolean) => {
   const [state, setState] = useState<State>(() => ({ key: null, detail: { id: personal.id, status: "ready", team: personal } }));
   const current = useRef<TeamRef>(personal);
   const pendingSave = useRef<TeamRef | null>(null);
@@ -97,6 +97,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
         try { await admission.ready(signal); } catch { return; }
         if (!valid()) return;
         if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
+          if (guardUnavailable?.(id)) { fail(id, error); return; }
           try {
             const storageKey = teamPreferenceKey(admission.userId);
             const saved = window.localStorage.getItem(storageKey);
@@ -113,7 +114,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
       }
     })();
     return () => controller.abort();
-  }, [routeKey, epoch, navigation, blocked, revision, admission, personal.id, personal.kind, personal.name, save, retry, preserveOnRevalidation]);
+  }, [routeKey, epoch, navigation, blocked, revision, admission, personal.id, personal.kind, personal.name, save, retry, preserveOnRevalidation, guardUnavailable]);
   const acceptTeam = useCallback((team: Team) => {
     if (admission.isInvalidated || current.current.id !== team.id) return;
     current.current = team;
@@ -131,6 +132,13 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
       return "forgotten";
     } catch { return "storage_error"; }
   }, [admission, personal]);
+  const leaveTeam = useCallback((id: string) => {
+    const key = routeRef.current.key;
+    if (admission.isInvalidated || current.current.id !== id || key !== null && key !== "default" && key !== id) return;
+    current.current = personal;
+    save(personal);
+    if (key === "default") retry();
+  }, [admission, personal, save, retry]);
   const detail: Detail = routeKey === null ? { id: current.current.id, status: "ready", team: current.current } : state.key !== routeKey ? { id: routeKey === "default" ? current.current.id : routeKey, status: "loading" } : state.detail;
-  return { detail, retry, saveError, retrySave, acceptTeam, forgetUnavailable };
+  return { detail, retry, saveError, retrySave, acceptTeam, forgetUnavailable, leaveTeam };
 };
