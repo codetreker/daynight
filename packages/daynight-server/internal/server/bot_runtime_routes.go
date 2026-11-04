@@ -1,0 +1,62 @@
+package server
+
+import (
+	"net/http"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+)
+
+func (h *sessionRoutes) registerBotRuntimeRoutes(mux *http.ServeMux) {
+	const base = "/api/v1/me/workers/{workerId}/bots/{botId}/"
+	for action, handler := range map[string]AuthenticatedHandler{
+		"register": h.registerBot, "grant": h.grantBot, "report": h.reportBot,
+	} {
+		mux.HandleFunc("POST "+base+action, h.auth.Require(h.parameters(handler)))
+		mux.HandleFunc(base+action, h.auth.Require(resourceMethodNotAllowed(h.logger, "POST")))
+	}
+}
+
+func (h *sessionRoutes) registerBot(w http.ResponseWriter, r *http.Request, p core.Principal) {
+	body, err := relayBody(w, r)
+	if err != nil {
+		h.failure(w, r, err)
+		return
+	}
+	input, err := botRegisterInput(body)
+	if err != nil {
+		h.failure(w, r, err)
+		return
+	}
+	result, err := h.service.RegisterBot(r.Context(), p, r.PathValue("workerId"), r.PathValue("botId"), input)
+	h.result(w, r, http.StatusOK, map[string]any{"bot": botResponse(result.Bot), "session": result.Session}, err)
+}
+
+func (h *sessionRoutes) grantBot(w http.ResponseWriter, r *http.Request, p core.Principal) {
+	body, err := relayBody(w, r)
+	if err != nil {
+		h.failure(w, r, err)
+		return
+	}
+	input, err := botGrantInput(body)
+	if err != nil {
+		h.failure(w, r, err)
+		return
+	}
+	result, err := h.service.GrantBot(r.Context(), p, r.PathValue("workerId"), r.PathValue("botId"), input)
+	h.result(w, r, http.StatusOK, result, err)
+}
+
+func (h *sessionRoutes) reportBot(w http.ResponseWriter, r *http.Request, p core.Principal) {
+	body, err := relayBody(w, r)
+	if err != nil {
+		h.failure(w, r, err)
+		return
+	}
+	input, err := botReportInput(body)
+	if err != nil {
+		h.failure(w, r, err)
+		return
+	}
+	result, err := h.service.ReportBot(r.Context(), p, r.PathValue("workerId"), r.PathValue("botId"), input)
+	h.result(w, r, http.StatusOK, botResponse(result), err)
+}

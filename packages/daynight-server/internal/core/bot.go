@@ -16,6 +16,7 @@ type Bot struct {
 	ResolvedConfiguration BotConfiguration
 	RoleConfiguration     *BotRoleConfiguration
 	SessionID             *string
+	TestExecutionID       *string
 	StartupResult         BotStartupResult
 	Deletion              *BotDeletion
 	CreatedAt             time.Time
