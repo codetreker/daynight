@@ -61,12 +61,6 @@ func invitationWriteError(w http.ResponseWriter, request *http.Request, logger *
 	writeError(w, request, logger, "membership", phase, err)
 }
 
-func memberResponse(member core.ProjectMember) api.ProjectMember {
-	return api.ProjectMember{ProjectID: member.Grant.ProjectID, UserID: member.Grant.UserID, Email: member.Email,
-		Name: member.Name, AvatarURL: member.AvatarURL, Role: string(member.Grant.Role), Version: member.Grant.Version,
-		CreatedAt: member.Grant.CreatedAt.UTC(), UpdatedAt: member.Grant.UpdatedAt.UTC()}
-}
-
 func participantResponse(participant core.ProjectParticipant) api.ProjectParticipant {
 	var direct *api.ProjectGrant
 	if grant := participant.DirectGrant; grant != nil {

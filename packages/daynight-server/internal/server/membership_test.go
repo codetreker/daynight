@@ -345,6 +345,25 @@ func TestInvitationUnknownTransactionOutcomeIsExplicitAndSafe(t *testing.T) {
 	}
 }
 
+func TestInvitationInspectRejectsMalformedJSONWithoutDisclosingToken(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	routes := &MembershipRoutes{logger: logger}
+	for _, body := range []string{`{"token":"secret","extra":true}`, `{"token":"secret","token":"second"}`, `{"token":"secret"`} {
+		request := httptest.NewRequest("POST", "/api/v1/invitations/inspect", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Request-ID", "project-test")
+		response := httptest.NewRecorder()
+		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			routes.inspectInvitation(w, r, core.Principal{})
+		})).ServeHTTP(response, request)
+		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+		if strings.Contains(response.Body.String(), "secret") || strings.Contains(logs.String(), "secret") {
+			t.Fatal("malformed inspection disclosed the token")
+		}
+	}
+}
+
 func TestMembershipHTTPStrictInputAndErrorMapping(t *testing.T) {
 	h := membershipTestHarness(t)
 	base := "/api/v1/projects/" + h.project.ID
