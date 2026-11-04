@@ -24,7 +24,10 @@ Native macOS support is limited to Apple Silicon (ARM64). Intel macOS is
 unsupported. The [client requirements](../../../../docs/spec/daynight.md#c1-包与平台)
 own that platform boundary for CLI, Worker, Controller and Review.
 The [checks workflow](../../../../.github/workflows/checks.yml) selects the
-standard `macos-26` runner and verifies Darwin ARM64 before native validation.
+standard `macos-26` runner for each native validation phase and verifies Darwin
+ARM64 independently before ordinary tests and installed acceptance. The
+[phase decision](2026-11-04-parallel-native-cli-validation.md) owns their parallel
+execution and separate evidence.
 The [official image catalog](https://github.com/actions/runner-images/blob/a2d4955654f519bd5b559bffaea60d9f90156630/README.md#L32)
 and [standard runner table](https://github.com/github/docs/blob/396218f23a6e3fa24d173ebfa74b3499adde67a3/data/reusables/actions/supported-github-runners.md#L83-L87)
 identify that label as macOS 26 ARM64. It preserves the OS major version and
@@ -34,8 +37,9 @@ This supersedes the Intel runner selection and architecture-independent support
 premise in the [hosted capacity decision](2026-11-03-macos-hosted-runner-capacity.md).
 Its pnpm setup bootstrap correction, supported executable-link preference,
 case-owned preparation and bounded cleanup remain in effect. Linux and Windows
-validation, application dependencies and native hook, callback, command and job
-limits retain their existing settings. Task-platform values remain OS enums.
+validation, application dependencies and native hook, callback and command
+limits retain their existing settings. Each native phase retains a 10-minute
+job limit; phase separation changes the aggregate budget and bootstrap cost. Task-platform values remain OS enums.
 
 ## Alternatives
 
