@@ -63,6 +63,9 @@ export const verifySessionStatus = async (page: Page, api: AuthenticatedAPI, ori
           title: await rectangle(row(index).locator('.root-title')), state: await rectangle(status(index).locator('.root-status')) }))),
       });
       const before = await measure();
+      const visibleScreenshot = info.outputPath(`session-status-visible-${viewport.width}.png`);
+      await page.screenshot({ path: visibleScreenshot, fullPage: true });
+      await info.attach(`session-status-visible-${viewport.width}`, { path: visibleScreenshot, contentType: 'image/png' });
       expect(await badge(status(0)).evaluate(node => {
         const style = getComputedStyle(node);
         return { font: style.fontFamily, size: style.fontSize, style: style.fontStyle, background: style.backgroundColor, border: style.borderTopWidth };
@@ -91,7 +94,7 @@ export const verifySessionStatus = async (page: Page, api: AuthenticatedAPI, ori
       await expect(badge(status(index))).toHaveText(['working', 'notice', 'warning'][index]!, { timeout: 15_000 });
       if (index === 0) {
         await status(index).focus();
-        await expect(page.getByRole('tooltip')).toBeVisible();
+        await expect(page.getByRole('tooltip', { name: '会话工作中，打开 Session', exact: true })).toBeVisible();
         await page.keyboard.press('Enter');
       } else if (index === 1) {
         await status(index).scrollIntoViewIfNeeded();
