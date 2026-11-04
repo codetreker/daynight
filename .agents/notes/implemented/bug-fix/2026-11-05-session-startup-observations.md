@@ -19,6 +19,12 @@ through the existing claim update. Reporting remains independent of execution
 recovery and does not send native input. The [protocol design](../../../../docs/design/task-session-protocol.md#启动观察的独立上报)
 owns fields, ordering, permissions and compatibility.
 
+Provider adapters normalize proven SDK initialization rejections before cleanup.
+Copilot remote RPC errors and Claude structured control-response errors do not
+share the native RPC error class; SDK transport errors must retain uncertainty.
+Cleanup failures remain private diagnostics and cannot replace the original
+startup outcome or establish a process stop proof.
+
 A protected, separate task property stores the report. An explicitly negotiated
 current response exposes only the matching claim, Session, generation and
 Controller instance. Existing Worker and Session snapshot shapes remain stable.

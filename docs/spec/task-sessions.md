@@ -61,7 +61,7 @@ Copilot 的 model 或 effort 未指定时保留原生默认值，不补造模型
 
 ## 启动结果与恢复阻断
 
-Web Task Session 必须提供与当前 claim、Session、executionGeneration 和 controllerInstanceId 绑定的启动观察及独立恢复阻断。明确原生拒绝或操作系统拒绝启动才能记为失败；初始化超时、传输中断及证据缺失保持结果未知。原生初始化完整完成后才能确认 ready，早到的 idle 通知不能替代完成证据。ready 表示本代曾完成启动，不代表当前连接仍可用。
+Web Task Session 必须提供与当前 claim、Session、executionGeneration 和 controllerInstanceId 绑定的启动观察及独立恢复阻断。明确原生拒绝或操作系统拒绝启动才能记为失败；初始化超时、传输中断及证据缺失保持结果未知。原生初始化完整完成后才能确认 ready，早到的 idle 通知不能替代完成证据。ready 表示本代曾完成启动，不代表当前连接仍可用。Codex、Copilot 和 Claude 的明确初始化拒绝遵守同一分类，SDK 传输异常不因共用错误类型被误判为拒绝；失败清理不能覆盖原始启动分类或绕过停止证明。
 
 Worker 即使无法通过 Controller relay 连接服务，也须通过既有认领更新上报其持久本机事实；首次 hello 前的故障不能永远停留为正常 initializing。恢复缺失原生身份、预算耗尽或其他安全门禁须保留独立原因，不用恢复受阻覆盖未知启动结果。摘要只包含稳定原因码，安全文字由固定映射生成，不暴露原始凭据、私有路径、完整日志或输入。
 

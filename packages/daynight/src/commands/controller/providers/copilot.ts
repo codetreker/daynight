@@ -1,5 +1,6 @@
 import { CopilotControls } from "./controls-copilot.js";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { realpath, stat } from "node:fs/promises";
 import type { CopilotClient, CopilotSession, SessionConfig, SessionEvent } from "@github/copilot-sdk";
 import { NativeRpcError, record, string } from "./native-rpc.js";
@@ -9,6 +10,14 @@ import { CopilotInteractions } from "./copilot-interactions.js";
 import { CopilotProjection, copilotOwner } from "./copilot-projection.js";
 import { copilotDeadline, startCopilotRuntime } from "./copilot-runtime.js";
 import type { NativeProvider, ProviderOptions, ProviderReceipt, ProviderState } from "./types.js";
+import { ControllerStartupError } from "../startup.js";
+
+// Resolve the SDK's own RPC constructor; its local transport errors also use ResponseError.
+const { ResponseError, ErrorCodes } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as {
+  ResponseError: new (...args: never[]) => Error & { code: number };
+  ErrorCodes: { MessageWriteError: number; MessageReadError: number; PendingResponseRejected: number; ConnectionInactive: number };
+};
+const transportErrors = new Set([ErrorCodes.MessageWriteError, ErrorCodes.MessageReadError, ErrorCodes.PendingResponseRejected, ErrorCodes.ConnectionInactive]);
 
 export const openCopilotProvider = async (options: ProviderOptions): Promise<NativeProvider> => {
   const args = parseProviderArguments("copilot", options.args), cwd = await realpath(options.cwd);
@@ -139,7 +148,12 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       if (polling || closed || disconnected || !client) return; polling = true;
       void call(client.ping(), "Copilot connection health", 5000).catch(() => disconnect(new Error("Native Copilot connection lost; operation results are unknown."))).finally(() => { polling = false; });
     }, 5000); heartbeat.unref();
-  } catch (error) { await close(); throw error; }
+  } catch (error) {
+    const failure = error instanceof ResponseError && !transportErrors.has(error.code)
+      ? new ControllerStartupError({ state: "failed", reasonCode: "native_rejected" }, error.message, { cause: error }) : error;
+    try { await close(); } catch { options.onDiagnostic?.("Copilot startup cleanup failed; native process stop remains unconfirmed."); }
+    throw failure;
+  }
   const send = async (text: string, operationId: string, expectedTurnId: string | null, displayPrompt?: string): Promise<ProviderReceipt> => {
       if (closed || disconnected || dispatching || currentTurnId !== expectedTurnId || interactions.waiting) throw new NativeRpcError(-32602, "Native Copilot turn changed or cannot accept input.");
       const steering = currentTurnId !== null;

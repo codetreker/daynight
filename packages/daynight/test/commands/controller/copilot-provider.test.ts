@@ -2,6 +2,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import { startupFailure } from "../../../src/commands/controller/startup.js";
+import { NativeRpcTimeoutError } from "../../../src/commands/controller/providers/native-rpc.js";
 import type { ProviderEntry, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
 const sdk = vi.hoisted(() => ({ construct: vi.fn(), connection: vi.fn((url, options) => ({ kind: "uri", url, ...options })) }));
 const processMock = vi.hoisted(() => ({ spawn: vi.fn() }));
@@ -30,6 +33,24 @@ function setup() {
 }
 beforeEach(() => { vi.clearAllMocks(); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
+
+const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (code: number, message: string) => Error };
+test.each([-32099, -32098, -32097, -32096])("Copilot SDK local transport error %s remains unknown", async code => {
+  fixture.client.createSession.mockRejectedValue(new ResponseError(code, "Local transport failed"));
+  const error = await openCopilotProvider(fixture.options).catch(error => error);
+  expect(startupFailure(error)).toEqual({ state: "unknown", reasonCode: "native_transport_unknown" });
+});
+
+test.each(["reject", "timeout"])("Copilot cleanup failure preserves the original startup %s without asserting stopped", async mode => {
+  fixture.client.createSession.mockRejectedValue(mode === "reject" ? new ResponseError(-32602, "Native initialization rejected") : new NativeRpcTimeoutError("session.create"));
+  fixture.child.kill.mockImplementation(() => { throw new Error("Fixture stop failed"); });
+  const diagnostics: string[] = [];
+  const error = await openCopilotProvider({ ...fixture.options, onDiagnostic: message => diagnostics.push(message) }).catch(error => error);
+  expect(startupFailure(error)).toEqual(mode === "reject" ? { state: "failed", reasonCode: "native_rejected" } : { state: "unknown", reasonCode: "native_timeout" });
+  expect(diagnostics.some(message => /stop|cleanup/i.test(message))).toBe(true);
+  expect(fixture.states.some(state => state.activity === "stopped")).toBe(false);
+  expect(fixture.child.signalCode).toBeNull();
+});
 
 test.each([false, true])("Copilot appends the exact role without an initial user turn (resume=%s)", async resume => {
   const instructions = "  Daynight 助手\nKeep native defaults. 😀 e\u0301\n", id = resume ? randomUUID() : null;

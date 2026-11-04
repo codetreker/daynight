@@ -3,9 +3,10 @@ import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
 import type { ProviderOptions } from "./types.js";
+import { NativeRpcTimeoutError } from "./native-rpc.js";
 
 export const copilotDeadline = <T>(promise: Promise<T>, label: string, ms = 30_000): Promise<T> => new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`${label} timed out; its result is unknown.`)), ms);
+  const timer = setTimeout(() => reject(new NativeRpcTimeoutError(label)), ms);
   promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
 });
 
