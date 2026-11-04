@@ -1,6 +1,6 @@
 import { parseApiJson } from "./json.js";
 import { jsonObjectSources } from "./json-source.js";
-import type { AddTaskStepInput, StepResource, StepsResource, TaskStep, TaskStepStatus } from "./types.js";
+import type { AddTaskStepInput, MoveTaskStepInput, StepResource, StepsResource, TaskStep, TaskStepStatus } from "./types.js";
 import { array, fields, id, malformed, resourceVersion, text, timestamp } from "./validation.js";
 
 export const TASK_STEPS_RESPONSE_BYTES = 64 * 1024 * 1024;
@@ -76,4 +76,29 @@ export const confirmAddedTaskStep = (resource: StepsResource, input: AddTaskStep
     })) return malformed();
   }
   return input.id;
+};
+
+export const confirmMovedTaskStep = (resource: StepsResource, targetId: string, input: MoveTaskStepInput, previous?: StepsResource): string => {
+  if (resource.version !== input.version && resource.version !== input.version + 1n) return malformed();
+  const index = resource.steps.findIndex((step) => step.id === targetId);
+  if (index < 0) return malformed();
+  if (input.before !== undefined) {
+    const anchor = resource.steps.findIndex((step) => step.id === input.before);
+    if (anchor < 0 || index + 1 !== anchor) return malformed();
+  } else if (input.after !== undefined) {
+    const anchor = resource.steps.findIndex((step) => step.id === input.after);
+    if (anchor < 0 || index !== anchor + 1) return malformed();
+  } else if (index !== (input.position === "first" ? 0 : resource.steps.length - 1)) return malformed();
+  if (previous !== undefined) {
+    const oldIndex = previous.steps.findIndex((step) => step.id === targetId);
+    if (oldIndex < 0 || resource.steps.length !== previous.steps.length) return malformed();
+    const expected = previous.steps.filter((step) => step.id !== targetId);
+    expected.splice(index, 0, previous.steps[oldIndex]!);
+    if (resource.version !== input.version + (oldIndex === index ? 0n : 1n)
+      || resource.steps.some((step, position) => {
+        const old = expected[position]!;
+        return step.id !== old.id || step.title !== old.title || step.description !== old.description || step.status !== old.status || step.createdAt !== old.createdAt || step.updatedAt !== old.updatedAt;
+      })) return malformed();
+  }
+  return targetId;
 };

@@ -31,6 +31,13 @@ export type AddTaskStepInput = {
 };
 export type TaskStepsReadOptions = { readonly requestId: string };
 export type AddTaskStepOptions = TaskStepsReadOptions & { readonly previous?: StepsResource };
+export type MoveTaskStepInput = {
+  readonly version: bigint;
+  readonly before?: string;
+  readonly after?: string;
+  readonly position?: "first" | "last";
+};
+export type MoveTaskStepOptions = TaskStepsReadOptions & { readonly previous?: StepsResource };
 
 export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskPlatform = "windows" | "linux" | "macos";

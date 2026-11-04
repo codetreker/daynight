@@ -106,7 +106,7 @@ export const taskDefinition: CommandDefinition = {
     },
     {
       name: "step",
-      description: "Read and add task-owned Steps independently from Sessions",
+      description: "Read, add and move task-owned Steps independently from Sessions",
       options: [helpOption],
       commands: [
         {
@@ -137,6 +137,19 @@ export const taskDefinition: CommandDefinition = {
             versionOption, projectOption, jsonOption, helpOption,
           ],
           details: "Without an anchor, append to the saved order. --before and --after are mutually exclusive. Same titles create independent records; an existing ID is a conflict and is never regenerated or retried. Without --if-version, read the current Steps version before one POST. An explicit project/version performs one POST without parent pre-reads. Unknown results retain the original ID and request UUID; at most one same-operation read observes current facts, never historical attribution or a retry. --json prints only the complete confirmed collection.",
+        },
+        {
+          name: "move",
+          description: "Move one Step and return the complete confirmed collection",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }],
+          options: [
+            { names: ["--before"], description: "Move immediately before another Task-local Step", value: { name: "step-id", kind: "text" } },
+            { names: ["--after"], description: "Move immediately after another Task-local Step", value: { name: "step-id", kind: "text" } },
+            { names: ["--first"], description: "Move to the beginning of the saved order" },
+            { names: ["--last"], description: "Move to the end of the saved order" },
+            versionOption, projectOption, jsonOption, helpOption,
+          ],
+          details: "Exactly one of --before, --after, --first or --last is required. Anchors must be another Step in the same Task. Moving to the current position is a no-op; all Step content and timestamps remain unchanged. Without --if-version, read complete Steps before one PUT; an explicit project/version performs one PUT without pre-reads. A confirmed resource must match the requested position and no-op/+1 version. Unknown results retain original identities and request UUID; at most one correlated read observes current facts, without replay. --json prints only the complete confirmed collection.",
         },
       ],
       details: "Without --project, resolve the current Git origin. An explicit project UUID avoids project or Task pre-reads and works outside a repository. Step IDs are Task-local eight-character identities, not prefixes or display numbers. Run daynight task step <command> --help for usage.",

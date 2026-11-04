@@ -168,15 +168,17 @@ Steps 错误分类先检查事务/cleanup 的内部故障，再映射纯业务 F
 
 ## CLI 与指令资源
 
-`task step` 在通用 task handler 前分派，已交付 list/show/add；定义树同时生成这三个命令的帮助与 Bash/zsh 补全。四状态 Step 类型独立于 Task。`step-add.ts` 拥有参数与结果输出，`step-write.ts` 和 `step-write-errors.ts` 拥有 Add 实际使用的版本分支、不可变身份与结果事实；没有未来操作注册器。
+`task step` 在通用 task handler 前分派，已交付 list/show/add/move；定义树同时生成这些命令的帮助与 Bash/zsh 补全。四状态 Step 类型独立于 Task。`step-add.ts` 与 `step-move.ts` 各自拥有参数与结果输出，`step-write.ts` 和 `step-write-errors.ts` 拥有实际使用的版本分支、不可变身份与结果事实；没有未来操作注册器。
 
-`listTaskSteps`、`getTaskStep` 与 `addTaskStep` 复用既有 `runServerCommand`、`exchange`、精确 bigint JSON、认证与预算。显式 project 避免项目/父 Task 预读；显式版本一次 POST，默认 GET Steps 后一次 POST，预读失败不递交。Add 的短 ID 在递交前确定，另生成完整请求 UUID；重复或未知结果不自动重放或换 ID。完整严格 201、principal、规范 Location、父版本 +1、目标字段/新时间和位置共同确认新增，默认分支还核对已读旧项保持。显式版本不补造旧基线。
+`listTaskSteps`、`getTaskStep`、`addTaskStep` 与 `moveTaskStep` 复用既有 `runServerCommand`、`exchange`、精确 bigint JSON、认证与预算。显式 project 避免项目/父 Task 预读；显式版本一次 POST 或 PUT，默认 GET Steps 后一次写入，预读失败不递交。Add 的短 ID 在递交前确定，另生成完整请求 UUID；重复或未知结果不自动重放或换 ID。完整严格 201、principal、规范 Location、父版本 +1、目标字段/新时间和位置共同确认新增，默认分支还核对已读旧项保持。显式版本不补造旧基线。
 
-公开错误保留容量 encodedBytes/maxEncodedBytes、原请求 UUID 和分别观察的服务/响应 ID；回显相等不构成确认门槛。完整解码 4xx 为已知拒绝；已递交而没有可信回执的故障为 unknown。只有同一 Operation/API/认证身份仍有效时，至多以 UUID.r1 读取一次完整集合，报告当前版本和目标 found/absent，结论仍 unknown、非零退出且不输出成功资源。取消/耗尽不创建脱离读取，无观察时给出普通显式 project list/show 指导，不回退旧预读或重放。
+`moveTaskStep` 校验规范目标、恰好一种位置和非自引用锚点，经已有 exchange 提交 PUT 并确认完整结果中的首尾或相邻位置。默认预读允许比较每条 Step 的全部字段和内容时间、非目标相对顺序，以及真实变化 +1/no-op 同版本；显式版本只确认资源、位置和允许的版本范围，维持一次写请求。最大正 int64 的 no-op 允许同版本成功。
 
-严格新增回执的 `confirmedMutationId` 与既有 Thread 共用 transport 的实际确认机制，穿过后续清理；runtime 接受具体调用者的安全 failureText。确认后渲染、输出或清理失败保留已确认身份，不降为 unknown。可读成功输出新增 ID 与完整集合，JSON 仅输出完整资源及 LF。终端控制/bidi 转义、PT4 可信发现事实和任意 cause 的安全边界保持。
+Add 与 Move 共用确认、拒绝及 unknown 的处理，attempt 保留操作名、原身份、payload 和请求 UUID。公开错误保留容量 encodedBytes/maxEncodedBytes、原请求 UUID 和分别观察的服务/响应 ID；回显相等不构成确认门槛。完整解码 4xx 为已知拒绝；已递交而没有可信回执的故障为 unknown。只有同一 Operation/API/认证身份仍有效时，至多以 UUID.r1 读取一次完整集合，报告当前版本和目标 found/absent，结论仍 unknown、非零退出且不输出成功资源。取消/耗尽不创建脱离读取，无观察时给出普通显式 project list/show 指导，不回退旧预读或重放。
 
-update、set-status、move、delete 四个 CLI 命令及 canonical skill 的 Step 工作流指导保留目标职责。写入复用已交付的父版本、结果核对、原身份及未知事实边界；delete 必须确认版本 +1，其他修改允许原版本 no-op 或 +1，并核对目标字段、位置或存在状态。
+严格写入回执的 `confirmedMutationId` 与既有 Thread 共用 transport 的实际确认机制，穿过后续清理；runtime 接受具体调用者的安全 failureText。确认后渲染、输出或清理失败保留已确认身份，不降为 unknown。可读成功输出目标 ID 与完整集合，JSON 仅输出完整资源及 LF。终端控制/bidi 转义、PT4 可信发现事实和任意 cause 的安全边界保持。
+
+update、set-status、delete 三个 CLI 命令及 canonical skill 的 Step 工作流指导保留目标职责。写入复用已交付的父版本、结果核对、原身份及未知事实边界；delete 必须确认版本 +1，其他修改允许原版本 no-op 或 +1，并核对目标字段或存在状态。
 
 canonical skill 的 task-content 区分持久 Steps 与 Session 计划、工具日志和授权；task-management 拥有操作语义，write-safety 拥有父版本与核对，task-execution 按项目规则维护 Steps。SKILL/handbook 只增加概念与导航，不增加固定阶段、执行模式或原生 todo 提升规则。独立 CLI usage 手册同步已交付能力，Agent 指令指导仍由其专属交付拥有。
 
