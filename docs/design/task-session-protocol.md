@@ -203,9 +203,13 @@ Codex 的 `subAgentActivity` 投影为 `tool_call`，以启动、交互、中断
 
 `task-agent-session/display-mode.ts` 提供独立的 `SessionDisplayMode`（`standard | conversation`）、`DEFAULT_SESSION_DISPLAY_MODE`（`conversation`）和 `selectSessionDisplayEntries(entries, mode)`。selector 接受只读条目数组，按原顺序返回原条目引用，不修改消息 parts、修订、资源或 Session 状态，也不触发资源读取、网络及 Provider 操作。Standard 仅排除正文为空或全空白的 reasoning。Conversation 保留用户/助手消息的完整 parts、todo、所有状态的 interaction、真实 error（包括取消和中断）及计划工具；隐藏 reasoning、compaction、普通工具和被共享函数确认为合法旧格式子代理活动的 error。失败的普通工具仍按工具分类。
 
-计划工具只按名称最后一个 `.` 分段精确匹配 `update_plan`、`TodoWrite`、`todo_write`、`EnterPlanMode`、`ExitPlanMode`、`enter_plan_mode`、`exit_plan_mode`、`TaskCreate`、`TaskUpdate`、`TaskList`、`TaskGet`；不忽略大小写、不去除空白，也不从参数或输出推断类型。所有 timeline kind 均显式分类，新增 kind 必须补充分类决定。当前生产入口尚未消费 selector 或默认常量，`SessionTimeline` 仍保留原有非空 reasoning 过滤及完整时间线；模式偏好、菜单、过滤分页和切换滚动未接入。模块边界与接入限制见[显示分类决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-classification.md)。
+计划工具只按名称最后一个 `.` 分段精确匹配 `update_plan`、`TodoWrite`、`todo_write`、`EnterPlanMode`、`ExitPlanMode`、`enter_plan_mode`、`exit_plan_mode`、`TaskCreate`、`TaskUpdate`、`TaskList`、`TaskGet`；不忽略大小写、不去除空白，也不从参数或输出推断类型。所有 timeline kind 均显式分类，新增 kind 必须补充分类决定。分类理由见[显示分类决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-classification.md)。
 
-滚动状态区分跟随和阅读。触摸起点仅用于检测上读方向，轻点不改变模式；非编辑控件的上读按键、旧内容焦点和脚注跳转可暂停跟随。宽度变化后优先按可见文本位置恢复，找不到该文本时退回稳定条目锚点。分页、inactive 页面和返回最新沿用同一滚动状态，不能用布局变化推断用户恢复跟随。
+`SessionTimeline` 的可选 `displayMode` 使用该 selector 派生可见列表；省略时保持 Standard 内部兼容行为。当前普通入口尚未传入模式，产品偏好与菜单尚未接入，不能将模块的 Conversation 默认常量当作已生效的产品默认。渲染仅挂载可见条目，隐藏工具及其输出资源组件卸载；保留消息、计划和交互使用稳定 entry key，资源索引、响应 gating、pendingResponse 与完整 SessionState 不变。切回 Standard 从已有条目恢复显示，不派发工具操作；资源仍按既有读取规则加载。
+
+Conversation 无可见条目时显示“当前对话模式下暂无内容”或“No content in conversation mode.”，Standard 保留原空态。`hasOlder`、加载中和历史错误独立于可见列表，连续隐藏页仍可手动加载，过滤不会自动请求下一页，也不改写 cursor 或实时归并位置。
+
+滚动状态区分跟随和阅读。触摸起点仅用于检测上读方向，轻点不改变模式；非编辑控件的上读按键、旧内容焦点和脚注跳转可暂停跟随。宽度变化后优先按可见文本位置恢复，找不到该文本时退回稳定条目锚点。`SessionTimeline` 向共享 `useTimelineScroll` 提供 Session/history 身份、active、完整条目修订，以及独立的原始 key 顺序、可见 key 顺序和 mode。mode 不属于重置身份；切换保留跟随或暂停意图。锚点记录捕获时的原始顺序，条目被过滤后按原始时间顺序找最近前一可见项，无前项则找后一项，并定位其顶部；仍可见时优先恢复文字及相对位置。无可见项时保留暂停锚点，inactive 时不操作 viewport，恢复 active 后按当前可见顺序恢复。分页、ResizeObserver、流式内容和返回最新沿用同一滚动状态，不能用布局变化推断用户恢复跟随。共享 hook 的显示顺序参数可选，其他时间线调用方沿用既有接口。理由与限制见[显示过滤与阅读位置决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-reading.md)。
 
 Session View 在选择最近 12 条可见回执前过滤无错误的成功操作：`confirmed`，以及 `send_message` / `execute_command` 的 `provider_accepted`。其他类型的 `provider_accepted` 仍等待最终确认，保留展示；任何携带 error 的回执均保留。没有可见回执时不挂载回执区域。过滤仅作用于渲染，client 的操作账本、原操作核对和草稿受理逻辑保持独立。展示取舍见[成功回执展示决策](../../.agents/notes/implemented/bug-fix/2026-11-03-quiet-session-receipts.md)。
 

@@ -45,8 +45,10 @@ consumers. The selector has no React, client or preference dependency. Adding a
 timeline kind requires an explicit classification because the predicate has an
 exhaustive switch and a boolean return type.
 
-Current views retain Standard-compatible behavior. Preferences, menu controls,
-filtered pagination and mode-switch scroll recovery are not implemented here.
-Their later integration must retain the complete source order separately from
-visible entries; the selector must not acquire ownership of session state or
-resource loading to accommodate them.
+Ordinary views retain Standard-compatible behavior until they explicitly pass a
+mode. The timeline consumes this selector for explicit modes, including filtered
+pagination and mode-switch scroll recovery as described by the
+[display reading decision](2026-11-04-session-display-reading.md). That consumer
+retains complete source order separately from visible entries. Preferences and
+menu integration remain outside this classification module; the selector owns
+neither session state nor resource loading.
