@@ -241,6 +241,10 @@ describe("authentication language changes", () => {
       await interaction.click(await screen.findByRole("button", { name: kind === "member" ? en.auth.management.members.removeLabel({ name: "协作者 Raw" }) : en.auth.management.members.revokeLabel({ id: invitationId }) }));
     }
     const dialog = screen.getByRole("dialog");
+    if (kind !== "token") {
+      const confirm = kind === "member" ? en.auth.management.members.removeConfirm : en.auth.management.members.revokeConfirm;
+      await waitFor(() => expect(within(dialog).getByRole("button", { name: confirm })).not.toBeDisabled());
+    }
     const requests = fetcher.mock.calls.length;
     if (kind === "token") expect(dialog).toHaveTextContent(en.auth.management.account.revokeBody({ name: "Raw 令牌" }));
     await interaction.selectOptions(language(within(dialog)), "zh-CN");
