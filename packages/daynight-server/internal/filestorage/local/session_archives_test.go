@@ -172,3 +172,164 @@ func TestDeleteSessionArchivesRejectsNonDirectoryNamespace(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestArchiveCleanupClosedDirectoryDoesNotReportSuccess(t *testing.T) {
+	path := t.TempDir()
+	if err := os.WriteFile(filepath.Join(path, "history.json"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := directory.Lstat("history.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.Close(); err != nil {
+		t.Fatal(err)
+	}
+	storage := &Storage{fileSync: (*os.File).Sync}
+	for name, operation := range map[string]func() error{
+		"enumerate": func() error { return removeArchiveContents(t.Context(), directory) },
+		"child":     func() error { return removeArchiveChild(t.Context(), directory, "history.json") },
+		"entry":     func() error { return removeArchiveEntry(t.Context(), directory, "history.json", info) },
+		"sync":      func() error { return storage.syncArchiveDirectory(directory) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := operation(); !errors.Is(err, os.ErrClosed) {
+				t.Fatalf("closed directory was not reported: %v", err)
+			}
+		})
+	}
+	if got, err := os.ReadFile(filepath.Join(path, "history.json")); err != nil || string(got) != "keep" {
+		t.Fatalf("failed cleanup changed history: %q %v", got, err)
+	}
+}
+
+func TestArchiveCleanupMissingChildAndEntryAreIdempotent(t *testing.T) {
+	directory, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	if err := directory.WriteFile("history.json", []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := directory.Lstat("history.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.Remove("history.json"); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeArchiveChild(t.Context(), directory, "history.json"); err != nil {
+		t.Fatalf("missing child was not idempotent: %v", err)
+	}
+	if err := removeArchiveEntry(t.Context(), directory, "history.json", info); err != nil {
+		t.Fatalf("entry removed by another cleanup was not idempotent: %v", err)
+	}
+}
+
+func TestArchiveCleanupPreservesEntryReplacedAfterInspection(t *testing.T) {
+	path := t.TempDir()
+	directory, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	if err := directory.WriteFile("history.json", []byte("inspected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := directory.Lstat("history.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Retain the old inode so replacement cannot accidentally reuse its identity.
+	if err := directory.Rename("history.json", "original.json"); err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.WriteFile("history.json", []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeArchiveEntry(t.Context(), directory, "history.json", info); !errors.Is(err, filestorage.ErrPathConflict) {
+		t.Fatalf("replaced entry was not refused: %v", err)
+	}
+	for name, want := range map[string]string{"history.json": "replacement", "original.json": "inspected"} {
+		if got, err := os.ReadFile(filepath.Join(path, name)); err != nil || string(got) != want {
+			t.Fatalf("cleanup modified %s: %q %v", name, got, err)
+		}
+	}
+}
+
+func TestArchiveCleanupCancellationPreservesInspectedEntries(t *testing.T) {
+	path := t.TempDir()
+	directory, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	if err := directory.Mkdir("nested", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.WriteFile("nested/history.json", []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := directory.Lstat("nested/history.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := removeArchiveChild(ctx, directory, "nested"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled recursive cleanup: %v", err)
+	}
+	if err := removeArchiveEntry(ctx, directory, "nested/history.json", info); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled inspected entry removal: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(path, "nested/history.json")); err != nil || string(got) != "keep" {
+		t.Fatalf("canceled cleanup changed history: %q %v", got, err)
+	}
+}
+
+func TestArchiveCleanupUnreadableDirectoryPreservesHistory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory read permissions")
+	}
+	path := t.TempDir()
+	directory, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	if err := directory.Mkdir("nested", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.WriteFile("nested/history.json", []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(path, "nested")
+	if err := os.Chmod(nested, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(nested, 0o700) })
+	opened, _, err := openArchiveDirectory(directory, "nested")
+	if opened != nil {
+		_ = opened.Close()
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("unreadable directory admitted for cleanup: %v", err)
+	}
+	if err := removeArchiveChild(t.Context(), directory, "nested"); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("unreadable child cleanup hid failure: %v", err)
+	}
+	if err := os.Chmod(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(nested, "history.json")); err != nil || string(got) != "keep" {
+		t.Fatalf("failed cleanup changed history: %q %v", got, err)
+	}
+	if err := removeArchiveChild(t.Context(), directory, "nested"); err != nil {
+		t.Fatalf("cleanup could not retry after permission repair: %v", err)
+	}
+}
