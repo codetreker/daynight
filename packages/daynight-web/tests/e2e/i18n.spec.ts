@@ -215,6 +215,12 @@ test.describe('Web language journeys', () => {
     await pathInput.fill(uploadPath);
     const inputElement = await fileInput.elementHandle();
     if (frameElement === null || inputElement === null) throw new Error('Attachment elements are absent.');
+    // Returning from the preview can queue a permission read behind cache admission.
+    // Settle that focus observation before measuring requests caused by the locale change.
+    const focusedAccess = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/access` && response.status() === 200);
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    expect(await (await focusedAccess).finished()).toBeNull();
+    await expect(page.locator(`.project-title-actions a[href="/projects/${project.id}/settings"]`)).toHaveCount(1);
     const beforeModalSwitch = [...reads];
     await changeDetailLanguage('zh-CN');
     await dialog.getByRole('tab', { name: '概览', exact: true }).click();
