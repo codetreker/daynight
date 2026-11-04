@@ -756,7 +756,7 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
     expect(unknownInvitationResponse.status()).toBe(201);
     const unknownInvitation = await unknownInvitationResponse.json() as { link: string };
     await page.goto('/projects');
-    await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
     await openInvitation(page, unknownInvitation.link);
     await expect(page.getByRole('heading', { name: 'You are invited to a Team' })).toBeVisible();
     let committedStatus: number | undefined;
