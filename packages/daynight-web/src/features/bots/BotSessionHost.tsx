@@ -3,6 +3,7 @@ import { authRequestsPaused } from '../../api/client';
 import type { BotSessionBinding } from '../../api/sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { SessionView } from '../task-agent-session/SessionView';
+import type { SessionTimelineReadingHandle } from '../task-agent-session/SessionTimeline';
 import { useSessionMessages } from '../task-agent-session/messages';
 import { BotSessionCache, botSessionKey, type BotSessionPane } from './session-cache';
 import './bot-session.css';
@@ -45,13 +46,17 @@ export function BotSessionHost({ cache, binding, active = true }: {
 
 function BotPane({ pane, active, current }: { readonly pane: BotSessionPane; readonly active: boolean; readonly current: boolean }) {
   const view = useSyncExternalStore(pane.client.subscribe, pane.client.snapshot);
-  const restored = useRef(false), attemptedPage = useRef<string | null>(null);
+  const restored = useRef<SessionTimelineReadingHandle | null>(null), attemptedPage = useRef<string | null>(null);
   const reading = useMemo(() => ({ scope: pane.key, ref: pane.reading }), [pane]);
   useLayoutEffect(() => {
     const handle = pane.reading.current, bookmark = pane.retained.bookmark;
+    // Archive loading can replace the Timeline while this pane stays mounted.
+    // Only unfinished restoration may cross that boundary; the original handle
+    // still distinguishes a real Latest cancellation from a fresh handle's idle.
+    if (bookmark && restored.current && restored.current.getRestoreStatus() !== 'pending') { pane.retained.bookmark = null; return; }
     if (!active || !current || !handle || !bookmark || (!view.historyReady && view.archiveState !== 'ready')) return;
-    if (!restored.current) {
-      restored.current = true;
+    if (restored.current !== handle) {
+      restored.current = handle; attemptedPage.current = null;
       if (handle.restoreBookmark(bookmark) === 'rejected') { pane.retained.bookmark = null; return; }
     }
     const status = handle.getRestoreStatus();

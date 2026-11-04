@@ -32,7 +32,11 @@ and retries across browser connection generations and Controller connection epoc
 Only an admissible page request records an attempt; a replacement Controller
 that is still synchronizing or an authentication gate that refuses the request
 must not consume its retry. A failed page retains the bookmark;
-Latest cancels it. The [design](../../../../docs/design/bot-session-view.md)
+Latest cancels it. Restoration belongs to a mounted Timeline handle, not the
+longer-lived pane: only a pending target transfers when archive loading replaces
+the Timeline. Stable handles forward to current scroll state, while complete
+validated archives confirm the boundary without enabling live pagination.
+The [design](../../../../docs/design/bot-session-view.md)
 owns interfaces, ownership and fallback details. This consumes the existing
 [reading bookmark decision](2026-11-04-session-display-reading.md) and extends
 [display preference ownership](2026-11-04-session-display-preferences.md) with
