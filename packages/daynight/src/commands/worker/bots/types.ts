@@ -2,6 +2,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { canonicalId } from "../../../api/parse.js";
 import { normalizeServerUrl } from "../../../config/server.js";
+import { isNonemptyText } from "../../../platform/text.js";
 import type { WorkerAgent } from "../../../api/types.js";
 
 export type BotOwner = { serverOrigin: string; ownerUserId: string; workerId: string };
@@ -41,7 +42,7 @@ const object = (value: unknown, field: string): Record<string, unknown> => {
   return value as Record<string, unknown>;
 };
 const text = (value: unknown, field: string): string => {
-  if (typeof value !== "string" || value.trim() === "" || !value.isWellFormed() || value.includes("\0")) throw new TypeError(`${field} must be nonempty Unicode text.`);
+  if (!isNonemptyText(value)) throw new TypeError(`${field} must be nonempty Unicode text.`);
   return value;
 };
 export const botVersion = (value: unknown): string => {

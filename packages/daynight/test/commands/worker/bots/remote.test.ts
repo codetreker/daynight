@@ -31,6 +31,14 @@ const listen = async (handler: (request: IncomingMessage, response: ServerRespon
 const signal = () => new AbortController().signal;
 
 describe("Bot inventory remote", () => {
+  it("preserves server-valid Unicode names without blocking the rest of the inventory", async () => {
+    const items = [{ ...bot(), name: "\uFEFF" }, bot(4)];
+    const remote = await listen((_request, response) => {
+      response.end(JSON.stringify({ items, nextCursor: null }));
+    });
+    await expect(remote.list(signal())).resolves.toEqual(items);
+  });
+
   it("reads every page with the original worker and preserves decimal versions and duplicates for reconciliation", async () => {
     const requests: string[] = [];
     const remote = await listen((request, response) => {
