@@ -72,7 +72,7 @@ See the [task content standard](task-content.md) for organizing descriptions and
 | --- | --- |
 | `allowAgents` | Permission for automatic selection. False for new tasks and cannot be enabled during creation. Enable only after an explicit [handoff](handoff.md) review. Omission preserves its value when assignment does not change. |
 | `requiredPlatform` | `null`, `windows`, `linux`, or `macos`; null means unrestricted. Can be specified during creation or updates and cleared during updates. |
-| `assignedTo` | One optional human responsible for the task, represented by a local user UUID or null. Create/update use `--assigned-to <user-uuid>`; update uses `--clear-assigned-to` to send null. These options conflict. Omission during update preserves the current value. |
+| `assignedTo` | One optional human responsible for the task, represented by a local user UUID or null. Create/update use `--assigned-to <user-uuid>`; update uses `--clear-assigned-to` to send null. These options conflict. CLI creation defaults to the authenticated account when `--assigned-to` is omitted; an explicit UUID selects that person. Identity lookup failure prevents creation. Omission during update preserves the current value. |
 
 A real assignee change, including first assignment or clearing, sets `allowAgents=false`
 in the same update. A same-value assignment does not reset permission. The selected
