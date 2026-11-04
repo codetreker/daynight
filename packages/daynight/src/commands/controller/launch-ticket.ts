@@ -7,6 +7,9 @@ import { normalizeServerUrl } from "../../config/server.js";
 import { sessionBinding, type SessionBinding } from "../../session/protocol.js";
 import type { FrozenExecutionConfiguration } from "../worker/types.js";
 
+// Retain the legacy 5 MiB allowance plus room for a fully JSON-escaped 64 KiB role.
+const MAX_TICKET_BYTES = 6 * 1024 * 1024;
+
 type LaunchCommon = {
   readonly schemaVersion: 1;
   readonly launchId: string; readonly executionId: string; readonly controllerId: string; readonly controllerInstanceId: string;
@@ -60,17 +63,19 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
 };
 export const readLaunchTicket = async (home: string, launchId: string): Promise<ControllerLaunchTicket> => {
   const file = controllerTicketPath(home, launchId); const metadata = await lstat(file);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 5 * 1024 * 1024 || (process.platform !== "win32" && (metadata.mode & 0o077) !== 0)) throw new Error("Controller ticket must be a private regular file.");
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_TICKET_BYTES || (process.platform !== "win32" && (metadata.mode & 0o077) !== 0)) throw new Error("Controller ticket must be a private regular file.");
   const ticket = parseLaunchTicket(JSON.parse(await readFile(file, "utf8")) as unknown);
   if (ticket.launchId !== launchId) throw new Error("Controller launch ticket identity mismatch.");
   return ticket;
 };
 export const writeLaunchTicket = async (home: string, ticket: ControllerLaunchTicket): Promise<string> => {
   parseLaunchTicket(ticket);
+  const serialized = `${JSON.stringify(ticket)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > MAX_TICKET_BYTES) throw new Error("Controller serialized ticket exceeds 6 MiB.");
   const filename = controllerTicketPath(home, ticket.launchId); const directory = path.dirname(filename);
   await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
   const temporary = `${filename}.${randomUUID()}.tmp`; const file = await open(temporary, "wx", 0o600);
-  try { await file.writeFile(`${JSON.stringify(ticket)}\n`); await file.sync(); } finally { await file.close(); }
+  try { await file.writeFile(serialized); await file.sync(); } finally { await file.close(); }
   try { await link(temporary, filename); }
   catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;

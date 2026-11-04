@@ -16,7 +16,10 @@ parsing validates present values as nonblank, well-formed Unicode within 64 KiB
 UTF-8 while preserving their exact text. It retains absent fields, the original
 object and schema version; the existing canonical hash covers supplied roles
 without changing legacy hashes. Immutable ticket writes bind the role to its
-launch identity.
+launch identity. A shared 6 MiB serialized-file bound preserves the old 5 MiB
+allowance plus a fully JSON-escaped 64 KiB role and field overhead. Writes check
+the exact serialized bytes before creating a file; reads use the same bound.
+Per-field limits alone cannot prevent an accepted ticket from becoming unreadable.
 
 Controller startup conditionally forwards the field through the shared provider
 options path for fresh and resumed execution. It never sends the role as input.

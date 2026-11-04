@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
@@ -293,4 +293,35 @@ it("carries persisted role instructions through stopped generations without repl
     } finally { store.close(); }
     ticket = { ...persisted, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: String(Number(generation) + 1), resumeNativeSessionId: nativeSessionId };
   }
+});
+
+
+it("keeps a previously readable maximum-size prompt readable after adding a role", async () => {
+  const { home, ticket } = await fixture();
+  const initialPrompt = '\"'.repeat(1_000_000) + "a".repeat(3_194_304);
+  expect(Buffer.byteLength(initialPrompt)).toBe(4 * 1024 * 1024);
+  const legacy = { ...ticket, initialPrompt };
+  await writeLaunchTicket(home, legacy);
+  expect(await readLaunchTicket(home, legacy.launchId)).toEqual(legacy);
+  const withRole = { ...legacy, launchId: randomUUID(), instructions: "r".repeat(65_536) };
+  await writeLaunchTicket(home, withRole);
+  expect(await readLaunchTicket(home, withRole.launchId)).toEqual(withRole);
+});
+
+it("uses the same serialized byte boundary for ticket writes and reads", async () => {
+  const { home, ticket } = await fixture();
+  const maximum = 6 * 1024 * 1024;
+  const withRole = { ...ticket, initialPrompt: "a".repeat(4 * 1024 * 1024), instructions: "\u0000".repeat(65_536) };
+  const extraEscapes = maximum - Buffer.byteLength(JSON.stringify(withRole) + "\n");
+  const exact = { ...withRole, initialPrompt: '\"'.repeat(extraEscapes) + "a".repeat(withRole.initialPrompt.length - extraEscapes) };
+  expect(Buffer.byteLength(JSON.stringify(exact) + "\n")).toBe(maximum);
+  const file = await writeLaunchTicket(home, exact);
+  expect((await stat(file)).size).toBe(maximum);
+  expect(await readLaunchTicket(home, exact.launchId)).toEqual(exact);
+  const tooLarge = { ...exact, launchId: randomUUID(), initialPrompt: '\"' + exact.initialPrompt.slice(0, -1) };
+  expect(Buffer.byteLength(JSON.stringify(tooLarge) + "\n")).toBe(maximum + 1);
+  await expect(writeLaunchTicket(home, tooLarge)).rejects.toThrow(/serialized.*6 MiB/i);
+  expect(await readLaunchTicket(home, exact.launchId)).toEqual(exact);
+  await writeFile(file, JSON.stringify({ ...tooLarge, launchId: exact.launchId }) + "\n");
+  await expect(readLaunchTicket(home, exact.launchId)).rejects.toThrow(/private regular file/);
 });
