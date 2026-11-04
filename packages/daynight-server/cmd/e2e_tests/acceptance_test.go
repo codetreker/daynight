@@ -655,9 +655,10 @@ func acceptanceConcurrentStartup(t *testing.T, scenario *acceptanceScenario) {
 	first = first.started(t)
 	second = second.started(t)
 	var versions []int64
-	if err := fixture.admin.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}) {
+	if err := fixture.admin.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}) {
 		t.Fatal("concurrent processes did not share exactly one migration ledger")
 	}
+	acceptanceBotOwnershipSchema(t, fixture)
 	project := first.project(t, "Shared process state")
 	read := acceptanceDecode[api.Project](t, second.request(context.Background(), http.MethodGet, "/api/v1/projects/"+project.ID, nil, ""), http.StatusOK)
 	if !reflect.DeepEqual(project, read) {
@@ -760,4 +761,19 @@ func acceptanceStatusReads(t *testing.T, scenario *acceptanceScenario) {
 	}
 	restarted.signal(t)
 	restarted.stopped(t, 0)
+}
+
+func acceptanceBotOwnershipSchema(t *testing.T, fixture *acceptanceFixture) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var constraints []string
+	err := fixture.admin.QueryRow(ctx, `SELECT array_agg(pg_get_constraintdef(oid) ORDER BY pg_get_constraintdef(oid))
+ FROM pg_constraint WHERE conrelid='bots'::regclass AND contype='f'`).Scan(&constraints)
+	if err != nil || !slices.Equal(constraints, []string{
+		"FOREIGN KEY (owner_user_id) REFERENCES users(id)",
+		"FOREIGN KEY (owner_user_id, worker_id) REFERENCES workers(user_id, worker_id)",
+	}) {
+		t.Fatalf("startup did not create Bot user and composite Worker ownership constraints: %v, %v", constraints, err)
+	}
 }

@@ -3,6 +3,7 @@ import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedI
 import { array, boolean, id, malformed, project, record, string, timestamp } from "./parse";
 import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipants, ProjectGrant, ProjectPeople, ProjectPeopleQuery, ProjectPerson, ProjectRole, ProjectAccess, User } from "./auth-types";
 import type { Project } from "./types";
+import { parseProfileVersion } from "./profile-version";
 import { decodeProjectJson } from "./project-json";
 export type * from "./auth-types";
 
@@ -38,7 +39,13 @@ const secretBody = (token: string): string => {
   return JSON.stringify({ token });
 };
 
-export const me = (signal: AbortSignal): Promise<User> => authRead("/api/v1/me", signal, parseUser);
+export const me = (signal: AbortSignal): Promise<User> => authOperation(signal, async () => {
+  const response = await request("/api/v1/me", signal, { cache: "no-cache", headers: { Accept: "application/json" } });
+  return json(response, signal, (value) => {
+    if (response.status !== 200) throw new ApiError("protocol", response.status);
+    return parseUser(value);
+  });
+});
 export const getAuthConfig = (signal: AbortSignal): Promise<AuthConfig> => authRead("/api/v1/auth/providers", signal, parseAuthConfig);
 export const logout = (signal: AbortSignal): Promise<void> => empty("/api/v1/auth/logout", "POST", signal);
 export const listTokens = (signal: AbortSignal, expectedUserId: string, onIdentityMismatch: () => void): Promise<readonly PersonalAccessToken[]> => authOperation(signal, async () => {
@@ -85,9 +92,10 @@ const parseProjectPeople = (value: unknown, requested: readonly string[] | null)
   if (Object.keys(data).some((key) => key !== "items" && key !== "unresolvedUserIds")) return malformed();
   const items = array(data.items, (value): ProjectPerson => {
     const person = record(value);
-    if (Object.keys(person).some((key) => key !== "userId" && key !== "name" && key !== "avatarUrl" && key !== "hasProjectAccess")) return malformed();
+    if (Object.keys(person).some((key) => key !== "userId" && key !== "name" && key !== "avatarUrl" && key !== "hasProjectAccess" && key !== "version")) return malformed();
     return {
       userId: id(person.userId),
+      version: parseProfileVersion(person.version),
       name: person.name === null ? null : string(person.name),
       avatarUrl: person.avatarUrl === null ? null : string(person.avatarUrl),
       hasProjectAccess: boolean(person.hasProjectAccess),

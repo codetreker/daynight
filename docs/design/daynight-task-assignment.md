@@ -1,6 +1,6 @@
 # Task 负责人设计
 
-状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 负责人命令、Web 负责人写入/展示/筛选和负责人字段缓存，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
+状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 负责人命令、Web 负责人写入/展示/筛选和 schema 6 持久资料缓存，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
 
 ## 数据所有权
 
@@ -48,11 +48,11 @@ HTTP 单值 assignedTo 输入在 service 边界转换为显式 all/unassigned/us
 
 Snapshot.Tasks 按规范选择使用静态 SQL 片段：all 不增加条件，unassigned 使用 assigned_to IS NULL，user 使用绑定的 UUID 等值。输入值只作参数，不拼接 SQL。条件在 ORDER/LIMIT 之前；worker inventory 分支同样先应用显式原生条件，再执行既有 worker 解码、归属匹配和最终 limit+1。worker 自动候选选择 me，在游标核验前解析为固定认证账号的 userId；完整既有 worker 库存省略负责人条件，继续为 all。
 
-page.go 仅为 kind=tasks 编码和要求 cursor version 2，并保存必需的规范选择 all/unassigned/user:UUID。项目列表和账号级 Worker 列表继续使用版本 1，不编码任务选择字段；workerId 筛选的 Task 页仍是 tasks version 2。任务旧版本拒绝，而 me 与对应 UUID 在规范 scope 相同时可续页。项目、状态、ready、许可、平台、workerUser/workerId 和位置仍绑定原 scope。
+page.go 仅为 kind=tasks 编码和要求 cursor version 2，并保存必需的规范选择 all/unassigned/user:UUID。项目列表使用独立 kind 与版本 2，绑定主体和项目列表范围；账号级 Worker 列表使用版本 1。二者均不编码任务选择字段；workerId 筛选的 Task 页仍是 tasks version 2。任务旧版本拒绝，而 me 与对应 UUID 在规范 scope 相同时可续页。项目、状态、ready、许可、平台、workerUser/workerId 和位置仍绑定原 scope。
 
 ## 项目内人员读取
 
-Tasks 服务和 taskHandler 复用既有项目读取组合，专用 core/API 条目恰含 userId、nullable name、nullable avatarUrl 与 hasProjectAccess；响应始终有 items 和 unresolvedUserIds 两个非 null 数组。资料保持 canonical users 的实际 nullable 值，不合成姓名或邮件。
+Tasks 服务和 taskHandler 复用既有项目读取组合，专用 core/API 条目恰含 userId、version、nullable name、nullable avatarUrl 与 hasProjectAccess；响应始终有 items 和 unresolvedUserIds 两个非 null 数组。资料保持 canonical users 的实际 nullable 值，不合成姓名或邮件。
 
 HTTP 以局部 query 解析只允许重复 userId，不放宽共用 queryValues 的单值规则。省略参数是完整目录；明确的限定模式先校验非空、最多 100 个互异规范 UUID。service 同样验证直接调用，避免空数组被当作完整模式。两个模式均在一次 ReadSnapshot 内先 RequireProjectRead，再读资格和资料。
 
@@ -74,7 +74,7 @@ store/project_access.go 拥有单主体准入和批量查询共用的 projectAcc
 
 Go 组装仍验证规范 ID、互斥和完整覆盖：items 与 unresolved 恰好覆盖规范请求一次，各自稳定排序。query/scan/rows/取消或事务失败不安装部分集合。错误不借用 ErrNotFound 表示资料缺失，避免外层误译为项目 404。
 
-完整目录面向显式打开或重试；周期消费者使用当前展示/选中 ID 的限定模式，空集合不发请求，不能省略参数退化为全量。Web消费和刷新由认证scope内的TaskAssignees拥有，人员资料不写入Task版本或浏览器持久任务记录。CLI 已严格消费 Task/graph 的 assignedTo，普通元数据命令使用完整 Task 响应，不为姓名调用目录；[客户端设计](daynight-project-task.md)拥有命令、me 身份与输出。
+完整目录保留独立资料枚举能力；Web 的选择器从当前 task-sync 的完整 assigneeVersions 清单取得资格和内容版本，仅通过限定模式补读缺失或变化资料，空集合不发请求，不能省略参数退化为全量。TaskAssignees 拥有认证 scope 内的读取与显示，TaskCacheScope 拥有独立 profiles store 的持久内容；资料不写入 Task 版本或持久任务记录。CLI 已严格消费 Task/graph 的 assignedTo，普通元数据命令使用完整 Task 响应，不为姓名调用目录；[客户端设计](daynight-project-task.md)拥有命令、me 身份与输出。
 
 ## CLI 字段与命令
 
@@ -86,19 +86,25 @@ TaskDetailSession 继续唯一拥有所有 Task mutation，assignedTo action 复
 
 HTTP200确认后才能抬高已提交版本下限；响应读取失败或未知结果沿既有GET核对队列，不重放PATCH。更高版本完整当前值可替代原意图，旧历史/旧owner不能发布结果。确认、摘要同步与详情持久化继续属于现有ticket/generation边界。
 
-Web所有Task/detail/summary/graph解析和比较纳入assignedTo。负责人最初通过schema 4进入缓存。当前格式与升级范围由[缓存设计](daynight-task-sync.md)拥有，继续在同一升级事务中清除projects/summaries/details、清水位并轮换user fence；字段消费者与所需重建共同生效，不把缺字段解释为null。mutable profile不进入IDB或Task version。
+Web 所有 Task/detail/summary/graph 解析和比较纳入 assignedTo。原生负责人最初通过 schema 4 进入缓存，真实 Project ownership 在 schema 5 引入时要求重建旧格式。当前 schema 6 增加独立 profiles store：从 schema 5 升级保留兼容任务内容及 userFence；1/2/3/4 升级仍清除不兼容 projects/summaries/details、清水位并轮换 userFence，不把缺字段解释为 null。完整升级范围由[缓存设计](daynight-task-sync.md)拥有。可变人员内容按自身 version 独立持久化，不进入 Task version 或任务记录。
 
 ## Web 人员与界面所有者
 
-TaskAssigneesProvider在认证TaskCache边界中为当前scope提供TaskAssignees。当前挂载行、详情和具体过滤以独立symbol登记ID需求，合并、排序去重后分100项；空集合不请求。ProjectPage与独立TaskDetailPage将graph-owner symbol和正revision登记为receipt；重挂载的revision从1开始仍可触发读取，不能用全局lastRevision单调判重。
+TaskAssigneesProvider 在认证 TaskCache 边界中提供按项目共享的人员所有者。TaskSync 在同一项目读取快照中复用完整目录资格查询，返回完整 assigneeVersions 清单；每项仅有 userId、version 和 hasProjectAccess。版本对规范化可空元组 [userId,name,avatarUrl] 计算 SHA-256，以 64 位小写十六进制输出；客户端把它作为服务端签发的内容标识，不复现散列。访问状态独立于内容版本，角色、登录时间与任务引用变化不使相同资料失效。计算复用实际资料读取，无需 PostgreSQL 迁移；每轮成本随合格人员数量与资料总字节增长，清单传输只随人员数量增长。
 
-限定读取在途时合并一个后继刷新，避免慢请求每5秒被取消而永不完成。完整目录只由打开/重试触发。capture从已授权内存manifest取得userFence/cacheGeneration等ticket，不调用beginSync重复验证整项目持久摘要；scope.ready前后均检查身份、历史、需求及所有权，正结果在无await段发布。
+当前挂载行、详情和具体过滤以独立 symbol 登记 ID 需求。ProjectPage 与独立 TaskDetailPage 的正 revision receipt 只表示本挂载已有成功项目同步，不能让持久资料自行授予访问。完成 /me 身份核验及当前项目在线清单后，TaskAssignees 通过 scope 的 readProfiles 读取当前查看者、项目、userFence 下的资料，以清单版本验证后恢复显示；仅本地摘要 preview 不提供人员资格清单。当前访问标记始终从在线 assigneeVersions 取得，不从资料 store 恢复。
 
-people map按每个人最新派发序号合并，晚到catalogue不能覆盖较新限定结果；unresolved同样保留顺序fence。可信同用户404先由scope.canRevokeProject核验捕获ticket，再沿scope.signal撤权；菜单关闭或需求变化不丢失父项目失权，旧E1不能清新E2。错误与清理故障保留原状态和原因，不制造失权资料。
+需求合并、排序去重后只补读缺失或内容版本变化的合格 ID，每批最多 100 项；nullable 姓名或头像仍是已解析内容。限定读取共享在途工作，需求变化不丢弃同一身份和项目历史中的有效结果。GET 自带实际内容 version，writeProfiles 保存真实观测；manifest V1 后读到资料 V2 时不能把 V2 标记为 V1，也不能立即循环重查等待中的旧清单。请求记录派发时的 graph receipt 观测身份；超前资料与临时 unresolved 的例外只在该次观测有效，新的正 graph receipt 即使内容版本相同也会清除例外并重新核验。重复 receipt、组件重开和需求变化保持同一观测，普通匹配版本缓存仍不重读。旧观测的冲突响应不能在新观测中恢复例外；当前清单和请求观测共同阻止过期结果覆盖较新判断。
 
-TaskAssigneeIdentity显示真实nullable姓名/头像，name缺失显示短UUID，图片失败使用当前身份首字形态；不生成email。TaskAssigneeSelect紧邻状态24px成组，TaskAssigneeFilter拥有all/me/unassigned/user显示状态。AssigneePicker的fixed菜单在surface的焦点所有者子树内，尺寸和12px边界按视口计算，随scroll/resize/fullscreen及进入动画稳定定位；键盘与Escape/Tab/外部点击保留现有详情层级和焦点。
+选择器的候选集合来自在线完整清单，首次打开只填补尚未加载的候选资料；普通重开复用匹配内容和在途工作，Retry 恢复失败或缺失项，不重新传输整份头像目录。完整清单的资格和访问变化可更新显示，而相同内容版本直接复用已有姓名与头像。
 
-ProjectPage从完整index导出匹配ID，再在显示集合和分页前相交；ChainList保留完整component进度和依赖，仅裁剪展示的子任务集合。概览与图不继承负责人过滤，显式概览定位可回到all以展示目标。新增界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
+profiles store 按 [viewerUserId,projectId,profileUserId] 隔离内容，记录 userFence 和 profile {userId,version,name,avatarUrl}，不存 hasProjectAccess。持久读取与写入经过当前 ticket 的 userFence/cacheGeneration 校验，发布前再次检查认证 scope、项目历史及所有权。缓存事件与读取捕获先采用当前 userFence/cacheGeneration，再判断当前在线清单是否存在；generation 更替立即使旧请求失效。当前投影为 assigneeVersions:null 或已无授权投影时，撤回 people、资格清单、unresolved、临时例外及目录 ready 状态；目录已请求则回到 loading，否则为 idle。跨标签页先安装新历史而本页同步仍在途时也遵守这一规则，不能因缺少新清单跳过撤回。相同 userFence 的原始 profiles 和待保存内容独立保留，只有新在线清单匹配后才恢复显示；userFence 改变清除旧内容。页面卸载关闭连接并保留内容，注销/换号/会话失效及项目撤权清除所属资料。GET 成功后可在当前 scope 显示资料；持久写入失败保留 dirty 内容与可恢复错误，Retry 先重试保存，不重传已有内容。损坏资料在事务内定向清除当前项目 profiles，保留 Task 记录并暴露错误，后续 Retry 按当前清单重新读取。错误和清理故障保留原状态与原因，不制造失权资料。
+
+可信同用户 404 先由 scope.canRevokeProject 核验捕获 ticket，再沿 scope.signal 撤权；菜单关闭或需求变化不丢失父项目失权，旧 E1 不能清新 E2。[请求复用决策](../../.agents/notes/implemented/bug-fix/2026-11-04-task-view-request-reuse.md)保存内容版本、持久复用和元数据扫描成本的取舍。
+
+TaskAssigneeIdentity 显示真实 nullable 姓名/头像，name 缺失显示短 UUID，图片失败使用当前身份首字形态；不生成 email。TaskAssigneeSelect 紧邻状态 24px 成组，TaskAssigneeFilter 拥有 all/me/unassigned/user 显示状态。AssigneePicker 的 fixed 菜单在 surface 的焦点所有者子树内，尺寸和 12px 边界按视口计算，随 scroll/resize/fullscreen 及进入动画稳定定位；键盘与 Escape/Tab/外部点击保留现有详情层级和焦点。
+
+ProjectPage 从完整 index 导出匹配 ID，再在显示集合和分页前相交；ChainList 保留完整 component 进度和依赖，仅裁剪展示的子任务集合。概览与图不继承负责人过滤，显式概览定位可回到 all 以展示目标。新增界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
 
 ## 观测与验证
 
@@ -108,4 +114,4 @@ ProjectPage从完整index导出匹配ID，再在显示集合和分页前相交�
 
 查询验证过滤先于分页、完整 scope、旧任务游标拒绝和其他列表版本不变、worker inventory 组合、自动候选本人筛选与 claim 事务负责人校验。目录验证两种模式的原始引用完整性、隐私、精确覆盖、100/101 边界、真实快照并发及所有失败路径。至少 10000 任务和 100 人员的生产查询 EXPLAIN ANALYZE BUFFERS 与响应样本通过显式本地 `bash scripts/stress.sh`（在服务模块内）运行，并绑定被测代码；常规 Go CI 排除该压力样本，保留真实 PostgreSQL 的过滤、游标、权限及失败路径验证和严格覆盖率门槛。数量样本不改变 Web 图规模限制，也不是生产容量上限。
 
-Web验证覆盖负责人字段与当前缓存格式升级、mutation同值/确认下限/材料保持、people需求/receipt/派发和负向撤权fence、完整链筛选、菜单焦点及双语窄屏。生产功能场景task-assignment与task-assignment-layout分别拥有真实写入/未知结果核对，以及身份/布局/完整图显示的验证；完整inventory由Web验收所有者定义。
+Web 验证覆盖 schema 6 持久资料、schema 5 无损升级及 schema 1/2/3/4 重建、mutation 同值/确认下限/材料保持、人员清单/内容版本/在途合并及负向撤权 fence、跨标签页新 generation 尚无在线清单（assigneeVersions:null）时立即撤回旧人员与 ready 目录、新清单后零重复下载复用内容、完整链筛选、菜单焦点及双语窄屏。生产功能场景task-assignment与task-assignment-layout分别拥有真实写入/未知结果核对，以及身份/布局/完整图显示的验证；完整inventory由Web验收所有者定义。

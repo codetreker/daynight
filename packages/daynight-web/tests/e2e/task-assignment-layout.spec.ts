@@ -1,6 +1,6 @@
 import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
 import { stringifyApiJson } from "../../src/api/json";
-import type { Locator, Page, TestInfo } from '@playwright/test';
+import type { Locator, Page, Response, TestInfo } from '@playwright/test';
 import { bearerContext, type AuthenticatedAPI } from './authentication';
 import { createProject, createTask, expect, seedUserProfile, test } from './fixtures';
 import { closeChain, openChain } from './chain-dialog';
@@ -63,6 +63,159 @@ const layouts = [
   { locale: 'zh-CN', width: 390 }, { locale: 'en', width: 390 },
   { locale: 'zh-CN', width: 320 }, { locale: 'en', width: 320 },
 ] as const;
+
+const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: AuthenticatedAPI, alice: Profile, missingProfile: Profile, info: TestInfo): Promise<void> => {
+  // The padding models an inline profile photo's transfer cost while keeping the image fixture deterministic.
+  const inlineAvatar = (color: string) => `data:image/svg+xml;base64,${Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><!--${'x'.repeat(176_600)}--><rect width="16" height="16" fill="${color}"/></svg>`).toString('base64')}`;
+  const avatar = inlineAvatar('#6256c5');
+  await seedUserProfile(alice.id, { name: longName, avatarUrl: avatar });
+  const project = await createProject(api, { name: 'Persistent assignee and current-account cache acceptance' });
+  const first = await createTask(api, project.id, { title: 'First task sharing an inline avatar', assignedTo: alice.id });
+  const second = await createTask(api, project.id, { title: 'Second task sharing an inline avatar', assignedTo: alice.id });
+  const peoplePath = `/api/v1/projects/${project.id}/task-assignees`;
+  const syncPath = `/api/v1/projects/${project.id}/task-sync`;
+  const requests: string[][] = [];
+  const payloads: { readonly userIds: readonly string[]; readonly bytes: number }[] = [];
+  const payloadReads: Promise<void>[] = [];
+  type WireReceipt = { readonly path: string; validator: boolean; wireStatus: number | null; wireBytes: number | null };
+  const wire = new Map<string, WireReceipt>();
+  const validators = new Map<string, boolean>();
+  const network = await page.context().newCDPSession(page);
+  await network.send('Network.enable');
+  // Routing disables Chromium's HTTP cache, so this phase observes the real network without intercepting requests.
+  network.on('Network.requestWillBeSent', (event) => {
+    const path = new URL(event.request.url).pathname;
+    if (path === '/api/v1/me' || path === peoplePath) wire.set(event.requestId, {
+      path, validator: validators.get(event.requestId) ?? Object.keys(event.request.headers).some((name) => name.toLowerCase() === 'if-none-match'), wireStatus: null, wireBytes: null,
+    });
+  });
+  network.on('Network.requestWillBeSentExtraInfo', (event) => {
+    const validator = Object.keys(event.headers).some((name) => name.toLowerCase() === 'if-none-match');
+    validators.set(event.requestId, validator);
+    const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.validator = validator;
+  });
+  network.on('Network.responseReceivedExtraInfo', (event) => { const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireStatus = event.statusCode; });
+  network.on('Network.loadingFinished', (event) => { const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireBytes = event.encodedDataLength; });
+  const meReceipts = () => [...wire.values()].filter((receipt) => receipt.path === '/api/v1/me');
+  const expectMe = async (index: number, status: number) => {
+    await expect.poll(() => meReceipts()[index]?.wireStatus).toBe(status);
+    // Session expiry aborts the active identity fetch after the 401 headers arrive.
+    if (status === 401) return meReceipts()[index]!;
+    await expect.poll(() => meReceipts()[index]?.wireBytes).not.toBeNull();
+    const receipt = meReceipts()[index]!;
+    expect(receipt.wireBytes).toBeGreaterThanOrEqual(0);
+    if (status === 304) {
+      expect(receipt.validator, 'The browser validates its cached current-account response').toBe(true);
+      expect(receipt.wireBytes, 'Authenticated 304 validation carries headers without retransmitting profile bytes').toBeLessThan(4096);
+    }
+    return receipt;
+  };
+  const observeRequest = (request: { url(): string }) => {
+    const url = new URL(request.url());
+    if (url.pathname === peoplePath) requests.push(url.searchParams.getAll('userId'));
+  };
+  const observeResponse = (response: Response) => {
+    const url = new URL(response.url());
+    if (url.pathname === peoplePath && response.status() === 200) payloadReads.push((async () => {
+      payloads.push({ userIds: url.searchParams.getAll('userId'), bytes: (await response.body()).byteLength });
+    })());
+  };
+  const expectAvatar = async (image: Locator) => {
+    await expect(image).toHaveCount(1);
+    await expect.poll(() => image.evaluate((element) => {
+      const image = element as HTMLImageElement;
+      return image.complete && image.naturalWidth === 16 && image.naturalHeight === 16;
+    })).toBe(true);
+  };
+  const nextSync = async () => {
+    const receipt = await page.locator('.snapshot-time time').getAttribute('datetime');
+    const response = page.waitForResponse((response) => new URL(response.url()).pathname === syncPath);
+    await page.clock.fastForward(15_000); expect((await response).status()).toBe(200);
+    await expect(page.locator('.snapshot-time time')).not.toHaveAttribute('datetime', receipt!);
+  };
+  page.on('request', observeRequest); page.on('response', observeResponse);
+  try {
+    await page.clock.install({ time: new Date('2029-01-01T00:00:00Z') });
+    await page.goto(`/projects/${project.id}`); await standalone(page);
+    await expectAvatar(page.locator(`#standalone-task-${first.id} .assignee-avatar img`));
+    await expectMe(0, 200);
+    expect(requests, 'Shared visible assignees are resolved once').toEqual([[alice.id]]);
+    await Promise.all(payloadReads);
+    expect(payloads[0]!.bytes, 'The fixture carries a production-sized inline avatar').toBeGreaterThan(235_000);
+    for (const task of [first, second, first]) {
+      await openTask(page, task.id); await expectAvatar(assignee(page).locator('.assignee-avatar img')); await closeDetail(page);
+    }
+    expect(requests, 'Opening tasks reuses the loaded profile and avatar').toEqual([[alice.id]]);
+
+    await page.clock.pauseAt(new Date('2030-01-01T00:00:00Z'));
+    await expect(page.locator('.snapshot-time time')).toHaveAttribute('datetime', /^2030-/);
+    await nextSync();
+    expect(requests, 'A successful empty task-sync response does not retransmit known profiles').toEqual([[alice.id]]);
+    await page.reload(); await standalone(page);
+    await expectAvatar(page.locator(`#standalone-task-${first.id} .assignee-avatar img`));
+    await expectMe(1, 304);
+    expect(requests, 'Fresh admission reuses the persisted profile after reloading the document').toEqual([[alice.id]]);
+
+    const invitation = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: { expectedUserId: alice.id } }); expect(invitation.status()).toBe(201);
+    const invitationBody = await invitation.json() as { link: string };
+    expect((await missing.post('/api/v1/invitations/accept', { data: { token: new URL(invitationBody.link).hash.slice(1), expectedUserId: missingProfile.id } })).status()).toBe(200);
+    const added = await createTask(api, project.id, { title: 'New assignee needs only one missing profile', assignedTo: missingProfile.id });
+    await nextSync();
+    const addedRow = page.locator(`#standalone-task-${added.id}`);
+    await expect(addedRow.locator('.assignee-name')).toHaveText(missingProfile.id.slice(0, 8));
+    expect(requests, 'Only the newly displayed uncached assignee is requested').toEqual([[alice.id], [missingProfile.id]]);
+
+    const changedName = 'Changed profile without retransmitting another avatar';
+    await seedUserProfile(missingProfile.id, { name: changedName, avatarUrl: null });
+    await nextSync();
+    await expect(addedRow.locator('.assignee-name')).toHaveText(changedName);
+    expect(requests, 'A profile version change fetches only that person').toEqual([[alice.id], [missingProfile.id], [missingProfile.id]]);
+    const membersResponse = await api.get(`/api/v1/projects/${project.id}/members`); expect(membersResponse.status()).toBe(200);
+    const member = parseMembers(await decodeMembersJson(new Response(await membersResponse.text())), project.id).items.find((member) => member.userId === missingProfile.id);
+    if (member === undefined) throw new Error('Access-only cache validation requires the current direct membership.');
+    expect((await api.delete(`/api/v1/projects/${project.id}/members/${missingProfile.id}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: member.directGrant!.version, expectedUserId: alice.id }) })).status()).toBe(204);
+    await nextSync();
+    await expect(addedRow.locator('.assignee-former')).toBeVisible();
+    expect(requests, 'An access-only manifest change reuses the profile bytes').toEqual([[alice.id], [missingProfile.id], [missingProfile.id]]);
+
+    await Promise.all(payloadReads);
+    const bytesBeforeCatalogue = payloads.reduce((sum, payload) => sum + payload.bytes, 0);
+    for (const task of [second, first]) {
+      await openTask(page, task.id); await assignee(page).click(); await expect(menu(page).getByRole('listbox')).toBeVisible();
+      await expectAvatar(menu(page).getByRole('option', { name: longName, exact: true }).locator('.assignee-avatar img'));
+      await expect(menu(page).getByRole('option', { name: new RegExp(`^${changedName}`) })).toHaveCount(0);
+      await page.keyboard.press('Escape'); await closeDetail(page);
+    }
+    await Promise.all(payloadReads);
+    expect(requests, 'The manifest and known profiles supply candidate catalogues without another people read').toEqual([[alice.id], [missingProfile.id], [missingProfile.id]]);
+    expect(payloads.reduce((sum, payload) => sum + payload.bytes, 0), 'Unchanged inline avatars transfer no further bytes').toBe(bytesBeforeCatalogue);
+
+    const changedAvatar = inlineAvatar('#2a936b');
+    await seedUserProfile(alice.id, { name: longName, avatarUrl: changedAvatar });
+    await page.reload(); await standalone(page);
+    const updatedImage = page.locator(`#standalone-task-${first.id} .assignee-avatar img`);
+    await expectAvatar(updatedImage);
+    await expect.poll(async () => await updatedImage.getAttribute('src') === changedAvatar, { message: 'The changed inline avatar is rendered' }).toBe(true);
+    await expectMe(2, 200);
+    expect(requests, 'Reload transfers only the profile whose avatar changed').toEqual([[alice.id], [missingProfile.id], [missingProfile.id], [alice.id]]);
+    await page.reload(); await standalone(page); await expectAvatar(updatedImage);
+    await expectMe(3, 304);
+    expect(requests, 'The replacement avatar is persisted and reused on the next reload').toEqual([[alice.id], [missingProfile.id], [missingProfile.id], [alice.id]]);
+
+    await page.context().clearCookies();
+    await page.reload(); await expectMe(4, 401);
+    await expect(page.locator('.auth-shell,.task-detail-dialog')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: /^(登录你的工作空间|Sign in to your workspace)$/, exact: true })).toBeVisible();
+    await expect(page.getByText(first.title, { exact: true })).toHaveCount(0);
+    await Promise.all(payloadReads);
+    await info.attach('assignment-people-cache', { body: JSON.stringify({ projectId: project.id, avatarBytes: Buffer.byteLength(avatar), requests, payloads, wire: [...wire.values()] }), contentType: 'application/json' });
+  } finally {
+    page.off('request', observeRequest); page.off('response', observeResponse);
+    await page.clock.resume(); await network.detach();
+    await Promise.all(payloadReads);
+    await seedUserProfile(missingProfile.id, { name: missingProfile.name, avatarUrl: missingProfile.avatarUrl });
+  }
+};
 
 test('task-assignment-layout', scenario, async ({ page, api, playwright }, info) => {
   const baseURL = info.project.use.baseURL;
@@ -170,8 +323,12 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
       await chooseFilter(page, locale === 'en' ? 'Everyone' : '所有负责人');
     }
     expect(peopleRequests.some((entry) => entry.bounded && entry.status === 200)).toBe(true);
-    expect(peopleRequests.some((entry) => !entry.bounded && entry.status === 200)).toBe(true);
+    expect(peopleRequests.every((entry) => entry.bounded), 'Candidate catalogues reuse the task-sync manifest').toBe(true);
     await info.attach('assignment-people-receipts', { body: JSON.stringify({ projectId: project.id, peopleRequests, formerUserId: bobProfile.id }), contentType: 'application/json' });
+    await test.step('Persists versioned profiles and validates cached current-account responses', async () => {
+      const missing = await bearerContext(playwright.request, baseURL, 'nullable');
+      try { await verifyPeopleReuse(page, api, missing, aliceProfile, await profile(missing), info); } finally { await missing.dispose(); }
+    });
   } finally {
     try {
       await seedUserProfile(aliceProfile.id, { name: aliceProfile.name, avatarUrl: aliceProfile.avatarUrl });

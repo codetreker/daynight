@@ -21,10 +21,11 @@ type TaskViewRecord struct {
 }
 
 type TaskSync struct {
-	Mode        string
-	Epoch       string
-	Project     Project
-	ActorAccess ProjectAccess
-	ObservedAt  time.Time
-	Tasks       []TaskViewRecord
+	Mode             string
+	Epoch            string
+	Project          Project
+	ActorAccess      ProjectAccess
+	ObservedAt       time.Time
+	Tasks            []TaskViewRecord
+	AssigneeVersions []TaskAssigneeVersion
 }

@@ -16,11 +16,13 @@
 现有 PostgreSQL task 事务规则不扩展为文件与元数据的原子提交保证。
 
 [鉴权架构](daynight-auth.md)定义已接入运行时的 UniAuth 身份交接、本地用户、会话、
-访问令牌、CLI 设备授权及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
+访问令牌、CLI 设备授权、Team 生命周期及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
 [身份基础模块](../../.agents/notes/implemented/architecture/2026-10-22-identity-credentials.md)
 提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
 提供事务内授权、私有创建和邀请。`server.New(Dependencies, Config, logger)`
-返回 `(http.Handler, error)`，验证配置并统一注册身份、成员和全部业务路由。
+返回 `(http.Handler, error)`，验证配置并统一注册身份、Team、成员和全部业务路由。
+Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据与生命周期事务)拥有，
+不引入 Project/Task 的反向锁依赖。
 每个资源 service 方法显式接收 `core.Principal`；不保留匿名业务入口或私有创建/列表
 别名。[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 记录组合、凭据隐私与验证边界。
@@ -120,8 +122,8 @@ service/store；请求仍只经过一次现有日志包装。HTML、图、Worker
 `/login`、`/projects`、项目页、账号级 `/workers` 与 `/workers/{workerId}`、公开静态使用引导 `/setup`、
 `/projects/{projectId}/tasks/{taskId}` 完整详情和其附件路径入口。
 [公开入口设计](daynight-landing.md)区分介绍、认证和工作台；使用引导在认证组件外挂载，
-不发起身份核验或其他 API 请求。`/login`、`/setup` 和 `/workers` 根及后代命名空间在
-callback 配置验证中保留，冲突在路由注册前拒绝。GET 沿用 HEAD 语义，其他方法返回 405，未知形状不回退 index。UI 的无效 ID 仍交付
+不发起身份核验或其他 API 请求。`/login`、`/setup`、`/workers`、`/teams` 根及后代，
+以及 `/api/v1/teams` 命名空间在 callback 配置验证中保留，冲突在路由注册前拒绝。GET 沿用 HEAD 语义，其他方法返回 405，未知形状不回退 index。UI 的无效 ID 仍交付
 index 后由前端显示未找到页面。独立附件命名空间复用原始路径守卫，在 ServeMux
 清理和重定向前拒绝非法路径；数据与授权仍由已有任务、图和附件接口负责，机制见
 [详情页面设计](daynight-task-inspection.md#独立完整任务详情)及
@@ -182,10 +184,14 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 登录/项目 writer 与双来源计算。Project 点读 LEFT JOIN 归属并校验必需事实，缺行明确失败；
 不存在业务读取时补 owner 的分支。
 
-表不建立 foreign key。引用存在性、同 project 限制和图规则由获得 project 写锁后的
+项目与任务相关表不建立 foreign key。引用存在性、同 project 限制和图规则由获得 project 写锁后的
 service 写入路径校验；所有写入都必须经过该路径。`017_task_soft_delete.sql` 增加可空
 `deleted_at`，删除保留任务与附件。removeDepends 省略/false 时，存在未删除引用者即拒绝；true 明确解除全部传入引用，包括已删除源历史边，受影响源版本各增加一次，目标自己的前置保持。新依赖不能引用已删除任务，两种删除模式均保持活动图完整。[软删除设计](daynight-task-deletion.md)拥有事务保护、可见性和缓存失效。
 其他数据库写入者仍须遵守同一引用维护规则。
+
+`033_bots.sql` 的 Bot 定义独立于项目锁，使用用户外键及 `(owner_user_id, worker_id)`
+组合外键保证归属关系；凭据、请求指纹和版本仍由 Bot 事务校验。
+[助手定义设计](assistant.md)拥有其冻结配置、幂等创建和删除责任。
 
 ## 仓库地址注册
 
@@ -283,6 +289,8 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 
 | 方法与路径 | 操作 |
 |---|---|
+| `GET/POST /api/v1/teams` | 本人成员资格分页；原子创建普通 Team 和创建者 admin |
+| `GET/PATCH/DELETE /api/v1/teams/{teamId}` | 读取本人关系，按元数据版本改名或核对名称后删除空 Team |
 | `POST /api/v1/projects` | 创建 project |
 | `GET /api/v1/projects` | 分页列出 project |
 | `GET /api/v1/projects/{projectId}` | 获取 project |
@@ -344,7 +352,7 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 
 ## 列表与读取一致性
 
-项目列表在数据库中先按调用者成员关系过滤，再执行分页；项目、task 与完整图的
+项目列表在数据库中先按调用者的 owner Team 成员关系与 direct grant 过滤，再执行分页；项目、task 与完整图的
 读取在同一 `ReadSnapshot` 内检查成员关系并读取资源。HTTP 入口每次重新验证
 会话或 PAT，数据库成员检查遵循所属快照或项目写锁的时点；凭据验证不属于业务
 事务中的再次校验。附件在文件 I/O 前完成快照授权，随后按已准入操作完成，详见
@@ -357,7 +365,9 @@ task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform`、`a
 
 普通列表保留 SQL limit；指定 workerId 时，store 按原 keyset 顺序读取候选及其唯一 worker 属性，在 Go 中解码并匹配归属，收集到 page limit+1 个匹配项或结束。最终分页和 lookahead 在归属筛选后计算，cursor 来自最后返回的匹配项。选中任务再批量加载全部属性，保持一致快照；不通过 SQL JSON 转换 PR 文本，也不引入独立 claim 权威表。
 
-Task cursor 版本2绑定解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。项目和账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本2。
+项目列表默认返回全部可访问项目；`teamId` 选择当前主体所属 Team 的项目，`shared=true` 选择有 direct grant 且没有 owner Team 成员关系的项目。二者互斥，非成员或不存在的 Team 返回 404，数据库失败仍为错误；资格、Team 和主体条件均先于 LIMIT。列表不返回总数。项目 cursor 使用独立 kind 和版本 2，绑定规范主体及 all/team/shared 范围和 Team ID，旧版本或跨范围续页被拒绝。游标不提供防篡改保护，也不作为授权凭据；每次请求独立检查访问权限。
+
+Task cursor 版本2绑定解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本2。
 
 cursor 编码最后一项的位置、资源类型、project 路径范围及规范化筛选条件。解码时
 校验格式和范围，拒绝旧版本1任务 cursor、将 project 列表 cursor 用于 task 列表，或在修改筛选后复用。

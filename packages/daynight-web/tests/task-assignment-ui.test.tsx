@@ -17,10 +17,10 @@ const formerUser = '00000000-0000-4000-8000-000000000203';
 const nullNameUser = '10000000-0000-4000-8000-000000000204';
 const longName = 'A person with a sufficiently long display name to require truncation in a task row';
 const people: readonly ProjectPerson[] = [
-  { userId: TEST_VIEWER_ID, name: longName, avatarUrl: '/broken-avatar.png', hasProjectAccess: true },
-  { userId: otherUser, name: 'Other person', avatarUrl: null, hasProjectAccess: true },
-  { userId: formerUser, name: 'Former person', avatarUrl: null, hasProjectAccess: false },
-  { userId: nullNameUser, name: null, avatarUrl: null, hasProjectAccess: true },
+  { version: "a".repeat(64), userId: TEST_VIEWER_ID, name: longName, avatarUrl: '/broken-avatar.png', hasProjectAccess: true },
+  { version: "a".repeat(64), userId: otherUser, name: 'Other person', avatarUrl: null, hasProjectAccess: true },
+  { version: "a".repeat(64), userId: formerUser, name: 'Former person', avatarUrl: null, hasProjectAccess: false },
+  { version: "a".repeat(64), userId: nullNameUser, name: null, avatarUrl: null, hasProjectAccess: true },
 ];
 
 beforeEach(() => {
@@ -33,6 +33,7 @@ const install = (initial: readonly TaskDetail[]) => {
   const fetcher = vi.fn(async (address: string, options?: RequestInit): Promise<Response> => {
     const url = new URL(address, location.origin);
     if (url.pathname === `/api/v1/projects/${projectId}/task-sync`) return taskSyncResponse(graphFixture([...tasks.values()]), {
+      assigneeVersions: people.map(({ userId, version, hasProjectAccess }) => ({ userId, version, hasProjectAccess })),
       viewerId: TEST_VIEWER_ID, query: taskSyncQuery(url), versionForTask: (task) => tasks.get(task.id)!.version,
       propertiesForTask: (task) => tasks.get(task.id)!.properties,
     });
