@@ -278,7 +278,10 @@ describe('authoritative project management', () => {
     click('邀请成员'); expect(screen.getByText('7 天后到期 · 单次使用 · 加入角色：成员')).toBeInTheDocument(); await dialogClick('创建邀请链接');
     await screen.findByLabelText('一次性邀请链接'); expect(auth.createInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', expect.any(AbortSignal));
     expect(screen.getByLabelText('一次性邀请链接')).toHaveValue('https://daynight.test/invitations#once-secret'); await dialogClick('我已保存，关闭');
-    expect(screen.queryByDisplayValue(/once-secret/)).toBeNull(); click('撤销邀请 invitation-a');
+    expect(screen.queryByDisplayValue(/once-secret/)).toBeNull();
+    const revoke = await screen.findByRole('button', { name: '撤销邀请 invitation-a' });
+    await waitFor(() => expect(revoke).not.toBeDisabled());
+    click('撤销邀请 invitation-a');
     expect(screen.getByText(/这个邀请链接将立即失效/)).toBeInTheDocument(); await dialogClick('撤销邀请');
     await screen.findByText(/还没有有效邀请/); expect(auth.revokeInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'invitation-a', expect.any(AbortSignal));
   });
