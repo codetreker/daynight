@@ -234,7 +234,7 @@ it("retains a committed Worker upgrade when Web state fails and resumes after it
   await expect(runWorker(f)).rejects.toThrow("unsupported-version");
   expect(mocks.coordinator).not.toHaveBeenCalled();
   const worker = new Database(f.paths.databaseFile);
-  expect(worker.pragma("user_version", { simple: true })).toBe(5);
+  expect(worker.pragma("user_version", { simple: true })).toBe(6);
   expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 });
   worker.close();
   const web = new Database(webFile);
@@ -250,7 +250,7 @@ it("retains a committed Worker upgrade when Web state fails and resumes after it
   expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(1);
   upgradedWeb.close();
   const unchangedWorker = new Database(f.paths.databaseFile);
-  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(5);
+  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(6);
   unchangedWorker.close();
 });
 
