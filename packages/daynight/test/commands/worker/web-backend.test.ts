@@ -449,3 +449,75 @@ it.each(["failed", "paused", "stopped", "stopping"] as const)("persists a failed
   expect(f.store.getTask(f.task)?.recovery).toEqual({ count: 3, pauseReason: "The retry did not become healthy.", retryAuthorized: false });
   expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
 });
+
+it.each(["worktree", "prepare"] as const)("retries the same unsubmitted generation after %s preparation fails and the Worker store reopens", async failure => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
+  if (failure === "worktree") vi.mocked(f.git.verifyWorktree).mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
+  else f.launcher.prepare.mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
+  await expect(f.backend.advance(authorized, new AbortController().signal)).rejects.toThrow("Preparation temporarily unavailable");
+  const allocated = f.store.getTask(f.task)!;
+  expect(allocated.webExecution).toMatchObject({ executionGeneration: "2", launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [] });
+  expect(allocated.recovery).toEqual({ count: 3, pauseReason: "Preparation temporarily unavailable.", retryAuthorized: false });
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+  const shutdown = await f.backend.cleanup(allocated, "shutdown", 20, undefined, true);
+  f.store.clearShutdown(shutdown, 21);
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: reopened, git: f.git, launcher: f.launcher, platform: "macos", buildPrompt: vi.fn(), emit: () => {}, now: () => 30, request: f.request });
+  const resumed = await backend.advance(reopened.authorizeRecoveryRetry(f.task, 22), new AbortController().signal);
+  expect(resumed.recovery).toEqual({ count: 4, pauseReason: null, retryAuthorized: false });
+  expect(resumed.webExecution).toMatchObject({ executionGeneration: "2", launchId: allocated.webExecution!.launchId, controllerInstanceId: allocated.webExecution!.controllerInstanceId, initialOperationId: allocated.webExecution!.initialOperationId, restartAfterShutdown: false });
+  expect(resumed.resources.nativeSession).toEqual(allocated.resources.nativeSession);
+  expect(f.launcher.launch).toHaveBeenCalledOnce();
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+});
+
+it.each(["unknown", "controller", "native", "generation", "claim", "session", "native-session", "not-stopped", "missing-stop-time", "alive", "changed-journal"] as const)("rejects unsafe evidence when retrying an allocated unsubmitted generation (%s)", async changed => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  f.launcher.prepare.mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
+  await expect(f.backend.advance(f.store.authorizeRecoveryRetry(f.task, 9), new AbortController().signal)).rejects.toThrow("Preparation temporarily unavailable");
+  const allocated = f.store.getTask(f.task)!;
+  if (changed === "unknown") f.store.updateWebExecution(allocated, { launchSubmission: "unknown" }, 21);
+  if (changed === "controller") f.store.updateWebExecution(allocated, { controllerProcess: f.snapshot.controllerProcess }, 21);
+  if (changed === "native") f.store.updateWebExecution(allocated, { nativeProcesses: [f.snapshot.controllerProcess!] }, 21);
+  const previous = { ...f.snapshot };
+  if (changed === "generation") previous.executionGeneration = "0";
+  if (changed === "claim") previous.claimId = randomUUID();
+  if (changed === "session") previous.sessionId = randomUUID();
+  if (changed === "native-session") previous.nativeSessionId = randomUUID();
+  if (changed === "not-stopped") previous.nativeStopped = false;
+  if (changed === "missing-stop-time") previous.stoppedAt = null;
+  f.saved.mockReturnValue(previous);
+  if (changed === "alive") f.stopped.mockResolvedValue(false);
+  if (changed === "changed-journal") f.saved.mockReturnValueOnce(previous).mockReturnValue({ ...previous, error: "Evidence changed during inspection." });
+  const retry = f.store.authorizeRecoveryRetry(f.task, 22);
+  await expect(f.backend.advance(retry, new AbortController().signal)).rejects.toThrow();
+  expect(f.store.getTask(f.task)?.recovery).toMatchObject({ count: 3, retryAuthorized: false });
+  expect(f.store.getTask(f.task)?.recovery.pauseReason).not.toBeNull();
+  expect(f.store.getTask(f.task)?.webExecution?.executionGeneration).toBe("2");
+  expect(f.store.getTask(f.task)?.webExecution?.launchId).toBe(allocated.webExecution!.launchId);
+  expect(f.launcher.prepare).toHaveBeenCalledOnce(); expect(f.launcher.launch).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+});
+
+it("continues a consumed unsubmitted retry after a Worker reopen without consuming another allowance", async () => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  f.launcher.prepare.mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
+  await expect(f.backend.advance(f.store.authorizeRecoveryRetry(f.task, 9), new AbortController().signal)).rejects.toThrow("Preparation temporarily unavailable");
+  const allocated = f.store.getTask(f.task)!;
+  f.store.authorizeRecoveryRetry(allocated, 21);
+  const pending = f.store.retryUnsubmittedWebGeneration(allocated, f.snapshot, 22);
+  expect(pending.recovery).toEqual({ count: 4, pauseReason: null, retryAuthorized: true });
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: reopened, git: f.git, launcher: f.launcher, platform: "macos", buildPrompt: vi.fn(), emit: () => {}, now: () => 30, request: f.request });
+  const resumed = await backend.advance(reopened.getTask(f.task)!, new AbortController().signal);
+  expect(resumed.recovery).toEqual({ count: 4, pauseReason: null, retryAuthorized: false });
+  expect(resumed.webExecution?.launchId).toBe(allocated.webExecution!.launchId);
+  expect(resumed.webExecution?.executionGeneration).toBe("2");
+  expect(f.launcher.launch).toHaveBeenCalledOnce();
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+});

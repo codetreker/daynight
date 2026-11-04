@@ -48,14 +48,24 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         if (retryAttempt && task.recovery.pauseReason !== null) {
           // Authorization permits one replacement generation only after proving the old writer stopped.
           if (task.webExecution === null || task.resources.nativeSession === null) throw new Error("Web retry requires the original native session identity.");
-          const saved = originalSnapshot();
-          if (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession.sessionId) throw new Error("Web retry requires the original native session identity.");
-          task = remember(task, saved);
-          const proof = task.webExecution!.controllerProcess;
-          if (proof === null || !await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses)) throw new Error("Web retry requires complete original controller and native process stop.");
-          const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId);
-          const stopped = await recordStoppedControllerGeneration(journal(task), ticket);
-          task = options.store.beginWebGeneration(task, stopped, options.now());
+          if (task.webExecution.launchSubmission === "not-submitted" && BigInt(task.webExecution.executionGeneration) > 1n) {
+            // Preparation may fail after allocating a generation but before any writer is launched.
+            const previous = readControllerSnapshot(journal(task));
+            if (previous === null || previous.controllerProcess === null || previous.lifecycle !== "stopped" || !previous.nativeStopped || previous.stoppedAt === null) throw new Error("Unsubmitted recovery requires the original complete stopped generation evidence.");
+            if (!await confirmControllerProcessesStopped(previous.controllerProcess, previous.nativeProcesses)) throw new Error("Unsubmitted recovery requires complete original controller and native process stop.");
+            signal.throwIfAborted();
+            if (JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(previous)) throw new Error("The original stopped generation changed during unsubmitted recovery verification.");
+            task = options.store.retryUnsubmittedWebGeneration(task, previous, options.now());
+          } else {
+            const saved = originalSnapshot();
+            if (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession.sessionId) throw new Error("Web retry requires the original native session identity.");
+            task = remember(task, saved);
+            const proof = task.webExecution!.controllerProcess;
+            if (proof === null || !await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses)) throw new Error("Web retry requires complete original controller and native process stop.");
+            const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId);
+            const stopped = await recordStoppedControllerGeneration(journal(task), ticket);
+            task = options.store.beginWebGeneration(task, stopped, options.now());
+          }
         } else if (!retryAttempt && task.webExecution !== null && task.webExecution.launchSubmission !== "not-submitted" && task.recovery.count >= task.configuration.recoveryLimit) {
           // Older versions recorded exhaustion without a pause. Inspect before any launch preparation.
           try {

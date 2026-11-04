@@ -248,3 +248,29 @@ it("commits an exhausted recovery pause and preserves it across reopen and shutd
   reopened.pauseRecovery(claim, "The authorized attempt failed.", 14);
   expect(reopened.beginRecovery(claim, 15).recovery.count).toBe(2);
 });
+
+it("atomically consumes an explicit retry for the same unsubmitted intent across reopen", () => {
+  const { file, store, project, claim } = fixture();
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 0 }, userId: id(6) }, 1);
+  let original = store.initializeWebExecution(claim, 2);
+  const controllerProcess = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "birth", commandHash: "a".repeat(64) };
+  original = store.updateWebExecution(original, { sessionId: id(8), controllerProcess, initialPrompt: "original assignment", launchSubmission: "acknowledged" }, 3);
+  original = store.bindNativeSession(original, { source: "controller", sessionId: id(7) }, 4);
+  const execution = original.webExecution!;
+  const previous: import("../../../src/commands/controller/lifecycle-store.js").ControllerSnapshot = { executionId: execution.executionId, claimId: claim.claimId, sessionId: id(8), executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, lifecycle: "stopped", nativeSessionId: id(7), initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess, nativeProcesses: [], nativeStopped: true, stoppedAt: new Date(0).toISOString(), error: "Original failure" };
+  store.authorizeRecoveryRetry(original, 5);
+  const allocated = store.beginWebGeneration(original, previous, 6);
+  store.pauseRecovery(allocated, "Preparation failed.", 7);
+  const authorized = store.authorizeRecoveryRetry(allocated, 8);
+  expect(() => store.retryUnsubmittedWebGeneration(authorized, { ...previous, claimId: id(9) }, 9)).toThrow("preceding stopped generation");
+  expect(store.getTask(claim)?.recovery).toEqual(authorized.recovery);
+  const retried = store.retryUnsubmittedWebGeneration(authorized, previous, 10);
+  expect(retried.webExecution).toEqual(allocated.webExecution);
+  expect(retried.recovery).toEqual({ count: 2, pauseReason: null, retryAuthorized: true });
+  close(store);
+  const reopened = open(file);
+  expect(reopened.getTask(claim)?.webExecution).toEqual(allocated.webExecution);
+  expect(reopened.getTask(claim)?.recovery).toEqual(retried.recovery);
+  expect(() => reopened.retryUnsubmittedWebGeneration(claim, previous, 11)).toThrow("preceding stopped generation");
+  expect(reopened.getTask(claim)?.recovery.count).toBe(2);
+});

@@ -11,6 +11,11 @@ worker restarts, and a pause checked after launch preparation cannot prevent
 another attempt. The original claim must retain responsibility for its native
 session and resources even when no further execution is allowed.
 
+Generation allocation can also precede a failure in worktree verification or
+launch preparation. The Controller has not started, so its journal still names
+the predecessor; requiring a current-generation journal for every later retry
+would make that recoverable execution permanently unavailable.
+
 ## Decision
 
 The [Web execution evidence decision](../architecture/2026-10-28-web-execution-evidence.md)
@@ -42,8 +47,21 @@ distinguish an unconsumed authorization from a generated attempt awaiting
 readiness. Generation creation and count advancement commit atomically; the
 flag remains set until a matching ready observation, so interruption cannot
 authorize another generation. Initialization remains waiting, failure pauses
-again, and initial assignment receipts prevent replay. `task.properties.paused` retains its independent Herdr
-continuation-ping meaning. The [worker design](../../../../docs/design/daynight-worker.md#web-backend-与执行证据)
+again, and initial assignment receipts prevent replay.
+
+A generation can be allocated before worktree verification or launch preparation
+fails, leaving only its predecessor's journal. A new explicit retry can continue
+that allocated generation only when launch submission is `not-submitted`, no
+current Controller or native process evidence exists, and the journal matches
+the original execution, claim, Session and native identity at the immediately
+preceding generation. Complete predecessor stop proof is rechecked against OS
+process state. Consuming the new authorization and incrementing the recovery
+count commit atomically while preserving generation, launch ID and initial
+operation ID and clearing orderly-restart provenance. An unknown or acknowledged
+launch cannot use predecessor evidence to infer that no writer exists.
+
+`task.properties.paused` retains its independent Herdr continuation-ping meaning.
+The [worker design](../../../../docs/design/daynight-worker.md#web-backend-与执行证据)
 owns the runtime mechanism and the [worker requirements](../../../../docs/spec/daynight-worker.md#w-09sqlite对账退出与恢复)
 own observable guarantees.
 
