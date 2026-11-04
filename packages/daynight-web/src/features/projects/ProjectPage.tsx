@@ -279,7 +279,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           {snapshot !== null && notice?.kind === "overview-target-unavailable" && <p className="snapshot-notice" role="status">{overview.targetUnavailable}</p>}
           <section className="project-section-panel project-overview" id="project-section-panel-overview" role="tabpanel"
             aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>
-            {snapshot !== null && <ProjectOverview snapshot={snapshot} progress={progress} pagination={{ ...overviewPagination, onPageChange: selectOverviewPage }} onNavigate={onOverviewNavigate} />}
+            {snapshot !== null && <ProjectOverview snapshot={snapshot} progress={progress} pagination={{ ...overviewPagination, onPageChange: selectOverviewPage }} onNavigate={onOverviewNavigate} onOpenTask={onOpenTask} />}
           </section>
           <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>

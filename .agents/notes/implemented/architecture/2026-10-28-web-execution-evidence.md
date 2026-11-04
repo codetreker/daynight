@@ -23,11 +23,18 @@ identity, recovery budget, cleanup operation and deadline. Controller journals
 continue to own native input receipts, projections and the durable outbox.
 
 The [minimal worker record decision](../simplification/2026-10-27-worker-claim-records.md)
-remains the Herdr lifecycle owner. The [mode decision](2026-10-27-task-session-mode-contract.md)
+remains the Herdr business lifecycle owner. The [cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md)
+adds independent scheduling for both modes and preserves terminal-cleanup
+notification state across Herdr restarts. Web cleanup.error and result continue
+to describe native execution, not scheduling or archive/deletion failures.
+The [mode decision](2026-10-27-task-session-mode-contract.md)
 extends the shared index with frozen routing; the [session design](../../../../docs/design/task-session-protocol.md)
 owns Web recovery and operation semantics. Neither backend can reinterpret an
 existing claim using the latest configured mode. Missing Web provenance is a
 visible recovery failure, not proof that no native process was started.
+The [persistent recovery pause decision](../bug-fix/2026-11-04-web-recovery-pause.md)
+uses this Web evidence store to preserve recovery pauses and reconcile waiting
+without allowing ordinary restarts to authorize another attempt.
 
 A new Task Worker native session uses the unattended full-access policy.
 Independent Test Sessions retain native defaults, and native resume preserves

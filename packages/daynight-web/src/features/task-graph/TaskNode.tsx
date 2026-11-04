@@ -1,3 +1,4 @@
+import { TaskPausedBadge, useTaskPaused } from "../task-pause/TaskPause";
 import { memo, useCallback, useId, useLayoutEffect, useRef, type FocusEvent, type MouseEvent } from 'react';
 import { useReactFlow, type Node, type NodeProps } from '@xyflow/react';
 import { useTaskExecution } from '../task-execution/TaskExecutionClock';
@@ -26,11 +27,12 @@ export type TaskFlowNode = Node<TaskNodeData, 'task'>;
 
 const TaskNodeContent = memo(({ task, kind, execution }: Pick<TaskNodeData, 'task' | 'kind'> & { readonly execution: TaskExecution | null }) => {
   const { messages: { graph: m, common } } = useI18n();
+  const paused = useTaskPaused(task.id);
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   return <>
     <span className="task-node-meta">
       <span className="task-node-id">{task.id.slice(0, 8)}</span>
-      <span className="task-node-meta-labels"><TaskAgentPermissionBadge allowAgents={task.allowAgents} compact /><TaskPlatformBadge requiredPlatform={task.requiredPlatform} compact />{execution?.overdue && <TaskExecutionWarning />}</span>
+      <span className="task-node-meta-labels">{paused && <TaskPausedBadge compact />}<TaskAgentPermissionBadge allowAgents={task.allowAgents} compact /><TaskPlatformBadge requiredPlatform={task.requiredPlatform} compact />{execution?.overdue && <TaskExecutionWarning />}</span>
     </span>
     <span className="task-node-title">{title}</span>
     <span className="task-node-bottom">
@@ -54,9 +56,10 @@ const ExpansionControl = ({ direction, expansion, onExpand, onFocus }: { directi
 };
 
 export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
-  const { messages: { graph: m, common } } = useI18n();
+  const { messages: { graph: m, common, inspection: { pause } } } = useI18n();
   const { setCenter, getViewport } = useReactFlow();
   const inspection = useTaskInspectionState(data.task.id);
+  const paused = useTaskPaused(data.task.id);
   const execution = useTaskExecution(data.task);
   const descriptionId = useId();
   const focusedControl = useRef<HTMLButtonElement | null>(null);
@@ -96,9 +99,9 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
   const inspect = useCallback(() => { data.onInspectTask(data.task.id); }, [data.onInspectTask, data.task.id]);
   const expandable = data.expansions.prerequisites.ids.length > 0 || data.expansions.successors.ids.length > 0;
   return (
-    <div className={`task-node task-node-${data.task.status} task-node-${inspection}${data.kind === 'external' ? ' task-node-external' : ''}${execution?.overdue ? ' task-node-stuck' : ''} nodrag nopan`} data-inspection={inspection} style={{ pointerEvents: 'auto' }}>
+    <div className={`task-node task-node-${data.task.status} task-node-${inspection}${data.kind === 'external' ? ' task-node-external' : ''}${execution?.overdue ? ' task-node-stuck' : ''}${paused ? ' task-node-paused' : ''} nodrag nopan`} data-inspection={inspection} style={{ pointerEvents: 'auto' }}>
       <button type="button" ref={body} className="task-node-body nodrag nopan"
-        aria-label={`${m.nodeLabel({ title, status: common.status[data.task.status], blocked: data.task.blockedBy.length > 0, external: data.kind === 'external' })}${m.inspectionSuffix[inspection]}`}
+        aria-label={`${m.nodeLabel({ title, status: common.status[data.task.status], blocked: data.task.blockedBy.length > 0, external: data.kind === 'external' })}${paused ? `, ${pause.label}` : ''}${m.inspectionSuffix[inspection]}`}
         aria-describedby={execution === null ? undefined : descriptionId}
         aria-pressed={inspection === 'selected'} onClick={inspect} onFocus={revealOnFocus}>
         <TaskNodeContent task={data.task} kind={data.kind} execution={execution} />

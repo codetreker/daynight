@@ -24,14 +24,16 @@ locks and uncertainty about surviving native agents.
 ## Decision
 
 Each store explicitly selects its format and SQL directory, with an independent
-`user_version` sequence: Review 2, Worker 5, Web execution state 1, Controller
+`user_version` sequence: Review 2, Worker 6, Web execution state 1, Controller
 journal 6 and native resume lease 1. Review and journal retain their existing
 nonzero conversions; retired detailed Worker versions 1–4 remain unsupported.
-The minimal Worker index gains no business columns, identity marker, history or
-recovery ledger. There is no global version, database-family identifier or
+The minimal Worker task index gains no business columns, identity marker or
+execution history. The [cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md)
+adds a separate terminal-cleanup schedule in Worker version 6, preserving
+existing project and task rows. There is no global version, database-family identifier or
 migration ledger.
 
-Five baselines and six upgrades are independent `.sql` resources. Top-level
+Five baselines and seven upgrades are independent `.sql` resources. Top-level
 filenames alone define each owner's baseline, versions and execution order;
 TypeScript has no per-step registry or second sequence. A valid next numbered
 file automatically enters its owner's chain. Strict discovery rejects malformed

@@ -29,10 +29,26 @@ Read admission returns `ProjectAccess` within the existing read snapshot. This
 computed projection has project/user IDs, the current role and an optional actual
 direct grant. It has no independent writable version or storage timestamps; the
 embedded grant retains its own facts. Point admission and accessible-project filtering
-use the same canonical direct-authorization source. Resource services and Worker
-non-owner administrator checks consume access; claim ownership and task-assignee
-requirements keep their separate rules. The [actor access projection](2026-11-03-project-access-projection.md)
+use the same canonical direct-authorization source. Resource services, new task
+assignment targets and Worker non-owner administrator checks consume access.
+Task-assignee catalogues and bounded resolution use that source's raw identities
+for access qualification while retaining their separate profile-integrity and
+historical-reference rules. Responsibility and claim ownership remain distinct;
+the [assignment decision](2026-11-03-task-assignment-foundation.md) owns those
+rules. The [actor access projection](2026-11-03-project-access-projection.md)
 owns public reads, same-snapshot task-sync publication and client freshness.
+
+Web and Herdr Session admission use `ReadProjectAccess` through the relay's
+shared `member()` wrapper in their existing raw transactions. Credential checks
+remain separate; the canonical statement supplies the role without holding grant
+row locks until commit. Session paths have different Task/Session lock orders,
+so Thread's stronger authorization locks cannot be inserted into them. Original
+requesters are reauthorized at dispatch, online content is rechecked after network
+waits, and browser channels recheck every 250ms. Owner/controller restrictions and
+personal TestSession access remain independent of project roles. The
+[Session design](../../../../docs/design/task-session-protocol.md#relay-与恢复)
+owns these resource-specific rules. Missing access maps to the existing refusal;
+other canonical query errors retain their causes.
 
 Writes use the existing project row lock before checking actor access, the target
 grant's observed version and administrator count. The same project lock orders
@@ -65,6 +81,11 @@ now makes ordinary Create/List principal-aware, removes those aliases and mounts
 principals. Existing projects receive no automatic membership.
 
 ## Alternatives
+
+**Keep private membership SQL in the Session relay.** This makes Session
+admission a separate policy owner that can diverge from ordinary resource access.
+The canonical reader already accepts a raw transaction, so sharing it does not
+require changing Session transaction ownership or adding a new abstraction.
 
 **Use the joined member record as the authorization result.** This couples
 resource admission to profile projection and exposes a writable grant version as

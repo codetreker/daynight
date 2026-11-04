@@ -337,7 +337,7 @@ flowchart TD
 | `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时 `POST /api/v1/projects`，提交原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
-| `task create [--required-platform <platform>] [--assigned-to <user-uuid>]` | `POST /api/v1/projects/{projectId}/tasks`，可选 requiredPlatform 与 assignedTo |
+| `task create [--required-platform <platform>] [--assigned-to <user-uuid>]` | 省略负责人先 `GET /api/v1/me`，再 `POST /api/v1/projects/{projectId}/tasks`，携带 assignedTo 和可选 requiredPlatform |
 | `task list` | `GET /api/v1/projects/{projectId}/tasks`，保留相同筛选遍历 cursor |
 | `task ready [--limit <N>] [--allow-agents true\|false] [--compatible-platform <platform>]` | 单次 `GET /api/v1/projects/{projectId}/tasks?ready=true&limit=N`，可带 allowAgents、compatiblePlatform，不提交 cursor |
 | `task show <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}` |
@@ -381,7 +381,7 @@ create/update 的 --required-platform 设置枚举，update --clear-required-pla
 省略保留。list/ready --compatible-platform 与许可、状态、ready共同投影到服务查询并绑定cursor，
 先于分页/上限，客户端验证响应匹配并暴露协议错，不本地删项。平台不改变ready或人工setter。
 
-负责人选项属于普通任务元数据。create/update 的 --assigned-to 接受自由UUID文本并规范化；update 的 --clear-assigned-to 发送null，与设置冲突。省略仅不生成key，不把null当作undefined；AssignedTo也参与至少一个更新字段判断。写入仅UUID，list另接受小写me/unassigned并传到每页。ready命令不增加该字段；用户可用task list --ready组合查询。worker 新候选使用 me，而完整既有 claim 库存仍省略该条件；[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有运行时资格规则，CLI 元数据命令保留独立职责。
+负责人选项属于普通任务元数据。create/update 的 --assigned-to 接受自由UUID文本并规范化；update 的 --clear-assigned-to 发送null，与设置冲突。update 省略时不生成 key，不把 null 当作 undefined；AssignedTo 也参与至少一个更新字段判断。create 省略负责人时，在同一 ServerSession 中复用 getCurrentUser() 取得认证账号 id，并在创建请求中显式提交 assignedTo。显式 UUID 跳过身份查询；身份读取后再次检查取消，失败或取消不调用 createTask。这个默认值属于 CLI，ApiClient 和服务端的可空创建输入保持原有语义。[CLI 创建默认负责人决策](../../.agents/notes/implemented/process/2026-11-04-cli-create-default-assignee.md)保存取舍。写入仅UUID，list另接受小写me/unassigned并传到每页。ready命令不增加该字段；用户可用task list --ready组合查询。worker 新候选使用 me，而完整既有 claim 库存仍省略该条件；[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有运行时资格规则，CLI 元数据命令保留独立职责。
 
 `task ready` 将常见的下一项工作选择限制为前 N 项，避免项目积累任务后每次
 选择都读取完整 ready 集合。命令校验 `--limit` 为十进制整数 `1..100`，省略时
@@ -587,10 +587,13 @@ symlink 偏好；独立 e2e 仍验证默认 PNPM shim，生产依赖与真实 np
 `node packages/daynight/scripts/project-task-acceptance.ts`，由 Go 检查脚本调用；
 [`project-task-budgets.ts`](../../packages/daynight/scripts/project-task-budgets.ts)
 拥有期限与解码字节预算场景。
-它构建并安装 CLI 一次，将安装身份传给独立 Go 测试包 `cmd/e2e_tests`，复用其 fresh
-race binary、隔离 PostgreSQL schema、listener、重启和数据库等待屏障。该包拥有
-跨进程验收的 `TestMain` 与辅助设施，由既有 `go-cov` 入口和 `go test ./...`
-发现执行；主命令包保留直接调用内部函数的测试并独立管理临时资源。场景
+完整入口先执行覆盖率阶段，再执行 E2E 阶段，`--coverage` 与 `--e2e` 可独立选择。
+两个阶段分别构建并安装 CLI，各自拥有 PostgreSQL、UniAuth 和真实 Web 构建输入。
+E2E 将自己的安装身份传给独立 Go 测试包 `cmd/e2e_tests`，复用其 fresh race binary、
+隔离 PostgreSQL schema、listener、重启和数据库等待屏障。该包拥有跨进程验收的
+`TestMain` 与辅助设施，以 `go test -race -count=1 -timeout=10m ./cmd/e2e_tests`
+完整执行，`go test ./...` 也能发现它；主命令包保留直接调用内部函数的测试并
+独立管理临时资源。场景
 `installed_cli_project_task_workflow` 通过要求编号 `PT.V1`、`PT.V3`、`PT.V5`、
 `PT.V6`、`PT.V7`、`PT.V8`、`PT.V9`、`PT.V10` 与 CLI 验收对应，保留原有服务
 场景及所属 package 覆盖率。Go receipt 的 `installedCli` 保存共享 helper 的 schema、
@@ -610,14 +613,18 @@ PR 控制字符可见转义及无原始终端控制字符输出。
 [附件跨层验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)；
 原有 PT 场景与两个常规期限探针保持；四个完整字节预算探针由显式本地压力入口拥有。
 
-编排层执行固定版本 go-cov，以 `--skip-result-packages cmd/e2e_tests` 省略没有
-产品语句的 E2E 测试包结果汇总行；该包测试仍完整执行，测试失败仍向上传递。
-生产包及函数的覆盖率门槛、critical 检查和原始 coverage profile 保持完整。
-strict raw coverage 检查通过后，才在 Go 默认 10 分钟计时器之外运行所选公开安装
-CLI 预算套件。常规 `scripts/check.sh` 和 CI 选择 `deadlines` 的两个期限场景：
+覆盖率阶段执行固定版本 go-cov，以 `--exclude-packages` 和完整 module import path
+排除纯测试包 `cmd/e2e_tests`，该包只在 E2E 阶段执行一次。固定工具按子串匹配，
+编排层先用 `go list ./...` 拒绝同名扩展或嵌套包，再递归拒绝 E2E 目录中的非
+`_test.go` Go 文件；该例外不能隐去生产语句。生产包及函数的覆盖率门槛、critical
+检查和原始 coverage profile 保持完整。覆盖率安装供 `internal/server` 鉴权断言
+使用，该包签发正常 PAT 并通过私有文件交给同阶段预算探针。E2E 不生产或消费此
+交接文件。strict raw coverage 检查通过后，才在 Go 默认 10 分钟计时器之外运行
+所选公开安装 CLI 预算套件。常规 `scripts/check.sh` 和 CI 选择 `deadlines` 的两个期限场景：
 持续推进 cursor 的总期限和响应开始后停顿的单次期限。
 显式本地 `scripts/check.sh --stress-budgets` 选择 `stress-budgets` 的四个 gzip 解码
-字节边界场景；CLI 包的 `test:stress:budgets` 和仓库根同名命令转发该入口。该选项与
+字节边界场景，并在覆盖率阶段后继续完整 E2E；CLI 包的 `test:stress:budgets` 和
+仓库根同名命令转发该入口。该选项与
 原始探针入口在非空 `CI` 环境下于压力准备之前拒绝。两个期限场景使用
 测试侧 Node.js `registerHooks` preload，只包装安装产物的 `api/operation.js` 导出，
 复用原有 `createOperation` 实现并注入 3 秒总期限和 1 秒单次期限。preload 先断言
@@ -632,11 +639,19 @@ project，各页均满足列表协议，失败 stdout 必须为空。
 每页均低于单响应上限。常规套件的两种期限场景并行运行，本地压力套件的四个
 字节边界场景依次执行。四个字节场景使用完整生产默认值，不加载期限 mock；两个
 期限场景仍验证实际等待、正确错误分类、持续分页、空 stdout 和清理。
-已有 20 分钟 Go 作业保留 build/vet/race 与严格 coverage gate。
+CI 将覆盖率与 E2E 放在两个并行的 20 分钟作业中，二者使用同一 server selector
+并由最终 `checks` 汇总。覆盖率作业保留 build/vet/race 与严格 coverage gate，
+E2E 作业保留真实进程、race、安装产物溯源及全部场景清理。分工见
+[独立作业决策](../../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)。
 根目录 `.tmp/project-task-service-evidence.json` 拥有常规期限证据，
 `.tmp/project-task-stress-evidence.json` 拥有本地完整字节证据；schema 1 中的 `suite`
-和精确场景名集合验证所选工作负载。回执记录共享安装身份、Go 命令/覆盖率结果、
-解码与传输字节、探针结果和进程/socket/目录清理。每个预算场景的 `deadlines`
+和精确场景名集合验证所选工作负载。回执记录所属阶段的安装身份、Go 命令/覆盖率
+结果、解码与传输字节、探针结果和进程/socket/目录清理。独立 E2E 编排回执为
+`.tmp/project-task-e2e-evidence.json`，记录自己的安装、Go 命令与安装树移除，探针集合
+为空；完整进程场景继续写入服务模块 `.tmp/acceptance-evidence.json`。各阶段编排
+回执还保存源码 revision/tree/dirty 与实际 package 清单。coverage artifact 保留
+`daynight-server-acceptance` 名称，E2E artifact 为 `daynight-server-e2e-acceptance`，
+均在失败路径上传已产生的诊断。每个预算场景的 `deadlines`
 记录实际 `totalMs`、`requestMs` 与 `mocked`，避免将短期限行为证据误解为实际等待了
 生产期限。本地 `c19b064` dirty receipt 与
 [PR #55](https://github.com/codetreker/daynight/pull/55) 的干净托管 receipt 保留真实

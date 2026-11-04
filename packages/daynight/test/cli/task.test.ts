@@ -15,6 +15,7 @@ const projectId = "a1b2c3d4-1111-4222-8333-123456789abc";
 const taskId = "b1b2c3d4-1111-4222-8333-123456789abc";
 const secondId = "b1b2c3d4-1111-4222-8333-123456789abd";
 const thirdId = "b1b2c3d4-1111-4222-8333-123456789abe";
+const accountId = "a1b2c3d4-1111-4222-8333-123456789abe";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project 中文", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task = (partial: Partial<Task> = {}): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, ...partial });
@@ -97,6 +98,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
         const captured = { method: request.method!, pathname: url.pathname, query: url.searchParams, bodyText, body: bytes.length === 0 ? null : contentType?.startsWith("application/json") ? parseApiJson(bodyText) : bytes, contentType, bytes };
         requests.push(captured);
         if (captured.method === "GET" && captured.pathname === projectPath) respond(response, project);
+        else if (captured.method === "GET" && captured.pathname === "/api/v1/me") respond(response, { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null });
         else handler(captured, response);
       });
     });
@@ -497,6 +499,7 @@ describe("compiled task commands", () => {
     try {
       let current = task({ requiredPlatform: "windows", description: "Status details", version: 9_007_199_254_740_993n });
       const { requests } = await f.serve((request, response) => {
+        if (request.method === "POST") current = { ...current, assignedTo: (request.body as { assignedTo: string }).assignedTo };
         if (request.method === "PUT") {
           const { status } = request.body as { status: Task["status"] };
           if (current.status !== status) current = { ...current, status, ready: status === "todo", version: current.version + 1n };
@@ -750,11 +753,29 @@ describe("compiled task commands", () => {
     } finally { await f.close(); }
   }, 60_000);
 
+  it("defaults creation to the signed-in account and skips identity lookup for an explicit assignee", async () => {
+    const f = await fixture();
+    try {
+      const { requests } = await f.serve((request, response) => respond(response, task({ assignedTo: (request.body as { assignedTo: string }).assignedTo }), 201));
+      const created = await f.invoke(["create", "--title", "My task", ...explicit]);
+      expect(created.code, created.stderr).toBe(0);
+      expect(created.stdout).toContain(`Assigned to: ${accountId}\n`);
+      expect(requests.map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([`GET ${projectPath}`, "GET /api/v1/me", `POST ${taskPath}`]);
+      expect(requests.at(-1)!.body).toEqual({ title: "My task", assignedTo: accountId });
+      requests.length = 0;
+      const assigned = await f.invoke(["create", "--title", "Colleague task", "--assigned-to", secondId.toUpperCase(), ...explicit]);
+      expect(assigned.code, assigned.stderr).toBe(0);
+      expect(assigned.stdout).toContain(`Assigned to: ${secondId}\n`);
+      expect(requests.map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([`GET ${projectPath}`, `POST ${taskPath}`]);
+      expect(requests.at(-1)!.body).toEqual({ title: "Colleague task", assignedTo: secondId });
+    } finally { await f.close(); }
+  });
+
   it("creates, shows, lists and graphs explicit projects without Git or repository imports", async () => {
     const f = await fixture();
     try {
       const title = "Task 中文\n\u001b[31m";
-      const createdTask = task({ title, dependsOn: [secondId], blockedBy: [secondId], ready: false });
+      const createdTask = task({ title, assignedTo: accountId, dependsOn: [secondId], blockedBy: [secondId], ready: false });
       const second = task({ id: secondId, title: "Second" });
       const cursor = "next page+/=?";
       const { requests } = await f.serve((request, response) => {
@@ -768,7 +789,7 @@ describe("compiled task commands", () => {
       expect(created.stdout).toContain("Task created.");
       expect(created.stdout).toContain(taskId);
       expect(created.stdout).toContain("Task 中文\\n\\u001b[31m");
-      expect(requests.find(({ method }) => method === "POST")!.body).toEqual({ title, description: "", dependsOn: [secondId], externalDependsOn: [] });
+      expect(requests.find(({ method }) => method === "POST")!.body).toEqual({ title, description: "", assignedTo: accountId, dependsOn: [secondId], externalDependsOn: [] });
 
       const shown = await f.invoke(["show", taskId.toUpperCase(), "--project", projectId.toUpperCase(), "--json"]);
       expect(shown.code, shown.stderr).toBe(0);
@@ -797,7 +818,7 @@ describe("compiled task commands", () => {
       const current = task({ version: 9_007_199_254_740_993n, dependsOn: [secondId], externalDependsOn: [secondId] });
       const { requests } = await f.serve((request, response) => respond(response, request.method === "GET" ? current : { ...current, ...(request.body as object), version: current.version + 1n }, request.method === "POST" ? 201 : 200));
       const cases = [
-        { args: ["create", "--title", "Mixed", "--depends-on", thirdId.toUpperCase(), "--external-depends-on", secondId], body: { title: "Mixed", dependsOn: [secondId, thirdId], externalDependsOn: [secondId] } },
+        { args: ["create", "--title", "Mixed", "--depends-on", thirdId.toUpperCase(), "--external-depends-on", secondId], body: { title: "Mixed", assignedTo: accountId, dependsOn: [secondId, thirdId], externalDependsOn: [secondId] } },
         { args: ["update", taskId, "--external-depends-on", thirdId], body: { dependsOn: [thirdId], externalDependsOn: [thirdId] } },
         { args: ["update", taskId, "--depends-on", secondId], body: { dependsOn: [secondId], externalDependsOn: [] } },
         { args: ["update", taskId, "--clear-dependencies"], body: { dependsOn: [], externalDependsOn: [] } },
@@ -808,8 +829,8 @@ describe("compiled task commands", () => {
         const update = args[0] === "update";
         const result = await f.invoke([...args, ...(update ? ["--if-version", "9223372036854775807"] : []), ...explicit]);
         expect(result.code, result.stderr).toBe(0);
-        expect(requests.map(({ method }) => method)).toEqual(["GET", update ? "PATCH" : "POST"]);
-        expect(requests[1]!.body).toEqual({ ...(update ? { version: 9_223_372_036_854_775_807n } : {}), ...body });
+        expect(requests.map(({ method }) => method)).toEqual(["GET", ...(update ? [] : ["GET"]), update ? "PATCH" : "POST"]);
+        expect(requests.at(-1)!.body).toEqual({ ...(update ? { version: 9_223_372_036_854_775_807n } : {}), ...body });
       }
     } finally { await f.close(); }
   }, 60_000);
@@ -888,7 +909,7 @@ describe("compiled task commands", () => {
           : { items: [{ ...project, id: thirdId, repoUrl: "https://other.example/Other/Repo" }], nextCursor: "project page two" });
         else if (request.method === "POST") {
           bindingPresentAtMutation = existsSync(path.join(f.caller, ".daynight/project.yml")) && readFileSync(path.join(f.caller, ".gitignore"), "utf8").includes("/.daynight/");
-          respond(response, task(), 201);
+          respond(response, task({ assignedTo: (request.body as { assignedTo: string }).assignedTo }), 201);
         } else respond(response, { items: [task()], nextCursor: null });
       });
       const options = { git: true, cwd: subdirectory, blocked: blockedReview };

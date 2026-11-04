@@ -1,6 +1,6 @@
 import type { TaskStatus, ExecutionPlatform, GraphTask } from "../../api/types";
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
-import { canDeleteTask, canWithdrawClaim, canSetStatus, canSetAgentPermission, canSetAssignedTo, canSetRequiredPlatform, useTaskDetailSessions, type TaskDetailSessions } from "./TaskDetailSession";
+import { canDeleteTask, canUnpause, canWithdrawClaim, canSetStatus, canSetAgentPermission, canSetAssignedTo, canSetRequiredPlatform, useTaskDetailSessions, type TaskDetailSessions } from "./TaskDetailSession";
 
 export const useTaskDetail = (projectId: string, taskId: string, revision: number, observedTask: GraphTask | undefined) => {
   const sessions = useTaskDetailSessions();
@@ -32,6 +32,7 @@ export const useTaskDetail = (projectId: string, taskId: string, revision: numbe
   }, [sessions, projectId, taskId, revision]);
   const setStatus = useCallback((status: TaskStatus, version: bigint) => { sessions.setStatus(projectId, taskId, status, version); }, [sessions, projectId, taskId]);
   const setAgentPermission = useCallback((allowAgents: boolean, version: bigint) => { sessions.setAgentPermission(projectId, taskId, allowAgents, version); }, [sessions, projectId, taskId]);
+  const unpause = useCallback((version: bigint) => { sessions.unpause(projectId, taskId, version); }, [sessions, projectId, taskId]);
   const setRequiredPlatform = useCallback((requiredPlatform: ExecutionPlatform | null, version: bigint) => { sessions.setRequiredPlatform(projectId, taskId, requiredPlatform, version); }, [sessions, projectId, taskId]);
   const setAssignedTo = useCallback((assignedTo: string | null, version: bigint) => { sessions.setAssignedTo(projectId, taskId, assignedTo, version); }, [sessions, projectId, taskId]);
   const withdrawClaim = useCallback((claimId: string, version: bigint) => { sessions.withdrawClaim(projectId, taskId, claimId, version); }, [sessions, projectId, taskId]);
@@ -42,5 +43,5 @@ export const useTaskDetail = (projectId: string, taskId: string, revision: numbe
   const requiresFreshRead = revision <= 0 || !sameIdentity || sessions.requiresFreshRead(projectId, taskId, observedTask);
   const assignmentUncertain = visible.mutation.operation?.action === "assignedTo" && (visible.mutation.phase === "unknown" ||
     visible.mutation.phase === "confirmed" && (requiresFreshRead || visible.error !== null || visible.mutation.reconciling || visible.mutation.reconciliationError !== null));
-  return { ...visible, requiresFreshRead, assignmentUncertain, retry, deleteTask, withdrawClaim, canWithdrawClaim: canWithdrawClaim({ ...visible, requiresFreshRead }), setStatus, setAgentPermission, setAssignedTo, setRequiredPlatform, reconcile, canDelete: canDeleteTask({ ...visible, requiresFreshRead }), canSetAssignedTo: canSetAssignedTo({ ...visible, requiresFreshRead }), canSetRequiredPlatform: canSetRequiredPlatform({ ...visible, requiresFreshRead }), canSetAgentPermission: canSetAgentPermission({ ...visible, requiresFreshRead }), canSetStatus: canSetStatus({ ...visible, requiresFreshRead }) };
+  return { ...visible, requiresFreshRead, assignmentUncertain, retry, unpause, canUnpause: canUnpause({ ...visible, requiresFreshRead }), deleteTask, withdrawClaim, canWithdrawClaim: canWithdrawClaim({ ...visible, requiresFreshRead }), setStatus, setAgentPermission, setAssignedTo, setRequiredPlatform, reconcile, canDelete: canDeleteTask({ ...visible, requiresFreshRead }), canSetAssignedTo: canSetAssignedTo({ ...visible, requiresFreshRead }), canSetRequiredPlatform: canSetRequiredPlatform({ ...visible, requiresFreshRead }), canSetAgentPermission: canSetAgentPermission({ ...visible, requiresFreshRead }), canSetStatus: canSetStatus({ ...visible, requiresFreshRead }) };
 };

@@ -1,9 +1,9 @@
 import { ApiError } from '../../api/client';
 import { listWorkers, type WorkerSummary } from '../../api/workers';
 import type { TaskCacheScope } from '../task-cache/TaskCacheProvider';
-import { sortWorkers } from './observation';
 import { useWorkerObservation, type WorkerObservation, type WorkerReadOptions } from './useWorkerObservation';
 
+// Keep service creation order in the snapshot; online grouping belongs to rendering.
 export type WorkerListSnapshot = { readonly observedAt: string; readonly items: readonly WorkerSummary[] };
 const loadWorkers = async (scope: TaskCacheScope, signal: AbortSignal): Promise<WorkerObservation<WorkerListSnapshot>> => {
   const items = new Map<string, WorkerSummary>(), cursors = new Set<string>();
@@ -16,7 +16,7 @@ const loadWorkers = async (scope: TaskCacheScope, signal: AbortSignal): Promise<
       if (items.has(worker.workerId)) throw new ApiError('protocol');
       items.set(worker.workerId, worker);
     }
-    if (page.nextCursor === null) return { snapshot: { observedAt: page.observedAt, items: sortWorkers([...items.values()], Date.parse(page.observedAt)) }, receivedMonotonic };
+    if (page.nextCursor === null) return { snapshot: { observedAt: page.observedAt, items: [...items.values()] }, receivedMonotonic };
     if (cursors.has(page.nextCursor)) throw new ApiError('protocol');
     cursors.add(page.nextCursor); cursor = page.nextCursor;
   }

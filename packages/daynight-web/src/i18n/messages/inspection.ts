@@ -1,6 +1,8 @@
+import type { PauseMessages } from "./pause";
 import type { WorkerPhase } from '../../api/types';
 
 export type InspectionMessages = {
+  readonly pause: PauseMessages;
   readonly discussion: {
     readonly title: string; readonly empty: string; readonly loading: string; readonly refresh: string;
     readonly loadOlder: string; readonly loadNewer: string; readonly viewLatest: string;

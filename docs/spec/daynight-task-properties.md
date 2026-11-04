@@ -43,7 +43,7 @@ PR 项只允许 url/title 两字段，两者均必填。嵌套未知字段、重
 
 paused 仅接受 JSON 布尔 true 或 false，null、字符串、数字及复合值均拒绝。缺席表示不暂停，但不是一个自动生成的 false 属性；设置 false 会保留该键，移除则删除它。两种操作均可用于执行中的任务，保留其状态、计时、归属及其他属性。
 
-paused:true 只抑制 worker 自动发送的周期 continuation ping，不停止已运行的 agent、不改变任务领取资格或 Task/worker phase，也不阻止初始及待递交 assignment、恢复、终止清理或人工会话交互。解除暂停后，原生观察未改变也能重新适用正常 ping 条件。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有。
+paused:true 只抑制 worker 自动发送的周期 continuation ping，不停止已运行的 agent、不改变任务领取资格或 Task/worker phase，也不阻止初始及待递交 assignment、恢复、终止清理或人工会话交互。解除暂停后，原生观察未改变也能重新适用正常 ping 条件。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有；Web 的暂停发现、展示与精确版本解除入口由[Web 需求](daynight-web.md#暂停展示与解除)拥有，沿用普通 task PATCH 与原有属性语义。
 
 ## 属性 HTTP 资源
 

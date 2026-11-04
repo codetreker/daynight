@@ -7,6 +7,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// projectAccessRelation returns one effective role per project/user and retains
+// raw user IDs so profile consumers can detect missing users.
 const projectAccessRelation = `SELECT project_id,user_id,role FROM project_members`
 
 // ReadProjectAccess evaluates access in the caller's transaction without acquiring row locks.
