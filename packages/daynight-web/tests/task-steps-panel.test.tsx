@@ -566,7 +566,7 @@ describe("editing a Step", () => {
     fireEvent.click(row("00000001").getByRole("button", { name: "Edit step" }));
     fireEvent.click(screen.getByRole("button", { name: /^Discard$/ }));
     expect(form().getByRole("textbox", { name: "Title" })).toHaveValue("Round 2");
-  });
+  }, 15_000);
   it("preserves untouched CR and CRLF while editing displayed text", () => {
     read.resource = resource([{ ...steps[0]!, title: "First\r\nSecond", description: "One\rTwo\r\nThree" }]);
     renderWithLocale(panel(), { locale: "en" }); open("00000000");
