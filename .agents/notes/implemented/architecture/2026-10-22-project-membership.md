@@ -73,7 +73,10 @@ creation commits real Personal ownership and its first direct admin grant
 together. The original foundation kept direct-only policy and last-administrator
 protection while consumers were prepared; the Personal ownership decision
 replaces those policies and renames the original table and sequence in place.
-Invitation responses retain their current contract.
+Invitation responses retain their current contract. The
+[grant management decision](2026-11-04-project-grant-management.md) adds explicit
+creation preconditions and post-mutation actor receipts while preserving the
+legacy role and removal responses.
 
 Member observation versions come from one PostgreSQL bigint sequence on insertion
 and real role changes. They are opaque, positive and noncontiguous; a no-op keeps
