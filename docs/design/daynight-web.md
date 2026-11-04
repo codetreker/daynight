@@ -104,7 +104,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 `useWorkers`、`useWorker` 通过共享 `useWorkerObservation` 持有页面内存。既有 TaskCacheScope 只提供认证生命周期、ready gate 和 mismatch 失效回调，Worker 数据不进入其项目集合或 IndexedDB。每次读取前及发布前等待 scope.ready，并同时核对取消信号、请求 generation 和资源身份。Workspace 传入 readEnabled；身份核验或阻塞立即取消私有读取并暂停计时。同账号核验后重读，换号则由工作空间 key 丢弃旧内存。scope gate 还阻止身份状态尚未完成 React 重绘时的旧响应发布。
 
-列表加载器逐页读取到 nextCursor 为 null，暂存所有摘要并拒绝循环游标或重复 Worker ID。只有整轮成功才一次发布，任何页失败都保留上次完整集合。发布使用最后一页的 observedAt 与该响应接收时的 performance.now 建立统一锚点，再按在线优先、lastReportedAt 倒序和 workerId 稳定排序。摘要只有 machine、platform、上报时间及任务观测/计数，不执行逐 Worker 详情 fan-out，也不推断 OS release。
+列表加载器逐页读取到 nextCursor 为 null，暂存所有摘要并拒绝循环游标或重复 Worker ID。只有整轮成功才一次发布，任何页失败都保留上次完整集合。快照的 items 始终保留服务端 (created_at, worker_id) 升序的跨页原始次序；created_at 是当前账号该 Worker 首次有效报告的持久化时间，后续报告不会更新。发布使用最后一页的 observedAt 与该响应接收时的 performance.now 建立统一锚点。WorkersPage 从原始快照筛选近期 Worker，再由 sortWorkers 复制数组并稳定地将 online 分组置前，组内不再比较 lastReportedAt 或 workerId。每次新快照或本地 ticker 重绘都从原始创建次序出发，因此尚未完成下次网络刷新时的 online 边界变化也能在新组内正确就位；已按 online 排列的数组不能作为后续分组的创建次序来源。摘要无需新增 createdAt，只有 machine、platform、上报时间及任务观测/计数，不执行逐 Worker 详情 fan-out，也不推断 OS release。
 
 每个可见页面共享一个 5 秒单飞刷新和一个 1 秒 ticker。纯 observation helper 使用 `observedAt + performance.now() - receivedMonotonic`，以 `< 120000ms` 判 online、`<= 72h` 判近期。页面隐藏、readEnabled 关闭或读取失败时，保留最后已发布时间并标记 stale，停止从旧锚点推进新结论。恢复可见或同账号核验后先发起新读取；成功才替换锚点并恢复 ticker。该生命周期与任务执行耗时不同：睡眠前的 Worker 锚点不能在重新可见时直接快进为当前在线结论。`WorkerReadNotice` 仅在保留快照且已有读取错误时显示警告和重试入口；没有错误的陈旧状态沿用徽标、任务快照说明与来源时间，正常检查不插入提示区域，原内容及焦点保持稳定。重试开始不清除已有错误，成功发布才移除失败提示。可信当前身份 404 清空详情，协议错误、网络错误及其他失败保留旧快照和“上次确认状态”。
 

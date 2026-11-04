@@ -20,7 +20,7 @@ Report actual failures when the CLI, service, project, or upload is unavailable.
 | Create a Goal | Covers its discussions and breakdown within the confirmed scope, but create the corresponding tasks only at the [Goal confirmation points](goal.md). |
 | Start a discussion | An explicit request to start a discussion authorizes only that discussion; follow the Goal protocol for stage transitions. |
 | Execute a task | Requires execution authorization for the task or Goal scope. Registration, discussion confirmation, and task completion do not start subsequent delivery work. |
-| Hand off a task | An explicit request to hand work off for automatic agent execution authorizes content review and enabling `allowAgents` after it passes; it does not start execution in the current session. Creation and execution do not imply handoff. |
+| Hand off a task | An explicit request to hand work off for automatic agent execution authorizes content review, verification that the task is assigned to the authenticated account, and enabling `allowAgents` after both pass; it does not authorize reassignment; it does not start execution in the current session. Creation and execution do not imply handoff. |
 | Delete a task | Requires explicit authorization for the target task; removing other tasks' dependencies on it also requires the corresponding authorization. |
 | Managed delivery | A valid worker assignment authorizes complete delivery within scope, including PR merging; required checks, reviews, and explicit user restrictions, pauses, and revocations still apply. |
 

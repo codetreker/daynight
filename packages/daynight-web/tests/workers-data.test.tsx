@@ -1,10 +1,12 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, fireEvent, renderHook, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { useWorker } from '../src/features/workers/useWorker';
 import { useWorkers } from '../src/features/workers/useWorkers';
+import { WorkersPage } from '../src/features/workers/WorkersPage';
+import { renderWithLocale } from './helpers/renderWithLocale';
 import { isWorkerOnline, isWorkerRecent, sortWorkers, workerServerMilliseconds } from '../src/features/workers/observation';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerError, workerId, workerPage, workerResponse, workerSummary } from './helpers/workers';
 
@@ -44,9 +46,21 @@ describe('Worker observation time', () => {
     expect(isWorkerOnline(current, now)).toBe(true); expect(isWorkerOnline(current, now + 1_000)).toBe(false);
     expect(isWorkerRecent(old, now)).toBe(true); expect(isWorkerRecent(old, now + 1)).toBe(false);
     const tie = { ...current, workerId: workerId(3) }, input = [old, tie, current];
-    expect(sortWorkers(input, now).map(worker => worker.workerId)).toEqual([current.workerId, tie.workerId, old.workerId]);
+    expect(sortWorkers(input, now).map(worker => worker.workerId)).toEqual([tie.workerId, current.workerId, old.workerId]);
     expect(input).toEqual([old, tie, current]);
     expect(workerServerMilliseconds({ observedAt: WORKER_TIME, receivedMonotonic: 100 }, 200)).toBe(now + 100);
+  });
+  it('keeps service creation order within each online group independently of report age or ID', () => {
+    const now = Date.parse(WORKER_TIME);
+    // Creation order differs from both UUID order and report recency.
+    const items = Object.freeze([9, 3, 7, 1, 5].map((id, index) => Object.freeze({ ...workerSummary(id),
+      lastReportedAt: new Date(now - [150_000, 119_000, 10_000, 130_000, 20_000][index]!).toISOString() })));
+    const ids = (time: number) => sortWorkers(items, time).map(worker => worker.workerId);
+    expect(ids(now)).toEqual([3, 7, 5, 9, 1].map(workerId));
+    expect(ids(now + 1_000)).toEqual([7, 5, 9, 3, 1].map(workerId));
+    expect(ids(now + 120_000)).toEqual([9, 3, 7, 1, 5].map(workerId));
+    expect(sortWorkers([], now)).toEqual([]);
+    expect(items.map(worker => worker.workerId)).toEqual([9, 3, 7, 1, 5].map(workerId));
   });
   it('advances one page clock across online and recent boundaries while a read remains in flight', async () => {
     const now = Date.parse(WORKER_TIME), recent = workerSummary(1), old = workerSummary(2), pending = deferred<Response>();
@@ -68,6 +82,42 @@ describe('Worker observation time', () => {
 });
 
 describe('complete Worker list reads', () => {
+  it('regroups a complete paged snapshot on local expiry and refresh without losing creation order or focus', async () => {
+    const now = Date.parse(WORKER_TIME), a = workerSummary(9), b = workerSummary(3), c = workerSummary(7);
+    a.lastReportedAt = new Date(now - 150_000).toISOString();
+    b.lastReportedAt = new Date(now - 119_000).toISOString();
+    const pending = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(workerResponse(workerPage([a, b], 'next')))
+      .mockImplementationOnce(() => pending.promise);
+    vi.stubGlobal('fetch', fetch);
+    const view = renderWithLocale(<TaskCacheProvider scope={makeScope()}><WorkersPage readEnabled /></TaskCacheProvider>, { locale: 'en' });
+    const order = () => within(screen.getByRole('list', { name: 'Worker list' })).getAllByRole('link').map(link => link.getAttribute('href'));
+    const links = (...ids: number[]) => ids.map(id => `/workers/${workerId(id)}`);
+    await flush(); expect(screen.getByText('Loading Workers')).toBeInTheDocument(); expect(screen.queryByRole('list')).toBeNull();
+    pending.resolve(workerResponse(workerPage([c]))); await flush();
+    expect(order()).toEqual(links(3, 7, 9));
+    const focused = screen.getByRole('link', { name: 'View Worker 3' }); focused.focus();
+    vi.setSystemTime(new Date('1900-01-01T00:00:00Z'));
+    await advance(1_000);
+    expect(order()).toEqual(links(7, 9, 3)); expect(fetch).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('link', { name: 'View Worker 3' })).toBe(focused); expect(focused).toHaveFocus();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const observedAt = new Date(now + 2_000 + attempt * 1_000).toISOString();
+      // A recovers online; C reports more recently, then A does. Neither changes creation order.
+      const updatedA = { ...a, lastReportedAt: attempt === 0 ? WORKER_TIME : observedAt, taskObservationState: 'observed' as const, taskObservedAt: observedAt, activeTaskCount: attempt + 2 };
+      const updatedC = { ...c, lastReportedAt: attempt === 0 ? observedAt : WORKER_TIME, taskObservationState: 'observed' as const, taskObservedAt: observedAt, activeTaskCount: attempt + 4 };
+      const lastPage = deferred<Response>();
+      fetch.mockResolvedValueOnce(workerResponse(workerPage([updatedA, b], 'next', observedAt))).mockImplementationOnce(() => lastPage.promise);
+      act(() => { screen.getByRole('button', { name: 'Refresh' }).click(); }); await flush();
+      expect(order()).toEqual(attempt === 0 ? links(7, 9, 3) : links(9, 7, 3));
+      expect(screen.queryByRole('alert')).toBeNull(); expect(focused).toHaveFocus();
+      lastPage.resolve(workerResponse(workerPage([updatedC], null, observedAt))); await flush();
+      expect(order()).toEqual(links(9, 7, 3)); expect(focused).toHaveFocus();
+      expect(screen.getByRole('link', { name: 'View Worker 3' })).toBe(focused);
+    }
+    fireEvent.click(focused); expect(window.location.pathname).toBe(`/workers/${b.workerId}`);
+    view.unmount(); expect(vi.getTimerCount()).toBe(0);
+  });
   it('publishes all pages atomically and anchors every row to the final response', async () => {
     const next = deferred<Response>(), secondTime = '2026-10-29T12:00:01.123456789Z';
     const fetch = vi.fn().mockResolvedValueOnce(workerResponse(workerPage([workerSummary(1)], 'next'))).mockImplementationOnce(() => next.promise);
