@@ -31,24 +31,30 @@ const codexConfigurationFooter = new RegExp(`^[ \\t]*(?:${configurationFooter})[
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/selection_picker_tests.rs#L9-L43
 const keymapFooter = `(?:${configurationGroup}${footerSeparator})?${footerShortcut}${footerGap}edit(?:${footerGap}shortcut)?(?:${footerSeparator}${footerShortcut}${footerGap}custom)?(?:${footerSeparator}${footerShortcut}${footerGap}unbound)?${footerSeparator}${footerShortcut}${footerGap}close`;
 const codexKeymapFooter = new RegExp(`^[ \\t]*(?:${keymapFooter})[ \\t]*$`, "gmi");
-// MultiSelectPicker owns Space toggles, optional ordering, and configured save/cancel keys.
+// Checkbox views own Space[/accept] toggles, optional ordering, and finite save/back actions.
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/multi_select_picker.rs#L308-L329
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/multi_select_picker.rs#L606-L617
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/multi_select_picker.rs#L779-L802
-const multiSelectFooter = `space${footerGap}toggle(?:${footerSeparator}${footerShortcut}/${footerShortcut}${footerGap}reorder)?(?:${footerSeparator}${footerShortcut}${footerGap}save)?(?:${footerSeparator}${footerShortcut}${footerGap}cancel)?`;
-const codexMultiSelectFooter = new RegExp(`^[ \\t]*(?:${multiSelectFooter})[ \\t]*$`, "gmi");
-const codexShortMultiSelect = new RegExp(`^[ \\t\\r\\n]*(?:Type${footerGap}to${footerGap}search[ \\t]*\\r?\\n)?[ \\t]*(?:${multiSelectFooter})[ \\t\\r\\n]*$`, "i");
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/hooks_browser_view.rs#L519-L570
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/memories_settings_view.rs#L455-L468
+const checkboxFooter = `space(?:/${footerShortcut})?${footerGap}toggle(?:${footerSeparator}${footerShortcut}/${footerShortcut}${footerGap}reorder)?(?:${footerSeparator}${footerShortcut}${footerGap}save(?:/select)?)?(?:${footerSeparator}${footerShortcut}${footerGap}(?:cancel|back|close|save/close))?`;
+const codexCheckboxFooter = new RegExp(`^[ \\t]*(?:${checkboxFooter})[ \\t]*$`, "gmi");
+const codexShortCheckbox = new RegExp(`^[ \\t\\r\\n]*(?:Type${footerGap}to${footerGap}search[ \\t]*\\r?\\n)?[ \\t]*(?:${checkboxFooter})[ \\t\\r\\n]*$`, "i");
+const hooksEventFooter = `(?:t${footerGap}trust${footerGap}all${footerSeparator}(?:${footerShortcut}${footerGap}review${footerSeparator})?|${footerShortcut}${footerGap}details${footerSeparator})?${footerShortcut}${footerGap}close`;
+const hooksHandlerFooter = `(?:Managed${footerGap}\\(always${footerGap}on\\)${footerSeparator}|t${footerGap}trust${footerSeparator})?${footerShortcut}${footerGap}back`;
+const hookEvents = "PreToolUse|PermissionRequest|PostToolUse|PreCompact|PostCompact|PreModelRequest|PostModelRequest|SessionStart|SessionEnd|UserPromptSubmit|SubagentStart|SubagentStop|Stop|Interrupt";
+// The import customization screen is also a checkbox input owner, with fixed legacy hints.
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/external_agent_config_migration/render.rs#L168-L207
+const importFooter = ["Use ↑/↓ to move, space to toggle, b to go back", "Press enter to continue, ↑/↓ to move, b to go back", "Use ↑/↓ to move, enter to select, c to customize"].map(message => message.replaceAll(" ", footerGap)).join("|");
 // Custom bottom-pane views own these controls rather than the shared picker defaults.
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/plugin_catalog.rs#L1283-L1312
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/experimental_features_view.rs#L450-L465
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/skills_toggle_view.rs#L332-L351
 const pluginToggle = `${footerShortcut}${footerGap}toggle`;
 const pluginFooter = `(?:${footerShortcut}${footerGap}upgrade${footerSeparator})?(?:${footerShortcut}${footerGap}remove${footerSeparator})?(?:${pluginToggle}${footerSeparator})?${footerShortcut}/${footerShortcut}${footerGap}tabs${footerSeparator}${footerShortcut}${footerGap}details(?:${footerSeparator}${pluginToggle})?${footerSeparator}${footerShortcut}${footerGap}close`;
-const experimentalFooter = `${footerShortcut}${footerGap}toggle(?:${footerSeparator}${footerShortcut}${footerGap}save)?(?:${footerSeparator}${footerShortcut}${footerGap}save/close)?`;
 // These footers keep the same input-owning view mounted while a save runs or needs retry.
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/experimental_features_view.rs#L125-L135
 const experimentalStatus = ["Saving… Closing this popup will not cancel the write.", "Selections retained. Save to retry, or cancel to close."].map(message => message.replaceAll(".", "\\.").replaceAll(" ", footerGap)).join("|");
-const skillsFooter = `${footerShortcut}(?:/${footerShortcut})?${footerGap}toggle(?:${footerSeparator}${footerShortcut}${footerGap}close)?`;
 // The session picker paints title, conversation rows, then separately packed footer rows.
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker/layout.rs#L54-L90
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L2480-L2597
@@ -57,11 +63,16 @@ const sessionFooter = `${footerShortcut}${footerGap}(?:resume|fork|restore)(?:[ 
 const namedCodexMenus = [
   { header: /^\s*Configuration\s*$/, footer: codexConfigurationFooter },
   { header: /^\s*Keymap\s*$/, footer: codexKeymapFooter },
-  { header: /^\s*Configure (?:Status Line|Terminal Title)\s*$/, footer: codexMultiSelectFooter },
-  { header: /^\s*Microphone: \S.*$/, footer: codexMultiSelectFooter },
+  { header: /^\s*Configure (?:Status Line|Terminal Title)\s*$/, footer: codexCheckboxFooter },
+  { header: /^\s*Microphone: \S.*$/, footer: codexCheckboxFooter },
   { header: /^\s*Plugins\s*$/, footer: new RegExp(`^[ \\t]*(?:${pluginFooter}|${pickerFooter})[ \\t]*$`, "gmi") },
-  { header: /^\s*Experimental features\s*$/, footer: new RegExp(`^[ \\t]*(?:${experimentalFooter}|${experimentalStatus})[ \\t]*$`, "gmi") },
-  { header: /^\s*Enable\/Disable Skills\s*$/, footer: new RegExp(`^[ \\t]*(?:${skillsFooter})[ \\t]*$`, "gmi") },
+  { header: /^\s*Experimental features\s*$/, footer: new RegExp(`^[ \\t]*(?:${checkboxFooter}|${experimentalStatus})[ \\t]*$`, "gmi") },
+  { header: /^\s*(?:Enable\/Disable Skills|Memories)\s*$/, footer: codexCheckboxFooter },
+  { header: /^\s*Reset all memories\?\s*$/, footer: codexFooter },
+  { header: /^\s*Hooks\s*$/, footer: new RegExp(`^[ \\t]*(?:${hooksEventFooter})[ \\t]*$`, "gmi") },
+  { header: new RegExp(`^\\s*(?:${hookEvents}) hooks\\s*$`), footer: new RegExp(`^[ \\t]*(?:${checkboxFooter}|${hooksHandlerFooter})[ \\t]*$`, "gmi") },
+  { header: /^\s*> (?:Import setup|Choose what to import)\s*$/, footer: new RegExp(`^[ \\t]*(?:${importFooter})[ \\t]*$`, "gmi") },
+  { header: /^\s*Choose an import source\s*$/, footer: codexFooter },
   { header: /^\s*(?:Resume|Fork) a previous session\s*$/, footer: new RegExp(`^[ \\t]*(?:${sessionFooter})[ \\t]*$`, "gmi") },
 ];
 
@@ -88,10 +99,10 @@ export const nativeInputBlocker = (agent: WorkerAgent, visible: string): NativeI
     };
     const footer = footerEnd(codexFooter);
     if (selectedRow >= 0 && footer > selectedRow && !laterPrompt(footer)) return "menu";
-    const checkbox = lines.findLastIndex(line => /^\s*[›»]\s+\[[ x]\]\s+\S/.test(line));
+    const checkbox = lines.findLastIndex(line => /^\s*(?:[›»]\s+)?\[[ x!]\]\s+\S/.test(line));
     const emptyCheckboxSearch = lines.findLastIndex(line => /^\s*no matches\s*$/.test(line));
-    const multiSelectEnd = footerEnd(codexMultiSelectFooter);
-    if (codexShortMultiSelect.test(screen) || (checkbox >= 0 && multiSelectEnd > checkbox || emptyCheckboxSearch >= 0 && multiSelectEnd > emptyCheckboxSearch) && !laterPrompt(multiSelectEnd)) return "menu";
+    const checkboxEnd = footerEnd(codexCheckboxFooter);
+    if (codexShortCheckbox.test(screen) || (checkbox >= 0 && checkboxEnd > checkbox || emptyCheckboxSearch >= 0 && checkboxEnd > emptyCheckboxSearch) && !laterPrompt(checkboxEnd)) return "menu";
     for (const menu of namedCodexMenus) {
       const header = lines.findLastIndex(line => menu.header.test(line));
       const end = footerEnd(menu.footer);

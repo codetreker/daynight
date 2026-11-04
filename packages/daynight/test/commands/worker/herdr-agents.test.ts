@@ -841,9 +841,26 @@ describe("direct task resource management", () => {
     "space toggle · esc cancel",
     "space toggle · f3 save",
     "space toggle",
-  ])("recognizes the shared MultiSelectPicker controls without a title whitelist: %s", async footer => {
+    "space/enter toggle · esc back",
+    "space/f3 toggle · f2 back",
+    "space/ctrl+x enter toggle · ctrl+k esc back",
+    "space/enter toggle ·\nesc back",
+    "space toggle · enter save/select · esc cancel",
+    "space toggle · f3 save/select · f2 cancel",
+    "space toggle · enter save/select",
+    "space toggle · enter\nsave/select · esc cancel",
+    "space/enter toggle · esc close",
+    "space toggle · enter save · esc save/close",
+  ])("recognizes the shared checkbox controls without a title whitelist: %s", async footer => {
     const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
     f.screen.text = `An arbitrary widget title\n› [x] Selected checkbox\n  [ ] Another checkbox\n${footer}`;
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("retains checkbox ownership when a non-checkbox action has the current selection", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.screen.text = "A checkbox view\n  [x] Existing option\n› Reset all options\nspace toggle · enter save/select · esc cancel";
     await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
     expect(f.prompts).toEqual([]);
   });
@@ -878,6 +895,9 @@ describe("direct task resource management", () => {
     { agent: "codex" as const, screen: "Business description of keyboard controls\nspace toggle · ←/→ reorder · enter save · esc cancel" },
     { agent: "codex" as const, screen: "› [x] A literal checkbox draft\nenter send · esc cancel" },
     { agent: "codex" as const, screen: "› [x] Old selection\nspace toggle · ←/→ reorder · enter save · esc cancel\n› Continue" },
+    { agent: "codex" as const, screen: "A discussion of checkbox controls\nspace/enter toggle · esc back" },
+    { agent: "codex" as const, screen: "A discussion of saving settings\nspace toggle · enter save/select · esc cancel" },
+    { agent: "codex" as const, screen: "› [x] A literal draft\nenter send · esc cancel" },
     { agent: "codex" as const, screen: `${configurationMenu}\n\n› A custom current composer` },
     { agent: "codex" as const, screen: `${keymapMenu}\n\n› Continue` },
     { agent: "codex" as const, screen: "› Arbitrary business row\nleft/right group · enter edit · esc close" },
