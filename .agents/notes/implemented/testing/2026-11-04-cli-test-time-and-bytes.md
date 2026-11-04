@@ -4,18 +4,21 @@ Status: implemented
 
 ## Problem
 
-Large binary transport assertions can spend more time traversing Buffer properties
-than executing the transport. The Controller admission regression also spends
+Binary transport and resource-bundle assertions can spend more time traversing
+Buffer properties than executing the transport or resource copy. The Controller admission regression also spends
 31 seconds waiting for a native provider fixture, although its required evidence
 is the separation of an incomplete frame's admission timeout from an admitted
 request's response deadline. These costs recur in ordinary CLI validation.
 
 ## Decision
 
-The 150,000-byte attachment and compiled stdout tests compare full payloads with
-`Buffer.equals`. This checks length and every byte through Node's native byte
-comparison. Payload size, stream chunk bounds, metadata and exit assertions remain
-part of the same tests; Buffer object properties are not transport data.
+The 150,000-byte attachment and compiled stdout tests and resource-bundle copy
+checks compare complete bytes with `Buffer.equals`. This checks length and every
+byte through Node's native byte comparison. Payload size, stream chunk bounds,
+metadata and exit assertions remain part of the transport tests. Resource checks
+retain LF/CRLF input variants, file lists, SQL selection, repeated-copy failure
+and installed-skill validation. Buffer object properties do not represent the
+transported or copied data.
 
 The admission regression uses real Controller IPC sockets and a provider completion
 barrier. It observes the production 30,000ms socket timeout and verifies that the
@@ -37,6 +40,11 @@ owns production admission and response deadlines, which remain unchanged.
 
 ## Alternatives
 
+**Install a global Buffer equality tester.** That changes matcher behavior across
+the test process and makes byte-specific intent implicit at other assertions.
+Explicit native comparisons keep the optimization at complete-byte checks while
+other assertions retain their existing object semantics.
+
 **Retain the real 31-second provider delay.** This exercises elapsed native time,
 but repeats a long wait to establish the same timeout cancellation and subsequent
 completion guarantees on every ordinary run.
@@ -52,9 +60,10 @@ already identified incomplete connection has its native expiry accelerated.
 
 ## Consequences
 
-Large binary comparisons retain exact byte and length checks without generic
-object traversal. On failure, a boolean equality assertion identifies a payload
-mismatch without rendering a large per-byte object diff.
+Binary comparisons retain exact byte and length checks without generic object
+traversal. Resource-copy comparisons identify their relative resource in the
+assertion message. A mismatch can therefore be located without rendering a large
+per-byte object diff.
 
 The admission regression removes the 31-second wall-clock delay while preserving
 real IPC, native incomplete-frame expiry, authenticated timer cancellation and
