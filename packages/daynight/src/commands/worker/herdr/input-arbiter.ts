@@ -6,6 +6,7 @@ import type { SessionV2Message, SessionV2Payloads } from "../../../session/v2/ty
 import { herdrInputEnvelope } from "./input-store.js";
 import type { HerdrInputStore } from "./input-store.js";
 import type { HerdrInputBatch, HerdrInputOperation, HerdrInputRecord, HerdrInputTarget, HerdrInputWriteContext } from "./input-types.js";
+import { HerdrInputBlockedError } from "./agents.js";
 
 type Result = SessionV2Payloads["operation_result"];
 type ControlAck = SessionV2Payloads["control_ack"];
@@ -117,12 +118,15 @@ export const createHerdrInputArbiter = (options: {
       })()]);
       update(draft => { const op = draft.operations.find(value => value.operationId === batch.operationId)!; if (op.result.state !== "dispatching") return; op.result = result(batch.operationId, "transport_completed"); if (batch.source === "initial") draft.initialOutcome = "transport_completed"; });
     } catch (error) {
+      let blockedBeforeWrite = false;
       update(draft => {
         const op = draft.operations.find(value => value.operationId === batch.operationId)!; if (op.result.state !== "dispatching") return;
-        op.result = result(batch.operationId, running.written ? "unknown" : "rejected", running.written ? "input_unknown" : (error instanceof AdmissionError || error instanceof SessionV2Error) ? error.code : "invalid_payload");
+        blockedBeforeWrite = !running.written && batch.source !== "web" && error instanceof HerdrInputBlockedError;
+        op.result = result(batch.operationId, running.written ? "unknown" : "rejected", running.written ? "input_unknown" : blockedBeforeWrite ? "automation_suspended" : (error instanceof AdmissionError || error instanceof SessionV2Error) ? error.code : "invalid_payload");
         if (batch.source === "initial") draft.initialOutcome = running.written ? "unknown" : "pending";
         if (running.written) { draft.unknownInput = true; draft.lease = null; draft.leaseSeq = "0"; draft.controlEpoch = String(BigInt(draft.controlEpoch) + 1n); if (!["closing", "closed"].includes(draft.state)) draft.state = "suspended"; }
       });
+      if (blockedBeforeWrite) throw error;
     } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); if (onAbort) running.controller.signal.removeEventListener("abort", onAbort); running.controller.abort(new Error("The native input batch ended.")); active.delete(batch.operationId); }
     return operation(batch.operationId)!.result;
   };

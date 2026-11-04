@@ -1,4 +1,5 @@
 import { openChain } from './chain-dialog';
+import { expectLanguageLayout } from './language-layout';
 import { selectTaskList } from './project-view';
 import { randomUUID } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
@@ -387,6 +388,26 @@ test.describe('Web language journeys', () => {
     await page.getByRole('button', { name: '重试刷新', exact: true }).click();
     await expect(page.locator('.snapshot-error')).toHaveCount(0);
     await page.clock.resume();
+    const workspaceLanguage = language(page.locator('.topbar'));
+    await workspaceLanguage.selectOption('en');
+    await workspaceLanguage.focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(workspaceLanguage).toHaveValue('zh-CN');
+    await expect(workspaceLanguage).toBeFocused();
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.locale'))).toBe('zh-CN');
+    await page.keyboard.press('ArrowUp');
+    await expect(workspaceLanguage).toHaveValue('en');
+    await expect(workspaceLanguage).toBeFocused();
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.locale'))).toBe('en');
+    for (const locale of ['en', 'zh-CN'] as const) {
+      await language(page.locator('.topbar')).selectOption(locale);
+      for (const width of [1440, 320]) {
+        await page.setViewportSize({ width, height: 800 });
+        await expectLanguageLayout(language(page.locator('.topbar')));
+        await expectPageWidth(page);
+        await screenshot(page, info, `language-selector-workspace-${locale}-${width}`);
+      }
+    }
     await openChain(page, task.id);
     for (const locale of ['en', 'zh-CN'] as const) {
       await language(page.locator('.task-chain-dialog')).selectOption(locale);
@@ -398,6 +419,8 @@ test.describe('Web language journeys', () => {
         const selected = await inspectTask(page, task.id).getAttribute('aria-pressed');
         await fullscreenToggle.click();
         const fullscreen = page.locator('.task-chain-dialog-fullscreen');
+        await expectLanguageLayout(language(fullscreen));
+        await screenshot(page, info, `language-selector-graph-${locale}-${width}`);
         await page.evaluate(() => {
           (window as unknown as { localeStorageFault: { value: string | null } }).localeStorageFault.value = 'write';
         });

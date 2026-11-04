@@ -49,11 +49,11 @@ selects four real 128 MiB/256 MiB exact-limit and +1-byte probes. The separate
 source, installation, precise scenario inventory and cleanup. Production limits
 and full-size boundary assertions are unchanged.
 
-Default browser acceptance requires thirty-five native and thirty-five container
-functional scenarios (70 total), both eleven-check combined-authentication
+Default browser acceptance requires thirty-six native and thirty-six container
+functional scenarios (72 total), both eleven-check combined-authentication
 receipts, source/browser
 identity and all existing resource cleanup. Explicit local `--stress` adds five
-native capacity/limit scenarios (40 native / 35 container, 75 total) after
+native capacity/limit scenarios (41 native / 36 container, 77 total) after
 functional execution and container/browser cleanup. It preserves all complete API datasets, five repetitions, timing
 budgets, strict performance receipts and browser diagnostics. Schema 3 evidence
 records `mode: functional` or `mode: stress`; exact report validation follows

@@ -500,7 +500,7 @@ and records cleanup failures.
 
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. After shared CLI preparation, it overlaps thirty-two native functional
+parallel. After shared CLI preparation, it overlaps thirty-six native functional
 workflows with the same container workflows, then requires complete target and
 shared CLI cleanup. The explicit local
 `pnpm web:acceptance:stress` command adds the fixed native capacity cases after
@@ -536,12 +536,12 @@ Default CLI service acceptance retains two bounded deadline probes and
 `.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
 the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
 claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
-local functional mode requires thirty-five scenarios per target (70 total);
-CI partitions that inventory into disjoint eighteen- and seventeen-case selections
-per target. Shard receipts additionally identify `shard` and `selection`, and the
+local functional mode requires thirty-six scenarios per target (72 total);
+CI partitions that inventory into disjoint eighteen-case selections per
+target. Shard receipts additionally identify `shard` and `selection`, and the
 final gate requires their complete canonical union. Stress mode remains local
-and unsharded, adds five native capacity scenarios (40 native / 35 container,
-75 total) and `native/capacity/performance.json`. Both local modes retain strict
+and unsharded, adds five native capacity scenarios (41 native / 36 container,
+77 total) and `native/capacity/performance.json`. Both local modes retain strict
 source/browser identity, combined authentication and owned-resource cleanup;
 CI shard 2 owns both combined journeys while each shard owns its full cleanup. Local measurements prove only their recorded source and host;
 they do not establish hosted PR latency.
@@ -759,8 +759,7 @@ builds its own real native and container deployments. Case selection uses
 `--fully-parallel --workers=1 --retries=0 --shard=i/2`; every database still runs
 one worker serially. Complete and selected discovery use the same functional
 arguments as execution and the canonical scenario inventory. Current selections
-contain sixteen cases each and jointly cover all thirty-two scenarios per
-target. The selected IDs and shard identity remain in the existing run evidence.
+contain eighteen cases each and jointly cover all thirty-six scenarios per target. The selected IDs and shard identity remain in the existing run evidence.
 The container callback reads its validated source/run-bound parent selection.
 
 Within each entry, native and container preparation overlap. Once native
