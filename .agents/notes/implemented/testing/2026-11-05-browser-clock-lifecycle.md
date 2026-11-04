@@ -5,55 +5,66 @@ Status: implemented
 ## Problem
 
 A real [Web CI run](https://github.com/codetreker/daynight/actions/runs/41872720370/job/126724057058)
-exposed a clock-control failure in the Step status journey. The case installed a
-controlled clock after application timers had started, then paused at the same
-timestamp used for installation. Playwright replaces native clock functions, so
-late installation can leave existing timers under a different owner. Its running
-clock can also pass the installation timestamp before the subsequent pause call.
+exposed a clock-control failure in the Step status journey. Separate `install`
+and `pauseAt` calls used the same target timestamp. Real time could advance
+between those calls, making the requested pause time past even when the target
+used a fixed calendar year.
 
-The [pinned Playwright lifecycle requirement](https://github.com/microsoft/playwright/blob/ce480a952553175eae75342aad2c5e86cdf2cbba/docs/src/clock.md#L22-L39)
-requires installation before other clock-related calls. A fixed calendar year
-alone does not prevent an identical installation/pause anchor from becoming past.
+Controlled phases need a deterministic clock in the document whose application
+timers they inspect. Pausing an existing page does not transfer ownership of
+native timers that were created before clock control began.
 
 ## Decision
 
-The controlled Step status case installs its clock at entry, before navigation
-to the production application. Its later reopening phase pauses at
-`clockStart + info.timeout`. This anchor remains in the future within the case's
-existing deadline, without introducing another timing budget or arbitrary year.
-The membership-revocation flow applies the same order and bounded future anchor
-to its newly created page before application navigation.
+Fixtures use the existing `page.clock.pauseAt` API directly before navigating to
+the application, with no separate installation at the same timestamp. The
+[pinned server implementation](https://github.com/microsoft/playwright/blob/cfe490d941f992655948eee8fd4fd94e1c4234bf/packages/playwright-core/src/server/clock.ts#L51-L55)
+initializes clock control and registers the pause state. The
+[injected implementation](https://github.com/microsoft/playwright/blob/cfe490d941f992655948eee8fd4fd94e1c4234bf/packages/injected/src/clock.ts#L198-L209)
+stops real-time advancement before applying that target.
 
-The real service, resource convergence, membership retirement, exact write
+Navigation is the application initialization barrier. The
+[new-document replay](https://github.com/microsoft/playwright/blob/cfe490d941f992655948eee8fd4fd94e1c4234bf/packages/injected/src/clock.ts#L439-L475)
+restores the paused state before the new application's timers start. The Step
+status and fresh membership-page flows perform no old-application observation
+between pausing and navigation. Native timers in the old page can continue until
+that document is replaced; this mechanism does not retroactively control them.
+
+Real service requests, resource convergence, membership retirement, exact write
 counts, failure assertions, cleanup and existing deadlines retain their behavior.
 The reopening flow still resumes time before its short polling phase. The
 [functional polling decision](2026-11-04-web-functional-polling.md) owns those
-selected polling periods; it does not change clock ownership.
+selected polling periods, independently of this document lifecycle.
 
 The execution-time scenario retains its separate native-clock evidence:
 incorrect wall time, a real one-second ticker and actual warning-threshold
-crossing with held task-sync responses. This controlled-clock lifecycle does not
-apply a simulated clock to that scenario.
+crossing with held task-sync responses. No simulated clock is applied to that
+scenario by this decision.
 
 ## Alternatives
 
-**Install only when the reopening phase begins.** The application has already
-created timers at that point. Replacing global clock functions then violates
-the documented lifecycle even when a particular run happens to complete.
+**Keep separate installation and pause calls at one epoch.** Clock advancement
+between the calls leaves the original scheduling race. Another fixed year does
+not change that ordering.
 
-**Pause at the installation timestamp or another fixed year.** Time advances
-between the two calls; choosing a different year leaves the same ordering race.
-A future anchor derived from the existing case bound removes that dependency.
+**Install before the case and use a deadline-derived future anchor.** This can
+avoid the past-time race but extends controlled time across earlier application
+work and adds anchor ownership. The existing atomic pause API followed by
+navigation establishes the needed document boundary without those controls.
 
-**Raise timeouts or retry clock failures.** Longer deadlines do not establish
-correct clock ownership or make a past timestamp valid. The existing assertion
-and deadline boundaries remain the verification contract.
+**Inspect the old page immediately after pausing.** Existing native timers may
+still run there. Assertions that depend on the controlled clock belong after the
+navigation barrier in the newly initialized application document.
+
+**Raise timeouts or retry clock failures.** Longer deadlines do not make a past
+timestamp valid or transfer native timer ownership. Existing assertions and
+failure deadlines remain the verification contract.
 
 ## Consequences
 
-Controlled phases use one clock owner before application initialization, and
-pause without depending on zero elapsed scheduling time. Browser navigation,
-periodic synchronization and resumption still require real execution evidence.
-A focused clock probe establishes the local primitive behavior; complete selected
-native/container browser suites and current-source Web CI establish integration.
-The earlier failure and the lifecycle record do not themselves prove the repair.
+Controlled application documents start with replayed clock ownership and paused
+state. Local browser probes establish the fixed date, timer boundary, resume and
+fresh-context behavior; they also expose the old-page native timer limitation.
+Complete selected native/container suites and current-source Web CI remain
+necessary to prove resource and application integration after navigation. The
+API behavior and earlier failure alone do not establish that full result.

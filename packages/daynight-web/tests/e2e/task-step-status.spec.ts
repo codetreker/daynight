@@ -32,8 +32,6 @@ const screenshot = async (page: Page, info: TestInfo, name: string): Promise<voi
 };
 
 test('step status writes converge through real service resources', { annotation: { type: 'scenario', description: 'task-step-status' } }, async ({ page, api, baseURL, allowBrowserWrites }, info) => {
-  const clockStart = Date.now();
-  await page.clock.install({ time: clockStart });
   const project = await createProject(api, { name: 'Step status browser acceptance' });
   const task = await createTask(api, project.id, { title: 'Steps status acceptance' });
   const other = await createTask(api, project.id, { title: 'Other task while waiting' });
@@ -234,8 +232,8 @@ test('step status writes converge through real service resources', { annotation:
     await expect(trigger(page, stepId)).toBeEnabled();
     expect(writes).toBe(11);
     await root(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
-    // The test deadline expires before this bounded pause anchor can become the past.
-    await page.clock.pauseAt(clockStart + info.timeout);
+    const frozenTime = new Date('2030-01-01T00:00:00Z');
+    await page.clock.pauseAt(frozenTime);
     await page.goto(`/projects/${project.id}`);
     await selectTaskList(page);
     await page.getByRole('tab', { name: '独立任务', exact: true }).click();
@@ -430,8 +428,8 @@ test('step resources retire after actual membership revocation', { annotation: {
     expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitation.link).hash.slice(1), expectedUserId: bobProfile.id } })).status()).toBe(200);
     await browserAuthentication(context, baseURL, 'bob');
     const bobPage = await context.newPage();
-    const clockStart = Date.now();
-    await bobPage.clock.install({ time: clockStart }); await bobPage.clock.pauseAt(clockStart + info.timeout);
+    const now = new Date('2030-01-01T00:00:00Z');
+    await bobPage.clock.pauseAt(now);
     const writes: string[] = [];
     const errors: string[] = [];
     bobPage.on('request', request => { if (!['GET', 'HEAD'].includes(request.method())) writes.push(`${request.method()} ${new URL(request.url()).pathname}`); });

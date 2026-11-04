@@ -33,9 +33,9 @@ Controller communication, response parsing, state publication, authentication,
 layout and cleanup. Cases that control browser time and capacity measurements
 retain their own schedule setup. The
 [controlled-clock lifecycle decision](2026-11-05-browser-clock-lifecycle.md)
-requires installation before application timers and a bounded future pause
-anchor in the Step status fixtures. Unit tests cover the production schedules
-and short-period behavior. Assignment reconciliation also uses the short task-sync
+uses atomic `pauseAt` followed by application navigation, which establishes the
+controlled timer state in the new document. Unit tests cover the production
+schedules and short-period behavior. Assignment reconciliation also uses the short task-sync
 period when an API-originated permission change must reach its open detail
 control; its version-conflict, uncertain-result and exact write-count checks
 retain their original assertions.
@@ -58,10 +58,10 @@ an interval, but Session refreshes use monotonic deadlines with a shorter local
 tick. The same numbers also occur in failure deadlines, making a global timer
 shim both incomplete and semantically broader than the intended polling change.
 
-**Advance a simulated browser clock.** Existing deterministic scenarios keep this
-technique. Applying it to the real execution crossing would remove the distinct
-native-clock evidence, and installing it after native timers have started is
-unsupported. Short named periods preserve natural time and the existing asset.
+**Advance a simulated browser clock.** Existing deterministic scenarios retain
+this technique with an explicit document initialization boundary. Applying it to
+the real execution crossing would remove that distinct native-clock evidence.
+Short named periods preserve natural time and the existing asset.
 
 **Build a separate acceptance frontend.** Build-time replacement would require
 both native and Docker build inputs and produce different assets. A narrow

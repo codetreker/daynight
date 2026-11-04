@@ -15,7 +15,7 @@ const textValue = (value: string) => value.replace(/\r\n?/g, "\n");
 type Result = { readonly kind: "rejected" | "unknown"; readonly error: unknown } | null;
 
 // A response lost after dispatch is not safe to repeat, even if a later read matches the intended state.
-const useOperation = (admission: TaskCacheScope) => {
+export const useOperation = (admission: TaskCacheScope) => {
   const active = useRef<AbortController | null>(null);
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<Result>(null);
