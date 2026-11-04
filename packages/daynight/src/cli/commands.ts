@@ -1,3 +1,4 @@
+import { botDefinition } from "../commands/bot/definition.js";
 import { controllerDefinition } from "../commands/controller/definition.js";
 import type { CliCommand } from "./context.js";
 import type { CommandDefinition } from "./schema.js";
@@ -16,6 +17,7 @@ export type CommandRegistration = CommandDefinition & {
 };
 
 export const commands: readonly CommandRegistration[] = [
+  { ...botDefinition, load: async () => ({ run: (await import("../commands/bot/commands.js")).runBotCommand }) },
   { ...controllerDefinition, load: async () => ({ run: (await import("../commands/controller/index.js")).runControllerCommand }) },
   { ...workerDefinition, load: async () => ({ run: (await import("../commands/worker/index.js")).runWorkerCommand }) },
   { ...loginDefinition, load: async () => ({ run: (await import("../commands/auth/command.js")).runLoginCommand }) },

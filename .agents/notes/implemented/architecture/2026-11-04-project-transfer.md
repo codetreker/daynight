@@ -48,5 +48,5 @@ The transfer receipt remains usable after the actor loses Project access, while
 an unknown result cannot be reconstructed from current state. The Team locks
 serialize transfer with rename and deletion; cross-Team transfers acquire them
 in a stable order. Destination metadata is exposed only to a source administrator
-who supplies its UUID, with no Team directory or search. Client commands and UI
-remain separate capabilities.
+who supplies its UUID, with no Team directory or search. The CLI consumes this contract through a confirmed preview and receipt; the
+[CLI transfer decision](2026-11-04-cli-project-transfer.md) owns that boundary.

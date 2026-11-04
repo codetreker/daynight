@@ -372,3 +372,30 @@ it("rejects a pending old-history profile after a peer replacement and reuses ma
   await apply(cache); await vi.waitFor(() => expect(owner.snapshot(projectId).status).toBe("ready"));
   expect(owner.snapshot(projectId).people.get(personId)).toEqual(person()); expect(requests).toHaveLength(2);
 });
+
+it('withdraws all people on scope suspension and rejects a pending profile from the same generation', async () => {
+  const { owner, cache } = await harness();
+  owner.openCatalogue(projectId); await count(1); await settle(0);
+  await vi.waitFor(() => expect(owner.snapshot(projectId).status).toBe('ready'));
+  expect(owner.snapshot(projectId).people.size).toBe(2);
+  const old = await cache.beginSync(projectId, signal());
+  const changed = { ...person(), version: 'b'.repeat(64), name: 'Pending old profile' };
+  await apply(cache, undefined, [{ userId: personId, version: changed.version, hasProjectAccess: true }, ...manifest([otherId])]);
+  await count(2);
+  cache.suspendProject(projectId);
+  expect(owner.snapshot(projectId).people.size).toBe(0);
+  expect(owner.snapshot(projectId).items).toEqual([]);
+  expect(owner.snapshot(projectId).unresolvedUserIds.size).toBe(0);
+  await settle(1, [changed]);
+  expect(owner.snapshot(projectId).people.size).toBe(0);
+  cache.resumeProject(projectId);
+  await apply(cache, undefined, [{ userId: personId, version: changed.version, hasProjectAccess: true }, ...manifest([otherId])]);
+  const current = await cache.beginSync(projectId, signal());
+  expect(current.cacheGeneration).toBe(old.cacheGeneration);
+  expect(current.scopeRevision).not.toBe(old.scopeRevision);
+  await count(3);
+  expect(owner.snapshot(projectId).people.has(personId)).toBe(false);
+  await settle(2, requests[2]!.url.searchParams.getAll('userId').map((id) => id === personId ? changed : person(id)));
+  await vi.waitFor(() => expect(owner.snapshot(projectId).status).toBe('ready'));
+  expect(owner.snapshot(projectId).people.get(personId)?.name).toBe(changed.name);
+});

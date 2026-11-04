@@ -34,7 +34,7 @@ const screenshot = async (page: Page, info: TestInfo, name: string): Promise<voi
 };
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>((done) => { resolve = done; }); return { promise, resolve }; };
 const pauseAutomaticRefresh = async (page: Page): Promise<void> => {
-  const now = new Date('2030-01-01T00:00:00Z'); await page.clock.install({ time: now }); await page.clock.pauseAt(now);
+  const now = new Date('2030-01-01T00:00:00Z'); await page.clock.pauseAt(now);
 };
 const open = async (page: Page, project: string, task: string): Promise<void> => {
   const syncPath = `/api/v1/projects/${project}/task-sync`;

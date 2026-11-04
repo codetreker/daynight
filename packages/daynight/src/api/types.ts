@@ -133,6 +133,22 @@ export type ProjectAccess = {
   readonly directGrant: ProjectGrant | null;
 };
 
+export type ProjectTransferPreview = {
+  readonly sourceTeam: TeamRef;
+  readonly targetTeam: TeamRef & { readonly version: bigint };
+  readonly ownership: ProjectOwnership;
+  readonly actorRole: "admin" | "member" | null;
+};
+
+export type ProjectTransferReceipt = {
+  readonly projectId: string;
+  readonly changed: boolean;
+  readonly sourceTeam: TeamRef;
+  readonly ownerTeam: TeamRef;
+  readonly ownership: ProjectOwnership;
+  readonly actorAccess: ProjectAccess | null;
+};
+
 export type ProjectParticipant = {
   readonly inheritedFrom: { readonly team: TeamRef; readonly role: "admin" | "member" } | null;
   readonly userId: string;

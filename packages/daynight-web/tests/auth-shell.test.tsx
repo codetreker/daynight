@@ -117,7 +117,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     window.history.replaceState(null, "", `/projects/${projectId}/members`);
     let removed = false;
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
-      if (url === `/api/v1/projects/${projectId}/members/${userId}` && options?.method === "DELETE") { removed = true; return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(serverUserId) })); }
+      if (url === `/api/v1/projects/${projectId}/grants/${userId}` && options?.method === "DELETE") { removed = true; return Promise.resolve(json({ projectId, userId, deleted: true, actorAccess: null })); }
       if (url.endsWith("/access")) return !removed && serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
       if (url.endsWith("/members")) return Promise.resolve(json({ actorAccess: directAccessFixture(projectId, serverUserId, "admin"), items: [participant(), participant(otherId, "admin", "Bob")] }));
       if (url.endsWith("/invitations")) return Promise.resolve(json({ items: [] }));
@@ -126,10 +126,11 @@ describe("sidebar integration with the authenticated workspace", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "移除 Alice" }));
-    const dialog = screen.getByRole("dialog", { name: "移除 Alice？" });
-    await waitFor(() => expect(within(dialog).getByRole("button", { name: "移除成员" })).not.toBeDisabled());
-    fireEvent.click(within(dialog).getByRole("button", { name: "移除成员" }));
+    fireEvent.click(await screen.findByRole("button", { name: "移除 Alice 的单独授权" }));
+    const dialog = screen.getByRole("dialog", { name: "移除 Alice 的单独授权？" });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "移除授权" })).not.toBeDisabled());
+    fireEvent.click(within(dialog).getByRole("button", { name: "移除授权" }));
+    fireEvent.click(await screen.findByRole("button", { name: "返回项目" }));
     await screen.findByRole("heading", { name: "还没有项目" });
     expect(window.location.pathname).toBe("/projects");
     expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).queryByRole("link", { name: "私有项目" })).toBeNull();
@@ -1592,4 +1593,17 @@ describe("private project creation", () => {
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+});
+
+it('clears cold Bot draft and receipt namespaces on an account change outside the Bot page', async () => {
+  install(); render(<AuthenticatedApp />);
+  await screen.findByRole('complementary', { name: '工作空间导航' });
+  const key = `daynight:bot-session:${JSON.stringify([userId, 'bot', 'session', 'execution'])}:draft`;
+  window.sessionStorage.setItem(key, 'private draft');
+  const displayKey = `daynight.web.session.display.v1:${JSON.stringify([userId, 'session'])}`;
+  window.localStorage.setItem(displayKey, '"standard"');
+  serverUserId = otherId; returnFromAnotherWindow();
+  await screen.findByText('Bob');
+  await waitFor(() => expect(window.sessionStorage.getItem(key)).toBeNull());
+  expect(window.localStorage.getItem(displayKey)).toBeNull();
 });
