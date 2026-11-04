@@ -312,13 +312,13 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	if identityDecode[core.WorkerConfigurationResource](t, data).Desired != nil {
 		t.Fatal("inaccessible project bootstrap persisted a target")
 	}
-	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", `{}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", invitationActorBody(bobUser.ID), origin, http.StatusCreated)
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
 	link, err := url.Parse(invitation.Link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	identityRequest(t, alice, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, http.StatusOK)
+	identityRequest(t, alice, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, aliceUser.ID), origin, http.StatusOK)
 	identityRequest(t, alice, http.MethodPost, integration.server.URL+path+"/report", jsonBody(t, configurationHTTPReportBody(value, nil)), aware, http.StatusOK)
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
 		response, _ := identityRequest(t, bob, method, integration.server.URL+path+"/configuration", put("1"), origin, http.StatusNotFound)
