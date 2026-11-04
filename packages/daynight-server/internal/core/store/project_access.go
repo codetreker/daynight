@@ -28,6 +28,25 @@ func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string)
 	return access, nil
 }
 
+// LockProjectAuthorization retains the actual positive grant through commit.
+// Callers acquire Task and credential share locks first; this query must never
+// lock Project because ordinary project writes acquire Project before Task.
+func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID string) (core.ProjectAccess, error) {
+	var grant core.ProjectGrant
+	err := tx.QueryRow(ctx, `SELECT m.project_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at
+        FROM project_members m JOIN users u ON u.id=m.user_id JOIN projects p ON p.id=m.project_id
+        WHERE m.project_id=$1 AND m.user_id=$2 FOR SHARE OF m`, projectID, userID).Scan(
+		&grant.ProjectID, &grant.UserID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt)
+	if err != nil {
+		return core.ProjectAccess{}, queryError("lock project authorization", err)
+	}
+	return core.ProjectAccess{ProjectID: grant.ProjectID, UserID: grant.UserID, Role: grant.Role, DirectGrant: &grant}, nil
+}
+
+func (tx *ThreadTx) LockProjectAuthorization(ctx context.Context, principal core.Principal, projectID string) (core.ProjectAccess, error) {
+	return LockProjectAuthorization(ctx, tx.tx, principal.UserID, projectID)
+}
+
 func (s *Snapshot) ProjectAccess(ctx context.Context, principal core.Principal, projectID string) (core.ProjectAccess, error) {
 	return ReadProjectAccess(ctx, s.tx, principal.UserID, projectID)
 }

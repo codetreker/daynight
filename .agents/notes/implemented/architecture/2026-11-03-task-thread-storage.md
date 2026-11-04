@@ -18,9 +18,14 @@ DEFAULT gen_random_uuid(); (task_id,message_id) is the composite primary key.
 There is no globally unique message ID requirement or additional submission
 identity. The ordinary (task_id,created_at,message_id) index serves paging.
 
-A dedicated ReadCommitted Thread transaction shares the parent-task,
-credential and membership locks, then exclusively locks a lazy task-local head.
-It never acquires the project write lock after the task lock. It snapshots the
+A dedicated ReadCommitted Thread transaction shares the parent-task and
+credential locks, then obtains canonical strong project admission through
+`store.LockProjectAuthorization` in `project_access.go`. That primitive shares
+the actual positive direct-grant row through commit and returns `ProjectAccess`
+with its real `DirectGrant`. Role and grant facts come from the locked row after
+any wait, without a profile projection. The transaction then exclusively locks a
+lazy task-local head. It never acquires a Project row lock after the Task lock,
+because ordinary project writes acquire Project before Task. It snapshots the
 author's nullable name and any verified claim/worker/provider attribution. The
 final database-clock expiry check follows all waits and encoding. Rejected
 candidates and head initialization roll back together; no task mutation path is
@@ -62,6 +67,13 @@ project lock, require task-version decisions and invoke Task mutation behavior.
 A separate Thread transaction serializes only the selected discussion and
 preserves the task/graph/sync invariants.
 
+**Keep strong project admission in Thread-private member SQL.** This makes
+Thread a second owner of project permission policy and couples admission to a
+joined profile response. The canonical access owner provides the strong query
+while Thread retains its transaction, credential and task ordering. Reading an
+independent access alias while locking a separate grant alias could retain a
+pre-wait role; the strong query derives access from the actual locked grant.
+
 **Order only by random UUID within the current millisecond.** A later UUID can
 sort before an incremental anchor and disappear from subsequent afterId reads.
 Regenerating UUIDs or synthesizing future timestamps would violate database
@@ -72,9 +84,11 @@ preserves both guarantees, at the cost of explicit temporary refusal.
 
 Messages survive execution changes and name changes without increasing a
 previously admitted resource's encoded size. The task-local head serializes
-appenders; readers need no head lock. Thread has its own credential revalidation
-and permission locks, while ordinary Task transactions retain their existing
-admission rules. Discussion neither changes Task versions nor enters task-sync.
+appenders; readers need no head lock. Thread retains its credential revalidation
+and consumes canonical strong admission, while ordinary Task transactions retain
+their existing admission rules. Strong admission uses actual direct grants; it
+adds no ownership rows or placeholder authorization sources. Discussion neither
+changes Task versions nor enters task-sync.
 
 Clock stalls or rollback produce explicit failures rather than partial history.
 A lost commit response can leave a persisted message and an unknown client

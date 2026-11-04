@@ -84,6 +84,12 @@ CLI 退出接口仅允许当前 PAT 撤销自身，不提供其他令牌管理�
 当前准入与可见项目列表共用 Store 的直接授权关系，列表在 SQL
 cursor/LIMIT 前筛选。单主体查询在同一语句取得有效角色与实际 grant，不额外读取资料。
 
+Thread 写入通过同一存储所有者的 `store.LockProjectAuthorization` 取得强准入。
+调用方先持 Task 与 credential share 锁，再锁实际存在的 direct grant 至事务结束；
+有效角色和真实 grant 均来自等锁后的行，不取得 Project 行锁。该入口不读取人员资料，
+也不把长期 share 锁扩散到普通资源或 Session 准入。[Thread 设计](daynight-task-thread.md#专用写事务)
+拥有完整锁序、存在性分类和提交前凭据重验。
+
 `GET /api/v1/projects/{projectId}/access` 返回当前主体的
 `{effectiveRole,directGrant}`，两个键必填。grant 为 null 或完整的
 `{projectId,userId,role,version,createdAt,updatedAt}`；当前直接授权实现成功时返回
