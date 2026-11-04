@@ -30,7 +30,7 @@ export const createHerdrRecordingRuntime = (options: {
   };
   const canAllocate = (record: HerdrLifecycleRecord): boolean => {
     const store = source(record), status = store.status();
-    return store.canOpenSegment() && !status.runs.some(run => run.captureError === "recording_limit") && herdrRecordingMetadataBudget(record, store.metadata().gaps, "segment") <= SESSION_V2_LIMITS.metadataMaxBytes;
+    return store.canOpenSegment(!samplers.has(record.sessionId)) && !status.runs.some(run => run.captureError === "recording_limit") && herdrRecordingMetadataBudget(record, store.metadata().gaps, "segment") <= SESSION_V2_LIMITS.metadataMaxBytes;
   };
   return {
     directory, source,
@@ -80,7 +80,7 @@ export const createHerdrRecordingRuntime = (options: {
       if (samplers.has(record.sessionId)) throw new Error("An active sampler cannot be recovered as a crashed segment.");
       const store = source(record);
       return record.segments.filter(segment => segment.endedAt === null).map(segment => {
-        const boundary = store.recoveryBoundary(segment.segmentId); store.endSegment(segment.segmentId, boundary);
+        const boundary = store.recoverSegment(segment.segmentId);
         return { segmentId: segment.segmentId, boundary };
       });
     },

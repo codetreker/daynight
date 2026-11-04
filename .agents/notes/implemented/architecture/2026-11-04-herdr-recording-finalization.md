@@ -15,7 +15,11 @@ The Worker records bounded complete visible frames in its execution data directo
 independently of live delivery. A hash-linked, synchronously committed selection
 and index journal surrounds atomic frame-file publication. Deduplicated observation
 intervals have durable checkpoints; recovery preserves gaps instead of extending
-an old screen through downtime. Native identity enrichment changes identity only,
+an old screen through downtime. Recovering a segment without a durable orderly end
+retains interruption evidence even when terminal cleanup will never start another
+sampler. A crash before any durable frame remains failed; an already persisted
+segment end is recovered without inventing an interruption. Native identity
+enrichment changes identity only,
 including already closed capture segments, without changing their observations.
 Post-input observation and ordinary polling reconcile the enriched ledger before
 republishing the current complete frame. The snapshot fence and acknowledged
@@ -38,7 +42,10 @@ resource deletion.
 Execution capacity depends on local original-process stop proof. An independent
 archive queue and count/byte/free-disk gates retain resource accountability after
 that slot is released. Explicit identity-checked operator disposition has its own
-journal and cannot manufacture archive success. Ready local sources are retained;
+journal and cannot manufacture archive success. Original-user authentication is
+separate from terminal-claim evidence: a permission-hidden 404 cannot authorize
+disposal; an observed terminal claim or confirmed task_deleted response can.
+Ready local sources are retained;
 there is no automatic expiration or garbage collection.
 Durable deletion records remain available to reconcile the original local task
 and cleanup schedule before releasing their scheduling entries. This closes the

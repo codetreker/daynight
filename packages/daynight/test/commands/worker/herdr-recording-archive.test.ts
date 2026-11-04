@@ -3,6 +3,7 @@ import { fstatSync, fsyncSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sta
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHerdrRecordingArchive } from "../../../src/commands/worker/herdr/recording-archive.js";
+import { createHerdrRecordingRuntime } from "../../../src/commands/worker/herdr/recording-runtime.js";
 import { HerdrArchiveHttpError, type HerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import type { HerdrLifecycleRecord } from "../../../src/commands/worker/herdr/lifecycle-types.js";
 import type { HerdrRecordingSnapshot } from "../../../src/commands/worker/herdr/recording-types.js";
@@ -49,6 +50,42 @@ const setup = (name = "valid-archive") => {
   return { directory, record, source, remote, api, open, bodies, counts: () => ({ finalizes, uploads, reads }), time: (value: number) => { clock = value; }, loseFinalization: () => { loseFinalization = true; }, loseUpload: () => { loseUpload = true; }, permission: (value: boolean) => { permission = value; } };
 };
 describe("persistent Herdr archive finalization", () => {
+  it.each(["recorded-crash", "empty-crash", "empty-orderly"] as const)("preserves terminal cleanup evidence: %s", async scenario => {
+    const recorded = scenario === "recorded-crash", orderly = scenario === "empty-orderly";
+    const s = setup(), directory = path.join(s.directory, "recordings");
+    const open = () => createHerdrRecordingRuntime({ directory, read: async () => ({ width: 1, height: 1, rows: [[]] }), publish: async () => {} });
+    const runtime = open(); runtime.prepare({ ...s.record, segments: [] });
+    const segment = { ...s.record.segments[0]!, endedAt: null, durationMs: null };
+    const source = runtime.source(s.record); source.openSegment(segment);
+    s.remote.recording[0]!.responsibility!.responsibilityId = source.status().runs[0]!.responsibilityId;
+    if (recorded) source.sample(segment.segmentId, { width: 1, height: 1, rows: [[]] }, { elapsedMs: "1", capturedAt: segment.startedAt });
+    if (orderly) source.endSegment(segment.segmentId, { durationMs: "0", endedAt: segment.startedAt });
+    // Terminal stop may share the last persisted wall-clock instant. Recovery
+    // must not synthesize a later timestamp for its missing-tail marker.
+    s.record.runs[0]!.run.stoppedAt = segment.startedAt;
+    s.remote.ledger.runs[0]!.stoppedAt = segment.startedAt;
+    s.record.runs[0]!.run.stopProof!.stoppedAt = segment.startedAt;
+    s.remote.ledger.runs[0]!.stopProof!.stoppedAt = segment.startedAt;
+    runtime.close();
+    const recovered = open(), local = { ...s.record, segments: [segment] };
+    const boundaries = recovered.recover(local);
+    for (const value of boundaries) Object.assign(s.record.segments.find(segment => segment.segmentId === value.segmentId)!, value.boundary);
+    recovered.closeRun(s.record);
+    const result = await s.open().advance(s.record, () => recovered.source(s.record).snapshot());
+    if (recorded) {
+      expect(result.state).toBe("ready"); expect(result.receipt!.payload.completeness).toBe("partial");
+      const body = parseSessionV2Archive(JSON.parse(s.bodies[0]!));
+      expect(body.gaps).toEqual([{ segmentId: segment.segmentId, reason: "checkpoint_lost", startElapsedMs: "2", endElapsedMs: null }]);
+      expect(body.index[0]!.lastElapsedMs).toBe("1");
+    } else if (orderly) {
+      expect(result.state).toBe("unavailable"); expect(result.receipt!.payload.reason).toBe("ended_before_first_sample");
+      expect(recovered.source(s.record).snapshot().gaps).toEqual([]);
+    } else {
+      expect(result.state).toBe("failed"); expect(result.receipt).toBeNull();
+      expect(s.counts()).toMatchObject({ finalizes: 0, uploads: 0 });
+    }
+    recovered.close();
+  });
   it.skipIf(process.platform === "win32")("does not authorize disposal or readback while its journal directory sync keeps failing", async () => {
     const s = setup(), archive = s.open(), root = statSync(s.directory);
     const actual = await vi.importActual<typeof import("node:fs")>("node:fs");

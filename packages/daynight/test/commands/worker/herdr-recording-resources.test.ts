@@ -1,5 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, realpathSync, renameSync } from "node:fs";
 import path from "node:path";
+import { createServer } from "node:http";
+import { createWorkerRemote, type WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { ApiError } from "../../../src/api/client.js";
@@ -11,7 +13,7 @@ import type { HerdrLifecycleRecord } from "../../../src/commands/worker/herdr/li
 import type { SessionV2Archive } from "../../../src/session/v2/types.js";
 const roots: string[] = [];
 afterEach(() => { roots.splice(0).forEach(root => rmSync(root, { force: true, recursive: true })); });
-const setup = () => {
+const setup = (remote?: Pick<WorkerRemote, "readTask" | "currentUserId">) => {
   mkdirSync("../../.tmp/herdr-resources-test", { recursive: true });
   const root = realpathSync(mkdtempSync(path.resolve("../../.tmp/herdr-resources-test/run-"))); roots.push(root);
   const doc = JSON.parse(readFileSync(new URL("../../session/fixtures/v2/valid-archive.json", import.meta.url), "utf8")) as SessionV2Archive;
@@ -21,7 +23,7 @@ const setup = () => {
   const owner = { projectId: doc.owner.projectId, taskId: doc.owner.taskId, claimId: doc.claimId, worktreeId: doc.owner.worktreeId }, target = { ...owner, sessionId: doc.sessionId };
   const archive = createHerdrRecordingArchive({ directory: path.join(root, "archives"), api: { state: async () => { throw new Error("offline"); } } as unknown as HerdrArchiveApi });
   let user = doc.owner.ownerUserId, readFailure: unknown, publishFailure: unknown, active = false, published = 0;
-  const resource = createHerdrRecordingResources({ directory, archive, list: () => [record], get: () => record, source: () => { throw new Error("not recording a new source"); }, publishStopped: async () => { published++; if (publishFailure) throw publishFailure; }, currentUserId: async () => user, readTask: async () => { if (readFailure) throw readFailure; return { id: owner.taskId, projectId: owner.projectId, status: active ? "in_progress" : "done", properties: active ? { worker: { claimId: owner.claimId, state: "active", userId: user, workerId: doc.owner.workerId, worktreeId: owner.worktreeId, machine: { id: "00000000-0000-4000-8000-000000000033", name: "test" }, platform: "macos", agent: "codex", agentControlMode: "herdr", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-03T10:00:00Z" } } : {} } as Task; } });
+  const resource = createHerdrRecordingResources({ directory, archive, list: () => [record], get: () => record, source: () => { throw new Error("not recording a new source"); }, publishStopped: async () => { published++; if (publishFailure) throw publishFailure; }, currentUserId: async () => user, readTask: async () => { if (readFailure) throw readFailure; return { id: owner.taskId, projectId: owner.projectId, status: active ? "in_progress" : "done", properties: active ? { worker: { claimId: owner.claimId, state: "active", userId: user, workerId: doc.owner.workerId, worktreeId: owner.worktreeId, machine: { id: "00000000-0000-4000-8000-000000000033", name: "test" }, platform: "macos", agent: "codex", agentControlMode: "herdr", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-03T10:00:00Z" } } : {} } as Task; }, ...remote });
   return { root, directory, source, cwd, record, owner, target, archive, resource, active: (value: boolean) => { active = value; }, user: (value: string) => { user = value; }, failure: (value: unknown) => { readFailure = value; }, publishFailure: (value: unknown) => { publishFailure = value; }, published: () => published };
 };
 describe("Herdr retained recording resources", () => {
@@ -52,10 +54,77 @@ describe("Herdr retained recording resources", () => {
     const s = setup(), op = createOperation();
     try {
       s.failure({ status: 404 }); await expect(s.resource.advance(s.owner, op)).rejects.toEqual({ status: 404 }); expect(s.published()).toBe(0);
-      s.failure(new ApiError({ operation: "get task" }, "response", { status: 410, cause: new Error("deleted") }));
+      s.failure(new ApiError({ operation: "task.show", projectId: s.owner.projectId, taskId: s.owner.taskId }, "response", { status: 410, serverError: { code: "task_deleted", message: "Task was deleted.", requestId: "deleted" }, cause: new Error("deleted") }));
       expect(await s.resource.advance(s.owner, op)).toBe(false); expect(s.published()).toBe(1);
     } finally { op.dispose(); }
   });
+  it.each(["advance", "retry", "abandon", "delete"] as const)("refuses %s after the original user loses project access while its claim remains active", async action => {
+    let projectAccess = true;
+    let s: ReturnType<typeof setup>;
+    const userId = "00000000-0000-4000-8000-000000000005";
+    const server = createServer((request, response) => {
+      response.setHeader("Content-Type", "application/json"); response.setHeader("Daynight-User-ID", userId);
+      if (request.url === "/api/v1/me") {
+        response.end(JSON.stringify({ id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: s.owner.projectId, kind: "personal", name: null } })); return;
+      }
+      if (request.url !== `/api/v1/projects/${s.owner.projectId}/tasks/${s.owner.taskId}`) { response.writeHead(500); response.end(); return; }
+      // Tasks.Get checks RequireProjectRead before loading the task. A revoked
+      // grant is deliberately hidden as not_found; the active claim is unchanged.
+      if (!projectAccess) { response.writeHead(404); response.end(JSON.stringify({ error: { code: "not_found", message: "Project was not found.", requestId: "revoked-access" } })); return; }
+      const time = "2026-11-03T10:00:00Z";
+      response.end(JSON.stringify({ id: s.owner.taskId, projectId: s.owner.projectId, title: "Retained execution", description: "", status: "in_progress", allowAgents: true, assignedTo: userId, requiredPlatform: "macos", startedAt: time, completedAt: null, version: 1, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
+        properties: { pullRequests: [], worker: { claimId: s.owner.claimId, state: "active", userId, workerId: s.record.owner.workerId, worktreeId: s.owner.worktreeId, machine: { id: s.record.owner.workerId, name: "test" }, platform: "macos", agent: "codex", agentControlMode: "herdr", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time } } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address(); if (address === null || typeof address === "string") throw new Error("Missing fixture address");
+    const remote = createWorkerRemote({ serverUrl: `http://127.0.0.1:${address.port}`, serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890" });
+    s = setup(remote); s.record.runs.forEach(run => { run.stopReason = "shutdown"; });
+    const op = createOperation(); let removals = 0;
+    try {
+      expect(await remote.currentUserId(op.signal)).toBe(userId);
+      expect((await remote.readTask(s.owner.projectId, s.owner.taskId, op.signal)).properties.worker).toMatchObject({ claimId: s.owner.claimId, state: "active" });
+      projectAccess = false;
+      expect(await remote.currentUserId(op.signal)).toBe(userId);
+      const denied = { status: 404, code: "not_found", projectId: s.owner.projectId, taskId: s.owner.taskId };
+      const result = action === "advance" ? s.resource.advance(s.owner, op) : action === "retry" ? s.resource.retry(s.target, op)
+        : s.resource.dispose({ ...s.target, operationId: "00000000-0000-4000-8000-000000000090", action, confirmed: true }, op, async () => { removals++; rmSync(s.cwd, { recursive: true }); });
+      await expect(result).rejects.toMatchObject(denied);
+      expect(removals).toBe(0); expect(s.published()).toBe(0); expect(s.archive.inspect(s.record)).toBeNull();
+      expect(existsSync(s.source)).toBe(true); expect(existsSync(s.cwd)).toBe(true);
+      projectAccess = true;
+      expect((await remote.readTask(s.owner.projectId, s.owner.taskId, op.signal)).properties.worker).toMatchObject({ claimId: s.owner.claimId, state: "active" });
+    } finally { op.dispose(); server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  });
+
+  it.each([
+    { status: 404, code: "not_found", uncertain: false },
+    { status: 404, code: "task_deleted", uncertain: false },
+    { status: 410, code: "not_found", uncertain: false },
+    { status: 410, code: "task_deleted", uncertain: true },
+  ])("rejects ambiguous deletion evidence $status/$code/uncertain=$uncertain", async ({ status, code, uncertain }) => {
+    const s = setup(), op = createOperation();
+    const error = new ApiError({ operation: "task.show", projectId: s.owner.projectId, taskId: s.owner.taskId }, "response", { status, serverError: { code, message: "Task unavailable.", requestId: "unavailable" }, outcomeUnconfirmed: uncertain, cause: new Error("unavailable") });
+    s.failure(error);
+    try { await expect(s.resource.advance(s.owner, op)).rejects.toBe(error); expect(s.published()).toBe(0); expect(s.archive.inspect(s.record)).toBeNull(); }
+    finally { op.dispose(); }
+  });
+
+  it("allows explicit deletion only with the original task's confirmed tombstone", async () => {
+    const s = setup(), op = createOperation(); s.record.runs.forEach(run => { run.stopReason = "shutdown"; });
+    const deletion = (taskId: string) => new ApiError({ operation: "task.show", projectId: s.owner.projectId, taskId }, "response", { status: 410, serverError: { code: "task_deleted", message: "Task was deleted.", requestId: "deleted" }, cause: new Error("deleted") });
+    const request = { ...s.target, operationId: "00000000-0000-4000-8000-000000000090", action: "delete" as const, confirmed: true as const };
+    let removals = 0;
+    const remove = async () => { removals++; rmSync(s.cwd, { recursive: true }); };
+    try {
+      const unrelated = deletion("00000000-0000-4000-8000-000000000099"); s.failure(unrelated);
+      await expect(s.resource.dispose(request, op, remove)).rejects.toBe(unrelated);
+      expect(removals).toBe(0); expect(s.archive.inspect(s.record)).toBeNull();
+      s.failure(deletion(s.owner.taskId));
+      expect(await s.resource.dispose(request, op, remove)).toMatchObject({ worktreeDeleted: true, disposition: { action: "delete", completed: true } });
+      expect(removals).toBe(1); expect(existsSync(s.source)).toBe(false); expect(existsSync(s.cwd)).toBe(false);
+    } finally { op.dispose(); }
+  });
+
   it("persists a bounded retry for failed stop-ledger publication before finalization", async () => {
     const s = setup(), op = createOperation(); s.publishFailure(new Error("ledger network failure"));
     try { const before = Date.now(); expect(await s.resource.advance(s.owner, op)).toBe(false); const state = s.archive.inspect(s.record)!; expect(state.state).toBe("pending"); expect(state.nextAttemptAt).toBeGreaterThanOrEqual(before + 5000); expect(state.finalization).toBeNull(); }

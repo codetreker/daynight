@@ -5,7 +5,7 @@ import { SESSION_V2_LIMITS } from "../../../src/session/v2/values.js";
 import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-store.js";
 import { inspectHerdrInput } from "../../../src/commands/worker/herdr/input-readiness.js";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
@@ -51,7 +51,7 @@ const fixture = (realInspector = false, driverResources = false) => {
   let task: Task = { id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: context.claimId, state: "active", userId: ownerId, workerId, machine: { id: uuid(8), name: "test-machine" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId: context.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-04T00:00:00Z" } } };
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
-  const settings = { nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
+  const settings = { recordingBlocked: false, nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
   let beforePromptGuard: (() => void) | undefined;
   let beforeLaunchRetry: (() => void) | undefined;
   let recoveryDelay: ((stage: "publish" | "state" | "prepare", signal: AbortSignal | undefined) => Promise<void>) | undefined;
@@ -189,7 +189,13 @@ const fixture = (realInspector = false, driverResources = false) => {
   const reopen = (injectSessionApi = true) => {
     if (facade) { facade.lifecycle!.close(); facades.delete(facade); }
     facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => task, processControl: native,
-      readRecording: async () => ({ width: 1, height: 1, rows: [[]] }), currentUserId: async () => ownerId,
+      readRecording: async (_record, signal) => {
+        if (settings.recordingBlocked) await new Promise<void>((_resolve, reject) => {
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+        return { width: 1, height: 1, rows: [[]] };
+      }, currentUserId: async () => ownerId,
       archiveApi: { ...createHerdrArchiveApi(serverOrigin, "fixture-token"), state: async () => stateView(), recording: async (_expected, message) => {
         const m = message as SessionV2Message;
         if (m.type !== "recording_responsibility" || !remote) throw new Error("Unexpected recording fixture message");
@@ -740,4 +746,27 @@ it("does not replay the accepted assignment through the execution driver after e
     expect(f.launches).toHaveLength(1); expect(f.read().ledgerRequest).toBeNull();
     expect(store.getTask(task)?.sessionId).toBe(f.nativeId);
   } finally { store.close(); }
+});
+
+
+it.each([true, false])("retains crash evidence when a terminal claim stops without reattaching, recorded: %s", async recorded => {
+  const f = fixture(); f.settings.recordingBlocked = !recorded;
+  f.register(); const binding = await f.prepare(); await f.start(binding);
+  const original = f.read(), source = () => openHerdrRecordingStore({ directory: path.join(f.paths.workerDirectory, "herdr-recordings", original.sessionId), owner: original.owner, sessionId: original.sessionId, claimId: original.claimId });
+  if (recorded) await vi.waitFor(() => expect(source().status().runs[0]!.registeredFrameCount).toBe("1"));
+  else expect(source().status().runs[0]!.registeredFrameCount).toBe("0");
+  f.reopen(); f.changeTask({ status: "done" });
+  await f.facade.lifecycle!.stop(f.context, "terminal", operation());
+  expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+  expect(f.read().segments).toHaveLength(1); expect(f.launches).toHaveLength(1); expect(f.inputs).toHaveLength(1);
+  if (recorded) {
+    expect(source().metadata().gaps).toMatchObject([{ reason: "checkpoint_lost", endElapsedMs: null }]);
+    const snapshot = source().snapshot(); expect(snapshot.runs[0]!.captureError).toBeNull();
+    expect(BigInt(snapshot.segments[0]!.durationMs)).toBe(BigInt(snapshot.index[0]!.lastElapsedMs) + 1n);
+  } else {
+    expect(source).toThrow(/source_corrupt/);
+    const events = readFileSync(path.join(f.paths.workerDirectory, "herdr-recordings", original.sessionId, "journal.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line).event);
+    expect(events).toContainEqual({ type: "error", executionGeneration: "1", code: "source_corrupt" });
+    expect(events.find(event => event.type === "gap").gap).toMatchObject({ reason: "checkpoint_lost", endElapsedMs: null });
+  }
 });

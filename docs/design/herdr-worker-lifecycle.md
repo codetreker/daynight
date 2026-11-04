@@ -49,7 +49,7 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 
 实际运行启动或恢复采集时产生新段；断点通过 `gap` 明确连接前后段。重启只承认录制 journal 的最后 durable checkpoint，不能推算连续观察；正常停采使用单调时钟边界。停止证明、封段和 ledger 确认分别可恢复。nativeSessionId 的单向补齐可同步已关闭段，但不能改变其观察边界。
 
-终态 claim 的同代停止 ledger 使用原 `connectionEpoch` 收尾，不要求再注册 active claim。完整消息与 epoch 先写入 `ledgerRequest`，发送失败或重启遇到未确认请求时先读回，不再次 POST。只有服务端确认的相同内容才清除请求并更新 `publishedLedgerHash`。任务已删除且 GET 返回 404 时，可以用原 epoch 首次提交全部已确认停止的 ledger；若发送结果丢失且读回仍为 404，则保留 pending 请求和责任，不将缺席认作确认。最终冻结及 ready/unavailable 回执由独立归档消费者确认。
+终态 claim 的同代停止 ledger 使用原 `connectionEpoch` 收尾，不要求再注册 active claim。完整消息与 epoch 先写入 `ledgerRequest`，发送失败或重启遇到未确认请求时先读回，不再次 POST。只有服务端确认的相同内容才清除请求并更新 `publishedLedgerHash`。任务已删除且 GET 返回 404 时，可以用原 epoch 首次提交全部已确认停止的 ledger；若发送结果丢失且读回仍为 404，则保留 pending 请求和责任，不将缺席认作确认。这里的 Session 状态缺席不构成任务终态或资源删除许可；任务读取的权限隐藏 404 必须单独拒绝，不能当作明确的 task_deleted。最终冻结及 ready/unavailable 回执由独立归档消费者确认。
 
 ## 停止 journal 与原进程证明
 

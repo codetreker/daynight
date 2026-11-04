@@ -232,6 +232,11 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
     try { append({ type: "checkpoint", fileId: s.lastFile, ...observation }); recordingBytes += delta; pending.delete(segmentId); }
     catch (error) { markFailed(runFor(segmentId).executionGeneration); throw error; }
   };
+  const recoveryBoundary = (segmentId: string): HerdrRecordingBoundary => {
+    const s = segmentFor(segmentId), gap = gapBoundaries.get(segmentId);
+    if (s.segment.endedAt !== null && s.segment.durationMs !== null) return { endedAt: s.segment.endedAt, durationMs: s.segment.durationMs };
+    return gap && BigInt(gap.durationMs) > BigInt(s.durableElapsed) ? clone(gap) : { endedAt: s.durableCapturedAt, durationMs: s.durableElapsed };
+  };
   return {
     directory,
     status,
@@ -244,7 +249,10 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
       const run: HerdrRecordingRun = { executionGeneration, responsibilityId: randomUUID(), recordingEnabled, selectedFrameCount: "0", registeredFrameCount: "0", captureError: null, closed: false };
       append({ type: "run", run }); return clone(run);
     },
-    canOpenSegment: (): boolean => !failed && files.size < SESSION_V2_LIMITS.maxFrames && recordingBytes < SESSION_V2_LIMITS.recordingMaxBytes && segments.size < SESSION_V2_LIMITS.maxSegments && gaps.length < SESSION_V2_LIMITS.maxGaps - 1,
+    canOpenSegment: (recovering = false): boolean => {
+      const missingTail = recovering && [...segments.values()].some(s => s.segment.endedAt === null && !openGap(s.segment.segmentId)) ? 1 : 0;
+      return !failed && files.size < SESSION_V2_LIMITS.maxFrames && recordingBytes < SESSION_V2_LIMITS.recordingMaxBytes && segments.size < SESSION_V2_LIMITS.maxSegments && gaps.length + missingTail < SESSION_V2_LIMITS.maxGaps - 1;
+    },
     openSegment: (segment: HerdrLocalSegment): void => {
       if (failed) corrupt();
       const previous = segments.get(segment.segmentId);
@@ -308,10 +316,22 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
       append({ type: "gap", gap: { segmentId, reason: "read_interrupted", startElapsedMs: start, endElapsedMs: null }, capturedAt: capturedAt ?? new Date(Date.parse(s.durableCapturedAt) + Number(BigInt(start) - BigInt(s.durableElapsed))).toISOString() });
     },
     fail: (executionGeneration?: string): void => markFailed(executionGeneration),
-    recoveryBoundary: (segmentId: string): HerdrRecordingBoundary => {
-      const s = segmentFor(segmentId), gap = gapBoundaries.get(segmentId);
-      if (s.segment.endedAt !== null && s.segment.durationMs !== null) return { endedAt: s.segment.endedAt, durationMs: s.segment.durationMs };
-      return gap && BigInt(gap.durationMs) > BigInt(s.durableElapsed) ? clone(gap) : { endedAt: s.durableCapturedAt, durationMs: s.durableElapsed };
+    recoveryBoundary,
+    recoverSegment: (segmentId: string): HerdrRecordingBoundary => {
+      const s = segmentFor(segmentId);
+      if (failed) corrupt();
+      if (s.segment.endedAt !== null) return recoveryBoundary(segmentId);
+      pending.delete(segmentId);
+      if (!openGap(segmentId)) {
+        if (gaps.length >= SESSION_V2_LIMITS.maxGaps || BigInt(s.durableElapsed) === 9223372036854775807n) { markFailed(s.segment.executionGeneration); corrupt(); }
+        // The open marker follows the last durable frame without claiming any
+        // observation or reconstructing elapsed downtime from the wall clock.
+        const startElapsedMs = s.lastFile === null ? "0" : String(BigInt(s.durableElapsed) + 1n);
+        append({ type: "gap", gap: { segmentId, reason: "checkpoint_lost", startElapsedMs, endElapsedMs: null }, capturedAt: s.durableCapturedAt });
+      }
+      const boundary = recoveryBoundary(segmentId);
+      append({ type: "segment_end", segmentId, boundary });
+      return boundary;
     },
     endSegment: (segmentId: string, boundary: HerdrRecordingBoundary): void => {
       const s = segmentFor(segmentId); if (s.segment.endedAt !== null) { if (s.segment.endedAt !== boundary.endedAt || s.segment.durationMs !== boundary.durationMs) corrupt(); return; }

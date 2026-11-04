@@ -89,7 +89,12 @@ export const createHerdrRecordingResources = (options: {
       if (task.id !== record.owner.taskId || task.projectId !== record.owner.projectId) throw new Error("The task observation belongs to another resource owner.");
       const claim = readWorkerClaim(task.properties);
       if (claim?.claimId === record.claimId && claim.state === "active") throw new Error("The original claim is still active; archive finalization or disposal is prohibited.");
-    } catch (cause) { if (!(cause instanceof ApiError) || ![404, 410].includes(cause.status ?? 0) || cause.outcomeUnconfirmed) throw cause; }
+    } catch (cause) {
+      // Task reads hide missing project access behind 404. Only the original
+      // task's explicit tombstone can replace an authorized task observation.
+      if (!(cause instanceof ApiError) || cause.phase !== "response" || cause.status !== 410 || cause.code !== "task_deleted"
+        || cause.projectId !== record.owner.projectId || cause.taskId !== record.owner.taskId || cause.outcomeUnconfirmed) throw cause;
+    }
     if (!stopped(record)) throw new Error("The original native execution stop is not confirmed.");
   };
   const authorize = async (target: HerdrResourceTarget, operation: Operation): Promise<HerdrLifecycleRecord> => {
