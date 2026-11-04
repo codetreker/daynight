@@ -2,6 +2,15 @@ import { pause } from "./pause";
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  steps: {
+    title: "Steps", empty: "No steps yet", noDescription: "No description",
+    loading: "Loading steps", refresh: "Refresh steps", retry: "Retry",
+    loadFailed: "Steps could not be loaded.", refreshFailed: "Steps could not be updated.", retained: "Showing previously loaded steps.",
+    networkError: "Unable to connect to the server.", protocolError: "The server returned invalid steps.", unavailable: "Steps are unavailable for this task.", denied: "You do not have permission to read these steps.", requestFailed: "The server could not load steps.",
+    count: (count) => `${count} steps`, status: { todo: "To do", in_progress: "In progress", done: "Done", skipped: "Skipped" },
+    created: "Created", updated: "Updated", pagination: "Steps pages", previous: "Previous", next: "Next", page: "Page",
+    range: (start, end, total) => `${start}–${end} of ${total} steps`,
+  },
   pause,
   discussion: {
     title: "Discussion", empty: "No discussion yet", loading: "Loading discussion", refresh: "Refresh discussion",

@@ -1,6 +1,6 @@
 # Task Steps 架构设计
 
-状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除，以及 CLI list/show 读取已实现；CLI 写入、Agent 指令资源与 Web 的 Steps 交互保留已确认的目标架构。本文区分已实现机制与客户端目标。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。
+状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除，以及 CLI list/show 与 Web Steps 阅读已实现；CLI 写入、Agent 指令资源与 Web 写入交互保留已确认的目标架构。本文区分已实现机制与客户端目标。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。
 
 ## 目标与边界
 
@@ -186,30 +186,37 @@ canonical skill 的 task-content 区分持久 Steps 与 Session 计划、工具�
 
 ## Web 资源与单一写入所有者
 
-`TaskDetailSessions` 的每个 Task entry 增加独立 Steps read state 和 Step 操作 union。`useTaskSteps` 只是订阅视图；提交、pending/unknown、身份 fence、晚响应和关闭后仍存续的写入仍归现有 session owner。
+### 已实现的读取
 
-当前[执行器](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-web/src/features/task-detail/TaskDetailSession.tsx#L505-L638)假定普通响应都是 TaskDetail，核对只读 Task。应重构为明确的 Task-result/Steps-result 和对应读回分派，保留一个提交生命周期及互斥，不复制第二个控制器。
+`TaskDetailSessions` 的每个 Task entry 拥有独立的 Steps read state，`useTaskSteps` 只按活动页签订阅视图。共同 Task 提交生命周期仍归同一个 owner；读取接入没有另建写控制器。`api/task-steps.ts` 复用 request、principal 检查和精确 bigint JSON codec，完整校验资源身份、正 int64 父版本、唯一规范短 ID、原值文本、四状态和 UTC 微秒时间。非法响应整体失败，不补造字段或丢弃条目。
 
-Steps 首次激活才读取，完整数据保存在当前 Task session 内存。项目摘要、TaskDetail 与 Steps 各自保留真实返回版本；新 Steps 版本不能替旧 TaskDetail 补造 updatedAt，也不能推进项目同步水位。
+首次激活才读取，完整资源只保存在 session 内存。每项独立保留真实版本，既不替旧 TaskDetail 补造 updatedAt，也不推进项目同步水位。owner 比较授权摘要、父详情、已确认父修改和已持有 Steps 的最高版本；更高下限把旧集合标为 stale。活动读取最多一个在途请求，目标推进合并到后续读取；非活动视图不读取。过期结果排队一次当前下限的重读，持续违反相同下限则暴露协议错误，避免无界请求循环。
 
-Steps 写成功后保留确认集合，把父详情标为需刷新，并触发父 GET 和项目同步。只有当前父详情、授权摘要和 Steps 资源在同一身份/缓存 generation 下匹配父版本，才恢复共同的可提交基线。超前响应等待同步准入，过期响应被更新版本排除；同版本不同内容是协议错误。
+超前资源等待摘要追上，并触发已有父 GET 和项目刷新。摘要追上才准入，摘要跳过中间版本则重新读取。等待准入与实际读取有不同状态，等待中的刷新入口仍可用；父读取失败传播为 Steps 失败，已有确认行仍可阅读。同版本但内容不同的响应报协议错误，不覆盖已确认集合。
 
-每次准入新的项目摘要版本、父详情版本或普通 Task/Worker 写入结果时，owner 都比较现存 Steps 的真实版本。父版本更高就把 Steps 标为 stale：活动 Steps 视图或正在核对的操作由 owner 排队一次完整 GET；非活动视图只失效，下一次激活再读取。读取请求按当前身份、generation 和最新已知版本下限合并，保留已有确认行和本地草稿，不把旧资源重新标成新版本。
+读取和准入均受身份、scope signal、缓存 generation、局部请求 generation 及版本下限约束。scope 的权限撤回事件和身份 retirement 同步取消读取并清除完整数组。集合 404 先读取父 Task，父仍可读时仅报告 Steps 错误；可信父 404 才调用既有 scope retirement。403 不推断项目撤权，410 交给既有父删除表达。
 
-若一次同步直接越过 Step 写回的中间版本，或读取结果落后于已知下限，丢弃该旧结果并对当前下限重新排队读取；超前结果则继续触发项目同步和父 GET。新父版本到达同样会驱动后续读取，直到得到可准入的一致基线或明确失败。每个资源最多一个在途普通读取，目标版本更新会合并到后续读取；这只调度读取，不重放修改。普通刷新不覆盖草稿，也不能替代 unknown 操作显式核对和提交 token 的结果处理。
+64 MiB 集合不写入现有 TaskDetail LRU 或 IndexedDB，不改变其 schema。只读准入事务核对 ticket、generation 与当前摘要，不持久化集合。最后一个需要集合的视图退订时清空完整资源、未准入响应并取消其准入等待；隐藏面板只保留按 ID 的展开选择与页码，重新激活按需读取。
 
+### 写入目标
 
-64 MiB 集合不写入现有 TaskDetail LRU 或 IndexedDB，也不触发该库的 schema 迁移。最后一个需要集合的视图退订且没有使用它的操作时释放完整数组；pending/unknown 保留提交身份、payload 和恢复所有权，完成或重开后按需重读，不为隐藏会话永久留存大集合。
+Step 操作 union 与 Task-result/Steps-result 分派接入现有提交和核对生命周期；不能复制第二个控制器。Steps 写成功保留确认集合，把父详情标为需刷新，并触发父 GET 和项目同步。只有当前父详情、授权摘要和 Steps 资源在同一身份与缓存 generation 下匹配父版本，才恢复共同可提交基线。同步直接跳过中间版本时仍按最新下限收敛，不重放修改。
 
-Web API 模块复用共同 request/principal/bigint codec，补齐容量 details 与服务错误 message。成功 HTTP 状态但非法 body 仍需读回完整 Steps，不能展示请求目标为已确认事实。
+Web 写入 API 补齐容量 details 与服务错误 message。成功 HTTP 状态但非法 body 仍需读回完整 Steps，不能展示请求目标为已确认事实。子 Step/锚点 404 保留当前可访问 Task、其他项和草稿；来源不明时按同一身份 fence 核验父 Task，只有确认父不可访问才 retirement。
 
-子 Step/锚点 404 保留当前可访问 Task、其他项和草稿；来源不明时在同一身份 fence 下 GET 父任务。只有已确认父不可访问才执行既有 scope retirement。403 是实际拒绝，不能自动推断项目撤权；410 表达 Task 删除。
-
-unknown 冻结该次提交的表单和共同提交入口，按原身份读取完整集合。读回仅确认当前状态，不归因某次丢响应操作；失败保持锁定。未提交草稿与新基线分别保存，明确拒绝后解除该表单冻结。
+unknown 冻结该次提交表单和共同提交入口，保留原身份、payload 和恢复所有权，按原身份读取完整集合。读回仅确认当前状态，不归因某次丢响应操作；失败保持锁定。未提交草稿与新基线分别保存，明确拒绝后解除该表单冻结。最后读者退订时，pending/unknown 操作继续拥有恢复身份，完成或重开后按需重读，不为隐藏会话永久保留大集合。
 
 ## Web 呈现、导航与大集合
 
-在现有 TaskDetailPanels 增加 Steps slot 和 `tab=steps`，继续使用相同弹窗/独立页、roving tab、hidden/inert、语言和焦点所有者。Step 状态有独立消息组，`skipped` 不进入 Task 文案类型。
+### 已实现的阅读
+
+`TaskDetailPanels` 固定提供概览之后的 Steps slot 和 `tab=steps`，继续使用相同弹窗与独立页、roving tab、hidden/inert、语言和焦点所有者。`TaskDetailSurface` 注入 `TaskStepsPanel`，`TaskDetailReading` 提供共享 Task-root Markdown render/navigation callback；正文与概览沿用同一个 `useAttachments` controller。文件链接从 Task 附件根解析，保留修饰键和既有 URL 策略，不新增附件清单或预览所有者。
+
+Steps 组件保留按稳定 ID 的多项展开状态及当前页码；服务顺序决定编号，跨页和刷新重排不重绑身份。四状态使用独立消息组，`skipped` 不进入 TaskStatus。现有控件只有阅读、刷新与翻页，后续写入能力没有空壳入口。
+
+完整资源仍一次读取，主列表每页最多挂载 100 行。超过 100 项展示全局范围、前后页和数值跳转，页码不生成随集合增长的 option 列表；分页只限制 DOM，不改变完整服务顺序，也不增加服务查询。刷新缩小集合时将显示页限制在仍存在的范围。600px 以下标题与状态/ID 换行，320px 下公共外壳和阅读控件保持可达。
+
+### 写入与导航目标
 
 Steps workspace 按 Task 身份保存展开 ID、一个表单、草稿、预览及确认选择。操作 token 绑定提交回执，迟到结果不能关闭后来创建的表单。own-form 在 pending/unknown 冻结字段；无关父写入只锁提交。删除正在编辑的项时，同一确认层明确告知未保存修改会丢弃。
 
@@ -219,11 +226,11 @@ Steps workspace 按 Task 身份保存展开 ID、一个表单、草稿、预览�
 
 原生整文档离开使用 beforeunload，应用内程序导航全部经过上述准入。原生 fragment 生成或其他未纳入应用索引的历史项暂缓纳入草稿取消恢复保证：这些条目沿用浏览器原生导航，当前不保证取消离开后恢复原历史位置或保留跨 Task 离开时的未保存草稿，存在位置恢复失败或草稿丢失风险。索引差值算法只用于有效索引，不为缺失索引补造数值。后续完善应集中在同一路由/历史所有者的索引登记和恢复策略，无需改变 Steps 数据与 API。
 
-守卫状态只属于当前浏览窗口和活动编辑作用域；不创建路由持久化或业务恢复服务。鉴权 retirement 立即清理私有内容并绕过草稿保留选择。当前验收覆盖程序跳转、已编号条目的一次及连续 Back/Forward、取消后的原历史位置、确认后只采用一次目标，以及同 Task 页签/附件往返。无索引历史项的上述恢复保证作为保留限制，暂不作为交付门槛。
+守卫状态只属于当前浏览窗口和活动编辑作用域；不创建路由持久化或业务恢复服务。鉴权 retirement 立即清理私有内容并绕过草稿保留选择。写入阶段验收覆盖程序跳转、已编号条目的一次及连续 Back/Forward、取消后的原历史位置、确认后只采用一次目标，以及同 Task 页签/附件往返。无索引历史项的上述恢复保证作为保留限制，暂不作为交付门槛。
 
-从 TaskDetailReading 提取共享 Task-root Markdown render/navigation callback，Steps 正文和预览均使用它及同一个 useAttachments controller。文件链接从 Task 附件根解析，沿用修饰键和既有 URL 策略，不新增附件清单或预览所有者。
+未提交 Markdown 预览沿用已实现的 Task-root renderer 和同一个附件 controller。
 
-**本地每页最多 100 行。** 完整资源仍一次读取，分页只限制 DOM，不改变服务端顺序或 API。跨页移动仍按 ID 作用于完整数组；添加、移动、删除后选择目标或相邻项所在页并恢复焦点。草稿和展开状态由 ID 保存，换页不会丢失。
+写入沿用已实现的每页 100 行边界。跨页移动按 ID 作用于完整数组；添加、移动、删除后选择目标或相邻项所在页并恢复焦点。草稿和展开状态由 ID 保存，换页不会丢失。
 
 该方式沿用[现有 PR 区域](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/docs/design/daynight-task-properties.md)限制挂载数量的方式，避免合法大集合直接形成巨大 DOM。超过 100 项才出现分页控件，展示全局范围和总数；不足一页时保留原列表。视觉验收使用 Task 附件中的交互原型，覆盖 241 项、跨页移动与添加、删除末页及保留草稿等情境。
 

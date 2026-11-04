@@ -231,7 +231,7 @@
   .task-detail-columns { display: block; padding: 20px 19px 24px; }
   .task-detail-aside { margin-top: 24px; }
   .task-detail-footer { padding: 8px 17px; }
-  .task-detail-tabs { padding: 0 19px; }
+  .task-detail-tabs { padding: 0 19px; flex-wrap: wrap; column-gap: 16px; row-gap: 0; }
   .task-detail-panel-attachments { padding: 14px 12px 16px; }
 }
 

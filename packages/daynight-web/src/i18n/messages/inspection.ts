@@ -2,6 +2,17 @@ import type { PauseMessages } from "./pause";
 import type { WorkerPhase } from '../../api/types';
 
 export type InspectionMessages = {
+  readonly steps: {
+    readonly title: string; readonly empty: string; readonly noDescription: string;
+    readonly loading: string; readonly refresh: string; readonly retry: string;
+    readonly loadFailed: string; readonly refreshFailed: string; readonly retained: string;
+    readonly networkError: string; readonly protocolError: string; readonly unavailable: string; readonly denied: string; readonly requestFailed: string;
+    readonly count: (count: string) => string;
+    readonly status: Readonly<Record<"todo" | "in_progress" | "done" | "skipped", string>>;
+    readonly created: string; readonly updated: string;
+    readonly pagination: string; readonly previous: string; readonly next: string; readonly page: string;
+    readonly range: (start: string, end: string, total: string) => string;
+  };
   readonly pause: PauseMessages;
   readonly discussion: {
     readonly title: string; readonly empty: string; readonly loading: string; readonly refresh: string;

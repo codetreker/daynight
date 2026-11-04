@@ -599,6 +599,33 @@ index. Overview positioning can clear a filter that hides its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
+## Steps reading
+
+Task details always expose Steps after Overview, in both the dialog and standalone
+page. `tab=steps` preserves the tab through direct access, reload and browser
+history, including details without a Session. Reading shows the ordered title,
+four-state status and task-local ID; multiple expanded rows render Task-root
+Markdown and timestamps through the same attachment controller as Overview.
+
+`TaskDetailSessions` owns a separate lazy Steps resource in memory. Summary,
+parent-detail and confirmed mutation versions invalidate it; identity, cache
+generation and version admission fence late responses. An ahead resource waits
+for summary admission and requests parent/project refresh, while stale responses
+are reread against the current floor. First-read errors, valid emptiness and
+retained-content errors remain distinct and retryable. A Steps 404 checks the
+parent before retiring access; 403 remains a refusal, and parent 410 uses the
+existing deleted-task presentation. Retirement and the last active reader's
+unsubscribe release complete collections, including pending admission. Steps never
+enter the TaskDetail LRU or IndexedDB.
+
+The list mounts at most 100 rows per page, with global numbering, previous/next
+buttons and a numeric page input. Paging makes no API requests; expansion remains
+bound to IDs across pages, same-task tabs and refresh reordering. Both languages
+and the 320px layout retain reading and recovery controls. Web writing controls
+are not exposed. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
+and [design](../../docs/design/daynight-task-steps.md#web-资源与单一写入所有者)
+own the complete read lifecycle and the remaining write architecture.
+
 ## Session display
 
 Task, Test and readable archived Sessions share the Display menu beside Refresh.

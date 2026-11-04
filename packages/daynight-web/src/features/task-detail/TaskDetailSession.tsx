@@ -1,6 +1,7 @@
 import { readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, unpauseTask, withdrawWorkerClaim } from "../../api/client";
+import { getTaskSteps, type StepsResource } from "../../api/task-steps";
 import { isTaskStale } from "./freshness";
 import type { ExecutionPlatform, GraphTask, TaskDetail, TaskStatus } from "../../api/types";
 import { TaskCacheError } from "../task-cache/database";
@@ -29,8 +30,31 @@ export type DetailState = {
   readonly error: unknown;
   readonly mutation: TaskMutationState;
 };
+export type TaskStepsState = {
+  readonly resource: StepsResource | null;
+  readonly status: "loading" | "waiting" | "ready" | "error" | "deleted";
+  readonly refreshing: boolean;
+  readonly stale: boolean;
+  readonly error: unknown;
+};
+export const emptyTaskStepsState: TaskStepsState = { resource: null, status: "loading", refreshing: false, stale: true, error: null };
+type StepsRead = {
+  state: TaskStepsState;
+  generation: number;
+  cacheGeneration: string | null;
+  floor: bigint | null;
+  retriedFloor: bigint | null;
+  read: AbortController | null;
+  queued: boolean;
+  admission: AbortController | null;
+  pending: { readonly resource: StepsResource; readonly ticket: SyncTicket; readonly generation: number } | null;
+  readonly projectId: string;
+  readonly taskId: string;
+  readonly listeners: Set<() => void>;
+};
 type Entry = {
   state: DetailState;
+  readonly steps: StepsRead;
   generation: number;
   read: AbortController | null;
   committedVersion: bigint | null;
@@ -83,12 +107,30 @@ const validStatusTiming = (before: TaskDetail, after: TaskDetail, target: TaskSt
   return after.completedAt !== null && after.startedAt === (before.status === "in_progress" ? before.startedAt : null);
 };
 
+const sameSteps = (before: StepsResource, after: StepsResource): boolean => before.steps.length === after.steps.length && before.steps.every((step, index) => {
+  const other = after.steps[index]!;
+  return step.id === other.id && step.title === other.title && step.description === other.description && step.status === other.status && step.createdAt === other.createdAt && step.updatedAt === other.updatedAt;
+});
+
 export class TaskDetailSessions {
   private readonly entries = new Map<string, Entry>();
   private readonly projects = new Map<string, Set<() => void>>();
   private readonly projectGenerations = new Map<string, string | null>();
   private disposed = false;
-  constructor(private readonly scope: TaskCacheScope) {}
+  private readonly releaseScope: () => void;
+  private readonly onScopeRetired = (): void => {
+    for (const entry of this.entries.values()) this.clearSteps(entry.steps, emptyTaskStepsState);
+  };
+  constructor(private readonly scope: TaskCacheScope) {
+    this.releaseScope = scope.subscribe((event) => {
+      for (const entry of this.entries.values()) {
+        if (entry.steps.projectId !== event.projectId) continue;
+        if (event.accessRevoked) this.clearSteps(entry.steps, { ...emptyTaskStepsState, status: "error", error: event.error });
+        else this.synchronizeSteps(entry);
+      }
+    });
+    scope.signal.addEventListener("abort", this.onScopeRetired, { once: true });
+  }
   projectGeneration(projectId: string): string | null {
     if (this.scope.isInvalidated) return null;
     if (authRequestsPaused()) return this.projectGenerations.get(projectId) ?? null;
@@ -109,14 +151,174 @@ export class TaskDetailSessions {
     const key = `${projectId}/${taskId}`;
     let entry = this.entries.get(key);
     if (entry === undefined) {
-      entry = { state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
+      entry = { steps: { state: emptyTaskStepsState, generation: 0, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
       this.entries.set(key, entry);
     }
     return entry;
   }
   private publish(entry: Entry, state: DetailState): void {
     entry.state = state;
+    this.synchronizeSteps(entry);
     for (const listener of entry.listeners) listener();
+  }
+  private publishSteps(steps: StepsRead, state: TaskStepsState): void {
+    steps.state = state;
+    for (const listener of steps.listeners) listener();
+  }
+  private clearSteps(steps: StepsRead, state: TaskStepsState): void {
+    steps.generation++;
+    steps.read?.abort(); steps.read = null;
+    steps.admission?.abort(); steps.admission = null;
+    steps.pending = null; steps.queued = false; steps.floor = null; steps.retriedFloor = null;
+    this.publishSteps(steps, state);
+  }
+  stepsSnapshot = (projectId: string, taskId: string): TaskStepsState => this.entry(projectId, taskId).steps.state;
+  subscribeSteps = (projectId: string, taskId: string, listener: () => void): (() => void) => {
+    const steps = this.entry(projectId, taskId).steps;
+    steps.listeners.add(listener);
+    return () => {
+      steps.listeners.delete(listener);
+      // Large collections belong only to views that currently need them.
+      if (steps.listeners.size === 0) this.clearSteps(steps, emptyTaskStepsState);
+    };
+  };
+  private stepsFloor(entry: Entry): bigint | null {
+    const versions = [this.summaryVersion(entry.steps.projectId, entry.steps.taskId), entry.state.detail?.version ?? null,
+      entry.committedVersion, entry.steps.state.resource?.version ?? null, entry.steps.pending?.resource.version ?? null];
+    return versions.reduce<bigint | null>((floor, version) => version !== null && (floor === null || version > floor) ? version : floor, null);
+  }
+  private synchronizeSteps(entry: Entry): void {
+    const steps = entry.steps;
+    if (this.disposed || this.scope.isInvalidated) return;
+    const generation = this.projectGeneration(steps.projectId);
+    if (steps.cacheGeneration !== generation) {
+      steps.cacheGeneration = generation;
+      const denied = generation === null ? steps.state.error : null;
+      this.clearSteps(steps, denied === null ? emptyTaskStepsState : { ...emptyTaskStepsState, status: "error", error: denied });
+    }
+    if (entry.state.status === "deleted") {
+      if (steps.state.status !== "deleted") this.clearSteps(steps, { ...emptyTaskStepsState, status: "deleted", stale: false });
+      return;
+    }
+    if (!entry.admitted || generation === null || entry.observedGeneration !== generation) {
+      if (steps.state.resource !== null || steps.pending !== null || steps.read !== null) this.clearSteps(steps, emptyTaskStepsState);
+      return;
+    }
+    const floor = this.stepsFloor(entry);
+    const advanced = steps.floor !== floor;
+    if (advanced) { steps.floor = floor; steps.retriedFloor = null; }
+    if (steps.state.resource !== null && floor !== null && steps.state.resource.version < floor && !steps.state.stale) {
+      this.publishSteps(steps, { ...steps.state, stale: true });
+    }
+    if (steps.pending !== null) {
+      const pending = steps.pending;
+      if (floor !== null && pending.resource.version < floor) {
+        steps.pending = null;
+        steps.queued = true;
+      } else if (pending.resource.version === this.summaryVersion(steps.projectId, steps.taskId)) {
+        steps.pending = null;
+        steps.admission = new AbortController();
+        const signal = AbortSignal.any([steps.admission.signal, this.scope.signal]);
+        void this.acceptSteps(entry, pending.resource, pending.ticket, pending.generation, signal)
+          .catch((error: unknown) => {
+            if (!this.disposed && !this.scope.isInvalidated && pending.generation === steps.generation && !isAbortError(error)) this.failSteps(steps, error);
+          }).finally(() => {
+            if (pending.generation !== steps.generation) return;
+            steps.admission = null;
+            if (steps.queued && steps.state.error === null) this.loadSteps(steps.projectId, steps.taskId);
+          });
+        return;
+      }
+    }
+    if (steps.listeners.size > 0 && steps.pending === null && (advanced || steps.state.stale && steps.state.error === null)) this.loadSteps(steps.projectId, steps.taskId);
+  }
+  loadSteps(projectId: string, taskId: string, force = false): void {
+    const entry = this.entry(projectId, taskId);
+    const steps = entry.steps;
+    if (this.disposed || this.scope.isInvalidated || steps.listeners.size === 0 || !entry.admitted || entry.state.status === "deleted" ||
+      entry.observedGeneration !== this.projectGeneration(projectId) || this.projectGeneration(projectId) === null) return;
+    if (steps.admission !== null || steps.read !== null) { if (force || steps.state.stale) steps.queued = true; return; }
+    if (!force && steps.pending !== null) return;
+    if (!force && !steps.state.stale) return;
+    if (force) { steps.pending = null; steps.retriedFloor = null; }
+    void this.readSteps(entry);
+  }
+  private failSteps(steps: StepsRead, error: unknown): void {
+    this.publishSteps(steps, { ...steps.state, status: steps.state.resource === null ? "error" : "ready", refreshing: false, stale: true, error });
+  }
+  private async acceptSteps(entry: Entry, resource: StepsResource, ticket: SyncTicket, generation: number, signal: AbortSignal): Promise<void> {
+    const steps = entry.steps;
+    const current = () => !this.disposed && !this.scope.isInvalidated && !signal.aborted && generation === steps.generation &&
+      steps.listeners.size > 0 && entry.admitted && this.projectGeneration(steps.projectId) === ticket.cacheGeneration;
+    await this.scope.ready(signal);
+    if (!current()) return;
+    const summaryVersion = await this.scope.detailTransaction(ticket, signal, async (_details, _manifest, summaries) => summaries.get(steps.taskId)?.version ?? null);
+    if (!current()) return;
+    const floor = this.stepsFloor(entry);
+    if (floor !== null && resource.version < floor) {
+      if (steps.retriedFloor === floor) throw new ApiError("protocol");
+      steps.retriedFloor = floor;
+      steps.queued = true;
+      return;
+    }
+    if (summaryVersion !== resource.version || this.summaryVersion(steps.projectId, steps.taskId) !== resource.version) {
+      steps.pending = { resource, ticket, generation };
+      this.publishSteps(steps, { ...steps.state, status: steps.state.resource === null ? "waiting" : "ready", refreshing: false, stale: true });
+      this.refreshProject(steps.projectId);
+      this.load(steps.projectId, steps.taskId, entry.state.revision, "automatic");
+      return;
+    }
+    const previous = steps.state.resource;
+    if (previous !== null && previous.version === resource.version && !sameSteps(previous, resource)) throw new ApiError("protocol");
+    this.publishSteps(steps, { resource: previous !== null && previous.version === resource.version ? previous : resource, status: "ready", refreshing: false, stale: false, error: null });
+  }
+  private async readSteps(entry: Entry): Promise<void> {
+    const steps = entry.steps;
+    const controller = new AbortController();
+    steps.read = controller;
+    steps.queued = false;
+    const generation = steps.generation;
+    const signal = AbortSignal.any([controller.signal, this.scope.signal]);
+    this.publishSteps(steps, { ...steps.state, status: steps.state.resource === null ? "loading" : "ready", refreshing: steps.state.resource !== null, stale: true, error: null });
+    let ticket: SyncTicket | null = null;
+    try {
+      ticket = await this.scope.beginSync(steps.projectId, signal);
+      const resource = await getTaskSteps(steps.projectId, steps.taskId, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
+      await this.acceptSteps(entry, resource, ticket, generation, signal);
+    } catch (error) {
+      if (signal.aborted || this.disposed || this.scope.isInvalidated || generation !== steps.generation || isAbortError(error)) return;
+      if (ticket !== null && this.projectGeneration(steps.projectId) !== ticket.cacheGeneration) return;
+      if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") {
+        this.markDeleted(steps.projectId, steps.taskId, ticket.cacheGeneration, error);
+        return;
+      }
+      if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 404) {
+        // A missing Steps route or item does not establish that the parent is inaccessible.
+        try {
+          const detail = await getTask(steps.projectId, steps.taskId, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
+          await this.accept(steps.projectId, steps.taskId, detail, ticket, entry.state.revision, false, signal);
+        } catch (parentError) {
+          if (signal.aborted || this.disposed || this.scope.isInvalidated || generation !== steps.generation || isAbortError(parentError)) return;
+          if (parentError instanceof ApiError && parentError.kind === "server" && parentError.status === 410 && parentError.code === "task_deleted") {
+            this.markDeleted(steps.projectId, steps.taskId, ticket.cacheGeneration, parentError);
+            return;
+          }
+          if (parentError instanceof ApiError && parentError.kind === "server" && parentError.status === 404 && parentError.code === "not_found") {
+            try { await this.revokeAccess(ticket, parentError, this.scope.signal); }
+            catch (storageError) { if (!this.scope.isInvalidated && !isAbortError(storageError)) this.failSteps(steps, storageError); }
+            return;
+          }
+          this.failSteps(steps, parentError);
+          return;
+        }
+      }
+      if (generation === steps.generation) this.failSteps(steps, error);
+    } finally {
+      if (generation === steps.generation) {
+        steps.read = null;
+        if (steps.queued && steps.state.error === null && steps.pending === null) this.loadSteps(steps.projectId, steps.taskId);
+      }
+    }
   }
   snapshot = (projectId: string, taskId: string): DetailState => this.entry(projectId, taskId).state;
   // A mutation result cannot satisfy a later opening's required live GET.
@@ -164,6 +366,7 @@ export class TaskDetailSessions {
     entry.admitted = admitted;
     entry.observedVersion = version;
     entry.observedTask = task;
+    this.synchronizeSteps(entry);
     if (entry.mismatch !== null && task !== undefined && !isTaskStale(task, entry.mismatch)) entry.mismatch = null;
     const matching = entry.state.detail !== null && entry.state.detail.version === version && task !== undefined;
     const detail = matching && (entry.state.detail!.ready !== task.ready || !sameIds(entry.state.detail!.blockedBy, task.blockedBy)) ? materializeDetail(entry.state.detail!, task) : entry.state.detail;
@@ -281,6 +484,7 @@ export class TaskDetailSessions {
     this.refreshProject(projectId);
   }
   private failRead(entry: Entry, error: unknown, reconciliation: boolean): void {
+    if (entry.steps.pending !== null) this.failSteps(entry.steps, error);
     const missing = error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
     const detail = missing ? null : entry.state.detail;
     this.publish(entry, { ...entry.state, detail, loadedRevision: missing ? null : entry.state.loadedRevision, status: detail !== null ? "ready" : "error", refreshing: false,
@@ -648,9 +852,13 @@ export class TaskDetailSessions {
   }
   dispose(): void {
     this.disposed = true;
+    this.releaseScope();
+    this.scope.signal.removeEventListener("abort", this.onScopeRetired);
     this.projects.clear();
     this.projectGenerations.clear();
     for (const entry of this.entries.values()) {
+      this.clearSteps(entry.steps, emptyTaskStepsState);
+      entry.steps.listeners.clear();
       entry.generation++;
       entry.read?.abort();
       entry.listeners.clear();

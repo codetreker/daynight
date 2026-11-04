@@ -2,6 +2,15 @@ import { pause } from "./pause";
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  steps: {
+    title: "步骤", empty: "暂无步骤", noDescription: "暂无说明",
+    loading: "加载步骤", refresh: "刷新步骤", retry: "重试",
+    loadFailed: "步骤加载失败。", refreshFailed: "步骤更新失败。", retained: "当前显示此前已加载的步骤。",
+    networkError: "无法连接服务器。", protocolError: "服务器返回的步骤数据无效。", unavailable: "此任务的步骤资源不可用。", denied: "你没有读取这些步骤的权限。", requestFailed: "服务器无法加载步骤。",
+    count: (count) => `${count} 项步骤`, status: { todo: "待开始", in_progress: "进行中", done: "已完成", skipped: "已跳过" },
+    created: "创建时间", updated: "更新时间", pagination: "步骤分页", previous: "上一页", next: "下一页", page: "页码",
+    range: (start, end, total) => `第 ${start}–${end} 项，共 ${total} 项步骤`,
+  },
   pause,
   discussion: {
     title: "讨论", empty: "还没有讨论", loading: "正在加载讨论", refresh: "刷新讨论",
