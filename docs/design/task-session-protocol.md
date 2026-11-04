@@ -175,6 +175,16 @@ PostgreSQL 保存 Session 归属、注册身份、授权、原生与连接代次
 
 响应操作按 interactionId 与 interactionRevision 限制同一交互的重复提交，不能按整个 turn 或 interaction_response 类型互斥。工具审批等待 tool_result 确认期间，同一工具提出的新 MCP form 必须可独立响应。浏览器只持久保存 operation 与交互身份的关联，不保存答案；缺少旧缓存时，服务端当前在线交互校验和 Controller 原生校验仍决定能否响应。
 
+## 原生正文的显示转换
+
+Controller 的 `ProviderOptions.onTimeline` 在调用 `journal.projectTimeline` 前通过 `providerDisplayEntry` 生成显示副本。Codex、Claude、Copilot 的实时事件和原生历史重放均经过这个入口；转换位于 `parseSourceEvent` 之前，既有 `sessionDisplayEntry` 整条 wire 预算降级继续位于持久化投影之后。
+
+转换仅遍历非交互正文的明确字段：user/assistant `content[].text`、`reasoning.text`、`tool_call.input` 与 `output[].text`、`error.message`、`compaction.summary`、`todo.items[].text`。条目、text part 和 todo item 按需复制，资源、身份、名称、状态、错误 code 和整个 interaction 保留原值。原生发送与响应参数不经过该转换。正常良构且无 NUL 的正文原样返回；异常段标注转义说明，将 NUL 与孤立 surrogate 写为字面 `\u0000` / `\uXXXX`，同段反斜线也转义，保留合法 Unicode pair、中文、换行和 tab。消息与 reasoning 的异常正文置于 fenced code block 内，确保 Markdown 消费者按字面渲染；正常正文继续使用原有 Markdown。围栏字符与长度根据保留内容中的 backtick/tilde 连续段选择，不能被正文提前闭合。
+
+转义说明、转换正文和所需 Markdown 围栏合计最多 200,000 个 UTF-16 code units；无法容纳下一个完整 token 时追加既有 `[Output truncated at 200000 characters]` 提示，不能切断 escape token 或 Unicode pair；`tool.truncated` 合并原截断状态和新增截断。显示仍满足协议单文本 1 MiB 字节/字符约束，整条事件沿用 1,400,000 serialized bytes 的 wire fallback。显示转换不把成功工具改为失败；只有既有整条 wire 超限降级可以替换展示条目。
+
+Provider 增量缓存保留未经此次转义的累计值，因此一个孤立高 surrogate 可暂时显示为 escape，后续低 surrogate 到达后重新从累计原值产生合法字符。转换后的副本落入 journal 和待归档文件，原生完整历史不变；恢复时可重新投影原先在持久化前被拒绝的条目，无需修改生产 journal。协议版本与存储格式不变，旧合法 journal 和 archive 沿用原读取路径。决策取舍见[原生显示文本决策](../../.agents/notes/implemented/bug-fix/2026-11-04-native-display-text.md)。
+
 ## Session View 的阅读与输入状态
 
 浏览器将 scope/current 失效与 auth 暂停分开。身份待复核时最多保留 WebSocket 60 秒；新帧保存在最多 1000 条、合计 4 MiB 的内存缓冲中，不推进已消费 cursor 或发布新内容。HTTP 在途结果也等待复核，负面授权结果仍立即失效。确认同一身份后按原序消费缓冲，并继续原连接与历史；到期、缓存超限或真实断线则关闭连接，使用最后已消费 cursor 恢复。scope 撤销、principal 不符和执行失效不享受此宽限。Chatbox 与审批暂时禁用操作，但保留输入、阅读位置和连接呈现；只有实际失去同步才显示恢复提示。该策略继承[前台身份核验](daynight-auth.md)的账号隔离规则，不停止或重新创建原生 Agent。
