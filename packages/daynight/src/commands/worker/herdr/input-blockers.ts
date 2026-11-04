@@ -146,7 +146,7 @@ export const nativeInputBlocker = (agent: WorkerAgent, visible: string): NativeI
     const sessionHeader = lines.findLastIndex(line => codexSessionHeader.test(line));
     const sessionEnd = footerEnd(codexSessionPrimaryFooter);
     const sessionRows = lines.slice(sessionHeader + 1, sessionEnd);
-    if (sessionHeader >= 0 && sessionEnd > sessionHeader && sessionRows.some(line => /^\s*(?:Type to search|Search: .+|[›»]\s+\S.*)$/.test(line)) && !laterPrompt(sessionEnd)) return "menu";
+    if (sessionHeader >= 0 && sessionEnd > sessionHeader && sessionRows.some(line => /^\s*(?:Type to search|Search: .+|[›»⌄]\s+\S.*)$/.test(line)) && !laterPrompt(sessionEnd)) return "menu";
     return null;
   }
   if (agent === "claude") {

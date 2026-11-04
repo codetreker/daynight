@@ -21,3 +21,14 @@ ${"─".repeat(width)}
  ⌃⇧⌥⌘fwd del ${action}
  ⌃o dense   ⌃t preview`,
 }));
+
+// A failed density save replaces search with a clipped inline error while the
+// expanded selected row keeps its native marker. These are admission rows only.
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L1953-L1960
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L3070-L3076
+export const expandedNarrowSessionPickerScreens = narrowSessionPickerScreens.map(frame => ({
+  ...frame,
+  screen: frame.screen
+    .replace("Type to search", frame.width === 26 ? "Failed to save view mo..." : "Failed to save view mode...")
+    .replace("› Original session", "⌄ Original session"),
+}));

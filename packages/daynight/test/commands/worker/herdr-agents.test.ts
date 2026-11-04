@@ -11,7 +11,7 @@ import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worke
 import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
 import { nativeKeyDisplays } from "../../fixtures/native-key-displays.js";
 import { nativeDisabledClips } from "../../fixtures/native-disabled-placeholders.js";
-import { narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
+import { expandedNarrowSessionPickerScreens, narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
 
 type Entry = Record<string, unknown>;
 const directories: string[] = [];
@@ -276,6 +276,17 @@ describe("direct task resource management", () => {
     await expect(f.manager.submitInitialPrompt(f.context, binding, "initial", operation())).resolves.toMatchObject({ submission: "submitted" });
     await f.manager.submitPrompt(f.context, binding, "continuation", operation());
     expect(f.prompts).toEqual(["initial", "continuation"]);
+  });
+
+  it.each(expandedNarrowSessionPickerScreens)("retains input on an expanded primary-only $action picker with an inline error", async ({ screen }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    expect(f.prompts).toEqual([]);
+    f.screen.text = `${screen}\n› Any custom current composer`;
+    await f.manager.submitInitialPrompt(f.context, binding, "initial", operation());
+    expect(f.prompts).toEqual(["initial"]);
   });
 
   it("returns a launched process before its first input or native SessionStart", async () => {

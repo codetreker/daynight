@@ -32,7 +32,9 @@ resume, fork or restore action. That primary-only form requires the complete
 Resume/Fork title, a source-defined search or selected session row between the
 title and footer, and no later prompt. Search evidence also covers an empty
 result list; a selected row remains evidence when an inline error replaces the
-search line. The [Session footer packing](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L2475-L2618)
+search line, including the [expanded selected marker](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L3070-L3076)
+`⌄`. A failed density save can replace search without closing that expanded
+picker. The [Session footer packing](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L2475-L2618)
 retains high-priority labeled controls before falling back to key-only hints.
 Codex's [picker footer](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/popup_consts.rs#L16-L63)
 and [disabled input rendering](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L4873-L4954)

@@ -3,7 +3,7 @@ import { createOperation } from "../../../src/api/operation.js";
 import { inspectHerdrInput } from "../../../src/commands/worker/herdr/input-readiness.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrAgentObservation, HerdrTaskBinding } from "../../../src/commands/worker/herdr.js";
-import { narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
+import { expandedNarrowSessionPickerScreens, narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
 
 const binding: HerdrTaskBinding = { session: "w", workspaceId: "ws", paneId: "pane", terminalId: "terminal" };
 const fixture = (width = 97) => {
@@ -87,6 +87,19 @@ it.each(narrowSessionPickerScreens)("refuses the primary-only $action picker at 
       screen.replace("⌃⇧⌥⌘fwd del", "f25"),
       screen.replace(` ⌃⇧⌥⌘fwd del ${action}`, ` Prose about ⌃⇧⌥⌘fwd del ${action}`),
     ]) {
+      f.text(visible);
+      await expect(f.inspect()).resolves.toMatchObject({ composer: "unavailable" });
+    }
+    expect(f.calls).not.toContain("terminal.attach");
+    expect(f.calls).not.toContain("agent.prompt");
+  } finally { f.operation.dispose(); }
+});
+
+it.each(expandedNarrowSessionPickerScreens)("refuses an expanded primary-only $action picker with an inline error", async ({ screen, width }) => {
+  const f = fixture(width); f.observation.kind = "codex"; f.text(screen);
+  try {
+    for (const purpose of ["automatic", "cleanup"] as const) await expect(f.inspect(purpose)).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    for (const visible of [screen.replace(/(?:Resume|Fork) a previous session/, "A discussion of previous sessions"), `${screen}\n› Any custom current composer`]) {
       f.text(visible);
       await expect(f.inspect()).resolves.toMatchObject({ composer: "unavailable" });
     }
