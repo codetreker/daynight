@@ -1878,6 +1878,13 @@ validates the installed package's source and artifact hashes. Its command, write
 and snapshot receipt remains case-owned. The shared setup receipt records the
 actual project-creation command once; case receipts reference that source-qualified
 receipt. Worker teardown drains preparation and closes its owned CLI client.
+The status open helper waits for a successful completed GET to that project's
+task-sync endpoint before reading the authoritative graph and selecting the
+detail UI. An initial read cancelled by manual refresh cannot satisfy that
+completion event; the replacement can. Existing status, version, material and
+rendered-state assertions remain independent of this network barrier. The
+[completion decision](../../.agents/notes/implemented/testing/2026-11-04-web-status-sync-completion.md)
+records the response-lifecycle distinction.
 
 The automatic-permission, platform and assignment journeys share only a project
 within the same worker. Their API authentication stays case-owned, and assignment
