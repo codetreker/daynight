@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/client";
 import { parseApiJson, stringifyApiJson } from "../src/api/json";
-import { addTaskStep, editTaskStep, getTaskSteps, moveTaskStep, parseTaskSteps, setTaskStepStatus } from "../src/api/task-steps";
+import { addTaskStep, deleteTaskStep, editTaskStep, getTaskSteps, moveTaskStep, parseTaskSteps, setTaskStepStatus } from "../src/api/task-steps";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
 const taskId = "20000000-0000-0000-0000-00000000000b";
@@ -141,5 +141,26 @@ describe("Step content transport", () => {
     const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
     await expect(editTaskStep(projectId, taskId, step.id, title, description, 5n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ kind: "protocol" });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe("Step deletion transport", () => {
+  it("sends one scoped DELETE with the exact version and accepts an empty collection", async () => {
+    const result = { ...resource, version: 6n, steps: [] };
+    const fetcher = vi.fn().mockResolvedValue(response(result)); vi.stubGlobal("fetch", fetcher);
+    const owner = { ...admission(), onWriteConfirmed: vi.fn() };
+    await expect(deleteTaskStep(projectId, taskId, "0000000A", 5n, new AbortController().signal, owner, "request-id")).resolves.toEqual(result);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/steps/0000000a`, expect.objectContaining({ method: "DELETE", body: '{"version":5}', headers: expect.objectContaining({ "X-Request-ID": "request-id" }) }));
+    expect(owner.onWriteConfirmed).toHaveBeenCalledOnce();
+  });
+  it.each([{ ...resource, version: 5n, steps: [] }, { ...resource, version: 7n, steps: [] }, { ...resource, version: 6n }, { ...resource, taskId: projectId, version: 6n, steps: [] }])("rejects an invalid success receipt %#", async (body) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(body)));
+    await expect(deleteTaskStep(projectId, taskId, step.id, 5n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ kind: "protocol" });
+  });
+  it("reports a missing target and rejects invalid input before dispatch", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ error: { code: "not_found", message: "missing", requestId: "r1" } }, 404)); vi.stubGlobal("fetch", fetcher);
+    await expect(deleteTaskStep(projectId, taskId, step.id, 5n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ status: 404, code: "not_found" });
+    await expect(deleteTaskStep(projectId, taskId, "bad", 5n, new AbortController().signal, admission(), "id")).rejects.toMatchObject({ kind: "protocol" });
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 });

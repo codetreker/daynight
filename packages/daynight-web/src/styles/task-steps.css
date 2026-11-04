@@ -106,3 +106,5 @@
 .step-target-choice:hover, .step-target-choice[aria-checked=true] { background: #f0f2ff; }
 .step-target-choice > span:first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 600px) { .step-target-pagination .steps-page-controls { width: 100%; } }
+
+.step-delete-action { color: #a05252; }

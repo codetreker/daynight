@@ -1740,7 +1740,7 @@ independent native/container services, databases, private credentials and cleanu
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
 --shard=i/2`: fully-parallel controls case-level partitioning, while each database
 still executes one browser worker serially. The current canonical inventory is
-36 scenarios, divided into two disjoint sets of 18. Default file-level partitioning
+38 scenarios, divided into two disjoint sets of 19. Default file-level partitioning
 does not provide this case-level balance.
 
 Before preparing services, the runner collects the complete canonical functional
@@ -2120,8 +2120,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (72 ordinary cases; local stress adds five native cases
-for 41 native / 36 container, 77 total), current manual/periodic refresh,
+The selected inventory (76 ordinary cases; local stress adds five native cases
+for 43 native / 38 container, 81 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -2161,6 +2161,7 @@ the remaining functional scenarios.
 | W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |
 | W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
 | Steps append | `task-step-add`: real-service append and CLI readback, pagination and focus, draft navigation, conflict and committed response loss, late receipt, bilingual desktop and narrow keyboard behavior |
+| Steps delete | `task-step-delete`: real-service removal, draft consequences, pagination focus, reference preservation, missing targets and unknown-result readback, bilingual desktop and narrow keyboard behavior |
 | Steps status | `task-step-status`, `task-step-access-retirement`: real-service status transitions, conflict, committed response loss and failed readback, malformed success, child 404 and parent deletion, late dialog receipt, bilingual desktop and narrow keyboard menus |
 | Steps position | `task-step-position`: real-service ordered moves, bounded search and paging, no-op, invalid anchor and self-reference, conflict and lost response, focus, bilingual narrow and touch controls |
 | W20 | `task-assignment`, `task-assignment-layout`: native field propagation, real exact-version assignment/clear PATCHes, same-value zero writes, conflict and committed-response-loss GET-only recovery, people identity/access presentation, local filters with full-chain facts, bilingual desktop/narrow menu, focus, scroll and fullscreen behavior |

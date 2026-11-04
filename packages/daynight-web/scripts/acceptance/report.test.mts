@@ -48,10 +48,10 @@ const stressNativeNames = [...functionalNames, ...capacityNames];
 const scenario = (name: string): Scenario => ({ name, title: name, durationMs: 12, screenshots: [`/owned/${name}.png`] });
 
 test('keeps functional and explicit local stress inventory totals distinct', () => {
-  assert.equal(functionalNames.length, 37);
-  assert.equal(functionalNames.length * 2, 74);
-  assert.equal(stressNativeNames.length, 42);
-  assert.equal(stressNativeNames.length + functionalNames.length, 79);
+  assert.equal(functionalNames.length, 38);
+  assert.equal(functionalNames.length * 2, 76);
+  assert.equal(stressNativeNames.length, 43);
+  assert.equal(stressNativeNames.length + functionalNames.length, 81);
 });
 
 test('verifies the complete functional inventory for the container target', () => {
@@ -92,7 +92,7 @@ test('requires the platform journey in each complete target report', () => {
   assert.throws(() => aggregateScenarios([withoutPlatform.map(scenario), capacityNames.map(scenario)], stressNativeNames), /Required acceptance scenario missing: task-platform/);
 });
 
-for (const name of ['task-assignment', 'task-assignment-layout', 'task-step-status', 'task-step-access-retirement', 'task-step-position', 'task-step-add', 'task-step-edit'] as const) {
+for (const name of ['task-assignment', 'task-assignment-layout', 'task-step-status', 'task-step-access-retirement', 'task-step-position', 'task-step-add', 'task-step-edit', 'task-step-delete'] as const) {
   test(`requires the ${name} journey in each complete target report`, () => {
     const incomplete = functionalNames.filter((candidate) => candidate !== name);
     assert.throws(() => readReport(report(incomplete), functionalNames), new RegExp(`Required acceptance scenario missing: ${name}`));
