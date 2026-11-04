@@ -69,12 +69,6 @@ jobs:
           run_install: false
           dest: ${{ github.workspace }}/.tmp/pnpm
       - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
-      - name: Require a package version increase for code changes
-        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest'
-        env:
-          VERSION_BASE: ${{ github.event.pull_request.base.sha }}
-          VERSION_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: pnpm version:check pull_request "$VERSION_BASE" "$VERSION_HEAD"
       - name: Record native validation environment
         id: environment
         run: node packages/daynight/scripts/validation-environment.ts

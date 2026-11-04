@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
@@ -25,9 +25,9 @@ for (const [path, expected] of [
   ["scripts/dev-install.mjs", { ...none, cli: true }],
   ["scripts/dev-install.test.mjs", { ...none, cli: true }],
   ["packages/daynight/src/.gitignore", { ...none, cli: true, server: true }],
-  ["packages/daynight/src/commands/review/skills/daynight-review/SKILL.md", { ...none, cli: true, server: true }],
-  ["packages/daynight/src/commands/review/skills/daynight-review/README.md", { ...none, cli: true, server: true }],
-  ["packages/daynight/src/commands/review/skills/daynight-review/AGENTS.md", { ...none, cli: true, server: true }],
+  ["packages/daynight/src/commands/review/skills/daynight-review/SKILL.md", { ...none, cli: true }],
+  ["packages/daynight/src/commands/review/skills/daynight-review/README.md", { ...none, cli: true }],
+  ["packages/daynight/src/commands/review/skills/daynight-review/AGENTS.md", { ...none, cli: true }],
   ["packages/daynight/src/README.md", { ...none, cli: true, server: true }],
   ["packages/daynight/package.json", { ...none, cli: true, server: true }],
   ["packages/daynight/tsconfig.json", { ...none, cli: true, server: true }],
@@ -40,7 +40,7 @@ for (const [path, expected] of [
   ["packages/daynight/scripts/check-runtime.mjs", { ...none, cli: true }],
   ["packages/daynight-web/scripts/publish-assets.mts", { ...none, server: true, web: true }],
   ["packages/daynight-web/package.json", { ...none, server: true, web: true }],
-  ["packages/daynight/test/tooling/check-version.test.ts", { ...none, cli: true }],
+  ["packages/daynight/test/tooling/copy-resources.test.ts", { ...none, cli: true }],
   ["packages/daynight/test/fixtures/installed-cli.ts", all],
   ["packages/daynight/test/fixtures/installed-operation-limits.ts", { ...none, cli: true, server: true }],
   ["packages/daynight-server/internal/server/tasks.go", { ...none, server: true }],
@@ -77,6 +77,19 @@ for (const [path, expected] of [
 ] satisfies Array<[string, ModuleSelection]>) {
   test(`routes ${path}`, () => assert.deepEqual(selectModules([path]), expected));
 }
+
+test("lazy command implementations stay CLI-only while startup definitions retain server checks", () => {
+  for (const command of ["worker", "controller", "review", "skill", "update", "completion"]) {
+    assert.deepEqual(selectModules([`packages/daynight/src/commands/${command}/runtime.ts`]), { ...none, cli: true });
+    assert.deepEqual(selectModules([`packages/daynight/src/commands/${command}/definition.ts`]), { ...none, cli: true, server: true });
+  }
+  for (const path of [
+    "cli/application.ts", "cli/commands.ts", "config/load.ts", "repository/identity.ts", "platform/diagnostics.ts",
+    "commands/auth/command.ts", "commands/project/command.ts", "commands/task/command.ts", "commands/server/runtime.ts",
+    "commands/future/command.ts", "future-shared.ts",
+  ]) assert.deepEqual(selectModules([`packages/daynight/src/${path}`]), { ...none, cli: true, server: true });
+  assert.deepEqual(selectModules(["packages/daynight/src/api/worker.ts"]), all);
+});
 
 test("combines module ownership without making documentation select a module", () => {
   assert.deepEqual(selectModules(["docs/spec/daynight-web.md", "packages/daynight/src/main.ts", "packages/daynight-web/package.json"]), all);
@@ -188,6 +201,131 @@ test("reads the complete change list beyond API file limits", async (t) => {
   const paths = await pullRequestPaths(repo.cwd, repo.base, head);
   assert.equal(paths.length, 3_101);
   assert.deepEqual(selectModules(paths), { ...none, server: true });
+});
+
+const cliManifestPath = "packages/daynight/package.json";
+const cliManifest = {
+  name: "@codetreker/daynight",
+  version: "1.0.0",
+  scripts: { build: "tsc" },
+  files: ["dist", "config.example.yml"],
+  dependencies: { dependency: "1.0.0" },
+  metadata: { version: "1.0.0" },
+};
+
+for (const [label, updated] of [
+  ["version-only", { ...cliManifest, version: "1.0.1" }],
+  ["format-only", cliManifest],
+  ["key-order-only", Object.fromEntries(Object.entries(cliManifest).reverse())],
+] as const) {
+  test(`${label} CLI manifests keep CLI validation without server jobs`, async (t) => {
+    const repo = repository(t);
+    repo.write(cliManifestPath, JSON.stringify(cliManifest));
+    const base = repo.commit();
+    repo.write(cliManifestPath, JSON.stringify(updated, null, 2));
+    const head = repo.commit();
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true });
+  });
+}
+
+for (const [field, updated] of [
+  ["dependencies", { dependency: "2.0.0" }],
+  ["scripts", { build: "different-build" }],
+  ["files", [...cliManifest.files].reverse()],
+  ["bin", { dn: "dist/other.js" }],
+  ["engines", { node: ">=24" }],
+  ["name", "@example/other"],
+  ["metadata", { version: "2.0.0" }],
+] as const) {
+  test(`CLI manifest ${field} changes retain server validation`, async (t) => {
+    const repo = repository(t);
+    repo.write(cliManifestPath, JSON.stringify(cliManifest));
+    const base = repo.commit();
+    repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1", [field]: updated }));
+    const head = repo.commit();
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
+  });
+}
+
+test("worker prompts, bundled instructions and a version-only manifest select only CLI", async (t) => {
+  const repo = repository(t);
+  repo.write(cliManifestPath, JSON.stringify(cliManifest));
+  const base = repo.commit();
+  repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1" }));
+  for (const path of [
+    ".agents/notes/implemented/feature/2026-11-02-task-paused-worker-pings.md",
+    "docs/design/daynight-worker.md",
+    "docs/spec/daynight-worker.md",
+    "packages/daynight/README.md",
+    "packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md",
+    "packages/daynight/src/commands/worker/prompts.ts",
+    "packages/daynight/test/commands/worker/prompts.test.ts",
+  ]) repo.write(path);
+  const head = repo.commit();
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true });
+});
+
+test("version-only manifest refinement preserves server selection from other changed inputs", async (t) => {
+  const repo = repository(t);
+  repo.write(cliManifestPath, JSON.stringify(cliManifest));
+  const base = repo.commit();
+  repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1" }));
+  repo.write("packages/daynight/src/commands/task/command.ts");
+  repo.write("packages/daynight/src/commands/worker/prompts.ts");
+  const head = repo.commit();
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
+});
+
+test("manifest comparison uses merge base and PR head rather than the target or checked-out tree", async (t) => {
+  const repo = repository(t);
+  repo.write(cliManifestPath, JSON.stringify(cliManifest));
+  repo.commit();
+  repo.git("checkout", "-b", "feature");
+  repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, version: "1.0.1" }));
+  const head = repo.commit();
+  repo.git("checkout", "main");
+  repo.write(cliManifestPath, JSON.stringify({ ...cliManifest, dependencies: { dependency: "2.0.0" } }));
+  const base = repo.commit();
+  repo.write(cliManifestPath, "invalid uncommitted JSON");
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true });
+});
+
+for (const change of ["add", "delete", "type"] as const) {
+  test(`CLI manifest ${change} retains server validation`, async (t) => {
+    const repo = repository(t);
+    if (change !== "add") repo.write(cliManifestPath, JSON.stringify(cliManifest));
+    const base = change === "add" ? repo.base : repo.commit();
+    if (change === "add") repo.write(cliManifestPath, JSON.stringify(cliManifest));
+    else {
+      rmSync(join(repo.cwd, cliManifestPath));
+      if (change === "type") symlinkSync("../../README.md", join(repo.cwd, cliManifestPath));
+    }
+    const head = repo.commit();
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
+  });
+}
+
+for (const invalid of ["{", "null", "[]", '{"version":1}', '{}']) {
+  for (const side of ["base", "head"] as const) {
+    test(`rejects invalid CLI manifest ${invalid} at ${side}`, async (t) => {
+      const repo = repository(t);
+      repo.write(cliManifestPath, side === "base" ? invalid : JSON.stringify(cliManifest));
+      const base = repo.commit();
+      repo.write(cliManifestPath, side === "head" ? invalid : JSON.stringify(cliManifest));
+      const head = repo.commit();
+      await assert.rejects(detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), /JSON|manifest/);
+    });
+  }
+}
+
+test("moving server-used CLI source into a lazy command still selects server", async (t) => {
+  const repo = repository(t);
+  repo.write("packages/daynight/src/commands/task/moved.ts");
+  const base = repo.commit();
+  mkdirSync(join(repo.cwd, "packages/daynight/src/commands/worker"), { recursive: true });
+  renameSync(join(repo.cwd, "packages/daynight/src/commands/task/moved.ts"), join(repo.cwd, "packages/daynight/src/commands/worker/moved.ts"));
+  const head = repo.commit();
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, cli: true, server: true });
 });
 
 test("pushes always run the complete workload", async () => {

@@ -1,3 +1,4 @@
+import { CLEANUP_OPERATION_MS, cleanupOperation } from "../../cleanup-operation.js";
 import path from "node:path";
 import { unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -174,7 +175,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             if (execution.ticketPath === null) throw new Error("The original launch ticket is missing; cleanup retains its unknown native writer.");
             const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
             let response: Awaited<ReturnType<typeof request>> | undefined;
-            try { response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 1000 }); }
+            try { response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: CLEANUP_OPERATION_MS }); }
             catch { const saved = readControllerSnapshot(journal(task)); if (saved !== null) task = remember(task, saved); }
             const reachable = response !== undefined;
             if (response !== undefined) task = remember(task, response.snapshot);
@@ -186,7 +187,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               if (task.webExecution!.cleanupOperationId === null) task = options.store.updateWebExecution(task, { cleanupOperationId: randomUUID() }, options.now());
               if (task.cleanup!.input === "not-submitted") {
                 task = options.store.markCleanupInputSubmitting(task, options.now());
-                await request(ticket, { kind: "cleanup", operationId: task.webExecution!.cleanupOperationId!, prompt: workerCleanupPrompt(task, task.cleanup!.deadline), deadline: task.cleanup!.deadline }, { signal, timeoutMs: 30000 });
+                await request(ticket, { kind: "cleanup", operationId: task.webExecution!.cleanupOperationId!, prompt: workerCleanupPrompt(task, task.cleanup!.deadline), deadline: task.cleanup!.deadline }, { signal, timeoutMs: Math.max(1, Math.min(CLEANUP_OPERATION_MS, task.cleanup!.deadline - options.now())) });
               }
               const operation = readControllerOperation(journal(task), task.webExecution!.cleanupOperationId!);
               if (operation?.state === "provider_accepted" || operation?.state === "confirmed") {
@@ -197,8 +198,8 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             }
             if (task.cleanup!.result === null) task = options.store.recordCleanupResult(task, stopped || immediateStop ? "unavailable" : "timed-out", stopped || immediateStop ? "Original processes stopped before cleanup completion was established." : "The original cleanup deadline elapsed.", options.now());
             if (!stopped) {
-              if (reachable) try { await request(ticket, { kind: "stop", deadline: options.now() + 5000 }, { signal, timeoutMs: 5000 }); } catch { /* OS process proof remains authoritative after an IPC loss. */ }
-              await stopControllerProcesses(proof, task.webExecution!.nativeProcesses, Date.now() + 5000);
+              if (reachable) try { await request(ticket, { kind: "stop", deadline: options.now() + CLEANUP_OPERATION_MS }, { signal, timeoutMs: CLEANUP_OPERATION_MS }); } catch { /* OS process proof remains authoritative after an IPC loss. */ }
+              await stopControllerProcesses(proof, task.webExecution!.nativeProcesses, Date.now() + CLEANUP_OPERATION_MS);
               stopped = await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses);
             }
             if (!stopped) throw new Error("Complete original controller process stop is not proven.");
@@ -216,7 +217,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         // Shutdown proves stop but leaves any terminal finalization for normal reconciliation.
         if (kind === "shutdown") return task;
         stage = "observation";
-        if (task.resources.worktree === null) { const found = await workerOperation(operation => options.git.findWorktree({ projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath }, task, operation), signal); if (found !== null) task = options.store.bindWorktree(task, found, options.now()); }
+        if (task.resources.worktree === null) { const found = await cleanupOperation(operation => options.git.findWorktree({ projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath }, task, operation), signal); if (found !== null) task = options.store.bindWorktree(task, found, options.now()); }
         if (task.cleanup!.kind === "terminal" && !task.cleanup!.worktreeDeleted) {
           if (execution && execution.launchSubmission !== "not-submitted") {
             stage = "archive";
@@ -224,7 +225,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             await options.archive(task, journal(task), signal);
           }
           stage = "worktree-removal";
-          await workerOperation(operation => options.git.removeWorktree({ projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath }, task, operation), signal);
+          await cleanupOperation(operation => options.git.removeWorktree({ projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath }, task, operation), signal);
           task = options.store.confirmWorktreeDeleted(task, { worktreeDeleted: true }, options.now());
         }
         return task;

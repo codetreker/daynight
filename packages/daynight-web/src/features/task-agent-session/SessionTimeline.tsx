@@ -10,22 +10,26 @@ import { SessionResourceView } from './SessionResourceView';
 import { SessionInteractionCard } from './SessionInteractionCard';
 import { useSessionMessages } from './messages';
 import { useTimelineScroll } from '../../ui/useTimelineScroll';
+import { selectSessionDisplayEntries, type SessionDisplayMode } from './display-mode';
 
-export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder, loadingOlder, onLoadOlder, onLoadResource, historyError = null }: {
+export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder, loadingOlder, onLoadOlder, onLoadResource, historyError = null, displayMode = 'standard' }: {
   readonly state: SessionState; readonly active: boolean; readonly canRespond: boolean;
   readonly onRespond: (interaction: SessionInteraction, response: InteractionResponse) => Promise<void>;
   readonly hasOlder: boolean; readonly loadingOlder: boolean; readonly onLoadOlder: () => Promise<void>;
   readonly onLoadResource: (resourceId: string, signal: AbortSignal) => Promise<Blob>; readonly historyError?: string | null;
+  readonly displayMode?: SessionDisplayMode;
 }) {
   const m = useSessionMessages();
-  const entries = useMemo(() => state.entries.filter(entry => entry.kind !== 'reasoning' || entry.text.trim().length > 0), [state.entries]);
-  const scroll = useTimelineScroll(`${state.snapshot?.sessionId}/${state.snapshot?.historyEpoch}`, active, entries);
+  const entries = useMemo(() => selectSessionDisplayEntries(state.entries, displayMode), [state.entries, displayMode]);
+  const originalKeys = useMemo(() => state.entries.map(entry => entry.entryId), [state.entries]);
+  const visibleKeys = useMemo(() => entries.map(entry => entry.entryId), [entries]);
+  const scroll = useTimelineScroll(`${state.snapshot?.sessionId}/${state.snapshot?.historyEpoch}`, active, state.entries, undefined, { originalKeys, visibleKeys, mode: displayMode });
   return <div className="session-timeline-shell">
     <div className="session-timeline" ref={scroll.viewport} tabIndex={0} aria-label={m.title} onScroll={scroll.onScroll} onWheel={scroll.onWheel} onTouchStart={scroll.onTouchStart} onTouchMove={scroll.onTouchMove} onPointerDown={scroll.onPointerDown} onKeyDown={scroll.onKeyDown} onFocus={scroll.onFocus} onClick={(event) => { if (event.target instanceof Element && event.target.closest('a[data-footnote-ref], a[data-footnote-backref]')) scroll.pause(); }}>
       <div ref={scroll.content} className="session-timeline-content">
         {hasOlder ? <button className="button session-history" disabled={loadingOlder} onClick={() => { scroll.pause(); void onLoadOlder().catch(() => {}); }}>{loadingOlder ? m.loading : m.older}</button> : null}
         {historyError ? <p role="alert" className="session-error">{historyError}</p> : null}
-        {entries.length === 0 ? <p className="session-empty">{m.empty}</p> : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} resources={state.resources} active={active} canRespond={entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} /></article>)}
+        {entries.length === 0 ? <p className="session-empty">{displayMode === 'conversation' ? m.conversationEmpty : m.empty}</p> : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} resources={state.resources} active={active} canRespond={entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} /></article>)}
       </div>
     </div>
     {scroll.showLatest ? <button className="button session-latest" onClick={scroll.latest}>{m.latest} ↓</button> : null}
