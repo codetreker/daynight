@@ -233,7 +233,8 @@ test('step status writes converge through real service resources', { annotation:
     expect(writes).toBe(11);
     await root(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
     const frozenTime = new Date('2030-01-01T00:00:00Z');
-    await page.clock.install({ time: frozenTime }); await page.clock.pauseAt(frozenTime);
+    // Leave room for the installed clock to advance before it is paused.
+    await page.clock.install({ time: new Date(frozenTime.getTime() - 60_000) }); await page.clock.pauseAt(frozenTime);
     await page.goto(`/projects/${project.id}`);
     await selectTaskList(page);
     await page.getByRole('tab', { name: '独立任务', exact: true }).click();
