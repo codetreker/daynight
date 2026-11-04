@@ -114,10 +114,10 @@ It composes the project list, graph, shared task-detail surfaces and My Workers
 list/detail with private project creation, account/token pages, member/invitation management,
 project execution-warning settings and explicit invitation acceptance.
 
-`WorkspaceSidebar` provides peer My projects and My Workers entries in its
-scrollable upper region. Accessible projects appear as indented links below My
-projects. The project index selects My projects; project, member and settings
-routes select the corresponding project. Both Worker routes select My Workers. Links preserve native
+`WorkspaceSidebar` provides a Team selector, the selected Team's project links,
+Shared with me and My Workers in its scrollable upper region. Shared projects
+stay outside the Team's indented list. Project, member and settings routes select
+the corresponding project; both Worker routes select My Workers. Links preserve native
 modified clicks, expose full names through accessible text and titles, and
 truncate long visible names. Project children appear in expanded desktop and
 mobile navigation and are hidden in the folded rail. Initial loading, empty and
