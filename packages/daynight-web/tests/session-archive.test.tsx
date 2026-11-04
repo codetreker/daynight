@@ -128,7 +128,7 @@ it('rebinds a ready archive to the final native ID from a fresh authenticated sn
 });
 it('does not load a previous generation archive after a concurrent standalone resume', async () => {
   const f = fixture('archived', true);
-  const resumed = { ...f.s, executionGeneration: '2', lifecycle: 'active' as const };
+  const resumed = { ...f.s, executionGeneration: String(BigInt(f.s.executionGeneration) + 1n), lifecycle: 'active' as const };
   vi.mocked(f.api.current).mockResolvedValueOnce({ status: 'registered', session: f.s }).mockResolvedValue({ status: 'registered', session: resumed });
   await f.client.start();
   await vi.waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());

@@ -17,6 +17,7 @@ export class ProjectAccessSession {
   private readonly listeners = new Set<() => void>();
   private readonly lifetime = new AbortController();
   private read: Promise<ProjectAccess | null> | null = null;
+  private readAbort: AbortController | null = null;
   private sequence = 0;
   private accepted = 0;
   private barrier = 0;
@@ -40,6 +41,14 @@ export class ProjectAccessSession {
     this.schedule();
     return true;
   };
+  publishMutation = (access: ProjectAccess | null): void => {
+    if (!this.live()) return;
+    this.barrier = this.beginObservation();
+    this.accepted = this.barrier;
+    this.lastObservation = performance.now();
+    this.update({ access, status: access === null ? 'unavailable' : 'ready', refreshing: false, error: null });
+    this.schedule();
+  };
   private schedule = (): void => {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
@@ -51,7 +60,9 @@ export class ProjectAccessSession {
     if (!this.live()) return Promise.resolve(null);
     this.barrier = this.beginObservation();
     this.update({ ...this.state, refreshing: true });
-    const signal = AbortSignal.any([this.lifetime.signal, this.scope.signal]);
+    const readAbort = new AbortController();
+    this.readAbort = readAbort;
+    const signal = AbortSignal.any([this.lifetime.signal, this.scope.signal, readAbort.signal]);
     let ticket = this.barrier;
     let cacheTicket: SyncTicket | null = null;
     const pending = Promise.resolve().then(async () => {
@@ -61,9 +72,10 @@ export class ProjectAccessSession {
         ticket = this.beginObservation();
         const access = await getProjectAccess(this.projectId, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
         await this.scope.ready(signal);
-        if (!this.live() || ticket < this.barrier) return null;
+        if (!this.live() || ticket < this.barrier || cacheTicket.scopeRevision !== this.scope.getProjectRevision(this.projectId)) return null;
         if (ticket >= this.accepted) {
           this.accepted = ticket;
+          this.scope.resumeProject(this.projectId);
           this.update({ access, status: 'ready', refreshing: true, error: null });
         }
         return this.state.access;
@@ -79,16 +91,18 @@ export class ProjectAccessSession {
         this.lastObservation = performance.now();
         this.update({ access: denied ? null : this.state.access, status: denied ? 'unavailable' : 'error', refreshing: false, error });
         if (denied && cacheTicket !== null) {
-          try {
-            await this.scope.revokeProject(cacheTicket, signal, true, error as ApiError);
-          } catch (failure) {
-            if (this.live() && !isAbortError(failure) && ticket >= this.barrier) this.update({ ...this.state, error: failure });
+          const cleanup = this.scope.revokeProject(cacheTicket, signal, true, error as ApiError);
+          const cleanupBarrier = this.barrier;
+          try { await cleanup; }
+          catch (failure) {
+            if (this.live() && !isAbortError(failure) && this.barrier === cleanupBarrier) this.update({ ...this.state, status: 'error', error: failure });
           }
         }
         return null;
       } finally {
         if (this.read === pending) {
           this.read = null;
+          if (this.readAbort === readAbort) this.readAbort = null;
           if (ticket >= this.barrier) this.lastObservation = performance.now();
           if (ticket >= this.barrier || this.accepted >= this.barrier) this.update({ ...this.state, refreshing: false });
           this.schedule();
@@ -98,6 +112,12 @@ export class ProjectAccessSession {
     this.read = pending;
     return pending;
   };
+  revalidateAfterMutation = (): Promise<ProjectAccess | null> => {
+    this.readAbort?.abort();
+    this.readAbort = null;
+    this.read = null;
+    return this.revalidate();
+  };
   start = (initialRead: boolean): (() => void) => {
     const refresh = () => { if (document.visibilityState !== 'hidden') void this.revalidate(); else this.schedule(); };
     window.addEventListener('focus', refresh);
@@ -105,9 +125,12 @@ export class ProjectAccessSession {
     const unsubscribe = this.scope.subscribe((event) => {
       if (event.projectId !== this.projectId || !event.accessRevoked) return;
       this.barrier = this.beginObservation();
-      this.update({ access: null, status: 'unavailable', refreshing: false, error: event.error });
+      const previous = this.state.error;
+      const knownDenial = event.error instanceof ApiError && event.error.kind === 'server' && event.error.status === 404 && event.error.code === 'not_found';
+      const priorFailure = previous !== null && !(previous instanceof ApiError && previous.kind === 'server' && previous.status === 404 && previous.code === 'not_found');
+      this.update({ access: null, status: 'unavailable', refreshing: false, error: knownDenial && priorFailure ? previous : event.error });
     });
-    if (initialRead && document.visibilityState !== 'hidden') void this.revalidate();
+    if ((initialRead || this.scope.isProjectSuspended(this.projectId)) && document.visibilityState !== 'hidden') void this.revalidate();
     else this.schedule();
     return () => {
       this.lifetime.abort();

@@ -86,6 +86,11 @@ the Session protocol.
 
 ## Consequences
 
+The [startup observation decision](2026-11-05-session-startup-observations.md)
+extends the independent summary with typed, generation-bound startup and recovery
+facts. It preserves the recovery gates described here.
+
+
 A failed execution remains diagnosable and recoverable without a replacement
 native conversation. Automatic restart cannot bypass the stop, and remote
 summary failures cannot consume native recovery attempts. Operators must use

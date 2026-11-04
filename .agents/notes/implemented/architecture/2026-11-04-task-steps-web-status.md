@@ -55,4 +55,4 @@ Status changes require convergence of three independently returned resources,
 so synchronization or read failures remain visible and temporarily prevent
 further writes. The [append and content form](2026-11-04-task-steps-web-add.md)
 and [position writes](2026-11-04-task-steps-web-position.md) reuse the same
-owner; deletion can do so without another gate.
+owner; [deletion](2026-11-05-task-steps-web-delete.md) uses that gate as well.

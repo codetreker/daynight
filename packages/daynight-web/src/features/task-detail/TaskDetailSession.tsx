@@ -1,7 +1,7 @@
 import { readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, unpauseTask, withdrawWorkerClaim } from "../../api/client";
-import { addTaskStep, editTaskStep, getTaskSteps, moveTaskStep, setTaskStepStatus, type AddStepInput, type StepPlacement, type StepStatus, type StepsResource } from "../../api/task-steps";
+import { addTaskStep, deleteTaskStep, editTaskStep, getTaskSteps, moveTaskStep, setTaskStepStatus, type AddStepInput, type StepPlacement, type StepStatus, type StepsResource } from "../../api/task-steps";
 import { isTaskStale } from "./freshness";
 import type { ExecutionPlatform, GraphTask, TaskDetail, TaskStatus } from "../../api/types";
 import { TaskCacheError } from "../task-cache/database";
@@ -9,9 +9,9 @@ import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import type { SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
 import { materializeDetail, readCachedDetail, saveDetail, validateDetailSummary, type DetailAdmission } from "./detail-cache";
 
-export type TaskMutationOperation = { readonly action: "unpause"; readonly version: bigint } | { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "stepAdd"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepEdit"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepPosition"; readonly stepId: string; readonly placement: StepPlacement; readonly version: bigint; readonly requestId: string } | { readonly action: "stepStatus"; readonly stepId: string; readonly status: StepStatus; readonly version: bigint; readonly requestId: string } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
-const isStepOperation = (operation: TaskMutationOperation | null): operation is Extract<TaskMutationOperation, { action: "stepStatus" | "stepAdd" | "stepEdit" | "stepPosition" }> =>
-  operation?.action === "stepStatus" || operation?.action === "stepAdd" || operation?.action === "stepEdit" || operation?.action === "stepPosition";
+export type TaskMutationOperation = { readonly action: "unpause"; readonly version: bigint } | { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "stepAdd"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepEdit"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepDelete"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepPosition"; readonly stepId: string; readonly placement: StepPlacement; readonly version: bigint; readonly requestId: string } | { readonly action: "stepStatus"; readonly stepId: string; readonly status: StepStatus; readonly version: bigint; readonly requestId: string } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
+const isStepOperation = (operation: TaskMutationOperation | null): operation is Extract<TaskMutationOperation, { action: "stepStatus" | "stepAdd" | "stepEdit" | "stepDelete" | "stepPosition" }> =>
+  operation?.action === "stepStatus" || operation?.action === "stepAdd" || operation?.action === "stepEdit" || operation?.action === "stepDelete" || operation?.action === "stepPosition";
 const movedSteps = (resource: StepsResource, stepId: string, placement: StepPlacement): StepsResource["steps"] | null => {
   const from = resource.steps.findIndex((step) => step.id === stepId);
   if (from < 0) return null;
@@ -27,7 +27,7 @@ const movedSteps = (resource: StepsResource, stepId: string, placement: StepPlac
   remaining.splice(to, 0, resource.steps[from]!);
   return remaining;
 };
-type TaskMutationReview = { readonly detail: TaskDetail; readonly cacheGeneration: string };
+type TaskMutationReview = { readonly detail: TaskDetail; readonly cacheGeneration: string; readonly scopeRevision: number };
 class TaskMutationReviewExpired extends Error {}
 export type TaskMutationState = {
   readonly operation: TaskMutationOperation | null;
@@ -145,10 +145,13 @@ export class TaskDetailSessions {
   };
   constructor(private readonly scope: TaskCacheScope) {
     this.releaseScope = scope.subscribe((event) => {
+      if (event.accessRevoked) this.projectGenerations.set(event.projectId, null);
       for (const entry of this.entries.values()) {
         if (entry.steps.projectId !== event.projectId) continue;
-        if (event.accessRevoked) this.clearSteps(entry.steps, { ...emptyTaskStepsState, status: "error", error: event.error });
-        else this.synchronizeSteps(entry);
+        if (event.accessRevoked) {
+          this.observe(event.projectId, entry.steps.taskId, undefined, false);
+          this.clearSteps(entry.steps, { ...emptyTaskStepsState, status: "error", error: event.error });
+        } else this.synchronizeSteps(entry);
       }
     });
     scope.signal.addEventListener("abort", this.onScopeRetired, { once: true });
@@ -323,7 +326,7 @@ export class TaskDetailSessions {
   private async acceptSteps(entry: Entry, resource: StepsResource, ticket: SyncTicket, generation: number, signal: AbortSignal): Promise<void> {
     const steps = entry.steps;
     const current = () => !this.disposed && !this.scope.isInvalidated && !signal.aborted && generation === steps.generation &&
-      (steps.listeners.size > 0 || this.stepOperationNeedsResource(entry)) && entry.admitted && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(steps.projectId) === ticket.cacheGeneration;
+      (steps.listeners.size > 0 || this.stepOperationNeedsResource(entry)) && entry.admitted && ticket.scopeRevision === this.scope.getProjectRevision(steps.projectId) && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(steps.projectId) === ticket.cacheGeneration;
     await this.scope.ready(signal);
     if (!current()) return;
     const observed = this.stepsFloor(entry);
@@ -443,7 +446,7 @@ export class TaskDetailSessions {
       const deniedError = cacheGeneration === null ? entry.state.error : null;
       this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: deniedError === null ? "loading" : "error", refreshing: false,
         requiresFreshRead: true, graphMismatch: false, error: deniedError,
-        mutation: restored ? idleMutation() : { ...entry.state.mutation, reconciling: false, reconciliationError: null } });
+        mutation: restored ? idleMutation() : { ...entry.state.mutation, reconciling: false, reconciliationError: cacheGeneration === null ? entry.state.mutation.reconciliationError : null } });
     }
     const changed = lifecycleChanged || restored || entry.observedVersion !== version;
     entry.observedGeneration = cacheGeneration;
@@ -597,7 +600,7 @@ export class TaskDetailSessions {
   private async accept(projectId: string, taskId: string, detail: TaskDetail, ticket: SyncTicket, revision: number, reconciliation: boolean, signal: AbortSignal, generation: number | null = null, writeGeneration: number | null = null, readOpeningGeneration: number | null = null): Promise<void> {
     const entry = this.entry(projectId, taskId);
     const current = (): boolean => !signal.aborted && !this.disposed && !this.scope.isInvalidated && entry.state.status !== "deleted" &&
-      entry.admitted && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
+      entry.admitted && ticket.scopeRevision === this.scope.getProjectRevision(projectId) && entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
       (generation === null || generation === entry.generation);
     if (!current()) return;
     if (detail.projectId !== projectId || detail.id !== taskId) throw new ApiError("protocol");
@@ -743,14 +746,17 @@ export class TaskDetailSessions {
     if (!this.canSetStepStatus(projectId, taskId) || !["todo", "in_progress", "done", "skipped"].includes(status) || entry.steps.state.resource?.version !== version || !entry.steps.state.resource.steps.some((step) => step.id === target) || !/^[0-9a-f]{8}$/.test(target)) return;
     this.performMutation(projectId, taskId, { action: "stepStatus", stepId: target, status, version, requestId: crypto.randomUUID() });
   }
-  addStep(projectId: string, taskId: string, stepId: string, title: string, description: string, status: StepStatus, version: bigint): string | null {
+  addStep(projectId: string, taskId: string, stepId: string, title: string, description: string, status: StepStatus, version: bigint, placement?: { readonly before: string } | { readonly after: string }): string | null {
     const entry = this.entry(projectId, taskId);
     const target = stepId.toLowerCase();
+    const normalized = placement === undefined ? undefined : "before" in placement ? { before: placement.before.toLowerCase() } : { after: placement.after.toLowerCase() };
+    const anchor = normalized === undefined ? undefined : "before" in normalized ? normalized.before : normalized.after;
     if (!this.canSetStepStatus(projectId, taskId) || entry.steps.state.resource?.version !== version || !/^[0-9a-f]{8}$/.test(target) ||
+      (anchor !== undefined && (!/^[0-9a-f]{8}$/.test(anchor) || !entry.steps.state.resource.steps.some((step) => step.id === anchor))) ||
       !["todo", "in_progress", "done", "skipped"].includes(status) || !/[^\p{White_Space}]/u.test(title) ||
       [title, description].some((value) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value))) return null;
     const requestId = crypto.randomUUID();
-    this.performMutation(projectId, taskId, { action: "stepAdd", stepId: target, version, requestId }, { id: target, title, description, status, version });
+    this.performMutation(projectId, taskId, { action: "stepAdd", stepId: target, version, requestId }, { id: target, title, description, status, version, ...(normalized === undefined ? {} : { placement: normalized }) });
     return requestId;
   }
   editStep(projectId: string, taskId: string, stepId: string, title: string, description: string, version: bigint): string | null {
@@ -761,6 +767,15 @@ export class TaskDetailSessions {
       [title, description].some((value) => value.includes("\0") || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value))) return null;
     const requestId = crypto.randomUUID();
     this.performMutation(projectId, taskId, { action: "stepEdit", stepId: target, version, requestId }, undefined, { title, description });
+    return requestId;
+  }
+  deleteStep(projectId: string, taskId: string, stepId: string, version: bigint): string | null {
+    const entry = this.entry(projectId, taskId);
+    const target = stepId.toLowerCase();
+    if (!this.canSetStepStatus(projectId, taskId) || entry.steps.state.resource?.version !== version || !/^[0-9a-f]{8}$/.test(target) ||
+      !entry.steps.state.resource.steps.some((step) => step.id === target)) return null;
+    const requestId = crypto.randomUUID();
+    this.performMutation(projectId, taskId, { action: "stepDelete", stepId: target, version, requestId });
     return requestId;
   }
   moveStep(projectId: string, taskId: string, stepId: string, placement: StepPlacement, version: bigint): void {
@@ -824,7 +839,7 @@ export class TaskDetailSessions {
     return null;
   }
   private mutationIsCurrent(projectId: string, entry: Entry, operation: TaskMutationOperation, ticket: SyncTicket): boolean {
-    return !this.scope.isInvalidated && entry.state.mutation.operation === operation && this.projectGeneration(projectId) === ticket.cacheGeneration;
+    return !this.scope.isInvalidated && entry.state.mutation.operation === operation && ticket.scopeRevision === this.scope.getProjectRevision(projectId) && this.projectGeneration(projectId) === ticket.cacheGeneration;
   }
   private admitMutationOutcome(projectId: string, taskId: string, operation: TaskMutationOperation, ticket: SyncTicket | null, error: unknown = null): boolean {
     const entry = this.entry(projectId, taskId);
@@ -855,6 +870,7 @@ export class TaskDetailSessions {
     const project = this.scope.getAuthorizedProject(projectId);
     if (this.scope.isInvalidated || entry.state.mutation.operation !== operation || !entry.admitted ||
       entry.observedGeneration !== review.cacheGeneration || ticket.cacheGeneration !== review.cacheGeneration ||
+      ticket.scopeRevision !== review.scopeRevision || this.scope.getProjectRevision(projectId) !== review.scopeRevision ||
       project?.manifest.cacheGeneration !== review.cacheGeneration || this.summaryVersion(projectId, taskId) !== operation.version ||
       isTaskStale(project.index.nodes.get(taskId), review.detail)) throw new TaskMutationReviewExpired();
   }
@@ -885,7 +901,7 @@ export class TaskDetailSessions {
     const previousSteps = isStepOperation(operation) ? entry.steps.state.resource : null;
     const reviewedGeneration = this.projectGeneration(projectId);
     if (reviewedGeneration === null) return;
-    const review: TaskMutationReview = { detail: previous, cacheGeneration: reviewedGeneration };
+    const review: TaskMutationReview = { detail: previous, cacheGeneration: reviewedGeneration, scopeRevision: this.scope.getProjectRevision(projectId) };
     this.cancelRead(projectId, taskId);
     if (isStepOperation(operation)) {
       entry.steps.recoveryReads = 0;
@@ -935,15 +951,17 @@ export class TaskDetailSessions {
                 ? addTaskStep(projectId, taskId, addInput!, signal, admission, operation.requestId)
                 : operation.action === "stepEdit"
                   ? editTaskStep(projectId, taskId, operation.stepId, editInput!.title, editInput!.description, operation.version, signal, admission, operation.requestId)
+                : operation.action === "stepDelete"
+                  ? deleteTaskStep(projectId, taskId, operation.stepId, operation.version, signal, admission, operation.requestId)
                 : moveTaskStep(projectId, taskId, operation.stepId, operation.placement, operation.version, signal, admission, operation.requestId);
           });
           if (response === null) return;
           await this.runMutationStage(projectId, taskId, operation, async () => {
             if (!this.admitMutationOutcome(projectId, taskId, operation, requestTicket)) return;
             const result = response.value;
-            const expected = operation.action === "stepPosition" ? moved : previousSteps!.steps;
+            const expected = operation.action === "stepPosition" ? moved : operation.action === "stepDelete" ? previousSteps!.steps.filter((step) => step.id !== operation.stepId) : previousSteps!.steps;
             const valid = operation.action === "stepAdd"
-              ? result.version === committedVersion && result.steps.length === previousSteps!.steps.length + 1 && sameSteps(previousSteps!, { ...result, steps: result.steps.slice(0, -1) })
+              ? result.version === committedVersion && result.steps.length === previousSteps!.steps.length + 1 && sameSteps(previousSteps!, { ...result, steps: result.steps.filter((step) => step.id !== operation.stepId) })
               : expected !== null && result.version === committedVersion && result.steps.length === expected.length && result.steps.every((step, index) => {
                 const old = expected[index]!;
                 const edited = operation.action === "stepEdit" && step.id === operation.stepId;

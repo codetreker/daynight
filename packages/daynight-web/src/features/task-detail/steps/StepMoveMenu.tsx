@@ -2,11 +2,11 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { TaskStep } from "../../../api/task-steps";
 import { useI18n } from "../../../i18n/LocaleProvider";
 
-export type MoveAction = "edit" | "up" | "down" | "first" | "last" | "relative";
+export type MoveAction = "edit" | "delete" | "up" | "down" | "first" | "last" | "relative" | "addBefore" | "addAfter";
 
-export const StepMoveMenu = ({ step, index, total, available, busy, onSelect }: {
+export const StepMoveMenu = ({ step, index, total, available, canAdd, canEdit, busy, onSelect }: {
   readonly step: TaskStep; readonly index: number; readonly total: number;
-  readonly available: boolean; readonly busy: boolean; readonly onSelect: (action: MoveAction) => void;
+  readonly available: boolean; readonly canAdd: boolean; readonly canEdit: boolean; readonly busy: boolean; readonly onSelect: (action: MoveAction) => void;
 }) => {
   const { messages: { inspection: { steps: m } } } = useI18n();
   const [open, setOpen] = useState(false);
@@ -18,16 +18,20 @@ export const StepMoveMenu = ({ step, index, total, available, busy, onSelect }: 
   const menuId = useId();
   const reasonId = useId();
   const actions: { action: MoveAction; label: string; disabled: boolean }[] = [
-    { action: "up", label: m.moveUp, disabled: index === 0 },
-    { action: "down", label: m.moveDown, disabled: index === total - 1 },
-    { action: "first", label: m.moveFirst, disabled: index === 0 },
-    { action: "last", label: m.moveLast, disabled: index === total - 1 },
-    { action: "relative", label: m.moveRelative, disabled: total < 2 },
-    { action: "edit", label: m.editStep, disabled: false },
+    { action: "up", label: m.moveUp, disabled: !available || index === 0 },
+    { action: "down", label: m.moveDown, disabled: !available || index === total - 1 },
+    { action: "first", label: m.moveFirst, disabled: !available || index === 0 },
+    { action: "last", label: m.moveLast, disabled: !available || index === total - 1 },
+    { action: "relative", label: m.moveRelative, disabled: !available || total < 2 },
+    { action: "addBefore", label: m.addBefore, disabled: !canAdd },
+    { action: "addAfter", label: m.addAfter, disabled: !canAdd },
+    { action: "edit", label: m.editStep, disabled: !canEdit },
+    { action: "delete", label: m.deleteStep, disabled: !available },
   ];
   const enabled = actions.map((item, i) => item.disabled ? -1 : i).filter((i) => i >= 0);
   const close = (restore: boolean) => { setOpen(false); if (restore) trigger.current?.focus(); };
-  const show = (last = false) => { if (available && enabled.length) { setActive(last ? enabled[enabled.length - 1]! : enabled[0]!); setOpen(true); } };
+  const menuAvailable = available || canAdd || canEdit;
+  const show = (last = false) => { if (menuAvailable && enabled.length) { setActive(last ? enabled[enabled.length - 1]! : enabled[0]!); setOpen(true); } };
   useLayoutEffect(() => {
     if (!open || !trigger.current || !menu.current) return;
     const element = menu.current;
@@ -44,7 +48,7 @@ export const StepMoveMenu = ({ step, index, total, available, busy, onSelect }: 
     return () => { element.removeEventListener("toggle", toggled); window.removeEventListener("resize", position); document.removeEventListener("scroll", position, true); element.hidePopover(); };
   }, [open]);
   useLayoutEffect(() => { if (open) options.current[active]?.focus(); }, [open, active]);
-  useEffect(() => { if (!available) setOpen(false); }, [available]);
+  useEffect(() => { if (!menuAvailable) setOpen(false); }, [menuAvailable]);
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => { if (!container.current?.contains(event.target as Node)) close(false); };
@@ -52,9 +56,9 @@ export const StepMoveMenu = ({ step, index, total, available, busy, onSelect }: 
   }, [open]);
   return <div className="step-move-picker" ref={container} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) close(false); }}>
     <button ref={trigger} className="step-more" type="button" aria-label={m.moveMenu(step.title)} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
-      aria-disabled={!available} aria-busy={busy} aria-describedby={!available ? reasonId : undefined}
-      onClick={() => open ? close(false) : show()} onKeyDown={(event) => { if (available && (event.key === "ArrowDown" || event.key === "ArrowUp")) { event.preventDefault(); show(event.key === "ArrowUp"); } }}>{busy ? <span className="spinner" aria-hidden="true" /> : "⋯"}</button>
-    {!available && <span className="step-status-reason" role="tooltip" id={reasonId}>{m.moveUnavailable}</span>}
+      aria-disabled={!menuAvailable} aria-busy={busy} aria-describedby={!menuAvailable ? reasonId : undefined}
+      onClick={() => open ? close(false) : show()} onKeyDown={(event) => { if (menuAvailable && (event.key === "ArrowDown" || event.key === "ArrowUp")) { event.preventDefault(); show(event.key === "ArrowUp"); } }}>{busy ? <span className="spinner" aria-hidden="true" /> : "⋯"}</button>
+    {!menuAvailable && <span className="step-status-reason" role="tooltip" id={reasonId}>{m.moveUnavailable}</span>}
     {open && <div className="task-status-menu step-move-menu" ref={menu} id={menuId} popover="auto" role="menu" aria-label={m.moveMenu(step.title)} onKeyDown={(event) => {
       if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
         event.preventDefault(); const pos = enabled.indexOf(active);
@@ -62,6 +66,6 @@ export const StepMoveMenu = ({ step, index, total, available, busy, onSelect }: 
       } else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); }
       else if (event.key === "Tab") close(false);
     }}>{actions.map((item, i) => <button key={item.action} ref={(node) => { options.current[i] = node; }} type="button" role="menuitem" disabled={item.disabled} tabIndex={active === i ? 0 : -1}
-      className="task-status-option" onFocus={() => setActive(i)} onClick={() => { close(true); onSelect(item.action); }}>{item.label}</button>)}</div>}
+      className={`task-status-option${item.action === "delete" ? " step-delete-action" : ""}`} onFocus={() => setActive(i)} onClick={() => { close(true); onSelect(item.action); }}>{item.label}</button>)}</div>}
   </div>;
 };

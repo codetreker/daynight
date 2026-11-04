@@ -1,3 +1,4 @@
+import { botDefinition } from "../commands/bot/definition.js";
 import { controllerDefinition } from "../commands/controller/definition.js";
 import type { CliCommand } from "./context.js";
 import type { CommandDefinition } from "./schema.js";
@@ -6,6 +7,7 @@ import { reviewDefinition } from "../commands/review/definition.js";
 import { workerDefinition } from "../commands/worker/definition.js";
 import { projectDefinition } from "../commands/project/definition.js";
 import { taskDefinition } from "../commands/task/definition.js";
+import { invitationDefinition } from "../commands/invitation/definition.js";
 import { teamDefinition } from "../commands/team/definition.js";
 import { updateDefinition } from "../commands/update/definition.js";
 import { skillDefinition } from "../commands/skill/definition.js";
@@ -16,6 +18,7 @@ export type CommandRegistration = CommandDefinition & {
 };
 
 export const commands: readonly CommandRegistration[] = [
+  { ...botDefinition, load: async () => ({ run: (await import("../commands/bot/commands.js")).runBotCommand }) },
   { ...controllerDefinition, load: async () => ({ run: (await import("../commands/controller/index.js")).runControllerCommand }) },
   { ...workerDefinition, load: async () => ({ run: (await import("../commands/worker/index.js")).runWorkerCommand }) },
   { ...loginDefinition, load: async () => ({ run: (await import("../commands/auth/command.js")).runLoginCommand }) },
@@ -37,6 +40,7 @@ export const commands: readonly CommandRegistration[] = [
     ...projectDefinition,
     load: async () => ({ run: (await import("../commands/project/command.js")).runProjectCommand }),
   },
+  { ...invitationDefinition, load: async () => ({ run: (await import("../commands/invitation/command.js")).runInvitationCommand }) },
   { ...teamDefinition, load: async () => ({ run: (await import("../commands/team/command.js")).runTeamCommand }) },
   {
     ...taskDefinition,

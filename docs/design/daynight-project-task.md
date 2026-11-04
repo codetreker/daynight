@@ -79,7 +79,8 @@ src/
   commands/
     server/                # 共享配置、操作与信号生命周期
     project/               # 参数、帮助、project 操作及渲染
-    team/                  # Team 只读命令、上下文与渲染
+    team/                  # Team 命令、上下文、确认与渲染
+    invitation/            # 邀请接收语法、操作与渲染
     task/                  # task、Step 读取与附件的参数、帮助、操作及渲染
     review/                # review 配置投影和既有行为
     update/                # 既有 npm 安装生命周期
@@ -354,11 +355,17 @@ flowchart TD
 | `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时读取 `/me`，再提交真实 `expectedUserId` 和原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
+| `project transfer` | 确定 Project 与 `/me`，读取目标预览，确认后提交 `POST /api/v1/projects/{id}/transfer` |
 | `team list` | `GET /api/v1/me`，再读取全部 `GET /api/v1/teams` 页 |
 | `team show`、`team default show` | `GET /api/v1/me`，再按选定 ID 读取 `GET /api/v1/teams/{id}` |
+| `team default set <uuid\|personal>` | `GET /api/v1/me` 与指定 Team；验证成员资格并确认后更新本地配置，不提交远程 mutation |
 | `team create` | `GET /api/v1/me`，确认后 `POST /api/v1/teams`，提交原始名称与 `expectedUserId` |
 | `team rename`、`team delete` | `GET /api/v1/me` 和目标 Team，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}`，提交名称、精确 version 和 `expectedUserId` |
+| `team invitation create`、`list`、`revoke` | 解析当前用户和目标 Team，分别 POST、GET `/api/v1/teams/{id}/invitations` 或 DELETE 其指定邀请；写入确认并携带 `expectedUserId` |
+| `team member list` | `GET /api/v1/me`，再读取所选 Team 的完整 `GET /api/v1/teams/{id}/members` 目录 |
+| `team member set-role`、`team member remove`、`team leave` | `GET /api/v1/me` 与目标成员快照，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}/members/{userId}`，提交真实成员版本与 `expectedUserId` |
 | `team projects` | `GET /api/v1/me`，再读取全部 `GET /api/v1/projects?teamId=...` 页 |
+| `invitation inspect`、`invitation accept` | 读取当前主体，按同服务链接路径向 Project 或 Team invitation 的 inspect/accept 发送 POST body；accept 携带 `expectedUserId` |
 | `task create [--required-platform <platform>] [--assigned-to <user-uuid>]` | 省略负责人先 `GET /api/v1/me`，再 `POST /api/v1/projects/{projectId}/tasks`，携带 assignedTo 和可选 requiredPlatform |
 | `task list` | `GET /api/v1/projects/{projectId}/tasks`，保留相同筛选遍历 cursor |
 | `task ready [--limit <N>] [--allow-agents true\|false] [--compatible-platform <platform>]` | 单次 `GET /api/v1/projects/{projectId}/tasks?ready=true&limit=N`，可带 allowAgents、compatiblePlatform，不提交 cursor |
@@ -392,6 +399,19 @@ Team 读取先以 `/me` 确定真实用户和 Personal Team，并核对响应主
 失效配置显示成可用；`team list` 不解析默认，显式目标也不受其影响。该读取路径不写
 配置，既有全范围 Project 发现继续使用原列表方法。
 
+`default set` 使用发起请求时的规范 origin 和 token 快照，以 `/me` 主体定位当前
+`teamDefaults` pair，保留其存在性和原值作为写入前置条件，不解析或验证旧目标。
+显式目标或真实 Personal ID 经 Team 详情与主体、成员关系校验后，确认提示展示名称、ID
+和角色。网络与确认结束后才取得配置排他锁；锁内重读 YAML，比较 origin、token 和当前
+pair，仅更新该 pair。其他账号或服务的配置不参与当前选择，token 轮换后同一账号仍
+使用原选择。取消、身份不匹配或前置条件变化均不写入。
+
+专属 writer 复用配置文件的 regular-file 检查、原子替换与含 token 文件的 0600 模式；
+YAML AST 保留注释及未知字段。ownership 校验在写前对比目标路径之外的解码值，拒绝
+共享 alias 导致其他设置变化；创建缺失的祖先映射时只忽略该路径空祖先的差异。本地
+替换或清理失败可能发生在写入后，writer 重读精确 pair 报告当前事实，不自动重放或
+把读取结果当作操作成功凭据。
+
 Team 生命周期写入复用当前用户和目标解析，确认阶段不持配置锁。普通确认展示操作及
 目标；删除将名称编码为 JSON string literal，让换行、控制符、反斜线和空白可见，
 再将输入解码并精确比较原文。非 TTY 且无 `--confirm` 时不写入；显式布尔确认只
@@ -403,6 +423,31 @@ typed mutation API 绑定 `/me` 主体并校验响应主体、资源与删除回
 等待、无效成功响应或未知提交不能证明回滚，也不能自动重发。后续读取只描述当前事实。
 Team 未确认写入使用 `PublicDiagnosticError` 保留内部 cause，顶层仅输出安全的结果说明、
 request ID 和读取当前状态的提示，避免递归格式化原始响应及传输错误。
+
+邀请管理只输出经过验证的同服务一次性链接，列表只接受并渲染元数据；撤销消费有限
+回执，`changed:false` 是确认的未变更结果，但不能区分已撤销、已消费或不存在。创建响应可能含秘密，因此解析和错误
+诊断在暴露原因链之前隔离不可信响应内容；链接不写配置或长期缓存。服务端继续负责
+权限和 Personal Team 拒绝，客户端验证响应主体与请求目标。
+成员目录解析验证每项 Team、用户身份、角色、精确关系版本、时间及 nullable 资料，完整
+验证后才输出。成员变更使用该关系的版本而非 Team 元数据或 Project grant 版本；`leave`
+以当前用户为目标。typed mutation API 验证响应主体及目标，消费服务返回的成员关系或
+移除回执与 actor role。自行退出后 actor role 为 null，直接输出回执，避免权限已失效时的
+后续 GET 将成功误报为失败。确认、冲突、取消和未知提交遵循同一 Team 写入规则；配置
+默认值与独立 Project grant 均不因成员变化而改写。
+
+邀请接收入口从隐藏提示或 `--stdin` 取得链接；后者读取至 EOF，最多 4096 字节，
+允许末尾一个 LF 或 CRLF。入口验证服务 origin、路径与秘密后
+选择 Project 或 Team API；秘密只进入请求 body，不进入参数、配置和诊断。解析失败在
+构造可递归输出的 cause 之前丢弃秘密原文。读取 `/me` 绑定真实用户，响应须核对主体；
+预览不消费，确认后 accept 只提交一次。非交互无确认不写；未知结果不能自动重发，也
+不能根据后续关系读取声称已找回原回执。[CLI 邀请接收决策](../../.agents/notes/implemented/architecture/2026-11-04-cli-invitation-receiver.md)
+记录输入与身份边界，服务端关系及消费规则由[鉴权架构](daynight-auth.md#数据与并发)拥有。
+
+项目转移按现有仓库解析规则只读选择 Project，不持久化绑定，也不解析默认 Team。
+目标解析器只接受规范 UUID 或当前 origin 的精确 Team 页面链接。预览绑定当前主体，
+显示来源、目标与预期角色；确认后提交预览的 ownership 和目标版本。typed API 校验
+主体、目标和回执，直接消费提交结果，包括失权的 null access；未知结果不能由后续
+读取恢复。服务事务和权限机制由[鉴权架构](daynight-auth.md#数据与并发)拥有。
 
 Steps typed GET 复用 `exchange` 的认证、no-store、取消、期限与响应预算。显式 project
 直接访问所选路径，不增加项目发现、父 Task GET 或子项 404 后的隐藏核验。
@@ -695,9 +740,9 @@ symlink 偏好；独立 e2e 仍验证默认 PNPM shim，生产依赖与真实 np
 拥有期限与解码字节预算场景。
 完整入口先执行覆盖率阶段，再执行 E2E 阶段，`--coverage` 与 `--e2e` 可独立选择。
 两个阶段分别构建并安装 CLI，各自拥有 PostgreSQL、UniAuth 和真实 Web 构建输入。
-E2E 将自己的安装身份传给独立 Go 测试包 `cmd/e2e_tests`，复用其 fresh race binary、
+E2E 将自己的安装身份传给独立 Go 测试包 `cmd/e2e_tests`，复用其 fresh binary、
 隔离 PostgreSQL schema、listener、重启和数据库等待屏障。该包拥有跨进程验收的
-`TestMain` 与辅助设施，以 `go test -race -count=1 -timeout=10m ./cmd/e2e_tests`
+`TestMain` 与辅助设施，以 `go test -race=<value> -count=1 -timeout=10m ./cmd/e2e_tests`
 完整执行，`go test ./...` 也能发现它；主命令包保留直接调用内部函数的测试并
 独立管理临时资源。场景
 `installed_cli_project_task_workflow` 通过要求编号 `PT.V1`、`PT.V3`、`PT.V5`、
@@ -746,8 +791,10 @@ project，各页均满足列表协议，失败 stdout 必须为空。
 字节边界场景依次执行。四个字节场景使用完整生产默认值，不加载期限 mock；两个
 期限场景仍验证实际等待、正确错误分类、持续分页、空 stdout 和清理。
 CI 将覆盖率与 E2E 放在两个并行的 20 分钟作业中，二者使用同一 server selector
-并由最终 `checks` 汇总。覆盖率作业保留 build/vet/race 与严格 coverage gate，
-E2E 作业保留真实进程、race、安装产物溯源及全部场景清理。分工见
+并由最终 `checks` 汇总。覆盖率作业保留 build/vet 与严格 coverage gate，
+E2E 作业保留真实进程、安装产物溯源及全部场景清理。race instrumentation 在 PR CI 关闭、
+main CI 和本地默认开启，两个阶段及 E2E 服务 binary 使用一致模式，具体选择与回执由
+[服务验证说明](../../packages/daynight-server/README.md#race-instrumentation)拥有。分工见
 [独立作业决策](../../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)。
 根目录 `.tmp/project-task-service-evidence.json` 拥有常规期限证据，
 `.tmp/project-task-stress-evidence.json` 拥有本地完整字节证据；schema 1 中的 `suite`

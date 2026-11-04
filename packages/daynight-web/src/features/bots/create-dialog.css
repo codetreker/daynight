@@ -1,0 +1,13 @@
+.bot-create-dialog { width: min(460px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); }
+.bot-create-dialog form { min-width: 0; }
+.bot-create-dialog .dialog-body { overflow-wrap: anywhere; }
+.bot-create-dialog .field input, .bot-create-dialog .field select { width: 100%; min-width: 0; }
+.bot-create-host { color: var(--muted); font-size: 13px; }
+.bot-create-advanced { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 14px; }
+.bot-create-advanced summary { cursor: pointer; color: var(--muted); font-size: 13px; width: fit-content; }
+.bot-create-advanced summary:focus-visible { outline: 2px solid var(--indigo); outline-offset: 4px; }
+.bot-create-dialog .notice code { overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .bot-create-dialog .dialog-header, .bot-create-dialog .dialog-body, .bot-create-dialog .dialog-footer { padding-inline: 16px; }
+  .bot-create-dialog .dialog-footer { flex-wrap: wrap; }
+}

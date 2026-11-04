@@ -31,7 +31,8 @@ describe('session history request progress', () => {
     await f.client.start(); f.receive(); await flush();
     expect(f.client.snapshot().status).toBe('error'); expect(f.client.snapshot().error).toBeTruthy();
     await f.client.loadOlder(); expect(f.api.timeline).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(30_000); expect(f.api.current).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.api.current).toHaveBeenCalledTimes(11); expect(f.api.timeline).toHaveBeenCalledOnce();
   });
   it.each([null, '', 'A'])('rejects a nonadvancing cursor %s without merging the invalid page', async cursor => {
     const f = fixture(); await ready(f);

@@ -20,7 +20,11 @@ retains isolated PostgreSQL schemas, storage roots, process control, source and
 artifact checks, concurrency barriers, error assertions and cleanup evidence.
 `go test ./...` discovers the package. The
 [CI split decision](2026-11-04-server-e2e-ci-jobs.md) places its complete
-race-enabled execution in a separate validation mode and CI job.
+execution in a separate validation mode and CI job. The
+[Go validation timing decision](2026-11-04-go-validation-timing.md) later makes
+instrumentation event-specific: local validation and main CI use race detection,
+while PR CI disables it. The freshly built service matches its test binary's
+actual race build tag.
 
 At package extraction, the central Node orchestrator used
 `--skip-result-packages cmd/e2e_tests` with `go-cov`: the pinned tool otherwise
@@ -60,9 +64,9 @@ appropriate to its resources.
 
 ## Consequences
 
-The complete gate retains its scenarios, race detection, production coverage
-thresholds, installed CLI artifact checks and built-process evidence. The
-independent E2E validation mode runs the complete test-only package; production
+The complete gate retains its scenarios, event-specific race detection,
+production coverage thresholds, installed CLI artifact checks and built-process
+evidence. The independent E2E validation mode runs the complete test-only package; production
 coverage remains in its owning packages. The binary still
 targets the production command, and its execution remains separate from the
 owning packages' statement coverage. Directory depth is unchanged, so module,

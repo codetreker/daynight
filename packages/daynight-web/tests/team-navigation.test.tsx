@@ -29,6 +29,36 @@ const install = (extra?: (url: string, init?: RequestInit) => Response | Promise
 beforeEach(() => { focused = true; vi.spyOn(document, "hasFocus").mockImplementation(() => focused); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible"); });
 
 describe("Team workspace navigation", () => {
+  it.each(["/shared-projects", `/projects/${projectId}/tasks/00000000-0000-4000-8000-000000000006`])("preserves another tab's newer Team after a delayed self exit on %s", async (route) => {
+    window.history.replaceState(null, "", `/teams/${a}/members`);
+    const receipt = Promise.withResolvers<Response>();
+    const fetcher = install((url, init) => {
+      if (url === `/api/v1/teams/${a}`) return json({ ...team(a, "Alpha"), membership: { ...team(a, "Alpha").membership, role: "member" } });
+      if (url === `/api/v1/teams/${a}/members`) return json({ items: [{ ...team(a, "Alpha").membership, role: "member", profile: { name: "Alice", email: null, avatarUrl: null } }] });
+      if (url === `/api/v1/teams/${a}/members/${userId}` && init?.method === "DELETE") return receipt.promise;
+      if (url.startsWith(`/api/v1/projects/${projectId}`)) return json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404);
+      return undefined;
+    });
+    render(<AuthenticatedApp />); await screen.findByRole("button", { name: "Leave Team" });
+    await waitFor(() => expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(a));
+    fireEvent.click(screen.getByRole("button", { name: "Leave Team" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Leave Team" }));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1));
+    act(() => navigate(route));
+    if (route === "/shared-projects") await screen.findByRole("heading", { name: "Projects shared with me" });
+    else await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith(`/api/v1/projects/${projectId}`))).toBe(true));
+    expect(screen.getByRole("dialog", { hidden: true })).toBeInTheDocument();
+    localStorage.setItem(`daynight.selectedTeam:${userId}`, b);
+    await act(async () => receipt.resolve(json({ teamId: a, userId, removed: true, actorRole: null })));
+    await waitFor(() => expect(screen.queryByRole("dialog", { hidden: true })).toBeNull());
+    expect(window.location.pathname).toBe(route);
+    if (route === "/shared-projects") {
+      expect(screen.getByRole("heading", { name: "Projects shared with me" })).toBeInTheDocument();
+      expect(screen.getByText(/You left the Team/)).toBeInTheDocument();
+    }
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(b);
+    act(() => navigate("/projects")); await screen.findByRole("heading", { name: "Beta" });
+  });
   it("uses Personal initially, offers paginated Team links and preserves native navigation", async () => {
     const fetcher = install(); render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "Personal" });
@@ -226,6 +256,149 @@ describe("Team workspace navigation", () => {
     expect(screen.queryByText("Old account")).toBeNull();
     expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(a);
     expect(localStorage.getItem(`daynight.selectedTeam:${bob}`)).toBeNull();
+  });
+
+  it("retains a settings draft during same-account revalidation and reread", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`);
+    const recheck = Promise.withResolvers<Response>(); let reads = 0;
+    install((url, init) => url === `/api/v1/teams/${a}` && !init?.method && ++reads === 3 ? recheck.promise : undefined);
+    render(<AuthenticatedApp />); const name = await screen.findByLabelText("Team name");
+    fireEvent.change(name, { target: { value: "Unsaved draft" } });
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBe(3));
+    await act(async () => recheck.resolve(json(team(a, "  Alpha  "))));
+    await waitFor(() => expect(screen.getByLabelText("Team name")).toHaveValue("Unsaved draft"));
+  });
+  it("retains typed deletion confirmation through same-account revalidation", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`); const fetcher = install();
+    render(<AuthenticatedApp />); await screen.findByLabelText("Team name"); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Team" }); fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha  " } });
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(2));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Delete Team" })).toBeVisible());
+    expect(within(screen.getByRole("dialog", { name: "Delete Team" })).getByLabelText("Enter the Team name to confirm")).toHaveValue("  Alpha  ");
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+  });
+  it.each(["success", "lost"] as const)("keeps a pending delete through 404 on revalidation: %s", async (outcome) => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`); const reply = Promise.withResolvers<Response>(); let reads = 0, deletes = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}` && init?.method === "DELETE") { deletes++; return reply.promise; }
+      if (url === `/api/v1/teams/${a}` && !init?.method && ++reads >= 4) return json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404);
+      return undefined;
+    });
+    render(<AuthenticatedApp />); await screen.findByLabelText("Team name"); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Team" }); fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha  " } }); fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
+    await waitFor(() => expect(deletes).toBe(1)); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBeGreaterThanOrEqual(4)); expect(window.location.pathname).toBe(`/teams/${a}/settings`);
+    if (outcome === "success") { await act(async () => reply.resolve(json({ teamId: a, deleted: true }))); await waitFor(() => expect(window.location.pathname).toBe(`/teams/${personal}`)); }
+    else { await act(async () => reply.reject(new TypeError("connection lost"))); expect(await screen.findByText(/result is unknown/)).toBeInTheDocument(); expect(window.location.pathname).toBe(`/teams/${a}/settings`); expect(deletes).toBe(1); }
+  });
+  it("does not replace a rename receipt with a late settings reread", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`); const patch = Promise.withResolvers<Response>(), late = Promise.withResolvers<Response>(); let reads = 0, patches = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}` && init?.method === "PATCH") { patches++; return patch.promise; }
+      if (url === `/api/v1/teams/${a}` && !init?.method && ++reads === 3) return late.promise;
+      return undefined;
+    });
+    render(<AuthenticatedApp />); const name = await screen.findByLabelText("Team name"); fireEvent.change(name, { target: { value: "New name" } }); fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(patches).toBe(1)); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus")); await waitFor(() => expect(reads).toBe(3));
+    await act(async () => patch.resolve(json({ ...team(a, "New name"), version: 2n }))); await screen.findByText("Saved");
+    await act(async () => late.resolve(json(team(a, "  Alpha  ")))); expect(screen.getByLabelText("Team name")).toHaveValue("New name");
+  });
+  it("returns to Personal for a confirmed unavailable Team without a pending operation", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`); let reads = 0;
+    install((url, init) => url === `/api/v1/teams/${a}` && !init?.method && ++reads >= 3 ? json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404) : undefined);
+    render(<AuthenticatedApp />); await screen.findByLabelText("Team name"); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(window.location.pathname).toBe("/projects")); await waitFor(() => expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBeNull());
+  });
+
+  it("ignores a previous account's late Team 404 while identity is revalidated", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`);
+    const bob = "00000000-0000-4000-8000-000000000011", bobPersonal = "00000000-0000-4000-8000-000000000012";
+    const old = Promise.withResolvers<Response>(), nextIdentity = Promise.withResolvers<Response>(); let current = userId, reads = 0, meReads = 0;
+    const response = (body: unknown, principal: string, status = 200) => new Response(stringifyWireJson(body), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": principal } });
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/me") return ++meReads === 1 ? Promise.resolve(json(person)) : nextIdentity.promise;
+      if (url === `/api/v1/teams/${a}` && !init?.method) {
+        if (current === bob) return Promise.resolve(response({ error: { code: "not_found", message: "missing", requestId: "rq-b" } }, bob, 404));
+        if (++reads === 3) return old.promise;
+        return Promise.resolve(json(team(a, "  Alpha  ")));
+      }
+      if (url.startsWith("/api/v1/teams?")) return Promise.resolve(response({ items: [], nextCursor: null }, current));
+      if (url.startsWith("/api/v1/projects?")) return Promise.resolve(response({ items: [], nextCursor: null }, current));
+      throw new Error(`Unexpected request ${url}`);
+    }));
+    render(<AuthenticatedApp />); await screen.findByLabelText("Team name"); fireEvent.click(screen.getByRole("button", { name: "Delete Team" })); await waitFor(() => expect(reads).toBe(3));
+    current = bob; focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await act(async () => old.resolve(response({ error: { code: "not_found", message: "missing", requestId: "rq-a" } }, userId, 404)));
+    await act(async () => nextIdentity.resolve(response({ ...person, id: bob, name: "Bob", personalTeam: { id: bobPersonal, kind: "personal", name: null } }, bob)));
+    await waitFor(() => expect(screen.queryByText("Alice")).toBeNull());
+    expect(window.location.pathname).not.toBe(`/teams/${personal}`); expect(screen.queryByRole("dialog", { name: "Delete Team" })).toBeNull();
+  });
+
+  it("publishes a confirmed rename receipt received during identity revalidation", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`); const patch = Promise.withResolvers<Response>(), identity = Promise.withResolvers<Response>(); let patches = 0, meReads = 0;
+    install((url, init) => {
+      if (url === "/api/v1/me" && ++meReads === 2) return identity.promise;
+      if (url === `/api/v1/teams/${a}` && init?.method === "PATCH") { patches++; return patch.promise; }
+      return undefined;
+    });
+    render(<AuthenticatedApp />); const name = await screen.findByLabelText("Team name"); fireEvent.change(name, { target: { value: "New name" } }); fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(patches).toBe(1)); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(meReads).toBe(2)); await act(async () => patch.resolve(json({ ...team(a, "New name"), version: 2n })));
+    await act(async () => identity.resolve(json(person)));
+    await screen.findByText("Saved"); expect(document.querySelector("summary.team-switch")).toHaveAttribute("aria-label", "Switch Team: New name");
+  });
+
+  it("does not erase another tab's newer selection when a settings reread returns 404", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`); const late = Promise.withResolvers<Response>(); let reads = 0;
+    install((url, init) => url === `/api/v1/teams/${a}` && !init?.method && ++reads === 3 ? late.promise : undefined);
+    render(<AuthenticatedApp />); await screen.findByLabelText("Team name"); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBe(3)); localStorage.setItem(`daynight.selectedTeam:${userId}`, b);
+    await act(async () => late.resolve(json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404)));
+    await screen.findByText("This Team is unavailable or you do not have access."); expect(window.location.pathname).toBe(`/teams/${a}/settings`); expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(b);
+  });
+
+  it("reports a storage failure when clearing a confirmed unavailable settings Team and retries", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`); let reads = 0, failStorage = false;
+    const getItem = Storage.prototype.getItem;
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) { if (failStorage && key === `daynight.selectedTeam:${userId}`) throw new Error("denied"); return getItem.call(this, key); });
+    install((url, init) => url === `/api/v1/teams/${a}` && !init?.method && ++reads >= 3 ? json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404) : undefined);
+    render(<AuthenticatedApp />); await screen.findByLabelText("Team name"); failStorage = true;
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await screen.findByText("Unable to read or clear the saved Team selection. Try again."); expect(window.location.pathname).toBe(`/teams/${a}/settings`);
+    failStorage = false; fireEvent.click(screen.getByRole("button", { name: "Retry" })); await waitFor(() => expect(window.location.pathname).toBe("/projects"));
+  });
+
+  it("suspends the create dialog during same-account identity revalidation without losing its draft", async () => {
+    const identity = Promise.withResolvers<Response>(); let meReads = 0;
+    install((url) => url === "/api/v1/me" && ++meReads === 2 ? identity.promise : undefined);
+    render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Personal" });
+    const selector = document.querySelector<HTMLDetailsElement>("details.team-selector")!; fireEvent.click(selector.querySelector("summary")!); fireEvent.click(within(selector).getByRole("button", { name: "Create Team" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Team" }); fireEvent.change(within(dialog).getByLabelText(/Team name/), { target: { value: "Draft" } });
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(dialog.parentElement).toHaveAttribute("hidden")); fireEvent.keyDown(document, { key: "Escape" });
+    await act(async () => identity.resolve(json(person))); await waitFor(() => expect(screen.getByRole("dialog", { name: "Create Team" })).toBeVisible());
+    expect(within(screen.getByRole("dialog", { name: "Create Team" })).getByLabelText(/Team name/)).toHaveValue("Draft");
+  });
+  it("discards a create dialog's late unknown-state read when the account changes", async () => {
+    const bob = "00000000-0000-4000-8000-000000000011", bobPersonal = "00000000-0000-4000-8000-000000000012";
+    const old = Promise.withResolvers<Response>(), identity = Promise.withResolvers<Response>(); let current = userId, meReads = 0, listReads = 0;
+    const response = (body: unknown, principal: string) => new Response(stringifyWireJson(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": principal } });
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/me") return ++meReads === 1 ? Promise.resolve(json(person)) : identity.promise;
+      if (url === "/api/v1/teams" && init?.method === "POST") return Promise.reject(new TypeError("lost"));
+      if (url.startsWith("/api/v1/teams?")) { if (current === userId && ++listReads === 2) return old.promise; return Promise.resolve(response({ items: [], nextCursor: null }, current)); }
+      if (url.startsWith("/api/v1/projects?")) return Promise.resolve(response({ items: [], nextCursor: null }, current));
+      throw new Error(`Unexpected request ${url}`);
+    }));
+    render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Personal" }); const selector = document.querySelector<HTMLDetailsElement>("details.team-selector")!; fireEvent.click(selector.querySelector("summary")!); fireEvent.click(within(selector).getByRole("button", { name: "Create Team" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Team" }); fireEvent.change(within(dialog).getByLabelText(/Team name/), { target: { value: "Draft" } }); fireEvent.click(within(dialog).getByRole("button", { name: "Create Team" }));
+    await within(dialog).findByText(/result is unknown/); fireEvent.click(within(dialog).getByRole("button", { name: "Check current state" })); await waitFor(() => expect(listReads).toBe(2));
+    current = bob; focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await act(async () => old.resolve(response({ items: [team(a, "Old account Team")], nextCursor: null }, userId)));
+    await act(async () => identity.resolve(response({ ...person, id: bob, name: "Bob", personalTeam: { id: bobPersonal, kind: "personal", name: null } }, bob)));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Create Team" })).toBeNull()); expect(screen.queryByText("Old account Team")).toBeNull();
   });
 
 });
