@@ -13,7 +13,7 @@ flowchart LR
   Q --> H
 ```
 
-`api/workers.go` 定义公开 DTO；`internal/server/workers.go` 注册三个认证端点，输入解析拒绝各层未知、重复和错误分支字段。`service.Workers` 处理 principal、规范 UUID、有效报告、账号绑定分页与事务编排。core 的报告、遥测和任务观测模型与 HTTP DTO 分离，store 保存受控 JSONB。
+`api/workers.go` 定义公开 DTO；`internal/server/workers.go` 注册报告与快照认证端点，并挂接由[配置设计](daynight-worker-configuration.md)拥有的配置子资源，输入解析拒绝各层未知、重复和错误分支字段。`service.Workers` 处理 principal、规范 UUID、有效报告、账号绑定分页与事务编排。core 的报告、遥测和任务观测模型与 HTTP DTO 分离，store 保存受控 JSONB。
 
 机器信息不授予身份。资源由 `(principal.UserID,workerId)` 定位，Cookie 写入的 Origin、PAT、身份响应标头及 no-store 复用既有认证。报告日志使用 `component=worker_report`，关联 user_id、已验证 worker_id、request_id 与处理阶段；正文和原生命令内容不进入日志。
 
@@ -21,7 +21,7 @@ flowchart LR
 
 迁移 `025_worker_snapshots.sql` 创建 workers，包含 user_id、worker_id、created_at、last_seen_at、telemetry 和 task_snapshot。主键为 `(user_id,worker_id)`；`workers_recent(user_id,last_seen_at DESC,worker_id)` 支持账号近期筛选。telemetry、task_snapshot 具有 JSON object 约束，created_at 首次写入后保持不变。
 
-此表没有 FK、历史报告或持久化 online 布尔值。旧 claim 和 task 时间不能证明机器仍在运行，因此迁移不回填快照。任务属性使用独立 task_properties 行，完整 JSON 文本由 Go codec 处理，不经过 PostgreSQL JSON cast。
+[配置迁移](daynight-worker-configuration.md#持久化与表示)在同一 Worker 行增加独立目标及应用观测；不改变本节迁移的原始快照含义。此表没有 FK、历史报告或持久化 online 布尔值。旧 claim 和 task 时间不能证明机器仍在运行，因此迁移不回填快照。任务属性使用独立 task_properties 行，完整 JSON 文本由 Go codec 处理，不经过 PostgreSQL JSON cast。
 
 `telemetry.assistantHost` 使用可选指针存入同一 JSONB，不需要额外表或迁移。HTTP 将允许字段与必填字段分开，保留旧客户端缺字段的准入；提供对象时执行完整的严格解析和服务层校验。整个 telemetry 替换意味着省略扩展会撤销旧能力，不保留过期成功。详情 DTO 显式映射该对象，Web Worker 解析器接受此可选扩展并继续拒绝未知字段；不增加助手入口或修改普通 Worker 展示。
 
@@ -34,6 +34,8 @@ flowchart LR
 UPSERT 同时写 last_seen_at、telemetry、task_snapshot，只竞争该 Worker 行，并以 `workers.last_seen_at < EXCLUDED.last_seen_at` 拒绝旧 observation。已知清单完整替换任务快照；null 清单根据旧状态保留 observed/stale 的任务与原时刻，并变为 stale，旧 unavailable 保持 unavailable。
 
 旧写被条件忽略时，RETURNING 没有行。随后在同一 READ COMMITTED 事务发出独立 SELECT 取得当前保存值。INSERT 的冲突判定可能遇到该语句快照中尚不可见的并发提交行；后续语句重新取得快照，避免同语句 CTE 反查仍不可见的情况。事务辅助保留操作、提交与回滚错误链。
+
+显式配置协议在机器观测 upsert 后，继续以同一 Worker 行处理首次候选和应用观测 CAS；该扩展的完整结构与事务由[配置设计](daynight-worker-configuration.md)拥有。观测 CAS 拒绝保留已有配置结果，不把合法机器观测当作失败。
 
 该路径不写 task、claim、task version 或项目状态。报告返回服务端时间与最终保存的 lastReportedAt，不能把迟到旧写当作新观测。响应丢失不证明回滚，客户端后续新报告仍以完整观测收敛。
 

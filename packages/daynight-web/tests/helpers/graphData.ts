@@ -24,7 +24,7 @@ const graph = (number: number, name: string, seeds: readonly TaskSeed[]): TaskGr
   });
   return {
     observedAt: '2026-10-20T12:00:00Z',
-    project: {
+    project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n },
       settings: { version: 1n, executionWarningMinutes: 60 }, id: id(number), name,
       repoUrl: 'https://github.com/example/task-graph', createdAt: '2026-10-21T09:00:00Z', updatedAt: '2026-10-22T09:00:00Z',
     },

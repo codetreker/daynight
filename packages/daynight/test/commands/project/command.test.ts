@@ -7,7 +7,7 @@ import type { ProjectCommandDependencies } from "../../../src/commands/project/c
 import { renderProjectList } from "../../../src/commands/project/rendering.js";
 
 const id = "abcdefab-1234-5678-90ab-abcdefabcdef";
-const project: Project = { id, name: "Project 名称", repoUrl: "git@Git.Example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: "2026-10-20T01:02:03.123456789Z", updatedAt: "2026-10-20T02:03:04.987654321Z" };
+const project: Project = { id, name: "Project 名称", repoUrl: "git@Git.Example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-20T01:02:03.123456789Z", updatedAt: "2026-10-20T02:03:04.987654321Z" };
 const context = () => ({
   version: "0.0.0", packageDirectory: "unused", homeDirectory: vi.fn<() => string>(() => { throw new Error("Home directory must not be read by project dispatch"); }),
   workingDirectory: vi.fn<() => string>(() => { throw new Error("Working directory must not be read by project commands"); }),
@@ -30,6 +30,7 @@ const fixture = (projects: readonly Project[] = []) => {
     setTaskProperty: async () => { throw new Error("Unused property API"); },
     removeTaskProperty: async () => { throw new Error("Unused property API"); },
     getCurrentUser: unavailable,
+    getTeamCurrentUser: unavailable, listTeams: unavailable, getTeam: unavailable, listTeamProjects: unavailable,
     reportWorker: unavailable,
     createProject: vi.fn<ApiClient["createProject"]>().mockResolvedValue(project),
     listProjects: vi.fn<ApiClient["listProjects"]>().mockResolvedValue(projects),

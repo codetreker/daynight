@@ -207,14 +207,18 @@ GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
 captured targets, disposable review artifacts, shared refs, and isolation between
-PR worktrees. Independent Git suites run in separate Vitest workers. Each suite
-copies its immutable bare-origin seed into private test directories; refs,
+PR worktrees. Independent Git suites run in separate Vitest workers. Review suites
+copy immutable bare-origin seeds into private test directories; refs,
 SQLite databases, clones and worktrees remain separate for every case. Sparse
 suites prepare their shared source graph before copying; scenario observations
 and mutations remain private. Source snapshots are prepared through batched
 native Git imports, while real clone/fetch/worktree operations remain the test
-subjects. Tests within
-a file stay sequential so environment changes and cleanup have one owner.
+subjects. Worker worktree cases separately copy file-owned starting repositories
+for the files and reftable backends. Direct mutation checks verify independent
+tracked bytes, refs and Git objects in each copy. The
+[Worker seed decision](../.agents/notes/implemented/testing/2026-11-04-worker-git-fixture-seeds.md)
+owns that fixture lifetime. Tests within a file stay sequential so environment
+changes and cleanup have one owner.
 The [Git test decision](../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)
 records the isolation rules, and the
 [CI timing report](../docs/research/windows-ci-performance.md) records native
@@ -224,8 +228,16 @@ separate setup and behavior limits and the existing private-directory cleanup.
 The [fixture lifecycle decision](../.agents/notes/implemented/testing/2026-10-22-submodule-discovery-fixture-lifecycle.md)
 records that separation. The installed acceptance suite additionally verifies the package
 bin, default native command shims, singleton/stale-lock behavior and the complete
-review/re-review/restart/closure lifecycle. Separate npm global-prefix acceptance
-checks self-update and installation ownership. Curated environment and scenario
+review/re-review/restart/closure lifecycle. Its Vitest global setup packs and
+installs the production package once per platform invocation. Consumers own
+private runtime directories; manual, SQL-resource and review lifecycle mutation
+uses private CLI package files with shared read-only dependencies. Global
+teardown checks the canonical package bytes and removes that installation after
+all consumers finish. Consumer receipts report runtime cleanup separately from
+the canonical preparation receipt in `.tmp/installed-cli-preparation.json`.
+The [shared preparation decision](../.agents/notes/implemented/testing/2026-11-04-shared-installed-cli-preparation.md)
+owns installation, view and cleanup responsibilities. Separate npm global-prefix
+acceptance checks self-update and installation ownership. Curated environment and scenario
 receipts are uploaded by each native CI job; [validation](#validation) describes
 their scope and interpretation. Controlled Copilot executables exercise retained sessions, durable
 launch intent, stdin prompts and streamed completion/failure handling. These
@@ -416,9 +428,13 @@ The private [web workspace](../packages/daynight-web/README.md) implements the p
 list, cursor paging, safe API decoding, cancellation, project statistics, task
 graphs, complete task details in centered dialogs or independent pages, and
 single-file attachment management. An open project or standalone detail synchronizes
-its IndexedDB summary base every five seconds while visible, pauses automatic
-reads while hidden and synchronizes immediately on return. The current mount must
-complete a user-matched online sync before displaying persisted private data.
+its IndexedDB summary base every fifteen seconds while visible, pauses automatic
+reads while hidden and synchronizes immediately on return. Current identity is verified through browser-managed `/me` HTTP revalidation;
+unchanged profiles use bodyless wire-level 304 responses. Persistent assignee
+content is restored only after a user-matched online project sync supplies its
+complete qualified-person version manifest. Matching profiles survive reload;
+only changed or missing content is fetched. The cached content grants no project
+or mutation authority.
 Full details reuse matching intrinsic cached content, perform a live read on
 opening and refresh on business-version changes or recovery needs.
 Refresh retains browsing state and the mounted details, including attachment

@@ -7,7 +7,7 @@ import { createLocaleRender } from "./helpers/renderWithLocale";
 
 const render = createLocaleRender("zh-CN");
 const code = "BCDFG-HJKLM";
-const user = { id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: "00000000-0000-4000-8000-000000000001", name: "Alice", email: "alice@example.com", emailVerified: true, avatarUrl: null };
 const inspection = (status: DeviceAuthorizationInspection["status"] = "pending"): DeviceAuthorizationInspection => ({ userCode: code, status, expiresAt: new Date(Date.now() + 600_000).toISOString() });
 const fixture = () => ({ inspect: vi.fn<DeviceAuthorizationApi["inspect"]>().mockResolvedValue(inspection()), decide: vi.fn<DeviceAuthorizationApi["decide"]>().mockResolvedValue(undefined) });
 const switchAccount = vi.fn();

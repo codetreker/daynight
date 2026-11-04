@@ -17,13 +17,24 @@ type UpdateProjectSettingsRequest struct {
 	ExecutionWarningMinutes int32 `json:"executionWarningMinutes"`
 }
 
+type ProjectOwnership struct {
+	TeamID  string `json:"teamId"`
+	Version int64  `json:"version"`
+}
+
+type ProjectDocument struct {
+	Project
+	Access ProjectAccess `json:"access"`
+}
+
 type Project struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	RepoURL   string          `json:"repoUrl"`
-	CreatedAt time.Time       `json:"createdAt"`
-	UpdatedAt time.Time       `json:"updatedAt"`
-	Settings  ProjectSettings `json:"settings"`
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
+	RepoURL   string           `json:"repoUrl"`
+	CreatedAt time.Time        `json:"createdAt"`
+	UpdatedAt time.Time        `json:"updatedAt"`
+	Settings  ProjectSettings  `json:"settings"`
+	Ownership ProjectOwnership `json:"ownership"`
 }
 
 type ProjectPage struct {

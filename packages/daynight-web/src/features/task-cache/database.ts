@@ -1,9 +1,10 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { Project, TaskDetail, TaskSummary } from "../../api/types";
+import type { ProjectPerson } from "../../api/auth-types";
 
 export const TASK_CACHE_DATABASE = "daynight-task-cache";
-export const TASK_CACHE_SCHEMA = 4;
-export const TASK_CACHE_STORES = ["userScopes", "projects", "summaries", "details"] as const;
+export const TASK_CACHE_SCHEMA = 6;
+export const TASK_CACHE_STORES = ["userScopes", "projects", "summaries", "details", "profiles"] as const;
 export type UserScopeRecord = { readonly userId: string; readonly userFence: string };
 export type ProjectRecord = {
   readonly userId: string; readonly projectId: string; readonly userFence: string;
@@ -22,11 +23,17 @@ export type DetailRecord = {
   readonly userFence: string; readonly cacheGeneration: string;
   readonly detail: TaskIntrinsicDetail; readonly byteSize: number; readonly lastUsedAt: number;
 };
+export type CachedProfile = Omit<ProjectPerson, "hasProjectAccess">;
+export type ProfileRecord = {
+  readonly userId: string; readonly projectId: string; readonly profileUserId: string;
+  readonly userFence: string; readonly profile: CachedProfile;
+};
 export interface TaskCacheSchema extends DBSchema {
   userScopes: { key: string; value: UserScopeRecord };
   projects: { key: [string, string]; value: ProjectRecord; indexes: { "by-user": string } };
   summaries: { key: [string, string, string]; value: SummaryRecord; indexes: { "by-user": string; "by-project": [string, string] } };
   details: { key: [string, string, string]; value: DetailRecord; indexes: { "by-user": string; "by-project": [string, string] } };
+  profiles: { key: [string, string, string]; value: ProfileRecord; indexes: { "by-user": string; "by-project": [string, string] } };
 }
 export class TaskCacheError extends Error {
   constructor(readonly category: "storage" | "blocked" | "versionchange" | "closed" | "corrupt", cause?: unknown) {
@@ -61,12 +68,17 @@ export class TaskCacheDatabase {
             store.createIndex("by-user", "userId");
             store.createIndex("by-project", ["userId", "projectId"]);
           }
-        } else {
+        } else if (oldVersion < 5) {
           const rebuild = async () => {
             for (const name of ["projects", "summaries", "details"] as const) await transaction.objectStore(name).clear();
             for await (const cursor of transaction.objectStore("userScopes")) await cursor.update({ userId: cursor.value.userId, userFence: crypto.randomUUID() });
           };
           void rebuild().catch((error: unknown) => { upgradeFailure = error; try { transaction.abort(); } catch { /* The failed upgrade may already be aborted. */ } });
+        }
+        if (!database.objectStoreNames.contains("profiles")) {
+          const profiles = database.createObjectStore("profiles", { keyPath: ["userId", "projectId", "profileUserId"] });
+          profiles.createIndex("by-user", "userId");
+          profiles.createIndex("by-project", ["userId", "projectId"]);
         }
       },
       blocked: () => {

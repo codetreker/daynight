@@ -13,6 +13,36 @@ const ownerName = 'Claim owner '.repeat(16) + 'complete';
 const account = `${'account'.repeat(24)}@example.com`;
 const machineName = 'Machine-'.repeat(24) + 'complete';
 
+export const verifyClaimControlFocus = async (heading: Locator, overviewTab: Locator): Promise<void> => {
+  const withdraw = heading.getByRole('button', { name: /^(强制撤回|Force withdraw)$/, exact: true });
+  const expectWithdrawVisible = async (): Promise<void> => {
+    await expect.poll(() => withdraw.evaluate((element) => {
+      const bounds = element.getBoundingClientRect(), region = element.closest('.task-detail-heading')!.getBoundingClientRect();
+      return bounds.top >= region.top - 1 && bounds.bottom <= region.bottom + 1;
+    })).toBe(true);
+  };
+  await overviewTab.focus();
+  await heading.evaluate((element) => { element.scrollTop = 0; });
+  await overviewTab.press('Shift+Tab');
+  await expect(withdraw).toBeFocused();
+  await expectWithdrawVisible();
+
+  await heading.focus();
+  await heading.press('Home');
+  await expect.poll(() => heading.evaluate((element) => element.scrollTop)).toBe(0);
+  await heading.press('End');
+  await expect.poll(() => heading.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1);
+  if (await heading.evaluate((element) => element.scrollHeight > element.clientHeight + 1)) {
+    await heading.evaluate((element) => { element.scrollTop = 0; });
+    const bounds = (await heading.boundingBox())!;
+    await heading.page().mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await heading.page().mouse.wheel(0, 250);
+    await expect.poll(() => heading.evaluate((element) => Math.abs(element.scrollTop - Math.min(250, element.scrollHeight - element.clientHeight)))).toBeLessThanOrEqual(1);
+  }
+  await withdraw.focus();
+  await expectWithdrawVisible();
+};
+
 const expectIdentityEdges = async (heading: Locator): Promise<void> => {
   for (const selector of ['.task-claim-owner strong', '.task-claim-account', '.task-claim-execution > span:first-child']) {
     for (const edge of ['start', 'end'] as const) {
@@ -69,7 +99,7 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
   const membersURL = `**/api/v1/projects/${project.id}/members`;
   await page.route(membersURL, async (route) => {
     const response = await api.get(`/api/v1/projects/${project.id}/members`);
-    const body = { items: parseMembers(await decodeMembersJson(new Response(await response.text())), project.id) };
+    const body = parseMembers(await decodeMembersJson(new Response(await response.text())), project.id);
     const headers = { ...response.headers() }; delete headers['content-length'];
     await route.fulfill({ status: response.status(), headers, body: stringifyWireJson({ ...body, items: body.items.map((member) => member.userId === readWorkerClaim(current.properties)!.userId ? { ...member, profile: { ...member.profile, name: ownerName, email: account } } : member) }) });
   });
@@ -113,17 +143,7 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
             const overviewBounds = await overview.boundingBox();
             expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
             await expectIdentityEdges(heading);
-            await heading.focus(); await page.keyboard.press('Home'); await page.keyboard.press('End');
-            if (await heading.evaluate((element) => element.scrollHeight > element.clientHeight + 1)) {
-              await heading.evaluate((element) => { element.scrollTop = 0; });
-              const bounds = (await heading.boundingBox())!;
-              await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-              await page.mouse.wheel(0, 250);
-              await expect.poll(() => heading.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-            }
-            const withdraw = heading.getByRole('button', { name: /^(强制撤回|Force withdraw)$/, exact: true });
-            await withdraw.focus();
-            await expect.poll(() => withdraw.evaluate((element) => { const bounds = element.getBoundingClientRect(), region = element.closest('.task-detail-heading')!.getBoundingClientRect(); return bounds.top >= region.top - 1 && bounds.bottom <= region.bottom + 1; })).toBe(true);
+            await verifyClaimControlFocus(heading, root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }));
             await root.getByRole('tab', { name: /^(附件|Attachments)$/, exact: true }).click();
             await (await attachmentFileButton(root, 'docs/guide.md')).click();
             const preview = root.locator('.attachment-preview-body');

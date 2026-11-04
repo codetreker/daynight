@@ -11,7 +11,7 @@ const projectId = "a1b2c3d4-1111-4222-8333-123456789abc";
 const secondId = "a1b2c3d4-1111-4222-8333-123456789abd";
 const project = (id = projectId, name = "Project 中文") => ({
   id, name, repoUrl: "git@git.example:Org/Repo.git",
-  settings: { version: 1n, executionWarningMinutes: 60 },
+  settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n },
   createdAt: "2026-10-20T00:00:00.123456789Z", updatedAt: "2026-10-20T00:00:00.123456789Z",
 });
 

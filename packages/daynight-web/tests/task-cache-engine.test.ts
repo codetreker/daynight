@@ -16,9 +16,9 @@ const nextEpoch = "30000000-0000-0000-0000-000000000002";
 const taskId = (n: number) => `40000000-0000-0000-0000-${n.toString().padStart(12, "0")}`;
 const time = "2026-10-20T12:00:00.123456789Z";
 const later = "2026-10-20T12:00:01.000000001Z";
-const project: Project = { id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ assignedTo: null, id: taskId(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
-const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, tasks, ...changes });
+const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, tasks, ...changes });
 const signal = () => new AbortController().signal;
 const scopes: TaskCacheScope[] = [];
 const connections: IDBPDatabase<TaskCacheSchema>[] = [];
@@ -62,10 +62,10 @@ afterEach(() => {
   for (const database of connections.splice(0)) database.close();
 });
 
-it("atomically saves four-store data and reopens the exact maximum without granting local access", async () => {
+it("atomically saves task data and reopens the exact maximum without granting local access", async () => {
   const first = scope(); const result = await seed(first, [task(1), task(2, { updatedAt: later, version: 9_007_199_254_740_993n })]);
   const database = await inspect();
-  expect([...database.objectStoreNames]).toEqual(["details", "projects", "summaries", "userScopes"]);
+  expect([...database.objectStoreNames]).toEqual(["details", "profiles", "projects", "summaries", "userScopes"]);
   const manifest = await database.get("projects", [userId, projectId]);
   expect(manifest).toMatchObject({ state: "active", epoch, maxUpdatedAt: later, taskCount: 2, edgeCount: 0 });
   expect(result.project.versions.get(taskId(2))).toBe(9_007_199_254_740_993n); first.dispose();
@@ -424,4 +424,50 @@ it("rolls property replacements and the watermark back together after a partial 
   expect((await database.get("summaries", [userId, projectId, taskId(1)]))!.summary.properties).toEqual(original[0]!.properties);
   expect((await database.get("summaries", [userId, projectId, taskId(2)]))!.summary.properties).toEqual(original[1]!.properties);
   expect(await database.get("projects", [userId, projectId])).toEqual(initial.project.manifest);
+});
+
+it("stores profile content only behind current online admission and retains it across task history replacement", async () => {
+  const cache = scope(); const unadmitted = await cache.beginSync(projectId, signal());
+  const profile = { userId: otherUser, version: "a".repeat(64), name: null, avatarUrl: "data:image/svg+xml;base64,PHN2Zy8+" };
+  await expect(cache.readProfiles(unadmitted, signal())).rejects.toMatchObject({ name: "AbortError" });
+  await seed(cache); const first = await cache.beginSync(projectId, signal());
+  await cache.writeProfiles(first, [profile], signal());
+  expect(await cache.readProfiles(first, signal())).toEqual([profile]);
+  await cache.applySync(first, response([], { mode: "snapshot", epoch: nextEpoch }), signal());
+  const next = await cache.beginSync(projectId, signal());
+  expect(next.cacheGeneration).not.toBe(first.cacheGeneration);
+  expect(await cache.readProfiles(next, signal())).toEqual([profile]);
+  await expect(cache.writeProfiles(first, [{ ...profile, name: "Obsolete history" }], signal())).rejects.toMatchObject({ name: "AbortError" });
+  expect(await cache.readProfiles(next, signal())).toEqual([profile]);
+});
+
+it("purges profile content for project withdrawal and user invalidation while preserving another viewer", async () => {
+  const cache = scope(); const other = scope(otherUser); await seed(cache); await seed(other);
+  const profile = { userId: otherUser, version: "a".repeat(64), name: "Shared person", avatarUrl: null };
+  const ticket = await cache.beginSync(projectId, signal()), otherTicket = await other.beginSync(projectId, signal());
+  await cache.writeProfiles(ticket, [profile], signal()); await other.writeProfiles(otherTicket, [profile], signal());
+  await cache.revokeProject(ticket, signal()); const database = await inspect();
+  expect(await database.getAllFromIndex("profiles", "by-user", userId)).toEqual([]);
+  expect(await other.readProfiles(otherTicket, signal())).toEqual([profile]);
+  await seed(cache); const fresh = await cache.beginSync(projectId, signal()); await cache.writeProfiles(fresh, [profile], signal());
+  await cache.invalidateScope(); expect(await database.getAllFromIndex("profiles", "by-user", userId)).toEqual([]);
+  expect(await other.readProfiles(otherTicket, signal())).toEqual([profile]);
+});
+
+it("merges ownership within one epoch and replaces restored history without persisting access", async () => {
+  const cache = scope(); const initial = await seed(cache);
+  const ownership = { teamId: otherProject, version: 9_007_199_254_740_993n };
+  const changed = await delta(cache, [], { project: { ...project, ownership } });
+  expect(changed.changed).toBe(true);
+  expect(changed.project.graph.project.ownership).toEqual(ownership);
+  expect(changed.project.index).toBe(initial.project.index);
+  const old = await delta(cache, [], { project: { ...project, updatedAt: later } });
+  expect(old.project.graph.project.ownership).toEqual(ownership);
+  await expect(delta(cache, [], { project: { ...project, ownership: { ...ownership, teamId: project.ownership.teamId } } })).rejects.toMatchObject({ kind: "protocol" });
+  const next = await delta(cache, [], { mode: "snapshot", epoch: nextEpoch });
+  expect(next.project.graph.project.ownership).toEqual(project.ownership);
+  const database = await inspect();
+  expect((await database.get("projects", [userId, projectId]))!.project).not.toHaveProperty("access");
+  expect((await database.get("projects", [userId, projectId]))!.project).not.toHaveProperty("ownerTeam");
+  expect(next.project.graph.project.settings).toEqual(project.settings);
 });

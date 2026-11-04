@@ -28,7 +28,7 @@ const indexOf = (items = seeds): GraphIndex => {
   });
   const graph: TaskGraph = {
     observedAt: time,
-    project: { id: 'project', name: 'Project', repoUrl: 'https://github.com/example/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
+    project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: 'project', name: 'Project', repoUrl: 'https://github.com/example/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
     tasks,
     summary: {
       total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
@@ -54,10 +54,10 @@ describe('Goal task lists', () => {
     expect(disclosure()).toHaveAttribute('aria-controls', children().id);
     const rows = within(children()).getAllByRole('button', { name: /已完成|进行中|待处理/ });
     expect(rows.map((row) => row.querySelector('.root-title')!.textContent)).toEqual(['Implementation', 'Acceptance', 'Other root']);
-    expect(rows.map((row) => row.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
+    expect(rows.map((row) => row.closest('.goal-task-row')!.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
     expect(rows.map((row) => row.getAttribute('data-task-status'))).toEqual(['in_progress', 'todo', 'done']);
     expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'in_progress');
-    expect(rows[1]).toHaveTextContent('被阻塞');
+    expect(rows[1]!.closest('.goal-task-row')).toHaveTextContent('被阻塞');
     expect(within(children()).queryByText('External')).toBeNull();
     expect(within(children()).queryByText('Standalone')).toBeNull();
     expect(disclosure().querySelector('.root-progress-label')).toHaveTextContent('2/4 已完成');
@@ -77,7 +77,7 @@ describe('Goal task lists', () => {
     expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^1 进行中$/);
     view.rerender(list(indexOf(remaining.map((item) => item.id === 'Goal' ? { ...item, status: 'done' as const } : item))));
     expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^0 进行中$/);
-    expect(disclosure().querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(disclosure().parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
     view.setLocale('en');
     expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^0 in progress$/);
   });

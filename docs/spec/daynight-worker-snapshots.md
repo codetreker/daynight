@@ -1,6 +1,6 @@
 # Worker 运行快照接口
 
-本文定义账号级 Worker 最新运行快照的服务端协议。[设计](../design/daynight-worker-snapshots.md)拥有事务、查询与存储机制；[客户端上报需求](daynight-worker-reporting.md)拥有 CLI 的持续采集、调度与取消；[任务认领协议](../design/daynight-worker-claims.md)继续拥有任务执行归属。
+本文定义账号级 Worker 最新运行快照的服务端协议。[设计](../design/daynight-worker-snapshots.md)拥有事务、查询与存储机制；[客户端上报需求](daynight-worker-reporting.md)拥有 CLI 的持续采集、调度与取消；[任务认领协议](../design/daynight-worker-claims.md)继续拥有任务执行归属。[云端配置接口](daynight-worker-configuration.md)拥有独立的目标与应用观测，以及显式选择的报告扩展；本页默认报告格式保持。
 
 Worker 快照是认证客户端主动提交的观测。服务端校验格式、账号及任务归属，不执行系统采集或启动执行进程。硬件和版本数据是客户端提供的展示信息，机器名称及 machine.id 不构成认证身份。
 
@@ -8,7 +8,7 @@ Worker 快照是认证客户端主动提交的观测。服务端校验格式、�
 
 | 方法 | 路径 | 成功结果 |
 |---|---|---|
-| POST | `/api/v1/me/workers/{workerId}/report` | `200`，`{observedAt,lastReportedAt}` |
+| POST | `/api/v1/me/workers/{workerId}/report` | `200`，默认 `{observedAt,lastReportedAt}`；显式配置协议扩展其回执 |
 | GET | `/api/v1/me/workers` | `200`，`{observedAt,items,nextCursor}` |
 | GET | `/api/v1/me/workers/{workerId}` | `200`，`{observedAt,worker}` |
 
@@ -20,7 +20,7 @@ Worker 资源键为认证账号与规范 workerId 的组合。workerId、machine
 
 请求为 UTF-8 `application/json`，最多 1 MiB。必须是单个对象；各层字段名区分大小写，未知字段、重复键、缺少必填字段、错误分支字段及尾随 JSON 均为 `400 invalid_input`。报告端点不接受查询参数。
 
-以下顶层字段必填；`assistantHost` 为可选扩展，旧报告省略该字段仍有效：
+以下顶层字段必填；`assistantHost` 为可选扩展，旧报告省略该字段仍有效。选择配置协议时另外要求其定义的 `configuration` 字段，未选择时该字段仍属于未知输入：
 
 | 字段 | 内容 |
 |---|---|

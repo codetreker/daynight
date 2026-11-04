@@ -1,8 +1,9 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { lstat, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import crossSpawn from "cross-spawn";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
+import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 import { inspectInstalledSkill } from "../fixtures/skill-contract.js";
 import type { InstalledSkillContract } from "../fixtures/skill-contract.js";
 import { createSkillFixture, skillPipe, skillTerminal, skillTerminalEvidence, skillTerminalSessionsClosed } from "../fixtures/skill-terminal.js";
@@ -11,14 +12,14 @@ import type { SkillFixture, TerminalAction } from "../fixtures/skill-terminal.js
 const agentsPrompt = "Install the using-daynight skill for which agents?";
 const scopePrompt = "Where should the skill be installed?";
 const down = "\u001b[B";
-let installed: Awaited<ReturnType<typeof createInstalledCli>>;
+let installed: Awaited<ReturnType<typeof createAcceptanceCli>>;
 let skillBundle: InstalledSkillContract | undefined;
 let sequence = 0;
 const scenarios: string[] = [];
 const evidencePath = path.resolve(import.meta.dirname, "../../../../.tmp/skill-install-evidence.json");
 beforeAll(async () => {
   await rm(evidencePath, { force: true });
-  installed = await createInstalledCli();
+  installed = await createAcceptanceCli();
   const source = path.resolve(import.meta.dirname, "../../src/commands/skill/skills/using-daynight");
   expect(await tree(bundle())).toEqual(await tree(source));
   skillBundle = await inspectInstalledSkill(bundle());
@@ -27,14 +28,14 @@ afterAll(async () => {
   if (installed === undefined) return;
   const failures: unknown[] = [];
   try { await installed.cleanup(); } catch (cause) { failures.push(cause); }
-  let installationRemoved = false;
+  let runtimeRemoved = false;
   try { await lstat(installed.receipt.root); }
-  catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") installationRemoved = true; else failures.push(cause); }
+  catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") runtimeRemoved = true; else failures.push(cause); }
   const { packageVersion, tarballSha256, entrySha256, source } = installed.receipt;
   const terminalSessionsClosed = skillTerminalSessionsClosed();
-  await writeFile(evidencePath, `${JSON.stringify({ schemaVersion: 1, success: scenarios.length === 15 && failures.length === 0 && installationRemoved && terminalSessionsClosed, platform: process.platform, nodeVersion: process.version, artifact: { packageVersion, tarballSha256, entrySha256, source }, scenarios, terminals: skillTerminalEvidence, skillBundle: { metadata: skillBundle?.metadata, resources: skillBundle?.resources }, cleanup: { installationRemoved, terminalSessionsClosed, errors: failures.length } }, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(evidencePath, `${JSON.stringify({ schemaVersion: 1, success: scenarios.length === 15 && failures.length === 0 && runtimeRemoved && terminalSessionsClosed, platform: process.platform, nodeVersion: process.version, artifact: { packageVersion, tarballSha256, entrySha256, source }, scenarios, terminals: skillTerminalEvidence, skillBundle: { metadata: skillBundle?.metadata, resources: skillBundle?.resources }, cleanup: { runtimeRemoved, terminalSessionsClosed, errors: failures.length } }, null, 2)}\n`, { mode: 0o600 });
   if (failures.length !== 0) throw new AggregateError(failures, "Installed skill acceptance cleanup failed.");
-  expect(installationRemoved).toBe(true);
+  expect(runtimeRemoved).toBe(true);
   expect(terminalSessionsClosed).toBe(true);
 });
 

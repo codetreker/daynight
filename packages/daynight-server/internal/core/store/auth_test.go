@@ -133,7 +133,8 @@ func TestIdentityStorageOperationalFailures(t *testing.T) {
 			case "insert-session", "delete-session", "authenticate":
 				table = "sessions"
 			}
-			if _, err := s.Pool.Exec(context.Background(), "DROP TABLE "+table); err != nil {
+			// Keep dependent constraints intact while making the queried relation unavailable.
+			if _, err := s.Pool.Exec(context.Background(), "ALTER TABLE "+table+" RENAME TO unavailable_"+table); err != nil {
 				t.Fatal(err)
 			}
 			var err error

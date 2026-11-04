@@ -17,7 +17,7 @@ const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({ ass
 });
 const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot => {
   const graph: TaskGraph = {
-    project: { id: 'project', name: 'Project', repoUrl: 'https://example.com/repo', createdAt: start, updatedAt: start,
+    project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: 'project', name: 'Project', repoUrl: 'https://example.com/repo', createdAt: start, updatedAt: start,
       settings: { version: 1n, executionWarningMinutes: 1 } },
     observedAt: at(elapsed), tasks: [task('Goal', { dependsOn: [] }), ...tasks],
     summary: { total: tasks.length + 1, todo: tasks.filter((item) => item.status === 'todo').length,
@@ -53,7 +53,7 @@ describe('Goal child execution duration', () => {
     const view = renderWithLocale(content(snapshot(tasks), onOpenTask), { locale, taskCache: true });
     expand();
     const running = [row('manual'), row('automatic')];
-    const names = locale === 'en' ? ['manualAssignee: UnassignedIn progress', 'automaticAssignee: UnassignedIn progress'] : ['manual负责人：未分配进行中', 'automatic负责人：未分配进行中'];
+    const names = locale === 'en' ? ['manualAssignee: Unassigned In progress', 'automaticAssignee: Unassigned In progress'] : ['manual负责人：未分配 进行中', 'automatic负责人：未分配 进行中'];
     for (const [index, element] of running.entries()) {
       expect(element).toHaveAccessibleName(names[index]!);
       expect(element.querySelector('time')).toHaveTextContent(locale === 'en' ? '< 1 min' : '不足 1 分钟');

@@ -29,7 +29,7 @@ func TestProjectAccessProjectionAndAuthorization(t *testing.T) {
 		{member, joined.Grant},
 	} {
 		access, err := f.projects.Access(ctx, test.principal, strings.ToUpper(project.ID))
-		if err != nil || !reflect.DeepEqual(access, core.ProjectAccess{ProjectID: project.ID, UserID: test.principal.UserID, Role: test.grant.Role, DirectGrant: &test.grant}) {
+		if err != nil || (access.ProjectID != project.ID || access.UserID != test.principal.UserID || access.Role != test.grant.Role || !reflect.DeepEqual(access.DirectGrant, &test.grant)) {
 			t.Fatalf("current actor access: %#v %v", access, err)
 		}
 	}

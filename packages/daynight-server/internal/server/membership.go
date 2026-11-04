@@ -25,6 +25,8 @@ func (h *MembershipRoutes) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/members", h.auth.Require(h.listMembers))
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/members/{userId}", h.auth.Require(h.setRole))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/members/{userId}", h.auth.Require(h.removeMember))
+	mux.HandleFunc("PUT /api/v1/projects/{projectId}/grants/{userId}", h.auth.Require(h.setGrant))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/grants/{userId}", h.auth.Require(h.removeGrant))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/invitations", h.auth.Require(h.listInvitations))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/invitations", h.auth.Require(h.createInvitation))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/invitations/{inviteId}", h.auth.Require(h.revokeInvitation))
@@ -33,6 +35,7 @@ func (h *MembershipRoutes) RegisterRoutes(mux *http.ServeMux) {
 	for path, methods := range map[string]string{
 		"/api/v1/projects/{projectId}/members":                "GET, HEAD",
 		"/api/v1/projects/{projectId}/members/{userId}":       "PATCH, DELETE",
+		"/api/v1/projects/{projectId}/grants/{userId}":        "PUT, DELETE",
 		"/api/v1/projects/{projectId}/invitations":            "GET, HEAD, POST",
 		"/api/v1/projects/{projectId}/invitations/{inviteId}": "DELETE",
 		"/api/v1/invitations/inspect":                         "POST",
@@ -60,7 +63,11 @@ func participantResponse(participant core.ProjectParticipant) api.ProjectPartici
 		response := projectGrantResponse(*grant)
 		direct = &response
 	}
-	return api.ProjectParticipant{UserID: participant.UserID, EffectiveRole: string(participant.EffectiveRole), DirectGrant: direct,
+	var inherited *api.ProjectInheritance
+	if source := participant.InheritedFrom; source != nil {
+		inherited = &api.ProjectInheritance{Team: teamRefResponse(source.Team), Role: string(source.Role)}
+	}
+	return api.ProjectParticipant{InheritedFrom: inherited, UserID: participant.UserID, EffectiveRole: string(participant.EffectiveRole), DirectGrant: direct,
 		Profile: api.ProjectParticipantProfile{Name: participant.Profile.Name, Email: participant.Profile.Email, AvatarURL: participant.Profile.AvatarURL}}
 }
 
@@ -97,13 +104,13 @@ func (h *MembershipRoutes) listMembers(w http.ResponseWriter, request *http.Requ
 		writeError(w, request, logger, "membership", "list", err)
 		return
 	}
-	members, err := h.memberships.List(request.Context(), principal, id)
+	members, err := h.memberships.ListWithAccess(request.Context(), principal, id)
 	if err != nil {
 		writeError(w, request, logger, "membership", "list", err)
 		return
 	}
-	response := api.ProjectParticipantList{Items: make([]api.ProjectParticipant, 0, len(members))}
-	for _, member := range members {
+	response := api.ProjectParticipantList{Items: make([]api.ProjectParticipant, 0, len(members.Items)), ActorAccess: projectAccessResponse(members.ActorAccess)}
+	for _, member := range members.Items {
 		response.Items = append(response.Items, participantResponse(member))
 	}
 	membershipCompleted(request, logger, "list")

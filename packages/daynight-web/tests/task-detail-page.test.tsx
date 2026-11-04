@@ -280,7 +280,7 @@ describe('standalone full task details', () => {
     await screen.findByRole('heading', { name: '独立任务' });
   });
 
-  it('reuses full details after an unchanged five-second graph receipt while retaining the mounted view', async () => {
+  it('reuses full details after an unchanged fifteen-second graph receipt while retaining the mounted view', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const fixture = installed();
     window.history.replaceState(null, '', address());
@@ -288,7 +288,7 @@ describe('standalone full task details', () => {
     const title = await screen.findByRole('heading', { name: '独立任务' });
     const body = document.querySelector('.task-detail-body');
     expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(fixture.fetcher.mock.calls.filter(([url]) => new URL(url, location.origin).pathname.endsWith('/task-sync'))).toHaveLength(2));
     expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(1);
     expect(screen.getByRole('heading', { name: '独立任务' })).toBe(title);

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
 )
 
@@ -188,5 +189,63 @@ func TestWorkerAssistantHostHTTPPersistenceAndLegacyReplacement(t *testing.T) {
 	page := decodeResponse[api.WorkerPage](t, projectRequest(handler, http.MethodGet, "/api/v1/me/workers", ""), http.StatusOK)
 	if len(page.Items) != 1 {
 		t.Fatal("assistant reporting changed worker listing")
+	}
+}
+
+func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T) {
+	handler := projectTestHandler(t, projectTestStore(t), &bytes.Buffer{})
+	id := uuid.NewString()
+	path := "/api/v1/me/workers/" + id
+	host := assistantHostBody()
+	value := configurationHTTPValue()
+	body := configurationHTTPReportBody(value, nil)
+	body["assistantHost"] = host
+	var wantHost api.WorkerAssistantHost
+	if err := json.Unmarshal([]byte(jsonBody(t, host)), &wantHost); err != nil {
+		t.Fatal(err)
+	}
+	var wantConfiguration core.WorkerConfiguration
+	if err := json.Unmarshal([]byte(jsonBody(t, value)), &wantConfiguration); err != nil {
+		t.Fatal(err)
+	}
+
+	response := configurationHTTPRequest(handler, http.MethodPost, path+"/report", jsonBody(t, body), "1")
+	receipt := decodeResponse[configurationHTTPReceipt](t, response, http.StatusOK)
+	if response.Header().Get(workerConfigurationHeader) != "1" || receipt.Configuration.Desired == nil || receipt.Configuration.Desired.Revision != "1" || !reflect.DeepEqual(receipt.Configuration.Desired.Value, wantConfiguration) {
+		t.Fatalf("combined report did not negotiate and bootstrap configuration: %s", response.Body)
+	}
+	detail := snapshotDetailHTTP(t, handler, id)
+	if !reflect.DeepEqual(detail.Worker.Telemetry.AssistantHost, &wantHost) {
+		t.Fatalf("configuration exchange changed the stored assistant host: %+v", detail.Worker.Telemetry.AssistantHost)
+	}
+	configuration := decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
+	if !reflect.DeepEqual(configuration.Desired, receipt.Configuration.Desired) || configuration.Observation != nil || configuration.ObservationRevision != "0" {
+		t.Fatalf("combined report configuration was not persisted independently: %+v", configuration)
+	}
+	rejectedHost := assistantHostBody()
+	rejectedHost["defaultCwd"] = "/rejected-assistant-host"
+	rejected := configurationHTTPReportBody(nil, map[string]any{"baseRevision": "0", "desiredRevision": "2", "items": []any{}})
+	rejected["assistantHost"] = rejectedHost
+	assertProjectError(t, configurationHTTPRequest(handler, http.MethodPost, path+"/report", jsonBody(t, rejected), "1"), http.StatusBadRequest, "invalid_input")
+	if after := snapshotDetailHTTP(t, handler, id); !reflect.DeepEqual(after.Worker, detail.Worker) {
+		t.Fatalf("refused configuration exchange committed a partial worker report: %+v", after.Worker)
+	}
+	if after := decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK); !reflect.DeepEqual(after, configuration) {
+		t.Fatalf("refused configuration exchange changed the stored configuration: %+v", after)
+	}
+
+	delete(body, "assistantHost")
+	delete(body, "configuration")
+	legacy := projectRequest(handler, http.MethodPost, path+"/report", jsonBody(t, body))
+	fields := decodeResponse[map[string]json.RawMessage](t, legacy, http.StatusOK)
+	if len(fields) != 2 || fields["observedAt"] == nil || fields["lastReportedAt"] == nil || legacy.Header().Get(workerConfigurationHeader) != "" {
+		t.Fatalf("legacy heartbeat received an extended report receipt: %s", legacy.Body)
+	}
+	if snapshotDetailHTTP(t, handler, id).Worker.Telemetry.AssistantHost != nil {
+		t.Fatal("legacy replacement retained obsolete assistant hosting capability")
+	}
+	retained := decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
+	if !reflect.DeepEqual(retained, configuration) {
+		t.Fatalf("legacy heartbeat changed the stored cloud configuration: %+v", retained)
 	}
 }

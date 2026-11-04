@@ -188,7 +188,7 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 }
 
 func userResponse(user core.User) api.User {
-	return api.User{ID: user.ID, Email: user.Email, EmailVerified: user.EmailVerified, Name: user.Name, AvatarURL: user.AvatarURL}
+	return api.User{ID: user.ID, Email: user.Email, EmailVerified: user.EmailVerified, Name: user.Name, AvatarURL: user.AvatarURL, PersonalTeam: teamRefResponse(user.PersonalTeam)}
 }
 func tokenResponse(c core.PersonalAccessToken) api.PersonalAccessToken {
 	return api.PersonalAccessToken{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.UTC(), ExpiresAt: utcTokenExpiry(c.ExpiresAt)}
@@ -201,7 +201,7 @@ func (h *Authentication) me(w http.ResponseWriter, request *http.Request, p core
 		writeError(w, request, h.logger.With("user_id", p.UserID), "auth", "me", err)
 		return
 	}
-	writeJSON(w, request, h.logger, http.StatusOK, userResponse(user))
+	h.writeCachedUser(w, request, userResponse(user))
 }
 func (h *Authentication) logout(w http.ResponseWriter, request *http.Request, p core.Principal) {
 	if err := h.identity.Logout(request.Context(), p); err != nil {

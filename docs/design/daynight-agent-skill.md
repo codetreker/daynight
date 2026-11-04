@@ -123,15 +123,15 @@ controller。Skill、task、附件和完成规则均不授予合并等额外交�
 | `authorization.md` | 必需追踪与评审、创建和执行等操作授权、任务范围与连续性 |
 | `setup.md` | CLI、登录、项目和仓库指示的连接准备 |
 | `project-management.md` | 项目发现、身份核验、复用与授权登记 |
-| `task-management.md` | 查询范围、元数据、状态、依赖分类、去冗余、变更后图核验与删除 |
+| `task-management.md` | 查询范围、Steps 操作、元数据、状态、依赖分类、去冗余、变更后图核验与删除 |
 | `write-safety.md` | 精确版本、冲突、不确定写入、附件并发与多步操作 |
 | `final-acceptance.md` | 整体验收结论、证据与临时辅助脚本边界 |
 | `create-task.md` | 明确创建许可、具体成果边界、已有任务匹配、资料准备与登记完整性 |
 | `run-task.md` | 普通指定任务的开始、恢复、重开、普通 done 与返回；普通 Goal 的明确讨论转场 |
 | `autopilot-managed-task.md` | 显式 assignment 核验、原 active claim、指定工作区、按类型的必需附件和评审、单任务自主交付循环、交互信号与等待、claim-bound done 与交还 controller |
-| `task-execution.md` | 两种执行入口共用的真实任务输入、阶段资料、范围、交付、成果、验收准备与 session 等待检查点；不拥有开始或最终状态写入 |
+| `task-execution.md` | 两种执行入口共用的真实任务输入、按项目规则维护 Steps、阶段资料、范围、交付、成果、验收准备与 session 等待检查点；不拥有开始或最终状态写入 |
 | `goal.md` | Goal 判断、顺序讨论与用户确认、阶段开始授权、确认后实际拆分、恢复和整体验收 |
-| `task-content.md` | 任务定义与成果、task/session 分类、唯一内容所有者、引用读取和阶段适用性 |
+| `task-content.md` | 任务定义与成果、持久 Steps 与 session 内容分类、唯一内容所有者、引用读取和阶段适用性 |
 | `handoff.md` | 指定移交授权、充分性与本人负责人检查、许可更新、只读复审、状态与并发结果核对 |
 
 task description 明确当前任务、责任与资料入口。`task-content.md` 统一拥有 task/session
