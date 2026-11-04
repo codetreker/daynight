@@ -8,6 +8,8 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 
 Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端完整自有 claim 清单，实际资源状态分别来自 Herdr、Controller journal、操作系统、Git 和文件系统；归档完成来自服务端回执。本机主索引只承担项目映射、认领、模式和原生会话身份，清理记录只保存资源身份、控制意图、期限和重试策略，不能用操作完成标记替代重新观察。macOS Herdr 另以独立持久 journal 保存原运行、输入准入、Session 连接与停止证据；[Herdr 生命周期设计](../design/herdr-worker-lifecycle.md)拥有该机制。Linux/Windows Herdr 的执行计时与业务输入观察保留在进程内；Web 保留执行配置、恢复预算和原生操作身份，并从 Controller 拥有的回执与进程实例证明读取原生事实，以满足[Task Session 需求](task-sessions.md)的未知结果不重放及单 writer 要求。
 
+独立 Bot 的本地库存与启动意图由[Bot 库存需求](worker-bot-inventory.md)拥有，使用相同 Worker 锁和 SQLite 格式，不参与 Task 容量计算。
+
 ## 必须满足的行为
 
 ### W-01：前台运行、配置与平台
@@ -21,7 +23,7 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 - 同 agent 类型逐字段继承；切换类型清除未显式给出的 model/args。Args 整体替换，不允许覆盖 worker 拥有的 cwd/session/model/mode 位置或固定 full access 策略；冲突参数在启动前明确拒绝。配置在启动/重启读取，不热重载；已认领执行保留 agent 和原生 session ID，重新启动使用当前适用的 model/args，不把另一工具的参数套到原工具。
 - `worker repo list [--json]` 读取本地选择；add/remove 选择远端现存可访问 Project。省略 --project 时多选显示名称、完整 UUID、repoUrl，至少选一项；显式 --project 支持非交互。新增保存 projectId、原 repoUrl、绝对 path；匹配既有注册保留传输 URL、路径和覆盖，remote-only 项只补 projectId。Remove 只改变后续领取范围，保留 clone、claim、worktree 和原生历史。
 - worker.repositoryRoot 独立于 review，只在新增注册时展开，改变根不移动已有路径。Repo 操作拥有 worker.repositories 及保留条目的 projectId；setup 另拥有全局 agent/model/args 及确认重置的仓库原生字段。所有写入锁内重读并拒绝相关服务/凭据、根和仓库变动，保护其他解码值及保留条目的未知字段；显式删除拥有整个所选条目。共享 alias 影响非归属值时拒绝保存，保持原文件；无关字段、注释和安全 alias 保留。网络与提示不持配置锁。
-- 空配置的交互式 run 先引导选择，非交互给出 repo add --project 指引。选择使用同一份捕获的服务凭据及 worker 设置；取消、失败或不完整选择不能启动任务资源。持久恢复动作从本次成功项目映射及完整清单开始，不承诺离线延续通用管理意图；原终态清理期限、重试调度及 macOS 原运行的持久停止责任必须保留。
+- `worker run` 允许 repositories 为空，在普通目录和非交互环境直接启动，不自动引导配置、不创建虚假 Project、Task 或 worktree。新 Task 领取范围仍只来自显式配置；可通过 `worker setup` 或 `worker repo add --project` 配置下次启动的范围。服务凭据与 worker 设置从同一配置快照读取，仍须通过认证和原实例锁。原 Task 库存、终态清理期限、重试调度及 macOS 原运行的持久停止责任不因空仓库而消失。
 - 首次启动随机生成稳定 workerId，复用配置锁与原子替换保存到配置根下的 config.yml（DN_CONFIG_DIR，缺省 ~/.daynight）。身份创建只拥有根字段 workerId；根循环 alias 等使未知或其他非归属解码值变化时拒绝保存并保留原文件。合法值只读复用，非法值拒绝，身份持久化后才可 claim。每个配置根只有一个 worker 实例，其 worker/ 保存 SQLite、实例锁、日志、Herdr 和临时资源；同根第二实例拒绝，端点路径不合法明确失败。DN_CONFIG_DIR 必须是绝对路径；未配置时保持原目录。根选择同时覆盖 Controller 与 Review 状态，不改变真实 HOME、Provider 登录及项目 worktree。不同根不得独立管理同一个任务 worktree。
 - 一个状态目录用于当前配置的单一服务、账号和 workerId。切换前先结束旧执行，再重建本机状态；不提供跨服务或跨账号的旧执行自动接续。
 

@@ -68,6 +68,21 @@ describe("worker protocol negotiation", () => {
 });
 
 describe("in-process worker task API", () => {
+  it("requires the exact startup report in a confirmed update receipt", async () => {
+    const startupReport = { schemaVersion: 1 as const, source: "worker" as const, sessionId: taskId, claimId,
+      executionGeneration: "1", controllerInstanceId: workerId, revision: "1", observedAt: time,
+      startup: { state: "unknown" as const, reasonCode: "native_timeout" as const },
+      recovery: { state: "blocked" as const, reasonCode: "native_identity_missing" as const } };
+    let include = false;
+    const origin = await listen((_request, response) => {
+      const current = task({ ...claim(), agentControlMode: "web" });
+      respond(response, { ...current, properties: { ...current.properties, ...(include ? { sessionStartup: startupReport } : {}) } });
+    });
+    const client = api(origin);
+    await expect(client.updateWorkerClaim(projectId, taskId, { version: 1n, claimId, startupReport })).rejects.toMatchObject({ outcomeUnconfirmed: true });
+    include = true;
+    await expect(client.updateWorkerClaim(projectId, taskId, { version: 1n, claimId, startupReport })).resolves.toHaveProperty("properties.sessionStartup", startupReport);
+  });
   it("sends exact version-bound worker actions and accepts their 200 responses", async () => {
     const requests: { method: string; path: string; body: unknown }[] = [];
     const max = 9_223_372_036_854_775_807n;

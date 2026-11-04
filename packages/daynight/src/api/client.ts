@@ -1,8 +1,9 @@
+import { sameStartupReport } from "../session/startup.js";
 import { parseBot, botName, botVersion } from "../commands/bot/api.js";
 import type { Bot, CreateBotInput, DeleteBotInput } from "../commands/bot/api.js";
 import { parseWorkerPage, parseWorkerDetail } from "../commands/worker/query-api.js";
 import type { WorkerList, WorkerDetailResponse, WorkerSummary } from "../commands/worker/query-api.js";
-import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim } from "./task-properties.js";
+import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim, readSessionStartupReport } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
 import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES, THREAD_PAGE_BYTES } from "./thread.js";
@@ -13,8 +14,8 @@ import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { ProjectTransferPreview, ProjectTransferReceipt, Team, InvitationScope, InvitationInspection, InvitationAcceptance } from "./types.js";
+import { canonicalId, parsePage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
+import type { ProjectTransferPreview, ProjectTransferReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance } from "./types.js";
 import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string };
@@ -96,6 +97,9 @@ export type ApiClient = {
   createTeam(userId: string, name: string, requestId: string): Promise<Team>;
   renameTeam(userId: string, team: Team, name: string, requestId: string): Promise<Team>;
   deleteTeam(userId: string, team: Team, requestId: string): Promise<{ readonly teamId: string; readonly deleted: true }>;
+  listTeamMembers(userId: string, teamId: string): Promise<readonly TeamMemberWithProfile[]>;
+  setTeamMemberRole(userId: string, member: TeamMember, role: TeamRole, requestId: string): Promise<TeamMemberRoleReceipt>;
+  removeTeamMember(userId: string, member: TeamMember, requestId: string): Promise<RemoveTeamMemberReceipt>;
   listTeamProjects(userId: string, teamId: string): Promise<readonly Project[]>;
   previewProjectTransfer(userId: string, projectId: string, targetTeamId: string): Promise<ProjectTransferPreview>;
   transferProject(userId: string, projectId: string, preview: ProjectTransferPreview, requestId: string): Promise<ProjectTransferReceipt>;
@@ -843,6 +847,35 @@ export const createApiClient = (options: {
         parse: (value) => parseTeamDeleteReceipt(value, target), confirmMutation: (result) => result.teamId,
       }, [200], { kind: "json", value: { name: team.name, version: team.version, expectedUserId: user } }, true);
     },
+    listTeamMembers: (userId, teamId) => {
+      const user = resourceId(userId), team = resourceId(teamId);
+      return exchange({ operation: "team.member.list" }, resourcePath("teams", team, "members"), "GET", {
+        kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
+        onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        parse: (value) => parseTeamMembers(value, team, user),
+      }, [200], undefined, true);
+    },
+    setTeamMemberRole: (userId, member, role, requestId) => {
+      const user = resourceId(userId), team = resourceId(member.teamId), target = resourceId(member.userId);
+      const previous = { ...member, teamId: team, userId: target };
+      if (role !== "member" && role !== "admin") throw new Error("Team role must be member or admin.");
+      taskVersion(member.version);
+      return exchange({ operation: "team.member.set-role", sentRequestId: requestId }, resourcePath("teams", team, "members", target), "PATCH", {
+        kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
+        onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        parse: (value) => parseTeamMemberRoleReceipt(value, user, previous, role), confirmMutation: (result) => result.membership.teamId,
+      }, [200], { kind: "json", value: { version: member.version, role, expectedUserId: user } }, true);
+    },
+    removeTeamMember: (userId, member, requestId) => {
+      const user = resourceId(userId), team = resourceId(member.teamId), target = resourceId(member.userId);
+      const previous = { ...member, teamId: team, userId: target };
+      taskVersion(member.version);
+      return exchange({ operation: "team.member.remove", sentRequestId: requestId }, resourcePath("teams", team, "members", target), "DELETE", {
+        kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
+        onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        parse: (value) => parseRemoveTeamMemberReceipt(value, user, previous), confirmMutation: (result) => result.teamId,
+      }, [200], { kind: "json", value: { version: member.version, expectedUserId: user } }, true);
+    },
     listTeamProjects: (userId, teamId) => {
       const user = resourceId(userId), team = resourceId(teamId);
       return list({ operation: "team.projects" }, "/projects", (value) => parsePage(value, (item) => {
@@ -1016,7 +1049,7 @@ export const createApiClient = (options: {
       } }, [200], { kind: "json", value: { version: input.version, status: input.status } }, true);
     },
     claimWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.claim", "/worker-claim", "POST", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
-    updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.herdr === undefined || herdrMatches(worker.herdr, input.herdr)) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId), true),
+    updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.herdr === undefined || herdrMatches(worker.herdr, input.herdr)) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId) && (input.startupReport === undefined || sameStartupReport(readSessionStartupReport(task.properties), input.startupReport)), true),
     completeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.complete", "/status", "PUT", { ...input, status: "done" }, (task, worker) => worker !== undefined && task.status === "done" && worker.state === "completed" && worker.claimId === canonicalId(input.claimId), true),
     releaseWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.release", "/worker-claim/release", "POST", input, (task, worker) => worker !== undefined && task.status === "todo" && worker.state === "released" && worker.claimId === canonicalId(input.claimId)),
     withdrawWorkerClaim: (projectId, taskId, input) => {

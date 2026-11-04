@@ -1716,6 +1716,15 @@ shard 2 runs all 28 cases before its full-stack acceptance. Its results and fail
 are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
 inside the browser CI artifact directory.
 
+The Bot viewport suite runs the production application, Session host and timeline
+against controlled HTTP and Session API responses. It checks long-history
+scrolling, bounded pagination, visible input and retained reading positions at
+desktop and 390px widths. Run `pnpm --filter @codetreker/daynight-web exec playwright
+test --config tests/navigation/bots-viewport-playwright.config.ts`. Browser CI
+shard 2 also runs this suite; captures are stored in
+`packages/daynight-web/.tmp/acceptance/bots-viewport/`. These fixtures do not
+establish native Worker or Provider behavior.
+
 The required comparison is `covered * 10 > total * 9` using BigInt. Exactly 90%
 fails independently of display rounding. Pure-type declarations contribute zero
 statements only after the pinned TypeScript compiler's emitted JavaScript proves

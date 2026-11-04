@@ -65,14 +65,6 @@ const machineDescription = (platform: TaskPlatform): WorkerMachine => {
   return { id: `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`, name };
 };
 
-const hasWorkerDatabase = async (file: string): Promise<boolean> => {
-  try { await lstat(file); return true; }
-  catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
-    throw error;
-  }
-};
-
 const runtimeCancellation = (signal?: AbortSignal) => {
   const controller = new AbortController();
   const cancel = (): void => controller.abort(signal?.reason);
@@ -148,7 +140,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       },
       emit: event => { const task = event.task === undefined ? null : store.getTask(event.task); emit({ kind: event.kind, message: event.message, ...(task === null ? {} : { task }) }); },
     });
-    return { webStore, webBackend, launcher, backfillArchives, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, buildPrompt };
+    return { webStore, webBackend, launcher, backfillArchives, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, verifyWebStartupReporting: api.supportsStartupReports, buildPrompt };
   } catch (error) {
     try { webStore.close(); } catch (closeError) { throw new AggregateError([error, closeError], "Web runtime initialization and store shutdown failed."); }
     throw error;
@@ -158,7 +150,6 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
 export const runWorker = async (options: {
   homeDirectory: string; packageDirectory: string; version: string; workingDirectory: string;
   log?: (message: string) => void; signal?: AbortSignal;
-  prepareRepositories?: (signal: AbortSignal) => Promise<void>;
 }): Promise<void> => {
   const platform = currentWorkerPlatform();
   const paths = resolveWorkerPaths(options.homeDirectory);
@@ -176,24 +167,12 @@ export const runWorker = async (options: {
   let reporter: ReturnType<typeof createWorkerReporter> | undefined;
   try {
     signal.throwIfAborted();
-    let configuration = await readWorkerConfiguration(paths, signal);
-    const { serverUrl, serverToken } = await loadServerConfiguration(paths, signal);
+    const { configuration, serverUrl, serverToken } = await readWorkerConfigurationSnapshot(paths, signal);
     if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
-    const prepareRepositories = async (): Promise<void> => {
-      if (configuration.repositories.length > 0 || options.prepareRepositories === undefined) return;
-      await options.prepareRepositories(signal);
-      signal.throwIfAborted();
-      const current = await readWorkerConfigurationSnapshot(paths, signal);
-      if (current.serverUrl !== serverUrl || current.serverToken !== serverToken) throw new Error("The Daynight service or authentication changed during worker repository configuration; restart the worker with the current configuration.");
-      configuration = current.configuration;
-      if (configuration.repositories.length === 0) throw new Error("Worker repository configuration did not select any repositories.");
-    };
-    if (configuration.repositories.length === 0 && options.prepareRepositories !== undefined && !await hasWorkerDatabase(paths.databaseFile)) await prepareRepositories();
     lock = await acquireWorkerInstanceLock(paths);
     signal.throwIfAborted();
     const workerId = await ensureWorkerIdentity(paths, signal);
     store = openWorkerStore(paths.databaseFile);
-    await prepareRepositories();
     for (const directory of [paths.temporaryDirectory, paths.logsDirectory]) await mkdir(directory, { recursive: true, mode: 0o700 });
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     const remote = createWorkerRemote({ serverUrl, serverToken });

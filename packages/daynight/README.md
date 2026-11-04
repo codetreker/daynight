@@ -167,6 +167,10 @@ daynight team show [--team <uuid|personal>] [--json]
 daynight team create <name> [--confirm] [--json]
 daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team member list [--team <uuid|personal>] [--json]
+daynight team member set-role <user-id> <member|admin> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team member remove <user-id> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team leave [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
 daynight invitation inspect [--stdin] [--json]
@@ -629,6 +633,24 @@ conflicts require a fresh decision, and unknown outcomes are never replayed.
 Reading current facts does not recover a lost receipt. A later output or cleanup
 failure retains a confirmed receipt. Use `--json` for the confirmed resource or
 deletion receipt.
+
+`team member list` reads the selected Team's complete member directory, including
+nullable profile fields, roles and membership versions. `team member set-role`
+changes an existing member's role; `team member remove` removes one, and `team
+leave` removes the current user. Only a Team admin can manage other members or
+change roles; any member can leave. Personal membership is immutable and an
+ordinary Team must retain an admin. These operations do not change Project grants
+or the configured default Team.
+
+Membership writes use the target member's observed positive int64 membership
+version, not the Team or Project grant version. Supply its exact digits with
+`--if-version` to retain an earlier decision; a mismatch with the current
+observation is rejected before submission. Writes require interactive confirmation
+or `--confirm`, and bind the current user to the request and response. A validated
+receipt reports the actor's remaining Team role, including `null` after leaving;
+a successful self-exit uses that receipt without a follow-up Team read. Unknown
+outcomes are not automatically replayed. A later read only establishes current
+facts and cannot recover a lost receipt.
 
 ## Accept an invitation
 

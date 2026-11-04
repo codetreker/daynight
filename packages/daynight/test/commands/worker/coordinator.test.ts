@@ -81,11 +81,11 @@ it("preserves native polling values, asynchronous settlement and cancellation", 
   expect(polling.requested).toEqual([1_000, 1_000, 1_000]);
 });
 
-const fixture = async (maxConcurrent = 1) => {
+const fixture = async (maxConcurrent = 1, registerProject = true) => {
   const base = path.resolve("../../.tmp/minimal-coordinator-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "r-")); directories.push(root);
   let store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store);
-  const project: WorkerProject = { projectId: uuid(10), repoUrl: "https://example.test/owner/repo.git", localPath: path.join(root, "repo") }; store.registerProject(project);
+  const project: WorkerProject = { projectId: uuid(10), repoUrl: "https://example.test/owner/repo.git", localPath: path.join(root, "repo") }; if (registerProject) store.registerProject(project);
   const candidates = [task(project.projectId, uuid(100)), task(project.projectId, uuid(101))];
   const grants = new Map<string, Task>();
   const worktrees = new Map<string, { owner: ResourceOwner; binding: WorktreeBinding }>();
@@ -263,6 +263,19 @@ describe("worker report publication boundaries", () => {
     expect(registerClaim).not.toHaveBeenCalled();
     expect(f.tasks.start).not.toHaveBeenCalled();
     await f.coordinator.shutdown();
+  });
+
+  it("does not start Herdr from a default configuration without repositories or task responsibility", async () => {
+    const f = await fixture(1, false);
+    const coordinator = createWorkerCoordinator({ ...f.options, repositories: [] });
+    await coordinator.tick();
+    expect(f.remote.ownInventory).toHaveBeenCalledOnce();
+    expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+    expect(f.tasks.listResources).not.toHaveBeenCalled();
+    expect(f.tasks.start).not.toHaveBeenCalled();
+    expect(f.store.listTasks()).toEqual([]);
+    expect(await coordinator.shutdown()).toBe(true);
+    expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
   });
 
   it("publishes a complete inventory before native resource discovery can fail", async () => {
@@ -1807,6 +1820,49 @@ it("persists Web failure exhaustion, reconciles waiting with fresh versions, and
     expect(readWorkerClaim(f.grants.get(row.claimId)!.properties)).toMatchObject({ claimId: row.claimId, state: "active", phase: "waiting" });
     expect(f.remote.claim).toHaveBeenCalledOnce();
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
+});
+
+it.each(["supported", "legacy", "unavailable"])("reconciles paused summaries with %s startup reporting without advancing recovery", async support => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(), webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 0 };
+  const advance = vi.fn(async (input: WebTask) => {
+    webStore.pauseRecovery(input, "No original identity.", 2);
+    return webStore.getTask(input)!;
+  });
+  const observeStartupReport = vi.fn((input: WebTask) => ({ schemaVersion: 1 as const, source: "worker" as const,
+    sessionId: uuid(888), claimId: input.claimId, executionGeneration: "1", controllerInstanceId: uuid(889), revision: "1",
+    observedAt: "2026-11-05T00:00:00.000Z", startup: { state: "unknown" as const, reasonCode: "native_timeout" as const },
+    recovery: { state: "blocked" as const, reasonCode: "native_identity_missing" as const } }));
+  let calls = 0;
+  vi.mocked(f.remote.update).mockImplementation(async (current, input) => {
+    calls++;
+    if (calls === 1) {
+      f.grants.set(readWorkerClaim(current.properties)!.claimId, { ...current, version: 17n });
+      throw new Error("Unconfirmed report response.");
+    }
+    const { startupReport, ...summary } = input;
+    const updated = { ...current, properties: { ...current.properties, ...(startupReport ? { sessionStartup: startupReport } : {}), worker: { ...readWorkerClaim(current.properties)!, ...summary } } };
+    f.grants.set(readWorkerClaim(current.properties)!.claimId, updated); return updated;
+  });
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration,
+    webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, verifyWebStartupReporting: async () => {
+      if (support === "unavailable") throw new Error("Capabilities response unavailable.");
+      return support === "supported";
+    },
+    webBackend: { advance, cleanup: vi.fn(), observeStartupReport } });
+  const tick = async () => { await coordinator.tick(); await new Promise<void>(resolve => setImmediate(resolve)); };
+  try {
+    await tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    await tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(f.remote.update).mock.calls[1]![0].version).toBe(17n);
+    if (support === "supported") expect(vi.mocked(f.remote.update).mock.calls[1]![1]).toHaveProperty("startupReport.startup.reasonCode", "native_timeout");
+    else expect(vi.mocked(f.remote.update).mock.calls[1]![1]).not.toHaveProperty("startupReport");
+    await tick(); await tick();
+    expect(advance).toHaveBeenCalledOnce();
+    expect(f.remote.update).toHaveBeenCalledTimes(2);
+    expect(webStore.getTask(f.store.listTasks()[0]!)?.recovery.count).toBe(0);
   } finally { await new Promise<void>(resolve => setImmediate(resolve)); webStore.close(); }
 });
 

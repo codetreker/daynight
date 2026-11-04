@@ -85,18 +85,26 @@ export type TeamRef = {
   readonly name: string | null;
 };
 
+export type TeamRole = "member" | "admin";
+export type TeamMember = {
+  readonly teamId: string;
+  readonly userId: string;
+  readonly role: TeamRole;
+  readonly version: bigint;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+export type TeamMemberWithProfile = TeamMember & {
+  readonly profile: { readonly name: string | null; readonly email: string | null; readonly avatarUrl: string | null };
+};
+export type TeamMemberRoleReceipt = { readonly membership: TeamMember; readonly actorRole: TeamRole };
+export type RemoveTeamMemberReceipt = { readonly teamId: string; readonly userId: string; readonly removed: true; readonly actorRole: TeamRole | null };
+
 export type Team = TeamRef & {
   readonly version: bigint;
   readonly createdAt: string;
   readonly updatedAt: string;
-  readonly membership: {
-    readonly teamId: string;
-    readonly userId: string;
-    readonly role: "member" | "admin";
-    readonly version: bigint;
-    readonly createdAt: string;
-    readonly updatedAt: string;
-  };
+  readonly membership: TeamMember;
 };
 
 export type ProjectOwnership = {
@@ -351,6 +359,7 @@ export type UpdateWorkerClaimInput = {
   readonly phase?: WorkerPhase;
   readonly herdr?: WorkerHerdr | null;
   readonly nativeSessionId?: string | null;
+  readonly startupReport?: import("../session/startup.js").SessionStartupReport;
 };
 export type CompleteWorkerTaskInput = { readonly version: bigint; readonly claimId: string };
 export type ReleaseWorkerClaimInput = CompleteWorkerTaskInput & { readonly stoppedConfirmed: true };

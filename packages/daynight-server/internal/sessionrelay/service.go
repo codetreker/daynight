@@ -156,8 +156,9 @@ func member(ctx context.Context, tx pgx.Tx, p core.Principal, project string, no
 }
 
 type task struct {
-	Worker *core.WorkerClaim
-	Status string
+	Worker        *core.WorkerClaim
+	Status        string
+	StartupReport *sp.StartupReport
 }
 
 func lockTask(ctx context.Context, tx pgx.Tx, project, id string) (task, error) {
@@ -188,6 +189,10 @@ func taskWorker(ctx context.Context, tx pgx.Tx, id string, t task) (task, error)
 		return task{}, err
 	}
 	t.Worker, err = taskproperties.Worker(properties)
+	if err != nil {
+		return t, err
+	}
+	t.StartupReport, err = taskproperties.SessionStartup(properties)
 	return t, err
 }
 func current(t task, r *record) bool {

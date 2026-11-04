@@ -1602,8 +1602,11 @@ it('clears cold Bot draft and receipt namespaces on an account change outside th
   window.sessionStorage.setItem(key, 'private draft');
   const displayKey = `daynight.web.session.display.v1:${JSON.stringify([userId, 'session'])}`;
   window.localStorage.setItem(displayKey, '"standard"');
+  const creationKey = `daynight.bot.creation:${userId}`;
+  window.sessionStorage.setItem(creationKey, '20000000-0000-4000-8000-000000000001');
   serverUserId = otherId; returnFromAnotherWindow();
   await screen.findByText('Bob');
   await waitFor(() => expect(window.sessionStorage.getItem(key)).toBeNull());
   expect(window.localStorage.getItem(displayKey)).toBeNull();
+  expect(window.sessionStorage.getItem(creationKey)).toBeNull();
 });

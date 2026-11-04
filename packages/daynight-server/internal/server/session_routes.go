@@ -71,7 +71,7 @@ func (h *sessionRoutes) register(mux *http.ServeMux) {
 			writeJSON(w, r, h.logger, http.StatusOK, map[string]any{"protocol": v2.Protocol, "schemaVersion": 2, "projectionVersion": 1, "providers": []string{"codex", "claude", "copilot"}, "backends": []string{"herdr"}, "recordingResponsibilityVersion": 1, "controlDispatchVersion": 1, "workerCapabilitiesRequired": true})
 			return
 		}
-		writeJSON(w, r, h.logger, http.StatusOK, map[string]any{"protocol": sp.Protocol, "schemaVersion": 1, "projectionVersion": 1, "providers": []string{"codex", "claude", "copilot"}})
+		writeJSON(w, r, h.logger, http.StatusOK, map[string]any{"protocol": sp.Protocol, "schemaVersion": 1, "projectionVersion": 1, "providers": []string{"codex", "claude", "copilot"}, "startupReportVersion": 1})
 	}))
 	capabilityMethod := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
 		methodNotAllowed(h.logger, "GET")(w, r)
@@ -187,7 +187,11 @@ func (h *sessionRoutes) current(w http.ResponseWriter, r *http.Request, p core.P
 		h.failure(w, r, err)
 		return
 	}
-	result, err := h.service.Current(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"))
+	read := h.service.Current
+	if r.Header.Get("X-Daynight-Startup-Version") == "1" {
+		read = h.service.CurrentWithStartup
+	}
+	result, err := read(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"))
 	h.result(w, r, http.StatusOK, result, err)
 }
 func (h *sessionRoutes) grant(w http.ResponseWriter, r *http.Request, p core.Principal) {

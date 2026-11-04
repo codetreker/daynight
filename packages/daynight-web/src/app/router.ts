@@ -15,6 +15,8 @@ export type Route =
 export type ProtectedRoute = Route
   | { readonly kind: "team" | "teamSettings" | "teamMembers"; readonly teamId: string }
   | { readonly kind: "sharedProjects" }
+  | { readonly kind: "bots" }
+  | { readonly kind: "bot"; readonly botId: string }
   | { readonly kind: "workers" }
   | { readonly kind: "worker"; readonly workerId: string }
   | { readonly kind: "testSessions" }
@@ -66,6 +68,12 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   const team = /^\/teams\/([^/]+)(\/(?:settings|members))?$/.exec(pathname);
   if (team !== null) {
     try { const teamId = canonicalId(decodeURIComponent(team[1]!)); return teamId === null ? { kind: "notFound" } : { kind: team[2] === undefined ? "team" : team[2] === "/settings" ? "teamSettings" : "teamMembers", teamId }; }
+    catch { return { kind: "notFound" }; }
+  }
+  if (pathname === "/bots") return { kind: "bots" };
+  const bot = /^\/bots\/([^/]+)$/.exec(pathname);
+  if (bot !== null) {
+    try { const botId = canonicalId(decodeURIComponent(bot[1]!)); return botId === null ? { kind: "notFound" } : { kind: "bot", botId }; }
     catch { return { kind: "notFound" }; }
   }
   if (pathname === "/workers") return { kind: "workers" };

@@ -30,7 +30,7 @@ export const workerDefinition: CommandDefinition = {
     name: "run",
     description: "Run the foreground task worker until interrupted",
     options: [help],
-    details: "Read worker settings from DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml) at startup.\nWith no configured repositories, select existing remote Projects interactively before startup.\nFor noninteractive configuration, run daynight worker repo add --project <project-id>.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
+    details: "Read worker settings from DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml) at startup.\nAn empty repository list starts without prompting; no Project, task or worktree is created.\nTo enable new task acquisition, run daynight worker repo add --project <project-id> before restarting.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
   }, {
     name: "attach",
     description: "Attach an interactive terminal to an existing task runtime",

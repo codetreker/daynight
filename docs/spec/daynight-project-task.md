@@ -208,6 +208,10 @@ daynight team show [--team <uuid|personal>] [--json]
 daynight team create <name> [--confirm] [--json]
 daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team member list [--team <uuid|personal>] [--json]
+daynight team member set-role <user-id> <member|admin> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team member remove <user-id> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team leave [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
 ```
@@ -247,6 +251,23 @@ Unicode、不能包含 NUL 或全为 Unicode `White_Space`。Personal Team 不�
 冲突须重新读取并重新确认，未知结果不得自动重放。读取当前事实不能证明丢失的
 回执，未知结果须以非零退出报告，并在可用时提供安全请求标识。`--json` 输出已确认的
 资源或删除回执。回执已确认后，即使本地输出或清理失败也保留该确认事实。
+
+## Team 成员管理
+
+`team member list` 读取所选 Team 的完整成员目录，包含用户 ID、角色、真实成员关系版本、
+时间和可为 null 的资料。目录仅向当前 Team 成员开放，不提供跨 Team 搜索或任意用户加入。
+`team member set-role` 更改已有成员角色，`team member remove` 移除已有成员，`team leave`
+退出当前用户的成员关系。管理员可管理成员及自己的角色，普通成员可自行退出；普通 Team
+必须保留至少一名管理员，Personal Team 的成员关系不可更改。这些操作不修改独立 Project
+grant，也不修改配置的默认 Team。
+
+成员写入使用目标成员的真实正 int64 关系版本，不使用 Team 元数据或 Project grant 版本。
+`--if-version` 保留先前决策观察到的精确版本，与当前读取不符时在提交前拒绝；省略时使用
+当前读取版本。写操作复用交互确认或布尔 `--confirm`，取消或非交互且未确认时不提交。
+冲突需要重新观察和决策，不自动重放。写入携带当前用户身份并验证响应主体、目标和回执；
+成功回执包含操作者剩余 Team role，自行退出为 null。自行退出成功直接使用回执，不再
+读取失权后的敏感 Team 数据。未知结果以错误报告，不自动重放；后来读取只能说明当前事实，
+不能证明原写入成功。`--json` 保留完整目录或已确认回执及精确版本，可读文本安全转义。
 
 ## 邀请接收
 

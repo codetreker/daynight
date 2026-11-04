@@ -51,7 +51,7 @@ test('browser mode installs its browser with the original bound before ordinary 
   assert.deepEqual(observed.accepted, []);
   installing.resolve('installed');
   await pending;
-  assert.equal(observed.calls.length, 4);
+  assert.equal(observed.calls.length, 5);
   assert.deepEqual(observed.calls[0]!.args, ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'install', '--with-deps', 'chromium']);
   assert.equal(observed.calls[0]!.options.timeoutMs, 600_000);
   assert.equal(observed.calls[0]!.options.signal, controller.signal);
@@ -61,6 +61,8 @@ test('browser mode installs its browser with the original bound before ordinary 
   assert.equal(observed.calls[2]!.options.timeoutMs, 180_000);
   assert.deepEqual(observed.calls[3]!.args, ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/team-members-playwright.config.ts']);
   assert.equal(observed.calls[3]!.options.timeoutMs, 180_000);
+  assert.deepEqual(observed.calls[4]!.args, ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/bots-viewport-playwright.config.ts']);
+  assert.equal(observed.calls[4]!.options.timeoutMs, 180_000);
   assert.deepEqual(observed.accepted, [controller]);
 });
 
@@ -73,7 +75,7 @@ test('CI shard arguments are bounded and only shard 2 owns navigation checks', a
     const observed = operations();
     const controller = new AbortController();
     await runCi('browser', controller, observed, shard);
-    assert.equal(observed.calls.length, current === 1 ? 1 : 4);
+    assert.equal(observed.calls.length, current === 1 ? 1 : 5);
     assert.deepEqual(observed.acceptanceOptions, [{ shard }]);
     assert.deepEqual(observed.accepted, [controller]);
   }
@@ -113,7 +115,7 @@ test('browser acceptance failure remains a failed CI operation', async () => {
   const failure = new Error('Browser acceptance failed');
   observed.acceptance = async () => { throw failure; };
   await assert.rejects(runCi('browser', new AbortController(), observed), (error) => error === failure);
-  assert.equal(observed.calls.length, 4);
+  assert.equal(observed.calls.length, 5);
 });
 
 test('cancellation prevents new commands and acceptance after a completed command', async () => {
