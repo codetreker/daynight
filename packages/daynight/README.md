@@ -156,6 +156,7 @@ daynight project
 daynight project create <name> [--repo <repo>]
 daynight project list [--json]
 daynight project show <project-id> [--json]
+daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] [--if-version <version>] [--confirm] [--json]
 daynight team list [--json]
 daynight team show [--team <uuid|personal>] [--json]
 daynight team create <name> [--confirm] [--json]
@@ -606,6 +607,17 @@ conflicts require a fresh decision, and unknown outcomes are never replayed.
 Reading current facts does not recover a lost receipt. A later output or cleanup
 failure retains a confirmed receipt. Use `--json` for the confirmed resource or
 deletion receipt.
+
+`project transfer` moves a Project to a Team identified by UUID or a same-service
+`/teams/<uuid>` link. It resolves the explicit Project or current repository
+without changing its binding or default Team. Only the current owner Team admin
+can transfer; destination membership is not required. The preview identifies the
+source, destination and expected access before confirmation. `--confirm` skips
+the prompt but retains the preview's exact versions and identity checks. An
+optional `--if-version` rejects a preview with a different ownership version.
+A successful receipt may report no remaining access. Conflicts require a fresh
+preview and decision; a lost receipt remains unknown even if a later read is 404.
+Project grants and invitations are preserved.
 
 ## Task management
 
