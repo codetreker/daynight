@@ -258,7 +258,7 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 当前 member 或 admin 可创建；省略目标时使用调用者 Personal Team。Project、真实 ownership 与
 creator direct admin 原子提交。身份不符在任何领域 SQL 前返回 409 `identity_mismatch`，非成员
 不可创建。客户端核对响应主体，不自动重放未知写入。成功返回 Project、ownership 和同一事务中
-新鲜的 access。现有 CLI 和 Web 创建入口未指定目标，使用当前真实身份并保留有效名称与仓库地址原文。
+新鲜的 access。CLI 未指定目标时使用当前身份的 Personal Team；Web 创建入口提交打开对话框时捕获的 Team。两者使用当前真实身份并保留有效名称与仓库地址原文。
 
 既有项目按最早加入的现任 admin 的 Personal Team 回填；加入时间相同按 user UUID 稳定决定。
 全部既有用户，包括仅持 PAT 的用户，预先取得 Personal。零 admin 或坏引用使迁移整体失败，

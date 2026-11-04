@@ -17,6 +17,7 @@ import { createLocaleRender } from "./helpers/renderWithLocale";
 import { invitationStorageKey } from "../src/features/auth/invitation";
 import { SIDEBAR_STORAGE_KEY } from "../src/app/useSidebarPreference";
 import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
+import { personalTeamPage } from "./helpers/team";
 
 const render = createLocaleRender("zh-CN");
 let topLevelFocused = true;
@@ -46,6 +47,7 @@ const fail = (status: number, code: string) => json({ error: { code, message: "h
 const graph = (url: string) => graphResponse({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, url);
 const defaults = (url: string): Response => {
   if (url === "/api/v1/me") return json(user(serverUserId, serverUserId === userId ? "Alice" : "Bob"));
+  if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(serverUserId));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
   if (url.endsWith("/members")) return json({ actorAccess: directAccessFixture(projectId, serverUserId, "admin"), items: [participant()] });
@@ -1371,7 +1373,7 @@ describe("private project creation", () => {
     expect(repository.checkValidity()).toBe(true);
     fireEvent.submit(screen.getByRole("button", { name: "创建项目" }).closest("form")!);
     await waitFor(() => expect(window.location.pathname).toBe(`/projects/${projectId}`));
-    expect(fetcher.mock.calls.find(([, options]) => options?.method === "POST")?.[1]?.body).toBe(JSON.stringify({ name: "  新项目  ", repoUrl: "git@github.com:example/repo.git", expectedUserId: userId }));
+    expect(fetcher.mock.calls.find(([, options]) => options?.method === "POST")?.[1]?.body).toBe(JSON.stringify({ name: "  新项目  ", repoUrl: "git@github.com:example/repo.git", expectedUserId: userId, teamId: user().personalTeam.id }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 

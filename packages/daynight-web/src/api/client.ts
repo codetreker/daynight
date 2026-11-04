@@ -169,7 +169,7 @@ export const requestId = (value: string): string => {
   return id;
 };
 
-export const listProjects = (query: { readonly limit?: number; readonly cursor?: string }, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<ProjectPage> => {
+export const listProjects = (query: { readonly limit?: number; readonly cursor?: string; readonly teamId?: string; readonly shared?: true }, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<ProjectPage> => {
   const parameters = new URLSearchParams();
   if (query.limit !== undefined) {
     if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 100) throw new ApiError("protocol");
@@ -178,6 +178,12 @@ export const listProjects = (query: { readonly limit?: number; readonly cursor?:
   if (query.cursor !== undefined) {
     if (query.cursor === "") throw new ApiError("protocol");
     parameters.set("cursor", query.cursor);
+  }
+  if (query.teamId !== undefined && query.shared !== undefined) throw new ApiError("protocol");
+  if (query.teamId !== undefined) parameters.set("teamId", requestId(query.teamId));
+  if (query.shared !== undefined) {
+    if (query.shared !== true) throw new ApiError("protocol");
+    parameters.set("shared", "true");
   }
   const suffix = parameters.size === 0 ? "" : `?${parameters.toString()}`;
   if (admission === undefined) return read(`/api/v1/projects${suffix}`, signal, parseProjectPage, decodeProjectPageJson);
