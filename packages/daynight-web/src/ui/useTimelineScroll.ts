@@ -107,9 +107,9 @@ export function useTimelineScroll(identity: string, active: boolean, revision: u
         const textTop = saved.text && readingTextTop(entry, saved.text);
         recapture = textTop === undefined;
         const entryBounds = entry.getBoundingClientRect();
-        // Cold remounts collapse details. If the old text is gone and its row
-        // offset would hide the entire shorter row, retain the row at its top.
-        const rowTop = pending && saved.text && textTop === undefined && saved.top <= -entryBounds.height ? 0 : saved.top;
+        // Cold remounts collapse details. Without a usable text position, an
+        // old offset inside text or an image may hide the entire shorter row.
+        const rowTop = pending && textTop === undefined && saved.top <= -entryBounds.height ? 0 : saved.top;
         const adjustment = (textTop ?? entryBounds.top) - box.getBoundingClientRect().top - (textTop !== undefined ? saved.text!.top : rowTop);
         if (Math.abs(adjustment) > 1) box.scrollTop += adjustment;
       }

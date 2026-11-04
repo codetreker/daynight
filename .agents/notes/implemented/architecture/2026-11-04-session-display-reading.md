@@ -40,8 +40,9 @@ pagination capture cannot replace that target. After an authoritative history
 boundary, absent rows fall back to the saved preceding neighbor, succeeding
 neighbor, or first visible row. Filtered rows still use the current complete
 order. Empty displays and inactive geometry retain the pending bookmark. When a cold
-restore loses its text quote and the saved offset would hide the whole shortened
-entry above the viewport, it uses the entry top rather than a later message.
+restore has no usable text position and the saved offset would hide the whole
+shortened entry above the viewport, it uses the entry top rather than a later
+message. This includes image-only reading positions that never captured text.
 SessionTimeline combines the caller's authenticated ownership scope with the
 actual session fence, and checks historyEpoch separately. The container owns
 bookmark lifetime and historical loading; the hook owns geometry and intent.

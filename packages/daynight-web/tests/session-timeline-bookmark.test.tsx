@@ -4,12 +4,14 @@ import { useTimelineScroll, type TimelineReadingBookmark } from '../src/ui/useTi
 import { createLocaleRender } from './helpers/renderWithLocale';
 
 const render = createLocaleRender('en');
-type Settings = { original: string[]; visible: string[]; identity: string; epoch: string; complete: boolean; active: boolean };
+type Settings = { original: string[]; visible: string[]; identity: string; epoch: string; complete: boolean; active: boolean; heights: Readonly<Record<string, number>>; imageKey: string | null; imageExpanded: boolean };
 // JSDOM has no layout or scroll clamping. Model those primitives while using
 // actual mounted rows, the real hook and the same events as a Session viewport.
 function timeline(initial: Partial<Settings> = {}) {
-  let settings: Settings = { original: ['a', 'b', 'c', 'd', 'e', 'f'], visible: ['a', 'b', 'c', 'd', 'e', 'f'], identity: 'user/session/fence', epoch: '1', complete: true, active: true, ...initial };
+  let settings: Settings = { original: ['a', 'b', 'c', 'd', 'e', 'f'], visible: ['a', 'b', 'c', 'd', 'e', 'f'], identity: 'user/session/fence', epoch: '1', complete: true, active: true, heights: {}, imageKey: null, imageExpanded: true, ...initial };
   let position = 0, scroll!: ReturnType<typeof useTimelineScroll>;
+  const rowHeight = (key: string) => settings.heights[key] ?? 300;
+  const contentHeight = () => 40 + settings.visible.reduce((height, key) => height + rowHeight(key), 0);
   const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 400, width: 400, height, x: 0, y: top, toJSON() {} });
   function Timeline() {
     scroll = useTimelineScroll(settings.identity, settings.active, settings.original, undefined, { originalKeys: settings.original, visibleKeys: settings.visible, mode: 'test' }, { historyEpoch: settings.epoch, historyComplete: settings.complete });
@@ -18,14 +20,14 @@ function timeline(initial: Partial<Settings> = {}) {
       if (!node) return;
       Object.defineProperties(node, {
         clientHeight: { configurable: true, value: 200 },
-        scrollHeight: { configurable: true, get: () => 40 + settings.visible.length * 300 },
-        scrollTop: { configurable: true, get: () => position, set: (top: number) => { position = Math.max(0, Math.min(top, Math.max(0, 40 + settings.visible.length * 300 - 200))); } },
+        scrollHeight: { configurable: true, get: contentHeight },
+        scrollTop: { configurable: true, get: () => position, set: (top: number) => { position = Math.max(0, Math.min(top, Math.max(0, contentHeight() - 200))); } },
       });
       node.getBoundingClientRect = () => rect(0, 200);
     }} onScroll={scroll.onScroll} onWheel={scroll.onWheel}>
       <div ref={scroll.content}>{settings.visible.map((key, index) => <article key={key} data-entry-key={key} ref={node => {
-        if (node) node.getBoundingClientRect = () => rect(40 + index * 300 - position, 300);
-      }}>{`${key} `.repeat(600)}</article>)}</div>
+        if (node) node.getBoundingClientRect = () => rect(40 + settings.visible.slice(0, index).reduce((height, previous) => height + rowHeight(previous), 0) - position, rowHeight(key));
+      }}>{key === settings.imageKey ? <details open={settings.imageExpanded}><summary>Image output</summary>{settings.imageExpanded ? <img alt="" /> : null}</details> : `${key} `.repeat(600)}</article>)}</div>
     </div>;
   }
   const view = render(<Timeline />), box = view.container.firstElementChild as HTMLElement;
@@ -154,6 +156,26 @@ it.each([-300, -649.75])('returns a collapsed cold-restored row to its top when 
   expect(second.restore(expanded)).toBe('restored');
   expect(second.box.scrollTop).toBe(340); expect(second.capture().anchor?.key).toBe('b');
   expect(second.box.querySelector('[data-entry-key="b"]')!.getBoundingClientRect().top).toBe(0);
+});
+
+it.each([{ offset: 310, restoredTop: 0 }, { offset: 10, restoredTop: -10 }])('restores a genuinely captured image-only position after cold collapse: %o', ({ offset, restoredTop }) => {
+  // The only text is the summary above the image. Real Range measurements
+  // place it above the viewport when reading inside the expanded image.
+  vi.spyOn(document, 'createRange').mockImplementation(() => {
+    let node: Node;
+    return { setStart: (next: Node) => { node = next; }, setEnd: () => {}, getBoundingClientRect: () => {
+      const top = node.parentElement!.closest('article')!.getBoundingClientRect().top;
+      return { top, bottom: top + 8, height: 8 } as DOMRect;
+    } } as unknown as Range;
+  });
+  const first = timeline({ heights: { b: 900 }, imageKey: 'b' }); first.read(340 + offset);
+  const bookmark = first.capture();
+  expect(bookmark.anchor?.key).toBe('b'); expect(bookmark.anchor?.top).toBe(-offset); expect(bookmark.anchor?.text).toBeUndefined();
+  first.view.unmount();
+  const second = timeline({ heights: { b: 32 }, imageKey: 'b', imageExpanded: false });
+  expect(second.restore(bookmark)).toBe('restored');
+  expect(second.box.querySelector('[data-entry-key="b"]')!.getBoundingClientRect().top).toBe(restoredTop);
+  expect(second.capture().anchor?.key).toBe('b'); expect(second.scroll().isFollowing()).toBe(false);
 });
 
 it('uses the first visible row only after all bounded neighbor hints are unavailable at the boundary', () => {
