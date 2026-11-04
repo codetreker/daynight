@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createTeam, deleteTeam, getTeam, listTeams, renameTeam } from "../src/api/teams";
+import { createTeam, deleteTeam, getTeam, listTeamMembers, listTeams, removeTeamMember, renameTeam, setTeamMemberRole } from "../src/api/teams";
 import { invalidateAuthRequests } from "../src/api/client";
 
 const user = "00000000-0000-4000-8000-000000000001";
@@ -30,6 +30,77 @@ describe("Team reads", () => {
   it("rejects a successful status other than 200", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(source(), { status: 201, headers: { "Content-Type": "application/json", "Daynight-User-ID": user } })));
     await expect(getTeam(team, user, new AbortController().signal, vi.fn())).rejects.toMatchObject({ kind: "protocol", status: 201 });
+  });
+});
+
+describe("Team member directory and mutations", () => {
+  const other = "00000000-0000-4000-8000-000000000003";
+  const signal = () => new AbortController().signal;
+  const membership = (target: string, role = "member", version = "9223372036854775806") => `{"teamId":"${team}","userId":"${target}","role":"${role}","version":${version},"createdAt":"${time}","updatedAt":"${time}"}`;
+  const profiled = (target: string, role = "member") => membership(target, role).slice(0, -1) + ',"profile":{"name":null,"email":"person@example.com","avatarUrl":null}}';
+  const directory = () => `{"items":[${profiled(user, "admin")},${profiled(other)}]}`;
+  const members = async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(directory())));
+    return listTeamMembers(team, user, signal(), vi.fn());
+  };
+
+  it("reads only the scoped directory, preserving nullable profiles and int64 versions", async () => {
+    const fetch = vi.fn().mockResolvedValue(response(directory())); vi.stubGlobal("fetch", fetch);
+    const list = await listTeamMembers(team, user, signal(), vi.fn());
+    expect(fetch.mock.calls[0]?.[0]).toBe(`/api/v1/teams/${team}/members`);
+    expect(list[1]?.profile).toEqual({ name: null, email: "person@example.com", avatarUrl: null });
+    expect(list[1]?.version).toBe(9223372036854775806n);
+  });
+
+  it("rejects malformed or cross-team directories and a wrong principal", async () => {
+    for (const body of [directory().replace(`"teamId":"${team}"`, `"teamId":"${other}"`), `{"items":[${profiled(user)},${profiled(user)}]}`, `{"items":[${profiled(other)}]}`, directory().replace('"name":null', '"name":1'), directory().replace('"avatarUrl":null', '"extra":null')]) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(body)));
+      await expect(listTeamMembers(team, user, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
+    }
+    const mismatch = vi.fn(); vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(directory(), other)));
+    await expect(listTeamMembers(team, user, signal(), mismatch)).rejects.toMatchObject({ code: "principal_mismatch" });
+    expect(mismatch).toHaveBeenCalledOnce();
+  });
+
+  it("sends exact versions and validates actor roles for role changes and removal", async () => {
+    const [self, target] = await members();
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response(`{"membership":${membership(other, "admin", "9223372036854775807")},"actorRole":"admin"}`))
+      .mockResolvedValueOnce(response(`{"membership":${membership(user, "member", "9223372036854775807")},"actorRole":"member"}`))
+      .mockResolvedValueOnce(response(`{"teamId":"${team}","userId":"${other}","removed":true,"actorRole":"admin"}`))
+      .mockResolvedValueOnce(response(`{"teamId":"${team}","userId":"${user}","removed":true,"actorRole":null}`));
+    vi.stubGlobal("fetch", fetch);
+    expect((await setTeamMemberRole(user, target!, "admin", signal(), vi.fn(), vi.fn())).membership.version).toBe(9223372036854775807n);
+    expect(fetch.mock.calls[0]?.[1].body).toBe(`{"version":9223372036854775806,"role":"admin","expectedUserId":"${user}"}`);
+    expect((await setTeamMemberRole(user, self!, "member", signal(), vi.fn(), vi.fn())).actorRole).toBe("member");
+    expect((await removeTeamMember(user, target!, signal(), vi.fn(), vi.fn())).actorRole).toBe("admin");
+    expect((await removeTeamMember(user, self!, signal(), vi.fn(), vi.fn())).actorRole).toBeNull();
+    expect(fetch.mock.calls[3]?.[1].body).toBe(`{"version":9223372036854775806,"expectedUserId":"${user}"}`);
+  });
+
+  it("rejects inconsistent receipts and never retries unknown outcomes", async () => {
+    const [, target] = await members();
+    for (const body of [`{"membership":${membership(other, "admin", "9223372036854775806")},"actorRole":"admin"}`, `{"membership":${membership(other, "admin", "9223372036854775807")},"actorRole":"member"}`, `{"teamId":"${team}","userId":"${other}","removed":true,"actorRole":null}`]) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(body)));
+      const call = body.includes('"membership"') ? setTeamMemberRole(user, target!, "admin", signal(), vi.fn(), vi.fn()) : removeTeamMember(user, target!, signal(), vi.fn(), vi.fn());
+      await expect(call).rejects.toMatchObject({ kind: "protocol" });
+    }
+    const fetch = vi.fn().mockRejectedValue(new TypeError("lost response")), dispatch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    await expect(removeTeamMember(user, target!, signal(), vi.fn(), dispatch)).rejects.toMatchObject({ kind: "network" });
+    expect(fetch).toHaveBeenCalledOnce(); expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("accepts a version-preserving no-op and exposes refusals and identity changes", async () => {
+    const [, target] = await members(), mismatch = vi.fn();
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response(`{"membership":${membership(other)},"actorRole":"admin"}`))
+      .mockResolvedValueOnce(new Response('{"error":{"code":"last_admin","message":"last admin","requestId":"req"}}', { status: 409, headers: { "Content-Type": "application/json", "Daynight-User-ID": user } }))
+      .mockResolvedValueOnce(new Response('{"error":{"code":"identity_mismatch","message":"identity mismatch","requestId":"req"}}', { status: 409, headers: { "Content-Type": "application/json", "Daynight-User-ID": user } }));
+    vi.stubGlobal("fetch", fetch);
+    expect((await setTeamMemberRole(user, target!, "member", signal(), mismatch, vi.fn())).membership.version).toBe(target!.version);
+    await expect(removeTeamMember(user, target!, signal(), mismatch, vi.fn())).rejects.toMatchObject({ kind: "server", code: "last_admin" });
+    await expect(removeTeamMember(user, target!, signal(), mismatch, vi.fn())).rejects.toMatchObject({ kind: "server", code: "identity_mismatch" });
+    expect(mismatch).toHaveBeenCalledOnce(); expect(fetch).toHaveBeenCalledTimes(3);
   });
 });
 
