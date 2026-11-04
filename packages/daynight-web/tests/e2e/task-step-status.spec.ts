@@ -35,6 +35,11 @@ test('step status writes converge through real service resources', { annotation:
   const task = await createTask(api, project.id, { title: 'Steps status acceptance' });
   const other = await createTask(api, project.id, { title: 'Other task while waiting' });
   const deletedTask = await createTask(api, project.id, { title: 'Deleted parent acceptance' });
+  const raceTask = await createTask(api, project.id, { title: 'Step reconciliation version advance' });
+  const raceStepsPath = endpoint(project.id, raceTask.id);
+  const raceStepId = '4567abcd';
+  const raceInitial = await api.post(raceStepsPath, { data: { version: raceTask.version, id: raceStepId, title: 'Version advance step' } });
+  expect(raceInitial.status()).toBe(201);
   const deletedPath = endpoint(project.id, deletedTask.id);
   const deletedStep = await api.post(deletedPath, { data: { version: deletedTask.version, id: stepIdForDeleted(), title: 'Deleted parent step' } });
   expect(deletedStep.status()).toBe(201);
@@ -50,7 +55,10 @@ test('step status writes converge through real service resources', { annotation:
   const statusUrl = new URL(`${stepsPath}/${stepId}/status`, baseURL).href;
   const deletedUrl = new URL(`${deletedPath}/${stepIdForDeleted()}/status`, baseURL).href;
   const collectionUrl = new URL(stepsPath, baseURL).href;
-  allowBrowserWrites([{ method: 'PUT', url: statusUrl, count: 11 }, { method: 'PUT', url: deletedUrl, count: 1 }]);
+  const raceCollectionUrl = new URL(raceStepsPath, baseURL).href;
+  const raceParentUrl = new URL(`/api/v1/projects/${project.id}/tasks/${raceTask.id}`, baseURL).href;
+  const raceStatusUrl = new URL(`${raceStepsPath}/${raceStepId}/status`, baseURL).href;
+  allowBrowserWrites([{ method: 'PUT', url: statusUrl, count: 11 }, { method: 'PUT', url: deletedUrl, count: 1 }, { method: 'PUT', url: raceStatusUrl, count: 1 }]);
   let writes = 0;
   let mode: 'normal' | 'conflict' | 'lost' | 'invalid' | 'child404' | 'late' = 'normal';
   let releaseLate!: () => void;
@@ -214,6 +222,73 @@ test('step status writes converge through real service resources', { annotation:
     await expect(trigger(page, stepId)).toContainText(labels.done);
     await expect(trigger(page, stepId)).toBeEnabled();
     expect(writes).toBe(11);
+    await root(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
+    await page.goto(`/projects/${project.id}/tasks/${raceTask.id}?tab=steps`);
+    await expect(trigger(page, raceStepId)).toBeEnabled();
+    let releaseRaceSteps!: () => void; let raceStepsEntered!: () => void; let raceStepsDelivered!: () => void;
+    let releaseParent!: () => void; let firstParentDelivered!: () => void; let nextParentEntered!: () => void;
+    const raceStepsGate = new Promise<void>(resolve => { releaseRaceSteps = resolve; });
+    const raceStepsWaiting = new Promise<void>(resolve => { raceStepsEntered = resolve; });
+    const raceStepsDone = new Promise<void>(resolve => { raceStepsDelivered = resolve; });
+    const parentGate = new Promise<void>(resolve => { releaseParent = resolve; });
+    const firstParent = new Promise<void>(resolve => { firstParentDelivered = resolve; });
+    const nextParent = new Promise<void>(resolve => { nextParentEntered = resolve; });
+    let raceStarted = false; let parentReads = 0; let raceWrites = 0; let deliveredVersion: bigint | null = null; let firstParentVersion: bigint | null = null;
+    await page.route(raceCollectionUrl, async route => {
+      if (!raceStarted) { await route.continue(); return; }
+      raceStepsEntered(); await raceStepsGate;
+      const response = await authenticatedAPI(page.context().request).fetch(route.request(), { timeout: 15_000, maxRetries: 0 });
+      expect(response.status()).toBe(200);
+      deliveredVersion = parseTaskSteps(parseApiJson(await response.text()), project.id, raceTask.id).version;
+      await fulfillAuthenticatedResponse(route, response); raceStepsDelivered();
+    });
+    await page.route(raceParentUrl, async route => {
+      if (!raceStarted || route.request().method() !== 'GET') { await route.continue(); return; }
+      const readNumber = ++parentReads;
+      if (readNumber > 1) { nextParentEntered(); await parentGate; }
+      const response = await authenticatedAPI(page.context().request).fetch(route.request(), { timeout: 15_000, maxRetries: 0 });
+      expect(response.status()).toBe(200);
+      if (readNumber === 1) firstParentVersion = (parseApiJson(await response.text()) as { version: bigint }).version;
+      await fulfillAuthenticatedResponse(route, response);
+      if (readNumber === 1) firstParentDelivered();
+    });
+    await page.route(raceStatusUrl, async route => {
+      raceWrites += 1;
+      const response = await authenticatedAPI(page.context().request).fetch(route.request(), { timeout: 15_000, maxRetries: 0 });
+      expect(response.status()).toBe(200); raceStarted = true; await route.abort('connectionfailed');
+    });
+    try {
+      await choose(page, raceStepId, 'done');
+      await Promise.all([raceStepsWaiting, firstParent]);
+      await expect(trigger(page, raceStepId)).toBeDisabled();
+      const afterStep = parseApiJson(await (await api.get(`/api/v1/projects/${project.id}/tasks/${raceTask.id}`)).text()) as { version: bigint };
+      expect(firstParentVersion).toBe(afterStep.version);
+      const expectedVersion = afterStep.version + 1n;
+      const advancedSync = page.waitForResponse(async response => {
+        if (new URL(response.url()).pathname !== `/api/v1/projects/${project.id}/task-sync` || response.status() !== 200) return false;
+        const body = parseApiJson(await response.text()) as { tasks?: { id: string; version: string }[] };
+        return body.tasks?.some(item => item.id === raceTask.id && /^[1-9][0-9]*$/.test(item.version) && BigInt(item.version) === expectedVersion) === true;
+      }, { timeout: 20_000 });
+      const advanceResponse = await api.patch(`/api/v1/projects/${project.id}/tasks/${raceTask.id}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: afterStep.version, description: 'Parent advanced while Steps read was held.' }) });
+      expect(advanceResponse.status()).toBe(200);
+      const advanced = parseApiJson(await advanceResponse.text()) as { version: bigint };
+      expect(advanced.version).toBe(expectedVersion);
+      await advancedSync;
+      releaseRaceSteps(); await raceStepsDone;
+      expect(deliveredVersion).toBe(advanced.version);
+      await nextParent;
+      await expect(trigger(page, raceStepId)).toBeDisabled();
+      releaseParent();
+      await expect(trigger(page, raceStepId)).toHaveText(/已完成/);
+      await expect(trigger(page, raceStepId)).toBeEnabled();
+      await root(page).getByRole('tab', { name: '概览', exact: true }).click();
+      await expect(root(page).locator('.task-detail-description')).toContainText('Parent advanced while Steps read was held.');
+      expect(raceWrites).toBe(1);
+      await info.attach('step-version-advance', { contentType: 'application/json', body: Buffer.from(JSON.stringify({ intermediate: String(afterStep.version), advanced: String(advanced.version), parentReads, raceWrites })) });
+    } finally {
+      releaseRaceSteps(); releaseParent();
+      await page.unroute(raceStatusUrl); await page.unroute(raceParentUrl); await page.unroute(raceCollectionUrl);
+    }
     await page.route(deletedUrl, async route => {
       const parent = await (await api.get(`/api/v1/projects/${project.id}/tasks/${deletedTask.id}`)).json();
       const deletion = await api.delete(`/api/v1/projects/${project.id}/tasks/${deletedTask.id}`, { data: { version: parent.version, removeDepends: true } });
@@ -222,7 +297,6 @@ test('step status writes converge through real service resources', { annotation:
       expect(response.status()).toBe(410);
       await fulfillAuthenticatedResponse(route, response);
     });
-    await root(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
     await page.goto(`/projects/${project.id}/tasks/${deletedTask.id}?tab=steps`);
     await choose(page, stepIdForDeleted(), 'done');
     await expect(root(page)).toContainText('任务已删除');
