@@ -13,10 +13,10 @@ const key = `daynight.selectedTeam:${alice}`;
 type Role = 'admin' | 'member';
 type Member = { role: Role; version: number; name: string | null; email: string | null };
 type Gate = { started: () => void; wait: Promise<void> };
-type State = { members: Map<string, Member>; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; grant: { userId: string; role: Role; version: number } };
+type State = { members: Map<string, Member>; betaMember: Member; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; grant: { userId: string; role: Role; version: number } };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> => {
-  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, grant: { userId: alice, role: 'admin', version: 7 } };
+  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, grant: { userId: alice, role: 'admin', version: 7 } };
   const membership = (id: string, team = teamId) => { const m = team === personalId ? { role: 'admin' as const, version: 9, name: 'Alice', email: null } : state.members.get(id)!; return { teamId: team, userId: id, role: m.role, version: m.version, createdAt: time, updatedAt: time }; };
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : id === betaId ? 'Beta' : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: id === betaId ? { teamId: betaId, userId: alice, role: 'admin', version: 20, createdAt: time, updatedAt: time } : membership(alice, id) });
   const roster = (id: string) => id === personalId ? [{ ...membership(alice, id), profile: { name: 'Alice', email: null, avatarUrl: null } }] : [...state.members].map(([userId, m]) => ({ ...membership(userId), profile: { name: m.name, email: m.email, avatarUrl: null } }));
@@ -28,7 +28,14 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
     if (path === '/api/v1/teams') return send({ items: state.members.has(alice) ? [team(teamId)] : [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team(personalId));
     if (path === `/api/v1/teams/${betaId}`) return send(team(betaId));
-    if (path === `/api/v1/teams/${betaId}/members`) return send({ items: [{ ...team(betaId).membership, profile: { name: 'Alice', email: null, avatarUrl: null } }] });
+    if (path === `/api/v1/teams/${betaId}/members`) return send({ items: [{ ...team(betaId).membership, profile: { name: 'Alice', email: null, avatarUrl: null } }, { teamId: betaId, userId: bob, role: state.betaMember.role, version: state.betaMember.version, createdAt: time, updatedAt: time, profile: { name: state.betaMember.name, email: state.betaMember.email, avatarUrl: null } }] });
+    if (path === `/api/v1/teams/${betaId}/members/${bob}` && method === 'PATCH') {
+      const body = request.postDataJSON() as Record<string, unknown>; state.writes.push({ method, path, body });
+      if (body.expectedUserId !== alice) return send(error('identity_mismatch'), 409);
+      if (body.version !== state.betaMember.version) return send(error('version_conflict'), 409);
+      state.betaMember.role = body.role as Role; state.betaMember.version += 10;
+      return send({ membership: { teamId: betaId, userId: bob, role: state.betaMember.role, version: state.betaMember.version, createdAt: time, updatedAt: time }, actorRole: 'admin' });
+    }
     if (path === `/api/v1/teams/${personalId}/members`) return send({ items: roster(personalId) });
     if (path === `/api/v1/teams/${teamId}` && state.failReadsAfterWrite && state.writes.length > 0) return route.abort('failed');
     if (path === `/api/v1/teams/${teamId}`) return state.members.has(alice) ? send(team(teamId)) : send(error('not_found'), 404);
@@ -222,6 +229,29 @@ test('a late self exit does not overwrite a different confirmed Team choice', as
   finish.resolve(); await expect(page.getByText('You left the Team; direct Project grants remain.')).toBeVisible();
   await expect.poll(() => new URL(page.url()).pathname).toBe(`/teams/${betaId}/members`);
   expect(await selected(page)).toBe(betaId); expect(api.writes).toHaveLength(1);
+});
+
+test('concurrent Team results remain distinct and a new candidate clears only its own Team', async ({ page }) => {
+  const api = await install(page); await start(page);
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  api.holdWrite = { started: started.resolve, wait: finish.promise };
+  await page.getByLabel('Team role: Bob').selectOption('member');
+  await page.getByRole('dialog').getByRole('button', { name: 'Confirm change' }).click(); await started.promise;
+  await traverse(page, `/teams/${betaId}/members`);
+  const betaRole = page.getByRole('combobox', { name: 'Team role: Bob' });
+  await expect(betaRole).toHaveValue('member');
+  await betaRole.selectOption('admin');
+  await page.getByRole('dialog').getByRole('button', { name: 'Confirm change' }).click();
+  const result = (id: string) => page.locator('[role="status"]').filter({ hasText: id });
+  await expect(result(betaId)).toContainText('Team membership updated.');
+  finish.resolve(); await expect(result(teamId)).toContainText('Team membership updated.');
+  await expect(result(betaId)).toBeVisible(); expect(api.writes).toHaveLength(2);
+  await expect(betaRole).toHaveValue('admin');
+  await betaRole.selectOption('member');
+  await expect(result(betaId)).toHaveCount(0); await expect(result(teamId)).toHaveCount(1);
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+  await result(teamId).getByRole('button', { name: 'Dismiss' }).click();
+  await expect(result(teamId)).toHaveCount(0); expect(api.writes).toHaveLength(2);
 });
 
 test('same-account revalidation preserves a pending exit and its unknown outcome', async ({ page }) => {
