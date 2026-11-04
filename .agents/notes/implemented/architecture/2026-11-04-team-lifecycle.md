@@ -48,6 +48,8 @@ The [Personal ownership decision](2026-11-04-personal-project-ownership.md)
 retains initialization, migration and access-source ownership. The
 [public ownership decision](2026-11-04-public-project-ownership.md) retains the
 minimal embedded Team reference and the Project cache boundary. The
+[CLI lifecycle decision](2026-11-04-cli-team-lifecycle.md) owns terminal
+confirmation and receipt handling. The
 [auth requirements](../../../../docs/spec/daynight-auth.md#team-生命周期)
 own the lifecycle's public fields and refusals.
 
@@ -73,7 +75,7 @@ resource and observation. Existence locking preserves ownership integrity
 without changing the schema's foreign-key policy or reversing resource lock
 orders.
 
-Member management, invitations, Team CLI commands and Team pages retain their
+Member management, invitations and Team pages retain their
 own capability boundaries. The [transfer decision](2026-11-04-project-transfer.md)
 uses the same Team existence lock for Project ownership changes. Any new ownership writer must
 participate in the Team existence lock; any new Team-owned child records must

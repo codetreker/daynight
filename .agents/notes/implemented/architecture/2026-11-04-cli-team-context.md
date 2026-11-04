@@ -25,6 +25,8 @@ own the observable commands and failures. The
 [project scope pagination decision](2026-11-04-project-scope-pagination.md) owns
 server filtering and cursor scope; all-accessible Project discovery remains
 independent of Team defaults.
+The [CLI lifecycle decision](2026-11-04-cli-team-lifecycle.md) owns writes and
+their confirmation.
 
 ## Alternatives
 

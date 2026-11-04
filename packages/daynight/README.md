@@ -158,6 +158,9 @@ daynight project list [--json]
 daynight project show <project-id> [--json]
 daynight team list [--json]
 daynight team show [--team <uuid|personal>] [--json]
+daynight team create <name> [--confirm] [--json]
+daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
 daynight task
@@ -582,6 +585,25 @@ teamDefaults:
 
 `team default show --json` returns `configured` (the saved ID or `null`) and
 the verified `team` resource.
+
+`team create` creates an ordinary Team, `team rename` changes its name, and
+`team delete` removes an empty ordinary Team. Names preserve their original
+characters and whitespace and may be duplicated. Rename and delete resolve the
+explicit or default Team and use an observed version; `--if-version` retains the
+specified positive int64 version, rejecting a mismatch with the observed version
+before submission. Personal Teams cannot be renamed or deleted.
+
+Each write requires interactive confirmation or the boolean `--confirm` flag.
+Without it, non-interactive calls fail before writing. Delete prompts for the
+displayed JSON string literal and compares its decoded value exactly with the
+raw Team name; create and rename accept `y` or `yes` case-insensitively.
+Cancellation, refusal or a mismatch does not submit. Even with
+`--confirm`, delete sends the real name and version; the service still checks
+identity, authority and preconditions. Success uses the validated receipt;
+conflicts require a fresh decision, and unknown outcomes are never replayed.
+Reading current facts does not recover a lost receipt. A later output or cleanup
+failure retains a confirmed receipt. Use `--json` for the confirmed resource or
+deletion receipt.
 
 ## Task management
 

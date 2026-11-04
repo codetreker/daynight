@@ -58,6 +58,11 @@ export const parseTeam = (value: unknown, userId: string, teamId?: string): Team
   if (membership.teamId !== ref.id || membership.userId !== userId || teamId !== undefined && ref.id !== teamId || ref.kind === "personal" && membership.role !== "admin") return malformed();
   return { ...ref, version: resourceVersion(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt), membership };
 };
+export const parseTeamDeleteReceipt = (value: unknown, teamId: string): { readonly teamId: string; readonly deleted: true } => {
+  const data = fields(value, ["teamId", "deleted"]);
+  if (id(data.teamId) !== teamId || data.deleted !== true) return malformed();
+  return { teamId, deleted: true };
+};
 const parseOwnership = (value: unknown): ProjectOwnership => {
   const data = fields(value, ["teamId", "version"]);
   return { teamId: id(data.teamId), version: resourceVersion(data.version) };
