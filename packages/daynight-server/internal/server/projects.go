@@ -19,6 +19,8 @@ func projectRoutes(mux *http.ServeMux, projects *service.Projects, auth *Authent
 	mux.HandleFunc("POST /api/v1/projects", auth.Require(handler.create))
 	mux.HandleFunc("GET /api/v1/projects", auth.Require(handler.list))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}", auth.Require(handler.get))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/access", auth.Require(handler.access))
+	mux.HandleFunc("/api/v1/projects/{projectId}/access", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/settings", auth.Require(handler.settings))
 	mux.HandleFunc("/api/v1/projects/{projectId}/settings", auth.Require(resourceMethodNotAllowed(logger, "PATCH")))
 	mux.HandleFunc("/api/v1/projects", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))

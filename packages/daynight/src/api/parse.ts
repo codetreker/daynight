@@ -1,5 +1,5 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ProjectMember, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectMember, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, User, WorkerReportReceipt } from "./types.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
@@ -68,6 +68,19 @@ export const parseUser = (value: unknown): User => {
     emailVerified: data.emailVerified === null ? null : bool(data.emailVerified),
     name: data.name === null ? null : text(data.name), avatarUrl: data.avatarUrl === null ? null : text(data.avatarUrl),
   };
+};
+export const parseProjectAccess = (value: unknown, projectId: string, userId?: string): ProjectAccess => {
+  const data = fields(value, ["effectiveRole", "directGrant"]);
+  const effectiveRole = data.effectiveRole === "admin" || data.effectiveRole === "member" ? data.effectiveRole : malformed();
+  if (data.directGrant === null) return { effectiveRole, directGrant: null };
+  const grant = fields(data.directGrant, ["projectId", "userId", "role", "version", "createdAt", "updatedAt"]);
+  const directGrant: ProjectGrant = {
+    projectId: id(grant.projectId), userId: id(grant.userId),
+    role: grant.role === "admin" || grant.role === "member" ? grant.role : malformed(),
+    version: resourceVersion(grant.version), createdAt: timestamp(grant.createdAt), updatedAt: timestamp(grant.updatedAt),
+  };
+  if (directGrant.projectId !== projectId || userId !== undefined && directGrant.userId !== userId) return malformed();
+  return { effectiveRole, directGrant };
 };
 export const parseProjectMembers = (value: unknown, projectId: string): readonly ProjectMember[] => {
   const data = fields(value, ["items"]);

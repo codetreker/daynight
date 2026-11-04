@@ -35,7 +35,11 @@ Web task details share the claim display and withdrawal operation across the
 dialog, standalone page and fullscreen. The display identifies the claiming user,
 machine, agent and phase. Released records are labeled; completed records do not
 appear as current ownership. Project members supply readable identities, while a
-former member remains identified by its real user ID. Confirmation freezes the
+former member remains identified by its real user ID. The caller's owner/admin
+eligibility comes from [current project access](2026-11-03-project-access-projection.md),
+independently of profile loading or failure. Stale or denied access invalidates
+withdrawal confirmation without discarding the profile read's error/retry state.
+Confirmation freezes the
 task, claim and exact version and explains the reset and delayed-stop boundary.
 The existing task session owns submission, returned-resource validation and
 GET-only reconciliation after an uncertain result. Cancel submits nothing, and

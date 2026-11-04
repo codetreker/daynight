@@ -9,8 +9,8 @@ import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseProject, parseProjectMembers, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectMember, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
+import { canonicalId, parsePage, parseProject, parseProjectAccess, parseProjectMembers, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
+import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectMember, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
@@ -70,6 +70,7 @@ export type ApiClient = {
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(projectId: string): Promise<Project>;
+  getProjectAccess(projectId: string): Promise<ProjectAccess>;
   listProjects(): Promise<readonly Project[]>;
   listProjectMembers(projectId: string): Promise<readonly ProjectMember[]>;
   createTask(projectId: string, input: CreateTaskInput): Promise<Task>;
@@ -478,6 +479,10 @@ export const createApiClient = (options: {
       return request({ operation: "project.show", projectId: project }, `/projects/${encodeURIComponent(project)}`, "GET", (value) => parseProject(value, project));
     },
     listProjects: () => list({ operation: "project.list" }, "/projects", (value) => parsePage(value, (item) => parseProject(item), (project) => project.id), (project) => project.id),
+    getProjectAccess: (projectId) => {
+      const project = resourceId(projectId);
+      return exchange({ operation: "project.access", projectId: project }, `/projects/${encodeURIComponent(project)}/access`, "GET", { kind: "json", parse: (value) => parseProjectAccess(value, project, expectedUserId) }, [200], undefined, true);
+    },
     listProjectMembers: (projectId) => {
       const project = resourceId(projectId);
       return exchange({ operation: "project.members", projectId: project }, `/projects/${encodeURIComponent(project)}/members`, "GET", { kind: "json", parse: (value) => parseProjectMembers(value, project) }, [200], undefined, true);

@@ -1000,33 +1000,35 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
     await expect.poll(() => page.evaluate((id) => JSON.parse(localStorage.getItem(`daynight:task-list-scroll:${id}`)!), project.id)).toBe(540);
   });
-  const membersUrl = `**/api/v1/projects/${project.id}/members`;
-  let releaseMembers!: () => void;
-  let markMembersRequestStarted!: () => void;
-  const membersResponseGate = new Promise<void>((resolve) => { releaseMembers = resolve; });
-  const membersRequestStarted = new Promise<void>((resolve) => { markMembersRequestStarted = resolve; });
-  await page.route(membersUrl, async (route) => {
-    markMembersRequestStarted();
-    await membersResponseGate;
+  const initialSyncUrl = (url: URL) => url.pathname === syncPath;
+  let releaseSync!: () => void;
+  let markSyncRequestStarted!: () => void;
+  const syncResponseGate = new Promise<void>((resolve) => { releaseSync = resolve; });
+  const syncRequestStarted = new Promise<void>((resolve) => { markSyncRequestStarted = resolve; });
+  await page.route(initialSyncUrl, async (route) => {
+    markSyncRequestStarted();
+    await syncResponseGate;
     await route.continue();
   });
   try {
     await page.reload();
     await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
-    await membersRequestStarted;
+    await syncRequestStarted;
     await expect(viewTab(page, '独立任务')).toHaveAttribute('aria-selected', 'true');
     await expect(standaloneCompleted).not.toBeChecked();
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
     const projectHeading = page.locator('.project-heading');
-    const headingBeforeMembership = await projectHeading.boundingBox();
-    expect(headingBeforeMembership).not.toBeNull();
-    releaseMembers();
+    await expect(projectHeading.locator('.project-title-actions-placeholder')).toHaveCount(1);
+    await expect(page.getByRole('link', { name: '项目设置', exact: true })).toHaveCount(0);
+    const headingBeforeAccess = await projectHeading.boundingBox();
+    expect(headingBeforeAccess).not.toBeNull();
+    releaseSync();
     await expect(page.getByRole('link', { name: '项目设置', exact: true })).toBeVisible();
-    expect(await projectHeading.boundingBox()).toEqual(headingBeforeMembership);
+    expect(await projectHeading.boundingBox()).toEqual(headingBeforeAccess);
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   } finally {
-    releaseMembers();
-    await page.unroute(membersUrl);
+    releaseSync();
+    await page.unroute(initialSyncUrl);
   }
 
   const other = await createProject(request, { name: `Other task views ${randomUUID()}` });

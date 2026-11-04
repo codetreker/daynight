@@ -260,12 +260,10 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(originalFrame).not.toBeNull();
     const identityRequests: string[] = [];
     const graphRequests: string[] = [];
-    const membershipRequests: string[] = [];
     const graphResponses: { readonly number: number; readonly status: number; readonly principal: string | null }[] = [];
     const requestOrder: string[] = [];
     const identityRequestNumbers = new WeakMap<object, number>();
     const graphRequestNumbers = new WeakMap<object, number>();
-    const membershipRequestNumbers = new WeakMap<object, number>();
     const pendingGraphWindows: { readonly identity: 'same-user' | 'changed-user'; readonly baseline: number; readonly beforeRelease: number }[] = [];
     page.on('request', (request) => {
       const pathname = new URL(request.url()).pathname;
@@ -277,10 +275,6 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
         graphRequests.push(request.method());
         graphRequestNumbers.set(request, graphRequests.length);
         requestOrder.push(`graph-request:${graphRequests.length}`);
-      } else if (pathname === `/api/v1/projects/${own.id}/members`) {
-        membershipRequests.push(request.method());
-        membershipRequestNumbers.set(request, membershipRequests.length);
-        requestOrder.push(`membership-request:${membershipRequests.length}`);
       }
     });
     page.on('response', (response) => {
@@ -447,16 +441,15 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await expect(page.getByRole('link', { name: '账户设置：Alice', exact: true })).toBeVisible();
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
     pendingGraphWindows.push({ identity: 'changed-user', baseline: changedUserGraphBaseline, beforeRelease: graphRequests.length });
-    const changedUserMembershipBaseline = membershipRequests.length;
-    const deniedMembership = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${own.id}/members`
-      && membershipRequestNumbers.get(response.request())! > changedUserMembershipBaseline);
+    const deniedGraph = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${own.id}/task-sync`
+      && graphRequestNumbers.get(response.request())! > changedUserGraphBaseline);
     heldChecks[2]!.release();
     await heldChecks[2]!.completed;
-    const membershipRefusal = await deniedMembership;
-    expect(membershipRefusal.request().method()).toBe('GET');
-    expect(membershipRefusal.status()).toBe(404);
-    expect(membershipRefusal.headers()['daynight-user-id']).toBe(bobUser.id);
-    expect((await membershipRefusal.json() as { error: { code: string } }).error.code).toBe('not_found');
+    const graphRefusal = await deniedGraph;
+    expect(graphRefusal.request().method()).toBe('GET');
+    expect(graphRefusal.status()).toBe(404);
+    expect(graphRefusal.headers()['daynight-user-id']).toBe(bobUser.id);
+    expect((await graphRefusal.json() as { error: { code: string } }).error.code).toBe('not_found');
     await expect(page.getByRole('link', { name: '账户设置：Bob', exact: true })).toBeVisible();
     await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
@@ -468,7 +461,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(identityRequests).toEqual(['GET', 'GET', 'GET']);
     expect(requestOrder).toContain('identity-response:3');
     const identityConfirmedAt = requestOrder.indexOf('identity-response:3');
-    expect(requestOrder.indexOf(`membership-request:${membershipRequestNumbers.get(membershipRefusal.request())!}`)).toBeGreaterThan(identityConfirmedAt);
+    expect(requestOrder.indexOf(`graph-request:${graphRequestNumbers.get(graphRefusal.request())!}`)).toBeGreaterThan(identityConfirmedAt);
     for (let number = changedUserGraphBaseline + 1; number <= graphRequests.length; number++) {
       expect(requestOrder.indexOf(`graph-request:${number}`)).toBeGreaterThan(identityConfirmedAt);
     }
@@ -484,8 +477,8 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await expect.poll(async () => { cacheAfterAccountChange = await cachePrivacy(); return cacheAfterAccountChange; }, {
       message: 'Changing accounts purges the old cache namespace and never authorizes its project for the new account',
     }).toEqual({ aliceActiveProjects: 0, aliceSummaries: 0, aliceDetails: 0, bobOwnProjectActive: false, bobSummaries: 0, bobDetails: 0 });
-    const membershipDenial = { status: membershipRefusal.status(), principal: membershipRefusal.headers()['daynight-user-id'] };
-    await info.attach('auth-real-tab-return', { body: Buffer.from(JSON.stringify({ identityRequests, graphRequests, graphResponses, membershipRequests, membershipDenial, pendingGraphWindows, requestOrder, continuity, cacheBeforeAccountChange, cacheAfterAccountChange })), contentType: 'application/json' });
+    const accessDenial = { status: graphRefusal.status(), principal: graphRefusal.headers()['daynight-user-id'] };
+    await info.attach('auth-real-tab-return', { body: Buffer.from(JSON.stringify({ identityRequests, graphRequests, graphResponses, accessDenial, pendingGraphWindows, requestOrder, continuity, cacheBeforeAccountChange, cacheAfterAccountChange })), contentType: 'application/json' });
     await picture(page, info, 'auth-account-return');
   } finally {
     for (const check of heldChecks) check.release();

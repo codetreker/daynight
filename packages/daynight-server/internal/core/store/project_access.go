@@ -12,10 +12,18 @@ const projectAccessRelation = `SELECT project_id,user_id,role FROM project_membe
 // ReadProjectAccess evaluates access in the caller's transaction without acquiring row locks.
 func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string) (core.ProjectAccess, error) {
 	var access core.ProjectAccess
-	err := tx.QueryRow(ctx, `SELECT a.project_id::text,a.user_id::text,a.role FROM (`+projectAccessRelation+`) a
+	var grant core.ProjectGrant
+	err := tx.QueryRow(ctx, `SELECT a.project_id::text,a.user_id::text,a.role,
+        g.project_id::text,g.user_id::text,g.role,g.version,g.created_at,g.updated_at FROM (`+projectAccessRelation+`) a
         JOIN users u ON u.id=a.user_id JOIN projects p ON p.id=a.project_id
-        WHERE a.project_id=$1 AND a.user_id=$2`, projectID, userID).Scan(&access.ProjectID, &access.UserID, &access.Role)
-	return access, authQueryError("read project access", err)
+        JOIN project_members g ON g.project_id=a.project_id AND g.user_id=a.user_id
+        WHERE a.project_id=$1 AND a.user_id=$2`, projectID, userID).Scan(&access.ProjectID, &access.UserID, &access.Role,
+		&grant.ProjectID, &grant.UserID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt)
+	if err != nil {
+		return core.ProjectAccess{}, authQueryError("read project access", err)
+	}
+	access.DirectGrant = &grant
+	return access, nil
 }
 
 func (s *Snapshot) ProjectAccess(ctx context.Context, principal core.Principal, projectID string) (core.ProjectAccess, error) {
