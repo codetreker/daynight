@@ -7,6 +7,7 @@ const resources = [
   { path: "commands/review/sqlite", kind: "directory", sqlOnly: true },
   { path: "commands/worker/sqlite", kind: "directory", sqlOnly: true },
   { path: "commands/worker/backends/sqlite", kind: "directory", sqlOnly: true },
+  { path: "commands/worker/herdr/sqlite", kind: "directory", sqlOnly: true },
   { path: "commands/controller/sqlite/journal", kind: "directory", sqlOnly: true },
   { path: "commands/controller/sqlite/resume-lease", kind: "directory", sqlOnly: true },
 ];

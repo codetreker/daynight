@@ -157,6 +157,55 @@ describe("native argument ownership", () => {
 });
 
 describe("direct task resource management", () => {
+  it("returns a launched process before its first input or native SessionStart", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.hook(async (method, params) => {
+      if (method !== "agent.start") return undefined;
+      const agent = f.launch(params); delete agent.agent_session;
+      return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] };
+    });
+    const result = await f.manager.launch(f.context, binding, { configuration }, operation());
+    expect(result).toMatchObject({ interactiveReady: true, nativeSession: null });
+    expect(f.prompts).toEqual([]);
+    expect(await f.manager.processInfo(f.context, binding, operation())).toEqual({ shellPid: 100, foregroundPids: [100, 200] });
+    await f.manager.submitInitialPrompt(f.context, binding, "assignment after durable identity", operation());
+    expect(f.prompts).toEqual(["assignment after durable identity"]);
+  });
+
+  it("returns a blocked launch for identity capture without attempting its first input", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.hook(async (method, params) => {
+      if (method !== "agent.start") return undefined;
+      const agent = f.launch(params); agent.agent_status = "blocked";
+      return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] };
+    });
+    expect(await f.manager.launch(f.context, binding, { configuration }, operation())).toMatchObject({ status: "blocked" });
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("rechecks first-input admission after readiness and skips revoked input", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    await f.manager.launch(f.context, binding, { configuration }, operation());
+    const result = await f.manager.submitInitialPrompt(f.context, binding, "revoked assignment", operation(), async () => false);
+    expect(result.submission).toBe("skipped");
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("rejects process discovery when the original terminal changes during the query", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    f.hook(async (method) => {
+      if (method === "pane.process_info") f.panes[0]!.terminal_id = "replacement";
+      return undefined;
+    });
+    await expect(f.manager.processInfo(f.context, binding, operation())).rejects.toThrow("terminal identity has changed");
+  });
+
+  it("rejects process discovery from another pane", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    f.hook(async (method) => method === "pane.process_info" ? { type: "pane_process_info", process_info: { pane_id: "replacement", shell_pid: 100, foreground_processes: [] } } : undefined);
+    await expect(f.manager.processInfo(f.context, binding, operation())).rejects.toThrow("another pane");
+  });
+
   const visible = (f: Awaited<ReturnType<typeof fixture>>, binding: HerdrTaskBinding, screen: string, extra: Entry = {}): HerdrRpcResult => ({ type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, tab_id: f.panes.find((pane) => pane.pane_id === binding.paneId)!.tab_id, source: "visible", format: "text", text: screen, revision: 0, truncated: false, ...extra } });
 
   it("creates one workspace with native XDG settings and rediscovers it without receipts", async () => {
@@ -395,6 +444,86 @@ describe("direct task resource management", () => {
     expect(starts).toHaveLength(3);
     expect(starts.every((call) => call.params.pane_id === binding.paneId)).toBe(true);
     expect(f.prompts).toEqual(["assignment"]); expect(f.preflights()).toBe(1);
+  });
+
+  it("retries the split launch without requiring SessionStart or submitting initial input", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    let attempts = 0;
+    f.hook(async (method, params) => {
+      if (method === "pane.process_info") return shellProcesses(binding);
+      if (method !== "agent.start") return undefined;
+      if (++attempts === 1) throw busyShell();
+      const agent = f.launch(params); delete agent.agent_session;
+      return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] };
+    });
+    const launched = await f.manager.launch(f.context, binding, { configuration }, operation());
+    expect(attempts).toBe(2);
+    expect(launched).toMatchObject({ interactiveReady: true, nativeSession: null });
+    expect(f.prompts).toEqual([]);
+    await f.manager.submitInitialPrompt(f.context, binding, "assignment", operation());
+    expect(f.prompts).toEqual(["assignment"]);
+    expect(attempts).toBe(2);
+  });
+
+  it("checks start admission immediately before every native launch attempt", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const order: string[] = []; const op = operation();
+    const beforeStart = vi.fn(async (active: Operation) => { expect(active).toBe(op); order.push("guard"); });
+    let attempts = 0;
+    f.hook(async method => {
+      if (method === "pane.process_info") return shellProcesses(binding);
+      if (method === "agent.start") { order.push("start"); if (++attempts < 3) throw busyShell(); }
+      return undefined;
+    });
+    await f.manager.launch(f.context, binding, { configuration, beforeStart }, op);
+    expect(order).toEqual(["guard", "start", "guard", "start", "guard", "start"]);
+    expect(beforeStart).toHaveBeenCalledTimes(3);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each([1, 2])("does not retry a rejected start guard on attempt %s", async rejectedAttempt => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const failure = new HerdrAgentActionError("Original launch target changed.", "agent.start", "rejected", { cause: busyShell() });
+    let attempts = 0; let checks = 0;
+    const beforeStart = vi.fn(async () => { if (++checks === rejectedAttempt) throw failure; });
+    f.hook(async method => {
+      if (method === "pane.process_info") return shellProcesses(binding);
+      if (method === "agent.start" && ++attempts === 1) throw busyShell();
+      return undefined;
+    });
+    await expect(f.manager.launch(f.context, binding, { configuration, beforeStart }, operation())).rejects.toBe(failure);
+    expect(beforeStart).toHaveBeenCalledTimes(rejectedAttempt);
+    expect(attempts).toBe(rejectedAttempt - 1);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each([2500, 7500])("uses the remaining launch budget after admission consumes %s ms", async elapsed => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    let now = 1000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const op = createOperation({ limits: { totalMs: 10_000 } }); operations.push(op);
+    try {
+      const launched = f.manager.launch(f.context, binding, { configuration, beforeStart: async () => { now += elapsed; } }, op);
+      if (elapsed === 2500) {
+        await launched;
+        expect(f.calls.filter(call => call.method === "agent.start")).toMatchObject([{ params: { timeout_ms: 7500 } }]);
+      } else {
+        await expect(launched).rejects.toMatchObject({ action: "agent.start", submission: "not-submitted" });
+        expect(f.calls.filter(call => call.method === "agent.start")).toEqual([]);
+      }
+      expect(f.prompts).toEqual([]);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("does not reuse start admission after an unknown launch response", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const beforeStart = vi.fn(async () => {});
+    const failure = new HerdrRpcError("launch response lost", { method: "agent.start", requestId: "unknown", submission: "unknown" });
+    f.hook(async method => { if (method === "agent.start") throw failure; return undefined; });
+    await expect(f.manager.launch(f.context, binding, { configuration, beforeStart }, operation())).rejects.toMatchObject({ submission: "unknown", cause: failure });
+    expect(beforeStart).toHaveBeenCalledOnce();
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.prompts).toEqual([]);
   });
 
   it("bounds shell initialization retries and retains the actual rejected launch", async () => {

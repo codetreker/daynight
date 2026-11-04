@@ -16,6 +16,13 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
     const deadline = deleteWorktree ? ensureCleanupSchedule(deps.store, input.owner, deps.now()).deadline : deps.now() + 600_000;
     let stage: "agent-stop" | "worktree-removal" = "agent-stop";
     try {
+      const lifecycle = deps.herdr.lifecycle;
+      if (lifecycle !== undefined) {
+        await cleanupOperation(operation => lifecycle.stop(input.owner, deleteWorktree ? "terminal" : "shutdown", operation), signal);
+        if (!lifecycle.isStopped(input.owner)) throw new Error("The original Herdr run stop is not confirmed; its resources are retained.");
+        deps.emit({ kind: "agent-stopped", ...(input.task === undefined ? {} : { task: input.task }), message: "Stopped the original Herdr run; its worktree and local source remain until archive finalization permits cleanup." });
+        return;
+      }
       const stopContext = { ...input.owner, cwd: path.join(input.project.localPath, ".worktrees", "daynight", input.owner.taskId) };
       await settleWorkerStops(deps, input.owner, signal, cleanupOperation);
       const observe = async () => actualTaskPane(input.owner, await cleanupOperation(operation => deps.herdr.tasks.listResources(operation), signal));

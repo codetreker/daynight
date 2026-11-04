@@ -1,13 +1,50 @@
+import path from "node:path";
+import { statSync } from "node:fs";
 import { createOperation } from "../../api/operation.js";
+import { readHerdrLifecycleRecords } from "./herdr/lifecycle-store.js";
+import { createMacProcessControl } from "./herdr/native-macos.js";
+import type { HerdrLocalRun } from "./herdr/lifecycle-types.js";
 import { createHerdrInstance } from "./herdr/instance.js";
 import { spawnHerdrProcess } from "./herdr/command.js";
 import { resolveWorkerPaths } from "./paths.js";
 
 export const attachWorker = async (options: { homeDirectory: string }): Promise<void> => {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("daynight worker attach requires an interactive terminal.");
-  const instance = createHerdrInstance({ paths: resolveWorkerPaths(options.homeDirectory) });
+  const paths = resolveWorkerPaths(options.homeDirectory);
+  const journal = path.join(paths.workerDirectory, "herdr-executions.sqlite");
+  let hasJournal = false;
+  if (process.platform === "darwin") {
+    try { statSync(journal); hasJournal = true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  let run: HerdrLocalRun | undefined;
+  if (hasJournal) {
+    const candidates = readHerdrLifecycleRecords(journal).filter(record => {
+      const current = record.runs.at(-1);
+      return current !== undefined && current.phase !== "stopped_confirmed";
+    });
+    if (candidates.length === 0) throw new Error("No recorded Herdr runtime is available for attachment.");
+    const { select } = await import("@inquirer/prompts");
+    const selected = candidates.length === 1 ? candidates[0]! : await select({
+      message: "Select the original task runtime to attach",
+      choices: candidates.map(record => ({ name: `${record.owner.taskId} · ${record.claimId} · ${record.owner.provider}`, value: record })),
+    });
+    run = selected.runs.at(-1)!;
+    if (run.daemon === null) throw new Error("The original Herdr daemon identity is unavailable; attachment is prohibited.");
+  }
+  const instance = createHerdrInstance(run === undefined ? { paths } : { paths: { ...paths, herdrDirectory: run.instanceDirectory, logsDirectory: path.join(run.instanceDirectory, "logs") }, isolatedRun: true });
+  const native = run === undefined ? undefined : createMacProcessControl();
+  const verifyDaemon = async (): Promise<void> => {
+    if (run === undefined || native === undefined) return;
+    const original = run.daemon!;
+    if (await native.observe(original) !== "same") throw new Error("The original Herdr daemon cannot be verified; attachment is prohibited.");
+    for (const endpoint of [instance.paths.apiEndpoint, instance.paths.clientEndpoint]) {
+      const peer = await native.peer(endpoint);
+      if (peer.pid !== original.pid || peer.bootId !== original.bootId || peer.birthToken !== original.birthToken || JSON.stringify(peer.auditToken) !== JSON.stringify(original.auditToken)) throw new Error("The endpoint no longer belongs to the original Herdr daemon; attachment is prohibited.");
+    }
+  };
   const operation = createOperation({ limits: { totalMs: 30_000 } });
-  try { await instance.connect(operation); }
+  try { await verifyDaemon(); await instance.connect(operation); await verifyDaemon(); }
   finally { operation.dispose(); }
   const attachment = instance.attachment;
   const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !attachment.unsetEnvironment.some((key) => key.toUpperCase() === name.toUpperCase())));

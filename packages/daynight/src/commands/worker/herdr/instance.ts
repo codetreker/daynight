@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { closeSync, openSync } from "node:fs";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { Socket } from "node:net";
@@ -158,17 +159,17 @@ const ordinaryDirectory = async (directory: string): Promise<void> => {
   const entry = await lstat(directory);
   if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error(`Private Herdr directory ${directory} must be an ordinary directory.`);
 };
-const verifyConfiguration = async (paths: HerdrInstancePaths): Promise<void> => {
+const verifyConfiguration = async (paths: HerdrInstancePaths, expected = managedConfiguration): Promise<void> => {
   const entry = await lstat(paths.configurationFile);
   if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Private Herdr configuration ${paths.configurationFile} must be an ordinary file.`);
-  if (await readFile(paths.configurationFile, "utf8") !== managedConfiguration) throw new Error(`Private Herdr configuration ${paths.configurationFile} differs from the managed configuration; inspect it before starting the worker.`);
+  if (await readFile(paths.configurationFile, "utf8") !== expected) throw new Error(`Private Herdr configuration ${paths.configurationFile} differs from the managed configuration; inspect it before starting the worker.`);
 };
-const ensureConfiguration = async (paths: HerdrInstancePaths): Promise<void> => {
+const ensureConfiguration = async (paths: HerdrInstancePaths, expected = managedConfiguration): Promise<void> => {
   await ordinaryDirectory(paths.privateDirectory);
-  try { await verifyConfiguration(paths); }
+  try { await verifyConfiguration(paths, expected); }
   catch (error) {
     if (!missing(error)) throw error;
-    await replaceFileAtomically(paths.configurationFile, managedConfiguration, 0o600);
+    await replaceFileAtomically(paths.configurationFile, expected, 0o600);
   }
 };
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -230,7 +231,11 @@ export const createHerdrInstance = (options: {
   executable?: string;
   environment?: NodeJS.ProcessEnv;
   spawnProcess?: HerdrSpawn;
+  onDaemonSpawn?: (pid: number) => Promise<void>;
+  retainOnStartupFailure?: boolean;
+  isolatedRun?: boolean;
 }) => {
+  const configuration = options.isolatedRun ? `${managedConfiguration}\n[update]\nversion_check = false\nmanifest_check = false\n` : managedConfiguration;
   const paths = resolveHerdrInstancePaths(options.paths);
   const executable = options.executable === undefined ? "herdr" : options.executable;
   if (executable.trim() === "" || /[\r\n\0]/.test(executable)) throw new Error("The Herdr executable must be nonempty without line breaks or NUL.");
@@ -270,7 +275,7 @@ export const createHerdrInstance = (options: {
       const scope = bounded(operation, 30_000);
       let startedHere: OwnedChild | null = null;
       try {
-        await ensureConfiguration(paths);
+        await ensureConfiguration(paths, configuration);
         const before = await endpoints(scope);
         if (before.api && before.client) return { ...await ready(scope), reconnected: true };
         if (before.api || before.client) throw new Error("The private Herdr instance has only one reachable endpoint; its startup or shutdown remains unconfirmed.");
@@ -284,6 +289,11 @@ export const createHerdrInstance = (options: {
           const spawnEnvironment = Object.freeze({ ...environment });
           owned = observeChild(start(executable, ["--session", session, "server"], { env: spawnEnvironment, detached: true, windowsHide: true, stdio: ["ignore", stdout, stderr] }), spawnEnvironment);
           startedHere = owned;
+          if (options.onDaemonSpawn) {
+            await once(owned.child, "spawn");
+            if (owned.child.pid === undefined) throw new Error("The original Herdr child did not report its process identity.");
+            await options.onDaemonSpawn(owned.child.pid);
+          }
         } finally { closeSync(stdout); if (stderr !== undefined) closeSync(stderr); }
         while (true) {
           const observed = await endpoints(scope);
@@ -296,7 +306,9 @@ export const createHerdrInstance = (options: {
           await pause(scope);
         }
       } catch (error) {
-        if (startedHere !== null && !startedHere.closed) {
+        // Retained resources remain journal-owned without keeping the failed Worker alive.
+        if (options.retainOnStartupFailure) startedHere?.child.unref();
+        if (startedHere !== null && !startedHere.closed && !options.retainOnStartupFailure) {
           try { killOwnedChild(startedHere); }
           catch (cause) { throw new AggregateError([error, cause], "Private Herdr startup failed and its owned process could not be terminated."); }
           const deadline = performance.now() + 2_000;
@@ -319,7 +331,7 @@ export const createHerdrInstance = (options: {
     connect: async (operation: Operation): Promise<HerdrInstanceReady> => {
       const scope = bounded(operation, 30_000);
       try {
-        try { await verifyConfiguration(paths); }
+        try { await verifyConfiguration(paths, configuration); }
         catch (cause) {
           if (missing(cause)) throw new Error("The worker Herdr session is not running. Start it with daynight worker run.", { cause });
           throw cause;

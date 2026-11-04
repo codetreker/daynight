@@ -14,6 +14,7 @@ const sqlDirectories = [
   "commands/review/sqlite",
   "commands/worker/sqlite",
   "commands/worker/backends/sqlite",
+  "commands/worker/herdr/sqlite",
   "commands/controller/sqlite/journal",
   "commands/controller/sqlite/resume-lease",
 ] as const;
