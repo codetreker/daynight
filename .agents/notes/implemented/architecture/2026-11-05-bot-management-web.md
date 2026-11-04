@@ -27,6 +27,11 @@ list and partial failures do not remove previously observed assistants. Only the
 selected authoritative detail can supply the Session binding. Startup readiness
 and current Worker availability remain separate observations.
 
+The routes reuse the Session shell's viewport height constraint. The Bot grid
+and conversation can shrink within it; the list and shared timeline own separate
+scroll regions. Timeline pagination and retained reading positions therefore use
+the actual visible conversation viewport.
+
 ## Alternatives
 
 **Submit every displayed default.** This would turn automatic resolution into
@@ -40,6 +45,12 @@ retained identity supports observation across remounts without replaying payload
 **Search only the first page.** This silently hides matches in later pages. Full
 pagination has a higher read cost but preserves a simple, complete search until
 the API provides a server-side search contract.
+
+**Let the document scroll the conversation.** An auto-height timeline expands
+with its history, moves the composer off screen and appears perpetually too
+short to the shared pagination hook. It also leaves timeline scroll bookmarks
+unrelated to the document's reading position. A bounded Session viewport keeps
+these existing contracts intact without adding a separate scrolling mechanism.
 
 ## Consequences
 
