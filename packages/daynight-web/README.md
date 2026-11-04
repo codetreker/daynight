@@ -1832,6 +1832,17 @@ rejects a stress selection in CI. Both local modes retain combined authenticatio
 exact source/browser identity and full cleanup; CI runs the two combined journeys
 on shard 2 while every shard performs its owned cleanup.
 
+Selected functional journeys inject shorter named polling intervals before page
+initialization: task synchronization and current-Session summary refreshes still
+use the real service, HTTP responses and normal state publication. The shared
+polling module keeps the production defaults of fifteen and five seconds;
+unit tests verify those defaults and the shorter schedules. Browser tests change
+only their owned polling periods, preserving request deadlines, freshness,
+execution clocks and real warning-threshold crossing. Cases with controlled
+browser clocks and local capacity measurements retain their own timing setup.
+The [polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-polling.md)
+owns this separation and its validation limits.
+
 Use Node 24, pnpm 11.28.6 and a frozen dependency install first. Chromium requires
 its normal runtime libraries on Linux; CI installs them with Playwright's
 `--with-deps` option. Locally, `DAYNIGHT_BROWSER_EXECUTABLE` can select an existing

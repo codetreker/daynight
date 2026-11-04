@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pauseAuthRequests } from '../src/api/client';
+import { pollingIntervalsKey } from '../src/app/polling';
 import type { TaskDetail, WorkerClaim } from '../src/api/types';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
@@ -36,7 +37,10 @@ async function fixture(tasks: readonly TaskDetail[] = [task()]) {
   return { scope, store };
 }
 async function settle() { for (let i = 0; i < 10; i++) await Promise.resolve(); }
-afterEach(() => { stores.splice(0).forEach((s) => s.dispose()); scopes.splice(0).forEach((s) => s.dispose()); });
+afterEach(() => {
+  stores.splice(0).forEach((s) => s.dispose()); scopes.splice(0).forEach((s) => s.dispose());
+  Reflect.deleteProperty(globalThis, Symbol.for(pollingIntervalsKey));
+});
 
 describe('Session summary semantics', () => {
   it.each([
@@ -59,6 +63,19 @@ describe('Session summary semantics', () => {
 });
 
 describe('Session summary scheduling and fencing', () => {
+  it('refreshes after the mocked polling period without changing the monotonic clock', async () => {
+    Reflect.set(globalThis, Symbol.for(pollingIntervalsKey), { sessionSummary: 100 });
+    const { store } = await fixture();
+    const fetch = vi.fn().mockImplementation(() => response()); vi.stubGlobal('fetch', fetch);
+    store.setChain('chain', [taskId], true); await settle();
+    expect(fetch).toHaveBeenCalledOnce();
+    const received = performance.now();
+    await vi.advanceTimersByTimeAsync(99); expect(fetch).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1); expect(fetch).toHaveBeenCalledTimes(2);
+    expect(performance.now() - received).toBe(100);
+    expect(store.snapshot().get(taskId)?.indicator).toBe('working');
+  });
+
   it('shares reads across visible chains, ignores unobserved tasks and refreshes five seconds after completion', async () => {
     const { store } = await fixture([task(), task(id(2))]); const pending = deferred<Response>();
     const fetch = vi.fn().mockReturnValueOnce(pending.promise).mockImplementation(() => response()); vi.stubGlobal('fetch', fetch);

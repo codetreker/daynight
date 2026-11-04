@@ -5,6 +5,7 @@ import { parseTaskSteps, type StepStatus, type StepsResource } from '../../src/a
 import { authenticatedAPI, bearerContext, browserAuthentication, fulfillAuthenticatedResponse, type AuthenticatedAPI } from './authentication';
 import { createProject, createTask, expect, test, updateTask } from './fixtures';
 import { selectTaskList } from './project-view';
+import { mockPollingIntervals, shortPollingInterval } from './polling';
 
 const labels: Record<StepStatus, string> = { todo: '待开始', in_progress: '进行中', done: '已完成', skipped: '已跳过' };
 const stepIdForDeleted = (): string => '1234abcf';
@@ -311,6 +312,7 @@ test('step status writes converge through real service resources', { annotation:
       await page.unroute(reopenStatusUrl); await page.unroute(reopenParentUrl); await page.unroute(reopenCollectionUrl);
       await page.clock.resume();
     }
+    await mockPollingIntervals(page, { taskSync: shortPollingInterval });
     await page.goto(`/projects/${project.id}/tasks/${raceTask.id}?tab=steps`);
     await expect(trigger(page, raceStepId)).toBeEnabled();
     const parentUpdatedAt = root(page).locator('.task-detail-metadata > div:nth-child(2) time');

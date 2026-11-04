@@ -1,11 +1,11 @@
 import { authRequestsPaused } from '../../api/client';
 import { createSessionApi } from '../../api/sessions';
+import { pollingInterval } from '../../app/polling';
 import { readWorkerClaim } from '../../api/task-properties';
 import type { TaskSummary, WorkerClaim } from '../../api/types';
 import type { TaskCacheScope } from '../task-cache/project-cache';
 import { sessionIndicator, type TaskSessionSummary } from './summary';
 
-const refreshDelay = 5_000;
 const freshness = 15_000;
 const concurrency = 4;
 type Binding = Pick<WorkerClaim, 'claimId' | 'workerId' | 'worktreeId' | 'state'>;
@@ -35,6 +35,7 @@ export class TaskSessionSummaryStore {
   private unsubscribe: (() => void) | null = null;
   private started = false;
   private enabled = true;
+  private readonly refreshDelay = pollingInterval('sessionSummary');
   constructor(private readonly scope: TaskCacheScope, private readonly projectId: string) {}
 
   snapshot = (): ReadonlyMap<string, TaskSessionSummary> => this.view;
@@ -131,7 +132,7 @@ export class TaskSessionSummaryStore {
       // completion cannot clear a replacement claim's flight or publish data.
       this.flights.delete(flight);
       if (this.entries.get(taskId) === entry && entry.flight === flight) {
-        entry.flight = null; entry.nextRead = performance.now() + refreshDelay;
+        entry.flight = null; entry.nextRead = performance.now() + this.refreshDelay;
       }
       this.reconcile();
     });
