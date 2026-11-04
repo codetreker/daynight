@@ -93,7 +93,7 @@ const holdProjectSync = async (page: Page, projectId: string) => {
   };
 };
 const loadAllProjects = async (page: Page): Promise<void> => {
-  await expect(page.getByRole('main').getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+  await expect(page.getByRole('main').getByRole('heading', { name: '个人', exact: true })).toBeVisible();
   await expect(page.getByRole('main').getByRole('status', { name: '正在加载项目' })).toHaveCount(0);
   const more = page.getByRole('main').getByRole('button', { name: '加载更多', exact: true });
   for (let count = 0; count < 200; count++) {
@@ -137,6 +137,9 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
   for (let index = 0; index < 51; index++) {
     projects.push(await createProject(request, { name: `${prefix} ${String(index).padStart(2, '0')}` }));
   }
+  const profileResponse = await request.get('/api/v1/me');
+  expect(profileResponse.status()).toBe(200);
+  const profile = await profileResponse.json() as { personalTeam: { id: string } };
   const listRequests: string[] = [];
   page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/v1/projects') listRequests.push(request.url()); });
   await page.goto('/projects');
@@ -157,7 +160,7 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
     await expect(page.getByRole('main').getByRole('alert')).toContainText('更多项目加载失败，已加载的项目仍可查看。');
     await expect(page.getByRole('main').getByRole('button', { name: '重试加载更多', exact: true })).toBeVisible();
     expect(await page.locator('a.project-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('href')))).toEqual(firstPage);
-    await expect(page.getByRole('main').getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+    await expect(page.getByRole('main').getByRole('heading', { name: '个人', exact: true })).toBeVisible();
   });
   const retried = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -178,7 +181,10 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
   const hrefs = await page.locator('a.project-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('href')));
   expect(new Set(hrefs).size).toBe(hrefs.length);
   expect(listRequests.some((value) => new URL(value).searchParams.has('cursor'))).toBe(true);
-  expect(listRequests.every((value) => new URL(value).searchParams.get('limit') === '50')).toBe(true);
+  expect(listRequests.every((value) => {
+    const query = new URL(value).searchParams;
+    return query.get('limit') === '50' && query.get('teamId') === profile.personalTeam.id && !query.has('shared');
+  })).toBe(true);
   await screenshot(page, info, 'project-list');
   await page.locator(`a.project-card[href="/projects/${projects[50]!.id}"]`).click();
   await expect(page.getByRole('main').getByRole('heading', { name: projects[50]!.name, exact: true })).toBeVisible();
@@ -1084,7 +1090,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
     await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
     await page.locator('.sidebar a.nav-button[href="/projects"]').click();
-    await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
     await loadAllProjects(page);
     await page.locator(`a.project-card[href="/projects/${other.id}"]`).click();
     await expect(page.getByRole('heading', { name: other.name, exact: true })).toBeVisible();
@@ -1589,7 +1595,7 @@ test('deep-links', scenario('deep-links'), async ({ page, api: request }, info) 
   await page.locator(`a.project-card[href="/projects/${second.id}"]`).click();
   await expect(page.getByRole('heading', { name: second.name, exact: true })).toBeVisible();
   await page.goBack();
-  await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
   await page.goForward();
   await expect(page.getByRole('heading', { name: second.name, exact: true })).toBeVisible();
 

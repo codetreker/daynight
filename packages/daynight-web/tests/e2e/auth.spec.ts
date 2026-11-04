@@ -154,7 +154,7 @@ test.describe('visible authentication protocol', () => {
       await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
       await page.goto('/login');
       await expect(page).toHaveURL(`${baseURL}/projects`);
-      await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
       await page.goto('/');
       await expect(page).toHaveURL(`${baseURL}/`);
       await expect(page.locator('.landing-page')).toBeVisible();
@@ -166,7 +166,7 @@ test.describe('visible authentication protocol', () => {
       await page.setViewportSize(originalViewport);
       await page.locator('.landing-page a[href="/projects"]').first().click();
       await expect(page).toHaveURL(`${baseURL}/projects`);
-      await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
       const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
       await page.getByRole('button', { name: '退出登录', exact: true }).click();
       expect((await signedOut).status()).toBe(204);
