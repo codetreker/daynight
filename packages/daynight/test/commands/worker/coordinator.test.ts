@@ -1417,6 +1417,96 @@ describe("terminal cleanup retry scheduling", () => {
     expect(f.tasks.start).toHaveBeenCalledOnce();
     await restarted.shutdown();
   });
+
+  it.each(["reconciliation", "direct shutdown"])("reopens Herdr to verify completed cleanup responsibility during Web-only %s", async mode => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
+    const f = await fixture();
+    let daemonRunning = false;
+    vi.mocked(f.herdr.ensureInstance).mockImplementation(async () => {
+      daemonRunning = true;
+      return { reconnected: false, version: "fixture", protocol: 22, snapshot: {} };
+    });
+    f.tasks.listResources.mockImplementation(async () => {
+      if (!daemonRunning) throw new Error("The private Herdr daemon is stopped.");
+      return structuredClone([...f.resources.values()]);
+    });
+    f.candidates.splice(1);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    const owner = [...f.worktrees.values()][0]!.owner;
+    f.grants.clear(); f.resources.clear(); f.candidates.splice(0);
+    const deleteSchedule = vi.spyOn(f.store, "deleteCleanupSchedule").mockImplementation(() => { throw new Error("Schedule deletion failed after local completion."); });
+    await f.coordinator.tick();
+    await eventually(() => {
+      expect(f.store.getTask(owner)?.status).toBe("done");
+      expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true);
+    });
+    const retained = f.store.getCleanupSchedule(owner);
+    expect(retained).toMatchObject({ failures: 1, nextAttemptAt: 2000 });
+    expect(f.worktrees.size).toBe(0);
+    await expect(f.coordinator.shutdown()).resolves.toBe(true);
+    // The runtime stops its private daemon after successful coordinator shutdown.
+    daemonRunning = false;
+    deleteSchedule.mockRestore();
+    f.reopenStore();
+    expect(f.store.listUnfinishedTasks()).toEqual([]);
+    expect(f.store.getCleanupSchedule(owner)).toEqual(retained);
+    f.clock(2000);
+    vi.mocked(f.herdr.ensureInstance).mockClear();
+    f.tasks.listResources.mockClear();
+    vi.mocked(f.git.removeWorktree).mockClear();
+    vi.mocked(f.remote.claim).mockClear();
+    const releaseObservation = Promise.withResolvers<void>();
+    let observationEntered = false, observationCompleted = false;
+    f.tasks.listResources.mockImplementation(async () => {
+      if (!daemonRunning) throw new Error("The private Herdr daemon is stopped.");
+      observationEntered = true;
+      await releaseObservation.promise;
+      observationCompleted = true;
+      return structuredClone([...f.resources.values()]);
+    });
+    const removeWorktree = vi.mocked(f.git.removeWorktree).getMockImplementation()!;
+    vi.mocked(f.git.removeWorktree).mockImplementation(async (...args) => {
+      expect(observationCompleted).toBe(true);
+      return removeWorktree(...args);
+    });
+    const webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+    const webConfiguration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 0 };
+    const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 2000 });
+    const advance = vi.fn(async (input: import("../../../src/commands/worker/backends/web-types.js").LocalTask) => webStore.initializeWebExecution(input, 2000));
+    const restarted = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: webConfiguration }], globalConfiguration: webConfiguration, webStore, webBackend: { ...backend, advance }, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
+    f.candidates.push(task(f.project.projectId, uuid(103)));
+    const operation = mode === "reconciliation" ? restarted.tick() : restarted.shutdown();
+    try {
+      await eventually(() => expect(observationEntered).toBe(true));
+      expect(f.herdr.ensureInstance).toHaveBeenCalled();
+      expect(f.store.getCleanupSchedule(owner)).toEqual(retained);
+      expect(f.remote.claim).not.toHaveBeenCalled();
+      expect(f.git.removeWorktree).not.toHaveBeenCalled();
+      releaseObservation.resolve();
+      if (mode === "direct shutdown") {
+        await expect(operation).resolves.toBe(true);
+        expect(f.store.getCleanupSchedule(owner)).toEqual(retained);
+        expect(f.git.removeWorktree).not.toHaveBeenCalled();
+        expect(f.remote.claim).not.toHaveBeenCalled();
+      } else {
+        await operation;
+        await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
+        await restarted.tick();
+        await eventually(() => expect(advance).toHaveBeenCalled());
+        expect(f.remote.claim).toHaveBeenCalledOnce();
+        expect(vi.mocked(f.remote.claim).mock.calls[0]![1].agentControlMode).toBe("web");
+        expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+      }
+      expect(f.tasks.start).toHaveBeenCalledOnce();
+    } finally {
+      releaseObservation.resolve();
+      await operation;
+      await restarted.shutdown();
+      webStore.close();
+    }
+  });
 });
 
 

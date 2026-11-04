@@ -87,7 +87,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const needsHerdr = (): boolean => options.globalConfiguration.agentControlMode !== "web"
     || options.repositories.some(repository => repository.configuration.agentControlMode !== "web")
-    || options.store.listUnfinishedTasks().some(task => task.agentControlMode !== "web");
+    || options.store.listUnfinishedTasks().some(task => task.agentControlMode !== "web")
+    || [...ending.values()].some(owner => options.store.getTask(owner)?.agentControlMode !== "web" && options.webStore?.getTask(owner) == null);
   const pendingStops = () => needsHerdr() ? options.herdr.tasks.pendingStops() : [];
   const ensureHerdr = async (signal?: AbortSignal): Promise<void> => { if (needsHerdr()) await workerOperation(operation => options.herdr.ensureInstance(operation), signal); };
   const listHerdr = async (signal?: AbortSignal): Promise<HerdrOwnedWorkspace[]> => needsHerdr() ? workerOperation(operation => options.herdr.tasks.listResources(operation), signal) : [];
@@ -227,6 +228,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         await delay(1000, undefined, signal === undefined ? {} : { signal });
       }
     }
+    await workerOperation(operation => options.herdr.ensureInstance(operation), signal);
     while (true) {
       const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), signal);
       const task = recordMissingClaim(owner, actualTaskPane(owner, resources));
@@ -483,6 +485,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         } else owners.set(key(context), context);
       }
       try {
+        await ensureHerdr();
         const workspaces = await listHerdr();
         for (const workspace of workspaces) {
           if (options.store.getProject(workspace.owner) === null) {

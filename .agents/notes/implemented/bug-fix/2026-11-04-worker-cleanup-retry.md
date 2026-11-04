@@ -37,7 +37,11 @@ its own native cleanup operation, result and deadline. Its first cleanup uses
 the saved schedule deadline, including after an interruption between the two
 database commits; an elapsed deadline leaves zero grace time. Already initialized
 Web cleanup keeps its original deadline. cleanup.error keeps its native-result
-meaning and does not store scheduler failures.
+meaning and does not store scheduler failures. A retained Herdr schedule still
+requires its private control backend when the local task is already done and
+all current configurations use Web. Cleanup and shutdown initialize that backend
+before resource observation without starting business agents; neither local done
+nor a configuration change releases the remaining responsibility or capacity.
 
 Claims retry independently after 1, 2, 4, 8, 16, 32 and then at most 60 seconds.
 Normal reconciliation starts eligible work without sleeping inside a job or
