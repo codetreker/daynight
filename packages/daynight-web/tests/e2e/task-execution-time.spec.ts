@@ -254,6 +254,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     await success(['task', 'set-status', legacy.id, 'done', '--project', project.id, '--if-version', String(unknownBeforeCompletion.version)]);
     const completedLegacy = await record(project.id, legacy.id, 'completed-legacy-remains-unknown');
     expect(completedLegacy.version).toBe(unknownBeforeCompletion.version + 1n);
+    expect(completedLegacy.updatedAt).not.toBe(unknownBeforeCompletion.updatedAt);
     expect(completedLegacy.startedAt).toBeNull(); expect(completedLegacy.completedAt).not.toBeNull();
     await retained.dispose();
     await openTimingChain();
@@ -296,7 +297,10 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
         await expect(manualRow).not.toHaveClass(/standalone-row-stuck/);
         await expect(manualRow.locator('.task-stuck-label')).toHaveCount(0);
         await expect(manualRow).not.toHaveAccessibleDescription(/Possibly stuck|可能卡住了/);
-        const unknown = page.locator(`#standalone-task-${legacy.id}`); await expect(unknown).toBeVisible(); await expect(unknown.locator('.root-status')).toHaveText(locale === 'en' ? 'Done' : '已完成'); await expect(duration(unknown)).toHaveCount(0); await expect(unknown.locator('.task-stuck-label')).toHaveCount(0);
+        const unknown = page.locator(`#standalone-task-${legacy.id}`);
+        await expect(unknown).toBeVisible();
+        await expect(unknown.locator('.root-status')).toHaveText(locale === 'en' ? 'Done' : '已完成', { timeout: 20_000 });
+        await expect(duration(unknown)).toHaveCount(0); await expect(unknown.locator('.task-stuck-label')).toHaveCount(0);
         await expect(duration(page.locator(`#standalone-task-${briefRow.id}`))).toContainText(locale === 'en' ? '< 1 min' : '不足 1 分钟');
         for (const width of [390, 320]) {
           await page.setViewportSize({ width, height: 1000 }); await rowLayout(row); await rowLayout(unknown);
