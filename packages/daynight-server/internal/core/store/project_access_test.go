@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,118 @@ func ordinaryProjectTeam(t *testing.T, database *Store, projectID string) string
 	mustQueryExec(t, database, `INSERT INTO teams(id,name) VALUES($1,'Owner team')`, teamID)
 	mustQueryExec(t, database, `UPDATE project_ownership SET team_id=$2,version=version+1 WHERE project_id=$1`, projectID, teamID)
 	return teamID
+}
+
+func TestScopedProjectsFilterBeforePaginationAndRequireTeamMembership(t *testing.T) {
+	database, owner, person, first := membershipFixture(t)
+	ctx := context.Background()
+	projects := []core.Project{first}
+	for i := 1; i < 6; i++ {
+		project, err := database.CreatePrivateProject(ctx, owner, uuid.NewString(), "Project", "https://example.com/project")
+		if err != nil {
+			t.Fatal(err)
+		}
+		projects = append(projects, project)
+	}
+	for i, project := range projects {
+		mustQueryExec(t, database, `UPDATE projects SET created_at='2024-01-01 00:00:00+00'::timestamptz + $2::int * interval '1 second' WHERE id=$1`, project.ID, i)
+	}
+	teamA := ordinaryProjectTeam(t, database, projects[0].ID)
+	teamB := ordinaryProjectTeam(t, database, projects[1].ID)
+	teamC := ordinaryProjectTeam(t, database, projects[5].ID)
+	emptyTeam := uuid.NewString()
+	mustQueryExec(t, database, `INSERT INTO teams(id,name) VALUES($1,'Empty team')`, emptyTeam)
+	mustQueryExec(t, database, `UPDATE project_ownership SET team_id=$2 WHERE project_id=$1`, projects[2].ID, teamA)
+	mustQueryExec(t, database, `UPDATE project_ownership SET team_id=$2 WHERE project_id=$1`, projects[4].ID, teamB)
+	for _, team := range []string{teamA, teamC, emptyTeam} {
+		mustQueryExec(t, database, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team, person.UserID)
+	}
+	for _, entry := range []struct {
+		index int
+		role  string
+	}{{0, "member"}, {1, "admin"}, {4, "member"}} {
+		mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,$3)`, projects[entry.index].ID, person.UserID, entry.role)
+	}
+	for _, test := range []struct {
+		name  string
+		scope ProjectScope
+		want  []int
+	}{
+		{"all", ProjectScope{Kind: ProjectScopeAll}, []int{0, 1, 2, 4, 5}},
+		{"team", ProjectScope{Kind: ProjectScopeTeam, TeamID: teamA}, []int{0, 2}},
+		{"other team", ProjectScope{Kind: ProjectScopeTeam, TeamID: teamC}, []int{5}},
+		{"shared", ProjectScope{Kind: ProjectScopeShared}, []int{1, 4}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var ids []string
+			var after *Position
+			for {
+				var page ProjectPage
+				err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+					var err error
+					page, err = snapshot.ScopedProjects(ctx, person, test.scope, Page{Limit: 1, After: after})
+					return err
+				})
+				if err != nil || len(page.Items) != 1 {
+					t.Fatalf("page: %#v %v", page, err)
+				}
+				ids = append(ids, page.Items[0].ID)
+				if !page.HasMore {
+					break
+				}
+				if len(ids) > len(test.want) {
+					t.Fatal("pagination did not terminate")
+				}
+				after = &Position{ID: page.Items[0].ID, CreatedAt: page.Items[0].CreatedAt}
+			}
+			want := make([]string, 0, len(test.want))
+			for _, i := range test.want {
+				want = append(want, projects[i].ID)
+			}
+			if !slices.Equal(ids, want) {
+				t.Fatalf("got %v, want %v", ids, want)
+			}
+		})
+	}
+	err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		_, err := snapshot.ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: teamB}, Page{Limit: 1})
+		return err
+	})
+	if !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("direct grants must not imply team membership: %v", err)
+	}
+	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		page, err := snapshot.ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: emptyTeam}, Page{Limit: 1})
+		if err != nil || page.Items == nil || len(page.Items) != 0 || page.HasMore {
+			t.Fatalf("member's empty team: %#v %v", page, err)
+		}
+		_, err = snapshot.ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: uuid.NewString()}, Page{Limit: 1})
+		return err
+	})
+	if !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("missing team: %v", err)
+	}
+	for _, scope := range []ProjectScope{{}, {Kind: ProjectScopeTeam}, {Kind: ProjectScopeAll, TeamID: teamA}, {Kind: ProjectScopeShared, TeamID: teamA}} {
+		err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+			_, err := snapshot.ScopedProjects(ctx, person, scope, Page{Limit: 1})
+			return err
+		})
+		if err == nil || errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("invalid scope %#v: %v", scope, err)
+		}
+	}
+	var memberships int
+	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM team_members WHERE team_id=$1 AND user_id=$2`, teamB, person.UserID).Scan(&memberships); err != nil || memberships != 0 {
+		t.Fatalf("shared list altered membership: %d %v", memberships, err)
+	}
+	mustQueryExec(t, database, `DROP TABLE team_members`)
+	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		_, err := snapshot.ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: teamA}, Page{Limit: 1})
+		return err
+	})
+	if err == nil || errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("database failure mistaken for missing membership: %v", err)
+	}
 }
 
 func TestProjectAccessCombinesEveryRealSourceWithoutChangingGrants(t *testing.T) {

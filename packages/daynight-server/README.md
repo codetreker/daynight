@@ -689,7 +689,7 @@ owns the outcome and lock-order details.
 
 `Store.ReadSnapshot` uses read-only `REPEATABLE READ` for project/task queries and
 derived readiness, with membership and resource reads in the same snapshot.
-Project-list membership filtering precedes pagination. Pages use a validated limit and optional `(createdAt, id)`
+Project-list effective-access and scope filtering precedes pagination. Pages use a validated limit and optional `(createdAt, id)`
 position; status/readiness filters run before keyset pagination. Page lookahead
 is returned as `HasMore`; HTTP cursor encoding belongs to the API layer.
 
@@ -869,6 +869,14 @@ Creation requires `application/json` (optionally UTF-8 charset), one object with
 1 MiB, exact field names and unique keys. Unknown/read-only fields, null required
 fields, wrong types, invalid UTF-8 and trailing JSON return `invalid_input`.
 
+Project lists default to all accessible projects. `teamId` selects a Team of which
+the principal is a member; `shared=true` selects direct grants outside the owner
+Team. The filters are mutually exclusive. Missing or inaccessible Teams return 404;
+database failures remain errors. Project cursor version 2 uses the scoped-projects
+kind and binds canonical principal, all/team/shared scope, Team ID and position;
+version 1 and cross-scope or cross-principal cursors are rejected. Cursors are not tamper-proof and are not authorization credentials; each request
+checks access independently. No count is returned.
+
 Lists accept `limit` (default 50 only when absent, range 1–100) and opaque
 `cursor`. Empty, repeated, malformed and unknown query parameters fail. Cursors
 bind a version, list kind, project/filter scope and exact `(createdAt, id)`
@@ -975,8 +983,8 @@ worker ownership is matched by decoding each candidate’s worker property row
 before collecting the final limit+1 matches; complete properties are batch-loaded
 for selected tasks. Assignee equality/IS NULL applies before this worker
 matching and final pagination. No bounded output page hides later matches, and
-opaque PR strings are not converted through PostgreSQL JSON types. Project and
-account-Worker cursors stay at version 1; old version-1 task cursors are refused.
+opaque PR strings are not converted through PostgreSQL JSON types. Account-Worker
+cursors stay at version 1; old version-1 task cursors are refused.
 The assignee filter is explicit and does not change automatic worker eligibility.
 
 ## Task-chain graph
@@ -1411,8 +1419,8 @@ query aggregated successfully across all relevant projects/pages supplies a comp
 ownership inventory. Partial pages, additional filters and failed traversals cannot
 authorize cleanup by absence. HTTP input retains strict query validation.
 Task cursor version 2 includes the resolved assignee scope; me and its concrete
-UUID may share that scope, but another account's me cannot. Project and
-account-owned Worker list cursors remain version 1.
+UUID may share that scope, but another account's me cannot. Account-owned Worker
+list cursors remain version 1.
 
 The project-scoped task-assignees GET returns `items` and `unresolvedUserIds`
 as non-null arrays. With no query it enumerates current members and assignees

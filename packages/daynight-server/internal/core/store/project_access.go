@@ -155,12 +155,58 @@ func (tx *ProjectTx) ProjectAccess(ctx context.Context, principal core.Principal
 	return ReadProjectAccess(ctx, tx.tx, principal.UserID, tx.projectID)
 }
 
+type ProjectScopeKind string
+
+const (
+	ProjectScopeAll    ProjectScopeKind = "all"
+	ProjectScopeTeam   ProjectScopeKind = "team"
+	ProjectScopeShared ProjectScopeKind = "shared"
+)
+
+type ProjectScope struct {
+	Kind   ProjectScopeKind
+	TeamID string
+}
+
 func (s *Snapshot) AccessibleProjects(ctx context.Context, principal core.Principal, page Page) (ProjectPage, error) {
+	return s.ScopedProjects(ctx, principal, ProjectScope{Kind: ProjectScopeAll}, page)
+}
+
+func (s *Snapshot) ScopedProjects(ctx context.Context, principal core.Principal, scope ProjectScope, page Page) (ProjectPage, error) {
+	condition := ""
+	var arguments []any
+	switch scope.Kind {
+	case ProjectScopeAll:
+		if scope.TeamID != "" {
+			return ProjectPage{}, queryError("list projects", fmt.Errorf("invalid project scope"))
+		}
+	case ProjectScopeTeam:
+		if scope.TeamID == "" {
+			return ProjectPage{}, queryError("list projects", fmt.Errorf("invalid project scope"))
+		}
+		var member int
+		err := s.tx.QueryRow(ctx, `SELECT 1 FROM teams t JOIN team_members m ON m.team_id=t.id
+            WHERE t.id=$1 AND m.user_id=$2`, scope.TeamID, principal.UserID).Scan(&member)
+		if err != nil {
+			return ProjectPage{}, queryError("read team membership", err)
+		}
+		condition = ` AND o.team_id=$5::uuid`
+		arguments = append(arguments, scope.TeamID)
+	case ProjectScopeShared:
+		if scope.TeamID != "" {
+			return ProjectPage{}, queryError("list projects", fmt.Errorf("invalid project scope"))
+		}
+		condition = ` AND EXISTS (SELECT 1 FROM project_grants g WHERE g.project_id=p.id AND g.user_id=$1)
+            AND NOT EXISTS (SELECT 1 FROM team_members m WHERE m.team_id=o.team_id AND m.user_id=$1)`
+	default:
+		return ProjectPage{}, queryError("list projects", fmt.Errorf("invalid project scope"))
+	}
 	afterTime, afterID := pageValues(page)
+	arguments = append([]any{principal.UserID, afterTime, afterID, page.Limit + 1}, arguments...)
 	rows, err := s.tx.Query(ctx, `SELECT `+projectProjection+` FROM `+projectRelation+`
         WHERE EXISTS (SELECT 1 FROM (`+projectAccessRelation+`) a WHERE a.project_id=p.id AND a.user_id=$1)
-        AND ($2::timestamptz IS NULL OR (p.created_at,p.id)>($2,$3::uuid))
-        ORDER BY p.created_at,p.id LIMIT $4`, principal.UserID, afterTime, afterID, page.Limit+1)
+        AND ($2::timestamptz IS NULL OR (p.created_at,p.id)>($2,$3::uuid))`+condition+`
+		ORDER BY p.created_at,p.id LIMIT $4`, arguments...)
 	if err != nil {
 		return ProjectPage{}, queryError("list accessible projects", err)
 	}
