@@ -69,8 +69,21 @@ missing user rows fail the whole roster instead of disappearing. Inherited-only
 participants have a null grant, while any direct grant retains its own real
 role, version and timestamps. Legacy role PATCH requires `expectedUserId`, stored role and the exact
 grant version, and returns `ProjectGrant`; DELETE requires the actor and version
-and retains 204. The actor guard precedes domain SQL and reports 409
-`identity_mismatch`. Invitation result DTOs retain their existing contract.
+and retains 204. `PUT /api/v1/projects/{projectId}/grants/{userId}` accepts
+`{version:null|positive int64,role,expectedUserId}`: null requires no existing
+grant, while a positive version must match the stored grant. A new grant target
+must already have effective Project access. The 200 response contains `grant`
+and nullable `actorAccess`. DELETE on the same path accepts a positive version
+and expectedUserId and returns `{projectId,userId,deleted:true,actorAccess}`.
+The access projection reflects the actor after the mutation in the transaction;
+null means the confirmed operation removed their access. Effective admins may
+manage their own and other admins' grants, including the last direct admin.
+Mismatched existence/version returns 409 `version_conflict`; a target without
+Project access returns 404 `not_found`. The actor guard precedes domain SQL and
+reports 409 `identity_mismatch`. A commit whose result cannot be confirmed
+returns 503 `write_outcome_unknown`; a later read establishes current facts, not
+the original outcome, and callers must not automatically replay the write.
+Invitation result DTOs retain their existing contract.
 Worker administrator checks consume access, while claim ownership and acquisition
 assignment requirements retain their separate rules.
 The project settings API provides a versioned execution-warning threshold that

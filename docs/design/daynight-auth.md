@@ -82,8 +82,11 @@ access relation 的有效角色，再 LEFT JOIN users；缺少或不匹配的规
 
 `ProjectMember` 仍是 grant 与 nullable 资料的内部直接关系投影，供现有授权目标检查、
 邀请及其他运行时调用使用；邀请 HTTP 结果分别返回真实 grant 与有效 access。
-角色 PATCH 成功直接返回 ProjectGrant，删除保留 204；它们不返回 participant 或有效角色。
-修改授权只比较真实 grant 版本，邀请 no-op 也读取实际直接关系，不以计算的准入结果代替。
+既有成员角色 PATCH 成功直接返回 ProjectGrant，删除保留 204；它们不返回 participant 或有效角色。
+新的 grants 路径通过 `version:null` 表示必须不存在，通过正版本比较真实 grant；新建目标须已有
+有效项目准入。PUT 成功返回指定 grant 与 actorAccess，DELETE 返回项目和目标 ID、deleted 与
+actorAccess；actorAccess 是事务中变更后的完整访问投影，可以为 null。邀请 no-op 读取实际直接关系，
+不以计算的准入结果代替。
 [participant 决策](../../.agents/notes/implemented/architecture/2026-11-04-project-participant-projection.md)
 拥有资料、有效角色与可写记录分离的原因及范围。
 
@@ -299,11 +302,16 @@ Team（相同时只锁一次）；锁后重新检查主体、归属及版本。T
 Thread 强准入在 ownership share 锁返回后，以新语句读取稳定 team_id 对应的 Team，再锁
 实际成员及 grant；等待期间提交的新目标不会被旧语句快照中的连接行误判为完整性错误。
 
-独立授权管理提交观察版本，锁项目后重查有效 admin 与 grant 版本。真实角色变更与新加入
-从 `project_grant_versions` sequence 取得新版本，观察值不要求连续或每次恰好加一；
-无变化保持版本。移除后重加入不复用旧版本，过期返回 version_conflict。有效 admin
-可以删除或降级最后一条 direct admin grant；owner Team 的继承权限独立计算。
-Team 成员变化不重写 Project grant，grant 变更不改 task.version。
+独立授权管理在验证 expectedUserId 后锁项目，重查有效 admin 与目标真实 grant；新增还检查
+目标已有有效项目准入。null 版本仅在 grant 不存在时允许新增，正版本仅在真实版本匹配时允许
+替换或移除；存在性与版本不匹配均返回 version_conflict。项目锁串行化授权和邀请写入。
+真实角色变更与新加入从 `project_grant_versions` sequence 取得新版本，观察值不要求连续或
+每次恰好加一；版本匹配的无变化保持版本。移除后重加入不复用旧版本。有效 admin 可以删除或
+降级本人及他人的最后一条 direct admin grant；owner Team 的继承权限独立计算。变更后在同一
+事务重新计算 actor access，确认 COMMIT 后才发送有限回执；失权时返回 null，不依赖后续有权限
+的 GET。无法确认 COMMIT 则报告 write_outcome_unknown，不能重放。Team 成员变化不重写 Project
+grant，grant 变更不改 task.version。[grant 管理决策](../../.agents/notes/implemented/architecture/2026-11-04-project-grant-management.md)
+拥有存在性条件、有限回执与外部加入范围的取舍。
 
 邀请七天有效、只授予 member、可撤销。邀请属于项目，创建者离任不自动作废。
 接受按项目→邀请顺序加锁，验证状态后检查真实 direct grant。已有 grant 保持原角色且
@@ -348,14 +356,15 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | GET .../projects/{id}/access | 当前主体的真实归属、owner Team、双来源有效角色与 canTransfer；要求当前项目准入。 |
 | GET .../projects/{id}/members | 任一有效成员读取 items participant 和同快照 actorAccess；资料与继承来源不授予 Team 目录访问权。 |
 | PATCH .../projects/{id}/settings | admin，锁后复核角色与精确设置 version，返回完整 Project。 |
+| PUT/DELETE .../projects/{id}/grants/{userId} | 有效 admin；PUT 的 version 为 null 或正版本，DELETE 为正版本，均携带 expectedUserId；新建目标须已有项目准入。成功返回有限回执与可空 actorAccess。 |
 | PATCH/DELETE .../members/{userId} | admin；携带真实 grant version 与必填 expectedUserId，PATCH 另含存储 role；成功分别返回 ProjectGrant / 204。 |
 | GET/POST .../projects/{id}/invitations、DELETE .../{inviteId} | admin；创建和撤销携带 expectedUserId，创建一次显示链接。 |
 | POST /api/v1/invitations/inspect、POST .../accept | 已登录用户，body 携带秘密；accept 另携带 expectedUserId，由本人明确提交。 |
 
 unauthenticated/forbidden/invitation_unavailable 保留原 envelope/requestId。
-Team 管理的 expectedUserId guard 在 Teams 领域查询或事务之前执行；授权修改/移除和
-邀请创建、撤销、接受的 guard 在领域事务及 Project 行锁之前执行，
-错主体返回 409 identity_mismatch；认证与独立请求日志不属于领域 SQL。
+Team 管理的 expectedUserId guard 在 Teams 领域查询或事务之前执行；项目转移、授权新增/修改/移除及
+邀请创建、撤销、接受的 guard 在领域事务及 Project 行锁之前执行。错主体返回 409 identity_mismatch；
+认证与独立请求日志不属于领域 SQL。
 该 fault 同时进入 HTTP 409 映射和日志已知类型集合，避免误变为 internal_error。
 非成员与不存在的 Team/项目均 not_found。Team 生命周期的 personal_team_immutable、
 team_not_empty、version_exhausted 与 version_conflict 同时进入 HTTP 409 映射和日志已知类型集合；

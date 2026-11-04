@@ -66,6 +66,8 @@ DTO/read owners allows this roster and observation conversion to stand alone.
 would not establish the snapshot-consistency guarantee. Its later coordinated
 read-contract change must publish through the existing access fences; this
 projection preserves that seam instead of creating another permission owner.
+The separate [grant management decision](2026-11-04-project-grant-management.md)
+adds grant routes without changing the existing invitation DTOs.
 
 ## Consequences
 

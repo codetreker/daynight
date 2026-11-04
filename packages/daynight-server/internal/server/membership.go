@@ -27,6 +27,8 @@ func (h *MembershipRoutes) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/members", h.auth.Require(h.listMembers))
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/members/{userId}", h.auth.Require(h.setRole))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/members/{userId}", h.auth.Require(h.removeMember))
+	mux.HandleFunc("PUT /api/v1/projects/{projectId}/grants/{userId}", h.auth.Require(h.setGrant))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/grants/{userId}", h.auth.Require(h.removeGrant))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/invitations", h.auth.Require(h.listInvitations))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/invitations", h.auth.Require(h.createInvitation))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/invitations/{inviteId}", h.auth.Require(h.revokeInvitation))
@@ -35,6 +37,7 @@ func (h *MembershipRoutes) RegisterRoutes(mux *http.ServeMux) {
 	for path, methods := range map[string]string{
 		"/api/v1/projects/{projectId}/members":                "GET, HEAD",
 		"/api/v1/projects/{projectId}/members/{userId}":       "PATCH, DELETE",
+		"/api/v1/projects/{projectId}/grants/{userId}":        "PUT, DELETE",
 		"/api/v1/projects/{projectId}/invitations":            "GET, HEAD, POST",
 		"/api/v1/projects/{projectId}/invitations/{inviteId}": "DELETE",
 		"/api/v1/invitations/inspect":                         "POST",
