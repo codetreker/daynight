@@ -26,10 +26,11 @@ not browser scenarios or product scope.
 
 `scripts/ci.mts` exports `runCi(mode, cancellation, operations?)` for explicit
 internal `quality` and `browser` modes. Quality runs
-the canonical Node harness and complete Vitest/V8 plus strict statement checker
-serially. The harness retains 180 seconds; coverage has a separate 240-second
-deadline under the [coverage budget decision](2026-11-04-web-coverage-command-budget.md).
-Isolation originally retained 180 seconds for each command. Only the coverage
+the canonical Node harness, complete Vitest/V8 collection and strict statement
+checker serially. Harness has a 180-second deadline and collection has a 300-second deadline; the
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) gives
+final inventory and coverage verification an independent 60-second deadline.
+Only the Vitest/V8
 child receives `VITEST_MAX_WORKERS=4`, calibrated for its dedicated public
 standard Linux runner by the [worker capacity
 decision](2026-10-28-web-quality-worker-capacity.md); its `forks` pool, file
@@ -88,13 +89,11 @@ keeps quality and browser work on one job's critical path and adds an observer
 that ordinary acceptance does not need. Separate jobs remove that coupling;
 the selected core has no such gate or reader.
 
-**Increase the job or command allowance.** At the time of isolation, larger
-budgets would have changed the validation contract without separating the
-competing responsibilities. Both jobs retained 20 minutes and their existing
-command and functional deadlines. The later
-[coverage budget decision](2026-11-04-web-coverage-command-budget.md) addresses
-ordinary-suite growth on the already separate quality runner; it does not
-replace isolation or increase either job's bound.
+**Increase the job or command allowance.** Larger budgets change the validation
+contract without separating the competing responsibilities. The isolation decision kept both jobs at
+20 minutes and preserved their command and functional deadlines. The later
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) separately
+bounds final verification and calibrates collection for the larger suite.
 
 **Shard browser scenarios across runners.** Shards duplicate target preparation
 and require new scenario, artifact and permission aggregation. At the time of this choice, the full native, container and capacity journey

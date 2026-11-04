@@ -68,8 +68,8 @@ export class StepReadCommandError extends PublicDiagnosticError {
   }
 }
 
-export const stepOperationLabel = (operation: StepWriteOperation): string => operation === "add" ? "Add" : operation === "update" ? "Update" : operation === "move" ? "Move" : "Set-status";
-export const stepConfirmedMessage = (operation: StepWriteOperation, stepId: string): string => `${operation === "add" ? "Step added." : operation === "update" ? "Step updated." : operation === "move" ? "Step moved." : "Step status set."} ID: ${stepId}`;
+export const stepOperationLabel = (operation: StepWriteOperation): string => operation === "add" ? "Add" : operation === "update" ? "Update" : operation === "move" ? "Move" : operation === "delete" ? "Delete" : "Set-status";
+export const stepConfirmedMessage = (operation: StepWriteOperation, stepId: string): string => `${operation === "add" ? "Step added." : operation === "update" ? "Step updated." : operation === "move" ? "Step moved." : operation === "delete" ? "Step deleted." : "Step status set."} ID: ${stepId}`;
 
 export class StepWriteCommandError extends PublicDiagnosticError {
   constructor(cause: unknown, phase: ReadPhase, projectId?: string, taskId?: string, stepId?: string, confirmed?: StepWriteAttempt, requestedOperation: StepWriteOperation = "add") {

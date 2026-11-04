@@ -781,9 +781,12 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 同一个 Web 模块选择结果并行启用 `verify-web-quality` 与 `verify-web`，两个 job 各保留
 20分钟上限，最终`checks`同时依赖二者及其他已选择模块。浏览器消费的CLI `src/api/`、`src/session/`和精确的`src/platform/text.ts`变更同时选择CLI与Web；共享workflow变更仍选择全部模块，合并结果验证及未选择job的`skipped`语义保持。
 
-质量 job 使用 `scripts/ci.mts` 的内部 `quality` 模式，串行执行 `test:harness` 和
-`test:coverage`，每个命令分别限时 180 秒。后者执行常规 Vitest/V8 文件，保留完整产品源码清单与严格语句覆盖率
-检查；只有该子进程的复制环境设置 `VITEST_MAX_WORKERS=4`，`forks` pool 和文件隔离不变。
+质量 job 使用 `scripts/ci.mts` 的内部 `quality` 模式，串行执行 `test:harness`、完整
+Vitest/V8 采集与 `scripts/coverage.mts`。harness 限时 180 秒，完整采集限时 300 秒，最终源码清单及
+严格覆盖率校验独立限时 60 秒，已完成的采集不能耗尽最终校验的时间；阶段归属见
+[预算决策](../../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)。
+完整产品源码清单与严格语句覆盖率检查保持；只有 Vitest/V8 子进程的复制环境设置
+`VITEST_MAX_WORKERS=4`，`forks` pool 和文件隔离不变。
 该并发数按当前公开仓库的标准 `ubuntu-latest` 独立质量 runner 的 4 CPU 容量校准，依据和
 历史竞争条件见[worker 容量决策](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)。
 仅测试文件逐项通过不足以证明 V8 报告和严格 checker 完成。质量 job 归档原始覆盖率及

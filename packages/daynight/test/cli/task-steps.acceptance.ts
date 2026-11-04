@@ -109,7 +109,11 @@ it("runs both packed launchers through Steps reads, delivered help and safe read
         const result = await invoke(launcher, args);
         expect(result.stdout).toContain("Usage: daynight task step");
         expect(result.stdout).not.toContain("--if-version");
-        expect(result.stdout).not.toMatch(/\n\s+delete\s/);
+        if (args.length <= 3) {
+          for (const command of ["list", "show", "add", "update", "set-status", "move", "delete"]) {
+            expect(result.stdout).toMatch(new RegExp(`\\n\\s+${command}\\s`));
+          }
+        }
       }
       await invoke(launcher, ["task", "step", "add", taskId], 2);
       await invoke(launcher, ["task", "step", "show", taskId, "prefix"], 2);
