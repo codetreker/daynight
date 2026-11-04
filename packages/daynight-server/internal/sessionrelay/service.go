@@ -81,6 +81,11 @@ type record struct {
 func load(ctx context.Context, tx pgx.Tx, id string) (*record, error) {
 	bot, err := lockSessionBot(ctx, tx, id)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || bot != nil && bot.Deletion != nil {
+			if rt, ok := tx.(*relayTx); ok {
+				rt.service.discardBotSession(id)
+			}
+		}
 		return nil, err
 	}
 	r := &record{}
@@ -501,6 +506,10 @@ func (s *Service) controller(ctx context.Context, f sp.ControllerFence, fn func(
 	return s.transact(ctx, func(tx pgx.Tx) error {
 		var project, taskID string
 		if err := tx.QueryRow(ctx, `SELECT COALESCE(project_id::text,''),COALESCE(task_id::text,'') FROM task_sessions WHERE id=$1`, f.SessionID).Scan(&project, &taskID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// This lookup precedes load, including the final socket disconnect.
+				s.discardBotSession(f.SessionID)
+			}
 			return err
 		}
 		t, err := scopeTask(ctx, tx, project, taskID)

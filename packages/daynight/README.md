@@ -1,11 +1,11 @@
 # Daynight CLI
 
 The `@codetreker/daynight` package provides the `daynight` command and its `dn`
-alias. Use it to manage server-backed projects, tasks, discussion threads and
-attachments, install the `using-daynight` skill for coding agents, run foreground
-task workers through
-Herdr or browser-connected native Controllers, and run a local GitHub PR reviewer through Copilot CLI. Both command names
-share configuration and behavior. Supported native platforms are Linux, Windows
+alias. Use it to manage server-backed projects, tasks, discussion threads,
+attachments and Bot definitions, inspect remote Workers, install the
+`using-daynight` skill for coding agents, run foreground task workers through
+Herdr or browser-connected native Controllers, and run a local GitHub PR reviewer
+through Copilot CLI. Both command names share configuration and behavior. Supported native platforms are Linux, Windows
 and Apple Silicon (ARM64) macOS. Intel macOS is unsupported.
 
 See the [project overview](../../README.md) for the browser workspace and service,
@@ -33,6 +33,8 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Task deletion](#task-deletion)
 - [Task discussion threads](#task-discussion-threads)
 - [Task attachments](#task-attachments)
+- [Bot management](#bot-management)
+- [Remote Worker queries](#remote-worker-queries)
 - [Worker configuration and startup](#worker-configuration-and-startup)
 - [Worker manual management](#worker-manual-management)
 - [Review configuration and startup](#review-configuration-and-startup)
@@ -133,6 +135,8 @@ daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
 daynight worker                     # Show worker help
+daynight worker list [--json]        # Query this account's remote Workers
+daynight worker show <worker-id> [--json]
 daynight worker setup               # Check prerequisites and choose an agent and Projects
 daynight worker run                 # Run until interrupted
 daynight worker attach              # Connect to an existing Herdr task runtime
@@ -157,10 +161,18 @@ daynight project
 daynight project create <name> [--repo <repo>]
 daynight project list [--json]
 daynight project show <project-id> [--json]
+daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] [--if-version <version>] [--confirm] [--json]
 daynight team list [--json]
 daynight team show [--team <uuid|personal>] [--json]
+daynight team create <name> [--confirm] [--json]
+daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
 daynight team projects [--team <uuid|personal>] [--json]
 daynight team default show [--json]
+daynight bot list [--json]
+daynight bot show <bot-id> [--json]
+daynight bot create --name <name> [--worker <worker-id>] [--cwd <path>] [--agent <codex|claude|copilot>] [--request-id <uuid>] [--json]
+daynight bot delete <bot-id> --if-version <version> [--request-id <uuid>] [--json]
 daynight task
 daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
@@ -585,6 +597,36 @@ teamDefaults:
 
 `team default show --json` returns `configured` (the saved ID or `null`) and
 the verified `team` resource.
+
+`team create` creates an ordinary Team, `team rename` changes its name, and
+`team delete` removes an empty ordinary Team. Names preserve their original
+characters and whitespace and may be duplicated. Rename and delete resolve the
+explicit or default Team and use an observed version; `--if-version` retains the
+specified positive int64 version, rejecting a mismatch with the observed version
+before submission. Personal Teams cannot be renamed or deleted.
+
+Each write requires interactive confirmation or the boolean `--confirm` flag.
+Without it, non-interactive calls fail before writing. Delete prompts for the
+displayed JSON string literal and compares its decoded value exactly with the
+raw Team name; create and rename accept `y` or `yes` case-insensitively.
+Cancellation, refusal or a mismatch does not submit. Even with
+`--confirm`, delete sends the real name and version; the service still checks
+identity, authority and preconditions. Success uses the validated receipt;
+conflicts require a fresh decision, and unknown outcomes are never replayed.
+Reading current facts does not recover a lost receipt. A later output or cleanup
+failure retains a confirmed receipt. Use `--json` for the confirmed resource or
+deletion receipt.
+
+`project transfer` moves a Project to a Team identified by UUID or a same-service
+`/teams/<uuid>` link. It resolves the explicit Project or current repository
+without changing its binding or default Team. Only the current owner Team admin
+can transfer; destination membership is not required. The preview identifies the
+source, destination and expected access before confirmation. `--confirm` skips
+the prompt but retains the preview's exact versions and identity checks. An
+optional `--if-version` rejects a preview with a different ownership version.
+A successful receipt may report no remaining access. Conflicts require a fresh
+preview and decision; a lost receipt remains unknown even if a later read is 404.
+Project grants and invitations are preserved.
 
 ## Task management
 
@@ -1300,6 +1342,104 @@ authentication and project-membership checks for attachment requests. Trusted
 executable HTML retains the application origin. The
 [CLI delivery decision](../../.agents/notes/archived/feature/2026-10-21-task-attachment-cli.md)
 records binary transport and output ownership.
+
+## Bot management
+
+Bot commands use the configured server and signed-in account. They work in an
+ordinary directory without Git or a Project and do not accept `--project`.
+
+```bash
+daynight bot list --json
+daynight bot create --name "Planning assistant" --json
+daynight bot show <bot-id> --json
+daynight bot delete <bot-id> --if-version <observed-version> --json
+```
+
+Creation needs only `--name`. Optional `--worker`, `--cwd` and `--agent` preserve
+explicit choices; the service resolves and freezes omitted settings. The
+specified directory belongs to the target Worker, may be outside a repository,
+and must be an absolute path for that machine. The CLI does not create it or
+substitute the local working directory. An active response reports the actual
+`startupResult`: accepting a `pending` definition does not establish a running
+or ready assistant. An existing `ready` result is a startup observation, not a
+promise that its Worker is currently online. Replaying the original creation
+request after deletion returns the minimal deletion responsibility and its actual
+cleanup stages, without recreating the definition or claiming startup.
+
+Creation and deletion accept `--request-id <uuid>`. When omitted, the CLI generates
+the UUID before sending the write. For creation it is the Bot ID; for deletion
+it is the `deletionId`, while `<bot-id>` still identifies the Bot. Keep the
+original identity and payload when checking an uncertain response. The CLI never
+retries a write automatically or generates a replacement ID after a failure.
+Use `daynight bot show <bot-id> --json` to read current facts before deciding
+whether another write is appropriate.
+
+Deletion requires the exact observed `--if-version`; the CLI does not fetch a
+new version to replace it. Bot versions, creation order and requested deletion
+versions are positive int64 decimal strings in JSON, including values beyond
+JavaScript's safe integer range. A version conflict remains an error. Read the
+current Bot and reassess the deletion instead of blindly resubmitting it.
+
+Deletion output retains the original request identity and both `workerCleanup`
+and `serverCleanup` results. A pending stage means cleanup is unfinished; only
+both stages completed establish completion. A failed stage retains its error
+code. Deleted definitions disappear from `bot list`, while `bot show` returns
+only their minimal deletion responsibility. List disappearance is not proof of
+process termination or history removal. The service commits a deletion barrier
+before cleanup, and requires the bound Worker's verified stop receipt before
+server history cleanup can complete. The CLI consumes those stages; it does not
+stop native processes or generate cleanup receipts. These entry points do not
+enable the complete assistant UI or establish complete Bot hosting.
+
+All four commands support `--json`. `list` emits an array; `show`, `create` and
+`delete` emit a Bot resource. Lists follow every page and produce output only
+after all pages succeed; a later-page error is not an empty or partial success.
+Operation failures exit 1. With `--json`, stderr contains one
+`{ "error": { ... } }` object with `operation`, available `botId`, `requestId`,
+`phase`, HTTP `status`, `code` and `serverRequestId`, plus `outcomeUnconfirmed`.
+Known configuration failures and request conflicts also include an actionable `reason`; missing authentication reports `login_required`.
+An unknown write also supplies `reconcile`, containing the original Bot's show
+command. The client `requestId` identifies the creation or deletion request;
+`serverRequestId` correlates the response. HTTP 401, 403, 404 and 409 remain
+failures. Diagnostics do not print credentials, raw transport causes or server
+error bodies. Invalid command syntax retains the normal text diagnostic and
+exit 2 even when `--json` is present.
+
+The [assistant requirements](../../docs/spec/assistant.md) define management and
+lifecycle behavior; the [design](../../docs/design/assistant.md) explains identity,
+version and deletion ownership.
+
+## Remote Worker queries
+
+```bash
+daynight worker list --json
+daynight worker show <worker-id> --json
+```
+
+These commands read the current account's remote observations without a Project,
+Git repository or local Worker configuration. They neither start a Worker nor
+take its local runtime lock. `worker repo list` separately lists repositories
+configured on this machine.
+
+`worker list --json` returns `{observedAt,items}` after every page succeeds.
+`worker show --json` returns `{observedAt,worker}`. The service includes Workers
+reported within the last 72 hours; an older, missing or inaccessible Worker is
+not a current detail result. `observedAt` is server time, and `lastReportedAt`
+identifies the retained report. Human-readable online/offline state compares
+those timestamps using the 120-second threshold; it does not reserve capacity
+or prove a Provider can start.
+
+Task observations remain distinct from connection state. `unavailable` inventory
+has null `activeTaskCount` and `taskObservedAt`, not zero tasks; `stale` retains
+an earlier observation. Detail includes task identities, resource probes, their
+sample times and errors, and optional `assistantHost` observations. A missing
+assistantHost means hosting support has not been reported. Offline Workers,
+failed probes and unknown inventories are never reported as idle capacity.
+Read or later-page failures remain errors rather than an empty success.
+With `--json`, operation failures print one `error` object on stderr with the
+operation, optional Worker ID, phase, HTTP status, code and response request ID.
+No raw transport cause or server error body is printed; missing authentication
+reports `reason: "login_required"`. Failed reads exit 1.
 
 ## Worker configuration and startup
 

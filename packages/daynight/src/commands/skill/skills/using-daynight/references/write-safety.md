@@ -1,6 +1,6 @@
 # Write safety
 
-Applies to creation, metadata updates, property setting and removal, status changes, deletion, Thread posts, and attachment operations.
+Applies to Project, Team and task creation and changes, property setting and removal, status changes, deletion, Thread posts, and attachment operations.
 See the corresponding `--help` for command syntax.
 
 ## Decisions and versions
@@ -23,6 +23,39 @@ Preserve confirmed IDs and resume missing operations on the original resources, 
 If verification is impossible, report the actual error and unconfirmed items without claiming success.
 Even if the expected value is readable, an unconfirmed response does not establish that this operation caused the change.
 See [task management](task-management.md#task-deletion) and [managed task execution](autopilot-managed-task.md#complete-the-original-claim) for reconciliation specific to deletion and worker completion.
+
+## Team writes
+
+With authorization, use `team create`, `team rename` and `team delete` for
+ordinary Team lifecycle changes. Rename and delete resolve the explicit or
+default Team and read its real name and version. Supply the exact positive int64
+through `--if-version` when a decision depends on an earlier observation; a
+default pre-submit read cannot protect that earlier decision. Conflict requires
+a fresh observation and decision, not a substituted version and replay. A
+specified version that differs from the read Team version is rejected locally.
+
+Writes need interactive confirmation or the boolean `--confirm` flag. Delete's
+interactive challenge is the displayed JSON string literal, decoded and matched
+exactly against the raw Team name. `--confirm` skips the challenge but still
+submits the real name and version; it does not waive authorization or service
+preconditions. Without confirmation, a non-interactive call does not write.
+Personal Teams cannot be renamed or deleted, and deletion requires an empty Team.
+
+A lost, cancelled or malformed response can follow a commit. Do not repeat the
+write automatically. Read current facts before another decision, but do not
+claim the original operation succeeded merely because current state matches;
+Team names can be duplicated and a read cannot restore a lost receipt.
+
+## Project transfers
+
+With authorization, use `project transfer` with a target Team UUID or an exact
+same-service Team link. The preview identifies the Project, source and destination
+and the actor's expected access. Confirm the decision interactively or use the
+boolean `--confirm` flag. The command submits the observed ownership and destination
+versions with the current identity; a conflict requires a new preview and decision.
+The receipt can confirm success with no remaining actor access. Do not replay an
+unknown submission automatically: a later Project read, including 404, cannot
+prove whether the transfer committed. Grants and invitations remain independent.
 
 ## Task Step writes
 

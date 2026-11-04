@@ -25,6 +25,7 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
+    previewProjectTransfer: vi.fn(), transferProject: vi.fn(),
     updateTaskStep: async () => { throw new Error("Unused Step API method"); },
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
     moveTaskStep: vi.fn<ApiClient["moveTaskStep"]>(),
@@ -33,8 +34,9 @@ const fixture = (operation = createOperation()) => {
     listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),
     readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(currentUser),
-    getTeamCurrentUser: vi.fn<ApiClient["getTeamCurrentUser"]>(), listTeams: vi.fn<ApiClient["listTeams"]>(), getTeam: vi.fn<ApiClient["getTeam"]>(), listTeamProjects: vi.fn<ApiClient["listTeamProjects"]>(),
+    getTeamCurrentUser: vi.fn<ApiClient["getTeamCurrentUser"]>(), listTeams: vi.fn<ApiClient["listTeams"]>(), getTeam: vi.fn<ApiClient["getTeam"]>(), createTeam: vi.fn<ApiClient["createTeam"]>(), renameTeam: vi.fn<ApiClient["renameTeam"]>(), deleteTeam: vi.fn<ApiClient["deleteTeam"]>(), listTeamProjects: vi.fn<ApiClient["listTeamProjects"]>(),
     getProjectAccess: vi.fn<ApiClient["getProjectAccess"]>(),
+    listBots: vi.fn<ApiClient["listBots"]>(), getBot: vi.fn<ApiClient["getBot"]>(), createBot: vi.fn<ApiClient["createBot"]>(), deleteBot: vi.fn<ApiClient["deleteBot"]>(), listWorkers: vi.fn<ApiClient["listWorkers"]>(), getWorker: vi.fn<ApiClient["getWorker"]>(),
     reportWorker: vi.fn<ApiClient["reportWorker"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),
     getTaskPropertySchema: vi.fn<ApiClient["getTaskPropertySchema"]>().mockResolvedValue(propertySchema),

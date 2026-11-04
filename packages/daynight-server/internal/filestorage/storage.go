@@ -29,6 +29,12 @@ type Storage interface {
 	Put(ctx context.Context, bucket, path string, content io.Reader) (FileInfo, error)
 	Open(ctx context.Context, bucket, path string) (Object, error)
 	Delete(ctx context.Context, bucket, path string) error
+	// DeleteSessionArchives removes only session-archives/<sessionID>, including
+	// objects without database metadata. sessionID must be a nonzero canonical
+	// UUID. Absence succeeds; cancellation, unsafe paths and filesystem failures
+	// remain errors and may leave partial cleanup for retry. Callers must prevent
+	// concurrent writes with the persistent Session lock and deletion barrier.
+	DeleteSessionArchives(ctx context.Context, sessionID string) error
 }
 
 // ValidateAddress preserves each accepted name; callers must not clean or normalize it.

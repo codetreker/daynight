@@ -1,6 +1,6 @@
 import type { SessionArchive, SessionArchiveStatus } from '../../../../daynight/src/session/archive';
 import { ApiError, isAbortError } from '../../api/client';
-import type { SessionApi, SessionChannel } from '../../api/sessions';
+import type { BotSessionBinding, SessionApi, SessionChannel } from '../../api/sessions';
 import { SESSION_PROTOCOL, assertSessionFence, sessionFence, sessionFenceKey, parseSessionOperation, type InteractionResponse, type SessionCommand, type SessionInteraction, type SessionOperation, type SessionSnapshot } from '../../../../daynight/src/session/protocol';
 import type { BrowserMessage, TimelinePage } from '../../../../daynight/src/session/controller-protocol';
 import { applySessionEvent, emptySessionState, hydrateSession, mergeTimeline, hasPendingResponse, sessionCancelGate, sessionRespondGate, sessionSendGate, sessionControlGate, type SessionState } from './state';
@@ -23,9 +23,9 @@ export type SessionViewState = {
   readonly historyError: string | null; readonly checking: ReadonlySet<string>;
   readonly historyReady: boolean; readonly historyRevision: number; readonly connectionGeneration: number;
 };
-type Options = { readonly api: SessionApi; readonly userId: string; readonly isCurrent: () => boolean; readonly isPaused?: () => boolean; readonly onPrincipalMismatch: () => void; readonly storage: Storage | null } & (
-  { readonly projectId: string; readonly taskId: string; readonly claimId: string; readonly testSessionId?: never } |
-  { readonly testSessionId: string; readonly projectId?: never; readonly taskId?: never; readonly claimId?: never }
+type Options = { readonly api: SessionApi; readonly userId: string; readonly isCurrent: () => boolean; readonly isPaused?: () => boolean; readonly onPrincipalMismatch: () => void; readonly onInvalidate?: () => void; readonly storage: Storage | null } & (
+  { readonly projectId: string; readonly taskId: string; readonly claimId: string; readonly testSessionId?: never; readonly bot?: never } |
+  { readonly testSessionId: string; readonly bot?: BotSessionBinding; readonly projectId?: never; readonly taskId?: never; readonly claimId?: never }
 );
 const message = (error: unknown): string => error instanceof Error ? error.message : 'Session request failed.';
 const terminalFailure = (operation: SessionOperation) => ['failed', 'rejected', 'expired'].includes(operation.state);
@@ -38,6 +38,7 @@ export class TaskSessionClient {
   private archive: SessionArchive | null = null;
   private listeners = new Set<() => void>();
   private lifetime = new AbortController();
+  private invalidated = false;
   private connection: SessionChannel | null = null;
   private connectionGeneration = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -131,7 +132,7 @@ export class TaskSessionClient {
     for (const listener of this.listeners) listener();
   }
   private draftScopePrefix(): string {
-    return `${draftPrefix(this.options.userId)}${this.options.testSessionId !== undefined ? `test:${this.options.testSessionId}` : `task:${this.options.projectId}:${this.options.taskId}`}:`;
+    return `${draftPrefix(this.options.userId)}${this.options.bot ? `bot:${this.options.bot.botId}:${this.options.bot.sessionId}` : this.options.testSessionId !== undefined ? `test:${this.options.testSessionId}` : `task:${this.options.projectId}:${this.options.taskId}`}:`;
   }
   private bindDraft(snapshot: SessionSnapshot) {
     const prefix = this.draftScopePrefix();
@@ -145,6 +146,13 @@ export class TaskSessionClient {
       // An authenticated current snapshot selects the execution; obsolete generations
       // cannot be revived by navigating back to a previously mounted composer.
       if (storage) for (let i = storage.length - 1; i >= 0; i--) { const previous = storage.key(i); if (previous?.startsWith(prefix) && previous !== key) storage.removeItem(previous); }
+      // Cold Bot panes retain only lightweight state for the authenticated fence.
+      // A new generation must not accumulate or restore obsolete uncertain inputs.
+      if (storage && this.options.bot) {
+        const operationPrefix = `daynight:session-operations:${this.options.userId}:${snapshot.sessionId}:`;
+        const currentOperationKey = this.storageKey(snapshot);
+        for (let i = storage.length - 1; i >= 0; i--) { const previous = storage.key(i); if (previous?.startsWith(operationPrefix) && previous !== currentOperationKey) storage.removeItem(previous); }
+      }
       const stored: unknown = JSON.parse(storage?.getItem(key) ?? 'null');
       if (stored && typeof stored === 'object' && 'text' in stored && typeof stored.text === 'string' && 'revision' in stored && typeof stored.revision === 'string' && 'submission' in stored) {
         const submission = stored.submission;
@@ -163,7 +171,11 @@ export class TaskSessionClient {
   };
   private matches(s: SessionSnapshot): boolean {
     if (s.identity.agentControlMode !== 'web') return false;
-    if (this.options.testSessionId !== undefined) return s.sessionId === this.options.testSessionId && s.testExecutionId !== undefined && s.identity.ownerUserId === this.options.userId;
+    if (this.options.testSessionId !== undefined) {
+      const bot = this.options.bot;
+      return s.sessionId === this.options.testSessionId && s.testExecutionId !== undefined && s.identity.ownerUserId === this.options.userId &&
+        (!bot || bot.ownerUserId === this.options.userId && bot.sessionId === s.sessionId && bot.testExecutionId === s.testExecutionId);
+    }
     return s.claimId !== undefined && s.claimId === this.options.claimId && s.identity.projectId === this.options.projectId && s.identity.taskId === this.options.taskId;
   }
   private sameSession(s: SessionSnapshot): boolean { return this.view.state.snapshot !== null && sessionFenceKey(this.view.state.snapshot) === sessionFenceKey(s); }
@@ -447,7 +459,7 @@ export class TaskSessionClient {
       if (!(this.paused() ? await this.admit() : this.admitted()) || !this.sameSession(s)) throw new Error('The active session changed.');
       assertSessionFence(receipt, sessionFence(s)); this.putOperation(receipt);
     } catch (error) {
-      if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate();
+      if (this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate();
       if (!(this.paused() ? await this.admit() : this.admitted())) throw error;
       if (this.sameSession(s) && error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status < 500) this.putOperation({ ...pending, state: 'rejected', error: { code: error.code, message: error.message } });
       throw error;
@@ -479,7 +491,7 @@ export class TaskSessionClient {
       if (!(this.paused() ? await this.admit() : this.admitted()) || !this.sameSession(snapshot)) return;
       assertSessionFence(operation, sessionFence(snapshot)); this.putOperation(operation);
     } catch (error) {
-      if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate();
+      if (this.owned() && this.sameSession(snapshot) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate();
       await this.admit();
       throw error;
     } finally { this.publish({ checking: new Set([...this.view.checking].filter((value) => value !== id)) }); }
@@ -498,7 +510,7 @@ export class TaskSessionClient {
       return new Blob([bytes], { type: archived.resource.mediaType ?? 'application/octet-stream' });
     }
     const blob = await this.options.api.resource(s.sessionId, id, combinedSignal).catch((error: unknown) => {
-      if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate();
+      if (this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate();
       throw error;
     });
     if (!(this.paused() ? await this.admit(combinedSignal) : this.admitted()) || combinedSignal.aborted || !this.sameSession(s)) throw new Error('The active session changed.');
@@ -516,6 +528,8 @@ export class TaskSessionClient {
     this.publish({ connected: false, loadingOlder: false });
   }
   invalidate = (): void => {
+    if (this.invalidated || this.lifetime.signal.aborted) return;
+    this.invalidated = true;
     const sessionId = this.view.state.snapshot?.sessionId ?? this.options.testSessionId;
     try {
       const storage = this.options.storage;
@@ -527,6 +541,7 @@ export class TaskSessionClient {
     } catch { /* Identity isolation remains enforced in memory. */ }
     this.draftKey = null; this.view = { ...this.view, draft: emptyDraft() };
     this.close();
+    this.options.onInvalidate?.();
   };
   close = (): void => { this.archive = null; this.disconnect(); this.clearSuspensionTimer(); this.publish({ archiveState: null, settingIntents: new Map(), state: emptySessionState(), connected: false, status: 'unavailable' }); this.lifetime.abort(); for (const timer of this.operationPolls) clearTimeout(timer); this.operationPolls.clear(); this.listeners.clear(); };
 }

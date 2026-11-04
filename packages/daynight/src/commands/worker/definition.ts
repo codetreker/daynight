@@ -11,6 +11,17 @@ export const workerDefinition: CommandDefinition = {
   name: "worker",
   description: "Run automatically claimed tasks in dedicated worktrees and Herdr",
   commands: [{
+    name: "list",
+    description: "List the signed-in account's recently reported remote Workers",
+    options: [{ names: ["--json"], description: "Print all Worker summaries and the service observation time as JSON" }, help],
+    details: "Read every page before printing a result. The service lists Workers reported within the last 72 hours.\nOnline means the last report was less than two minutes before the service observation. Unknown or stale task inventory is not idle capacity.\nWorks outside Git without a project, local Worker configuration or runner lock.",
+  }, {
+    name: "show",
+    description: "Show a remote Worker's telemetry and authorized task observations",
+    arguments: [{ name: "worker-id", description: "Worker UUID" }],
+    options: [{ names: ["--json"], description: "Print the complete Worker detail and service observation time as JSON" }, help],
+    details: "Read the explicit Worker from the configured service, including outside Git.\nProbe failures, missing software and stale or unavailable inventory remain visible. Online is an observation, not a promise of capacity or Agent availability.\nThis command does not start, attach to or lock the local Worker.",
+  }, {
     name: "setup",
     description: "Check prerequisites and select an agent and existing Daynight Projects",
     options: [help],

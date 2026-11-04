@@ -24,6 +24,19 @@ inaccessible defaults fail explicitly; listing Teams and using an explicit targe
 do not depend on the old default. These commands only read. Team defaults do not
 change project discovery or explicit project and task identity.
 
+With authorization, `team create` creates an ordinary Team, `team rename` changes
+its name, and `team delete` removes an empty ordinary Team. Rename and delete use
+the explicit or default Team. Their confirmation, version and uncertain-result
+rules are in [write safety](write-safety.md#team-writes); use the commands' help
+for exact syntax.
+
+With authorization, `project transfer --to-team <uuid|same-service-link>` moves
+the explicit `--project` or the Project resolved from the repository. The source
+Team admin can transfer without destination membership. The command does not
+change the default Team or repository binding. Review the preview and follow
+[write safety](write-safety.md#project-transfers); a successful receipt may
+report that the actor no longer has access.
+
 ## Register a project
 
 With authorization, use `project create` to register the repository as a project.

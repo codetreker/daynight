@@ -354,8 +354,11 @@ flowchart TD
 | `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时读取 `/me`，再提交真实 `expectedUserId` 和原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
+| `project transfer` | 确定 Project 与 `/me`，读取目标预览，确认后提交 `POST /api/v1/projects/{id}/transfer` |
 | `team list` | `GET /api/v1/me`，再读取全部 `GET /api/v1/teams` 页 |
 | `team show`、`team default show` | `GET /api/v1/me`，再按选定 ID 读取 `GET /api/v1/teams/{id}` |
+| `team create` | `GET /api/v1/me`，确认后 `POST /api/v1/teams`，提交原始名称与 `expectedUserId` |
+| `team rename`、`team delete` | `GET /api/v1/me` 和目标 Team，确认后分别 PATCH 或 DELETE `/api/v1/teams/{id}`，提交名称、精确 version 和 `expectedUserId` |
 | `team projects` | `GET /api/v1/me`，再读取全部 `GET /api/v1/projects?teamId=...` 页 |
 | `task create [--required-platform <platform>] [--assigned-to <user-uuid>]` | 省略负责人先 `GET /api/v1/me`，再 `POST /api/v1/projects/{projectId}/tasks`，携带 assignedTo 和可选 requiredPlatform |
 | `task list` | `GET /api/v1/projects/{projectId}/tasks`，保留相同筛选遍历 cursor |
@@ -389,6 +392,22 @@ Team 读取先以 `/me` 确定真实用户和 Personal Team，并核对响应主
 循环及超额，完整验证后统一渲染。`default show` 对已配置目标执行详情读取，避免把
 失效配置显示成可用；`team list` 不解析默认，显式目标也不受其影响。该读取路径不写
 配置，既有全范围 Project 发现继续使用原列表方法。
+
+Team 生命周期写入复用当前用户和目标解析，确认阶段不持配置锁。普通确认展示操作及
+目标；删除将名称编码为 JSON string literal，让换行、控制符、反斜线和空白可见，
+再将输入解码并精确比较原文。非 TTY 且无 `--confirm` 时不写入；显式布尔确认只
+跳过提示，删除仍提交真实目标名称和版本。`--if-version` 与读取版本不符时本地拒绝，
+不在冲突后自动刷新或重放。
+
+typed mutation API 绑定 `/me` 主体并校验响应主体、资源与删除回执；已确认成功直接
+消费回执，不追加读取判断提交。拒绝、取消和未知提交保留各自结果；网络中断、取消
+等待、无效成功响应或未知提交不能证明回滚，也不能自动重发。后续读取只描述当前事实。
+
+项目转移按现有仓库解析规则只读选择 Project，不持久化绑定，也不解析默认 Team。
+目标解析器只接受规范 UUID 或当前 origin 的精确 Team 页面链接。预览绑定当前主体，
+显示来源、目标与预期角色；确认后提交预览的 ownership 和目标版本。typed API 校验
+主体、目标和回执，直接消费提交结果，包括失权的 null access；未知结果不能由后续
+读取恢复。服务事务和权限机制由[鉴权架构](daynight-auth.md#数据与并发)拥有。
 
 Steps typed GET 复用 `exchange` 的认证、no-store、取消、期限与响应预算。显式 project
 直接访问所选路径，不增加项目发现、父 Task GET 或子项 404 后的隐藏核验。

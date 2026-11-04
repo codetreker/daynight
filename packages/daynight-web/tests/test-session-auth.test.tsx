@@ -175,6 +175,6 @@ it.each(['changed', 'expired'] as const)('clears the retained Test Session when 
   expect(textbox.isConnected).toBe(false);
   expect(f.sockets[0]!.close).toHaveBeenCalled();
   expect(Object.keys(window.sessionStorage).filter(key => key.startsWith(`daynight:session-draft:${owner}:`))).toEqual([]);
-  if (outcome === 'changed') expect(await screen.findByRole('link', { name: 'Account settings: Other' })).toBeVisible();
+  if (outcome === 'changed') expect(await screen.findByRole('button', { name: 'Account menu: Other' })).toBeVisible();
   else expect(await screen.findByRole('button', { name: /GitHub/ })).toBeVisible();
 });

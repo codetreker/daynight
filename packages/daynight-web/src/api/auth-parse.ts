@@ -2,7 +2,7 @@ import { array, boolean, id, malformed, nonemptyString, record, string, timestam
 import { parseTeamRef, parseProjectOwnership } from "./team-parse";
 import { parseApiJson } from "./json";
 import { jsonContainerSources, jsonObjectSources } from "./json-source";
-import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipant, ProjectParticipants, ProjectRole, ProjectAccess, ProjectGrant, User, TeamInvitationMember, TeamInvitationInspection, TeamInvitationAcceptance } from "./auth-types";
+import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipant, ProjectParticipants, ProjectRole, ProjectAccess, ProjectGrant, ProjectGrantResult, RemoveProjectGrantResult, User, TeamInvitationMember, TeamInvitationInspection, TeamInvitationAcceptance } from "./auth-types";
 
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null => value === null ? null : parse(value);
 const unique = <T>(items: T[], key: (item: T) => string): T[] => {
@@ -229,6 +229,32 @@ export const projectAccessSource = (text: string): unknown => {
   return parsed;
 };
 export const decodeProjectAccessJson = async (response: Response): Promise<unknown> => projectAccessSource(await response.text());
+
+export const decodeGrantResultJson = async (response: Response): Promise<unknown> => {
+  const text = await response.text(), data = record(JSON.parse(text)), fields = jsonObjectSources(text);
+  if (Object.hasOwn(data, "grant")) data.grant = parseApiJson(fields.get("grant")!);
+  if (Object.hasOwn(data, "actorAccess") && data.actorAccess !== null) data.actorAccess = projectAccessSource(fields.get("actorAccess")!);
+  return data;
+};
+
+export const parseGrantResult = (value: unknown, projectId: string, userId: string, actorId: string, role: ProjectRole, version: bigint | null): ProjectGrantResult => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => key !== "grant" && key !== "actorAccess")) return malformed();
+  const grant = parseProjectGrant(data.grant, projectId, userId);
+  const actorAccess = data.actorAccess === null ? null : parseProjectAccess(data.actorAccess, projectId, actorId);
+  if (grant.role !== role || version !== null && grant.version < version ||
+    userId === actorId && (actorAccess === null || !sameGrant(grant, actorAccess.directGrant))) return malformed();
+  return { grant, actorAccess };
+};
+
+export const parseRemoveGrantResult = (value: unknown, projectId: string, userId: string, actorId: string): RemoveProjectGrantResult => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => !["projectId", "userId", "deleted", "actorAccess"].includes(key)) ||
+    id(data.projectId) !== projectId || id(data.userId) !== userId || data.deleted !== true) return malformed();
+  const actorAccess = data.actorAccess === null ? null : parseProjectAccess(data.actorAccess, projectId, actorId);
+  if (userId === actorId && actorAccess !== null && actorAccess.directGrant !== null) return malformed();
+  return { projectId, userId, deleted: true, actorAccess };
+};
 
 export const decodeMembersJson = async (response: Response): Promise<unknown> => {
   const text = await response.text();
