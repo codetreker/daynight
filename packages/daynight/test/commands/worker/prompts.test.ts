@@ -57,21 +57,28 @@ describe("worker managed prompts", () => {
     expect(prompt).toContain(task.claimId); expect(prompt).toContain(new Date(deadline).toISOString());
     expect(prompt).toContain("outside the worktree"); expect(prompt).toContain("Preserve the controller-managed worktree");
   });
-  it("keeps review and CI waits inside the background assignment", async () => {
-    const { task } = await fixture(); const prompt = workerPingPrompt(task);
+  it.each(["startup", "resume", "periodic"])("keeps review and CI waits inside the background assignment in the %s prompt", async (kind) => {
+    const { task, build } = await fixture();
+    if (kind === "resume") task.sessionId = uuid(6);
+    const prompt = kind === "periodic" ? workerPingPrompt(task) : build(task, "linux");
     expect(prompt).toContain(task.projectId); expect(prompt).toContain(task.taskId); expect(prompt).toContain(task.claimId);
-    expect(prompt).toContain("original native conversation and worktree");
-    expect(prompt).toContain("Make decisions autonomously within that scope and authorization");
+    expect(prompt).toContain(kind === "periodic" ? "Make decisions autonomously within that scope and authorization" : "Make decisions autonomously within this assignment and its existing authorization");
+    if (kind === "periodic") {
+      expect(prompt).toContain("original native conversation and worktree");
+      expect(prompt).toContain("Reconcile unconfirmed writes");
+    }
     expect(prompt).toContain("wait and check it periodically yourself");
+    expect(prompt).toContain("Pending PR review, required reviewer approval, CI results and polling timeouts are not reasons to set properties.paused=true or request user intervention");
     expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
+    expect(prompt).toContain("Honor independent user pauses, restrictions and revocations");
     expect(prompt).toContain("all required delivery, acceptance and evidence");
-    expect(prompt).toContain("Reconcile unconfirmed writes");
   });
   it.each(["startup", "periodic"])("requires its own task to be paused before necessary human intervention in the %s prompt", async (kind) => {
     const { task, build } = await fixture();
     const prompt = kind === "startup" ? build(task, "linux") : workerPingPrompt(task);
     expect(prompt).toContain("When human intervention is necessary to complete this assignment");
     expect(prompt).toContain("must set properties.paused=true on your own assigned task before waiting");
+    expect(prompt).toContain("specific information, a decision, authorization or an action that you cannot supply within the task scope and existing authority");
     expect(prompt).toContain("Follow the using-daynight managed skill's Request user interaction workflow");
     expect(prompt).toContain("Clear the pause only after the problem is resolved and valid authorization permits resuming this assignment");
     expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
