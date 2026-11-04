@@ -10,7 +10,7 @@ Steps 是 Task 拥有的有序工作记录，跨 Session 和执行环境保留�
 
 ## 现有机制与复用点
 
-以下复用点的证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端及 CLI list/show/Add 部分描述当前实现；其余 CLI 操作、Agent 指令资源和 Web 部分描述尚待交付的目标机制。
+以下复用点的证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端、CLI list/show/Add 及 Web 读取部分描述当前实现；其余 CLI 操作、Agent 指令资源和 Web 写入部分描述尚待交付的目标机制。
 
 | 证据 | 当前事实及设计含义 |
 |---|---|
@@ -311,6 +311,6 @@ jq -c --arg rid "$STEP_REQUEST_ID" \
 
 ## 架构基线摘要
 
-服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；CLI list/show/Add 已通过独立 typed 客户端消费该资源。其余 CLI 写命令与指令资源保留相同契约，Web 目标通过现有会话的资源化扩展接入。各层保持项目流程、Worker 和 Session 边界。
+服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；CLI list/show/Add 已通过独立 typed 客户端消费该资源。Web 读取已接入现有详情会话的独立资源状态；其余 CLI 写命令、指令资源和 Web 写入、草稿及导航保护保留相同目标契约。各层保持项目流程、Worker 和 Session 边界。
 
 大集合按 100 行本地分页，只约束 DOM 挂载。集合完整性、顺序及服务端操作保持相同契约；Task 附件中的交互原型提供 Web 的具体视觉与跨页交互输入。本架构及其交付边界约束后续实现。

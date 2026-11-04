@@ -642,7 +642,7 @@ owns identity binding, menu behavior and preference integration.
 
 ## Task discussions
 
-Task details always provide Overview, Attachments and Discussion tabs, followed
+Task details always provide Overview, Steps, Attachments and Discussion tabs, followed
 by Session when native execution content is available. Discussion works before
 execution starts, after completion and while an execution environment is offline.
 It reads and posts directly to the task Thread resource; ordinary browser posts
