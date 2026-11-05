@@ -31,7 +31,7 @@ func createAssignedTask(t *testing.T, tasks *Tasks, actor model.Principal, proje
 
 func assertAssignmentChanged(t *testing.T, before, after model.Task, assigned *string) {
 	t.Helper()
-	if !equalOptional(after.AssignedTo, assigned) || after.AllowAgents || after.Version != before.Version+1 || !after.UpdatedAt.After(before.UpdatedAt) {
+	if !model.EqualOptional(after.AssignedTo, assigned) || after.AllowAgents || after.Version != before.Version+1 || !after.UpdatedAt.After(before.UpdatedAt) {
 		t.Fatalf("assignment transition: before %#v, after %#v", before, after)
 	}
 	preserved := after
@@ -51,7 +51,7 @@ func TestTaskAssignmentCreateAndTransitions(t *testing.T) {
 		if want != nil {
 			want = &alice.UserID
 		}
-		if !equalOptional(created.AssignedTo, want) || created.AllowAgents || created.Version != 1 || created.Status != model.TaskTodo {
+		if !model.EqualOptional(created.AssignedTo, want) || created.AllowAgents || created.Version != 1 || created.Status != model.TaskTodo {
 			t.Fatalf("creation assignment: %#v", created)
 		}
 	}
@@ -96,7 +96,7 @@ func TestTaskAssignmentNoOpsAndExecutionLocks(t *testing.T) {
 			requireFault(t, err, "version_conflict")
 			if status == model.TaskInProgress {
 				for _, value := range []*string{&bob.UserID, nil} {
-					if equalOptional(value, assigned) {
+					if model.EqualOptional(value, assigned) {
 						continue
 					}
 					_, err := tasks.Update(ctx, admin, project.ID, before.ID, UpdateTask{Version: before.Version, AssignedTo: assignmentChange(value), Description: pointer("Must not partly save")})
@@ -132,7 +132,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 		t.Fatal("historical same assignment changed the task")
 	}
 	current := updateTask(t, tasks, admin, before, UpdateTask{AssignedTo: assignmentChange(&alice.UserID), Title: pointer("Legitimate metadata"), RequiredPlatform: platformChange(pointer(model.PlatformLinux))})
-	if !equalOptional(current.AssignedTo, &alice.UserID) || !current.AllowAgents {
+	if !model.EqualOptional(current.AssignedTo, &alice.UserID) || !current.AllowAgents {
 		t.Fatal("unrelated metadata requalified or cleared a former assignee")
 	}
 	current, err := tasks.SetProperty(ctx, admin, project.ID, current.ID, "paused", "true", current.Version)
@@ -148,7 +148,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 	}
 	for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskInProgress, model.TaskDone, model.TaskTodo} {
 		current = setStatusTask(t, tasks, admin, current, status)
-		if !equalOptional(current.AssignedTo, &alice.UserID) || !current.AllowAgents {
+		if !model.EqualOptional(current.AssignedTo, &alice.UserID) || !current.AllowAgents {
 			t.Fatalf("status %s lost historical responsibility", status)
 		}
 	}
@@ -164,7 +164,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	current = updateTask(t, tasks, admin, current, UpdateTask{AllowAgents: pointer(true)})
 	descriptor := workerDescriptor()
 	current = claimWorkerTask(t, tasks, owner, current, descriptor)
-	if testWorker(t, current.Properties).UserID != owner.UserID || !equalOptional(current.AssignedTo, &owner.UserID) {
+	if testWorker(t, current.Properties).UserID != owner.UserID || !model.EqualOptional(current.AssignedTo, &owner.UserID) {
 		t.Fatal("claim changed task responsibility")
 	}
 	_, err := tasks.Update(ctx, admin, project.ID, current.ID, UpdateTask{Version: current.Version, AssignedTo: assignmentChange(&bob.UserID)})
@@ -183,11 +183,11 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	current, err = tasks.RemoveProperty(ctx, admin, project.ID, current.ID, "paused", current.Version)
-	if err != nil || !equalOptional(current.AssignedTo, &owner.UserID) {
+	if err != nil || !model.EqualOptional(current.AssignedTo, &owner.UserID) {
 		t.Fatal("active property mutation lost responsibility", err)
 	}
 	current, err = tasks.ReleaseWorker(ctx, owner, project.ID, current.ID, ReleaseWorker{Version: current.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
-	if err != nil || !equalOptional(current.AssignedTo, &owner.UserID) {
+	if err != nil || !model.EqualOptional(current.AssignedTo, &owner.UserID) {
 		t.Fatal("release lost responsibility", err)
 	}
 	current = updateTask(t, tasks, admin, current, UpdateTask{AssignedTo: assignmentChange(&bob.UserID)})
@@ -199,15 +199,15 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	_, err = tasks.ResumeWorker(ctx, bob, project.ID, current.ID, resume)
 	requireFault(t, err, "forbidden")
 	current, err = tasks.ResumeWorker(ctx, owner, project.ID, current.ID, resume)
-	if err != nil || !equalOptional(current.AssignedTo, &bob.UserID) || current.AllowAgents {
+	if err != nil || !model.EqualOptional(current.AssignedTo, &bob.UserID) || current.AllowAgents {
 		t.Fatal("manual resume lost responsibility or reset its permission", err)
 	}
 	current, err = tasks.SetStatus(ctx, owner, project.ID, current.ID, SetTaskStatus{Version: current.Version, Status: model.TaskDone, ClaimID: &next.ClaimID})
-	if err != nil || !equalOptional(current.AssignedTo, &bob.UserID) {
+	if err != nil || !model.EqualOptional(current.AssignedTo, &bob.UserID) {
 		t.Fatal("claim completion lost responsibility", err)
 	}
 	current = startTask(t, tasks, admin, current)
-	if !equalOptional(current.AssignedTo, &bob.UserID) || testWorker(t, current.Properties).State != model.WorkerCompleted {
+	if !model.EqualOptional(current.AssignedTo, &bob.UserID) || testWorker(t, current.Properties).State != model.WorkerCompleted {
 		t.Fatal("reopening changed responsibility or historical ownership")
 	}
 	withdrawn := createAssignedTask(t, tasks, admin, project.ID, &owner.UserID)
@@ -215,7 +215,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	claim := workerDescriptor()
 	withdrawn = claimWorkerTask(t, tasks, owner, withdrawn, claim)
 	withdrawn, err = tasks.WithdrawWorker(ctx, owner, project.ID, withdrawn.ID, WithdrawWorker{Version: withdrawn.Version, ClaimID: claim.ClaimID})
-	if err != nil || !equalOptional(withdrawn.AssignedTo, &owner.UserID) || withdrawn.AllowAgents || testWorker(t, withdrawn.Properties) != nil {
+	if err != nil || !model.EqualOptional(withdrawn.AssignedTo, &owner.UserID) || withdrawn.AllowAgents || testWorker(t, withdrawn.Properties) != nil {
 		t.Fatal("withdrawal lost responsibility or kept the claim", err)
 	}
 }
@@ -248,11 +248,11 @@ func TestTaskAssignmentCompetesWithExecutionAndPermission(t *testing.T) {
 			if err != nil || after.Version != before.Version+1 {
 				t.Fatal("race did not commit exactly one mutation", err)
 			}
-			if equalOptional(after.AssignedTo, &bob.UserID) {
+			if model.EqualOptional(after.AssignedTo, &bob.UserID) {
 				if after.AllowAgents || after.Status != model.TaskTodo || testWorker(t, after.Properties) != nil {
 					t.Fatal("winning assignment admitted execution or permission")
 				}
-			} else if !equalOptional(after.AssignedTo, &alice.UserID) || !after.AllowAgents {
+			} else if !model.EqualOptional(after.AssignedTo, &alice.UserID) || !after.AllowAgents {
 				t.Fatal("winning execution/permission changed the assignee")
 			}
 		})
@@ -279,7 +279,7 @@ func TestTaskAssignmentNoOpAndClaimCanBothSucceed(t *testing.T) {
 		}
 	}
 	after, err := tasks.Get(context.Background(), admin, project.ID, before.ID)
-	if err != nil || after.Status != model.TaskInProgress || after.Version != before.Version+1 || !after.AllowAgents || !equalOptional(after.AssignedTo, &owner.UserID) || testWorker(t, after.Properties).UserID != owner.UserID {
+	if err != nil || after.Status != model.TaskInProgress || after.Version != before.Version+1 || !after.AllowAgents || !model.EqualOptional(after.AssignedTo, &owner.UserID) || testWorker(t, after.Properties).UserID != owner.UserID {
 		t.Fatalf("equal assignment interfered with claim: %#v, %v", after, err)
 	}
 }

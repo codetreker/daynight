@@ -2,14 +2,16 @@ package server
 
 import (
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
 
 type teamHandler struct {
@@ -18,8 +20,8 @@ type teamHandler struct {
 	origin string
 }
 
-func teamRoutes(mux *http.ServeMux, teams *service.Teams, auth *Authentication, logger *slog.Logger) {
-	h := &teamHandler{teams: teams, logger: logger, origin: auth.origin}
+func teamRoutes(mux *http.ServeMux, teams *service.Teams, auth *authhttp.Authentication, logger *slog.Logger) {
+	h := &teamHandler{teams: teams, logger: logger, origin: auth.Origin()}
 	mux.HandleFunc("GET /api/v1/teams", auth.Require(h.list))
 	mux.HandleFunc("POST /api/v1/teams", auth.Require(h.create))
 	mux.HandleFunc("GET /api/v1/teams/{teamId}", auth.Require(h.get))
@@ -28,40 +30,40 @@ func teamRoutes(mux *http.ServeMux, teams *service.Teams, auth *Authentication, 
 	mux.HandleFunc("GET /api/v1/teams/{teamId}/members", auth.Require(h.listMembers))
 	mux.HandleFunc("PATCH /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.setMemberRole))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.removeMember))
-	mux.HandleFunc("/api/v1/teams/{teamId}/members", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("/api/v1/teams/{teamId}/members/{userId}", auth.Require(resourceMethodNotAllowed(logger, "PATCH, DELETE")))
+	mux.HandleFunc("/api/v1/teams/{teamId}/members", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("/api/v1/teams/{teamId}/members/{userId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PATCH, DELETE")))
 	mux.HandleFunc("GET /api/v1/teams/{teamId}/invitations", auth.Require(h.listInvitations))
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/invitations", auth.Require(h.createInvitation))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/invitations/{inviteId}", auth.Require(h.revokeInvitation))
 	mux.HandleFunc("POST /api/v1/team-invitations/inspect", auth.Require(h.inspectInvitation))
 	mux.HandleFunc("POST /api/v1/team-invitations/accept", auth.Require(h.acceptInvitation))
-	mux.HandleFunc("/api/v1/teams/{teamId}/invitations", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("/api/v1/teams/{teamId}/invitations/{inviteId}", auth.Require(resourceMethodNotAllowed(logger, "DELETE")))
-	mux.HandleFunc("/api/v1/team-invitations/inspect", auth.Require(resourceMethodNotAllowed(logger, "POST")))
-	mux.HandleFunc("/api/v1/team-invitations/accept", auth.Require(resourceMethodNotAllowed(logger, "POST")))
-	mux.HandleFunc("/api/v1/teams", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("/api/v1/teams/{teamId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
+	mux.HandleFunc("/api/v1/teams/{teamId}/invitations", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
+	mux.HandleFunc("/api/v1/teams/{teamId}/invitations/{inviteId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "DELETE")))
+	mux.HandleFunc("/api/v1/team-invitations/inspect", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+	mux.HandleFunc("/api/v1/team-invitations/accept", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+	mux.HandleFunc("/api/v1/teams", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
+	mux.HandleFunc("/api/v1/teams/{teamId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
 }
 
 func teamResponse(team model.Team) api.Team {
 	m := team.Membership
-	return api.Team{TeamRef: teamRefResponse(team.TeamRef), Version: team.Version, CreatedAt: team.CreatedAt.UTC(), UpdatedAt: team.UpdatedAt.UTC(), Membership: api.TeamMember{TeamID: m.TeamID, UserID: m.UserID, Role: string(m.Role), Version: m.Version, CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC()}}
+	return api.Team{TeamRef: httpx.TeamRefResponse(team.TeamRef), Version: team.Version, CreatedAt: team.CreatedAt.UTC(), UpdatedAt: team.UpdatedAt.UTC(), Membership: api.TeamMember{TeamID: m.TeamID, UserID: m.UserID, Role: string(m.Role), Version: m.Version, CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC()}}
 }
 
 func teamNameInput(fields map[string]json.RawMessage) (string, error) {
 	if !jsonunicode.Valid(fields["name"]) {
-		return "", invalidInput("name must contain valid Unicode text")
+		return "", httpx.InvalidInput("name must contain valid Unicode text")
 	}
-	return requiredString(fields, "name")
+	return httpx.RequiredString(fields, "name")
 }
 
 func (h *teamHandler) create(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	logger := h.logger.With("user_id", p.UserID)
-	if _, err := queryValues(r); err != nil {
+	if _, err := httpx.QueryValues(r); err != nil {
 		writeTeamError(w, r, logger, "create", err)
 		return
 	}
-	fields, err := decodeObject(w, r, "name", "expectedUserId")
+	fields, err := httpx.DecodeObject(w, r, "name", "expectedUserId")
 	if err != nil {
 		writeTeamError(w, r, logger, "create", err)
 		return
@@ -71,7 +73,7 @@ func (h *teamHandler) create(w http.ResponseWriter, r *http.Request, p model.Pri
 		writeTeamError(w, r, logger, "create", err)
 		return
 	}
-	expected, err := requiredString(fields, "expectedUserId")
+	expected, err := httpx.RequiredString(fields, "expectedUserId")
 	if err != nil {
 		writeTeamError(w, r, logger, "create", err)
 		return
@@ -87,42 +89,42 @@ func (h *teamHandler) create(w http.ResponseWriter, r *http.Request, p model.Pri
 
 func (h *teamHandler) list(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	logger := h.logger.With("user_id", p.UserID)
-	page, err := pageRequest(r)
+	page, err := httpx.PageRequest(r)
 	if err != nil {
-		writeError(w, r, logger, "team", "list", err)
+		httpx.WriteError(w, r, logger, "team", "list", err)
 		return
 	}
 	result, err := h.teams.List(r.Context(), p, page)
 	if err != nil {
-		writeError(w, r, logger, "team", "list", err)
+		httpx.WriteError(w, r, logger, "team", "list", err)
 		return
 	}
 	response := api.TeamPage{Items: make([]api.Team, 0, len(result.Items)), NextCursor: result.NextCursor}
 	for _, team := range result.Items {
 		response.Items = append(response.Items, teamResponse(team))
 	}
-	writeJSON(w, r, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, r, logger, http.StatusOK, response)
 }
 
 func (h *teamHandler) get(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	logger := h.logger.With("user_id", p.UserID)
-	if _, err := queryValues(r); err != nil {
-		writeError(w, r, logger, "team", "get", err)
+	if _, err := httpx.QueryValues(r); err != nil {
+		httpx.WriteError(w, r, logger, "team", "get", err)
 		return
 	}
 	team, err := h.teams.Get(r.Context(), p, r.PathValue("teamId"))
 	if err != nil {
-		writeError(w, r, logger, "team", "get", err)
+		httpx.WriteError(w, r, logger, "team", "get", err)
 		return
 	}
-	writeJSON(w, r, logger.With("team_id", team.ID), http.StatusOK, teamResponse(team))
+	httpx.WriteJSON(w, r, logger.With("team_id", team.ID), http.StatusOK, teamResponse(team))
 }
 
 func teamChangeInput(w http.ResponseWriter, r *http.Request) (service.ChangeTeam, error) {
-	if _, err := queryValues(r); err != nil {
+	if _, err := httpx.QueryValues(r); err != nil {
 		return service.ChangeTeam{}, err
 	}
-	fields, err := decodeObject(w, r, "name", "version", "expectedUserId")
+	fields, err := httpx.DecodeObject(w, r, "name", "version", "expectedUserId")
 	if err != nil {
 		return service.ChangeTeam{}, err
 	}
@@ -130,11 +132,11 @@ func teamChangeInput(w http.ResponseWriter, r *http.Request) (service.ChangeTeam
 	if err != nil {
 		return service.ChangeTeam{}, err
 	}
-	version, err := versionInput(fields)
+	version, err := httpx.VersionInput(fields)
 	if err != nil {
 		return service.ChangeTeam{}, err
 	}
-	expected, err := requiredString(fields, "expectedUserId")
+	expected, err := httpx.RequiredString(fields, "expectedUserId")
 	return service.ChangeTeam{Name: name, Version: version, ExpectedUserID: expected}, err
 }
 
@@ -180,42 +182,15 @@ func writeTeamError(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 			} else {
 				phase = "completion"
 			}
-			LogFailure(logger, r.Context(), "team", phase, fault)
-			writeJSON(w, r, logger, status, api.ErrorResponse{Error: api.Error{Code: fault.Code, Message: fault.Message, RequestID: RequestID(r.Context())}})
+			httpx.LogFailure(logger, r.Context(), "team", phase, fault)
+			httpx.WriteJSON(w, r, logger, status, api.ErrorResponse{Error: api.Error{Code: fault.Code, Message: fault.Message, RequestID: httpx.RequestID(r.Context())}})
 			return
 		}
 		err = fault
 	}
-	writeError(w, r, logger, "team", phase, err)
+	httpx.WriteError(w, r, logger, "team", phase, err)
 }
 
 func writeTeamJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logger, status int, value any) {
-	writeMutationJSON(w, r, logger, "team", status, value)
-}
-
-func writeMutationJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logger, component string, status int, value any) {
-	responseLogger := logger.With(component+"_error_code", "write_outcome_unknown", "write_outcome", "unknown")
-	data, err := json.Marshal(value)
-	if err != nil {
-		fault := &model.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err}
-		LogFailure(responseLogger, r.Context(), component, "response", fault)
-		writeJSON(w, r, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: fault.Code, Message: fault.Message, RequestID: RequestID(r.Context())}})
-		return
-	}
-	if r.Context().Err() != nil {
-		LogFailure(responseLogger, r.Context(), component, "response", &model.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: r.Context().Err()})
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	data = append(data, '\n')
-	written, err := w.Write(data)
-	if err == nil && written != len(data) {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
-		LogFailure(responseLogger, r.Context(), component, "response", &model.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err})
-		return
-	}
-	logger.InfoContext(r.Context(), "write response", "type", "resource", "component", component, "phase", "response", "status", status, "written_bytes", written, "request_id", RequestID(r.Context()))
+	httpx.WriteMutationJSON(w, r, logger, "team", status, value)
 }

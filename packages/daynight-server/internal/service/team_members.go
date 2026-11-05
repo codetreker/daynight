@@ -20,7 +20,7 @@ type TeamMemberResult struct {
 }
 
 func (s *Teams) Members(ctx context.Context, principal model.Principal, teamID string) ([]model.TeamMemberProfile, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return nil, err
 	}
 	id, err := canonicalTeamID(teamID)
@@ -58,7 +58,7 @@ func (s *Teams) changeMember(ctx context.Context, principal model.Principal, tea
 	if err != nil {
 		return TeamMemberResult{}, err
 	}
-	target, err := CanonicalID(userID)
+	target, err := model.CanonicalID(userID)
 	if err != nil || target != userID {
 		return TeamMemberResult{}, invalidInput("User ID must be a canonical UUID.")
 	}

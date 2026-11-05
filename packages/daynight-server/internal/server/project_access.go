@@ -5,7 +5,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func projectGrantResponse(grant model.ProjectGrant) api.ProjectGrant {
@@ -24,34 +24,30 @@ func projectAccessResponse(access model.ProjectAccess) api.ProjectAccess {
 		role := string(*access.TeamRole)
 		teamRole = &role
 	}
-	return api.ProjectAccess{ProjectID: access.ProjectID, OwnerTeam: teamRefResponse(access.OwnerTeam), Ownership: ownershipResponse(access.Ownership), EffectiveRole: string(access.Role), DirectGrant: direct, TeamRole: teamRole, CanTransfer: access.CanTransfer}
+	return api.ProjectAccess{ProjectID: access.ProjectID, OwnerTeam: httpx.TeamRefResponse(access.OwnerTeam), Ownership: ownershipResponse(access.Ownership), EffectiveRole: string(access.Role), DirectGrant: direct, TeamRole: teamRole, CanTransfer: access.CanTransfer}
 }
 
 func (h *projectHandler) access(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", principal.UserID)
-	projectID, err := service.CanonicalID(request.PathValue("projectId"))
+	projectID, err := model.CanonicalID(request.PathValue("projectId"))
 	if err == nil {
-		_, err = queryValues(request)
+		_, err = httpx.QueryValues(request)
 	}
 	if err != nil {
-		writeError(w, request, logger, "project_access", "get", err)
+		httpx.WriteError(w, request, logger, "project_access", "get", err)
 		return
 	}
 	logger = logger.With("project_id", projectID)
 	access, err := h.projects.Access(request.Context(), principal, projectID)
 	if err != nil {
-		writeError(w, request, logger, "project_access", "get", err)
+		httpx.WriteError(w, request, logger, "project_access", "get", err)
 		return
 	}
-	logger.InfoContext(request.Context(), "project access read", "type", "resource", "component", "project_access", "phase", "get", "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, projectAccessResponse(access))
+	logger.InfoContext(request.Context(), "project access read", "type", "resource", "component", "project_access", "phase", "get", "request_id", httpx.RequestID(request.Context()))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, projectAccessResponse(access))
 }
 
 func ownershipResponse(ownership model.ProjectOwnership) api.ProjectOwnership {
 	return api.ProjectOwnership{TeamID: ownership.TeamID, Version: ownership.Version}
-}
-
-func teamRefResponse(team model.TeamRef) api.TeamRef {
-	return api.TeamRef{ID: team.ID, Kind: team.Kind, Name: team.Name}
 }

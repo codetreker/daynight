@@ -17,9 +17,10 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func attachmentTestFiles(t *testing.T) *local.Storage {
@@ -69,7 +70,7 @@ func TestAttachmentHTTPFileLifecycleAndActualContent(t *testing.T) {
 	task := createHTTPTask(t, handler, project.ID, "Attached task")
 	file := "文档 space/设计 ?# %2F.bin"
 	location := attachmentFilePath(task, file)
-	payload := append(bytes.Repeat([]byte{0, 255, 128, 13, 10}, maxJSONBody/5+1), 'x')
+	payload := append(bytes.Repeat([]byte{0, 255, 128, 13, 10}, httpx.MaxJSONBody/5+1), 'x')
 	created := decodeResponse[api.Attachment](t, attachmentRequest(handler, http.MethodPut, location, "application/octet-stream", payload), http.StatusCreated)
 	if created.Path != file || created.SizeBytes != int64(len(payload)) || created.ContentType != "application/octet-stream" || created.CreatedAt.IsZero() || !created.CreatedAt.Equal(created.UpdatedAt) {
 		t.Fatalf("created attachment: %+v", created)

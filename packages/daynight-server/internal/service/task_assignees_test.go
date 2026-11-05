@@ -85,7 +85,7 @@ func TestTaskAssigneesCatalogueAndResolutionScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	items := serviceAssigneeItems(t, catalogue, want, nil)
-	if items[current.UserID].Name != nil || items[current.UserID].AvatarURL != nil || !equalOptional(items[formerIDs[0]].Name, &name) || !equalOptional(items[formerIDs[0]].AvatarURL, &avatar) {
+	if items[current.UserID].Name != nil || items[current.UserID].AvatarURL != nil || !model.EqualOptional(items[formerIDs[0]].Name, &name) || !model.EqualOptional(items[formerIDs[0]].AvatarURL, &avatar) {
 		t.Fatalf("nullable or canonical profiles changed: %#v", items)
 	}
 	memberView, err := tasks.Assignees(ctx, current, project.ID, TaskAssigneesRequest{})
@@ -174,7 +174,7 @@ func TestTaskAssigneesReadOneMembershipAndProfileSnapshot(t *testing.T) {
 			oldExpected[admin.UserID] = true
 		}
 		oldItems := serviceAssigneeItems(t, old, oldExpected, nil)
-		if !equalOptional(oldItems[target.UserID].Name, &oldName) {
+		if !model.EqualOptional(oldItems[target.UserID].Name, &oldName) {
 			t.Fatal("directory mixed old access with a new profile")
 		}
 		fresh, err := tasks.Assignees(ctx, admin, project.ID, request)
@@ -183,7 +183,7 @@ func TestTaskAssigneesReadOneMembershipAndProfileSnapshot(t *testing.T) {
 		}
 		oldExpected[target.UserID] = false
 		freshItems := serviceAssigneeItems(t, fresh, oldExpected, nil)
-		if !equalOptional(freshItems[target.UserID].Name, &newName) {
+		if !model.EqualOptional(freshItems[target.UserID].Name, &newName) {
 			t.Fatal("fresh read did not see the independently changed profile")
 		}
 		assertTaskUnchanged(t, tasks, admin, before)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -129,7 +130,7 @@ func TestStepsHTTPDeleteStrictInputScopeAndVersion(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
 	good := `{"version":1}`
-	assertProjectError(t, projectRequest(handler, "DELETE", endpoint, good+strings.Repeat(" ", maxJSONBody-len(good)+1)), 400, "invalid_input")
+	assertProjectError(t, projectRequest(handler, "DELETE", endpoint, good+strings.Repeat(" ", httpx.MaxJSONBody-len(good)+1)), 400, "invalid_input")
 	for _, tc := range []struct{ endpoint, allow string }{{path, "GET, HEAD, POST"}, {path + "/abcdef01/status", "PUT"}, {path + "/abcdef01/position", "PUT"}} {
 		response := projectRequest(handler, "DELETE", tc.endpoint, `{"version":1}`)
 		assertProjectError(t, response, 405, "method_not_allowed")
@@ -153,9 +154,9 @@ func TestStepsHTTPDeleteStrictInputScopeAndVersion(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET version=1 WHERE id=$1`, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	exact := good + strings.Repeat(" ", maxJSONBody-len(good))
+	exact := good + strings.Repeat(" ", httpx.MaxJSONBody-len(good))
 	resource := decodeResponse[api.StepsResource](t, projectRequest(handler, "DELETE", endpoint, exact), 200)
-	if len(exact) != maxJSONBody || resource.Version != 2 || len(resource.Steps) != 3 {
+	if len(exact) != httpx.MaxJSONBody || resource.Version != 2 || len(resource.Steps) != 3 {
 		t.Fatal("exact request boundary failed")
 	}
 	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, task.ID); err != nil {

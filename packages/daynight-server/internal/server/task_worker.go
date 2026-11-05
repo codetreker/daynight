@@ -7,28 +7,33 @@ import (
 	"log/slog"
 	"net/http"
 
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
+
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
-func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth *Authentication, logger *slog.Logger) {
+func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth *authhttp.Authentication, logger *slog.Logger) {
 	path := "/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim"
 	mux.HandleFunc("POST "+path, auth.Require(handler.claimWorker))
 	mux.HandleFunc("PATCH "+path, auth.Require(handler.updateWorker))
-	mux.HandleFunc(path, auth.Require(resourceMethodNotAllowed(logger, "POST, PATCH")))
+	mux.HandleFunc(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST, PATCH")))
 	for _, operation := range []struct {
 		path    string
-		handler AuthenticatedHandler
+		handler httpx.AuthenticatedHandler
 	}{
 		{"release", handler.releaseWorker},
 		{"withdraw", handler.withdrawWorker},
 		{"resume", handler.resumeWorker},
 	} {
 		mux.HandleFunc("POST "+path+"/"+operation.path, auth.Require(operation.handler))
-		mux.HandleFunc(path+"/"+operation.path, auth.Require(resourceMethodNotAllowed(logger, "POST")))
+		mux.HandleFunc(path+"/"+operation.path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
 	}
 }
 
@@ -39,50 +44,50 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
-		writeError(w, request, logger, "worker_claim", phase, err)
+		httpx.WriteError(w, request, logger, "worker_claim", phase, err)
 		return
 	}
 	if request.URL.RawQuery != "" || request.URL.ForceQuery {
-		writeError(w, request, logger, "worker_claim", phase, invalidInput("worker claim operations do not accept query parameters"))
+		httpx.WriteError(w, request, logger, "worker_claim", phase, httpx.InvalidInput("worker claim operations do not accept query parameters"))
 		return
 	}
-	fields, err := decodeObject(w, request, allowed...)
+	fields, err := httpx.DecodeObject(w, request, allowed...)
 	if err != nil {
-		writeError(w, request, logger, "worker_claim", phase, err)
+		httpx.WriteError(w, request, logger, "worker_claim", phase, err)
 		return
 	}
 	input, err := parse(fields)
 	if err != nil {
-		writeError(w, request, logger, "worker_claim", phase, err)
+		httpx.WriteError(w, request, logger, "worker_claim", phase, err)
 		return
 	}
-	claimID, err := requiredString(fields, "claimId")
+	claimID, err := httpx.RequiredString(fields, "claimId")
 	if err != nil {
-		writeError(w, request, logger, "worker_claim", phase, err)
+		httpx.WriteError(w, request, logger, "worker_claim", phase, err)
 		return
 	}
 	task, err := apply(workerProtocolContext(request), principal, projectID, id, input)
 	if err != nil {
-		writeError(w, request, logger, "worker_claim", phase, err)
+		httpx.WriteError(w, request, logger, "worker_claim", phase, err)
 		return
 	}
 	logger = logger.With("claim_id", claimID)
 	worker, err := taskproperties.Worker(task.Properties)
 	if err != nil {
-		writeError(w, request, logger, "worker_claim", phase, err)
+		httpx.WriteError(w, request, logger, "worker_claim", phase, err)
 		return
 	}
 	if worker != nil {
 		logger = logger.With("worker_id", worker.WorkerID, "state", worker.State)
 	}
 	logger.InfoContext(request.Context(), "worker claim operation applied", "type", "resource", "component", "worker_claim", "phase", phase,
-		"request_id", RequestID(request.Context()))
+		"request_id", httpx.RequestID(request.Context()))
 	response, err := taskResponse(task, request)
 	if err != nil {
-		writeError(w, request, logger, "worker_claim", phase, err)
+		httpx.WriteError(w, request, logger, "worker_claim", phase, err)
 		return
 	}
-	writeJSON(w, request, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
 func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -108,20 +113,20 @@ func (h *taskHandler) resumeWorker(w http.ResponseWriter, request *http.Request,
 func workerMachineInput(raw json.RawMessage) (model.WorkerMachine, error) {
 	fields, err := jsonobject.Decode(raw, "machine", "id", "name")
 	if err != nil {
-		return model.WorkerMachine{}, invalidInput(err.Error())
+		return model.WorkerMachine{}, httpx.InvalidInput(err.Error())
 	}
-	id, err := requiredString(fields, "id")
+	id, err := httpx.RequiredString(fields, "id")
 	if err != nil {
 		return model.WorkerMachine{}, err
 	}
-	name, err := requiredString(fields, "name")
+	name, err := httpx.RequiredString(fields, "name")
 	return model.WorkerMachine{ID: id, Name: name}, err
 }
 
 func workerDescriptorInput(fields map[string]json.RawMessage) (service.WorkerDescriptor, error) {
 	var input service.WorkerDescriptor
 	for key, destination := range map[string]*string{"claimId": &input.ClaimID, "workerId": &input.WorkerID, "worktreeId": &input.WorktreeID} {
-		value, err := requiredString(fields, key)
+		value, err := httpx.RequiredString(fields, key)
 		if err != nil {
 			return service.WorkerDescriptor{}, err
 		}
@@ -132,12 +137,12 @@ func workerDescriptorInput(fields map[string]json.RawMessage) (service.WorkerDes
 		return service.WorkerDescriptor{}, err
 	}
 	input.Machine = machine
-	platform, err := requiredString(fields, "platform")
+	platform, err := httpx.RequiredString(fields, "platform")
 	if err != nil {
 		return service.WorkerDescriptor{}, err
 	}
 	input.Platform = model.TaskPlatform(platform)
-	agent, err := requiredString(fields, "agent")
+	agent, err := httpx.RequiredString(fields, "agent")
 	if err != nil {
 		return service.WorkerDescriptor{}, err
 	}
@@ -150,12 +155,12 @@ func workerAgentControlModeInput(fields map[string]json.RawMessage) (model.Worke
 	if _, exists := fields["agentControlMode"]; !exists {
 		return model.AgentControlModeHerdr, nil
 	}
-	mode, err := requiredString(fields, "agentControlMode")
+	mode, err := httpx.RequiredString(fields, "agentControlMode")
 	if err != nil {
 		return "", err
 	}
 	if mode != string(model.AgentControlModeHerdr) && mode != string(model.AgentControlModeWeb) {
-		return "", invalidInput("agentControlMode must be herdr or web.")
+		return "", httpx.InvalidInput("agentControlMode must be herdr or web.")
 	}
 	return model.WorkerAgentControlMode(mode), nil
 }
@@ -163,7 +168,7 @@ func workerAgentControlModeInput(fields map[string]json.RawMessage) (model.Worke
 func claimWorkerInput(fields map[string]json.RawMessage) (service.ClaimWorker, error) {
 	var input service.ClaimWorker
 	var err error
-	input.Version, err = versionInput(fields)
+	input.Version, err = httpx.VersionInput(fields)
 	if err != nil {
 		return service.ClaimWorker{}, err
 	}
@@ -185,11 +190,11 @@ func nullableWorkerHerdr(fields map[string]json.RawMessage) (**model.WorkerHerdr
 	}
 	values, err := jsonobject.Decode(raw, "herdr", "session", "workspaceId", "paneId")
 	if err != nil {
-		return nil, invalidInput(err.Error())
+		return nil, httpx.InvalidInput(err.Error())
 	}
 	value = &model.WorkerHerdr{}
 	for key, destination := range map[string]*string{"session": &value.Session, "workspaceId": &value.WorkspaceID, "paneId": &value.PaneID} {
-		*destination, err = requiredString(values, key)
+		*destination, err = httpx.RequiredString(values, key)
 		if err != nil {
 			return nil, err
 		}
@@ -206,22 +211,22 @@ func nullableWorkerSession(fields map[string]json.RawMessage) (**string, error) 
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return &value, nil
 	}
-	value, err := optionalString(fields, "nativeSessionId")
+	value, err := httpx.OptionalString(fields, "nativeSessionId")
 	return &value, err
 }
 
 func updateWorkerInput(fields map[string]json.RawMessage) (service.UpdateWorker, error) {
 	var input service.UpdateWorker
 	var err error
-	input.Version, err = versionInput(fields)
+	input.Version, err = httpx.VersionInput(fields)
 	if err != nil {
 		return service.UpdateWorker{}, err
 	}
-	input.ClaimID, err = requiredString(fields, "claimId")
+	input.ClaimID, err = httpx.RequiredString(fields, "claimId")
 	if err != nil {
 		return service.UpdateWorker{}, err
 	}
-	phase, err := optionalString(fields, "phase")
+	phase, err := httpx.OptionalString(fields, "phase")
 	if err != nil {
 		return service.UpdateWorker{}, err
 	}
@@ -240,7 +245,7 @@ func updateWorkerInput(fields map[string]json.RawMessage) (service.UpdateWorker,
 	if raw, present := fields["startupReport"]; present {
 		report, parseErr := sp.DecodeStartupReport(raw)
 		if parseErr != nil {
-			return input, invalidInput("Invalid startup report.")
+			return input, httpx.InvalidInput("Invalid startup report.")
 		}
 		input.StartupReport = &report
 	}
@@ -248,12 +253,12 @@ func updateWorkerInput(fields map[string]json.RawMessage) (service.UpdateWorker,
 }
 
 func requiredWorkerConfirmation(fields map[string]json.RawMessage, key string) (bool, error) {
-	value, err := optionalBool(fields, key)
+	value, err := httpx.OptionalBool(fields, key)
 	if err != nil {
 		return false, err
 	}
 	if value == nil {
-		return false, invalidInput(key + " is required and must be true")
+		return false, httpx.InvalidInput(key + " is required and must be true")
 	}
 	return *value, nil
 }
@@ -261,11 +266,11 @@ func requiredWorkerConfirmation(fields map[string]json.RawMessage, key string) (
 func releaseWorkerInput(fields map[string]json.RawMessage) (service.ReleaseWorker, error) {
 	var input service.ReleaseWorker
 	var err error
-	input.Version, err = versionInput(fields)
+	input.Version, err = httpx.VersionInput(fields)
 	if err != nil {
 		return service.ReleaseWorker{}, err
 	}
-	input.ClaimID, err = requiredString(fields, "claimId")
+	input.ClaimID, err = httpx.RequiredString(fields, "claimId")
 	if err != nil {
 		return service.ReleaseWorker{}, err
 	}
@@ -274,11 +279,11 @@ func releaseWorkerInput(fields map[string]json.RawMessage) (service.ReleaseWorke
 }
 
 func withdrawWorkerInput(fields map[string]json.RawMessage) (service.WithdrawWorker, error) {
-	version, err := versionInput(fields)
+	version, err := httpx.VersionInput(fields)
 	if err != nil {
 		return service.WithdrawWorker{}, err
 	}
-	claimID, err := requiredString(fields, "claimId")
+	claimID, err := httpx.RequiredString(fields, "claimId")
 	return service.WithdrawWorker{Version: version, ClaimID: claimID}, err
 }
 
@@ -287,7 +292,7 @@ func resumeWorkerInput(fields map[string]json.RawMessage) (service.ResumeWorker,
 	if err != nil {
 		return service.ResumeWorker{}, err
 	}
-	previous, err := requiredString(fields, "previousClaimId")
+	previous, err := httpx.RequiredString(fields, "previousClaimId")
 	if err != nil {
 		return service.ResumeWorker{}, err
 	}

@@ -17,14 +17,14 @@ type SetTaskStatus struct {
 }
 
 func (s *Tasks) SetStatus(ctx context.Context, principal model.Principal, projectID, id string, input SetTaskStatus) (model.Task, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return model.Task{}, err
 	}
-	id, err = CanonicalID(id)
+	id, err = model.CanonicalID(id)
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -38,7 +38,7 @@ func (s *Tasks) SetStatus(ctx context.Context, principal model.Principal, projec
 		if input.Status != model.TaskDone {
 			return model.Task{}, invalidInput("A worker claim may only accompany completion.")
 		}
-		claimID, err := CanonicalID(*input.ClaimID)
+		claimID, err := model.CanonicalID(*input.ClaimID)
 		if err != nil {
 			return model.Task{}, err
 		}

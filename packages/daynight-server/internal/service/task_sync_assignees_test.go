@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
 
@@ -62,14 +64,18 @@ func TestTaskSyncAssigneeVersionsTrackContentAndLiveQualification(t *testing.T) 
 			t.Fatal("sync and people GET disagree on the same profile version")
 		}
 	}
-	user, err := database.IdentityUser(ctx, member.UserID)
+	var user model.User
+	_, err = database.WriteIdentity(ctx, func(scope store.IdentityScope) error {
+		var err error
+		user, _, err = scope.IdentityDAO().IdentityUser(ctx, member.UserID)
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	if _, err := database.CreateIdentitySession(ctx, user, model.Session{ID: uuid.NewString(), TokenHash: secretHash(randomSecret("dnst_")), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}); err != nil {
-		t.Fatal(err)
-	}
+	fixtureIdentitySession(t, database, user, model.Session{ID: uuid.NewString(), TokenHash: secretutil.Hash(secretutil.Random("dnst_")), CreatedAt: now, ExpiresAt: now.Add(identitycore.SessionLifetime)})
+
 	if _, err := database.Pool.Exec(ctx, `UPDATE project_grants SET role='admin',version=version+1 WHERE project_id=$1 AND user_id=$2`, project.ID, member.UserID); err != nil {
 		t.Fatal(err)
 	}

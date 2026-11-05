@@ -6,6 +6,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
@@ -22,15 +24,15 @@ func (h *taskStepsHandler) move(w http.ResponseWriter, request *http.Request, pr
 	}
 	stepID, err := taskcodec.CanonicalID(request.PathValue("stepId"))
 	if err != nil {
-		refuse(invalidInput(err.Error()))
+		refuse(httpx.InvalidInput(err.Error()))
 		return
 	}
 	logger = logger.With("step_id", stepID)
 	if request.URL.RawQuery != "" || request.URL.ForceQuery {
-		refuse(invalidInput("Steps do not accept query parameters."))
+		refuse(httpx.InvalidInput("Steps do not accept query parameters."))
 		return
 	}
-	fields, err := decodeObject(w, request, "version", "before", "after", "position")
+	fields, err := httpx.DecodeObject(w, request, "version", "before", "after", "position")
 	if request.Context().Err() != nil {
 		refuse(request.Context().Err())
 		return
@@ -54,18 +56,18 @@ func moveStepInput(fields map[string]json.RawMessage) (service.MoveTaskStep, err
 		return input, err
 	}
 	var err error
-	input.Version, err = versionInput(fields)
+	input.Version, err = httpx.VersionInput(fields)
 	if err != nil {
 		return input, err
 	}
-	input.Before, err = optionalString(fields, "before")
+	input.Before, err = httpx.OptionalString(fields, "before")
 	if err != nil {
 		return input, err
 	}
-	input.After, err = optionalString(fields, "after")
+	input.After, err = httpx.OptionalString(fields, "after")
 	if err != nil {
 		return input, err
 	}
-	input.Position, err = optionalString(fields, "position")
+	input.Position, err = httpx.OptionalString(fields, "position")
 	return input, err
 }

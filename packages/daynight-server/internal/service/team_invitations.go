@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
 
@@ -56,8 +57,8 @@ func (s *Teams) CreateInvitation(ctx context.Context, p model.Principal, teamID,
 			return err
 		}
 		now := time.Now().UTC()
-		result.Secret = randomSecret(teamInvitationPrefix)
-		result.Invitation = model.TeamInvitation{ID: uuid.NewString(), TeamID: id, CreatedBy: p.UserID, TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(InvitationLifetime)}
+		result.Secret = secretutil.Random(teamInvitationPrefix)
+		result.Invitation = model.TeamInvitation{ID: uuid.NewString(), TeamID: id, CreatedBy: p.UserID, TokenHash: secretutil.Hash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(InvitationLifetime)}
 		return tx.CreateInvitation(ctx, result.Invitation)
 	})
 	if err != nil {
@@ -67,7 +68,7 @@ func (s *Teams) CreateInvitation(ctx context.Context, p model.Principal, teamID,
 	return result, nil
 }
 func (s *Teams) ListInvitations(ctx context.Context, p model.Principal, teamID string) ([]model.TeamInvitation, error) {
-	if err := requirePrincipal(p); err != nil {
+	if err := model.RequirePrincipal(p); err != nil {
 		return nil, err
 	}
 	id, err := canonicalTeamID(teamID)
@@ -96,7 +97,7 @@ func (s *Teams) RevokeInvitation(ctx context.Context, p model.Principal, teamID,
 	if err != nil {
 		return false, err
 	}
-	inviteID, err := CanonicalID(invitationID)
+	inviteID, err := model.CanonicalID(invitationID)
 	if err != nil || inviteID != invitationID {
 		return false, invalidInput("Invitation ID must be a canonical UUID.")
 	}
@@ -118,16 +119,16 @@ func (s *Teams) RevokeInvitation(ctx context.Context, p model.Principal, teamID,
 	return changed, nil
 }
 func (s *Teams) inspectInvitation(ctx context.Context, p model.Principal, secret string, operation func(store.TeamReader, model.TeamInvitation) error) error {
-	if err := requirePrincipal(p); err != nil {
+	if err := model.RequirePrincipal(p); err != nil {
 		return err
 	}
-	if !validSecret(secret, teamInvitationPrefix) {
+	if !secretutil.Valid(secret, teamInvitationPrefix) {
 		return invitationUnavailable(nil)
 	}
 	var refusal *model.Fault
 	err := s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		return completeMembershipOperation(func() error {
-			i, err := snapshot.TeamDAO().TeamInvitation(ctx, secretHash(secret))
+			i, err := snapshot.TeamDAO().TeamInvitation(ctx, secretutil.Hash(secret))
 			if errors.Is(err, model.ErrNotFound) {
 				return invitationUnavailable(nil)
 			}
@@ -186,7 +187,7 @@ func (s *Teams) AcceptInvitation(ctx context.Context, p model.Principal, secret,
 	var refusal *model.Fault
 	err := s.store.WriteTeam(ctx, teamID, func(tx *store.TeamTx) error {
 		return completeMembershipOperation(func() error {
-			i, err := tx.LockInvitation(ctx, secretHash(secret))
+			i, err := tx.LockInvitation(ctx, secretutil.Hash(secret))
 			if errors.Is(err, model.ErrNotFound) {
 				return invitationUnavailable(nil)
 			}

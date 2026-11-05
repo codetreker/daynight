@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -47,7 +48,7 @@ func botConflict(message string) error {
 
 func botCredentialError(err error) error {
 	if errors.Is(err, model.ErrNotFound) {
-		return unauthenticated(err)
+		return model.Unauthenticated(err)
 	}
 	return err
 }
@@ -67,7 +68,7 @@ func botWorkerError(err error) error {
 }
 
 func normalizeBotRequest(input CreateBot) (CreateBot, string, error) {
-	id, err := CanonicalID(input.ID)
+	id, err := model.CanonicalID(input.ID)
 	if err != nil {
 		return input, "", err
 	}
@@ -80,7 +81,7 @@ func normalizeBotRequest(input CreateBot) (CreateBot, string, error) {
 		return input, "", invalidInput("Bot name must contain 1 to 40 characters.")
 	}
 	if input.Overrides.WorkerID != nil {
-		id, err := CanonicalID(*input.Overrides.WorkerID)
+		id, err := model.CanonicalID(*input.Overrides.WorkerID)
 		if err != nil {
 			return input, "", err
 		}
@@ -122,7 +123,7 @@ func botAbsolutePath(value string) bool {
 
 func normalizeBotConfiguration(input CreateBot) (model.BotConfiguration, error) {
 	configuration := input.ResolvedConfiguration
-	id, err := CanonicalID(configuration.WorkerID)
+	id, err := model.CanonicalID(configuration.WorkerID)
 	if err != nil {
 		return configuration, err
 	}
@@ -159,7 +160,7 @@ func (s *Bots) Create(ctx context.Context, principal model.Principal, input Crea
 }
 
 func (s *Bots) create(ctx context.Context, principal model.Principal, input CreateBot, resolve bool) (model.Bot, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Bot{}, err
 	}
 	input, fingerprint, err := normalizeBotRequest(input)
@@ -216,10 +217,10 @@ func (s *Bots) create(ctx context.Context, principal model.Principal, input Crea
 }
 
 func (s *Bots) Get(ctx context.Context, principal model.Principal, id string) (model.Bot, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Bot{}, err
 	}
-	id, err := CanonicalID(id)
+	id, err := model.CanonicalID(id)
 	if err != nil {
 		return model.Bot{}, err
 	}
@@ -249,7 +250,7 @@ func (s *Bots) List(ctx context.Context, principal model.Principal, request mode
 }
 
 func (s *Bots) ListWorker(ctx context.Context, principal model.Principal, workerID string, request model.PageRequest) (BotPage, error) {
-	id, err := CanonicalID(workerID)
+	id, err := model.CanonicalID(workerID)
 	if err != nil {
 		return BotPage{}, err
 	}
@@ -257,11 +258,11 @@ func (s *Bots) ListWorker(ctx context.Context, principal model.Principal, worker
 }
 
 func (s *Bots) list(ctx context.Context, principal model.Principal, workerID *string, request model.PageRequest) (BotPage, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return BotPage{}, err
 	}
-	scope := listScope{Kind: "bots", WorkerUserID: &principal.UserID, WorkerID: workerID}
-	page, err := listPage(request, scope)
+	scope := query.ListScope{Kind: "bots", WorkerUserID: &principal.UserID, WorkerID: workerID}
+	page, err := query.ListPage(request, scope)
 	if err != nil {
 		return BotPage{}, err
 	}
@@ -285,7 +286,7 @@ func (s *Bots) list(ctx context.Context, principal model.Principal, workerID *st
 	result := BotPage{Items: records.Items}
 	if records.HasMore {
 		last := records.Items[len(records.Items)-1]
-		cursor, err := encodeListCursor(scope, last.CreatedAt, last.ID)
+		cursor, err := query.EncodeListCursor(scope, last.CreatedAt, last.ID)
 		if err != nil {
 			return BotPage{}, err
 		}
@@ -297,14 +298,14 @@ func (s *Bots) list(ctx context.Context, principal model.Principal, workerID *st
 // Delete records an intent without claiming cleanup completion. Bound Sessions
 // require their deletion barrier and are refused by this definition-only path.
 func (s *Bots) Delete(ctx context.Context, principal model.Principal, id string, input DeleteBot) (model.Bot, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Bot{}, err
 	}
-	id, err := CanonicalID(id)
+	id, err := model.CanonicalID(id)
 	if err != nil {
 		return model.Bot{}, err
 	}
-	input.DeletionID, err = CanonicalID(input.DeletionID)
+	input.DeletionID, err = model.CanonicalID(input.DeletionID)
 	if err != nil {
 		return model.Bot{}, err
 	}

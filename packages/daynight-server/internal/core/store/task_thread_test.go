@@ -233,7 +233,8 @@ func TestThreadCredentialKindsAndExpiry(t *testing.T) {
 	_, principal, session := testAuthRecords(t, database)
 	ctx := context.Background()
 	pat := model.PersonalAccessToken{ID: queryID(1), TokenHash: []byte(strings.Repeat("x", 32)), Name: "thread PAT", CreatedAt: time.Now().UTC()}
-	if err := database.CreatePAT(ctx, principal, pat); err != nil {
+	pat.UserID = principal.UserID
+	if _, err := database.WriteIdentity(ctx, func(scope IdentityScope) error { return scope.IdentityDAO().InsertPAT(ctx, pat) }); err != nil {
 		t.Fatal(err)
 	}
 	patPrincipal := model.Principal{Kind: model.PATCredential, UserID: principal.UserID, CredentialID: pat.ID}

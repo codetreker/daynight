@@ -26,7 +26,7 @@ func propertyInputFault(err error) error {
 }
 
 func (s *Tasks) SetProperty(ctx context.Context, principal model.Principal, projectID, id, name, valueText string, version int64) (model.Task, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
 	value, err := taskprops.ParseInput(name, valueText)
@@ -41,7 +41,7 @@ func (s *Tasks) SetProperty(ctx context.Context, principal model.Principal, proj
 }
 
 func (s *Tasks) RemoveProperty(ctx context.Context, principal model.Principal, projectID, id, name string, version int64) (model.Task, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
 	if err := taskprops.CheckWritable(name); err != nil {

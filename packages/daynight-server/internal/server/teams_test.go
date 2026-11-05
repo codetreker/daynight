@@ -1,7 +1,9 @@
 package server
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/google/uuid"
@@ -86,7 +89,7 @@ func TestTeamHTTPStrictInputAndPagination(t *testing.T) {
 	h := projectTestHandler(t, db, &logs)
 	actor := h.principal.UserID
 	suffix := `,"expectedUserId":"` + actor + `"}`
-	for _, body := range []string{"", "null", "[]", `{"name":"x"}`, `{"name":null` + suffix, `{"name":1` + suffix, `{"name":""` + suffix, `{"name":" \u2003\u0085"` + suffix, `{"name":"bad\u0000"` + suffix, `{"name":"\ud800"` + suffix, `{"name":"\udfff"` + suffix, `{"name":"\ud800x"` + suffix, `{"name":"x","name":"y"` + suffix, `{"name":"x","extra":1` + suffix, `{"Name":"x"` + suffix, `{"name":"x"` + suffix + ` {}`, `{"name":"` + strings.Repeat("x", maxJSONBody) + `"` + suffix} {
+	for _, body := range []string{"", "null", "[]", `{"name":"x"}`, `{"name":null` + suffix, `{"name":1` + suffix, `{"name":""` + suffix, `{"name":" \u2003\u0085"` + suffix, `{"name":"bad\u0000"` + suffix, `{"name":"\ud800"` + suffix, `{"name":"\udfff"` + suffix, `{"name":"\ud800x"` + suffix, `{"name":"x","name":"y"` + suffix, `{"name":"x","extra":1` + suffix, `{"Name":"x"` + suffix, `{"name":"x"` + suffix + ` {}`, `{"name":"` + strings.Repeat("x", httpx.MaxJSONBody) + `"` + suffix} {
 		assertProjectError(t, projectRequest(h, "POST", "/api/v1/teams", body), 400, "invalid_input")
 	}
 	literal := decodeResponse[api.Team](t, projectRequest(h, "POST", "/api/v1/teams", `{"name":"\\ud800 \ufffd \ud83d\ude00"`+suffix), 201)
@@ -141,20 +144,20 @@ func TestTeamHTTPStrictInputAndPagination(t *testing.T) {
 
 func TestTeamHTTPSessionPATAndIdentityPermissions(t *testing.T) {
 	h := authTestHarness(t)
-	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	mux := http.NewServeMux()
-	h.auth.RegisterRoutes(mux)
-	teamRoutes(mux, service.NewTeams(h.database), h.auth, logger)
-	h.handler = RequestLogging(logger, mux)
-	admin, member, outsider := h.login(t, "team-admin"), h.login(t, "team-member"), h.login(t, "team-outsider")
+	h.Auth.RegisterRoutes(mux)
+	teamRoutes(mux, service.NewTeams(h.Database), h.Auth, logger)
+	h.Handler = httpx.RequestLogging(logger, mux)
+	admin, member, outsider := h.Login(t, "team-admin"), h.Login(t, "team-member"), h.Login(t, "team-outsider")
 	cookies := []*http.Cookie{admin}
-	user := decodeResponse[api.User](t, h.request("GET", "/api/v1/me", "", cookies, nil, ""), 200)
-	memberUser := decodeResponse[api.User](t, h.request("GET", "/api/v1/me", "", []*http.Cookie{member}, nil, ""), 200)
+	user := decodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", cookies, nil, ""), 200)
+	memberUser := decodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", []*http.Cookie{member}, nil, ""), 200)
 	body := jsonBody(t, api.CreateTeamRequest{Name: "Protected", ExpectedUserID: user.ID})
-	assertProjectError(t, h.request("POST", "/api/v1/teams", body, nil, nil, ""), 401, "unauthenticated")
-	assertProjectError(t, h.request("POST", "/api/v1/teams", body, cookies, nil, "https://foreign.test"), 403, "forbidden")
-	team := decodeResponse[api.Team](t, h.request("POST", "/api/v1/teams", body, cookies, nil, h.auth.origin), 201)
-	if _, err := h.database.Pool.Exec(context.Background(), `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, memberUser.ID); err != nil {
+	assertProjectError(t, h.Request("POST", "/api/v1/teams", body, nil, nil, ""), 401, "unauthenticated")
+	assertProjectError(t, h.Request("POST", "/api/v1/teams", body, cookies, nil, "https://foreign.test"), 403, "forbidden")
+	team := decodeResponse[api.Team](t, h.Request("POST", "/api/v1/teams", body, cookies, nil, h.Origin), 201)
+	if _, err := h.Database.Pool.Exec(context.Background(), `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, memberUser.ID); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -162,9 +165,9 @@ func TestTeamHTTPSessionPATAndIdentityPermissions(t *testing.T) {
 		expected string
 		status   int
 	}{{member, "forbidden", 403}, {outsider, "not_found", 404}} {
-		actor := decodeResponse[api.User](t, h.request("GET", "/api/v1/me", "", []*http.Cookie{test.cookie}, nil, ""), 200)
+		actor := decodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", []*http.Cookie{test.cookie}, nil, ""), 200)
 		for _, method := range []string{"PATCH", "DELETE"} {
-			assertProjectError(t, h.request(method, "/api/v1/teams/"+team.ID, jsonBody(t, api.ChangeTeamRequest{Name: "Protected", Version: 1, ExpectedUserID: actor.ID}), []*http.Cookie{test.cookie}, nil, h.auth.origin), test.status, test.expected)
+			assertProjectError(t, h.Request(method, "/api/v1/teams/"+team.ID, jsonBody(t, api.ChangeTeamRequest{Name: "Protected", Version: 1, ExpectedUserID: actor.ID}), []*http.Cookie{test.cookie}, nil, h.Origin), test.status, test.expected)
 		}
 	}
 	for _, method := range []string{"POST", "PATCH", "DELETE"} {
@@ -174,22 +177,22 @@ func TestTeamHTTPSessionPATAndIdentityPermissions(t *testing.T) {
 			path = "/api/v1/teams"
 			input = api.CreateTeamRequest{Name: "Changed", ExpectedUserID: memberUser.ID}
 		}
-		assertProjectError(t, h.request(method, path, jsonBody(t, input), cookies, nil, h.auth.origin), 409, "identity_mismatch")
+		assertProjectError(t, h.Request(method, path, jsonBody(t, input), cookies, nil, h.Origin), 409, "identity_mismatch")
 	}
-	got := decodeResponse[api.Team](t, h.request("GET", "/api/v1/teams/"+team.ID, "", cookies, nil, ""), 200)
+	got := decodeResponse[api.Team](t, h.Request("GET", "/api/v1/teams/"+team.ID, "", cookies, nil, ""), 200)
 	if !reflect.DeepEqual(got, team) {
 		t.Fatal("identity mismatch changed Team")
 	}
-	token := decodeResponse[api.CreatedPersonalAccessToken](t, h.request("POST", "/api/v1/me/tokens", `{"name":"Team API","expiresAt":null}`, cookies, nil, h.auth.origin), 201)
-	pat := decodeResponse[api.Team](t, h.request("POST", "/api/v1/teams", body, nil, []string{"Bearer " + token.Token}, "https://foreign.test"), 201)
+	token := decodeResponse[api.CreatedPersonalAccessToken](t, h.Request("POST", "/api/v1/me/tokens", `{"name":"Team API","expiresAt":null}`, cookies, nil, h.Origin), 201)
+	pat := decodeResponse[api.Team](t, h.Request("POST", "/api/v1/teams", body, nil, []string{"Bearer " + token.Token}, "https://foreign.test"), 201)
 	if pat.Membership.UserID != user.ID {
 		t.Fatal("PAT principal changed")
 	}
-	memberGet := h.request("GET", "/api/v1/teams/"+team.ID, "", []*http.Cookie{member}, nil, "")
+	memberGet := h.Request("GET", "/api/v1/teams/"+team.ID, "", []*http.Cookie{member}, nil, "")
 	if decodeResponse[api.Team](t, memberGet, 200).Membership.UserID != memberUser.ID || memberGet.Header().Get("Daynight-User-ID") != memberUser.ID {
 		t.Fatal("membership/identity envelope")
 	}
-	assertProjectError(t, h.request("GET", "/api/v1/teams/"+team.ID, "", []*http.Cookie{outsider}, nil, ""), 404, "not_found")
+	assertProjectError(t, h.Request("GET", "/api/v1/teams/"+team.ID, "", []*http.Cookie{outsider}, nil, ""), 404, "not_found")
 }
 
 func TestTeamHTTPOutcomeClassificationAndResponseFailures(t *testing.T) {
@@ -209,7 +212,7 @@ func TestTeamHTTPOutcomeClassificationAndResponseFailures(t *testing.T) {
 		{&model.Fault{Code: "team_not_empty", Message: "Transfer projects first"}, 409, "team_not_empty"},
 	} {
 		w := httptest.NewRecorder()
-		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeTeamError(w, r, logger, "rename", test.err) })).ServeHTTP(w, request)
+		httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeTeamError(w, r, logger, "rename", test.err) })).ServeHTTP(w, request)
 		assertProjectError(t, w, test.status, test.code)
 	}
 	for _, short := range []bool{false, true} {
@@ -238,7 +241,7 @@ func TestTeamHTTPOutcomeClassificationAndResponseFailures(t *testing.T) {
 
 func TestTeamHTTPReservedIdentityCallbackPaths(t *testing.T) {
 	for _, path := range []string{"/api/v1/teams", "/api/v1/teams/" + uuid.NewString(), "/teams", "/teams/" + uuid.NewString()} {
-		_, _, err := validateAuthSettings(AuthConfig{PublicOrigin: "https://example.com"}, "https://example.com"+path)
+		_, _, err := configpkg.ValidateAuthSettings(configpkg.AuthSettings{PublicOrigin: "https://example.com"}, "https://example.com"+path)
 		if err == nil {
 			t.Fatalf("identity callback captured Team path %s", path)
 		}

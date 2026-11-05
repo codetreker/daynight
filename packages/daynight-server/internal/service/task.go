@@ -71,14 +71,14 @@ type taskMutation struct {
 }
 
 func (s *Tasks) Create(ctx context.Context, principal model.Principal, projectID string, input CreateTask) (model.Task, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
 	properties, err := taskprops.Normalize(input.Properties)
 	if err != nil {
 		return model.Task{}, propertyInputFault(err)
 	}
-	projectID, err = CanonicalID(projectID)
+	projectID, err = model.CanonicalID(projectID)
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -143,13 +143,13 @@ func (s *Tasks) Update(ctx context.Context, principal model.Principal, projectID
 		if current.AllowAgents != values.AllowAgents && current.Status == model.TaskInProgress {
 			return taskMutation{}, &model.Fault{Code: "invalid_transition", Message: "Automatic execution permission cannot change while the task is in progress."}
 		}
-		if !equalOptional(current.RequiredPlatform, values.RequiredPlatform) && current.Status == model.TaskInProgress {
+		if !model.EqualOptional(current.RequiredPlatform, values.RequiredPlatform) && current.Status == model.TaskInProgress {
 			return taskMutation{}, &model.Fault{Code: "invalid_transition", Message: "Execution platform cannot change while the task is in progress."}
 		}
 		if err := validateCandidate(ctx, tx, id, values); err != nil {
 			return taskMutation{}, err
 		}
-		changed := !equalOptional(current.AssignedTo, values.AssignedTo) || !equalOptional(current.RequiredPlatform, values.RequiredPlatform) || current.AllowAgents != values.AllowAgents || current.Title != values.Title || current.Description != values.Description ||
+		changed := !model.EqualOptional(current.AssignedTo, values.AssignedTo) || !model.EqualOptional(current.RequiredPlatform, values.RequiredPlatform) || current.AllowAgents != values.AllowAgents || current.Title != values.Title || current.Description != values.Description ||
 			!slices.Equal(current.DependsOn, values.DependsOn) || !slices.Equal(current.ExternalDependsOn, values.ExternalDependsOn) || !taskproperties.Equal(current.Properties, values.Properties)
 		return taskMutation{id: id, current: current, values: values, changed: changed}, nil
 	})
@@ -299,7 +299,7 @@ func validateTaskValues(values store.TaskWrite) error {
 func canonicalDependencies(ids []string, self string) ([]string, error) {
 	canonical := make([]string, 0, len(ids))
 	for _, id := range ids {
-		id, err := CanonicalID(id)
+		id, err := model.CanonicalID(id)
 		if err != nil {
 			return nil, err
 		}

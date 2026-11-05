@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -246,10 +248,9 @@ func TestRevokedPATCannotAuthenticateForAnotherResourceRequest(t *testing.T) {
 	f := newMembershipFixture(t)
 	owner := f.user(t)
 	project := f.project(t, owner, "Revoked automation credential")
-	identity := NewIdentity(f.database, nil, "")
-	identity.now = func() time.Time { return f.now }
+	identity := identityservice.New(f.database, nil, "")
 	ctx := context.Background()
-	token, err := identity.CreatePAT(ctx, owner, CreatePAT{Name: "Resource access"})
+	token, err := identity.CreatePAT(ctx, owner, identitycore.CreatePAT{Name: "Resource access"})
 	if err != nil {
 		t.Fatal(err)
 	}

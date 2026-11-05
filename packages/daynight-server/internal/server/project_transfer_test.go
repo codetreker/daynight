@@ -15,6 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/google/uuid"
 )
@@ -22,16 +23,16 @@ import (
 func TestTransferHTTPContracts(t *testing.T) {
 	h := membershipTestHarness(t)
 	mux := http.NewServeMux()
-	h.auth.RegisterRoutes(mux)
-	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
-	projectRoutes(mux, service.NewProjects(h.database), h.auth, logger)
-	h.handler = RequestLogging(logger, mux)
+	h.Auth.RegisterRoutes(mux)
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
+	projectRoutes(mux, service.NewProjects(h.Database), h.Auth, logger)
+	h.Handler = httpx.RequestLogging(logger, mux)
 	ctx := context.Background()
 	target := uuid.NewString()
-	if _, err := h.database.Pool.Exec(ctx, `INSERT INTO teams(id,name,version) VALUES($1,'Destination private',9007199254740993)`, target); err != nil {
+	if _, err := h.Database.Pool.Exec(ctx, `INSERT INTO teams(id,name,version) VALUES($1,'Destination private',9007199254740993)`, target); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.database.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, target, h.memberID); err != nil {
+	if _, err := h.Database.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, target, h.memberID); err != nil {
 		t.Fatal(err)
 	}
 	path := "/api/v1/projects/" + h.project.ID
@@ -48,7 +49,7 @@ func TestTransferHTTPContracts(t *testing.T) {
 	assertProjectError(t, h.call("POST", path+"/transfer", wrong, h.admin), 409, "identity_mismatch")
 	stale := strings.Replace(input, `"version":9007199254740993`, `"version":1`, 1)
 	assertProjectError(t, h.call("POST", path+"/transfer", stale, h.admin), 409, "version_conflict")
-	if _, err := h.database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.adminID); err != nil {
+	if _, err := h.Database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.adminID); err != nil {
 		t.Fatal(err)
 	}
 	response := h.call("POST", path+"/transfer", input, h.admin)
@@ -60,18 +61,18 @@ func TestTransferHTTPContracts(t *testing.T) {
 		t.Fatal("receipt headers or lost-access result", response.Body, response.Header())
 	}
 	assertProjectError(t, h.call("GET", path, "", h.admin), 404, "not_found")
-	if strings.Contains(h.logs.String(), "Destination private") || !strings.Contains(h.logs.String(), `"component":"project_transfer"`) || !strings.Contains(h.logs.String(), `"outcome":"success"`) {
-		t.Fatalf("transfer logs: %s", &h.logs)
+	if strings.Contains(h.Logs.String(), "Destination private") || !strings.Contains(h.Logs.String(), `"component":"project_transfer"`) || !strings.Contains(h.Logs.String(), `"outcome":"success"`) {
+		t.Fatalf("transfer logs: %s", &h.Logs)
 	}
 }
 
 func TestTransferHTTPStrictInput(t *testing.T) {
 	h := membershipTestHarness(t)
 	mux := http.NewServeMux()
-	h.auth.RegisterRoutes(mux)
-	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
-	projectRoutes(mux, service.NewProjects(h.database), h.auth, logger)
-	h.handler = RequestLogging(logger, mux)
+	h.Auth.RegisterRoutes(mux)
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
+	projectRoutes(mux, service.NewProjects(h.Database), h.Auth, logger)
+	h.Handler = httpx.RequestLogging(logger, mux)
 	path := "/api/v1/projects/" + h.project.ID
 	team := h.project.Ownership.TeamID
 	valid := `{"ownership":{"teamId":"` + team + `","version":1},"targetTeam":{"id":"` + team + `","version":1},"expectedUserId":"` + h.adminID + `"}`
@@ -107,41 +108,41 @@ func TestTransferHTTPStrictInput(t *testing.T) {
 func TestTransferHTTPLostResponseAndSubsequent404(t *testing.T) {
 	h := membershipTestHarness(t)
 	mux := http.NewServeMux()
-	h.auth.RegisterRoutes(mux)
-	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
-	projectRoutes(mux, service.NewProjects(h.database), h.auth, logger)
-	h.handler = RequestLogging(logger, mux)
+	h.Auth.RegisterRoutes(mux)
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
+	projectRoutes(mux, service.NewProjects(h.Database), h.Auth, logger)
+	h.Handler = httpx.RequestLogging(logger, mux)
 	ctx := context.Background()
 	target := uuid.NewString()
-	if _, err := h.database.Pool.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'Target')`, target); err != nil {
+	if _, err := h.Database.Pool.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'Target')`, target); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.database.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, target, h.memberID); err != nil {
+	if _, err := h.Database.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, target, h.memberID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.adminID); err != nil {
+	if _, err := h.Database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.adminID); err != nil {
 		t.Fatal(err)
 	}
 	base := "/api/v1/projects/" + h.project.ID
 	body := `{"ownership":{"teamId":"` + h.project.Ownership.TeamID + `","version":1},"targetTeam":{"id":"` + target + `","version":1},"expectedUserId":"` + h.adminID + `"}`
 	request := httptest.NewRequest("POST", base+"/transfer", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Origin", h.auth.origin)
+	request.Header.Set("Origin", h.Origin)
 	request.Header.Set("X-Request-ID", "project-test")
 	request.AddCookie(h.admin)
-	before := h.logs.Len()
+	before := h.Logs.Len()
 	w := &threadFailingWriter{ResponseRecorder: httptest.NewRecorder()}
-	h.handler.ServeHTTP(w, request)
+	h.Handler.ServeHTTP(w, request)
 	if w.calls != 1 || w.Body.Len() != 0 {
 		t.Fatalf("failed response was replayed: %d %q", w.calls, w.Body.String())
 	}
-	transferLogs := h.logs.String()[before:]
+	transferLogs := h.Logs.String()[before:]
 	if strings.Count(transferLogs, `"component":"project_transfer"`) != 1 || !strings.Contains(transferLogs, `"phase":"response"`) || !strings.Contains(transferLogs, `"outcome":"unknown"`) || !strings.Contains(transferLogs, `"error_code":"write_outcome_unknown"`) {
 		t.Fatalf("response loss classification: %s", transferLogs)
 	}
 	var owner string
 	var version int64
-	if err := h.database.Pool.QueryRow(ctx, `SELECT team_id::text,version FROM project_ownership WHERE project_id=$1`, h.project.ID).Scan(&owner, &version); err != nil || owner != target || version != 2 {
+	if err := h.Database.Pool.QueryRow(ctx, `SELECT team_id::text,version FROM project_ownership WHERE project_id=$1`, h.project.ID).Scan(&owner, &version); err != nil || owner != target || version != 2 {
 		t.Fatalf("transfer not committed once: %s %d %v", owner, version, err)
 	}
 	assertProjectError(t, h.call("GET", base, "", h.admin), 404, "not_found")
@@ -165,7 +166,7 @@ func TestTransferHTTPCompletionClassification(t *testing.T) {
 		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionNotCommitted, Cause: errors.New("private error")}, 500, "internal_error"},
 	} {
 		w := httptest.NewRecorder()
-		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeTransferError(w, r, logger, time.Now(), "operation", tc.err)
 		})).ServeHTTP(w, request)
 		assertProjectError(t, w, tc.status, tc.code)

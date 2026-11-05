@@ -21,8 +21,9 @@ staged business refusals and transaction completion failures.
 
 `Completion` and `TransactionOutcome` describe durable outcome facts, while the
 existing error types retain their phase, cause chains and cleanup facts. The
-current concrete implementation and SQL remain in the store root; write scopes
-continue to use their existing contracts.
+current concrete implementation and SQL remain in the store root. Identity
+writes use the [identity boundary](2026-11-05-server-identity-boundaries.md);
+other write scopes continue to use their existing contracts.
 
 ## Alternatives
 
@@ -39,5 +40,5 @@ the boundary that later domain writers must preserve.
 Authorization and data from different readers retain a single snapshot, and a
 failed completion remains visible ahead of a staged refusal. The readers are
 valid only during their callback. The store root still contains PostgreSQL
-implementation details; separating that implementation and introducing domain
-write capabilities require their respective later work.
+implementation details; separating that implementation and introducing the
+remaining domain write capabilities require their respective later work.

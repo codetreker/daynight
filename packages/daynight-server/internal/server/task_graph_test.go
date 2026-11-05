@@ -17,6 +17,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -271,8 +272,8 @@ func TestTaskGraphHTTPErrorPrecedenceAndDTOUTC(t *testing.T) {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/", nil)
 		request.Header.Set("X-Request-ID", "project-test")
-		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-			writeError(w, request, logger, "task_graph", "get", err)
+		httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		})).ServeHTTP(response, request)
 		assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
 		value := decodeResponse[api.ErrorResponse](t, response, http.StatusInternalServerError)

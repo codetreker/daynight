@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 
@@ -20,78 +19,7 @@ func identitySession(userID, subject string) (model.User, model.Session) {
 	return model.User{ID: userID, UniAuthID: subject}, model.Session{ID: uuid.NewString(), TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 }
 
-func TestPersonalTeamConcurrentAndRepeatedLoginReusesCanonicalOwner(t *testing.T) {
-	s := isolatedStore(t)
-	ctx := context.Background()
-	const logins = 6
-	var wait sync.WaitGroup
-	users := make(chan model.User, logins)
-	failures := make(chan error, logins)
-	for range logins {
-		wait.Go(func() {
-			user, session := identitySession(uuid.NewString(), "github:concurrent-personal")
-			canonical, err := s.CreateIdentitySession(ctx, user, session)
-			users <- canonical
-			failures <- err
-		})
-	}
-	wait.Wait()
-	close(users)
-	close(failures)
-	for err := range failures {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	var canonical string
-	for user := range users {
-		if canonical != "" && canonical != user.ID {
-			t.Fatal("concurrent login did not use canonical user")
-		}
-		canonical = user.ID
-	}
-	var teamID string
-	var memberVersion int64
-	var createdAt time.Time
-	if err := s.Pool.QueryRow(ctx, `SELECT t.id::text,m.version,m.created_at FROM teams t JOIN team_members m ON m.team_id=t.id
-		WHERE t.personal_user_id=$1 AND m.user_id=$1 AND m.role='admin'`, canonical).Scan(&teamID, &memberVersion, &createdAt); err != nil {
-		t.Fatal(err)
-	}
-	user, session := identitySession(uuid.NewString(), "github:concurrent-personal")
-	if _, err := s.CreateIdentitySession(ctx, user, session); err != nil {
-		t.Fatal(err)
-	}
-	var valid bool
-	if err := s.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM users)=1 AND (SELECT count(*) FROM teams)=1
-		AND (SELECT count(*) FROM team_members)=1 AND (SELECT count(*) FROM sessions)=$1
-		AND EXISTS(SELECT 1 FROM team_members WHERE team_id=$2 AND user_id=$3 AND version=$4 AND created_at=$5)`,
-		logins+1, teamID, canonical, memberVersion, createdAt).Scan(&valid); err != nil || !valid {
-		t.Fatalf("repeated login changed Personal identity or owner membership: %v %v", valid, err)
-	}
-}
-
-func TestPersonalInitializationAndSessionRollbackTogether(t *testing.T) {
-	for _, phase := range []string{"team", "owner", "session"} {
-		t.Run(phase, func(t *testing.T) {
-			s := isolatedStore(t)
-			table := map[string]string{"team": "teams", "owner": "team_members", "session": "sessions"}[phase]
-			mustQueryExec(t, s, `CREATE FUNCTION reject_personal_insert() RETURNS trigger LANGUAGE plpgsql AS $$
-				BEGIN RAISE EXCEPTION 'test Personal initialization failure'; END $$;
-				CREATE TRIGGER reject_personal_insert BEFORE INSERT ON `+table+` FOR EACH ROW EXECUTE FUNCTION reject_personal_insert()`)
-			user, session := identitySession(uuid.NewString(), "github:rollback-personal")
-			if _, err := s.CreateIdentitySession(context.Background(), user, session); err == nil {
-				t.Fatal("failed Personal initialization succeeded")
-			}
-			var empty bool
-			if err := s.Pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM users)=0
-				AND (SELECT count(*) FROM teams)=0 AND (SELECT count(*) FROM team_members)=0 AND (SELECT count(*) FROM sessions)=0`).Scan(&empty); err != nil || !empty {
-				t.Fatalf("login transaction left partial identity: %v %v", empty, err)
-			}
-		})
-	}
-}
-
-func TestPersonalIntegrityFailuresAreNotRepairedByLoginOrProjectCreation(t *testing.T) {
+func TestPersonalIntegrityFailuresAreNotRepairedByProjectCreation(t *testing.T) {
 	for _, damage := range []string{"missing-owner", "wrong-role", "additional-member"} {
 		t.Run(damage, func(t *testing.T) {
 			s := isolatedStore(t)
@@ -107,20 +35,17 @@ func TestPersonalIntegrityFailuresAreNotRepairedByLoginOrProjectCreation(t *test
 				mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role)
 					SELECT id,$2,'member' FROM teams WHERE personal_user_id=$1`, user.ID, other.ID)
 			}
-			login, session := identitySession(uuid.NewString(), user.UniAuthID)
-			login.Name = new("Changed")
-			if _, err := s.CreateIdentitySession(ctx, login, session); err == nil || errors.Is(err, model.ErrNotFound) {
-				t.Fatalf("login hid invalid Personal ownership: %v", err)
-			}
 			if _, err := s.CreatePrivateProject(ctx, principal, uuid.NewString(), "Invalid", "host:repo"); err == nil || errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("project creation hid invalid Personal ownership: %v", err)
 			}
-			if _, err := s.IdentityUser(ctx, user.ID); err == nil || errors.Is(err, model.ErrNotFound) {
-				t.Fatalf("account read hid invalid Personal ownership: %v", err)
+			_, facts, err := testIdentityUser(s, ctx, user.ID)
+			if err != nil || facts.ID == "" {
+				t.Fatalf("account team facts: %#v %v", facts, err)
 			}
-			var name *string
-			if err := s.Pool.QueryRow(ctx, `SELECT name FROM users WHERE id=$1`, user.ID).Scan(&name); err != nil || name != nil {
-				t.Fatalf("failed login committed user UPSERT: %v %v", name, err)
+			if damage == "missing-owner" && (facts.MemberCount != 0 || facts.OwnerAdminCount != 0) ||
+				damage == "wrong-role" && (facts.MemberCount != 1 || facts.OwnerAdminCount != 0) ||
+				damage == "additional-member" && (facts.MemberCount != 2 || facts.OwnerAdminCount != 1) {
+				t.Fatalf("account member facts for %s: %#v", damage, facts)
 			}
 			var projects int
 			if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM projects`).Scan(&projects); err != nil || projects != 0 {
@@ -225,9 +150,13 @@ func TestIdentityUserReturnsCanonicalPersonalReference(t *testing.T) {
 	s := isolatedStore(t)
 	user, principal, _ := testAuthRecords(t, s)
 	ctx := context.Background()
-	got, err := s.IdentityUser(ctx, principal.UserID)
+	got, facts, err := testIdentityUser(s, ctx, principal.UserID)
+	got.PersonalTeam.ID, got.PersonalTeam.Kind = facts.ID, "personal"
 	if err != nil || !reflect.DeepEqual(got, user) || got.PersonalTeam.ID == "" || got.PersonalTeam.Kind != "personal" || got.PersonalTeam.Name != nil {
 		t.Fatalf("account Personal reference differs from canonical login: %#v %#v %v", got, user, err)
+	}
+	if facts.MemberCount != 1 || facts.OwnerAdminCount != 1 {
+		t.Fatalf("account member facts: %#v", facts)
 	}
 	var ownedTeam string
 	if err := s.Pool.QueryRow(ctx, `SELECT t.id::text FROM teams t JOIN team_members m ON m.team_id=t.id
@@ -235,7 +164,7 @@ func TestIdentityUserReturnsCanonicalPersonalReference(t *testing.T) {
 		t.Fatalf("account reference does not identify the stored Personal owner: %s %v", ownedTeam, err)
 	}
 	mustQueryExec(t, s, `DELETE FROM teams WHERE id=$1`, ownedTeam)
-	if _, err := s.IdentityUser(ctx, user.ID); err == nil || errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("missing Personal Team was hidden as an absent account: %v", err)
+	if _, facts, err := testIdentityUser(s, ctx, user.ID); err != nil || facts.ID != "" || facts.MemberCount != 0 || facts.OwnerAdminCount != 0 {
+		t.Fatalf("missing Personal Team facts: %#v %v", facts, err)
 	}
 }

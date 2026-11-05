@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/webui"
 )
 
@@ -23,7 +24,7 @@ func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return RequestLogging(logger, handler)
+	return httpx.RequestLogging(logger, handler)
 }
 
 func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
@@ -243,7 +244,7 @@ func TestUIErrorsCancellationAndFailedWriteUseSafeSingleBoundary(t *testing.T) {
 	for _, err := range []error{errors.New("private-resource-path"), webui.ErrNotFound} {
 		var logs bytes.Buffer
 		logger := slog.New(slog.NewJSONHandler(&logs, nil))
-		handler := RequestLogging(logger, uiHandler(logger, func(http.ResponseWriter, *http.Request) error { return err }))
+		handler := httpx.RequestLogging(logger, uiHandler(logger, func(http.ResponseWriter, *http.Request) error { return err }))
 		response := projectRequest(handler, http.MethodGet, "/", "")
 		status, code := http.StatusInternalServerError, "internal_error"
 		if errors.Is(err, webui.ErrNotFound) {

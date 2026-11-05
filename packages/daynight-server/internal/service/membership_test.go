@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
 
@@ -31,17 +34,10 @@ func newMembershipFixture(t *testing.T) *membershipFixture {
 
 func (f *membershipFixture) user(t *testing.T) model.Principal {
 	t.Helper()
-	ctx := context.Background()
-	secret := randomSecret("dnst_")
-	credential := model.Session{ID: uuid.NewString(), TokenHash: secretHash(secret), CreatedAt: f.now, ExpiresAt: f.now.Add(SessionLifetime)}
-	_, err := f.database.CreateIdentitySession(ctx, model.User{ID: uuid.NewString(), UniAuthID: uuid.NewString()}, credential)
-	if err != nil {
-		t.Fatal(err)
-	}
-	principal, err := f.database.Authenticate(ctx, model.SessionCredential, secretHash(secret), f.now)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secret := secretutil.Random("dnst_")
+	credential := model.Session{ID: uuid.NewString(), TokenHash: secretutil.Hash(secret), CreatedAt: f.now, ExpiresAt: f.now.Add(identitycore.SessionLifetime)}
+	principal := fixtureIdentitySession(t, f.database, model.User{ID: uuid.NewString(), UniAuthID: uuid.NewString()}, credential)
+
 	return principal
 }
 
@@ -248,11 +244,11 @@ func TestInvitationsLifecycleAndProjectOwnership(t *testing.T) {
 	p := f.project(t, owner, "Invited project")
 	ctx := context.Background()
 	invitation := f.invite(t, owner, p.ID)
-	if !validSecret(invitation.Secret, invitationPrefix) || invitation.Invitation.TokenHash != nil || !invitation.Invitation.ExpiresAt.Equal(f.now.Add(InvitationLifetime)) {
+	if !secretutil.Valid(invitation.Secret, invitationPrefix) || invitation.Invitation.TokenHash != nil || !invitation.Invitation.ExpiresAt.Equal(f.now.Add(InvitationLifetime)) {
 		t.Fatalf("mint: %#v", invitation)
 	}
 	var hash []byte
-	if err := f.database.Pool.QueryRow(ctx, `SELECT token_hash FROM project_invitations WHERE id=$1`, invitation.Invitation.ID).Scan(&hash); err != nil || !bytes.Equal(hash, secretHash(invitation.Secret)) {
+	if err := f.database.Pool.QueryRow(ctx, `SELECT token_hash FROM project_invitations WHERE id=$1`, invitation.Invitation.ID).Scan(&hash); err != nil || !bytes.Equal(hash, secretutil.Hash(invitation.Secret)) {
 		t.Fatalf("secret hash: %x %v", hash, err)
 	}
 	for i := 0; i < 2; i++ {
@@ -321,7 +317,7 @@ func TestInvitationsLifecycleAndProjectOwnership(t *testing.T) {
 	requireFault(t, err, "invitation_unavailable")
 	_, err = f.memberships.AcceptInvitation(ctx, owner, expiring.Secret, owner.UserID)
 	requireFault(t, err, "invitation_unavailable")
-	for _, secret := range []string{"bad", randomSecret(invitationPrefix)} {
+	for _, secret := range []string{"bad", secretutil.Random(invitationPrefix)} {
 		_, err = f.memberships.InspectInvitation(ctx, owner, secret)
 		requireFault(t, err, "invitation_unavailable")
 	}
@@ -472,9 +468,8 @@ func TestMembershipPATAndOperationalFailurePropagation(t *testing.T) {
 	admin := f.user(t)
 	p := f.project(t, admin, "PAT")
 	ctx := context.Background()
-	identity := NewIdentity(f.database, nil, "")
-	identity.now = func() time.Time { return f.now }
-	token, err := identity.CreatePAT(ctx, admin, CreatePAT{Name: "Automation"})
+	identity := identityservice.New(f.database, nil, "")
+	token, err := identity.CreatePAT(ctx, admin, identitycore.CreatePAT{Name: "Automation"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,5 @@
 package server
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"bytes"
 	"context"
@@ -16,7 +15,9 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -125,8 +126,8 @@ func TestStepsHTTPAddStrictInputLeavesCompleteStateUnchanged(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
-	exact := strings.TrimSuffix(base, "}") + `,"description":"` + strings.Repeat("x", maxJSONBody-len(base)-len(`,"description":""`)) + `"}`
-	if len(exact) != maxJSONBody {
+	exact := strings.TrimSuffix(base, "}") + `,"description":"` + strings.Repeat("x", httpx.MaxJSONBody-len(base)-len(`,"description":""`)) + `"}`
+	if len(exact) != httpx.MaxJSONBody {
 		t.Fatalf("request boundary fixture %d", len(exact))
 	}
 	assertProjectError(t, projectRequest(handler, "POST", path, exact+" "), 400, "invalid_input")
@@ -136,7 +137,7 @@ func TestStepsHTTPAddStrictInputLeavesCompleteStateUnchanged(t *testing.T) {
 	}
 	boundaryTask := decodeResponse[api.Task](t, projectRequest(handler, "POST", taskCollection(task.ProjectID), `{"title":"Request boundary"}`), 201)
 	boundary := decodeResponse[api.StepsResource](t, projectRequest(handler, "POST", taskPath(boundaryTask)+"/steps", exact), 201)
-	if len(boundary.Steps) != 1 || len(boundary.Steps[0].Description) != maxJSONBody-len(base)-len(`,"description":""`) {
+	if len(boundary.Steps) != 1 || len(boundary.Steps[0].Description) != httpx.MaxJSONBody-len(base)-len(`,"description":""`) {
 		t.Fatal("exact 1 MiB request lost content")
 	}
 	// Literal replacement characters, valid surrogate pairs and a textual escape

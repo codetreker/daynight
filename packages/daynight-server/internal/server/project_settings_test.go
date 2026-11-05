@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func settingsPath(projectID string) string {
@@ -117,7 +118,7 @@ func TestProjectSettingsHTTPStrictInputsAndMethods(t *testing.T) {
 		`{"version":1,"executionWarningMinutes":60,"updatedAt":"2026-01-01T00:00:00Z"}`,
 		`{"version":1,"executionWarningMinutes":60,"unknown":"private-settings-body-secret"}`,
 		"{\"version\":1,\"executionWarningMinutes\":60,\"unknown\":\"" + string([]byte{0xff}) + "\"}",
-		`{"version":1,"executionWarningMinutes":60,"unknown":"` + strings.Repeat("x", maxJSONBody) + `"}`,
+		`{"version":1,"executionWarningMinutes":60,"unknown":"` + strings.Repeat("x", httpx.MaxJSONBody) + `"}`,
 	} {
 		t.Run(body[:min(len(body), 80)], func(t *testing.T) {
 			response := projectRequest(handler, http.MethodPatch, path, body)

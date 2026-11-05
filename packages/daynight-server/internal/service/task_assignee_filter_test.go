@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -91,7 +92,7 @@ func TestTaskAssignedToFilterComposesBeforePagination(t *testing.T) {
 								case "unassigned":
 									matchesAssignment = task.AssignedTo == nil
 								case "me":
-									matchesAssignment = equalOptional(task.AssignedTo, &admin.UserID)
+									matchesAssignment = model.EqualOptional(task.AssignedTo, &admin.UserID)
 								default:
 									matchesAssignment = task.AssignedTo != nil && *task.AssignedTo == strings.ToLower(*selector)
 								}
@@ -175,7 +176,7 @@ func TestTaskAssignedToCursorScopeAndOtherCursorVersions(t *testing.T) {
 		_, err := tasks.List(ctx, admin, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AssignedTo: &invalid})
 		requireFault(t, err, "invalid_input")
 	}
-	projectCursor, err := encodeProjectCursor(project, admin.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
+	projectCursor, err := query.EncodeProjectCursor(project, admin.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,20 +6,23 @@ import (
 	"log/slog"
 	"net/http"
 
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 type MembershipRoutes struct {
 	memberships *service.Memberships
-	auth        *Authentication
+	auth        *authhttp.Authentication
 	logger      *slog.Logger
 }
 
 // NewMembershipRoutes composes membership handlers without activating the application mux.
-func NewMembershipRoutes(memberships *service.Memberships, auth *Authentication, logger *slog.Logger) *MembershipRoutes {
+func NewMembershipRoutes(memberships *service.Memberships, auth *authhttp.Authentication, logger *slog.Logger) *MembershipRoutes {
 	return &MembershipRoutes{memberships: memberships, auth: auth, logger: logger}
 }
 
@@ -44,24 +47,24 @@ func (h *MembershipRoutes) RegisterRoutes(mux *http.ServeMux) {
 		"/api/v1/invitations/accept":                          "POST",
 	} {
 		mux.HandleFunc(path, h.auth.Require(func(w http.ResponseWriter, request *http.Request, _ model.Principal) {
-			methodNotAllowed(h.logger, methods)(w, request)
+			httpx.MethodNotAllowed(h.logger, methods)(w, request)
 		}))
 	}
 }
 
 func membershipCompleted(request *http.Request, logger *slog.Logger, phase string) {
-	logger.InfoContext(request.Context(), "project membership operation completed", "type", "resource", "component", "membership", "phase", phase, "request_id", RequestID(request.Context()))
+	logger.InfoContext(request.Context(), "project membership operation completed", "type", "resource", "component", "membership", "phase", phase, "request_id", httpx.RequestID(request.Context()))
 }
 
 func invitationWriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logger, phase string, err error) {
 	var transaction *store.TransactionError
 	if errors.As(err, &transaction) && transaction.Outcome == store.TransactionUnknown {
 		const message = "Invitation write outcome is unknown. Review current state before starting another operation."
-		logger.ErrorContext(request.Context(), "operation failed", "type", "operation_error", "component", "membership", "phase", phase, "cause", ErrorKind(err), "error_code", "write_outcome_unknown", "diagnostic", message, "request_id", RequestID(request.Context()))
-		writeJSON(w, request, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "write_outcome_unknown", Message: message, RequestID: RequestID(request.Context())}})
+		logger.ErrorContext(request.Context(), "operation failed", "type", "operation_error", "component", "membership", "phase", phase, "cause", httpx.ErrorKind(err), "error_code", "write_outcome_unknown", "diagnostic", message, "request_id", httpx.RequestID(request.Context()))
+		httpx.WriteJSON(w, request, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "write_outcome_unknown", Message: message, RequestID: httpx.RequestID(request.Context())}})
 		return
 	}
-	writeError(w, request, logger, "membership", phase, err)
+	httpx.WriteError(w, request, logger, "membership", phase, err)
 }
 
 func participantResponse(participant model.ProjectParticipant) api.ProjectParticipant {
@@ -72,7 +75,7 @@ func participantResponse(participant model.ProjectParticipant) api.ProjectPartic
 	}
 	var inherited *api.ProjectInheritance
 	if source := participant.InheritedFrom; source != nil {
-		inherited = &api.ProjectInheritance{Team: teamRefResponse(source.Team), Role: string(source.Role)}
+		inherited = &api.ProjectInheritance{Team: httpx.TeamRefResponse(source.Team), Role: string(source.Role)}
 	}
 	return api.ProjectParticipant{InheritedFrom: inherited, UserID: participant.UserID, EffectiveRole: string(participant.EffectiveRole), DirectGrant: direct,
 		Profile: api.ProjectParticipantProfile{Name: participant.Profile.Name, Email: participant.Profile.Email, AvatarURL: participant.Profile.AvatarURL}}
@@ -87,14 +90,14 @@ func invitationResponse(invitation model.ProjectInvitation) api.ProjectInvitatio
 func membershipVersion(fields map[string]json.RawMessage) (int64, error) {
 	var version int64
 	if err := json.Unmarshal(fields["version"], &version); err != nil || version < 1 {
-		return 0, invalidInput("version is required and must be a positive 64-bit integer")
+		return 0, httpx.InvalidInput("version is required and must be a positive 64-bit integer")
 	}
 	return version, nil
 }
 
 func (h *MembershipRoutes) scoped(request *http.Request, principal model.Principal) (*slog.Logger, string, error) {
 	logger := h.logger.With("user_id", principal.UserID)
-	id, err := service.CanonicalID(request.PathValue("projectId"))
+	id, err := model.CanonicalID(request.PathValue("projectId"))
 	if err != nil {
 		return logger, "", err
 	}
@@ -105,15 +108,15 @@ func (h *MembershipRoutes) listMembers(w http.ResponseWriter, request *http.Requ
 	w.Header().Set("Cache-Control", "no-store")
 	logger, id, err := h.scoped(request, principal)
 	if err == nil {
-		_, err = queryValues(request)
+		_, err = httpx.QueryValues(request)
 	}
 	if err != nil {
-		writeError(w, request, logger, "membership", "list", err)
+		httpx.WriteError(w, request, logger, "membership", "list", err)
 		return
 	}
 	members, err := h.memberships.ListWithAccess(request.Context(), principal, id)
 	if err != nil {
-		writeError(w, request, logger, "membership", "list", err)
+		httpx.WriteError(w, request, logger, "membership", "list", err)
 		return
 	}
 	response := api.ProjectParticipantList{Items: make([]api.ProjectParticipant, 0, len(members.Items)), ActorAccess: projectAccessResponse(members.ActorAccess)}
@@ -121,14 +124,14 @@ func (h *MembershipRoutes) listMembers(w http.ResponseWriter, request *http.Requ
 		response.Items = append(response.Items, participantResponse(member))
 	}
 	membershipCompleted(request, logger, "list")
-	writeJSON(w, request, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
 func (h *MembershipRoutes) setRole(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger, projectID, err := h.scoped(request, principal)
 	var fields map[string]json.RawMessage
 	if err == nil {
-		fields, err = decodeObject(w, request, "version", "role", "expectedUserId")
+		fields, err = httpx.DecodeObject(w, request, "version", "role", "expectedUserId")
 	}
 	var version int64
 	if err == nil {
@@ -136,30 +139,30 @@ func (h *MembershipRoutes) setRole(w http.ResponseWriter, request *http.Request,
 	}
 	var role string
 	if err == nil {
-		role, err = requiredString(fields, "role")
+		role, err = httpx.RequiredString(fields, "role")
 	}
 	var expectedUserID string
 	if err == nil {
-		expectedUserID, err = requiredString(fields, "expectedUserId")
+		expectedUserID, err = httpx.RequiredString(fields, "expectedUserId")
 	}
 	if err != nil {
-		writeError(w, request, logger, "membership", "set_role", err)
+		httpx.WriteError(w, request, logger, "membership", "set_role", err)
 		return
 	}
 	grant, err := h.memberships.SetRole(request.Context(), principal, projectID, request.PathValue("userId"), service.SetProjectMemberRole{Version: version, Role: model.ProjectRole(role), ExpectedUserID: expectedUserID})
 	if err != nil {
-		writeError(w, request, logger, "membership", "set_role", err)
+		httpx.WriteError(w, request, logger, "membership", "set_role", err)
 		return
 	}
 	membershipCompleted(request, logger, "set_role")
-	writeJSON(w, request, logger, http.StatusOK, projectGrantResponse(grant))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, projectGrantResponse(grant))
 }
 
 func (h *MembershipRoutes) removeMember(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger, projectID, err := h.scoped(request, principal)
 	var fields map[string]json.RawMessage
 	if err == nil {
-		fields, err = decodeObject(w, request, "version", "expectedUserId")
+		fields, err = httpx.DecodeObject(w, request, "version", "expectedUserId")
 	}
 	var version int64
 	if err == nil {
@@ -167,13 +170,13 @@ func (h *MembershipRoutes) removeMember(w http.ResponseWriter, request *http.Req
 	}
 	var expectedUserID string
 	if err == nil {
-		expectedUserID, err = requiredString(fields, "expectedUserId")
+		expectedUserID, err = httpx.RequiredString(fields, "expectedUserId")
 	}
 	if err == nil {
 		err = h.memberships.Remove(request.Context(), principal, projectID, request.PathValue("userId"), service.RemoveProjectMember{Version: version, ExpectedUserID: expectedUserID})
 	}
 	if err != nil {
-		writeError(w, request, logger, "membership", "remove", err)
+		httpx.WriteError(w, request, logger, "membership", "remove", err)
 		return
 	}
 	membershipCompleted(request, logger, "remove")
@@ -184,15 +187,15 @@ func (h *MembershipRoutes) listInvitations(w http.ResponseWriter, request *http.
 	w.Header().Set("Cache-Control", "no-store")
 	logger, id, err := h.scoped(request, principal)
 	if err == nil {
-		_, err = queryValues(request)
+		_, err = httpx.QueryValues(request)
 	}
 	if err != nil {
-		writeError(w, request, logger, "membership", "list_invitations", err)
+		httpx.WriteError(w, request, logger, "membership", "list_invitations", err)
 		return
 	}
 	invitations, err := h.memberships.ListInvitations(request.Context(), principal, id)
 	if err != nil {
-		writeError(w, request, logger, "membership", "list_invitations", err)
+		httpx.WriteError(w, request, logger, "membership", "list_invitations", err)
 		return
 	}
 	response := api.ProjectInvitationList{Items: make([]api.ProjectInvitation, 0, len(invitations))}
@@ -200,7 +203,7 @@ func (h *MembershipRoutes) listInvitations(w http.ResponseWriter, request *http.
 		response.Items = append(response.Items, invitationResponse(invitation))
 	}
 	membershipCompleted(request, logger, "list_invitations")
-	writeJSON(w, request, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
 func (h *MembershipRoutes) createInvitation(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -211,7 +214,7 @@ func (h *MembershipRoutes) createInvitation(w http.ResponseWriter, request *http
 		expectedUserID, err = invitationActor(w, request)
 	}
 	if err != nil {
-		writeError(w, request, logger, "membership", "create_invitation", err)
+		httpx.WriteError(w, request, logger, "membership", "create_invitation", err)
 		return
 	}
 	result, err := h.memberships.CreateInvitation(request.Context(), principal, id, expectedUserID)
@@ -220,8 +223,8 @@ func (h *MembershipRoutes) createInvitation(w http.ResponseWriter, request *http
 		return
 	}
 	membershipCompleted(request, logger, "create_invitation")
-	writeCreated(w, request, logger, "/api/v1/projects/"+id+"/invitations/"+result.Invitation.ID,
-		api.CreatedProjectInvitation{ProjectInvitation: invitationResponse(result.Invitation), Link: h.auth.origin + "/invitations#" + result.Secret})
+	httpx.WriteCreated(w, request, logger, "/api/v1/projects/"+id+"/invitations/"+result.Invitation.ID,
+		api.CreatedProjectInvitation{ProjectInvitation: invitationResponse(result.Invitation), Link: h.auth.Origin() + "/invitations#" + result.Secret})
 }
 
 func (h *MembershipRoutes) revokeInvitation(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -242,19 +245,19 @@ func (h *MembershipRoutes) revokeInvitation(w http.ResponseWriter, request *http
 }
 
 func invitationActor(w http.ResponseWriter, request *http.Request) (string, error) {
-	fields, err := decodeObject(w, request, "expectedUserId")
+	fields, err := httpx.DecodeObject(w, request, "expectedUserId")
 	if err != nil {
 		return "", err
 	}
-	return requiredString(fields, "expectedUserId")
+	return httpx.RequiredString(fields, "expectedUserId")
 }
 
 func invitationToken(w http.ResponseWriter, request *http.Request) (string, error) {
-	fields, err := decodeObject(w, request, "token")
+	fields, err := httpx.DecodeObject(w, request, "token")
 	if err != nil {
 		return "", err
 	}
-	return requiredString(fields, "token")
+	return httpx.RequiredString(fields, "token")
 }
 
 func (h *MembershipRoutes) inspectInvitation(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -262,12 +265,12 @@ func (h *MembershipRoutes) inspectInvitation(w http.ResponseWriter, request *htt
 	logger := h.logger.With("user_id", principal.UserID)
 	token, err := invitationToken(w, request)
 	if err != nil {
-		writeError(w, request, logger, "membership", "inspect_invitation", err)
+		httpx.WriteError(w, request, logger, "membership", "inspect_invitation", err)
 		return
 	}
 	inspection, err := h.memberships.InspectInvitation(request.Context(), principal, token)
 	if err != nil {
-		writeError(w, request, logger, "membership", "inspect_invitation", err)
+		httpx.WriteError(w, request, logger, "membership", "inspect_invitation", err)
 		return
 	}
 	response := api.ProjectInvitationInspection{ProjectID: inspection.ProjectID, ProjectName: inspection.ProjectName}
@@ -281,22 +284,22 @@ func (h *MembershipRoutes) inspectInvitation(w http.ResponseWriter, request *htt
 	}
 	logger = logger.With("project_id", inspection.ProjectID)
 	membershipCompleted(request, logger, "inspect_invitation")
-	writeJSON(w, request, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
 func (h *MembershipRoutes) acceptInvitation(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", principal.UserID)
-	fields, err := decodeObject(w, request, "token", "expectedUserId")
+	fields, err := httpx.DecodeObject(w, request, "token", "expectedUserId")
 	var token, expectedUserID string
 	if err == nil {
-		token, err = requiredString(fields, "token")
+		token, err = httpx.RequiredString(fields, "token")
 	}
 	if err == nil {
-		expectedUserID, err = requiredString(fields, "expectedUserId")
+		expectedUserID, err = httpx.RequiredString(fields, "expectedUserId")
 	}
 	if err != nil {
-		writeError(w, request, logger, "membership", "accept_invitation", err)
+		httpx.WriteError(w, request, logger, "membership", "accept_invitation", err)
 		return
 	}
 	result, err := h.memberships.AcceptInvitation(request.Context(), principal, token, expectedUserID)
@@ -306,5 +309,5 @@ func (h *MembershipRoutes) acceptInvitation(w http.ResponseWriter, request *http
 	}
 	logger = logger.With("project_id", result.ProjectID)
 	membershipCompleted(request, logger, "accept_invitation")
-	writeJSON(w, request, logger, http.StatusOK, api.ProjectInvitationAcceptance{ProjectID: result.ProjectID, DirectGrant: projectGrantResponse(result.DirectGrant), Access: projectAccessResponse(result.Access), Joined: result.Joined, Consumed: result.Consumed})
+	httpx.WriteJSON(w, request, logger, http.StatusOK, api.ProjectInvitationAcceptance{ProjectID: result.ProjectID, DirectGrant: projectGrantResponse(result.DirectGrant), Access: projectAccessResponse(result.Access), Joined: result.Joined, Consumed: result.Consumed})
 }

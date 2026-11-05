@@ -27,14 +27,14 @@ type StepDocument struct {
 }
 
 func (s *TaskSteps) read(ctx context.Context, principal model.Principal, projectID, taskID string, operation func(store.TaskReader, model.TaskHeader) error) error {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return err
 	}
-	taskID, err = CanonicalID(taskID)
+	taskID, err = model.CanonicalID(taskID)
 	if err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func (s *TaskSteps) List(ctx context.Context, principal model.Principal, project
 }
 
 func (s *TaskSteps) Get(ctx context.Context, principal model.Principal, projectID, taskID, stepID string) (StepDocument, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return StepDocument{}, err
 	}
 	id, err := taskcodec.CanonicalID(stepID)

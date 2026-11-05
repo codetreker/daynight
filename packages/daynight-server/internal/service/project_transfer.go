@@ -40,10 +40,10 @@ func requireTransferAdmin(access model.ProjectAccess) error {
 }
 
 func (s *Projects) TransferPreview(ctx context.Context, principal model.Principal, projectID, targetTeamID string) (TransferPreview, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return TransferPreview{}, err
 	}
-	id, err := CanonicalID(projectID)
+	id, err := model.CanonicalID(projectID)
 	if err != nil {
 		return TransferPreview{}, err
 	}
@@ -90,7 +90,7 @@ func (s *Projects) Transfer(ctx context.Context, principal model.Principal, proj
 	if err := requireTeamActor(principal, input.ExpectedUserID); err != nil {
 		return TransferReceipt{}, err
 	}
-	id, err := CanonicalID(projectID)
+	id, err := model.CanonicalID(projectID)
 	if err != nil {
 		return TransferReceipt{}, err
 	}

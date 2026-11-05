@@ -17,11 +17,11 @@ func TestTaskPlatformUpdatesPreserveStatusAndLockExecution(t *testing.T) {
 	prerequisite := finishTask(t, tasks, principal, startTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Completed prerequisite")))
 	for _, platform := range []*model.TaskPlatform{nil, pointer(model.PlatformWindows), pointer(model.PlatformLinux), pointer(model.PlatformMacOS)} {
 		task, err := tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Platform status", RequiredPlatform: platform, DependsOn: []string{prerequisite.ID}, ExternalDependsOn: []string{prerequisite.ID}})
-		if err != nil || !equalOptional(task.RequiredPlatform, platform) || task.Status != model.TaskTodo || task.AllowAgents || !task.Ready {
+		if err != nil || !model.EqualOptional(task.RequiredPlatform, platform) || task.Status != model.TaskTodo || task.AllowAgents || !task.Ready {
 			t.Fatalf("platform creation: %#v, %v", task, err)
 		}
 		task = updateTask(t, tasks, principal, task, UpdateTask{Description: pointer("Preserved metadata"), AllowAgents: pointer(true), Properties: propertyPatch([]model.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Evidence"}}...)})
-		if !equalOptional(task.RequiredPlatform, platform) {
+		if !model.EqualOptional(task.RequiredPlatform, platform) {
 			t.Fatal("omitted platform changed requirement")
 		}
 		if got := updateTask(t, tasks, principal, task, UpdateTask{RequiredPlatform: platformChange(platform)}); !reflect.DeepEqual(got, task) {
@@ -30,7 +30,7 @@ func TestTaskPlatformUpdatesPreserveStatusAndLockExecution(t *testing.T) {
 		_, err = tasks.Update(ctx, principal, project.ID, task.ID, UpdateTask{Version: task.Version - 1, RequiredPlatform: platformChange(platform)})
 		requireFault(t, err, "version_conflict")
 		task = startTask(t, tasks, principal, task)
-		if !equalOptional(task.RequiredPlatform, platform) || !task.AllowAgents || task.StartedAt == nil {
+		if !model.EqualOptional(task.RequiredPlatform, platform) || !task.AllowAgents || task.StartedAt == nil {
 			t.Fatal("manual status update lost platform, permission or timing")
 		}
 		if got := updateTask(t, tasks, principal, task, UpdateTask{RequiredPlatform: platformChange(platform)}); !reflect.DeepEqual(got, task) {
@@ -48,7 +48,7 @@ func TestTaskPlatformUpdatesPreserveStatusAndLockExecution(t *testing.T) {
 		after := updateTask(t, tasks, principal, task, UpdateTask{RequiredPlatform: platformChange(changed)})
 		preserved := after
 		preserved.RequiredPlatform, preserved.Version, preserved.UpdatedAt = task.RequiredPlatform, task.Version, task.UpdatedAt
-		if !equalOptional(after.RequiredPlatform, changed) || after.Version != task.Version+1 || !after.UpdatedAt.After(task.UpdatedAt) || !reflect.DeepEqual(preserved, task) {
+		if !model.EqualOptional(after.RequiredPlatform, changed) || after.Version != task.Version+1 || !after.UpdatedAt.After(task.UpdatedAt) || !reflect.DeepEqual(preserved, task) {
 			t.Fatal("completed platform edit changed execution or unrelated fields")
 		}
 	}
@@ -123,7 +123,7 @@ func TestTaskPlatformCandidateMatrixAndGraph(t *testing.T) {
 		}
 		for _, task := range graph.Tasks {
 			for _, original := range inventory {
-				if original.ID == task.ID && !equalOptional(task.RequiredPlatform, original.RequiredPlatform) {
+				if original.ID == task.ID && !model.EqualOptional(task.RequiredPlatform, original.RequiredPlatform) {
 					t.Fatal("graph omitted platform")
 				}
 			}
@@ -190,7 +190,7 @@ func TestTaskPlatformAndManualStartRaceHasOneMutationWinner(t *testing.T) {
 		if after.RequiredPlatform != nil || after.StartedAt == nil {
 			t.Fatal("manual start changed platform or omitted timing")
 		}
-	} else if after.Status != model.TaskTodo || !equalOptional(after.RequiredPlatform, pointer(model.PlatformWindows)) || after.StartedAt != nil {
+	} else if after.Status != model.TaskTodo || !model.EqualOptional(after.RequiredPlatform, pointer(model.PlatformWindows)) || after.StartedAt != nil {
 		t.Fatalf("platform winner changed status: %#v", after)
 	}
 }
@@ -218,7 +218,7 @@ func TestTaskPlatformSurvivesEveryStatusAssignment(t *testing.T) {
 					if from != to {
 						expectedVersion++
 					}
-					if after.Version != expectedVersion || after.Status != to || !equalOptional(after.RequiredPlatform, platform) {
+					if after.Version != expectedVersion || after.Status != to || !model.EqualOptional(after.RequiredPlatform, platform) {
 						t.Fatalf("platform or status/version changed incorrectly: before %#v after %#v", task, after)
 					}
 					if from == to {

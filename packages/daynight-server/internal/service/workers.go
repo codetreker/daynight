@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -33,10 +34,10 @@ type WorkerDetailResult struct {
 }
 
 func (s *Workers) Report(ctx context.Context, principal model.Principal, workerID string, input model.WorkerReport) (WorkerReportResult, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return WorkerReportResult{}, err
 	}
-	workerID, err := CanonicalID(workerID)
+	workerID, err := model.CanonicalID(workerID)
 	if err != nil {
 		return WorkerReportResult{}, err
 	}
@@ -91,11 +92,11 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 }
 
 func (s *Workers) List(ctx context.Context, principal model.Principal, request model.PageRequest) (WorkerPage, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return WorkerPage{}, err
 	}
-	scope := listScope{Kind: "workers", WorkerUserID: &principal.UserID}
-	page, err := listPage(request, scope)
+	scope := query.ListScope{Kind: "workers", WorkerUserID: &principal.UserID}
+	page, err := query.ListPage(request, scope)
 	if err != nil {
 		return WorkerPage{}, err
 	}
@@ -116,7 +117,7 @@ func (s *Workers) List(ctx context.Context, principal model.Principal, request m
 	result.Items = records.Items
 	if records.HasMore {
 		last := records.Items[len(records.Items)-1]
-		cursor, err := encodeListCursor(scope, last.CreatedAt, last.WorkerID)
+		cursor, err := query.EncodeListCursor(scope, last.CreatedAt, last.WorkerID)
 		if err != nil {
 			return WorkerPage{}, fmt.Errorf("encode worker cursor: %w", err)
 		}
@@ -126,10 +127,10 @@ func (s *Workers) List(ctx context.Context, principal model.Principal, request m
 }
 
 func (s *Workers) Get(ctx context.Context, principal model.Principal, workerID string) (WorkerDetailResult, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return WorkerDetailResult{}, err
 	}
-	workerID, err := CanonicalID(workerID)
+	workerID, err := model.CanonicalID(workerID)
 	if err != nil {
 		return WorkerDetailResult{}, err
 	}

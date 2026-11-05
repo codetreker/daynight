@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -41,10 +42,10 @@ func validateTeamName(name string) error {
 }
 
 func requireTeamActor(principal model.Principal, expectedUserID string) error {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
-	expected, err := CanonicalID(expectedUserID)
+	expected, err := model.CanonicalID(expectedUserID)
 	if err != nil || expected != expectedUserID {
 		return invalidInput("expectedUserId must be a canonical user UUID.")
 	}
@@ -55,7 +56,7 @@ func requireTeamActor(principal model.Principal, expectedUserID string) error {
 }
 
 func canonicalTeamID(id string) (string, error) {
-	canonical, err := CanonicalID(id)
+	canonical, err := model.CanonicalID(id)
 	if err != nil || canonical != id {
 		return "", invalidInput("Team ID must be a canonical UUID.")
 	}
@@ -77,7 +78,7 @@ func (s *Teams) Create(ctx context.Context, principal model.Principal, input Cre
 }
 
 func (s *Teams) Get(ctx context.Context, principal model.Principal, teamID string) (model.Team, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Team{}, err
 	}
 	id, err := canonicalTeamID(teamID)
@@ -105,11 +106,11 @@ func (s *Teams) Get(ctx context.Context, principal model.Principal, teamID strin
 }
 
 func (s *Teams) List(ctx context.Context, principal model.Principal, request model.PageRequest) (TeamPage, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return TeamPage{}, err
 	}
-	scope := listScope{Kind: "teams", UserID: principal.UserID}
-	page, err := listPage(request, scope)
+	scope := query.ListScope{Kind: "teams", UserID: principal.UserID}
+	page, err := query.ListPage(request, scope)
 	if err != nil {
 		return TeamPage{}, err
 	}
@@ -125,7 +126,7 @@ func (s *Teams) List(ctx context.Context, principal model.Principal, request mod
 	response := TeamPage{Items: result.Items}
 	if result.HasMore {
 		last := result.Items[len(result.Items)-1]
-		cursor, err := encodeListCursor(scope, last.CreatedAt, last.ID)
+		cursor, err := query.EncodeListCursor(scope, last.CreatedAt, last.ID)
 		if err != nil {
 			return TeamPage{}, fmt.Errorf("encode Team cursor: %w", err)
 		}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func optionalRequiredPlatform(fields map[string]json.RawMessage) (**string, error) {
@@ -13,7 +14,7 @@ func optionalRequiredPlatform(fields map[string]json.RawMessage) (**string, erro
 	}
 	var value *string
 	if err := json.Unmarshal(raw, &value); err != nil || value != nil && !model.TaskPlatform(*value).Valid() {
-		return nil, invalidInput("requiredPlatform must be windows, linux, macos or null")
+		return nil, httpx.InvalidInput("requiredPlatform must be windows, linux, macos or null")
 	}
 	return &value, nil
 }

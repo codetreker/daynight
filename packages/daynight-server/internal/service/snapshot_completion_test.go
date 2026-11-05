@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -20,8 +22,8 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 	tasks, database, project, databaseURL, principal := taskService(t)
 	task := createTask(t, tasks, principal, project.ID, "Snapshot completion")
 	missing := uuid.NewString()
-	projectSecret := randomSecret(invitationPrefix)
-	teamSecret := randomSecret(teamInvitationPrefix)
+	projectSecret := secretutil.Random(invitationPrefix)
+	teamSecret := secretutil.Random(teamInvitationPrefix)
 	page := model.PageRequest{Limit: 10}
 	for _, test := range []struct {
 		name    string

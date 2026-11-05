@@ -1,6 +1,5 @@
 package server
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
 	"crypto/sha256"
@@ -19,7 +18,10 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/google/uuid"
@@ -101,9 +103,9 @@ func sessionHTTPSetup(t *testing.T, configureRoutes ...func(*sessionRoutes)) *se
 		configure(f.application.relay)
 	}
 	// Live relay state is process-local: HTTP control and WebSocket traffic share the same application.
-	f.handler.Handler = RequestLogging(testLogger(), application)
+	f.handler.Handler = httpx.RequestLogging(testLogger(), application)
 	extendedWorkerTestHandler(f.handler)
-	f.server = httptest.NewServer(RequestLogging(testLogger(), application))
+	f.server = httptest.NewServer(httpx.RequestLogging(testLogger(), application))
 	t.Cleanup(f.server.Close)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -371,7 +373,7 @@ func TestSessionRoutesRejectInvalidHTTPInputs(t *testing.T) {
 	for _, code := range []string{"session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict"} {
 		request := httptest.NewRequest(http.MethodGet, "/", nil)
 		response := httptest.NewRecorder()
-		writeError(response, request, testLogger(), "session", "test", &model.Fault{Code: code, Message: "Conflict"})
+		httpx.WriteError(response, request, testLogger(), "session", "test", &model.Fault{Code: code, Message: "Conflict"})
 		if response.Code != 409 {
 			t.Fatalf("%s mapped to %d", code, response.Code)
 		}

@@ -3,15 +3,17 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 type Dependencies struct {
@@ -31,14 +33,6 @@ type Runtime struct {
 	shutdownHandler func(context.Context) error
 }
 
-type runtimeError struct {
-	phase string
-	cause error
-}
-
-func (e *runtimeError) Error() string { return fmt.Sprintf("HTTP %s failed", e.phase) }
-func (e *runtimeError) Unwrap() error { return e.cause }
-
 func Start(ctx context.Context, config Config, logger *slog.Logger, handler func(Dependencies) (http.Handler, error)) (*Runtime, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
@@ -47,7 +41,7 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 	defer cancel()
 	files, err := local.New(config.StorageRoot)
 	if err != nil {
-		return nil, &ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "must identify a writable storage directory with supported filename semantics", cause: err}
+		return nil, &configpkg.ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "must identify a writable storage directory with supported filename semantics", Cause: err}
 	}
 	database, err := store.Open(startup, config.DatabaseURL)
 	if err != nil {
@@ -56,7 +50,7 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 	listener, err := (&net.ListenConfig{}).Listen(startup, "tcp", config.ListenAddress)
 	if err != nil {
 		database.Close()
-		return nil, &runtimeError{phase: "listen", cause: errors.Join(err, files.Close())}
+		return nil, &httpx.RuntimeError{Phase: "listen", Cause: errors.Join(err, files.Close())}
 	}
 	dependencies := Dependencies{Store: database, Files: files}
 	application, err := handler(dependencies)
@@ -65,14 +59,14 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 	}
 	if err != nil {
 		database.Close()
-		return nil, &runtimeError{phase: "composition", cause: errors.Join(err, listener.Close(), files.Close())}
+		return nil, &httpx.RuntimeError{Phase: "composition", Cause: errors.Join(err, listener.Close(), files.Close())}
 	}
 	requests, cancelRequests := context.WithCancel(context.Background())
 	runtime := &Runtime{
 		Dependencies: dependencies, files: files, listener: listener, logger: logger, shutdownTimeout: config.ShutdownTimeout,
 		cancelRequests: cancelRequests,
 		http: &http.Server{
-			Handler:           RequestLogging(logger, application),
+			Handler:           httpx.RequestLogging(logger, application),
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       60 * time.Second,
 			BaseContext:       func(net.Listener) context.Context { return requests },
@@ -120,7 +114,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	err = errors.Join(err, r.files.Close())
 	if err != nil {
-		return &runtimeError{phase: "shutdown", cause: err}
+		return &httpx.RuntimeError{Phase: "shutdown", Cause: err}
 	}
 	r.logger.InfoContext(ctx, "server stopped", "type", "lifecycle", "component", "server", "phase", "stopped")
 	return nil

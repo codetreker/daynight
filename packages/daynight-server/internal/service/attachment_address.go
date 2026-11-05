@@ -1,7 +1,9 @@
 package service
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+)
 
 type attachmentAddress struct {
 	projectID    string
@@ -11,11 +13,11 @@ type attachmentAddress struct {
 }
 
 func newAttachmentAddress(projectID, taskID, relativePath string) (attachmentAddress, error) {
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return attachmentAddress{}, err
 	}
-	taskID, err = CanonicalID(taskID)
+	taskID, err = model.CanonicalID(taskID)
 	if err != nil {
 		return attachmentAddress{}, err
 	}

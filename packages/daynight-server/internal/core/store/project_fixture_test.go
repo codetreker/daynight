@@ -19,7 +19,7 @@ func (s *Store) CreateProject(ctx context.Context, id, name, repoURL string) (mo
 	if current {
 		now := time.Now().UTC()
 		hash := sha256.Sum256([]byte(uuid.NewString()))
-		user, err := s.CreateIdentitySession(ctx, model.User{ID: uuid.NewString(), UniAuthID: "fixture:" + uuid.NewString()},
+		user, err := seedIdentitySession(s, ctx, model.User{ID: uuid.NewString(), UniAuthID: "fixture:" + uuid.NewString()},
 			model.Session{ID: uuid.NewString(), TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
 		if err != nil {
 			return model.Project{}, err

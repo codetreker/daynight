@@ -1,6 +1,5 @@
 package server
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"bytes"
 	"context"
@@ -15,7 +14,9 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -202,7 +203,7 @@ func TestThreadHTTPFailurePriorityAndResponseWrite(t *testing.T) {
 		{&store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true, Cause: &model.Fault{Code: "invalid_input", Message: "private business refusal"}}, 500, "internal_error"},
 	} {
 		recorder := httptest.NewRecorder()
-		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeThreadError(w, r, logger, "append", test.err)
 		})).ServeHTTP(recorder, request)
 		assertProjectError(t, recorder, test.status, test.code)

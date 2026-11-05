@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 )
 
@@ -41,7 +43,7 @@ func resourceTestServer(t *testing.T, database *store.Store, files filestorage.S
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.Config.Handler = RequestLogging(logger, handler)
+	server.Config.Handler = httpx.RequestLogging(logger, handler)
 	server.Start()
 	browser := testauth.Browser(t)
 	testauth.Login(t, browser, origin, "alice")
@@ -50,7 +52,7 @@ func resourceTestServer(t *testing.T, database *store.Store, files filestorage.S
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := service.NewIdentity(database, client, callback).Authenticate(context.Background(), model.PATCredential, token)
+	principal, err := identityservice.New(database, client, callback).Authenticate(context.Background(), model.PATCredential, token)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func propertyResource(t *testing.T, handler http.Handler, method, path string, body any) api.PropertyResource {
@@ -175,7 +176,7 @@ func TestTaskPropertyResourceWireLimitAndDatabaseFailure(t *testing.T) {
 	path := taskPath(task) + "/properties"
 	initial := propertyResource(t, handler, http.MethodPut, path+"/pullRequests", map[string]any{"version": task.Version, "valueText": "[]"})
 	body := jsonBody(t, map[string]any{"version": initial.Version, "valueText": "[]"})
-	body += strings.Repeat(" ", maxJSONBody-len(body))
+	body += strings.Repeat(" ", httpx.MaxJSONBody-len(body))
 	atLimit := decodeResponse[api.PropertyResource](t, projectRequest(handler, http.MethodPut, path+"/pullRequests", body), http.StatusOK)
 	if !reflect.DeepEqual(atLimit, initial) {
 		t.Fatal("exact-limit no-op changed values")

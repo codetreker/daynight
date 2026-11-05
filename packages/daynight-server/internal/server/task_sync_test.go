@@ -17,6 +17,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -190,10 +191,10 @@ func TestTaskSyncDTOUTCAndExactVersion(t *testing.T) {
 func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 	h := membershipTestHarness(t)
 	mux := http.NewServeMux()
-	h.auth.RegisterRoutes(mux)
+	h.Auth.RegisterRoutes(mux)
 	logger := testLogger()
-	taskSyncRoutes(mux, service.NewTaskSync(h.database, 10*time.Second), h.auth, logger, 10*time.Second)
-	h.handler = RequestLogging(logger, mux)
+	taskSyncRoutes(mux, service.NewTaskSync(h.Database, 10*time.Second), h.Auth, logger, 10*time.Second)
+	h.Handler = httpx.RequestLogging(logger, mux)
 	path := syncPath(h.project.ID)
 	assertProjectError(t, h.call(http.MethodGet, path, "", nil), http.StatusUnauthorized, "unauthenticated")
 	assertProjectError(t, h.call(http.MethodGet, path, "", h.outsider), http.StatusNotFound, "not_found")

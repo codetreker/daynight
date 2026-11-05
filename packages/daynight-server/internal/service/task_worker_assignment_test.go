@@ -26,7 +26,7 @@ func TestWorkerClaimRequiresAuthenticatedAssignee(t *testing.T) {
 				t.Fatal(err)
 			}
 			worker := testWorker(t, after.Properties)
-			if after.Status != model.TaskInProgress || !equalOptional(after.AssignedTo, assigned) || worker.UserID != claimant.UserID || worker.WorkerID != descriptor.WorkerID {
+			if after.Status != model.TaskInProgress || !model.EqualOptional(after.AssignedTo, assigned) || worker.UserID != claimant.UserID || worker.WorkerID != descriptor.WorkerID {
 				t.Fatalf("claim did not bind the authenticated assignee: %#v", after)
 			}
 		}

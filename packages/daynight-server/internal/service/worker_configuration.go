@@ -33,10 +33,10 @@ func configurationNotFound(err error) error {
 }
 
 func (s *Workers) Configuration(ctx context.Context, principal model.Principal, workerID string) (model.WorkerConfigurationResource, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
-	workerID, err := CanonicalID(workerID)
+	workerID, err := model.CanonicalID(workerID)
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
@@ -82,10 +82,10 @@ func configurationProjects(ctx context.Context, tx *store.WorkerTx, userID strin
 }
 
 func (s *Workers) PutConfiguration(ctx context.Context, principal model.Principal, workerID, revision string, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
-	workerID, err := CanonicalID(workerID)
+	workerID, err := model.CanonicalID(workerID)
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}

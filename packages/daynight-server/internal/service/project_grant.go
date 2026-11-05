@@ -43,13 +43,13 @@ func actorGrantAccess(ctx context.Context, tx *store.ProjectTx, principal model.
 }
 
 func (s *Memberships) SetGrant(ctx context.Context, principal model.Principal, projectID, userID string, input SetProjectGrant) (SetGrantResult, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return SetGrantResult{}, err
 	}
 	if err := requireMembershipActor(principal, input.ExpectedUserID); err != nil {
 		return SetGrantResult{}, err
 	}
-	id, err := CanonicalID(userID)
+	id, err := model.CanonicalID(userID)
 	if err != nil {
 		return SetGrantResult{}, err
 	}
@@ -98,7 +98,7 @@ func (s *Memberships) SetGrant(ctx context.Context, principal model.Principal, p
 }
 
 func (s *Memberships) RemoveGrant(ctx context.Context, principal model.Principal, projectID, userID string, input RemoveProjectMember) (RemoveGrantResult, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return RemoveGrantResult{}, err
 	}
 	if err := requireMembershipActor(principal, input.ExpectedUserID); err != nil {
@@ -108,7 +108,7 @@ func (s *Memberships) RemoveGrant(ctx context.Context, principal model.Principal
 	if err != nil {
 		return RemoveGrantResult{}, err
 	}
-	projectID, err = CanonicalID(projectID)
+	projectID, err = model.CanonicalID(projectID)
 	if err != nil {
 		return RemoveGrantResult{}, err
 	}
