@@ -33,17 +33,18 @@ export type WorkerCoordinatorOptions = {
   verifyWebStartupReporting?: WorkerSessionApi["supportsStartupReports"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
   serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
-  readyProjectIds?: readonly string[];
+  readyProjectIds?: readonly string[]; targetProjectIds?: readonly string[];
   repositories: readonly WorkerRepositoryAssignment[]; globalConfiguration: ExecutionConfiguration | null; maxConcurrent: number;
   buildPrompt: (assignment: ManagedAssignment, platform: TaskPlatform) => string;
   onInventory?: (inventory: WorkerTaskInventory) => void; onClaim?: (reference: WorkerTaskReference) => void;
   emit: (event: WorkerEvent) => void; signal?: AbortSignal; now?: () => number;
 };
-export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "readyProjectIds">;
+export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "readyProjectIds" | "targetProjectIds">;
 
 const configurationView = (value: WorkerCoordinatorConfiguration): WorkerCoordinatorConfiguration => Object.freeze({
   maxConcurrent: value.maxConcurrent,
   ...(value.readyProjectIds === undefined ? {} : { readyProjectIds: Object.freeze([...value.readyProjectIds]) }),
+  ...(value.targetProjectIds === undefined ? {} : { targetProjectIds: Object.freeze([...value.targetProjectIds]) }),
   globalConfiguration: value.globalConfiguration === null ? null : Object.freeze({ ...value.globalConfiguration, args: Object.freeze([...value.globalConfiguration.args]) }),
   repositories: Object.freeze(value.repositories.map(repository => Object.freeze({ project: Object.freeze({ ...repository.project }), configuration: Object.freeze({ ...repository.configuration, args: Object.freeze([...repository.configuration.args]) }) }))),
 });
@@ -63,6 +64,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const now = options.now === undefined ? Date.now : options.now;
   let configuration = configurationView(options);
   const selected = (projectId: string): boolean => configuration.readyProjectIds === undefined ? configuration.repositories.some(repository => repository.project.projectId === projectId) : configuration.readyProjectIds.includes(projectId);
+  const canAdvanceProject = (projectId: string): boolean => {
+    if (configuration.targetProjectIds === undefined) return selected(projectId);
+    if (!configuration.targetProjectIds.includes(projectId)) return options.store.getProject({ projectId }) !== null;
+    return selected(projectId);
+  };
   const deps: ExecutionDependencies = { store: options.store, git: options.git, herdr: options.herdr, readTask: options.remote.readTask, platform: options.platform, workerId: options.workerId, serverOrigin: options.serverOrigin, buildPrompt: options.buildPrompt, emit: options.emit, now };
   const execution = createExecutionDriver(deps);
   const cleanup = createCleanupDriver(deps);
@@ -108,12 +114,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const configurationFor = (task: LocalTask): ExecutionConfiguration | null => {
     if (task.agentControlMode === "web") { const frozen = options.webStore?.getTask(task)?.configuration; if (frozen) return frozen; }
     const repository = configuration.repositories.find(repository => repository.project.projectId === task.projectId);
-    if (repository === undefined && configuration.readyProjectIds !== undefined && selected(task.projectId)) return null;
+    if (repository === undefined && (configuration.targetProjectIds?.includes(task.projectId) || configuration.targetProjectIds === undefined && configuration.readyProjectIds !== undefined && selected(task.projectId))) return null;
     const current = repository?.configuration ?? configuration.globalConfiguration;
     if (current === null) return null;
     return current.agent === task.agent ? { ...current, agentControlMode: task.agentControlMode ?? "herdr" } : { agent: task.agent, agentControlMode: task.agentControlMode ?? "herdr", model: null, args: [], recoveryLimit: current.recoveryLimit };
   };
-  const canAdvance = (task: LocalTask): boolean => selected(task.projectId) && configurationFor(task) !== null;
+  const canAdvance = (task: LocalTask): boolean => canAdvanceProject(task.projectId) && configurationFor(task) !== null;
   // Cleanup-only backend access stays inside its claim job and retry schedule.
   const needsHerdr = (): boolean => configuration.globalConfiguration?.agentControlMode !== undefined && configuration.globalConfiguration.agentControlMode !== "web" && options.store.listProjects().length > 0
     || configuration.repositories.some(repository => repository.configuration.agentControlMode !== "web")
@@ -186,11 +192,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const startJob = (identity: ClaimIdentity, action: (signal: AbortSignal) => Promise<void>, terminal: boolean): void => {
     const identityKey = key(identity);
-    if (shuttingDown || jobs.has(identityKey) || !terminal && !selected(identity.projectId)) return;
+    if (shuttingDown || jobs.has(identityKey) || !terminal && !canAdvanceProject(identity.projectId)) return;
     const controller = new AbortController();
     controllers.set(identityKey, { controller, terminal });
     const signal = AbortSignal.any([normalSignal, controller.signal]);
-    const job = serialize(identity, () => !terminal && !selected(identity.projectId) ? Promise.resolve() : action(signal)).then(() => { inputWaiting.delete(identityKey); }).catch((error: unknown) => {
+    const job = serialize(identity, () => !terminal && !canAdvanceProject(identity.projectId) ? Promise.resolve() : action(signal)).then(() => { inputWaiting.delete(identityKey); }).catch((error: unknown) => {
       if (isWorkerCancellation(error, signal)) return;
       if (!terminal && error instanceof HerdrInputBlockedError) {
         if (inputWaiting.get(identityKey) !== error.message) {
@@ -592,7 +598,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         schedule(local, remoteTask);
       }
     }
-    const projects = options.store.listProjects().filter(project => selected(project.projectId));
+    const projects = options.store.listProjects().filter(project => canAdvanceProject(project.projectId));
     while (capacity(resources) < configuration.maxConcurrent && projects.length > 0) {
       let started = false;
       for (let turn = 0; turn < projects.length; turn++) {
@@ -633,8 +639,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const next = await page.next();
         if (next.done) { exhausted.add(index); continue; }
         const candidate = next.value;
-        const currentRepository = configuration.repositories.find(value => value.project.projectId === candidate.projectId);
-        if (currentRepository === undefined) continue;
+        const claimConfiguration = configuration;
+        const currentRepository = claimConfiguration.repositories.find(value => value.project.projectId === candidate.projectId);
+        if (currentRepository === undefined || !selected(candidate.projectId) || claimConfiguration.targetProjectIds !== undefined && !claimConfiguration.targetProjectIds.includes(candidate.projectId)) continue;
         try {
           assertCanAcquire({ projectId: candidate.projectId, taskId: candidate.id });
           if ([...resources.owners.values()].some(owner => owner.projectId === candidate.projectId && owner.taskId === candidate.id)) throw new Error("An original task resource still reserves its worktree; a new claim cannot be acquired.");
@@ -645,6 +652,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }
         requireImplementedWorkerBackend(currentRepository.configuration);
         if (currentRepository.configuration.agentControlMode === "web") await options.verifyWebServer?.(currentRepository.configuration.agent, normalSignal);
+        if (configuration !== claimConfiguration) continue;
         const claimId = randomUUID();
         try {
           const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);

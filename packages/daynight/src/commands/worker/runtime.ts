@@ -256,7 +256,7 @@ export const runWorker = async (options: {
         const binding = prepared.get(project.projectId);
         if (project.ready && project.native !== null && binding !== undefined) repositories.push({ project: binding, configuration: resolveCloudNative(project.native, local.agentControlMode, effective.recoveryLimit) });
       }
-      return { repositories, readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : resolveCloudNative(effective.native, local.agentControlMode, effective.recoveryLimit), maxConcurrent: effective.maxConcurrent };
+      return { repositories, targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : resolveCloudNative(effective.native, local.agentControlMode, effective.recoveryLimit), maxConcurrent: effective.maxConcurrent };
     };
     const transitions = new Map<string, string>();
     let effectiveSignature = "";

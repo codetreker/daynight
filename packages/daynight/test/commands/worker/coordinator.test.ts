@@ -18,6 +18,7 @@ import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
 import type { Operation } from "../../../src/api/operation.js";
@@ -2342,6 +2343,50 @@ it("observes completed Web resources when shutdown follows an interrupted schedu
 });
 
 
+describe("explicit resume with cloud project selection", () => {
+  it("starts an explicitly resumed retained project after restart without acquiring new work", async () => {
+    const f = await fixture(2), previousClaim = uuid(700), taskId = uuid(701);
+    const released: Task = { ...task(f.project.projectId, taskId), version: 8n, properties: { worker: {
+      claimId: previousClaim, worktreeId: uuid(702), userId: uuid(2), workerId, machine: f.options.machine,
+      platform: "linux", agent: "codex", agentControlMode: "herdr", state: "released", phase: "preparing",
+      herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z",
+    } } };
+    vi.mocked(f.remote.readTask).mockResolvedValue(released);
+    Object.assign(f.remote, {
+      authorizeControl: vi.fn(async () => {}),
+      resume: vi.fn(async (_projectId: string, _taskId: string, input: WorkerClaimDescriptor & { version: bigint; previousClaimId: string }) => {
+        expect(input.previousClaimId).toBe(previousClaim); expect(input.version).toBe(8n);
+        const { version: _version, previousClaimId: _previousClaim, ...descriptor } = input;
+        return f.grant(released, descriptor);
+      }),
+    });
+    const result = await submitWorkerControl({ ...f.options, signal: new AbortController().signal, coordinator: f.coordinator,
+      request: { kind: "resume", projectId: f.project.projectId, taskId, claimId: previousClaim, version: 8n } });
+    expect(result.message).toContain("worker run will start");
+    expect(result.task).toMatchObject({ projectId: f.project.projectId, taskId, status: "pending" });
+    const resumed = result.task!;
+    vi.mocked(f.remote.readTask).mockImplementation(async (_projectId, id) => [...f.grants.values()].find(value => value.id === id)!);
+    f.reopenStore();
+    const selectedTargets = [f.project.projectId];
+    const runner = createWorkerCoordinator({ ...f.options, repositories: [], readyProjectIds: [], targetProjectIds: selectedTargets, globalConfiguration: configuration });
+    selectedTargets.length = 0;
+    await runner.tick();
+    expect(f.store.getTask(resumed)?.status).toBe("pending");
+    expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled();
+    runner.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: null, maxConcurrent: 2 });
+    await runner.tick();
+    expect(f.store.getTask(resumed)?.status).toBe("pending");
+    expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled();
+    runner.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: configuration, maxConcurrent: 2 });
+    await runner.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    expect(f.store.getTask(resumed)).toMatchObject({ claimId: resumed.claimId, status: "active" });
+    expect(f.tasks.start.mock.calls[0]![0]).toMatchObject({ projectId: f.project.projectId, taskId, claimId: resumed.claimId });
+    expect(f.remote.candidates).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled();
+    await runner.shutdown();
+  });
+});
+
 describe("applied cloud runtime configuration", () => {
   it("keeps an unavailable project tuple distinct from usable global defaults", async () => {
     const f = await fixture();
@@ -2400,14 +2445,14 @@ describe("applied cloud runtime configuration", () => {
     await f.coordinator.shutdown();
   });
 
-  it("retains an in-flight grant as pending when its project becomes unavailable", async () => {
+  it("retains an in-flight grant as pending when its selected project becomes unready", async () => {
     const f = await fixture();
     let release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
     vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { await pending; return f.grant(candidate, descriptor); });
     const ticking = f.coordinator.tick();
     await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
-    f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], globalConfiguration: configuration, maxConcurrent: 1 });
+    f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [f.project.projectId], globalConfiguration: configuration, maxConcurrent: 1 });
     release(); await ticking;
     expect(f.store.listUnfinishedTasks()).toHaveLength(1);
     expect(f.store.listUnfinishedTasks()[0]!.status).toBe("pending");

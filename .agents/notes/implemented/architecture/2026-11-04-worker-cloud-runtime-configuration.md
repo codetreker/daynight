@@ -74,7 +74,11 @@ application and reporting.
 The same coordinator consumes current successful parameters. Running native
 processes retain their launch arguments. Herdr restarts and Web frozen-record
 recovery preserve their existing task-system semantics; configuration neither
-adds task fields nor creates a claim-specific parameter or pause ledger. The
+adds task fields nor creates a claim-specific parameter or pause ledger. New
+acquisition uses selected ready Projects. Retained mappings outside that target
+continue advancing existing and explicitly resumed claims with applicable
+validated settings or their original Web record; a selected but unprepared
+Project remains unavailable. The
 [Worker design](../../../../docs/design/daynight-worker.md#配置与目录)
 owns runtime composition and the
 [reporting design](../../../../docs/design/daynight-worker-reporting.md)
