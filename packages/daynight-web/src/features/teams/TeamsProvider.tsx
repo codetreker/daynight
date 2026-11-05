@@ -34,7 +34,7 @@ const useTeamsState = (preference: TeamPreference, admission: TaskCacheScope, ad
     } finally { if (listRequest.current === controller) listRequest.current = null; }
   }, [admission]);
   useEffect(() => { if (!admissionBlocked) void load(null); return () => { ++listGeneration.current; listRequest.current?.abort(); listRequest.current = null; }; }, [load, admissionBlocked]);
-  return { list, detail: preference.detail, forgetUnavailable: preference.forgetUnavailable, leaveTeam: preference.leaveTeam, refreshList: () => { void load(null); }, loadMore: () => { if (list.cursor !== null && listRequest.current === null) void load(list.cursor); }, refreshDetail: preference.retry, acceptTeam: preference.acceptTeam };
+  return { list, detail: preference.detail, visibilityTeamId: preference.visibilityTeamId, forgetUnavailable: preference.forgetUnavailable, leaveTeam: preference.leaveTeam, refreshList: () => { void load(null); }, loadMore: () => { if (list.cursor !== null && listRequest.current === null) void load(list.cursor); }, refreshDetail: preference.retry, acceptTeam: preference.acceptTeam };
 };
 export const TeamsProvider = ({ preference, admission, admissionBlocked, children }: { readonly preference: TeamPreference; readonly admission: TaskCacheScope; readonly admissionBlocked: boolean; readonly children: ReactNode }) => {
   const state = useTeamsState(preference, admission, admissionBlocked);

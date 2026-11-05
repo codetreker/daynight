@@ -150,5 +150,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
     if (key === "default") retry();
   }, [admission, personal, save, retry]);
   const detail: Detail = requestKey === null ? { id: current.current.id, status: "ready", team: current.current } : state.key !== requestKey ? { id: requestKey === "default" ? current.current.id : requestKey, status: "loading" } : state.detail;
-  return { detail, retry, saveError, retrySave, acceptTeam, forgetUnavailable, leaveTeam };
+  // Retain visibility during a same-navigation recheck without admitting links before the read succeeds.
+  const visibilityTeamId = detail.status === "ready" ? detail.id : detail.status === "loading" && verified.current?.navigation === navigation ? current.current.id : null;
+  return { detail, visibilityTeamId, retry, saveError, retrySave, acceptTeam, forgetUnavailable, leaveTeam };
 };
