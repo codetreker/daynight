@@ -11,6 +11,7 @@ import { ConfigurationProjectsDialog, ConfigurationRemovalDialog } from './Confi
 import { configurationFieldChanges, emptyProjectDraft, parseConfigurationDraft, resolvedProjectNative, type ConfigurationDraft } from './model';
 import { useConfigurationProjects } from './useConfigurationProjects';
 import { useWorkerConfiguration } from './useWorkerConfiguration';
+import { useConfigurationFormScroll } from './useConfigurationFormScroll';
 import './configuration.css';
 
 const agentName = (agent: string) => agent === 'claude' ? 'Claude Code' : agent === 'copilot' ? 'Copilot' : 'Codex';
@@ -68,6 +69,7 @@ export const WorkerConfigurationPanel = ({ workerId, visible = true, readEnabled
   useLayoutEffect(() => { if (!visible) setDialog(null); }, [visible]);
   useLayoutEffect(() => { if (state.unavailable || state.resource !== null && state.resource.desired === null) setDialog(null); }, [state.unavailable, state.resource]);
   const { resource, draft } = state;
+  const formRef = useConfigurationFormScroll(state.dirty && visible, draft);
   const disabled = state.unavailable;
   const actionsDisabled = !readEnabled || disabled;
   const metadata = new Map(choices.items.map(project => [project.id, project]));
@@ -92,7 +94,7 @@ export const WorkerConfigurationPanel = ({ workerId, visible = true, readEnabled
     {state.uncertain && <div className="notice warning configuration-notice" role="alert"><p>{m.uncertain}</p><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{m.verifySave}</button></div>}
     {state.error !== null && !state.uncertain && <div className="notice error configuration-notice" role="alert"><ConfigurationError error={state.error} write={state.errorSource === 'write'} retained /><button className="button" type="button" disabled={!readEnabled || state.refreshing || state.pending} onClick={state.refresh}>{workers.retry}</button></div>}
     {state.notice === 'saved' || state.notice === 'reconciled' || state.notice === 'notSaved' ? <div className={`notice ${state.notice === 'notSaved' ? 'warning' : 'success'} configuration-notice`} role="status">{m[state.notice]}</div> : null}
-    <div className="configuration-layout"><div className="configuration-main"><form onSubmit={save} noValidate aria-label={m.configuration}>
+    <div className="configuration-layout"><div className="configuration-main"><form ref={formRef} className={state.dirty ? 'configuration-form is-dirty' : 'configuration-form'} onSubmit={save} noValidate aria-label={m.configuration}>
       <section className="panel config-panel"><header className="panel-heading"><h2>{m.settings}</h2></header><div className="panel-body config-grid">{globalFields.map(key => <div className="field" key={key}><label htmlFor={`config-${key}`}>{m[key]}</label><div className="field-unit"><input id={`config-${key}`} type="text" inputMode="numeric" value={draft[key]} disabled={disabled} aria-invalid={parsed.errors[key] !== undefined} aria-describedby={`feedback-${key}${parsed.errors[key] === undefined ? '' : ` config-${key}-error`}`} onChange={event => state.setDraft(old => ({ ...old, [key]: event.target.value }))} />{key === 'pollIntervalMs' && <span>{m.milliseconds}</span>}</div><ConfigurationFieldError issue={parsed.errors[key]} id={`config-${key}-error`} range={{ minimum: key === 'recoveryLimit' ? 0 : 1, maximum: key === 'pollIntervalMs' ? 2_147_483_647 : Number.MAX_SAFE_INTEGER }} /><ConfigurationFeedback id={`feedback-${key}`} resource={resource} kind={key} expected={desired.value[key]} changed={changed[key]} /></div>)}</div></section>
       <section className="panel config-panel"><header className="panel-heading"><h2>{m.defaultNative}</h2></header><div className="panel-body config-grid"><ConfigurationNativeFields value={draft.native} onChange={native => state.setDraft(old => ({ ...old, native }))} disabled={disabled} errors={parsed.errors} /><div className="native-summary"><ConfigurationFeedback resource={resource} kind="native" expected={desired.value.native} changed={changed.native} /></div></div></section>
       <section className="panel config-panel"><header className="panel-heading"><h2>{m.projects} <span className="worker-count-badge">{format.number(draft.projects.length)}</span></h2><button className="button" type="button" disabled={disabled} onClick={chooseProjects}>＋ {m.chooseProjects}</button></header>
