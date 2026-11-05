@@ -8,7 +8,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/freeze"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"

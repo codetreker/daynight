@@ -157,7 +157,7 @@ Web 将 setting intent 按用户、执行与 operationId 保存，展示 pending
 
 ## Relay 与恢复
 
-Task Session 的 current/history、归档、capability、Controller grant、排队命令和浏览器 channel 共用 `sessionrelay.member()`：先核验当前凭据，再在调用方现有 raw transaction 中调用 `store.ReadProjectAccess`。canonical 单语句合并当前 owner Team role 与 direct grant role，读取最大有效角色和真实可空 direct grant，不读取用户展示资料。无准入返回既有 forbidden，其他数据库错误保留错误链。项目准入不持有跨到事务提交的授权来源行 share 锁，也不引入 Thread 的长期 ownership 锁；Task、Session 和凭据的原有锁序保持。admin 或 Session owner 的控制资格、Controller owner 限制和独立 Test Session 的本人边界仍分别检查。
+Task Session 的 current/history、归档、capability、Controller grant、排队命令和浏览器 channel 共用项目准入：先核验当前凭据，再在调用方的 `store.SessionScope` 中通过 `SessionDAO` 读取项目权限。canonical 单语句合并当前 owner Team role 与 direct grant role，读取最大有效角色和真实可空 direct grant，不读取用户展示资料。无准入返回既有 forbidden，其他数据库错误保留错误链。项目准入不持有跨到事务提交的授权来源行 share 锁，也不引入 Thread 的长期 ownership 锁；Task、Session 和凭据的原有锁序保持。admin 或 Session owner 的控制资格、Controller owner 限制和独立 Test Session 的本人边界仍分别检查。
 
 派发前按原始 requester 重新准入，不借用 Controller 的角色。在线内容在网络等待前后重验；浏览器 channel 每 250ms 重新检查项目准入与执行身份，失权后关闭连接。准入不缓存到 capability、Session 身份或归档索引中。
 
