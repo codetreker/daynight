@@ -2,38 +2,39 @@ package service
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestOpenAttachmentMaintenanceOwnsLockUntilClose(t *testing.T) {
 	url := serviceDatabaseURL(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
+	contender, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contender.Close(context.Background())
 	first, err := OpenAttachmentMaintenance(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close(context.Background())
 
-	blockedCtx, blockedCancel := context.WithTimeout(ctx, 250*time.Millisecond)
-	defer blockedCancel()
-	_, err = OpenAttachmentMaintenance(blockedCtx, url)
-	var failure *store.AttachmentMaintenanceError
-	if !errors.As(err, &failure) || failure.Stage != store.AttachmentMaintenanceLock || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("second session did not wait for the lock: %v", err)
+	const maintenanceLock int64 = 0x444e4154544c4159
+	var acquired bool
+	if err := contender.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", maintenanceLock).Scan(&acquired); err != nil || acquired {
+		t.Fatalf("lock while maintenance is open: acquired=%v, error=%v", acquired, err)
 	}
 	if err := first.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	second, err := OpenAttachmentMaintenance(ctx, url)
-	if err != nil {
+	if _, err := contender.Exec(ctx, "SELECT pg_advisory_lock($1)", maintenanceLock); err != nil {
 		t.Fatalf("lock unavailable after close: %v", err)
 	}
-	if err := second.Close(context.Background()); err != nil {
+	if _, err := contender.Exec(ctx, "SELECT pg_advisory_unlock($1)", maintenanceLock); err != nil {
 		t.Fatal(err)
 	}
 }
