@@ -1,4 +1,4 @@
-import type { Locator, Page, Route, TestInfo } from '@playwright/test';
+import type { Locator, Page, TestInfo } from '@playwright/test';
 import { parseUser } from '../../src/api/auth-parse';
 import type { AuthenticatedAPI } from './authentication';
 import { createProject, createTask, expect, type BrowserWriteExpectation } from './fixtures';
@@ -21,7 +21,7 @@ const geometry = (footer: Locator) => footer.evaluate(element => {
   const rows: number[] = [];
   for (const group of groups) if (!rows.some(center => Math.abs(center - group.center) < 2)) rows.push(group.center);
   return {
-    frame: box(element), groups, rows: rows.length, model: box(model), caret: box(required('.session-control-caret')),
+    frame: box(element), groups, rows: rows.length, activityParts: [...element.querySelectorAll('.session-activity-summary > *')].map(box), model: box(model), caret: box(required('.session-control-caret')),
     label: { width: label.clientWidth, scroll: label.scrollWidth },
     triggers: [...settings.querySelectorAll('button')].map(box),
     actions: [...actions.querySelectorAll('button')].map(box), slash: box(required('.session-command-trigger')),
@@ -61,7 +61,7 @@ export async function verifySessionFooter(page: Page, api: AuthenticatedAPI, ori
         if (activity === 'idle' && measured.frame.width >= 256 || measured.frame.width >= 516) {
           expect(measured.rows, 'Available container width keeps the footer on one row').toBe(1);
         }
-        for (const rect of [...measured.groups, ...measured.triggers, ...measured.actions]) {
+        for (const rect of [...measured.groups, ...measured.triggers, ...measured.actions, ...measured.activityParts]) {
           expect(rect.left).toBeGreaterThanOrEqual(measured.frame.left - 1);
           expect(rect.right).toBeLessThanOrEqual(measured.frame.right + 1);
         }
@@ -75,7 +75,7 @@ export async function verifySessionFooter(page: Page, api: AuthenticatedAPI, ori
         if (viewport.width < 600 && model === models[2]) expect(measured.label.scroll).toBeGreaterThan(measured.label.width);
         if (measured.coarse) {
           for (const rect of [...measured.triggers, ...measured.actions]) expect(rect.height).toBeGreaterThanOrEqual(36);
-          expect(measured.slash.width).toBeGreaterThanOrEqual(32);
+          expect(measured.slash.width).toBeGreaterThanOrEqual(36);
         }
         await expect(input).toHaveValue('Retain this draft across layout and native state changes.');
       }
@@ -132,17 +132,28 @@ export async function verifySessionFooter(page: Page, api: AuthenticatedAPI, ori
       const measured = await geometry(footer);
       observations.push({ state: label, contentWidth: target, constrainedSessionPanel: true, ...measured });
       expect(measured.rows).toBeLessThanOrEqual(3);
-      for (const rect of [...measured.groups, ...measured.triggers, ...measured.actions]) {
+      for (const rect of [...measured.groups, ...measured.triggers, ...measured.actions, ...measured.activityParts]) {
         expect(rect.left, label).toBeGreaterThanOrEqual(measured.frame.left - 1);
         expect(rect.right, label).toBeLessThanOrEqual(measured.frame.right + 1);
       }
-      for (let index = 1; index < measured.groups.length; index++) {
-        const left = measured.groups[index - 1]!, right = measured.groups[index]!;
+      for (let index = 0; index < measured.groups.length; index++) for (let other = index + 1; other < measured.groups.length; other++) {
+        const left = measured.groups[index]!, right = measured.groups[other]!;
         expect(left.right <= right.left + 1 || right.right <= left.left + 1 || left.bottom <= right.top + 1 || right.bottom <= left.top + 1, `${label}: semantic groups do not overlap`).toBe(true);
+      }
+      const controls = [...measured.triggers, ...measured.actions, ...measured.activityParts];
+      for (let index = 0; index < controls.length; index++) for (let other = index + 1; other < controls.length; other++) {
+        const left = controls[index]!, right = controls[other]!;
+        expect(left.right <= right.left + 1 || right.right <= left.left + 1 || left.bottom <= right.top + 1 || right.bottom <= left.top + 1, `${label}: controls do not overlap across groups`).toBe(true);
       }
       expect(measured.caret.right).toBeLessThanOrEqual(measured.model.right);
     };
-    const boundaries = [255, 256, 257, 345, 346, 347, 515, 516, 517];
+    const boundaries = [233, 234, 235, 255, 256, 257, 345, 346, 347, 515, 516, 517];
+    await controller.update('idle', models[2]);
+    await expect(footer.locator('.session-activity-summary')).toHaveCount(0);
+    for (const width of boundaries) {
+      await atContentWidth(width); await assertContained('idle-breakpoint', width);
+      expect((await geometry(footer)).rows).toBe(width >= 234 ? 1 : 2);
+    }
     const fixedTime = Date.now();
     await page.clock.setFixedTime(fixedTime);
     for (const seconds of [3599, 3600]) {
@@ -156,7 +167,7 @@ export async function verifySessionFooter(page: Page, api: AuthenticatedAPI, ori
     for (const width of boundaries) { await atContentWidth(width); await assertContained('waiting-status-suppressed', width); }
     const commandURL = `${origin}/api/v1/projects/${project.id}/tasks/${task.id}/sessions/${controller.sessionId}/commands`;
     allowBrowserWrites([{ method: 'POST', url: commandURL, count: 3 }]);
-    // Hold each HTTP submission before service admission; a definite rejection releases it without executing a Provider action.
+    // The controlled relay writer holds authorized submissions, then rejects them without executing a Provider action.
     for (const pending of ['send', 'cancel', 'command'] as const) {
       await controller.update(pending === 'cancel' ? 'working' : 'idle', models[2]);
       await expect(footer.locator('.session-model-label')).toHaveText(models[2]!);
@@ -164,25 +175,19 @@ export async function verifySessionFooter(page: Page, api: AuthenticatedAPI, ori
       else await expect(footer.locator('.session-activity-summary')).toHaveCount(0);
       await input.fill(pending === 'command' ? '/compact' : 'Do not execute: transport layout fixture.');
       if (pending === 'command') await page.keyboard.press('Escape');
-      let held: Route | undefined;
-      const intercept = (route: Route) => { held = route; };
-      await page.route(commandURL, intercept);
+      if (pending === 'cancel') await interrupt.click();
+      else await footer.locator('button[type="submit"]').click();
+      const command = await controller.waitForSubmission();
       try {
-        if (pending === 'cancel') await interrupt.click();
-        else await footer.locator('button[type="submit"]').click();
-        await expect.poll(() => held !== undefined).toBe(true);
         const label = pending === 'send' ? 'Awaiting provider confirmation' : pending === 'cancel' ? 'Interrupting…' : 'Executing command';
         await expect(footer.getByRole('button', { name: label, exact: true })).toBeVisible();
         for (const width of boundaries) { await atContentWidth(width); await assertContained(label, width); }
-      } finally {
-        if (held) await held.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'version_conflict', message: 'Controlled layout rejection.', requestId: 'session-footer-fixture' } }) });
-        await page.unroute(commandURL, intercept);
-      }
+      } finally { await controller.rejectSubmission(command); }
       await expect(footer.getByRole('button', { name: /^(Awaiting provider confirmation|Interrupting…|Executing command)$/ })).toHaveCount(0);
     }
     await info.attach('session-footer-evidence', { contentType: 'application/json', body: JSON.stringify({
       projectId: project.id, taskId: task.id, sessionId: controller.sessionId, observations,
-      boundary: 'Production Task Session pages and real isolated service with a protocol Controller fixture. Pending submissions are held before service admission and rejected; no native Provider or physical mobile keyboard coverage is claimed.',
+      boundary: 'Production Task Session pages and real isolated service with a protocol Controller fixture. Authorized pending submissions are held and rejected by the controlled relay writer; no native Provider or physical mobile keyboard coverage is claimed.',
     }, null, 2) });
   } finally {
     await controller.close();

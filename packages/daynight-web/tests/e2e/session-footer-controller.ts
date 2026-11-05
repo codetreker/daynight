@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { EventEmitter } from 'node:events';
 import { parseControllerGrantResponse, parseRegistrationResponse, parseRelayMessage, type ControllerMessage, type ControllerState, type RelayMessage } from '../../../daynight/src/session/controller-protocol';
-import { SESSION_PROTOCOL, type ControllerFence } from '../../../daynight/src/session/protocol';
+import { SESSION_PROTOCOL, type ControllerFence, type SessionCommand } from '../../../daynight/src/session/protocol';
 import { readWorkerClaim } from '../../src/api/task-properties';
 import type { AuthenticatedAPI } from './authentication';
 import { expect, type Task } from './fixtures';
@@ -56,6 +56,7 @@ export const openFooterController = async (api: AuthenticatedAPI, origin: string
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     let waiter: { type: RelayMessage['type']; resolve: (message: RelayMessage) => void; reject: (error: Error) => void } | null = null;
     const queued: RelayMessage[] = [];
+    const commands: SessionCommand[] = [];
     const prefix = () => { if (fence === null) throw new Error('Controller is not connected.'); return { protocol: SESSION_PROTOCOL, ...fence }; };
     const send = (message: ControllerMessage) => socket.send(JSON.stringify(message));
     const fail = () => { failure = new Error('Footer fixture Controller transport failed.'); waiter?.reject(failure); };
@@ -68,6 +69,9 @@ export const openFooterController = async (api: AuthenticatedAPI, origin: string
           if (message.kind !== 'timeline') throw new Error('Unexpected resource request.');
           send({ ...prefix(), type: 'content_response', requestId: message.requestId, sourceThrough: '0', error: null,
             result: { kind: 'timeline', historyEpoch: message.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false } });
+        } else if (message.type === 'operation_offer') {
+          commands.push(message.command);
+          send({ ...prefix(), type: 'operation_begin', operationId: message.command.operationId });
         } else if (message.type !== 'heartbeat_ack') {
           if (waiter?.type === message.type) { const current = waiter; waiter = null; current.resolve(message); }
           else queued.push(message);
@@ -119,6 +123,17 @@ export const openFooterController = async (api: AuthenticatedAPI, origin: string
     heartbeat = setInterval(() => { if (socket.readyState === 1) send({ ...prefix(), type: 'heartbeat' }); }, 5_000);
     return {
       task: claimed, sessionId: session.sessionId, update, disconnect: closeSocket,
+      waitForSubmission: async () => {
+        const authorized = await wait('operation_authorized');
+        const command = commands.find(value => value.operationId === authorized.operationId);
+        if (!command) throw new Error('Footer operation has no original command.');
+        return command;
+      },
+      rejectSubmission: async (command: SessionCommand) => {
+        send({ ...prefix(), type: 'operation_receipt', operation: { protocol: SESSION_PROTOCOL, sessionId: session.sessionId, claimId, executionGeneration: session.executionGeneration,
+          operationId: command.operationId, kind: command.kind, state: 'rejected', providerResult: null, error: { code: 'fixture_rejected', message: 'Controlled layout rejection; no Provider action was executed.' } } });
+        await wait('receipt_ack');
+      },
       close: async () => {
         await closeSocket();
         await releaseClaim();
