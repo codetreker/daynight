@@ -841,8 +841,10 @@ not by itself confirm an empty catalogue. Exhausting later pages establishes a
 separate persisted empty proof while retaining the original first page and cursor.
 Refreshing a confirmed empty catalogue follows an empty first page through its
 continuations until a record appears or the catalogue is exhausted. Failures
-retain eligible content and offer retry. Task version does
-not establish history freshness. Fences and generations guard revoked or stale
+retain eligible content and offer retry. When cache reads work but a refresh or
+pagination transaction cannot write, the view retains valid content and offers
+retry without publishing a successful response whose ordering is unproven. Task
+version does not establish history freshness. Fences and generations guard revoked or stale
 results; complete storage failure can conservatively hide a newer result or lose
 a denial across a restart after all tabs close, as described in the
 [cache design](../../docs/design/daynight-task-sync.md#5-indexeddb-与去重).

@@ -35,13 +35,16 @@ active leases; a trusted denial can evict a lease to retain its marker. When
 denial markers occupy every slot, the cache generation rotates while retaining
 the project, summaries and authorization and clearing old details and catalogues.
 When protected slots also include active leases and none is free, a reader waits
-for a lease to settle or expire before retrying. With functioning storage,
-identity changes, revoked access, task deletion and retired generations fence
+for a lease to settle or expire before retrying. If the cache remains readable
+but a refresh or pagination transaction cannot write, the view retains eligible
+content and exposes a retryable error instead of publishing a successful response
+whose ordering cannot be established. With functioning storage, identity changes, revoked access, task deletion and retired generations fence
 old content and late responses. If a clear or generation rotation cannot be
 persisted, live tabs use matching lifecycle broadcasts and in-memory fences to
 withdraw the catalogue and offer retry; invalidated in-flight responses cannot
 republish after the notice. If IndexedDB is completely unreadable and unwritable,
-a delayed old denial notice can arrive after a newer network success, and the
+authenticated network results remain eligible under the accepted fallback; a
+delayed old denial notice can arrive after a newer network success, and the
 receiver may conservatively hide that newer catalogue. If every relevant tab
 closes after a denial that no durable medium could record, the in-memory fence
 is lost; the next opening may briefly show the old catalogue before the network

@@ -24,7 +24,7 @@ export type CachedProject = TaskProjection & {
 export type DetailStore = IDBPObjectStore<TaskCacheSchema, [...typeof TASK_CACHE_STORES], "details", "readwrite">;
 export type SessionHistoryStore = IDBPObjectStore<TaskCacheSchema, [...typeof TASK_CACHE_STORES], "sessionHistory", "readwrite">;
 type HistorySettlement = { readonly taskId: string; readonly token: string; readonly outcome: "saved" | "failed" | "cancelled" };
-type HistoryUncertain = { readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string; readonly unbound?: true };
+type HistoryUncertain = { readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound?: true };
 export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly revokedGeneration?: string; readonly cacheGenerationChanged?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
 type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
 class TaskCacheLifecycleChanged extends DOMException {
@@ -57,7 +57,7 @@ export class TaskCacheScope {
   private readonly projections = new Map<string, CachedProject>();
   private readonly authorizedProjects = new Set<string>();
   private readonly historyPreviews = new Map<string, SyncTicket>();
-  private readonly uncertainHistory = new Map<string, { readonly userFence: string; readonly cacheGeneration: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string; readonly unbound: boolean; readonly revision: number; readonly allowedToken: string | null }>();
+  private readonly uncertainHistory = new Map<string, { readonly userFence: string; readonly cacheGeneration: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound: boolean; readonly revision: number; readonly allowedToken: string | null }>();
   private uncertaintyRevision = 0;
   private readonly suspendedProjects = new Set<string>();
   private readonly projectRevisions = new Map<string, number>();
@@ -97,10 +97,12 @@ export class TaskCacheScope {
           !("cacheGeneration" in hint) || typeof hint.cacheGeneration !== "string" || canonicalId(hint.cacheGeneration) !== hint.cacheGeneration ||
           typeof marker !== "object" || marker === null || !("taskId" in marker) || typeof marker.taskId !== "string" || canonicalId(marker.taskId) !== marker.taskId ||
           !("expectedToken" in marker) || marker.expectedToken !== null && (typeof marker.expectedToken !== "string" || canonicalId(marker.expectedToken) !== marker.expectedToken) ||
-          "expectedPaginationToken" in marker && (typeof marker.expectedPaginationToken !== "string" || canonicalId(marker.expectedPaginationToken) !== marker.expectedPaginationToken) ||
+          "expectedPaginationToken" in marker && marker.expectedPaginationToken !== null && (typeof marker.expectedPaginationToken !== "string" || canonicalId(marker.expectedPaginationToken) !== marker.expectedPaginationToken) ||
+          "expectedLeaseExpiresAt" in marker && marker.expectedLeaseExpiresAt !== null && (typeof marker.expectedLeaseExpiresAt !== "number" || !Number.isSafeInteger(marker.expectedLeaseExpiresAt) || marker.expectedLeaseExpiresAt < 0) ||
           "unbound" in marker && marker.unbound !== true) return;
         void this.receiveHistoryUncertain(hint.projectId, hint.userFence, hint.cacheGeneration, marker.taskId, marker.expectedToken, "unbound" in marker,
-          "expectedPaginationToken" in marker ? marker.expectedPaginationToken as string : undefined).catch(() => {});
+          "expectedPaginationToken" in marker ? marker.expectedPaginationToken as string | null : undefined,
+          "expectedLeaseExpiresAt" in marker ? marker.expectedLeaseExpiresAt as number | null : undefined).catch(() => {});
         return;
       }
       if ("sessionHistorySettled" in hint) {
@@ -260,10 +262,10 @@ export class TaskCacheScope {
     if (marker?.unbound && marker.userFence === ticket.userFence && marker.cacheGeneration === ticket.cacheGeneration && marker.revision === revision)
       this.uncertainHistory.set(key, { ...marker, allowedToken: token });
   }
-  async inspectHistoryUncertain(ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, expectedPaginationToken?: string): Promise<{ current: boolean; refreshing: boolean }> {
+  async inspectHistoryUncertain(ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, expectedPaginationToken?: string | null, expectedLeaseExpiresAt?: number | null): Promise<{ current: boolean; refreshing: boolean }> {
     const key = this.historyKey(ticket.projectId, taskId);
     const marker = this.uncertainHistory.get(key);
-    if (marker === undefined || marker.userFence !== ticket.userFence || marker.cacheGeneration !== ticket.cacheGeneration || marker.expectedToken !== expectedToken || marker.expectedPaginationToken !== expectedPaginationToken) return { current: false, refreshing: false };
+    if (marker === undefined || marker.userFence !== ticket.userFence || marker.cacheGeneration !== ticket.cacheGeneration || marker.expectedToken !== expectedToken || marker.expectedPaginationToken !== expectedPaginationToken || marker.expectedLeaseExpiresAt !== expectedLeaseExpiresAt) return { current: false, refreshing: false };
     try {
       const state = await this.sessionHistoryTransaction(ticket, signal, async store => {
         const row = await store.get([this.userId, ticket.projectId, taskId]);
@@ -274,7 +276,7 @@ export class TaskCacheScope {
         return row;
       });
       const current = this.uncertainHistory.get(key);
-      if (current === undefined || current.userFence !== ticket.userFence || current.cacheGeneration !== ticket.cacheGeneration || current.expectedToken !== expectedToken || current.expectedPaginationToken !== expectedPaginationToken || current.revision !== marker.revision) return { current: false, refreshing: false };
+      if (current === undefined || current.userFence !== ticket.userFence || current.cacheGeneration !== ticket.cacheGeneration || current.expectedToken !== expectedToken || current.expectedPaginationToken !== expectedPaginationToken || current.expectedLeaseExpiresAt !== expectedLeaseExpiresAt || current.revision !== marker.revision) return { current: false, refreshing: false };
       if (state !== null && marker.unbound) {
         if (state.requestToken === marker.allowedToken && state.leaseExpiresAt === null && state.settled === "saved") {
           this.clearHistoryUncertain(ticket, taskId, state.requestToken);
@@ -285,6 +287,13 @@ export class TaskCacheScope {
       if (state !== null && state.requestToken !== expectedToken) {
         if (state.leaseExpiresAt === null && state.settled === "saved") {
           this.clearHistoryUncertain(ticket, taskId, state.requestToken);
+          return { current: false, refreshing: false };
+        }
+        return { current: true, refreshing: typeof state.leaseExpiresAt === "number" && state.leaseExpiresAt > Date.now() };
+      }
+      if (state !== null && expectedLeaseExpiresAt !== undefined && state.leaseExpiresAt !== expectedLeaseExpiresAt) {
+        if (state.leaseExpiresAt === null && state.settled === "saved") {
+          if (this.uncertainHistory.get(key)?.revision === marker.revision) this.uncertainHistory.delete(key);
           return { current: false, refreshing: false };
         }
         return { current: true, refreshing: typeof state.leaseExpiresAt === "number" && state.leaseExpiresAt > Date.now() };
@@ -300,7 +309,7 @@ export class TaskCacheScope {
     if (marker !== undefined && marker.userFence === ticket.userFence && marker.cacheGeneration === ticket.cacheGeneration &&
       (marker.unbound ? marker.allowedToken === token : marker.expectedToken !== token)) this.uncertainHistory.delete(key);
   }
-  private async observeHistoryUncertain(ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, unbound = false, expectedPaginationToken?: string): Promise<boolean> {
+  private async observeHistoryUncertain(ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, unbound = false, expectedPaginationToken?: string | null, expectedLeaseExpiresAt?: number | null): Promise<boolean> {
     try {
       const current = await this.sessionHistoryTransaction(ticket, signal, async store => {
         const row = await store.get([this.userId, ticket.projectId, taskId]);
@@ -308,9 +317,11 @@ export class TaskCacheScope {
         if (row.userId !== this.userId || row.projectId !== ticket.projectId || row.taskId !== taskId || row.userFence !== ticket.userFence ||
           row.cacheGeneration !== ticket.cacheGeneration || typeof row.requestToken !== "string" || canonicalId(row.requestToken) !== row.requestToken) throw new TaskCacheError("corrupt");
         if (row.paginationToken !== null && (typeof row.paginationToken !== "string" || canonicalId(row.paginationToken) !== row.paginationToken)) throw new TaskCacheError("corrupt");
-        return { token: row.requestToken, paginationToken: row.paginationToken };
+        if (row.leaseExpiresAt !== null && (!Number.isSafeInteger(row.leaseExpiresAt) || row.leaseExpiresAt < 0)) throw new TaskCacheError("corrupt");
+        return { token: row.requestToken, paginationToken: row.paginationToken, leaseExpiresAt: row.leaseExpiresAt };
       });
-      if (!unbound && current !== null && (current.token !== expectedToken || expectedPaginationToken !== undefined && current.paginationToken !== expectedPaginationToken)) return false;
+      if (!unbound && ((current?.token ?? null) !== expectedToken || expectedPaginationToken !== undefined && (current?.paginationToken ?? null) !== expectedPaginationToken ||
+        expectedLeaseExpiresAt !== undefined && (current?.leaseExpiresAt ?? null) !== expectedLeaseExpiresAt)) return false;
     } catch (error) {
       if (isAbortError(error)) throw error;
       this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal, ticket.scopeRevision);
@@ -318,26 +329,29 @@ export class TaskCacheScope {
     const key = this.historyKey(ticket.projectId, taskId); const prior = this.uncertainHistory.get(key);
     const conservative = unbound || prior?.unbound === true && prior.userFence === ticket.userFence && prior.cacheGeneration === ticket.cacheGeneration;
     const marker = { userFence: ticket.userFence, cacheGeneration: ticket.cacheGeneration, expectedToken: conservative ? null : expectedToken,
-      ...(!conservative && expectedPaginationToken !== undefined ? { expectedPaginationToken } : {}), unbound: conservative, revision: ++this.uncertaintyRevision, allowedToken: null };
+      ...(!conservative && expectedPaginationToken !== undefined ? { expectedPaginationToken } : {}), ...(!conservative && expectedLeaseExpiresAt !== undefined ? { expectedLeaseExpiresAt } : {}),
+      unbound: conservative, revision: ++this.uncertaintyRevision, allowedToken: null };
     this.uncertainHistory.set(key, marker);
-    this.emit({ projectId: ticket.projectId, sessionHistoryUncertain: { taskId, expectedToken: marker.expectedToken, ...('expectedPaginationToken' in marker ? { expectedPaginationToken: marker.expectedPaginationToken } : {}), ...(marker.unbound ? { unbound: true } : {}) } });
+    this.emit({ projectId: ticket.projectId, sessionHistoryUncertain: { taskId, expectedToken: marker.expectedToken, ...('expectedPaginationToken' in marker ? { expectedPaginationToken: marker.expectedPaginationToken } : {}),
+      ...('expectedLeaseExpiresAt' in marker ? { expectedLeaseExpiresAt: marker.expectedLeaseExpiresAt } : {}), ...(marker.unbound ? { unbound: true } : {}) } });
     return true;
   }
-  async reportHistoryUncertain(ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, unbound = false, expectedPaginationToken?: string): Promise<boolean> {
-    const marked = await this.observeHistoryUncertain(ticket, taskId, expectedToken, signal, unbound, expectedPaginationToken);
+  async reportHistoryUncertain(ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, unbound = false, expectedPaginationToken?: string | null, expectedLeaseExpiresAt?: number | null): Promise<boolean> {
+    const marked = await this.observeHistoryUncertain(ticket, taskId, expectedToken, signal, unbound, expectedPaginationToken, expectedLeaseExpiresAt);
     if (marked)
       this.channel?.postMessage({ userId: this.userId, projectId: ticket.projectId, userFence: ticket.userFence, cacheGeneration: ticket.cacheGeneration,
-        sessionHistoryUncertain: { taskId, expectedToken, ...(expectedPaginationToken !== undefined ? { expectedPaginationToken } : {}), ...(unbound ? { unbound: true } : {}) } } satisfies Hint);
+        sessionHistoryUncertain: { taskId, expectedToken, ...(expectedPaginationToken !== undefined ? { expectedPaginationToken } : {}),
+          ...(expectedLeaseExpiresAt !== undefined ? { expectedLeaseExpiresAt } : {}), ...(unbound ? { unbound: true } : {}) } } satisfies Hint);
     return marked;
   }
-  private async receiveHistoryUncertain(projectId: string, userFence: string, cacheGeneration: string, taskId: string, expectedToken: string | null, unbound: boolean, expectedPaginationToken?: string): Promise<void> {
+  private async receiveHistoryUncertain(projectId: string, userFence: string, cacheGeneration: string, taskId: string, expectedToken: string | null, unbound: boolean, expectedPaginationToken?: string | null, expectedLeaseExpiresAt?: number | null): Promise<void> {
     await this.ready(this.lifetime.signal);
     if (!this.authorizedProjects.has(projectId) && !this.historyPreviews.has(projectId)) return;
     const observed = this.historyPreviews.get(projectId) ?? this.projections.get(projectId)?.manifest;
     if (observed === undefined || observed.userFence !== userFence || observed.cacheGeneration !== cacheGeneration || this.userFence !== userFence) return;
     const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration, epoch: observed.epoch,
       maxUpdatedAt: observed.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId) };
-    await this.observeHistoryUncertain(ticket, taskId, expectedToken, this.lifetime.signal, unbound, expectedPaginationToken);
+    await this.observeHistoryUncertain(ticket, taskId, expectedToken, this.lifetime.signal, unbound, expectedPaginationToken, expectedLeaseExpiresAt);
   }
   private async transaction<T>(work: (transaction: Transaction) => Promise<T>, signal?: AbortSignal, allowInvalidated = false): Promise<T> {
     if (!allowInvalidated) this.assertLive(signal);

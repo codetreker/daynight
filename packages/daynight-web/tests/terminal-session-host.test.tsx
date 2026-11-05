@@ -6,16 +6,20 @@ import { TaskDetailReading } from '../src/features/task-detail/TaskDetailReading
 import { createTerminalSessionApi } from '../src/api/terminal-sessions';
 import type { SessionHistoryItem } from '../src/api/terminal-sessions';
 import { ApiError } from '../src/api/client';
-import { beginSessionHistoryRefresh, readCachedSessionHistory, saveSessionHistory } from '../src/features/task-agent-session/session-history-cache';
+import { beginSessionHistoryPagination, beginSessionHistoryRefresh, readCachedSessionHistory, readSessionHistoryPaginationState, saveSessionHistory } from '../src/features/task-agent-session/session-history-cache';
 import { createTaskCacheScope, TaskCacheProvider, TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 vi.mock('../src/api/terminal-sessions', () => ({ createTerminalSessionApi: vi.fn(), parseSessionHistory: (value: unknown) => value }));
-vi.mock('../src/features/task-agent-session/session-history-cache', () => ({ beginSessionHistoryRefresh: vi.fn(), readCachedSessionHistory: vi.fn(), saveSessionHistory: vi.fn(), beginSessionHistoryPagination: vi.fn(async () => null), setSessionHistoryCompleteEmpty: vi.fn(async () => true), clearSessionHistory: vi.fn(async () => true), getSessionHistoryToken: vi.fn(async () => null), isSessionHistoryClearCurrent: vi.fn(async () => ({ current: true, refreshing: false })), readSessionHistoryPaginationState: vi.fn(async () => null), releaseSessionHistoryRefresh: vi.fn(async () => true) }));
+vi.mock('../src/features/task-agent-session/session-history-cache', () => ({ beginSessionHistoryRefresh: vi.fn(), readCachedSessionHistory: vi.fn(), saveSessionHistory: vi.fn(), beginSessionHistoryPagination: vi.fn(async () => null), completeSessionHistoryPagination: vi.fn(async () => true), clearSessionHistory: vi.fn(async () => true), getSessionHistoryToken: vi.fn(async () => null), isSessionHistoryClearCurrent: vi.fn(async () => ({ current: true, refreshing: false })), readSessionHistoryPaginationState: vi.fn(async () => null), releaseSessionHistoryRefresh: vi.fn(async () => true) }));
 vi.mock('../src/features/task-agent-session/TaskAgentSession', () => ({ TaskAgentSession: () => <div>Native timeline</div> }));
 beforeEach(() => {
   vi.spyOn(TaskCacheScope.prototype, 'isSessionHistoryTicketCurrent').mockReturnValue(true);
   vi.mocked(readCachedSessionHistory).mockReset().mockResolvedValue(null);
   vi.mocked(beginSessionHistoryRefresh).mockReset().mockResolvedValue({ kind: 'lease', token: '00000005-1111-4111-8111-111111111111', acquired: true, expiresAt: Date.now() + 30000 });
-  vi.mocked(saveSessionHistory).mockReset().mockResolvedValue(true);
+  let firstPage: { items: SessionHistoryItem[]; nextCursor: string | null } | null = null;
+  vi.mocked(saveSessionHistory).mockReset().mockImplementation(async (_scope, _ticket, _task, page) => { firstPage = page; return true; });
+  const pagination = () => firstPage === null ? null : ({ token: '00000005-1111-4111-8111-111111111111', paginationToken: '00000006-1111-4111-8111-111111111111', refreshing: false, leaseExpiresAt: null, page: firstPage, confirmedCompleteEmpty: false });
+  vi.mocked(beginSessionHistoryPagination).mockReset().mockImplementation(async () => pagination());
+  vi.mocked(readSessionHistoryPaginationState).mockReset().mockImplementation(async () => pagination());
 });
 afterEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
 const render = createLocaleRender('en', { taskCache: true });
@@ -137,6 +141,7 @@ describe('unified Session and managed records', () => {
   it('still loads the network when persistent storage fails', async () => {
     const api = fixture();
     vi.mocked(readCachedSessionHistory).mockRejectedValueOnce(new Error('storage unavailable'));
+    vi.spyOn(TaskCacheScope.prototype, 'sessionHistoryTransaction').mockRejectedValue(new Error('storage unavailable'));
     render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
     expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
     expect(api.history).toHaveBeenCalledTimes(1);
