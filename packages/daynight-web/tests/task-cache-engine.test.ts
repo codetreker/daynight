@@ -471,3 +471,25 @@ it("merges ownership within one epoch and replaces restored history without pers
   expect((await database.get("projects", [userId, projectId]))!.project).not.toHaveProperty("ownerTeam");
   expect(next.project.graph.project.settings).toEqual(project.settings);
 });
+
+it('publishes claim changes and removal only within the authorized user and project generation', async () => {
+  const worker = (name: string, state: 'active' | 'released' | 'completed') => ({ claimId: taskId(101), state, userId, workerId: taskId(102), machine: { id: taskId(103), name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: taskId(104), phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
+  const cache = scope();
+  const initial = await seed(cache, [task(1, { properties: { worker: worker('first', 'active') } })]);
+  expect(initial.project.workerMachines.get(taskId(1))?.machine.name).toBe('first');
+  const stale = await cache.beginSync(projectId, signal());
+  const changed = await delta(cache, [task(1, { version: 2n, allowAgents: false, properties: { worker: worker('finished', 'completed') } })]);
+  expect(changed.project.workerMachines.get(taskId(1))).toMatchObject({ state: 'completed', machine: { name: 'finished' } });
+  const late = await cache.applySync(stale, response([task(1, { properties: { worker: worker('first', 'active') } })]), signal());
+  expect(late.project.workerMachines.get(taskId(1))?.machine.name).toBe('finished');
+  const removed = await delta(cache, [task(1, { version: 3n, properties: {} })]);
+  expect(removed.project.workerMachines.has(taskId(1))).toBe(false);
+  const other = scope(otherUser);
+  expect(other.getAuthorizedProject(projectId)).toBeNull();
+  expect(cache.getAuthorizedProject(otherProject)).toBeNull();
+  const ticket = await cache.beginSync(projectId, signal());
+  expect(await cache.revokeProject(ticket, signal())).toBe(true);
+  expect(cache.getAuthorizedProject(projectId)).toBeNull();
+  await expect(cache.applySync(ticket, response([task(1, { version: 4n, properties: { worker: worker('late', 'active') } })]), signal())).rejects.toMatchObject({ name: 'AbortError' });
+  expect(cache.getAuthorizedProject(projectId)).toBeNull();
+});

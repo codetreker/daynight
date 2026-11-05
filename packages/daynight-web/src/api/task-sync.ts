@@ -1,7 +1,7 @@
 import { parseProfileVersion } from "./profile-version";
 import { parseProjectAccess } from "./auth-parse";
 import { isTaskVersion } from "./json";
-import { parseTaskProperties, readTaskPaused } from "./task-properties";
+import { parseTaskProperties, readTaskPaused, readWorkerClaim } from "./task-properties";
 import { array, boolean, id, malformed, project, record, string, timestamp, executionPlatform } from "./parse";
 import type { ProjectPersonVersion } from "./auth-types";
 import type { TaskSummary, TaskSync } from "./types";
@@ -25,6 +25,7 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
   if (data.status !== "todo" && data.status !== "in_progress" && data.status !== "done") return malformed();
   const properties = parseTaskProperties(data.properties);
   readTaskPaused(properties);
+  readWorkerClaim(properties);
   return {
     id: id(data.id), version, properties,
     titlePreview: string(data.titlePreview), titleTruncated: boolean(data.titleTruncated),

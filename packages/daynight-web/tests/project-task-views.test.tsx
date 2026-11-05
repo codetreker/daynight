@@ -563,7 +563,7 @@ describe('project overview and task workspace', () => {
 
   const mockNavigationSnapshot = (tasks: GraphTask[], revision: number): TaskGraphModule.GraphSnapshot => {
     const graph = snapshot(tasks);
-    return { graph, index: buildGraphIndex(graph), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: Date.now(), receivedMonotonic: performance.now(), revision };
+    return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: Date.now(), receivedMonotonic: performance.now(), revision };
   };
   const interceptOverviewNavigation = () => {
     let navigate!: Parameters<typeof ProjectOverviewModule.ProjectOverview>[0]['onNavigate'];

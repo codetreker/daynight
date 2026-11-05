@@ -229,7 +229,7 @@ export class TaskCacheScope {
     let projection: TaskProjection;
     if (sameTasks) {
       projection = sameProject(previous.graph.project, project) ? previous : {
-        graph: { ...previous.graph, project }, index: previous.index, versions: previous.versions, pausedTaskIds: previous.pausedTaskIds,
+        graph: { ...previous.graph, project }, index: previous.index, versions: previous.versions, pausedTaskIds: previous.pausedTaskIds, workerMachines: previous.workerMachines,
       };
     } else projection = projectSummaries(project, tasks, project.updatedAt);
     const result: CachedProject = {

@@ -123,3 +123,9 @@ it("retains complete generic properties and ordinary nested version fields in sy
   expect(result.tasks[0]!.version).toBe(9_007_199_254_740_993n);
   expect(parseTaskSummary({ ...task, properties: {} }).properties).toEqual({});
 });
+
+
+it("rejects malformed worker claims at the summary decoding boundary", () => {
+  expect(() => parseTaskSummary({ ...task, properties: { worker: null } })).toThrow("invalid response");
+  expect(() => parseTaskSummary({ ...task, properties: { worker: { machine: { name: "host" } } } })).toThrow("invalid response");
+});
