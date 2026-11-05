@@ -156,6 +156,20 @@ it("retains conflicting or previously drifted blocker identities and rolls back 
   expect(f.store.getOrchestrationBlocker(f.task)).toEqual(f.blocker);
 });
 
+it("binds a blocked native identity using the original Windows launch Job enrichment", () => {
+  const f = blockedInitialFixture();
+  const controllerProcess = { ...f.observed.controllerProcess!, processGroupId: null };
+  const task = f.store.updateWebExecution(f.task, { controllerProcess }, 5);
+  const observed = { ...f.observed, controllerProcess: { ...controllerProcess, jobObjectName: `Local\\Daynight-${task.webExecution!.launchId}` } };
+  expect(() => f.store.bindNativeSession(task, { source: "controller", sessionId: id(7) }, 6, { ...observed, controllerProcess: { ...observed.controllerProcess, jobObjectName: `Local\\Daynight-${id(90)}` } })).toThrow("original generation");
+  expect(f.store.getOrchestrationBlocker(task)).toEqual(f.blocker);
+  const bound = f.store.bindNativeSession(task, { source: "controller", sessionId: id(7) }, 7, observed);
+  expect(bound.resources.nativeSession?.sessionId).toBe(id(7));
+  expect(f.store.getOrchestrationBlocker(task)?.identity.nativeSessionId).toBe(id(7));
+  close(f.store);
+  expect(open(f.file).getTask(task)?.resources.nativeSession?.sessionId).toBe(id(7));
+});
+
 it("keeps completed versioned executions available for archive backfill after reopening", () => {
   const { file, store, project, claim } = fixture();
   const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };

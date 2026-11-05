@@ -1010,6 +1010,126 @@ it.each(["journal", "live"] as const)("preserves a native identity first learned
   expect(request.mock.calls.every(([, action]) => action.kind === "observe")).toBe(true);
 });
 
+it.each((["cleanup", "resume"] as const).flatMap(mode => (["valid", "known-job-lost", "known-job-changed", "core-changed", "wrong-launch"] as const).map(conflict => [mode, conflict] as const)))("verifies Windows controller proof enrichment before the first Worker observation (%s, %s)", async (mode, conflict) => {
+  const f = await fixture("codex", 3);
+  const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  const source = await cleanupSource(f, task);
+  const jobObjectName = `Local\\Daynight-${source.ticket.launchId}`;
+  const cached = { ...source.snapshot.controllerProcess!, processGroupId: null, ...(conflict.startsWith("known-job") ? { jobObjectName } : {}) };
+  const controller = { ...cached, jobObjectName };
+  if (conflict === "known-job-lost") delete (controller as { jobObjectName?: string }).jobObjectName;
+  if (conflict === "known-job-changed" || conflict === "wrong-launch") controller.jobObjectName = `Local\\Daynight-${randomUUID()}`;
+  if (conflict === "core-changed") controller.parentPid += 1;
+  const native = { ...cached, pid: 988, parentPid: cached.pid, startedAt: "native-original", commandHash: "b".repeat(64) };
+  const nativeSessionId = randomUUID();
+  const current = f.store.updateWebExecution(source.task, { controllerProcess: cached }, 6);
+  const snapshot: ControllerSnapshot = { ...source.snapshot, controllerProcess: controller, nativeProcesses: [native], nativeSessionId,
+    lifecycle: "ready", nativeStopped: false, stoppedAt: null,
+    initialInputState: "confirmed", error: null, startup: { state: "ready", reasonCode: "ready" },
+  };
+  source.saved.mockReturnValue(snapshot); source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
+  let stopped = false;
+  source.stopped.mockImplementation(async () => stopped);
+  const stop = vi.spyOn(processProof, "stopControllerProcesses").mockImplementation(async () => {
+    stopped = true; snapshot.lifecycle = "stopped"; snapshot.nativeStopped = true; snapshot.stoppedAt = new Date(50).toISOString();
+  });
+  const inspect = vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("running");
+  vi.mocked(lifecycle.recordStoppedControllerGeneration).mockResolvedValue(snapshot);
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request });
+  if (mode === "resume") f.store.blockOrchestration(current, { source: "worktree", code: "branch_mismatch", message: "Temporary branch deviation." }, 7);
+  const result = mode === "cleanup" ? backend.cleanup(current, "shutdown", 50) : backend.advance(current, new AbortController().signal);
+  if (conflict !== "valid") {
+    await expect(result).rejects.toThrow();
+    expect(f.store.getTask(task)?.resources.nativeSession).toBeNull();
+    expect(f.store.getTask(task)?.webExecution?.controllerProcess).toEqual(cached);
+    expect(launcher.launch).not.toHaveBeenCalled();
+    if (mode === "resume") expect(f.store.getOrchestrationBlocker(task)).not.toBeNull();
+    return;
+  }
+  await result;
+  expect(f.store.getTask(task)?.resources.nativeSession?.sessionId).toBe(nativeSessionId);
+  expect(f.store.getTask(task)?.recovery).toEqual({ count: 0, pauseReason: null, retryAuthorized: false });
+  expect(f.store.getTask(task)?.webExecution?.executionGeneration).toBe("1");
+  if (mode === "resume") {
+    expect(f.store.getOrchestrationBlocker(task)).toBeNull();
+    expect(inspect.mock.calls.map(([proof]) => proof)).toEqual([controller, native]);
+  } else {
+    expect(source.stopped).toHaveBeenCalledWith(controller, [native]);
+    expect(stop).toHaveBeenCalledWith(controller, [native], expect.any(Number));
+  }
+  expect(launcher.launch).not.toHaveBeenCalled();
+  expect(source.request.mock.calls.map(([, action]) => action.kind)).toEqual(mode === "cleanup" ? ["observe", "stop"] : ["observe"]);
+});
+
+it.each((["none", "exhausted", "missing-native", "missing-process", "unproven-stop", "changed-stop-native", "changed-stop-process", "changed-stop-session"] as const).flatMap(conflict => [false, true].map(retry => [conflict, retry] as const)))("recovers the original unexpectedly stopped native after a lost initial response (conflict=%s, retry=%s)", async (conflict, retry) => {
+  const f = await fixture("codex", conflict === "exhausted" ? 0 : 3);
+  const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  const source = await cleanupSource(f, task);
+  const native = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "native-original", commandHash: "b".repeat(64) };
+  const nativeSessionId = randomUUID();
+  let recovering = false;
+  let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "ready", activity: "idle", nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: null, nativeProcesses: [native] };
+  source.saved.mockImplementation(() => snapshot);
+  source.stopped.mockImplementation(async () => recovering && conflict !== "unproven-stop");
+  vi.mocked(lifecycle.recordStoppedControllerGeneration).mockImplementation(async () => ({ ...snapshot,
+    ...(conflict === "changed-stop-native" ? { nativeSessionId: randomUUID() } : {}),
+    ...(conflict === "changed-stop-session" ? { sessionId: randomUUID() } : {}),
+    ...(conflict === "changed-stop-process" ? { nativeProcesses: [{ ...native, pid: 989 }] } : {}),
+  }));
+  source.request.mockImplementation(async (ticket, action) => {
+    if (recovering) {
+      if (ticket.executionGeneration === "1") throw new Error("Original controller unexpectedly exited.");
+      return { requestId: randomUUID(), ok: true, snapshot: { ...snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "ready", nativeStopped: false, stoppedAt: null, error: null } };
+    }
+    if (action.kind === "submit_initial") {
+      snapshot = { ...snapshot, nativeSessionId, initialInputState: "confirmed" };
+      throw new Error("Initial response was lost.");
+    }
+    return { requestId: randomUUID(), ok: true, snapshot };
+  });
+  const launcher = {
+    prepare: vi.fn(async (record: LocalTask): Promise<ControllerLaunchTicket> => ({ ...source.ticket, launchId: record.webExecution!.launchId, executionGeneration: record.webExecution!.executionGeneration, controllerInstanceId: record.webExecution!.controllerInstanceId, resumeNativeSessionId: record.resources.nativeSession?.sessionId ?? null })),
+    launch: vi.fn(async () => {}), refreshGrant: vi.fn(async () => {}),
+  };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request });
+  await expect(backend.advance(source.task, new AbortController().signal)).rejects.toThrow("Initial response was lost");
+  expect(f.store.getTask(task)?.resources.nativeSession).toBeNull();
+  if (conflict === "exhausted") f.store.blockOrchestration(task, { source: "coordinator", code: "advance_failed", message: "Initial response was lost." }, 51);
+  else {
+    vi.mocked(f.git.verifyWorktree).mockRejectedValueOnce(new Error("Temporary worktree deviation."));
+    await expect(backend.advance(source.task, new AbortController().signal)).rejects.toThrow("Temporary worktree");
+  }
+  const blocker = f.store.getOrchestrationBlocker(task)!;
+  expect(blocker.identity.nativeSessionId).toBeNull();
+  snapshot = { ...snapshot, lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date(50).toISOString(), error: "Unexpected native exit." };
+  if (conflict === "missing-native") snapshot.nativeSessionId = null;
+  if (conflict === "missing-process") snapshot.nativeProcesses = [];
+  recovering = true;
+  const input = retry ? f.store.authorizeRecoveryRetry(task, 51) : f.store.getTask(task)!;
+  launcher.prepare.mockClear(); launcher.launch.mockClear();
+  if (conflict !== "none" && conflict !== "exhausted") {
+    await expect(backend.advance(input, new AbortController().signal)).rejects.toThrow();
+    expect(f.store.getTask(task)?.resources.nativeSession).toBeNull();
+    expect(f.store.getOrchestrationBlocker(task)).toEqual(blocker);
+    expect(f.store.getTask(task)?.recovery).toEqual(input.recovery);
+    expect(launcher.prepare).not.toHaveBeenCalled(); expect(launcher.launch).not.toHaveBeenCalled();
+    return;
+  }
+  const result = await backend.advance(input, new AbortController().signal);
+  expect(result.resources.nativeSession?.sessionId).toBe(nativeSessionId);
+  expect(result.webExecution?.executionGeneration).toBe(conflict === "exhausted" && !retry ? "1" : "2");
+  if (conflict === "exhausted" && !retry) {
+    expect(result.recovery).toMatchObject({ count: 0, reasonCode: "recovery_limit", retryAuthorized: false });
+    expect(result.recovery.pauseReason).not.toBeNull();
+    expect(launcher.launch).not.toHaveBeenCalled();
+  } else expect(result.recovery).toEqual({ count: 1, pauseReason: null, retryAuthorized: false });
+  expect(f.store.getOrchestrationBlocker(task)).toBeNull();
+  const launches = await Promise.all(launcher.prepare.mock.results.map(result => result.value));
+  expect(launches.every(ticket => ticket.resumeNativeSessionId === nativeSessionId)).toBe(true);
+  expect(source.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
+});
+
 it.each((["none", "controller", "journal-native", "journal-process"] as const).flatMap(conflict => [false, true].map(retry => [conflict, retry] as const)))("binds the original native identity through normal shutdown after a lost submit response (conflict=%s, retry=%s)", async (conflict, retry) => {
   const f = await fixture("codex", 3);
   const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);

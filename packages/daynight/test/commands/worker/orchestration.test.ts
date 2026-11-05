@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { LEGACY_BRANCH_ERROR, verifyLegacyBranchProvenance } from "../../../src/commands/worker/backends/orchestration.js";
+import { healthyOriginalGeneration, LEGACY_BRANCH_ERROR, preservesControllerEvidence, preservesControllerProcessProof, stoppedOriginalGeneration, verifyLegacyBranchProvenance } from "../../../src/commands/worker/backends/orchestration.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
+import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import type { LocalTask } from "../../../src/commands/worker/backends/web-types.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -60,4 +62,41 @@ it.each(["late", "before-report", "old", "worker", "claim", "native", "reason", 
   if (conflict === "conflict") f.entries.push({ ...terminal, timestamp: new Date(f.reportTime + 41_000).toISOString(), error: { name: "Error", message: "Original controller stopped." } });
   await f.save();
   await expect(verifyLegacyBranchProvenance(f.home, f.task, new AbortController().signal)).rejects.toThrow(/provenance is incomplete or conflicting/);
+});
+
+const windowsProofFixture = async () => {
+  const f = await fixture(0), execution = f.task.webExecution!;
+  const core = { pid: 123, parentPid: 1, processGroupId: null, startedAt: "2026-11-05T00:00:00.0000000Z", commandHash: "a".repeat(64) };
+  const nativeProcesses = [{ ...core, pid: 124, parentPid: 123 }];
+  const task: LocalTask = { ...f.task, webExecution: { ...execution, controllerProcess: core, nativeProcesses } };
+  const observed: ControllerSnapshot = { executionId: execution.executionId, claimId: task.claimId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, lifecycle: "working", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: task.resources.nativeSession!.sessionId, initialInputState: "confirmed", activity: "working", currentTurnId: null, capabilities: { send: true, steer: true, cancel: true, respond: false }, controllerProcess: { ...core, jobObjectName: `Local\\Daynight-${execution.launchId}` }, nativeProcesses, nativeStopped: false, stoppedAt: null, error: null };
+  return { task, observed, core, execution };
+};
+
+it("accepts original Windows Job capture after launcher process capture for live and stopped observations", async () => {
+  const { task, observed, core, execution } = await windowsProofFixture();
+  expect(healthyOriginalGeneration(task, observed)).toBe(true);
+  expect(preservesControllerEvidence({ ...observed, controllerProcess: core }, observed, execution.launchId)).toBe(true);
+  expect(stoppedOriginalGeneration(task, { ...observed, lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date(0).toISOString() })).toBe(true);
+  expect(preservesControllerProcessProof(core, core, execution.launchId)).toBe(true);
+  expect(preservesControllerProcessProof(observed.controllerProcess!, observed.controllerProcess, execution.launchId)).toBe(true);
+  expect(preservesControllerProcessProof(core, null, execution.launchId)).toBe(false);
+  expect(preservesControllerProcessProof({ ...core, processGroupId: core.pid }, { ...observed.controllerProcess!, processGroupId: core.pid }, execution.launchId)).toBe(false);
+});
+
+it.each(["pid", "parent", "group", "birth", "command", "other-launch", "known-job", "lost-job"] as const)("rejects %s changes when comparing Windows controller proofs", async conflict => {
+  const f = await windowsProofFixture();
+  if (conflict === "pid") f.observed.controllerProcess = { ...f.observed.controllerProcess!, pid: 999 };
+  if (conflict === "parent") f.observed.controllerProcess = { ...f.observed.controllerProcess!, parentPid: 999 };
+  if (conflict === "group") f.observed.controllerProcess = { ...f.observed.controllerProcess!, processGroupId: 999 };
+  if (conflict === "birth") f.observed.controllerProcess = { ...f.observed.controllerProcess!, startedAt: "different" };
+  if (conflict === "command") f.observed.controllerProcess = { ...f.observed.controllerProcess!, commandHash: "b".repeat(64) };
+  if (conflict === "other-launch") f.observed.controllerProcess = { ...f.observed.controllerProcess!, jobObjectName: `Local\\Daynight-${randomUUID()}` };
+  if (conflict === "known-job" || conflict === "lost-job") {
+    f.task.webExecution!.controllerProcess = { ...f.core, jobObjectName: `Local\\Daynight-${randomUUID()}` };
+    if (conflict === "lost-job") f.observed.controllerProcess = f.core;
+  }
+  expect(healthyOriginalGeneration(f.task, f.observed)).toBe(false);
+  expect(preservesControllerEvidence({ ...f.observed, controllerProcess: f.task.webExecution!.controllerProcess }, f.observed, f.execution.launchId)).toBe(false);
+  expect(stoppedOriginalGeneration(f.task, { ...f.observed, lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date(0).toISOString() })).toBe(false);
 });

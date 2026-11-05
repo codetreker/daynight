@@ -7,7 +7,7 @@ import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, RecoveryState } from "./web-types.js";
 import { webRecordInteger as integer, webRecordChoice as oneOf, webRecordText as text, webRecordId as id, parseWebWorktreeV1 as parseWorktree, parseWebExecutionV1 as parseWebExecution, parseWebCleanupV1 as parseCleanup, webClaimKey as key, parseWebTaskV1 as validate } from "./web-record.js";
 import { webExecutionStoreFormat } from "./web-store-format.js";
-import { continuingInitialGeneration, healthyOriginalGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, preservesNativeProcessPrefix, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
+import { continuingInitialGeneration, healthyOriginalGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
 
 const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 // The Worker owns Web execution state here; claim scheduling stays in the minimal index.
@@ -140,7 +140,7 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
             || observed.executionId !== execution.executionId || observed.claimId !== task.claimId || observed.testExecutionId !== undefined
             || observed.sessionId !== execution.sessionId || observed.executionGeneration !== execution.executionGeneration
             || observed.controllerInstanceId !== execution.controllerInstanceId || observed.nativeSessionId !== reference.sessionId
-            || observed.controllerProcess === null || execution.controllerProcess === null || !same(observed.controllerProcess, execution.controllerProcess)
+            || observed.controllerProcess === null || execution.controllerProcess === null || !preservesControllerProcessProof(execution.controllerProcess, observed.controllerProcess, execution.launchId)
             || observed.nativeProcesses.length === 0 || !preservesNativeProcessPrefix(execution.nativeProcesses, observed.nativeProcesses)) {
             throw new Error("Binding a blocked native session requires evidence from the original generation.");
           }

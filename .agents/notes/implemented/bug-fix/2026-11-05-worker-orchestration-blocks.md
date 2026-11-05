@@ -33,7 +33,13 @@ Controller may be observed before provider startup finishes. Existing Worker
 and journal proof prefixes remain binding; every new proof is checked against
 the OS. Verified first native binding updates the execution and matching blocker
 identity atomically, including during shutdown. This avoids treating a missing
-native ID as a wildcard or leaving a stale blocker after a legitimate binding.
+native ID as a wildcard or leaving a stale blocker after a legitimate binding. An unexpected
+first-generation exit uses the same binding only after proving complete original
+process stop, then returns to the existing recovery budget and retry gates.
+Windows Controller proof enrichment preserves every core identity field and
+accepts only an initially absent Job Object name for the original launch. Startup
+process capture precedes the Controller creating that boundary; requiring whole
+object equality would prevent cleanup in that interval.
 A proven stopped original generation can hand back to the existing native
 recovery path, preserving its pause, budget and authorization checks. Clearing
 an orchestration block does not grant a replacement writer.

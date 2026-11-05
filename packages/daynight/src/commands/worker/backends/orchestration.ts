@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import path from "node:path";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import type { ProcessProof } from "../../controller/process-proof.js";
 import type { LocalTask } from "./web-types.js";
 
 export const LEGACY_BRANCH_ERROR = "The task worktree no longer uses its original task branch.";
@@ -22,14 +23,21 @@ export const orchestrationIdentity = (task: LocalTask): OrchestrationIdentity =>
 export const sameOrchestrationIdentity = (task: LocalTask, blocker: OrchestrationBlocker): boolean =>
   JSON.stringify(orchestrationIdentity(task)) === JSON.stringify(blocker.identity);
 
+/** The Windows Controller adds its launch Job after the launcher captures the same process. */
+export const preservesControllerProcessProof = (previous: ProcessProof, observed: ProcessProof | null, launchId: string): boolean =>
+  observed !== null && observed.pid === previous.pid && observed.parentPid === previous.parentPid
+  && observed.processGroupId === previous.processGroupId && observed.startedAt === previous.startedAt && observed.commandHash === previous.commandHash
+  && (previous.jobObjectName !== undefined ? observed.jobObjectName === previous.jobObjectName
+    : observed.jobObjectName === undefined || (previous.processGroupId === null && observed.jobObjectName === `Local\\Daynight-${launchId}`));
+
 /** Controller startup appends captured processes; every previously captured identity must remain unchanged. */
 export const preservesNativeProcessPrefix = (previous: ControllerSnapshot["nativeProcesses"], observed: ControllerSnapshot["nativeProcesses"]): boolean =>
   previous.length <= observed.length && previous.every((proof, index) => JSON.stringify(proof) === JSON.stringify(observed[index]));
 
 /** Fresh IPC or journal observations cannot replace identities or undo delivery already recorded by the same Controller. */
-export const preservesControllerEvidence = (previous: ControllerSnapshot, observed: ControllerSnapshot): boolean =>
+export const preservesControllerEvidence = (previous: ControllerSnapshot, observed: ControllerSnapshot, launchId: string): boolean =>
   (previous.nativeSessionId === null || observed.nativeSessionId === previous.nativeSessionId)
-  && (previous.controllerProcess === null || JSON.stringify(observed.controllerProcess) === JSON.stringify(previous.controllerProcess))
+  && (previous.controllerProcess === null || preservesControllerProcessProof(previous.controllerProcess, observed.controllerProcess, launchId))
   && preservesNativeProcessPrefix(previous.nativeProcesses, observed.nativeProcesses)
   && (previous.initialInputState === "not_submitted" || observed.initialInputState !== "not_submitted");
 
@@ -43,7 +51,7 @@ const runningOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot
     && (snapshot.lifecycle === "ready" || snapshot.lifecycle === "working")
     && snapshot.startup?.state === "ready" && !snapshot.nativeStopped && snapshot.stoppedAt === null && snapshot.error === null
     && snapshot.controllerProcess !== null && execution.controllerProcess !== null
-    && JSON.stringify(snapshot.controllerProcess) === JSON.stringify(execution.controllerProcess)
+    && preservesControllerProcessProof(execution.controllerProcess, snapshot.controllerProcess, execution.launchId)
     && snapshot.nativeProcesses.length > 0 && preservesNativeProcessPrefix(execution.nativeProcesses, snapshot.nativeProcesses);
 };
 
@@ -65,7 +73,7 @@ export const stoppedOriginalGeneration = (task: LocalTask, snapshot: ControllerS
     && snapshot.sessionId === execution.sessionId && snapshot.executionGeneration === execution.executionGeneration && snapshot.controllerInstanceId === execution.controllerInstanceId
     && snapshot.nativeSessionId !== null && snapshot.nativeSessionId === task.resources.nativeSession?.sessionId
     && snapshot.lifecycle === "stopped" && snapshot.nativeStopped && snapshot.stoppedAt !== null && snapshot.controllerProcess !== null
-    && JSON.stringify(snapshot.controllerProcess) === JSON.stringify(execution.controllerProcess);
+    && execution.controllerProcess !== null && preservesControllerProcessProof(execution.controllerProcess, snapshot.controllerProcess, execution.launchId);
 };
 
 /** Only the known old producer's contradictory branch latch is eligible for provenance verification. */
