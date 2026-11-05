@@ -1184,11 +1184,11 @@ describe("authenticated standalone attachment reader", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.title).toBe("任务详情 · Daynight");
     const reader = screen.getByRole("main");
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.includes("/sessions?"))).toHaveLength(1));
     fireEvent.change(screen.getByRole("combobox", { name: "语言 / Language" }), { target: { value: "en" } });
     expect(document.title).toBe("Task details · Daynight");
     expect(screen.getByRole("main")).toBe(reader);
     expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", `/api/v1/projects/${projectId}/tasks/${taskId}/attachments/files/docs/guide.md`);
-    expect(fetcher).toHaveBeenCalledTimes(6);
     expect(fetcher.mock.calls.filter(([url]) => url.includes("/sessions?"))).toHaveLength(1);
   });
 

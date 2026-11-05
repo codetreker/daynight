@@ -65,7 +65,7 @@ afterEach(() => {
 it("atomically saves task data and reopens the exact maximum without granting local access", async () => {
   const first = scope(); const result = await seed(first, [task(1), task(2, { updatedAt: later, version: 9_007_199_254_740_993n })]);
   const database = await inspect();
-  expect([...database.objectStoreNames]).toEqual(["details", "profiles", "projects", "summaries", "userScopes"]);
+  expect([...database.objectStoreNames]).toEqual(["details", "profiles", "projects", "sessionHistory", "summaries", "userScopes"]);
   const manifest = await database.get("projects", [userId, projectId]);
   expect(manifest).toMatchObject({ state: "active", epoch, maxUpdatedAt: later, taskCount: 2, edgeCount: 0 });
   expect(result.project.versions.get(taskId(2))).toBe(9_007_199_254_740_993n); first.dispose();
