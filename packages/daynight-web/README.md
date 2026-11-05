@@ -684,12 +684,13 @@ withdraw admission even after presentation changes; stale histories cannot
 withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/implemented/bug-fix/2026-11-04-task-view-request-reuse.md)
 owns the versioning, HTTP cache and scan-cost trade-offs.
 
-The task-list filter supports All, Assigned to me, Unassigned and a person. It
-intersects recent/show-all selections before pagination and returns to page one
-when changed. Standalone rows match directly. A chain with any matching member
-retains its real representative as context and shows matching children and count;
-full-chain progress, readiness, dependencies, statistics and graph use the complete
-index. Overview positioning can clear a filter that hides its target. The
+The task lists share assignee and status filters. Assignee supports All, Assigned
+to me, Unassigned and a person; status supports all, todo, in progress and done.
+Both conditions must match the same task before pagination. Standalone rows match
+directly; a chain with any matching ordinary member retains its real representative
+and all ordinary children. Changing either filter resets both lists to page one.
+Full-chain progress, readiness, dependencies, statistics and graph use the complete
+index. Overview positioning adjusts filters that hide its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
@@ -950,7 +951,7 @@ the representative title, completed/total count and a floored integer percentage
 A Goal completes only when all ordinary members are done; its last member
 completion determines recency, with external prerequisites excluded. The latest
 known member completion supplies evidence when some historical times are unknown;
-without known recent evidence, completed Goals appear only through Show all.
+without known recent evidence, completed Goals remain available in the task list.
 The standalone aggregate row combines every unfinished standalone task with known
 completions in the same window. It remains visible at 100% when only recent
 completions remain, as do recent completed Goals. Project statistic cards retain
@@ -962,7 +963,7 @@ completions from October 21 at 00:00 onward. Local date arithmetic preserves
 calendar-day semantics across daylight-saving changes. Current time advances
 from the server sample and monotonic elapsed time after synchronization;
 local-only summaries use their provisional client-time anchor. One project-owned
-deadline updates Overview and Task list together at midnight, pauses while the
+deadline updates Overview at midnight, pauses while the
 page is hidden, and recalculates on visibility recovery without requiring a new
 snapshot.
 
@@ -975,7 +976,7 @@ exact newest-first order remains stable; the standalone aggregate follows
 matching-status chains.
 Pagination shows the current item range and filtered total with previous/next
 controls; one-page results have no pager. Each list retains its own page during
-the project visit. Changing Show all resets that list to page one; shrinking
+the project visit. Changing either filter resets both task lists to page one; shrinking
 results clamp the page immediately. These display slices do not truncate the
 cached graph, statistics, Goal progress or dependency context, and do not add
 requests or stored page preferences.
@@ -1009,10 +1010,8 @@ tasks (pending and in progress) from the complete snapshot, independently of
 completed-item visibility, outer/inner selection and the open graph dialog. Their sum
 equals the project's unfinished total; toolbars report all entries matching the
 current filter against complete category totals, independently of page size.
-Both categories default to all unfinished work plus completions in the local
-calendar window. Their independent Show all controls include all history when
-checked and restore the recent default when cleared. The label has no completed
-count suffix; each choice retains its existing per-project browser record.
+Both categories default to all statuses and include all history. Status and
+assignee selections are shared in memory during the project visit.
 
 Chain membership is an ordinary-edge weak component: `dependsOn` contains all
 prerequisites, while `externalDependsOn` marks edges that do not join
@@ -1041,8 +1040,7 @@ snapshot order, as do children in other status groups. Fresh snapshots recalcula
 this order. Top-level Goal ordering remains independent. Other starting tasks in a merge are
 included, while external prerequisite context is excluded. The
 list always retains `done`, `in_progress` and `todo` children; completed tasks
-remain visible. The chain-level Show all control changes whole-Goal visibility
-and never filters children by status or completion date. Child rows show their own status,
+remain visible. Filters determine whole-chain visibility and never remove children. Child rows show their own status,
 applicable ready/blocked markers and known execution duration after the title,
 and open the shared task dialog. The expanded heading offers the representative task's own
 details. Aggregate progress still includes that representative. Chain rows

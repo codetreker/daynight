@@ -360,8 +360,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await expect(root(page, a.id).locator('..').locator('.root-status')).toHaveText('进行中');
   await expect(root(page, a.id).locator('.root-progress-label')).toHaveText('4/7 已完成');
   await expect(page.locator('.react-flow__node')).toHaveCount(7);
-  const completedVisibility = page.getByRole('checkbox', { name: '显示所有', includeHidden: true });
-  await expect(completedVisibility).not.toBeChecked();
+  await expect(page.getByRole('checkbox', { name: '显示所有', includeHidden: true })).toHaveCount(0);
   await expect(root(page, completed.id)).toHaveCount(0);
   await expect(root(page, independent.id)).toHaveCount(0);
   await expect(page.getByLabel('显示 1 条，共 1 条任务链')).toBeVisible();
@@ -369,10 +368,6 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await viewTab(page, '独立任务').click();
   await expect(standalone(page, independent.id)).toBeVisible();
   await expect(standalone(page, independent.id)).toContainText('待处理');
-  const completedStandaloneVisibility = page.getByRole('checkbox', { name: '显示所有' });
-  await expect(completedStandaloneVisibility).not.toBeChecked();
-  await expect(standalone(page, completed.id)).toBeVisible();
-  await completedStandaloneVisibility.check();
   await expect(standalone(page, completed.id)).toBeVisible();
   await expect(viewTab(page, '任务链').locator('.graph-count-pill')).toHaveText('3');
   await expect(viewTab(page, '独立任务').locator('.graph-count-pill')).toHaveText('1');
@@ -381,14 +376,11 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await page.reload();
   await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(viewTab(page, '独立任务')).toHaveAttribute('aria-selected', 'true');
-  await expect(completedStandaloneVisibility).toBeChecked();
   expect(await page.locator('.standalone-row').evaluateAll((items) => items.map((item) => item.id))).toEqual(
     [independent, completed].map(({ id }) => `standalone-task-${id}`),
   );
-  await completedStandaloneVisibility.uncheck();
   await expect(standalone(page, completed.id)).toBeVisible();
   await viewTab(page, '任务链').click();
-  await expect(completedVisibility).not.toBeChecked();
   await expectClosedChain(page, a.id);
   await expect(root(page, a.id)).toHaveAttribute('aria-expanded', 'false');
   await openChain(page, a.id);
@@ -628,9 +620,6 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     await expect(card(page, statusDelivery[2]!.id)).toHaveCount(0);
     await expect(page.locator('.root-toggle')).toHaveCount(3);
     await closeChain(page);
-    const completed = page.getByRole('checkbox', { name: /显示所有/ });
-    await expect(completed).toHaveAccessibleName('显示所有');
-    await completed.check();
     await expect(page.locator('.root-toggle')).toHaveCount(3);
     await expect(root(page, auth[0]!.id).locator('.root-progress-label')).toHaveText('7/7 已完成');
     await expect(root(page, statusDelivery[0]!.id).locator('.root-progress-label')).toHaveText('3/3 已完成');
@@ -827,8 +816,6 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('1/2 已完成');
   await expect(root(page, independent.id)).toHaveCount(0);
   await expect(root(page, completedRoot.id)).toBeVisible();
-  const chainsCompleted = page.getByRole('checkbox', { name: '显示所有' });
-  await chainsCompleted.check();
   await expect(root(page, completedRoot.id)).toBeVisible();
   await expect(viewTab(page, '任务链').locator('.graph-count-pill')).toHaveText('25');
   await graphButton(page, predecessor.id).click();
@@ -972,9 +959,6 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await expect(standalonePagination).toContainText('第 16–22 条，共 22 条');
   await standalonePagination.getByRole('button', { name: '上一页', exact: true }).click();
   await expect(standalone(page, independent.id)).toBeVisible();
-  const standaloneCompleted = page.getByRole('checkbox', { name: '显示所有' });
-  await expect(standaloneCompleted).not.toBeChecked();
-  await standaloneCompleted.check();
   await expect(standalone(page, completedIndependent.id)).toHaveCount(0);
   await standalonePagination.getByRole('button', { name: '下一页', exact: true }).click();
   await expect(standalone(page, completedIndependent.id)).toBeVisible();
@@ -1006,7 +990,6 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await page.evaluate(() => window.scrollTo(0, 320));
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
   await activateViewWithoutScrolling(page, '任务链');
-  await expect(chainsCompleted).toBeChecked();
   await expectClosedChain(page, predecessor.id);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
   await openChain(page, predecessor.id);
@@ -1015,15 +998,10 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await page.evaluate(() => window.scrollTo(0, 540));
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   await activateViewWithoutScrolling(page, '独立任务');
-  await expect(standaloneCompleted).toBeChecked();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
-  await standaloneCompleted.evaluate((checkbox: HTMLInputElement) => checkbox.focus({ preventScroll: true }));
-  await page.keyboard.press('Space');
   await activateViewWithoutScrolling(page, '任务链');
-  await expect(chainsCompleted).toBeChecked();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   await activateViewWithoutScrolling(page, '独立任务');
-  await expect(standaloneCompleted).not.toBeChecked();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   await test.step('keeps category switching at the current position and only clamps shorter content', async () => {
     const scrollTrace = await page.evaluateHandle(() => {
@@ -1103,7 +1081,6 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
     await syncRequestStarted;
     await expect(viewTab(page, '独立任务')).toHaveAttribute('aria-selected', 'true');
-    await expect(standaloneCompleted).not.toBeChecked();
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
     const projectHeading = page.locator('.project-heading');
     await expect(projectHeading.locator('.project-title-actions-placeholder')).toHaveCount(1);
@@ -1539,7 +1516,6 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   expect(await nextAutomaticRefresh(page, project.id)).toBe(200);
   await expect(root(page, predecessor.id)).toBeVisible();
   await expect(page.getByRole('heading', { name: '暂无近期任务链' })).toHaveCount(0);
-  await expect(page.getByRole('checkbox', { name: '显示所有' })).not.toBeChecked();
   await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('已完成');
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('2/2 已完成');
   await openChain(page, predecessor.id);
@@ -1576,10 +1552,6 @@ test('failure-recovery', scenario('failure-recovery'), async ({ page, api: reque
   await expect(page.getByText('完成比例 100%')).toBeVisible();
   await selectTaskList(page);
   await expect(root(page, task.id)).toBeVisible();
-  await expect(page.getByRole('checkbox', { name: '显示所有' })).not.toBeChecked();
-  // The recovery scenario jumps the browser clock by a year and reloads offline,
-  // so its graph must stay visible independently of the recent-completion window.
-  await page.getByRole('checkbox', { name: '显示所有' }).check();
   await openChain(page, task.id);
   await expect(root(page, task.id).locator('..').locator('.root-status')).toHaveText('已完成');
   await expect(inspectTask(page, task.id)).toBeVisible();
@@ -1904,9 +1876,6 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(trigger).toBeFocused();
 
   await closeChain(page);
-  const completedVisibility = page.getByRole('checkbox', { name: '显示所有' });
-  await completedVisibility.check();
-  await expect(completedVisibility).toBeChecked();
   let currentTask = b;
   for (const fullscreenMode of [false, true]) {
     await openChain(page, a.id);

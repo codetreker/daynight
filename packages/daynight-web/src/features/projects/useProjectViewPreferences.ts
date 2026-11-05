@@ -22,11 +22,6 @@ const readPreference = <Value,>(key: string, decode: (value: unknown) => Value):
   }
 };
 
-const showAllPreference = (value: unknown): boolean => {
-  if (typeof value !== "boolean") throw new Error("Invalid task visibility preference.");
-  return value;
-};
-
 export type ProjectSection = "overview" | "tasks";
 export type TaskView = "standalone" | "chains";
 
@@ -61,16 +56,6 @@ const useNamedPreference = <Value,>(key: string, decode: (value: unknown) => Val
     }
   }, [key]);
   return { value, save, issue: writeIssue ?? initial.issue };
-};
-
-export const useChainVisibility = (projectId: string) => {
-  const { value, save, issue } = useNamedPreference(`daynight:completed-chains:${projectId}`, showAllPreference, false);
-  return { showAll: value, onShowAllChange: save, issue };
-};
-
-export const useStandaloneVisibility = (projectId: string) => {
-  const { value, save, issue } = useNamedPreference(`daynight:completed-standalone-tasks:${projectId}`, showAllPreference, false);
-  return { showAll: value, onShowAllChange: save, issue };
 };
 
 export const useProjectSection = (projectId: string) => {

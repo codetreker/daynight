@@ -72,7 +72,7 @@ describe("workspace localization", () => {
     const row = screen.getByRole("button", { name: /Task 用户数据/ });
     expect(row).toHaveTextContent("To do");
     expect(row).toHaveTextContent("Ready");
-    await user.selectOptions(screen.getByRole("combobox"), "zh-CN");
+    await user.selectOptions(screen.getByRole("combobox", { name: /language/i }), "zh-CN");
     expect(document.querySelector(".stats")).toBe(statistics);
     expect(statistics).toHaveAttribute("aria-label", "项目任务统计");
     expect(statistics).not.toBeVisible();
@@ -131,7 +131,7 @@ describe("workspace localization", () => {
     const alert = await screen.findByRole("alert");
     expect(within(alert).getByRole("heading", { name: title })).toBeVisible();
     const requestId = screen.getByText(error.requestId!);
-    await user.selectOptions(screen.getByRole("combobox"), "zh-CN");
+    await user.selectOptions(screen.getByRole("combobox", { name: /language/i }), "zh-CN");
     expect(screen.getByRole("alert")).toBe(alert);
     expect(within(alert).getByText(detail)).toBeVisible();
     expect(screen.getByText(error.requestId!)).toBe(requestId);
@@ -148,22 +148,21 @@ describe("workspace localization", () => {
     await selectTaskList();
     await user.click(screen.getByRole("tab", { name: "Standalone tasks" }));
     const standaloneTab = screen.getByRole("tab", { name: "Standalone tasks" });
-    const filter = screen.getByRole("checkbox", { name: "Show all" });
-    await user.click(filter);
+    const filter = screen.getByRole("combobox", { name: "Status" });
+    await user.selectOptions(filter, "todo");
     const row = screen.getByRole("button", { name: /Task 用户数据/ });
     const scroll = vi.spyOn(window, "scrollTo");
     scroll.mockClear();
-    const selector = screen.getByRole("combobox");
+    const selector = screen.getByRole("combobox", { name: /language/i });
     await user.selectOptions(selector, "zh-CN");
     expect(screen.getByRole("tab", { name: "独立任务" })).toBe(standaloneTab);
     expect(standaloneTab).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("checkbox", { name: "显示所有" })).toBe(filter);
-    expect(filter).toBeChecked();
+    expect(screen.getByRole("combobox", { name: "状态" })).toBe(filter);
+    expect(filter).toHaveValue("todo");
     expect(screen.getByRole("button", { name: /Task 用户数据/ })).toBe(row);
     expect(graphRequest).toHaveBeenCalledTimes(1);
     expect(scroll).not.toHaveBeenCalled();
     expect(window.localStorage.getItem(`daynight:task-view:${projectId}`)).toBe('"standalone"');
-    expect(window.localStorage.getItem(`daynight:completed-standalone-tasks:${projectId}`)).toBe("true");
     await user.click(row);
     expect(screen.getByRole("complementary", { name: "Task test shell" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Refresh test graph" }));
@@ -191,7 +190,7 @@ describe("workspace localization", () => {
     renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
     const notice = screen.getByText(en.workspace.preferences.tab.invalid);
-    await user.selectOptions(screen.getByRole("combobox"), "zh-CN");
+    await user.selectOptions(screen.getByRole("combobox", { name: /language/i }), "zh-CN");
     expect(screen.getByText(zhCN.workspace.preferences.tab.invalid)).toBe(notice);
     expect(window.localStorage.getItem(key)).toBe('"unknown"');
     expect(graphRequest).toHaveBeenCalledTimes(1);
@@ -201,7 +200,7 @@ describe("workspace localization", () => {
     window.history.replaceState(null, "", "/missing");
     renderWithLocale(<App />, { taskCache: true, locale: "en" });
     expect(screen.getByRole("heading", { name: "Page not found" })).toBeVisible();
-    const selector = screen.getByRole("combobox");
+    const selector = screen.getByRole("combobox", { name: /language/i });
     selector.focus();
     fireEvent.change(selector, { target: { value: "zh-CN" } });
     expect(selector).toHaveFocus();
@@ -214,7 +213,6 @@ describe("workspace localization", () => {
 
   it.each([0, 1, 2])("uses complete standalone count sentences for %i tasks in both languages", (count) => {
     expect(en.workspace.standalone.summary({ visible: count, total: count })).toBe(`Newest first · ${count} / ${count} standalone ${count === 1 ? "task" : "tasks"}`);
-    expect(en.workspace.standalone.hiddenCompleted({ count })).toBe(`${count} completed standalone ${count === 1 ? "task is" : "tasks are"} outside the current filter. Select “Show all” to view them.`);
     expect(zhCN.workspace.standalone.summary({ visible: count, total: count })).toBe(`最新创建在前 · ${count} / ${count} 个独立任务`);
   });
 });
