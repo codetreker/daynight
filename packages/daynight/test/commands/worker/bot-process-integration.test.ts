@@ -20,6 +20,7 @@ import { readControllerSnapshot, readControllerOperation } from "../../../src/co
 import { requestController } from "../../../src/commands/controller/local-client.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
+import { inspectControllerJob } from "../../../src/commands/controller/windows-job.js";
 import { parseControllerMessage, RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
 import { SESSION_PROTOCOL, type SessionSnapshot } from "../../../src/session/protocol.js";
 import snapshotFixture from "../../session/fixtures/snapshot.json" with { type: "json" };
@@ -105,7 +106,20 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
     const retained = aliasDirectory;
     return { environment: { ...process.env, DN_CONFIG_DIR: state, CODEX_HOME: path.join(home, "native"), CODEX_TEST_REQUEST_LOG: requestLog, EXPECT_WORKER_PERMISSIONS: "no", ...(options.rejectRole ? { CODEX_TEST_REJECT_ROLE: "Fixture role configuration refused" } : {}) }, aliasDirectory, bindings: [], release: async () => { if (retained !== null) await rm(retained, { recursive: true, force: true }); } };
   };
-  const create = () => createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, dependencies: { prepareEnvironment } });
+  const stopProcesses: typeof stopControllerProcesses = async (controller, native, deadline) => {
+    const started = Date.now();
+    try { await stopControllerProcesses(controller, native, deadline); }
+    catch (error) {
+      diagnostic("stop-original-processes", Date.now() - started, error);
+      // Only inspect identities created by this fixture; retain the original
+      // failure even if a diagnostic probe also fails.
+      const identities = await Promise.all([controller, ...native].map(async proof => ({ pid: proof.pid, state: await inspectProcessProof(proof).catch(() => "unconfirmed") })));
+      const jobMembers = controller.jobObjectName === undefined ? null : await inspectControllerJob(controller.jobObjectName).catch(() => "unconfirmed");
+      console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "stop-original-process-evidence", elapsedMs: Date.now() - started, deadlineExpired: Date.now() >= deadline, identities, jobMembers }));
+      throw error;
+    }
+  };
+  const create = () => createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, dependencies: { prepareEnvironment, stopProcesses } });
   const botProcess = create();
   const frames: ReturnType<typeof parseControllerMessage>[] = [], relayErrors: unknown[] = [];
   let browserConnections = 0, deleted = false;
@@ -321,8 +335,10 @@ test("deletes every private generation after real Controller stop while preservi
   f.store.observe(f.owner, remote, Date.now()); f.revoke();
   const receipts: BotDeletionReceipt[] = [];
   const api = { ...f.api, completeDeletion: async (_record: BotRecord, receipt: BotDeletionReceipt): Promise<BotDeleted> => {
-    expect(await confirmControllerProcessesStopped(finalWriter.controllerProcess!, finalWriter.nativeProcesses)).toBe(true);
-    expect(existsSync(controllerExecutionDirectory(f.home, first.executionId))).toBe(false);
+    if (receipt.result.state === "completed") {
+      expect(await confirmControllerProcessesStopped(finalWriter.controllerProcess!, finalWriter.nativeProcesses)).toBe(true);
+      expect(existsSync(controllerExecutionDirectory(f.home, first.executionId))).toBe(false);
+    }
     receipts.push(structuredClone(receipt));
     remote = { ...remote, version: String(BigInt(remote.version) + 1n), deletion: { ...remote.deletion, workerCleanup: receipt.result, serverCleanup: { state: "completed", code: null } } };
     return remote;

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { captureBotDeletionFiles, removeBotDeletionFile, type BotDeletionTarget } from "../../../src/commands/worker/bots/delete-files.js";
 import { controllerExecutionDirectory, controllerTicketPath, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import type { BotExecution } from "../../../src/commands/worker/bots/execution-store.js";
 import { removeHerdrSourceDirectory } from "../../../src/commands/worker/resource-disposal.js";
 import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
@@ -33,10 +34,10 @@ const fixture = async () => {
   };
   const execution: BotExecution = { launchId, executionId, executionGeneration: "2", launchSubmission: "acknowledged", controllerProcess: null, snapshot: null, aliasDirectory: alias, lastError: null, startup: null,
     recoveryCount: 0, restartAfterShutdown: false, recoveryBlocked: null, previous: null, retainedLaunchIds: [previousId], retainedAliasDirectories: [retainedAlias] };
-  const ticketValue: ControllerLaunchTicket = { schemaVersion: 1, launchId, executionId, testExecutionId: executionId, controllerId: id(9), controllerInstanceId: id(10), sessionId: id(12), executionGeneration: "2", serverOrigin: record.owner.serverOrigin, ownerUserId: id(1), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, initialInput: "none", initialOperationId: id(11), initialPrompt: "", resumeNativeSessionId: id(13), credentialFile: record.intent!.credentialFile, ipcEndpoint: path.join(home, "socket"), ipcSecret: "a".repeat(64), createdAt: "2026-11-05T00:00:00Z" };
+  const ticketValue: ControllerLaunchTicket = { schemaVersion: 1, launchId, executionId, testExecutionId: executionId, controllerId: id(9), controllerInstanceId: id(10), sessionId: id(12), executionGeneration: "2", serverOrigin: record.owner.serverOrigin, ownerUserId: id(1), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, initialInput: "none", initialOperationId: id(11), initialPrompt: "", resumeNativeSessionId: id(13), credentialFile: record.intent!.credentialFile, ipcEndpoint: resolveControllerIpcEndpoint(home, launchId), ipcSecret: "a".repeat(64), createdAt: "2026-11-05T00:00:00Z" };
   const ticketContent = JSON.stringify(ticketValue);
   await writeFile(ticket, ticketContent, { mode: 0o600 }); await chmod(ticket, 0o600);
-  await writeFile(previousTicket, JSON.stringify({ ...ticketValue, launchId: previousId, executionGeneration: "1", controllerInstanceId: id(14), resumeNativeSessionId: null }), { mode: 0o600 }); await chmod(previousTicket, 0o600);
+  await writeFile(previousTicket, JSON.stringify({ ...ticketValue, launchId: previousId, ipcEndpoint: resolveControllerIpcEndpoint(home, previousId), executionGeneration: "1", controllerInstanceId: id(14), resumeNativeSessionId: null }), { mode: 0o600 }); await chmod(previousTicket, 0o600);
   return { home, directory, ticket, previousTicket, alias, retainedAlias, record, execution, ticketValue, ticketContent };
 };
 const metadata = async (target: string) => { const entry = await lstat(target, { bigint: true }); return `${entry.dev}:${entry.ino}`; };
@@ -49,6 +50,13 @@ describe("Bot private file deletion", () => {
     for (const directory of unrelated) { await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, "keep"), "keep"); }
     const targets = await captureBotDeletionFiles(f.home, f.record, f.execution, signal());
     expect(targets.filter(target => !target.completed).map(target => target.path).sort()).toEqual([f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias].sort());
+    if (process.platform === "win32") {
+      expect(f.ticketValue.ipcEndpoint.startsWith("\\\\.\\pipe\\")).toBe(true);
+      expect(targets).toHaveLength(5);
+      expect(targets.some(target => target.kind === "socket" || target.path === f.ticketValue.ipcEndpoint)).toBe(false);
+    } else {
+      expect(targets.filter(target => target.kind === "socket")).toHaveLength(2);
+    }
     for (const target of targets) await removeBotDeletionFile(target, signal());
     for (const target of [f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias]) await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
     for (const directory of unrelated) expect(await readFile(path.join(directory, "keep"), "utf8")).toBe("keep");
@@ -175,7 +183,7 @@ describe("Bot private file deletion", () => {
     expect(await readFile(path.join(f.directory, "journal.sqlite"), "utf8")).toBe("private");
   });
 
-  it("unlinks only the captured socket and retains its parent", async () => {
+  it.skipIf(process.platform === "win32")("unlinks only the captured Unix socket and retains its parent", async () => {
     const f = await fixture(), socket = path.join(f.home, "socket");
     const server = createServer();
     // Relative bind avoids the Unix sockaddr length limit while keeping evidence

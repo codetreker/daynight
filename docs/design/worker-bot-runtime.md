@@ -42,6 +42,8 @@ grant 接收持久前代的 generation、Controller instance、recordId 和 stop
 
 取消 `run` 或显式 `shutdown` 先关闭调度并取消在途管理操作，等待发现、续期和启动 job 全部结束，再对本地责任清单中每个 Bot 进行有界停止。停止不依赖远端可用性，按原 ticket 尝试 IPC stop，并通过原进程证明停止进程树；IPC 回执或 timeout 单独不决定结果。恢复子进程可能已提交，而共享 journal 尚未替换前代 snapshot；此时不把前代 snapshot 当作当前原生进程证据，仍依据父进程已保存的当前子进程出生证明尝试停止。当前代 journal 停证缺失仍报告失败并保留责任，不能借前代已停止状态宣称完成。OS 确认与 journal 停证完成后才返回成功，不调用 StopTest、归档、cleanup prompt 或删除接口。每个 Bot 独立完成停止尝试，全部错误一并交给调用方；stores 与 Worker 实例锁必须保留到这些尝试完成。
 
+Windows Job 终止是异步的。`stopControllerProcesses` 请求终止后，反复通过 `confirmControllerProcessesStopped` 核对全部已保留的 Controller/native 进程身份及 Job 成员；成员列表先变空不等于原进程均已停止。调用方的原 deadline 是启动新一轮完整确认的预算，轮询不重置该期限，到时不再开始下一轮；已经开始的系统探测沿用既有单次 timeout，因此不承诺严格的总 wall-clock 上界。预算耗尽仍未取得完整停证、权限错误或未知查询结果均保留失败、执行资料与删除责任。
+
 `shutdownWorkerExecutions` 汇总 Task 和 Bot 的执行所有者，等待每项停止尝试并保留失败。Task 退出仍由 coordinator 和原 backend 完成，不把 Bot 停机规则注入 Task 归档及容量逻辑。正式 `runWorker` 尚未启用 Bot 调度或 `assistantHost` 广告；调用者的产品组合仍须明确接入这些执行所有者。
 
 ## 精确删除与失败保留

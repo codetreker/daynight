@@ -48,6 +48,15 @@ transition of the Bot intent and execution row. The next generation retains the
 same native Session, role, configuration and operation journal; an unreachable
 Controller alone never authorizes replacement.
 
+Windows Job termination is asynchronous, so an empty member list does not prove
+that every retained original process has exited. The stop helper repeatedly
+checks the complete Controller/native identities and Job boundary. The original
+deadline limits starting another complete confirmation round and is never reset;
+an already started system probe retains its existing per-call timeout. This is
+not a strict total wall-clock bound. Exhausting the polling budget without full
+proof, an unknown query or a permission error retains failure and execution
+evidence.
+
 Deletion runs under the same per-Bot serializer as launch and grant renewal.
 The persistent deletion observation blocks new execution actions, while process
 birth and current-generation observations from an already submitted child remain
