@@ -94,16 +94,18 @@ fi
 exec "$_dn_router_original" "$@"
 `;
 
-const activation = (output) => `# Source this file in sh or zsh. It does not select a Daynight configuration root.
+const activation = (output, commands) => `# Source this file in sh or zsh. It does not select a Daynight configuration root.
 _dn_router_activate() {
-  _dn_router_current=$(command -v daynight 2>/dev/null) || _dn_router_current=
-  case "$_dn_router_current" in
-    */agent-cli-aliases/*/daynight)
-      if [ -f "$_dn_router_current" ] && [ -x "$_dn_router_current" ]; then
-        return 0
-      fi
-      ;;
-  esac
+  for _dn_router_command in ${commands.map(quote).join(" ")}; do
+    _dn_router_current=$(command -v "$_dn_router_command" 2>/dev/null) || _dn_router_current=
+    case "$_dn_router_current" in
+      */agent-cli-aliases/*/"$_dn_router_command")
+        if [ -f "$_dn_router_current" ] && [ -x "$_dn_router_current" ]; then
+          return 0
+        fi
+        ;;
+    esac
+  done
   _dn_router_bin=${quote(output)}
   _dn_router_self=${quote(path.join(output, "daynight"))}
   _dn_router_command=daynight
@@ -192,7 +194,7 @@ export async function createRepoRouter(options) {
     await writeFile(path.join(output, "daynight"), wrapper(metadata), { flag: "wx", mode: 0o700 });
     // One inode also lets fallback identify either spelling through hard links or symlinks.
     if (options.includeDn) await link(path.join(output, "daynight"), path.join(output, "dn"));
-    await writeFile(path.join(output, "activate.sh"), activation(output), { flag: "wx", mode: 0o600 });
+    await writeFile(path.join(output, "activate.sh"), activation(output, commands), { flag: "wx", mode: 0o600 });
     await writeFile(path.join(output, "deactivate.sh"), deactivation(output), { flag: "wx", mode: 0o600 });
     await writeFile(path.join(output, "router.json"), `${JSON.stringify(metadata, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   } catch (cause) {

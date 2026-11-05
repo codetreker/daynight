@@ -45,7 +45,8 @@ from stable state. Incompatible retained state can remain untouched while a
 separately identified child root verifies current behavior; that test does not
 prove a lossless upgrade. A generated executable router selects development by
 physical cwd, sets the root only in that child and delegates outside calls through the
-current PATH. Managed Agent shims retain priority and their pinned snapshots.
+current PATH. Activation checks every routed command before changing PATH, so
+managed Agent shims retain their pinned snapshots even when only `dn` is configured.
 GitHub provides the checkout; the local fixture requires no remote Git writes.
 
 The website guide connects observable UI actions to CLI readback, distinguishing

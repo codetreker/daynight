@@ -170,6 +170,33 @@ test("activation preserves a selected managed Agent shim", async (t) => {
   assert.equal(rows(result)[0].label, "managed");
 });
 
+test("activation preserves dn-only managed aliases when the router includes dn", async (t) => {
+  const f = await fixture(t); f.create(["--include-dn"]);
+  const managed = path.join(f.state, "agent-cli-aliases", "dn-only-execution");
+  await mkdir(managed, { recursive: true });
+  await f.executable(path.join(managed, "dn"), "managed-pinned");
+  const originalPath = `${managed}:${f.stable}:/usr/bin:/bin`;
+  for (const shell of ["/bin/sh", "/bin/zsh"]) {
+    const result = f.run({ shell, env: { PATH: originalPath, DN_CONFIG_DIR: "retained root" }, script: `. ${quote(f.activate)}; dn; /bin/sh -c dn; printf '%s\\n' "$PATH" "$DN_CONFIG_DIR"` });
+    assert.equal(result.status, 0, result.stderr);
+    const lines = result.stdout.trim().split("\n");
+    assert.deepEqual(lines.slice(0, 2).map((line) => JSON.parse(line).label), ["managed-pinned", "managed-pinned"]);
+    assert.equal(lines[2], originalPath);
+    assert.equal(lines[3], "retained root");
+  }
+});
+
+test("a daynight-only router leaves an unrelated managed dn available", async (t) => {
+  const f = await fixture(t); f.create();
+  const managed = path.join(f.state, "agent-cli-aliases", "dn-only-execution");
+  await mkdir(managed, { recursive: true });
+  await f.executable(path.join(managed, "dn"), "managed-pinned");
+  for (const shell of ["/bin/sh", "/bin/zsh"]) {
+    const result = f.run({ shell, env: { PATH: `${managed}:${f.stable}:/usr/bin:/bin` }, script: "daynight; dn" });
+    assert.deepEqual(rows(result).map((row) => row.label), ["dev", "managed-pinned"]);
+  }
+});
+
 test("keeps the development entry link live and never falls back when it disappears", async (t) => {
   const f = await fixture(t);
   const first = f.dev, entry = path.join(f.root, "dev-link");
