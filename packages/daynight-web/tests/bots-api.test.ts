@@ -1,10 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BotCreationUnknown, createBot, getBot, getBotDefaults, listBots, parseBot, parseBotDefaults } from '../src/api/bots';
+import * as botsApi from '../src/api/bots';
 import { invalidateAuthRequests } from '../src/api/client';
 import { BOT_USER, botDefaults, botDefinition, botError, botId, botResponse, botWorkerDefaults } from './helpers/bots';
 
 const admission = () => ({ userId: BOT_USER, onPrincipalMismatch: vi.fn() });
 const signal = () => new AbortController().signal;
+const deleteInput = () => ({ ifVersion: '9007199254740993', deletionId: botId(50) });
+const deletedBot = (state: 'pending' | 'failed' | 'completed' = 'pending') => ({
+  id: botId(), workerId: botId(20), version: '9007199254740994',
+  deletion: { deletionId: botId(50), requestedVersion: '9007199254740993', workerCleanup: { state, code: state === 'failed' ? 'process_stop_unconfirmed' : null }, serverCleanup: { state: state === 'completed' ? 'completed' : 'pending', code: null } },
+});
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
 describe('Bot response contracts', () => {
@@ -61,6 +67,68 @@ describe('Bot response contracts', () => {
       { ...botWorkerDefaults(), providers: botWorkerDefaults().providers.map(p => ({ ...p, model: 'x'.repeat(257) })) },
     ];
     for (const worker of variants) expect(() => parseBotDefaults({ ...original, workers: [worker] })).toThrow();
+  });
+});
+
+describe('Bot deletion API', () => {
+  it.each(['pending', 'failed', 'completed'] as const)('returns the actual %s cleanup state with the original exact deletion identity', async state => {
+    expect(botsApi.deleteBot).toBeTypeOf('function');
+    const bot = deletedBot(state), fetch = vi.fn().mockResolvedValue(botResponse(bot)); vi.stubGlobal('fetch', fetch);
+    expect(await botsApi.deleteBot(botId().toUpperCase(), deleteInput(), signal(), admission())).toEqual(bot);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]![0]).toBe(`/api/v1/me/bots/${botId()}`);
+    expect(fetch.mock.calls[0]![1].method).toBe('DELETE');
+    expect(JSON.parse(String(fetch.mock.calls[0]![1].body))).toEqual(deleteInput());
+  });
+  it('checks a replay against requestedVersion even after cleanup advances the Bot version', async () => {
+    const bot = { ...deletedBot('completed'), version: '9007199254740998' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(botResponse(bot)));
+    expect(await botsApi.deleteBot(botId(), deleteInput(), signal(), admission())).toEqual(bot);
+  });
+  it.each([
+    () => Promise.reject(new TypeError('response lost')),
+    () => Promise.resolve(botError(500, 'internal_error')),
+    () => Promise.resolve(botResponse(deletedBot(), BOT_USER, 201)),
+    () => Promise.resolve(botResponse(botDefinition())),
+    () => Promise.resolve(botResponse({ ...deletedBot(), id: botId(2) })),
+    () => Promise.resolve(botResponse({ ...deletedBot(), deletion: { ...deletedBot().deletion, deletionId: botId(51) } })),
+    () => Promise.resolve(botResponse({ ...deletedBot(), deletion: { ...deletedBot().deletion, requestedVersion: '1' } })),
+  ])('retains the frozen request for observation after an unknown deletion outcome %#', async response => {
+    const fetch = vi.fn(response); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.deleteBot(botId(), deleteInput(), signal(), admission())).rejects.toMatchObject({ name: 'BotDeletionUnknown', id: botId(), input: deleteInput() });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it.each(['version_conflict', 'resource_conflict'])('preserves a definite %s rejection without retrying', async code => {
+    const fetch = vi.fn().mockResolvedValue(botError(409, code)); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.deleteBot(botId(), deleteInput(), signal(), admission())).rejects.toMatchObject({ kind: 'server', status: 409, code });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it('does not dispatch malformed IDs or inexact versions', async () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    for (const input of [{ ...deleteInput(), ifVersion: '01' }, { ...deleteInput(), ifVersion: '0' }, { ...deleteInput(), ifVersion: '9223372036854775808' }, { ...deleteInput(), deletionId: 'bad' }]) {
+      await expect(botsApi.deleteBot(botId(), input, signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    }
+    await expect(botsApi.deleteBot('bad', deleteInput(), signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('treats missing or changed response principals as unknown and invalidates the changed identity', async () => {
+    const gate = admission(), fetch = vi.fn().mockResolvedValueOnce(botResponse(deletedBot(), null)).mockResolvedValueOnce(botResponse(deletedBot(), botId(40)));
+    vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.deleteBot(botId(), deleteInput(), signal(), gate)).rejects.toMatchObject({ name: 'BotDeletionUnknown', cause: { kind: 'protocol' } });
+    await expect(botsApi.deleteBot(botId(), deleteInput(), signal(), gate)).rejects.toMatchObject({ name: 'BotDeletionUnknown', cause: { code: 'principal_mismatch' } });
+    expect(gate.onPrincipalMismatch).toHaveBeenCalledOnce();
+  });
+  it('retains dispatched aborts without classifying a pre-dispatch abort as unknown', async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn(async () => { controller.abort(); throw new DOMException('Aborted', 'AbortError'); }); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.deleteBot(botId(), deleteInput(), controller.signal, admission())).rejects.toMatchObject({ name: 'BotDeletionUnknown', id: botId(), input: deleteInput() });
+    await expect(botsApi.deleteBot(botId(), deleteInput(), controller.signal, admission())).rejects.not.toBeInstanceOf(botsApi.BotDeletionUnknown);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it('does not let caller mutation replace the identity of a dispatched deletion', async () => {
+    const original = deleteInput(), fetch = vi.fn(async (_url: unknown, _options: RequestInit) => { original.ifVersion = '3'; original.deletionId = botId(51); throw new TypeError('lost'); }); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.deleteBot(botId(), original, signal(), admission())).rejects.toMatchObject({ name: 'BotDeletionUnknown', input: deleteInput() });
+    expect(JSON.parse(String(fetch.mock.calls[0]![1].body))).toEqual(deleteInput());
   });
 });
 

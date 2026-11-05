@@ -6,7 +6,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_USER, botDefinition, botDefaults, botId, botResponse, botError } from './helpers/bots';
 import { parseAuthRoute } from '../src/app/router';
 vi.mock('../src/features/bots/BotSessionHost', () => ({ useBotSessionCache: () => cache, BotSessionHost: ({ binding }: {binding: {botId:string}|null}) => <section data-testid="host">{binding?.botId ?? 'no binding'}</section> }));
-const cache = { invalidateBot: vi.fn() };
+const cache = { invalidateBot: vi.fn(), blockBot: vi.fn(), unblockBot: vi.fn(), isBlocked: () => false, isRevoked: () => false, subscribe: () => () => {}, guardSnapshot: () => 0 };
 const scopes: ReturnType<typeof createTaskCacheScope>[] = [];
 afterEach(() => scopes.splice(0).forEach(scope => scope.dispose()));
 function mount(bot: string|null = null) {
@@ -107,4 +107,45 @@ it('keeps an unknown creation across leaving and reopening the page and only que
  fireEvent.click(screen.getByRole('button',{name:'Create assistant'}));expect(screen.queryByLabelText('Name')).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:'Check creation'}));await screen.findByRole('alert');
  expect(creates).toBe(1);expect(f.fetch.mock.calls.some(([url])=>String(url).endsWith(submitted))).toBe(true);restored.unmount();
+});
+
+it('opens the row menu by keyboard and cancels deletion without changing the current conversation', async () => {
+ const f=fixture(); mount(botId(1));
+ const menu=await screen.findByRole('button',{name:'More actions for Assistant 2'});
+ menu.focus(); fireEvent.keyDown(menu,{key:'ArrowDown'});
+ fireEvent.click(screen.getByRole('menuitem',{name:'Delete assistant'}));
+ const dialog=screen.getByRole('dialog',{name:'Delete Assistant 2?'});
+ fireEvent.click(within(dialog).getByRole('button',{name:'Cancel'}));
+ expect(menu).toHaveFocus(); expect(screen.getByRole('heading',{name:'Assistant 1'})).toBeVisible();
+ expect(f.fetch.mock.calls.some(([,o])=>o?.method==='DELETE')).toBe(false);
+});
+it('deletes the context-menu target and keeps pending cleanup distinct from completion', async () => {
+ const f=fixture(); let submitted: {url:string;body:unknown}|null=null;
+ f.fetch.mockImplementation(async(url,options)=>{
+  if(options?.method==='DELETE') { submitted={url:String(url),body:JSON.parse(String(options.body))}; const body=submitted.body as {deletionId:string;ifVersion:string}; return botResponse({id:botId(2),workerId:botId(20),version:'2',deletion:{deletionId:body.deletionId,requestedVersion:body.ifVersion,workerCleanup:{state:'pending',code:null},serverCleanup:{state:'pending',code:null}}}); }
+  return String(url).includes('/defaults')?botResponse(botDefaults()):String(url).includes('?')?botResponse({items:f.bots,nextCursor:null}):botResponse(f.bots[0]);
+ });
+ mount(botId(1)); const row=await screen.findByRole('link',{name:/Assistant 2/}); fireEvent.contextMenu(row);
+ fireEvent.click(screen.getByRole('menuitem',{name:'Delete assistant'}));
+ fireEvent.click(within(screen.getByRole('dialog')).getByRole('button',{name:'Delete assistant'}));
+ await screen.findByText('Waiting for cleanup');
+ expect((submitted as {url:string}|null)?.url).toBe(`/api/v1/me/bots/${botId(2)}`);
+ expect(screen.queryByRole('link',{name:/Assistant 2/})).toBeNull();
+ expect(screen.getByRole('heading',{name:'Assistant 1'})).toBeVisible();
+ expect(screen.queryByText('Deletion completed')).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'Refresh'}));
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Refresh'})).toBeEnabled());
+ expect(screen.queryByRole('link',{name:/Assistant 2/})).toBeNull();
+});
+it('keeps sending blocked after an unknown delete even when a following read still returns active',async()=>{
+ const f=fixture(); f.fetch.mockImplementation(async(url,options)=>{
+  if(options?.method==='DELETE') throw new TypeError('response lost');
+  return String(url).includes('/defaults')?botResponse(botDefaults()):String(url).includes('?')?botResponse({items:f.bots,nextCursor:null}):botResponse(f.bots[0]);
+ });
+ mount(botId(1)); fireEvent.click(await screen.findByRole('button',{name:'More actions for Assistant 1'}));
+ fireEvent.click(screen.getByRole('menuitem',{name:'Delete assistant'}));
+ fireEvent.click(within(screen.getByRole('dialog')).getByRole('button',{name:'Delete assistant'}));
+ await screen.findByText('Deletion result unknown');
+ expect(screen.getByTestId('host')).toHaveTextContent('no binding');
+ expect(f.fetch.mock.calls.filter(([,o])=>o?.method==='DELETE')).toHaveLength(1);
 });

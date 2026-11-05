@@ -4,7 +4,7 @@
 
 ## API 与准入
 
-`api/bots.ts` 消费服务端 `/api/v1/me/bots` 的 list、defaults、create、get。读取要求响应 principal 与当前账号一致；定义再次核对 owner、Worker 配置和 Session 双身份。删除响应是仅含身份及删除责任的联合类型。版本与创建顺序保持十进制字符串，不经浮点数转换。
+`api/bots.ts` 消费服务端 `/api/v1/me/bots` 的 list、defaults、create、get、delete。读取要求响应 principal 与当前账号一致；定义再次核对 owner、Worker 配置和 Session 双身份。删除响应是仅含身份及删除责任的联合类型。版本与创建顺序保持十进制字符串，不经浮点数转换。
 
 创建只发送 `{id,name,overrides?}`。默认值选择、Provider 的 model/args 解析以及成功偏好保存均由服务端拥有。响应解析保留真实 pending/ready/failed；已 dispatch 的传输、解析或非明确拒绝错误转换为 `BotCreationUnknown`。接口不自动重试写入。
 
@@ -25,6 +25,18 @@
 路由进入既有身份检查与页面标题流程，保留原生链接修改键行为。全局侧栏不增加正式助手入口，后续组合不需要替换本页身份或会话缓存模型。
 
 助手路由复用既有 Session 页面按动态视口约束的应用外壳。页面网格、对话列与 SessionHost 的高度链允许收缩；列表和时间线各自滚动，输入框留在可用视口内。时间线的实际滚动面继续由共享 Session View 拥有，确保历史分页触发与缓存阅读位置使用同一滚动坐标。
+
+## 删除协调
+
+`BotListItem` 的原生 popover 菜单负责更多、右键和键盘入口，确认目标与原按钮一起交给 `BotDeleteDialog`。确认框使用原生模态层、滚动锁和焦点恢复；打开只选择目标，确认才调用删除协调器。
+
+`deletion-coordinator.ts` 按账号 scope 复用单个协调器。每个目标保存名称、Session/Worker 身份、原删除请求、最小阶段结果及错误，不保留配置或对话正文。提交前同步 `blockBot` 并保存请求；同一协调器按已知 Session 身份向独立入口提供准入状态。初始 Session 尚未注册时，后续经 owner/Worker 校验的 active 读取补齐其身份，但不能用不同 Session 替换已知绑定。`BotDeletionUnknown` 保留已 dispatch 的不确定性。失败后的 GET 不将一次瞬时 active 观察当成撤销原请求的证明；原请求曾未知时，后续重试被拒绝也不能清除该不确定性。明确拒绝且权威 active 才解除对应 Bot 与独立 Session 的屏障，后续新请求仍需用户确认。
+
+权威删除按精确版本单调接纳，同一删除身份的旧阶段不得覆盖新结果；不同 Worker 响应不能影响目标。两个 cleanup 均 completed 才完成。协调器在接纳删除或权威拒绝访问时，直接按账号和 Bot 清理草稿、回执及对应 Session 显示偏好，再通知已挂载缓存通过 `invalidateBot` 清理内存与阅读状态。浏览器存储清理不依赖页面挂载，因此离开助手页后到达的删除结果仍完成定向清理。即使原响应来自另一删除身份，也不重开对话。请求重试由用户显式触发，先 GET 再沿用权威 deletionId/requestedVersion；自动轮询只读。scope abort 取消准入并清记录，提交结果未知不重放。
+
+WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身份和删除状态供重载恢复；存储失败保留内存。临时身份核对暂停阻止新请求和恢复准入，但不丢弃同一有效 scope 已发出请求的明确响应分类；明确拒绝的证据保留到同账号恢复后再查询权威状态。真正的 scope 失效丢弃响应与记录。`BotsPage` 订阅协调器与缓存的 guard revision，以本地删除状态过滤列表和详情，因此删除前发出的迟到读取不能绕过屏障。旧页面卸载只解绑缓存，原在途请求仍归账号 scope；新页面重新绑定时先恢复对应屏障。状态区展示实际清理阶段，完整页面刷新不是删除完成依据。
+
+取舍见[浏览器删除决策](../../.agents/notes/implemented/architecture/2026-11-05-bot-browser-deletion.md)。
 
 ## 详情与全屏边界
 

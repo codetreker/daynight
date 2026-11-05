@@ -6,6 +6,7 @@ import type { WorkerAssistantHost, WorkerMachine, WorkerReadAdmission } from './
 export type BotConfiguration = { readonly workerId: string; readonly cwd: string; readonly provider: WorkerAgent; readonly model: string | null; readonly args: readonly string[] };
 export type BotOverrides = { readonly workerId?: string; readonly cwd?: string; readonly provider?: WorkerAgent };
 export type CreateBotInput = { readonly id: string; readonly name: string; readonly overrides?: BotOverrides };
+export type DeleteBotInput = { readonly ifVersion: string; readonly deletionId: string };
 export type BotStartupResult = { readonly state: 'pending' | 'ready' | 'failed'; readonly code: string | null };
 export type BotCleanupResult = { readonly state: 'pending' | 'completed' | 'failed'; readonly code: string | null };
 type BotIdentity = { readonly id: string; readonly workerId: string; readonly version: string };
@@ -194,6 +195,34 @@ export async function createBot(input: CreateBotInput, signal: AbortSignal, admi
     // A dispatched write is observed by its original ID, including malformed
     // responses and aborted reads; neither error proves that creation rolled back.
     if (dispatched && !(error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500)) throw new BotCreationUnknown(target, error);
+    throw error;
+  }
+}
+
+export class BotDeletionUnknown extends Error {
+  constructor(readonly id: string, readonly input: DeleteBotInput, cause: unknown) { super('The Bot deletion outcome is unknown.', { cause }); this.name = 'BotDeletionUnknown'; }
+}
+
+/** Submit one exact deletion request; callers observe the Bot before deciding whether to retry it. */
+export async function deleteBot(botId: string, input: DeleteBotInput, signal: AbortSignal, admission: WorkerReadAdmission): Promise<DeletedBot> {
+  const expected = requestId(admission.userId), target = requestId(botId);
+  let original: DeleteBotInput;
+  try { original = Object.freeze({ ifVersion: decimal(input.ifVersion), deletionId: requestId(input.deletionId) }); }
+  catch { throw new ApiError('protocol'); }
+  let dispatched = false;
+  try {
+    const response = await request(`/api/v1/me/bots/${target}`, signal, { method: 'DELETE', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(original) }, () => { dispatched = true; });
+    assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
+    return await json(response, signal, value => {
+      if (response.status !== 200) throw new ApiError('protocol', response.status);
+      const bot = parseBot(value, expected, target);
+      if (bot.deletion === null || bot.deletion.deletionId !== original.deletionId || bot.deletion.requestedVersion !== original.ifVersion) return malformed();
+      return bot;
+    });
+  } catch (error) {
+    // A later GET may precede a still-running DELETE commit. Preserve its
+    // original identity until observation resolves the result; never replay here.
+    if (dispatched && !(error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500)) throw new BotDeletionUnknown(target, original, error);
     throw error;
   }
 }

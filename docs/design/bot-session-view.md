@@ -6,7 +6,7 @@
 
 `api/sessions.ts` 导出 `BotSessionBinding` 和 `createBotSessionApi(binding, onPrincipalMismatch)`。factory 复用独立 Session 的 `/api/v1/test-sessions/{sessionId}` API，额外核对真实 `testExecutionId`。`TaskSessionClient` 的独立分支接受 `bot`，在 HTTP current 与 channel snapshot 上重新验证账号、Session、执行及 Web 模式；草稿范围包含 Bot 身份。既有 fence 继续约束请求结果，旧代请求的迟到权限错误不能撤销新代客户端。
 
-页面在已认证的 `TaskCacheProvider` 内调用一次 `useBotSessionCache()`，把返回值与已验证的 `binding` 传给 `BotSessionHost`。选中项尚未取得绑定时传 `null`，不沿用旧绑定。缓存 hook 应放在选中项与详情面板之上，不能以选中 Bot 或详情开关作为 key。关闭页面内容时可传 `active=false`；删除或权威拒绝访问调用 `cache.invalidateBot(botId)`。同一缓存内被撤销的 Bot 不接受陈旧选择；重新授权须在新的有效身份范围建立缓存。
+页面在已认证的 `TaskCacheProvider` 内调用一次 `useBotSessionCache()`，把返回值与已验证的 `binding` 传给 `BotSessionHost`。选中项尚未取得绑定时传 `null`，不沿用旧绑定。缓存 hook 应放在选中项与详情面板之上，不能以选中 Bot 或详情开关作为 key。关闭页面内容时可传 `active=false`；删除或权威拒绝访问调用 `cache.invalidateBot(botId)`。同一账号 scope 内被撤销的 Bot 不接受陈旧选择，页面重挂不撤销该标记；重新授权须在新的有效身份范围建立缓存。
 
 `BotSessionHost` 始终渲染同一个 shell，pane 以完整绑定的 JSON key 区分。当前选择直接控制 `hidden`、`inert` 和 `active`，布局 effect 才创建新客户端。`isCurrent` 由账号范围、撤权状态和 pane 的实际客户端身份决定，不依赖当前可见项。非当前 pane 可同步消息；共享 View 的发送和交互控件还要求 `active`，不会将可见性变化当成身份撤销。详情布局与模式使用共享组件，未复制聊天 renderer 或 reducer。
 
@@ -19,6 +19,12 @@
 淘汰调用 `close`，不触发 `onInvalidate`。真正撤权使用幂等 `invalidate` 回调清除该 Bot 的挂载与冷状态、存储和显示偏好。`invalidateBot` 按 owner/Bot 命名空间清理，即使当前缓存从未选择过该 Bot，也覆盖此前导航留下的存储；页面内保留 owner/Bot/Session 关系供显示偏好清理。scope 的 abort 清除该账号的全部缓存。认证组件的退出、账号切换和已证实 principal 变化还调用 owner 级清理，枚举整个 Bot 命名空间，覆盖已经导航离开的页面。命名空间撤权版本在访问磁盘前更新，覆盖 owner、Bot 或具体绑定；旧 storage 实例不能再读取或补写状态。存储拒绝枚举或删除时，新实例仍禁止读取旧值；之后新授权实例成功写入的键才可供其它新实例读取。无法访问的浏览器存储和页面重载后的物理删除不属于可证明结果。
 
 共享显示偏好增加按绑定移除：旧句柄失效并通知订阅者，磁盘删除失败仍保留页面 tombstone；后续新的授权句柄从默认模式开始且允许重新选择。未涉及的 Task/Test 偏好保持既有行为。
+
+`blockBot` 关闭目标 pane，但按正常淘汰规则保存轻量恢复状态；`unblockBot` 仅在删除协调器确认可以恢复时解除。`identityScope` 共享 blocked/revoked 标记和 guard revision，活跃缓存同步处理，关闭的实例解除订阅。Host 同时订阅 pane 与 guard revision，解除临时阻止后重新选择目标。`invalidateBot(botId, sessionId?)` 还按已知 Session 清理显示偏好，以及同账号通过旧 Test URL 保存的独立草稿和回执。独立键以账号及完整 Session ID 为边界，不清理普通 Task 草稿或其他 Session；旧页面已经关闭、无法继续观察权限时也须完成此项清理。
+
+独立 Session 页面在创建客户端前读取同账号删除协调器恢复的 Session 准入状态；客户端的实时准入检查和协调器订阅共同撤下已打开的历史、停止读取及操作。提交中或未知只关闭客户端，保留轻量输入；权威删除或拒绝访问永久失效。明确拒绝且权威 active 允许重新创建客户端并恢复草稿。该屏障按已知 Session 身份工作，其他独立 Session 和普通 Task 保持原准入。
+
+独立 API 仅把已认证 current 读取的 409/resource_conflict 转为 `IndependentSessionReadDenied`，保留真实 HTTP 状态和错误码；它不解释一般 command/resource 冲突。共享 client 对该访问失效清空状态、草稿、回执和 Session 显示偏好。独立 current 没有调用方可变版本/fence，服务端删除屏障使用该拒绝。共享观察器每三秒复核独立 live/归档入口，归档已载入时只复核权限，不重复下载正文；本地已知的删除屏障不等待轮询结果。暂停、close 与 invalidate 沿原生命周期停止或延迟观察；普通 Task 的冲突语义保持不变。
 
 ## 书签与分页
 

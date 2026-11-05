@@ -109,3 +109,70 @@ it('invalidates cold account state before the replacement cache has selected any
   expect(new BotSessionStorage(botSessionKey(botBinding(2)), sessionStorage).length).toBe(0);
   expect(other.getItem('draft')).toBe('other account');
 });
+
+it('blocks an unknown deletion without discarding the original draft, operation or bookmark', async () => {
+  const f = fixture(sessionStorage), a = await f.select(1), b = await f.select(2);
+  a.client.setDraft('keep until deletion is confirmed'); b.client.setDraft('other Bot');
+  vi.mocked(f.bots[0]!.api.command).mockRejectedValue(new Error('unknown delivery'));
+  await expect(a.client.send('keep until deletion is confirmed')).rejects.toThrow();
+  const operationId = a.client.snapshot().draft.submission!.operationId;
+  const bookmark = { anchor: { key: 'reading-anchor' } } as unknown as NonNullable<typeof a.retained.bookmark>;
+  a.retained.bookmark = bookmark;
+  const changes = vi.fn(); f.cache.subscribe(changes);
+  const before = f.cache.guardSnapshot();
+  f.cache.blockBot(a.binding.botId);
+  expect(f.cache.isBlocked(a.binding.botId)).toBe(true); expect(f.cache.isRevoked(a.binding.botId)).toBe(false);
+  expect(f.cache.guardSnapshot()).toBeGreaterThan(before); expect(changes).toHaveBeenCalled();
+  expect(f.cache.snapshot()).toEqual([b]);
+  await expect(a.client.send('late input')).rejects.toThrow();
+  f.cache.select(a.binding); expect(f.cache.snapshot()).toEqual([b]);
+  expect(b.client.snapshot().draft.text).toBe('other Bot');
+  f.cache.unblockBot(a.binding.botId);
+  const restored = await f.select(1);
+  expect(restored.client.snapshot().draft.text).toBe('keep until deletion is confirmed');
+  expect(restored.client.snapshot().draft.submission?.operationId).toBe(operationId);
+  expect(restored.retained.bookmark).toBe(bookmark);
+  expect(f.bots[0]!.api.command).toHaveBeenCalledOnce();
+});
+
+it('retains deletion guards across cache replacement within one authenticated scope', async () => {
+  const identityScope = {}, binding = botBinding(1), bot = botFixture(binding);
+  const make = (scope = identityScope) => {
+    const cache = new BotSessionCache({ userId: botOwner, identityScope: scope, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage: sessionStorage, createApi: () => bot.api });
+    caches.push(cache); return cache;
+  };
+  const first = make(); first.select(binding);
+  await vi.waitFor(() => expect(first.snapshot()[0]!.client.snapshot().connected).toBe(true));
+  first.blockBot(binding.botId); first.close();
+  const second = make(); second.select(binding);
+  expect(second.isBlocked(binding.botId)).toBe(true); expect(second.snapshot()).toEqual([]);
+  second.unblockBot(binding.botId); second.select(binding);
+  await vi.waitFor(() => expect(second.snapshot()[0]!.client.snapshot().connected).toBe(true));
+  second.invalidateBot(binding.botId);
+  const revokedRevision = second.guardSnapshot();
+  second.invalidateBot(binding.botId); expect(second.guardSnapshot()).toBe(revokedRevision);
+  second.close();
+  const third = make(); third.unblockBot(binding.botId); third.select(binding);
+  expect(third.isRevoked(binding.botId)).toBe(true); expect(third.snapshot()).toEqual([]);
+  const nextScope = make({}); nextScope.select(binding);
+  await vi.waitFor(() => expect(nextScope.snapshot()[0]!.client.snapshot().connected).toBe(true));
+});
+
+it('revokes other mounted caches in the same scope and clears an explicit cold display binding', async () => {
+  const identityScope = {}, binding = botBinding(6), bot = botFixture(binding);
+  const make = () => {
+    const cache = new BotSessionCache({ userId: botOwner, identityScope, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage: sessionStorage, createApi: () => bot.api });
+    caches.push(cache); return cache;
+  };
+  const first = make(), second = make(); first.select(binding);
+  await vi.waitFor(() => expect(first.snapshot()[0]!.client.snapshot().connected).toBe(true));
+  const original = first.snapshot()[0]!; original.client.setDraft('owned draft');
+  const coldSessionId = botBinding(7).sessionId;
+  const displayKey = `daynight.web.session.display.v1:${JSON.stringify([botOwner, coldSessionId])}`;
+  localStorage.setItem(displayKey, '"standard"');
+  const taskKey = 'daynight:session-draft:task-other'; sessionStorage.setItem(taskKey, 'task draft');
+  second.invalidateBot(binding.botId, coldSessionId);
+  expect(first.snapshot()).toEqual([]); expect(first.isRevoked(binding.botId)).toBe(true);
+  await expect(original.client.send('late')).rejects.toThrow();
+  expect(localStorage.getItem(displayKey)).toBeNull(); expect(sessionStorage.getItem(taskKey)).toBe('task draft');
+});
