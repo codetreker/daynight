@@ -36,6 +36,7 @@ export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder
 }) {
   const m = useSessionMessages();
   const entries = useMemo(() => selectSessionDisplayEntries(state.entries, displayMode), [state.entries, displayMode]);
+  const historyEmpty = state.entries.length === 0 && (!hasOlder || historyComplete);
   const originalKeys = useMemo(() => state.entries.map(entry => entry.entryId), [state.entries]);
   const visibleKeys = useMemo(() => entries.map(entry => entry.entryId), [entries]);
   const identity = reading && state.snapshot ? JSON.stringify([reading.scope, sessionFenceKey(state.snapshot)]) : `${state.snapshot?.sessionId}/${state.snapshot?.historyEpoch}`;
@@ -61,7 +62,7 @@ export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder
       <div ref={scroll.content} className="session-timeline-content">
         {loadingOlder ? <div className="session-history-loading" role="status" aria-live="polite">{m.loadingOlder}</div> : null}
         {history.error ? <div role="alert" className="session-error session-history-error"><span>{history.error}</span>{hasOlder ? <button type="button" className="inline-link" disabled={!active || !historyReady || loadingOlder} onClick={history.retry}>{m.retryHistory}</button> : null}</div> : null}
-        {entries.length === 0 ? (suppressEmpty ? null : <p className="session-empty">{displayMode === 'conversation' ? m.conversationEmpty : m.empty}</p>) : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} resources={state.resources} active={active} canRespond={entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} /></article>)}
+        {entries.length === 0 ? (suppressEmpty ? null : <p className="session-empty">{displayMode === 'conversation' && !historyEmpty ? m.conversationEmpty : m.empty}</p>) : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} resources={state.resources} active={active} canRespond={entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} /></article>)}
       </div>
     </div>
     {pending.target || scroll.showLatest ? <div className="session-timeline-navigation">
