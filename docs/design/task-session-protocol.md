@@ -85,6 +85,14 @@ Journal 的 1→6 非零迁移由本库定义持有并保留原数据；版本 0
 
 Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并分页读取原生 items。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
 
+### Codex 重试与错误详情
+
+Codex adapter 在通知边界解释 `ErrorNotification.willRetry`，并保留 thread/turn 归属。匹配当前原生身份且严格为 `true` 时映射 `native_retry`；明确终止映射 `native_turn_error`，缺失、非法或不可可靠关联的信息映射 `native_error`。明确属于其他 thread 的通知不进入本 Session。通知本身不改变 `activity` 或结算等待者；原生 `turn/completed` 仍独立拥有轮次结果，失败终止即使没有先行 error 通知也须保留诊断。
+
+表示复用已有 `kind: error`、有界字符串 `code` 与 `message`。`message` 保存 JSON envelope，包含可读 `message` 和有界原文 `details`，先限制内容再序列化，避免切断 JSON。Controller、Go 解析器、Web 和归档沿用现有严格字段集合，不增加 severity 或重试状态字段。每条重试保留为历史通知，不推测网络恢复；最终错误按同轮次身份合并，保留先行通知诊断。原生协议依据与取舍见[重试通知决策](../../.agents/notes/implemented/bug-fix/2026-11-05-codex-retry-diagnostics.md)。
+
+Web 的共享 Timeline 用中性重试通知、终止告警和未知告警区分语义，摘要与原文详情分开。原生 `<details>` 默认折叠，详情保留传输中的完整有界 message 及 code。旧 JSON 只提取可读摘要，不能根据 `Reconnecting` 或断流错误类型降低严重度；不可解析内容显示安全摘要并保留原文。此呈现同时用于实时事件、重连历史读取与归档，不更改条目身份、修订、草稿或读取游标。
+
 Codex 投影将原生 `sleep` 映射为已有 `tool_call`，名称为 `clock.sleep`，实时开始与完成分别使用 `running`、`completed`，历史读取复用完成路径。条目 ID 由原生会话和 item ID 生成。有限正数 `durationMs` 转换为秒并标注请求时长，其余值使用普通等待说明；不生成工具输出，也不从请求时长推断实际耗时。该处理复用现有工具行与归档格式，取舍见[等待投影决策](../../.agents/notes/implemented/bug-fix/2026-11-03-codex-sleep-timeline.md)。
 
 Codex/Claude 原生 user message 的 clientId 或 UUID 可证明某条持久输入已被接收。仅匹配已记录的输入 operationId 时，才把 dispatching/unknown 提升为 provider_accepted；空闲、文件出现或连接成功均不能证明输入受理。恢复不重放结果未知的操作。原生 turn 结果、Task 完成和 cleanup 完成具有各自独立的确认条件。
