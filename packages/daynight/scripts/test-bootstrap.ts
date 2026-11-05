@@ -2,10 +2,8 @@ import { createRequire } from "node:module";
 
 export type TestIsolation = {
   root: string;
-  assertWritablePath: (target: unknown, followLeaf?: boolean) => void;
+  assertSafePath: (target: unknown, destructive?: boolean, followLeaf?: boolean) => void;
   guardedEnvironment: (environment?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
-  registerStateDirectory: (directory: string) => void;
-  cleanupIpc: () => void;
   cleanup: () => void;
 };
 

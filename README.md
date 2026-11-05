@@ -438,10 +438,10 @@ full application validation. See the
 ## Validation
 
 `pnpm check` covers CLI type checking and tests; `pnpm acceptance` exercises the
-installed package. CLI test processes use private home and configuration
-environments, with guarded filesystem and SQLite mutations; the
-[CLI test isolation guide](docs/development.md#cli-test-isolation) owns their
-allowed paths, child-process propagation and limits. Server and Web checks have
+installed package. CLI tests use private home and configuration environments
+and guard real Daynight state (`~/.daynight` and the inherited `DN_CONFIG_DIR`)
+against filesystem and SQLite writes or cleanup. The [CLI test isolation guide](docs/development.md#cli-test-isolation)
+owns child-process propagation, symbolic-link checks and protection limits. Server and Web checks have
 separate commands and require statement coverage strictly greater than 90%.
 Routine CI suites exclude stress workloads. Run the corresponding explicit local
 command when full-scale evidence is required:

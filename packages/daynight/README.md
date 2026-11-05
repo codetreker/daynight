@@ -12,8 +12,9 @@ See the [project overview](../../README.md) for the browser workspace and servic
 and the [development guide](../../docs/development.md) for source builds,
 validation, package versions and npm publication. The
 [CLI test isolation guide](../../docs/development.md#cli-test-isolation) describes
-the private test environment, guarded writes and cleanup, and inherited child
-process protection. Ordinary test and installed acceptance suites exclude stress
+the private test home and parent/child protection of real Daynight state
+(`~/.daynight` and the inherited `DN_CONFIG_DIR`) against writes and cleanup,
+including symbolic-link aliases. Ordinary test and installed acceptance suites exclude stress
 workloads. From this package, `pnpm test:stress` builds the CLI and runs the
 rendering and full Session-v2 `.stress.ts` suites;
 `pnpm test:stress:budgets` runs the server validation gate with the four full
