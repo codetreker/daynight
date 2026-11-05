@@ -51,6 +51,12 @@ export class BotDeletionCoordinator {
     }, { once: true });
   }
   snapshot = (): readonly BotDeletionRecord[] => this.view;
+  /** Independent URLs share the Bot's admission boundary for its known Session. */
+  sessionAdmission = (sessionId: string): 'allowed' | 'blocked' | 'revoked' => {
+    const records = this.view.filter(record => record.sessionId === sessionId);
+    if (records.some(record => record.result || record.phase === 'unavailable')) return 'revoked';
+    return records.some(record => record.phase !== 'rejected') ? 'blocked' : 'allowed';
+  };
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
   attachCache = (cache: Cache): (() => void) => {
     this.caches.add(cache);
@@ -157,7 +163,10 @@ export class BotDeletionCoordinator {
       const latest = this.records.get(id)!;
       if (latest.record.workerId !== null && latest.record.workerId !== bot.workerId) throw new ApiError('protocol');
       if (bot.deletion !== null) this.observe(bot);
-      else if (!latest.record.result && latest.record.phase !== 'unavailable') this.save({ ...latest.record, phase: latest.rejected ? 'rejected' : 'unknown', error: latest.rejected ? latest.record.error : null });
+      else if (!latest.record.result && latest.record.phase !== 'unavailable') {
+        if (latest.record.sessionId !== null && latest.record.sessionId !== bot.sessionId) throw new ApiError('protocol');
+        this.save({ ...latest.record, sessionId: bot.sessionId, phase: latest.rejected ? 'rejected' : 'unknown', error: latest.rejected ? latest.record.error : null });
+      }
       return true;
     } catch (error) {
       if (!this.admitted()) return false;

@@ -22,7 +22,9 @@
 
 `blockBot` 关闭目标 pane，但按正常淘汰规则保存轻量恢复状态；`unblockBot` 仅在删除协调器确认可以恢复时解除。`identityScope` 共享 blocked/revoked 标记和 guard revision，活跃缓存同步处理，关闭的实例解除订阅。Host 同时订阅 pane 与 guard revision，解除临时阻止后重新选择目标。`invalidateBot(botId, sessionId?)` 还按已知 Session 清理显示偏好，以及同账号通过旧 Test URL 保存的独立草稿和回执。独立键以账号及完整 Session ID 为边界，不清理普通 Task 草稿或其他 Session；旧页面已经关闭、无法继续观察权限时也须完成此项清理。
 
-独立 API 仅把已认证 current 读取的 409/resource_conflict 转为 `IndependentSessionReadDenied`，保留真实 HTTP 状态和错误码；它不解释一般 command/resource 冲突。共享 client 对该访问失效清空状态、草稿、回执和 Session 显示偏好。独立 current 没有调用方可变版本/fence，服务端删除屏障使用该拒绝；旧 Test URL 因此也不能保留已载入历史。共享观察器每三秒复核独立 live/归档入口，归档已载入时只复核权限，不重复下载正文。暂停、close 与 invalidate 沿原生命周期停止或延迟观察；普通 Task 的冲突语义保持不变。
+独立 Session 页面在创建客户端前读取同账号删除协调器恢复的 Session 准入状态；客户端的实时准入检查和协调器订阅共同撤下已打开的历史、停止读取及操作。提交中或未知只关闭客户端，保留轻量输入；权威删除或拒绝访问永久失效。明确拒绝且权威 active 允许重新创建客户端并恢复草稿。该屏障按已知 Session 身份工作，其他独立 Session 和普通 Task 保持原准入。
+
+独立 API 仅把已认证 current 读取的 409/resource_conflict 转为 `IndependentSessionReadDenied`，保留真实 HTTP 状态和错误码；它不解释一般 command/resource 冲突。共享 client 对该访问失效清空状态、草稿、回执和 Session 显示偏好。独立 current 没有调用方可变版本/fence，服务端删除屏障使用该拒绝。共享观察器每三秒复核独立 live/归档入口，归档已载入时只复核权限，不重复下载正文；本地已知的删除屏障不等待轮询结果。暂停、close 与 invalidate 沿原生命周期停止或延迟观察；普通 Task 的冲突语义保持不变。
 
 ## 书签与分页
 

@@ -30,7 +30,7 @@
 
 `BotListItem` 的原生 popover 菜单负责更多、右键和键盘入口，确认目标与原按钮一起交给 `BotDeleteDialog`。确认框使用原生模态层、滚动锁和焦点恢复；打开只选择目标，确认才调用删除协调器。
 
-`deletion-coordinator.ts` 按账号 scope 复用单个协调器。每个目标保存名称、Session/Worker 身份、原删除请求、最小阶段结果及错误，不保留配置或对话正文。提交前同步 `blockBot` 并保存请求；`BotDeletionUnknown` 保留已 dispatch 的不确定性。失败后的 GET 不将一次瞬时 active 观察当成撤销原请求的证明；原请求曾未知时，后续重试被拒绝也不能清除该不确定性。明确拒绝且权威 active 才 `unblockBot`，后续新请求仍需用户确认。
+`deletion-coordinator.ts` 按账号 scope 复用单个协调器。每个目标保存名称、Session/Worker 身份、原删除请求、最小阶段结果及错误，不保留配置或对话正文。提交前同步 `blockBot` 并保存请求；同一协调器按已知 Session 身份向独立入口提供准入状态。初始 Session 尚未注册时，后续经 owner/Worker 校验的 active 读取补齐其身份，但不能用不同 Session 替换已知绑定。`BotDeletionUnknown` 保留已 dispatch 的不确定性。失败后的 GET 不将一次瞬时 active 观察当成撤销原请求的证明；原请求曾未知时，后续重试被拒绝也不能清除该不确定性。明确拒绝且权威 active 才解除对应 Bot 与独立 Session 的屏障，后续新请求仍需用户确认。
 
 权威删除按精确版本单调接纳，同一删除身份的旧阶段不得覆盖新结果；不同 Worker 响应不能影响目标。两个 cleanup 均 completed 才完成。协调器在接纳删除或权威拒绝访问时，直接按账号和 Bot 清理草稿、回执及对应 Session 显示偏好，再通知已挂载缓存通过 `invalidateBot` 清理内存与阅读状态。浏览器存储清理不依赖页面挂载，因此离开助手页后到达的删除结果仍完成定向清理。即使原响应来自另一删除身份，也不重开对话。请求重试由用户显式触发，先 GET 再沿用权威 deletionId/requestedVersion；自动轮询只读。scope abort 取消准入并清记录，提交结果未知不重放。
 

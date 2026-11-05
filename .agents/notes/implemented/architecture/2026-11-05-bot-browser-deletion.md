@@ -17,6 +17,10 @@ requests reversibly block their target; only a definite rejection followed by an
 authoritative active read permits unblocking. Once any attempt is unknown, an
 active read or a later rejected retry cannot prove the original attempt ended.
 Explicit retries observe first and preserve the deletion identity.
+Independent Session pages consult the same account coordinator before creating
+clients and throughout client admission. Known Session identities include those
+learned after deletion starts, so navigation to an old URL cannot bypass an
+unconfirmed request by observing a still-active server snapshot.
 
 Confirmed deletion invalidates the target's mounted and retained browser state.
 The account coordinator clears target storage and display preferences even when
