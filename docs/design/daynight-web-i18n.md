@@ -89,7 +89,7 @@ Session 的指定操作和活动标签从已有英语目录导出只读子集，
 
 生产入口在 `createRoot()` 前执行初始解析，再把常驻 Provider 放在应用根部。首屏 HTML `lang` 和标题使用解析结果，后续导航与切换同步更新。Provider 不以 locale 作为 `key`，领域组件也不使用 locale 重置实例。
 
-主界面导航与独立 `TaskDetailPage` 共用 `LanguageSelector`。共享 `ManagementDialog` 和 `CreateProjectDialog` 继承当前语言，不渲染选择器或其偏好提示与重试；页面入口继续拥有偏好反馈。图浮层标题栏目前仍有选择器。居中 `TaskDetailDialog` 通过同一个 `LocaleProvider` 订阅应用当前语言，其顶栏保留任务标题、全屏、“…”菜单和关闭入口，新标签链接位于“…”菜单；当前状态菜单与平台切换位于标题下的公共状态行。详情打开时底层页面继续处于 `inert`，模态入口使用既有焦点圈定、Escape 分层和关闭后恢复机制；独立完整详情页保留普通浏览器键盘行为，内部确认窗仍各自拥有模态交互。图浮层标题、关闭、全屏及图控件使用同一目录，语言变化保留当前打开状态、同一图实例和焦点。
+主界面导航与独立 `TaskDetailPage` 共用 `LanguageSelector`。共享 `ManagementDialog` 和 `CreateProjectDialog` 继承当前语言，不渲染选择器或其偏好提示与重试；页面入口继续拥有偏好反馈。普通和全屏图浮层均不渲染自己的选择器或偏好反馈。居中 `TaskDetailDialog` 通过同一个 `LocaleProvider` 订阅应用当前语言，其顶栏保留任务标题、全屏、“…”菜单和关闭入口，新标签链接位于“…”菜单；当前状态菜单与平台切换位于标题下的公共状态行。详情打开时底层页面继续处于 `inert`，模态入口使用既有焦点圈定、Escape 分层和关闭后恢复机制；独立完整详情页保留普通浏览器键盘行为，内部确认窗仍各自拥有模态交互。图浮层标题、关闭、全屏及图控件使用同一目录，语言变化保留当前打开状态、同一图实例和焦点。
 
 Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻译字符串。语言变化更新资源、版本、时间和 last-confirmed 文案，不改变 Worker ID、hook 的读取依赖、冻结状态或单调锚点，不额外发起请求。普通任务状态和 phase 复用已有目录；机器名、路径和实际版本原样显示。
 
@@ -115,8 +115,8 @@ Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻�
 | 场景 | 验证内容 |
 |---|---|
 | `language-startup-preferences` | 浏览器语言、显式保存、重载与路由、标题和 HTML `lang`，以及用户原始数据。 |
-| `language-state-preservation` | 通过可操作入口切换并检查图节点/边/视口；检查全屏与模态焦点，并验证详情页签往返保留 PR 页码、附件输入和 iframe 身份及内容；分别挂起上传、覆盖和删除，验证待完成状态和每项写入次数。 |
-| `language-errors-and-narrow` | 读/无效值/写入故障与重试、真实隔离数据库故障下错误重译及相同 request ID，两种语言的 1440px/320px 图、对话框与附件布局。 |
+| `language-state-preservation` | 检查图节点/边/视口、选择及全屏切换；检查全屏与模态焦点，并验证详情页签往返保留 PR 页码、附件输入和 iframe 身份及内容；分别挂起上传、覆盖和删除，验证待完成状态和每项写入次数。 |
+| `language-errors-and-narrow` | 读/无效值/写入故障与重试、真实隔离数据库故障下错误重译及相同 request ID，两种语言的 1440px/320px 图、对话框与附件布局；图的普通和全屏模式无局部语言入口及占位，长标题、关闭和图操作保持可访问。 |
 
 三个场景使用现有受监控页面与场景级 `en-US` 浏览器 locale，继续由单一 Playwright project 执行一次、零 retry。需要精确比较语言切换前后业务请求数量的隔离阶段控制浏览器时钟，排除独立项目定时器触发；真实周期刷新由 `refresh-staleness` 单独验证。滚动恢复读取实际 `scrollTop`，以测试进程单调时钟观察其连续稳定状态，不依赖受控浏览器定时器。functional inventory、报告聚合与严格预期测试使用相同 annotation；
 常规验收与 CI 当前要求原生、容器各 29 个功能场景，共 58 个；显式本地压力验收另有

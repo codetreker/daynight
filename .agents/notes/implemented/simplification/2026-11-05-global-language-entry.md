@@ -39,9 +39,11 @@ content without a local control.
 
 The shared management and project creation dialogs no longer offer a local language
 entry. Existing focus isolation, keyboard interaction, page entry and preference
-failure recovery remain owned by their respective surfaces. The current graph overlay still
-contains its existing selector and needs a separate change to satisfy the UI
-principle. Removing it does not require changing the locale runtime or moving
-the retained page entries; the graph continues to show its control until changed. The rule does not require
+failure recovery remain owned by their respective surfaces. The
+[graph language entry decision](2026-11-05-graph-language-entry.md),
+[identity revalidation decision](../bug-fix/2026-11-05-revalidation-language-entry.md),
+and [attachment confirmation decision](2026-11-05-attachment-confirmation-language-entry.md)
+remove those overlays’ duplicate controls without changing the locale runtime or
+moving the retained page entries. The rule does not require
 the page entry to be active while a modal is open or visible when an entire page
 region is hidden in fullscreen.

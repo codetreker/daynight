@@ -47,12 +47,12 @@ The original inline toolbar kept one line and truncated its left text to preserv
 canvas height. The [graph-dialog decision](2026-10-26-task-chain-graph-dialog.md)
 replaces that presentation with a viewport-sized reading area: summary and actions
 can wrap, narrow layouts place them on separate lines, and complete action
-controls remain accessible without horizontal scrolling. The dialog header owns
-the locale selector in both modes, with compact narrow controls and a visually
-hidden label whose accessible name remains available. Locale preference failures
-appear below that selector without clipping the retry control. Native canvas controls
-stay at bottom-left, separate from the top-right locale notice and bottom-right
-attribution, so a persistent storage failure leaves zoom and fit accessible. The underlying counts
+controls remain accessible without horizontal scrolling. The dialog header originally
+owned a locale selector in both modes, with compact narrow controls and an
+accessible label; its preference notice was kept clear of the native canvas
+controls. The [graph language entrance decision](../simplification/2026-11-05-graph-language-entry.md)
+removes that selector and notice. Native canvas controls stay at bottom-left,
+separate from the bottom-right attribution. The underlying counts
 remain complete when only part of the graph is visible. The original
 card decision reserved 220 by 136 pixels for every task: a 94px body, 40px
 two-column footer and two border pixels. Uniform heights kept all controls in
