@@ -235,7 +235,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
             const latest = journal();
             if (latest?.controllerProcess == null) throw new Error("Original fixture process proof is not durable yet.");
             return latest;
-          }, { timeout: 10_000, interval: 100 });
+          }, { timeout: 30_000, interval: 100 });
         } catch (error) { diagnostic("cleanup-await-original-proof", Date.now() - evidenceStarted, error); }
         const proof = saved?.controllerProcess ?? execution.controllerProcess;
         try { const ticket = await botProcess.readTicket(record); await requestController(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { timeoutMs: 12_000 }); } catch { /* Process proof below owns cleanup completion. */ }
@@ -286,14 +286,15 @@ const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, sig
     diagnostic("launch-observation-unknown", Date.now() - started, error);
   }
   const originalTicket = await f.process.readTicket(f.current());
-  // An unknown spawn observation is reconciled through the original ticket;
-  // only an authenticated ready writer establishes launch success.
-  await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", activity: "idle", nativeSessionId: f.nativeId, initialInputState: "not_required" }), { timeout: 20_000, interval: 100 });
+  // An interrupted parent can return before the child acquires its own proof,
+  // creates the Windows Job and captures native ownership. Reconciliation waits
+  // for that sequence through the original authenticated ticket.
+  await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", activity: "idle", nativeSessionId: f.nativeId, initialInputState: "not_required" }), { timeout: 60_000, interval: 100 });
   expect(await f.process.readTicket(f.current())).toEqual(originalTicket);
 };
 
 test.each([false, true])("launches one real Controller with no user turn after unknown parent observation=%s, then observes the same writer after browser disconnect", async interruptedObservation => {
-  const f = await fixture(), signal = AbortSignal.timeout(30_000);
+  const f = await fixture(), signal = AbortSignal.timeout(60_000);
   if (interruptedObservation) vi.spyOn(processProof, "captureProcessProof").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
   await launchAndObserveReady(f, signal);
   const ticket = await f.process.readTicket(f.current());
