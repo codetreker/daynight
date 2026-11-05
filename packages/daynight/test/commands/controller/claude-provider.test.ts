@@ -363,3 +363,92 @@ test.each([false, true])("Claude propagates role startup failure and closes init
   expect(fixture.inputs).toEqual([]);
   expect(entries).toEqual([]);
 });
+
+test.each([
+  ["[Request interrupted by user]", "aborted_streaming"],
+  ["[Request interrupted by user for tool use]", "aborted_tools"],
+])("Claude hides native interruption text %s and reuses its identity on resume", async (text, reason) => {
+  const fixture = nativeFixture(), entries: ProviderEntry[] = [], observed: string[] = [];
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: entry => entries.push(entry), onInputObserved: id => observed.push(id), onState: () => {}, onSpawn: () => {} });
+  const id = randomUUID(), markerId = randomUUID();
+  // Native interruption messages omit isSynthetic, including in SDK history.
+  const marker = { type: "user", uuid: markerId, message: { content: [{ type: "text", text }] } };
+  try {
+    await provider.send("work", id, null);
+    let acknowledge!: () => void;
+    fixture.interrupt.mockImplementation(async () => {
+      fixture.emit(marker);
+      fixture.emit({ type: "result", uuid: randomUUID(), user_message_uuid: id, is_error: true, terminal_reason: reason });
+      await new Promise<void>(resolve => { acknowledge = resolve; });
+      return {};
+    });
+    const cancel = provider.cancel(id);
+    await new Promise(resolve => setImmediate(resolve));
+    const beforeReceipt = [...entries];
+    acknowledge(); await cancel;
+    expect(beforeReceipt.filter(entry => entry.kind === "user_message").every(entry => JSON.stringify(entry).includes('"work"'))).toBe(true);
+    expect(observed).toEqual([id]);
+    expect(beforeReceipt.filter(entry => entry.kind === "error")).toEqual([]);
+    expect(entries.filter(entry => entry.kind === "error")).toEqual([expect.objectContaining({ code: "turn_interrupted" })]);
+  } finally { await provider.close(); }
+  const liveMarker = entries.find(entry => entry.kind === "error");
+  nativeFixture();
+  sdk.getSessionInfo.mockResolvedValue({ sessionId: provider.nativeSessionId, cwd: process.cwd() });
+  sdk.getSessionMessages.mockResolvedValue([{ type: "user", uuid: id, message: { content: "work" } }, marker]);
+  const history: ProviderEntry[] = [], historyObserved: string[] = [];
+  const resumed = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: provider.nativeSessionId, onTimeline: entry => history.push(entry), onInputObserved: id => historyObserved.push(id), onState: () => {}, onSpawn: () => {} });
+  try {
+    expect(history.filter(entry => entry.kind === "error")).toEqual([liveMarker]);
+    expect(history.filter(entry => entry.kind === "user_message")).toHaveLength(1);
+    expect(historyObserved).toEqual([id]);
+  } finally { await resumed.close(); }
+});
+
+test.each([false, true])("Claude preserves ordinary text and tool results around interruption-like content (history=%s)", async history => {
+  const fixture = nativeFixture(), nativeId = randomUUID(), entries: ProviderEntry[] = [];
+  const marker = "[Request interrupted by user]";
+  const messages = [
+    { type: "user", uuid: randomUUID(), message: { content: `Explain ${marker}` } },
+    { type: "user", uuid: randomUUID(), isSynthetic: true, message: { content: `${marker}\n` } },
+    { type: "user", uuid: randomUUID(), message: { content: [{ type: "text", text: marker }, { type: "text", text: "quoted example" }] } },
+    { type: "user", uuid: randomUUID(), message: { content: [{ type: "tool_result", tool_use_id: "tool", content: marker, is_error: true }] } },
+    { type: "assistant", uuid: randomUUID(), message: { content: marker } },
+  ];
+  sdk.getSessionInfo.mockResolvedValue({ sessionId: nativeId, cwd: process.cwd() });
+  sdk.getSessionMessages.mockResolvedValue(messages);
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: history ? nativeId : null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });
+  try {
+    if (!history) { for (const message of messages) fixture.emit(message); await new Promise(resolve => setImmediate(resolve)); }
+    expect(entries.filter(entry => entry.kind === "user_message")).toHaveLength(4);
+    expect(entries.filter(entry => entry.kind === "assistant_message")).toHaveLength(1);
+    expect(entries.filter(entry => entry.kind === "tool_call")).toEqual([expect.objectContaining({ status: "failed", output: [{ type: "text", text: marker }] })]);
+    expect(entries.filter(entry => entry.kind === "error")).toEqual([]);
+  } finally { await provider.close(); }
+});
+
+test.each(["[Request interrupted by user]", "[Request interrupted by user for tool use]"])("Claude projects string-form historical interruption %s without a live receipt", async text => {
+  nativeFixture(); const nativeId = randomUUID(), entries: ProviderEntry[] = [], observed: string[] = [];
+  sdk.getSessionInfo.mockResolvedValue({ sessionId: nativeId, cwd: process.cwd() });
+  sdk.getSessionMessages.mockResolvedValue([{ type: "user", uuid: randomUUID(), message: { content: text } }]);
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: nativeId, onTimeline: entry => entries.push(entry), onInputObserved: id => observed.push(id), onState: () => {}, onSpawn: () => {} });
+  try { expect(entries).toEqual([expect.objectContaining({ kind: "error", code: "turn_interrupted" })]); expect(observed).toEqual([]); }
+  finally { await provider.close(); }
+});
+
+test("Claude subagent interruption does not replace the main turn marker identity", async () => {
+  const fixture = nativeFixture(), entries: ProviderEntry[] = [], id = randomUUID(), mainMarker = randomUUID();
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });
+  try {
+    await provider.send("work", id, null);
+    fixture.interrupt.mockImplementation(async () => {
+      fixture.emit({ type: "user", uuid: mainMarker, message: { content: "[Request interrupted by user]" } });
+      fixture.emit({ type: "user", uuid: randomUUID(), parent_tool_use_id: "child-tool", message: { content: "[Request interrupted by user for tool use]" } });
+      fixture.emit({ type: "result", uuid: randomUUID(), user_message_uuid: id, is_error: true, terminal_reason: "aborted_streaming" });
+      return {};
+    });
+    await provider.cancel(id);
+    expect(entries.filter(entry => entry.kind === "user_message").every(entry => JSON.stringify(entry).includes('"work"'))).toBe(true);
+    const { nativeEntryId } = await import("../../../src/commands/controller/providers/projection.js");
+    expect(entries.filter(entry => entry.kind === "error")).toEqual([expect.objectContaining({ code: "turn_interrupted", entryId: nativeEntryId(provider.nativeSessionId, `${mainMarker}:0`) })]);
+  } finally { await provider.close(); }
+});
