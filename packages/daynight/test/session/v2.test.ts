@@ -55,6 +55,10 @@ describe("recording responsibility and authenticated control provenance", () => 
 });
 
 describe("shared Session v2 raw wire corpus", () => {
+  it.each(["valid-ledger", "valid-prepared-stop-ledger", "valid-prepared-stop-retained-native"])("preserves the canonical proof identity in %s", name => {
+    const input = fixture(name);
+    expect(canonicalSessionJson(parseSessionV2Message(input))).toBe(canonicalSessionJson(input));
+  });
   it.each(manifest.cases)("$file accepts=$valid", async ({ file, type, valid }) => {
     const bytes = readFileSync(new URL(file, root));
     const result = type === "archive" ? decodeSessionV2Archive(bytes) : decodeSessionV2Message(bytes);

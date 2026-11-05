@@ -17,6 +17,10 @@ import (
 
 func terminalArchiveFixture(t *testing.T) (fixture, v2.Message, v2.Archive) {
 	t.Helper()
+	return terminalArchiveFixtureWithNative(t, nil)
+}
+func terminalArchiveFixtureWithNative(t *testing.T, nativeSession *string) (fixture, v2.Message, v2.Archive) {
+	t.Helper()
 	f, m := terminalFixture(t)
 	raw, err := os.ReadFile("../../../daynight/test/session/fixtures/v2/valid-archive.json")
 	if err != nil {
@@ -25,6 +29,13 @@ func terminalArchiveFixture(t *testing.T) (fixture, v2.Message, v2.Archive) {
 	doc, err := v2.DecodeArchive(raw)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for i := range doc.Runs {
+		doc.Runs[i].Binding.NativeSessionID = nativeSession
+		doc.Runs[i].StopProof.Binding.NativeSessionID = nativeSession
+	}
+	for i := range doc.Segments {
+		doc.Segments[i].Binding.NativeSessionID = nativeSession
 	}
 	reg := m.Payload.(v2.Registration)
 	reg.Binding = doc.Runs[0].Binding

@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { Operation } from "../../../api/operation.js";
 import { SessionV2Error } from "../../../session/v2/values.js";
 import { HerdrInputBlockedError } from "./agents.js";
@@ -7,6 +5,7 @@ import type { HerdrAgentObservation, HerdrTaskBinding } from "./agents.js";
 import { nativeInputBlocker } from "./input-blockers.js";
 import type { NativeInputBlocker } from "./input-blockers.js";
 import { hasEmptyResumeComposer } from "./resume-composer.js";
+import { readMacProcessTty, readMacTtySize } from "./native-tty.js";
 import type { createHerdrRpcClient } from "./rpc.js";
 
 export type HerdrInputPurpose = "automatic" | "manual" | "resume" | "cleanup";
@@ -20,22 +19,8 @@ const list = (value: unknown): Record<string, unknown>[] => {
   return value.map(object);
 };
 
-export const readHerdrProcessTty = async (pid: number, signal: AbortSignal): Promise<string> => {
-  if (process.platform !== "darwin" || !Number.isSafeInteger(pid) || pid < 1 || pid > 2147483647) throw new SessionV2Error("unsupported_protocol");
-  const { stdout } = await promisify(execFile)("/bin/ps", ["-p", String(pid), "-o", "tty="], { signal, timeout: 2000, maxBuffer: 128, encoding: "utf8" });
-  const tty = stdout.trim();
-  if (!/^ttys[0-9]+$/.test(tty)) throw new SessionV2Error("target_changed");
-  return `/dev/${tty}`;
-};
-
-/** Query only the original macOS PTY; no resize or terminal-mode mutation is requested. */
-export const readHerdrTtySize = async (tty: string, signal: AbortSignal): Promise<{ width: number; height: number }> => {
-  if (process.platform !== "darwin" || !/^\/dev\/ttys[0-9]+$/.test(tty)) throw new SessionV2Error("unsupported_protocol");
-  const { stdout } = await promisify(execFile)("/bin/stty", ["-f", tty, "size"], { signal, timeout: 2000, maxBuffer: 128, encoding: "utf8" });
-  const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(stdout);
-  if (!match) throw new SessionV2Error("target_changed");
-  return { width: Number(match[2]), height: Number(match[1]) };
-};
+export const readHerdrProcessTty = readMacProcessTty;
+export const readHerdrTtySize = readMacTtySize;
 
 /** Read-only checks never attach or infer a provider acknowledgement from a screen. */
 export const inspectHerdrInput = async (options: {

@@ -41,6 +41,14 @@ and [disabled input rendering](https://github.com/openai/codex/blob/6aaac6948030
 identify the concrete patterns. Ordinary prose mentioning cancellation is not a
 menu, and a later normal prompt excludes stale menu text above it.
 
+Known first-run screens follow the same refusal rule. Codex's welcome screen
+with a selected authentication method and its continuation hint, and Claude's
+welcome screen with either its selected theme controls or security continuation
+hint, are input-owning menus. Their explicit headers and controls distinguish
+them from ordinary prose; a later composer excludes stale onboarding text.
+Structured readiness can remain true while these screens consume Enter, so
+transport completion cannot establish delivery of the automatic assignment.
+
 Automatic and cleanup inspection has no positive composer whitelist, status-bar
 or displayed-directory requirement. Normal customized or unknown layouts proceed
 immediately after structured readiness; they do not wait for a recognized

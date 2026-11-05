@@ -3,6 +3,7 @@ import { fstatSync, fsyncSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sta
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHerdrRecordingArchive } from "../../../src/commands/worker/herdr/recording-archive.js";
+import { openHerdrRecordingStore } from "../../../src/commands/worker/herdr/recording-store.js";
 import { createHerdrRecordingRuntime } from "../../../src/commands/worker/herdr/recording-runtime.js";
 import { HerdrArchiveHttpError, type HerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import type { HerdrLifecycleRecord } from "../../../src/commands/worker/herdr/lifecycle-types.js";
@@ -25,7 +26,7 @@ const setup = (name = "valid-archive") => {
   mkdirSync("../../.tmp/herdr-archive-test", { recursive: true });
   const directory = mkdtempSync(path.resolve("../../.tmp/herdr-archive-test/run-")); roots.push(directory);
   const doc = fixture(name), envelope = { protocol: "daynight.session.v2" as const, schemaVersion: 2 as const, projectionVersion: 1 as const, sessionId: doc.sessionId, claimId: doc.claimId, executionGeneration: doc.executionGeneration, agentControlMode: "herdr" as const, contentKind: "terminal_recording" as const };
-  const record: HerdrLifecycleRecord = { owner: doc.owner, claimId: doc.claimId, sessionId: doc.sessionId, cwd: directory, registrationId: id(90), connectionEpoch: "1", registrationRequest: null, ledgerRequest: null, publishedLedgerHash: "a".repeat(64), controlEpoch: "1", initialAssignment: "transport_completed", initialPrompt: null, automationBlocked: true, preparation: null, runs: doc.runs.map(run => ({ run, phase: "stopped_confirmed", instanceDirectory: directory, daemon: null, processes: [], stopOperationId: run.stopProof!.recordId, stopReason: "terminal", error: null, admission: null })), segments: doc.segments.map(segment => ({ ...segment, gap: null })), version: 1 };
+  const record: HerdrLifecycleRecord = { owner: doc.owner, claimId: doc.claimId, sessionId: doc.sessionId, cwd: directory, registrationId: id(90), connectionEpoch: "1", registrationRequest: null, ledgerRequest: null, publishedLedgerHash: "a".repeat(64), controlEpoch: "1", initialAssignment: "transport_completed", initialPrompt: null, automationBlocked: true, preparation: null, runs: doc.runs.map(run => ({ run, phase: "stopped_confirmed", nativeLaunch: "observed", instanceDirectory: directory, daemon: null, processes: [], stopOperationId: run.stopProof!.recordId, stopReason: "terminal", error: null, admission: null })), segments: doc.segments.map(segment => ({ ...segment, gap: null })), version: 1 };
   const source: HerdrRecordingSnapshot = { schemaVersion: 1, owner: doc.owner, sessionId: doc.sessionId, claimId: doc.claimId, runs: doc.runs.map((run, index) => ({ executionGeneration: run.executionGeneration, responsibilityId: id(91 + index), recordingEnabled: true, selectedFrameCount: String(doc.files.filter(file => run.segmentIds.includes(file.segmentId)).length), registeredFrameCount: String(doc.files.filter(file => run.segmentIds.includes(file.segmentId)).length), captureError: null, closed: true })), segments: doc.segments, files: doc.files, index: doc.index, gaps: doc.gaps, journalSha256: "b".repeat(64) };
   const remote: HerdrSessionState = { status: "registered", ...envelope, owner: doc.owner, binding: doc.runs.at(-1)!.binding, connectionEpoch: "1", connected: false, capabilities: { observe: true, control: true, archive: true }, control: null, snapshot: null, ledger: { runs: doc.runs, finalizationId: null }, archive: { state: "pending", sha256: null, byteLength: null, completeness: null, errorCode: null, finalizationId: null }, recording: source.runs.map(run => ({ executionGeneration: run.executionGeneration, responsibility: { responsibilityId: run.responsibilityId, recordingEnabled: run.recordingEnabled }, evidence: null })) };
   let finalizes = 0, uploads = 0, reads = 0, clock = 0, loseFinalization = false, loseUpload = false, permission = false;
@@ -50,6 +51,56 @@ const setup = (name = "valid-archive") => {
   return { directory, record, source, remote, api, open, bodies, counts: () => ({ finalizes, uploads, reads }), time: (value: number) => { clock = value; }, loseFinalization: () => { loseFinalization = true; }, loseUpload: () => { loseUpload = true; }, permission: (value: boolean) => { permission = value; } };
 };
 describe("persistent Herdr archive finalization", () => {
+  it.each([[1, 0], [0, 1], [1, 0, 1], [1, 0, 0, 1], [0, 0, 1], [1, 1], [2, 0]].map(counts => ({ counts })))("archives original recording across generation segment counts $counts", async ({ counts }) => {
+    const s = setup(), originalRun = structuredClone(s.record.runs[0]!), originalSegment = structuredClone(s.record.segments[0]!);
+    const options = { directory: path.join(s.directory, "recording-source"), owner: s.record.owner, sessionId: s.record.sessionId, claimId: s.record.claimId };
+    let store = openHerdrRecordingStore(options);
+    s.record.runs = []; s.record.segments = []; s.remote.recording = [];
+    for (const [index, count] of counts.entries()) {
+      const generation = String(index + 1), local = structuredClone(originalRun);
+      local.run.executionGeneration = generation; local.run.segmentIds = [];
+      local.run.startedAt = new Date(Date.parse(originalRun.run.startedAt) + index * 20000).toISOString();
+      local.run.stoppedAt = new Date(Date.parse(local.run.startedAt) + 10000).toISOString();
+      local.run.stopProof = { ...local.run.stopProof!, recordId: id(200 + index), executionGeneration: generation, stoppedAt: local.run.stoppedAt };
+      local.stopOperationId = local.run.stopProof.recordId;
+      s.record.runs.push(local);
+      const responsibility = store.registerRun(generation);
+      s.remote.recording.push({ executionGeneration: generation, responsibility: { responsibilityId: responsibility.responsibilityId, recordingEnabled: true }, evidence: null });
+      // Every empty generation commits responsibility and closes without opening
+      // a native segment; a restart must retain that original journal prefix.
+      store = openHerdrRecordingStore(options);
+      for (let ordinal = 0; ordinal < count; ordinal++) {
+        const previous = s.record.segments.at(-1), segmentId = id(300 + s.record.segments.length);
+        const segment = { ...originalSegment, segmentId, executionGeneration: generation, segmentOrdinal: String(s.record.segments.length + 1), startedAt: local.run.startedAt, endedAt: null, durationMs: null,
+          gap: previous ? { kind: "boundary" as const, reason: "restart" as const, from: { executionGeneration: previous.executionGeneration, segmentId: previous.segmentId }, to: { executionGeneration: generation, segmentId } } : null };
+        store.openSegment(segment); store.sample(segmentId, { width: 1, height: 1, rows: [[]] }, { elapsedMs: "0", capturedAt: segment.startedAt });
+        const boundary = { endedAt: local.run.stoppedAt, durationMs: "10000" };
+        store.endSegment(segmentId, boundary); s.record.segments.push({ ...segment, ...boundary }); local.run.segmentIds.push(segmentId);
+      }
+      store.closeRun(generation); const closed = store.snapshot(); store = openHerdrRecordingStore(options);
+      store.registerRun(generation); store.closeRun(generation);
+      expect(store.snapshot()).toEqual(closed);
+    }
+    s.remote.executionGeneration = String(counts.length); s.remote.ledger.runs = s.record.runs.map(local => local.run);
+    let receipt: Extract<SessionV2Message, { type: "receipt" }>;
+    s.api.upload = async (_expected, body) => {
+      s.bodies.push(body); const archive = parseSessionV2Archive(JSON.parse(body));
+      receipt = { protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: s.record.sessionId, claimId: s.record.claimId, executionGeneration: String(counts.length), agentControlMode: "herdr", contentKind: "terminal_recording", type: "receipt", payload: { finalizationId: archive.finalizationId, disposition: "ready", dispositionDigest: "0".repeat(64), reason: null, sha256: createHash("sha256").update(body).digest("hex"), byteLength: String(Buffer.byteLength(body)), completeness: archive.completeness, evidence: null } };
+      receipt.payload.dispositionDigest = await sessionV2ReceiptDigest(receipt); return receipt;
+    };
+    s.api.receipt = async () => receipt;
+    const result = await s.open().advance(s.record, () => store.snapshot());
+    expect(result.state).toBe("ready"); expect(result.receipt!.payload.completeness).toBe("partial");
+    const archive = parseSessionV2Archive(JSON.parse(s.bodies[0]!));
+    expect(archive.files).toHaveLength(counts.reduce((total, count) => total + count, 0));
+    expect(archive.unavailableRuns.map(run => run.executionGeneration)).toEqual(counts.flatMap((count, index) => count === 0 ? [String(index + 1)] : []));
+    expect(archive.gaps).toHaveLength(counts.length - 1 + counts.reduce((total, count) => total + Math.max(0, count - 1), 0));
+    if (counts.join() === "1,0,0,1") expect(archive.gaps).toEqual([
+      { kind: "boundary", reason: "restart", from: { executionGeneration: "1", segmentId: id(300) }, to: { executionGeneration: "2", segmentId: null } },
+      { kind: "boundary", reason: "restart", from: { executionGeneration: "2", segmentId: null }, to: { executionGeneration: "3", segmentId: null } },
+      { kind: "boundary", reason: "restart", from: { executionGeneration: "3", segmentId: null }, to: { executionGeneration: "4", segmentId: id(301) } },
+    ]);
+  });
   it.each(["sample", "limit"] as const)("recovers a committed gap_end before the next %s event as a partial archive", async transition => {
     const s = setup(), directory = path.join(s.directory, "recordings");
     const open = () => createHerdrRecordingRuntime({ directory, read: async () => ({ width: 1, height: 1, rows: [[]] }), publish: async () => {} });

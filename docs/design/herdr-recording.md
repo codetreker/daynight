@@ -10,6 +10,8 @@
 
 每轮结束至少等待 350ms。不同完整画面先提交 selected 意图，再写临时帧、fsync、原子 rename、同步父目录，最后登记文件及索引；完成登记后才发布 `recorded=true`。索引采用带哈希链的 append journal，每次提交同步落盘。相同内容与尺寸保留一个帧，观察区间每 5 秒或正常停采时 checkpoint。重启只承认持久边界，重新采集创建新段并保留 restart gap；未 checkpoint 的持续时间不延长上一画面。恢复尚未持久结束的段时，即使 claim 已终态且不会再启动采样，也保留 `checkpoint_lost` 缺失标记或既有未结束 gap；该标记不声称观察了停机期间的画面，也不估算停机持续时间。已有持久 `segment_end` 则读回原结束边界，不增加中断；该代已记录 `recording_limit` 且源已封段时，即使 lifecycle 尚未提交停止意图，恢复也不能重新累计该段时长或改写其结束边界。普通 complete 源不会因无法分配新段而获得这一限额恢复例外；该路径继续拒绝恢复，不能隐去后续未观察区间。源封段与 lifecycle 停止分别持久化，后者滞后只需收敛原边界；重复恢复保持幂等。恢复段末单独依据 journal 已持久覆盖的位置，包含帧、checkpoint、gap 起点和已提交的 `gap_end`；它不能退回最后一帧的观察位置。gap 结束已提交、下一帧尚未选择时，新的缺失标记接在已结束 gap 之后，原 gap 和帧索引都保持不变。没有墙钟字段的 `gap_end` 只推进单调时间范围，不推算新的墙钟时间。
 
+restart 边界由 hash-linked journal 中已登记的 run 与 segment 关系投影，覆盖相邻每一代及同代相邻采集段。只完成准备、尚未打开采集段的空代也有原 recording responsibility；其边界端点保留 `segmentId=null`，不能跳过该代直连前后的实际段。segment 事件携带的原前段关联仍须核验，不能以重新生成边界掩盖错误关联。投影不新增观察时长、画面或停止证明，不改写旧 journal；重开与重复关闭保持同一结果。空代边界和采集中断共同计入 gap 数量及 metadata 预算。
+
 录制与输入共享原 Session 身份，但各自承担持久责任。nativeSessionId 从未知变为已知时，同代录制段只作单向身份补齐，不改变帧和已关闭段的观察边界。selected 文件未登记时仅可按原意图核验并恢复；已登记文件缺失、原始字节 hash 不符、错误归属或损坏 journal 均为 failed，不能静默删帧或转换为 unavailable。
 
 ## 有界退化和实时投递

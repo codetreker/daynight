@@ -32,6 +32,10 @@ preserved. Codex requires the renderer-DIM placeholder and current field
 geometry, not just its words; literal or multiline drafts and ambiguous styles
 do not become empty. RGB/indexed color arguments are not DIM evidence. Claude
 requires a genuinely blank bordered field and rejects ambiguous Try text.
+Its known permission footer is recognized alongside shortcut hints, including
+the native PR and agent-navigation suffixes. The permission label identifies a
+layout, grants no permission and cannot replace the empty bordered field; unknown
+labels, arbitrary suffixes and nonempty drafts remain unproved.
 Optional model, cwd and status-bar content are not requirements. Unknown fields
 and drafts cannot become empty. Copilot retains unavailable evidence and its
 explicit handback responsibility. The
@@ -68,7 +72,10 @@ cleanup is conditional on the preceding automation state and input safety;
 otherwise controlled stopping proceeds without an advisory prompt.
 
 Strict AttachTerminal uses the original terminal ID and a verified protocol
-profile. Read-only native TTY queries establish actual geometry; layout
+profile. Read-only native TTY queries establish actual geometry. The
+[direct geometry decision](../bug-fix/2026-11-05-herdr-native-input-geometry.md)
+replaces the original external-command implementation while preserving every
+input admission check; layout
 rectangles and observer frame dimensions do not. Every Input frame rechecks
 admission, including the Enter after a complete paste. Detach establishes only
 transport completion, and does not release the durable manual state.

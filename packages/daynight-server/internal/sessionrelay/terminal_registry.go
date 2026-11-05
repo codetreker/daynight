@@ -268,6 +268,15 @@ func validRunProgression(old, nextRun v2.Run) error {
 	return nil
 }
 
+// Preparation-only stop proof and content evidence are mutually exclusive in
+// either write order. Capture errors remain evidence, never successful zeroes.
+func validPreparedRecording(run v2.Run, rec terminalRecording) error {
+	if run.StopProof != nil && run.StopProof.NativeLaunch == "not_submitted" && (rec.ObservedContent || rec.Evidence != nil && (rec.Evidence.SelectedFrameCount != "0" || rec.Evidence.RegisteredFrameCount != "0")) {
+		return fault("source_corrupt", "A preparation-only stop cannot have recorded terminal content.")
+	}
+	return nil
+}
+
 // UpdateTerminalLedger grants exactly one next generation under the same lock as
 // finalization. A stopped generation and its segment ownership are immutable.
 func (s *Service) UpdateTerminalLedger(ctx context.Context, p model.Principal, project, taskID, id, epoch string, m v2.Message) (v2.Message, error) {
@@ -305,6 +314,9 @@ func (s *Service) UpdateTerminalLedger(ctx context.Context, p model.Principal, p
 					return err
 				}
 			}
+			if err := validPreparedRecording(run, r.Recording[run.ExecutionGeneration]); err != nil {
+				return err
+			}
 		}
 		generationChanged := m.ExecutionGeneration != r.Envelope.ExecutionGeneration
 		if len(r.Runs) == 0 {
@@ -319,7 +331,7 @@ func (s *Service) UpdateTerminalLedger(ctx context.Context, p model.Principal, p
 			// bindings and stop proofs. A proof may first learn it at shutdown;
 			// recovering from that identity must not rewrite the frozen run.
 			previousProof := in.Runs[len(r.Runs)-1].StopProof
-			if !terminalActive(t, r) || len(in.Runs) != len(r.Runs)+1 || number(m.ExecutionGeneration) != number(r.Envelope.ExecutionGeneration)+1 || previousProof == nil || previousProof.Binding.NativeSessionID == nil {
+			if !terminalActive(t, r) || len(in.Runs) != len(r.Runs)+1 || number(m.ExecutionGeneration) != number(r.Envelope.ExecutionGeneration)+1 || previousProof == nil || previousProof.NativeLaunch != "" || previousProof.Binding.NativeSessionID == nil {
 				return conflict()
 			}
 			if err := invalidateTerminalOperations(ctx, tx, id); err != nil {
@@ -377,6 +389,9 @@ func (s *Service) FinalizeTerminal(ctx context.Context, p model.Principal, proje
 					return fault("stop_unknown", "Every registered run must be stopped.")
 				}
 				rec := r.Recording[run.ExecutionGeneration]
+				if err := validPreparedRecording(run, rec); err != nil {
+					return err
+				}
 				if rec.Responsibility == nil || rec.Evidence == nil || !rec.Evidence.Closed {
 					return fault("source_corrupt", "Every run requires closed recording evidence before finalization.")
 				}
@@ -444,6 +459,11 @@ func (s *Service) UpdateTerminalRecording(ctx context.Context, p model.Principal
 			in := m.Payload.(v2.RecordingEvidence)
 			if rec.Responsibility == nil || in.ResponsibilityID != rec.Responsibility.ResponsibilityID {
 				return conflict()
+			}
+			candidate := rec
+			candidate.Evidence = &in
+			if err := validPreparedRecording(r.Runs[n-1], candidate); err != nil {
+				return err
 			}
 			canonical, canonicalErr := v2.CanonicalJSON(m)
 			if canonicalErr != nil {

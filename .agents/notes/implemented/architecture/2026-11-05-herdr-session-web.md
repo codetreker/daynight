@@ -45,7 +45,14 @@ visibility or identity check; closing the channel and fencing input still apply.
 
 Operation submission and receipt polling share one deadline. Explicit reads of
 an already unknown operation have a separate bounded window without replaying
-input. A missing receipt is ambiguous because admission can fail before the
+input. A validated command response with HTTP 409 and `input_busy`,
+`stale_fence`, `lease_expired`, or `automation_suspended` proves that this new
+operation was refused before ledger insertion. The client retains the rejected
+result, removes its pending intent, and refreshes authoritative control state.
+It neither polls a nonexistent receipt nor retries; a later user action gets a
+new operation ID under the current admission rules. Other errors remain unknown,
+including ambiguous conflicts, malformed responses, and lost acknowledgements.
+A missing receipt is ambiguous because admission can fail before the
 operation row exists; the client verifies access to the original Session before
 treating a receipt 404 as access loss. Query results remain fenced to their
 operation and viewer binding.
@@ -77,6 +84,12 @@ section shares discovery and rendering while withholding attachment mutations.
 operation row and an inaccessible Session to 404. Closing the viewer on that
 status alone removes recovery from valid Sessions; an independent original
 Session read preserves recovery without relaxing actual access denial.
+
+**Classify every submission error as unknown or every HTTP 409 as rejected.**
+The former blocks a losing browser after a confirmed control-admission refusal.
+The latter mistakes unknown input and operation-identity conflicts for proof of
+non-delivery. Only the command route's explicit pre-insertion refusal codes
+support clearing pending intent; a receipt-query error cannot do so.
 
 **Use complete binding equality for every lifecycle.** Native Session discovery
 changes binding metadata while preserving the underlying terminal and lease.
