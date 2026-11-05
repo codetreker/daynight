@@ -10,8 +10,12 @@ import (
 	"path"
 	"strconv"
 
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -20,7 +24,7 @@ type attachmentHandler struct {
 	logger      *slog.Logger
 }
 
-func attachmentRoutes(mux *http.ServeMux, attachments *service.Attachments, auth *Authentication, logger *slog.Logger) {
+func attachmentRoutes(mux *http.ServeMux, attachments *service.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := &attachmentHandler{attachments: attachments, logger: logger}
 	const base = "/api/v1/projects/{projectId}/tasks/{taskId}"
 	mux.HandleFunc("GET "+base+"/attachments", auth.Require(handler.list))
@@ -28,9 +32,9 @@ func attachmentRoutes(mux *http.ServeMux, attachments *service.Attachments, auth
 	mux.HandleFunc("GET "+base+"/attachments/files/{path...}", auth.Require(handler.download))
 	mux.HandleFunc("DELETE "+base+"/attachments/files/{path...}", auth.Require(handler.delete))
 	mux.HandleFunc("GET "+base+"/preview/{path...}", auth.Require(handler.preview))
-	mux.HandleFunc(base+"/attachments", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc(base+"/attachments/files/{path...}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PUT, DELETE")))
-	mux.HandleFunc(base+"/preview/{path...}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc(base+"/attachments", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc(base+"/attachments/files/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT, DELETE")))
+	mux.HandleFunc(base+"/preview/{path...}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 }
 
 func attachmentResponse(attachment model.Attachment) api.Attachment {
@@ -39,7 +43,7 @@ func attachmentResponse(attachment model.Attachment) api.Attachment {
 }
 
 func (h *attachmentHandler) resource(request *http.Request, principal model.Principal) (string, string, *slog.Logger, error) {
-	projectID, taskID, logger, err := (&taskHandler{logger: h.logger}).resource(request, principal)
+	projectID, taskID, logger, err := taskhttp.TaskResource(request, principal, h.logger)
 	if err == nil && request.PathValue("path") != "" {
 		logger = logger.With("path", request.PathValue("path"))
 	}
@@ -50,31 +54,31 @@ func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, p
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {
-		writeError(w, request, logger, "attachment", "list", err)
+		httpx.WriteError(w, request, logger, "attachment", "list", err)
 		return
 	}
-	input, err := pageRequest(request)
+	input, err := httpx.PageRequest(request)
 	if err != nil {
-		writeError(w, request, logger, "attachment", "list", err)
+		httpx.WriteError(w, request, logger, "attachment", "list", err)
 		return
 	}
 	page, err := h.attachments.List(request.Context(), principal, projectID, taskID, input)
 	if err != nil {
-		writeError(w, request, logger, "attachment", "list", err)
+		httpx.WriteError(w, request, logger, "attachment", "list", err)
 		return
 	}
 	response := api.AttachmentPage{Items: make([]api.Attachment, 0, len(page.Items)), NextCursor: page.NextCursor}
 	for _, attachment := range page.Items {
 		response.Items = append(response.Items, attachmentResponse(attachment))
 	}
-	writeJSON(w, request, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
 func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {
-		writeError(w, request, logger, "attachment", "put", err)
+		httpx.WriteError(w, request, logger, "attachment", "put", err)
 		return
 	}
 	contentType := request.Header.Get("Content-Type")
@@ -82,21 +86,21 @@ func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, pr
 		contentType = "application/octet-stream"
 	}
 	if _, _, err := mime.ParseMediaType(contentType); err != nil || len(request.Header.Values("Content-Type")) > 1 {
-		writeError(w, request, logger, "attachment", "put", invalidInput("Content-Type must be a valid media type"))
+		httpx.WriteError(w, request, logger, "attachment", "put", httpx.InvalidInput("Content-Type must be a valid media type"))
 		return
 	}
 	attachment, created, err := h.attachments.Put(request.Context(), principal, projectID, taskID,
 		request.PathValue("path"), contentType, request.Body)
 	if err != nil {
-		writeError(w, request, logger, "attachment", "put", err)
+		httpx.WriteError(w, request, logger, "attachment", "put", err)
 		return
 	}
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
 	}
-	logger.InfoContext(request.Context(), "attachment saved", "type", "resource", "component", "attachment", "phase", "put", "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, status, attachmentResponse(attachment))
+	logger.InfoContext(request.Context(), "attachment saved", "type", "resource", "component", "attachment", "phase", "put", "request_id", httpx.RequestID(request.Context()))
+	httpx.WriteJSON(w, request, logger, status, attachmentResponse(attachment))
 }
 
 func (h *attachmentHandler) delete(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -106,10 +110,10 @@ func (h *attachmentHandler) delete(w http.ResponseWriter, request *http.Request,
 		err = h.attachments.Delete(request.Context(), principal, projectID, taskID, request.PathValue("path"))
 	}
 	if err != nil {
-		writeError(w, request, logger, "attachment", "delete", err)
+		httpx.WriteError(w, request, logger, "attachment", "delete", err)
 		return
 	}
-	logger.InfoContext(request.Context(), "attachment deleted", "type", "resource", "component", "attachment", "phase", "delete", "request_id", RequestID(request.Context()))
+	logger.InfoContext(request.Context(), "attachment deleted", "type", "resource", "component", "attachment", "phase", "delete", "request_id", httpx.RequestID(request.Context()))
 	if request.Context().Err() == nil {
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -127,12 +131,12 @@ func (h *attachmentHandler) content(w http.ResponseWriter, request *http.Request
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {
-		writeError(w, request, logger, "attachment", phase, err)
+		httpx.WriteError(w, request, logger, "attachment", phase, err)
 		return
 	}
 	attachment, object, err := h.attachments.Open(request.Context(), principal, projectID, taskID, request.PathValue("path"))
 	if err != nil {
-		writeError(w, request, logger, "attachment", phase, err)
+		httpx.WriteError(w, request, logger, "attachment", phase, err)
 		return
 	}
 	w.Header().Set("Content-Type", attachment.ContentType)
@@ -149,13 +153,13 @@ func (h *attachmentHandler) content(w http.ResponseWriter, request *http.Request
 	err = errors.Join(err, object.Body.Close(), request.Context().Err())
 	if err != nil {
 		if writer.started {
-			LogFailure(logger, request.Context(), "attachment", phase, err)
+			httpx.LogFailure(logger, request.Context(), "attachment", phase, err)
 			panic(http.ErrAbortHandler)
 		}
 		w.Header().Del("Content-Type")
 		w.Header().Del("Content-Length")
 		w.Header().Del("Content-Disposition")
-		writeError(w, request, logger, "attachment", phase, err)
+		httpx.WriteError(w, request, logger, "attachment", phase, err)
 		return
 	}
 	if !writer.started {

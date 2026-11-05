@@ -10,8 +10,9 @@ import (
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -235,7 +236,7 @@ func TestClaimCompletionFreezesSessionInTheTaskTransaction(t *testing.T) {
 	publishState(t, f, v, idleState())
 	command := submitText(t, f, v)
 	claim := v.ClaimID
-	if _, err := service.NewTasks(f.s.DB).SetStatus(ctx, f.p, f.project, f.task, service.SetTaskStatus{Version: 1, Status: model.TaskDone, ClaimID: &claim}); err != nil {
+	if _, err := taskservice.NewTasks(f.s.DB).SetStatus(ctx, f.p, f.project, f.task, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone, ClaimID: &claim}); err != nil {
 		for errors.Unwrap(err) != nil {
 			err = errors.Unwrap(err)
 		}
@@ -359,7 +360,7 @@ func TestForcedWorkerWithdrawalFreezesWebSessionWithoutStopClaim(t *testing.T) {
 	ctx := context.Background()
 	publishState(t, f, v, idleState())
 	command := submitText(t, f, v)
-	task, err := service.NewTasks(f.s.DB).WithdrawWorker(ctx, f.p, f.project, f.task, service.WithdrawWorker{Version: 1, ClaimID: v.ClaimID})
+	task, err := taskservice.NewTasks(f.s.DB).WithdrawWorker(ctx, f.p, f.project, f.task, taskcore.WithdrawWorker{Version: 1, ClaimID: v.ClaimID})
 	if _, present := task.Properties["worker"]; err != nil || present || task.AllowAgents || task.Status != model.TaskTodo {
 		t.Fatal("withdrawal retained ownership", task, err)
 	}

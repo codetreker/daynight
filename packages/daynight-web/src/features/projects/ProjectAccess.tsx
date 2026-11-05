@@ -15,6 +15,7 @@ type AccessState = {
 export class ProjectAccessSession {
   private state: AccessState = { access: null, status: 'loading', refreshing: false, error: null };
   private readonly listeners = new Set<() => void>();
+  private readonly activityWaiters = new Set<() => void>();
   private readonly lifetime = new AbortController();
   private read: Promise<ProjectAccess | null> | null = null;
   private readAbort: AbortController | null = null;
@@ -58,10 +59,22 @@ export class ProjectAccessSession {
     this.timer = setTimeout(() => { this.timer = null; void this.revalidate(); }, Math.max(0, this.lastObservation + 30_000 - performance.now()));
   };
   revalidate = (): Promise<ProjectAccess | null> => this.readAccess(false);
-  waitForFreshAccess = async (signal: AbortSignal): Promise<ProjectAccess | null> => {
+  waitForFreshAccess = async (signal: AbortSignal, requireActive = false): Promise<ProjectAccess | null> => {
     while (this.live()) {
       await this.scope.ready(signal);
       if (!this.live()) return null;
+      if (requireActive && !this.active) {
+        const lifetime = AbortSignal.any([signal, this.lifetime.signal, this.scope.signal]);
+        lifetime.throwIfAborted();
+        await new Promise<void>((resolve, reject) => {
+          const cleanup = () => { this.activityWaiters.delete(resume); lifetime.removeEventListener('abort', abort); };
+          const resume = () => { cleanup(); resolve(); };
+          const abort = () => { cleanup(); reject(lifetime.reason); };
+          this.activityWaiters.add(resume);
+          lifetime.addEventListener('abort', abort, { once: true });
+        });
+        continue;
+      }
       const current = this.read;
       if (current !== null) { await current; continue; }
       return this.state.status === 'ready' && !this.state.refreshing ? this.state.access : null;
@@ -165,7 +178,10 @@ export class ProjectAccessSession {
         this.read = null;
         this.update({ ...this.state, refreshing: false });
       }
-    } else if (document.visibilityState !== 'hidden') this.refreshVisible();
+    } else {
+      if (document.visibilityState !== 'hidden') this.refreshVisible();
+      for (const resume of this.activityWaiters) resume();
+    }
   };
   private refreshVisible = (): void => {
     if (this.read !== null && this.protectedRead) { this.refreshAfterRead = true; return; }

@@ -45,19 +45,19 @@ func TestThreadFirstHeadConcurrencyPublishesStrictPositions(t *testing.T) {
 		go func(index int) {
 			defer group.Done()
 			var message model.ThreadMessage
-			err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-				head, err := tx.LockHead(ctx, queryID(1))
+			err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+				head, err := tx.ThreadDAO().LockHead(ctx, queryID(1))
 				if err != nil {
 					return err
 				}
-				message, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: fmt.Sprint(index)})
+				message, err = tx.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: fmt.Sprint(index)})
 				if err != nil {
 					return err
 				}
-				if err := tx.PrepareTimestamp(ctx, &message, head); err != nil {
+				if err := tx.ThreadDAO().PrepareTimestamp(ctx, &message, head); err != nil {
 					return err
 				}
-				return tx.AdvanceHead(ctx, queryID(1), message.Position())
+				return tx.ThreadDAO().AdvanceHead(ctx, queryID(1), message.Position())
 			})
 			if err != nil {
 				failures <- err
@@ -90,8 +90,8 @@ func TestThreadFirstHeadConcurrencyPublishesStrictPositions(t *testing.T) {
 			t.Fatal("concurrent positions are not strictly ordered")
 		}
 	}
-	if err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-		head, err := tx.LockHead(ctx, queryID(1))
+	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+		head, err := tx.ThreadDAO().LockHead(ctx, queryID(1))
 		if err != nil || head == nil || *head != items[len(items)-1].Position() {
 			t.Fatalf("committed head: %#v %v", head, err)
 		}
@@ -118,20 +118,20 @@ func TestThreadSamplesDatabaseClockAfterHeadLockWait(t *testing.T) {
 	completed := make(chan error, 1)
 	var message model.ThreadMessage
 	go func() {
-		completed <- database.WriteThread(ctx, func(tx *ThreadTx) error {
-			started <- tx.tx.Conn().PgConn().PID()
-			head, err := tx.LockHead(ctx, queryID(1))
+		completed <- threadTestWrite(database, ctx, func(tx ThreadScope) error {
+			started <- tx.(*ThreadTx).tx.Conn().PgConn().PID()
+			head, err := tx.ThreadDAO().LockHead(ctx, queryID(1))
 			if err != nil {
 				return err
 			}
-			message, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "after lock"})
+			message, err = tx.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "after lock"})
 			if err != nil {
 				return err
 			}
-			if err := tx.PrepareTimestamp(ctx, &message, head); err != nil {
+			if err := tx.ThreadDAO().PrepareTimestamp(ctx, &message, head); err != nil {
 				return err
 			}
-			return tx.AdvanceHead(ctx, queryID(1), message.Position())
+			return tx.ThreadDAO().AdvanceHead(ctx, queryID(1), message.Position())
 		})
 	}()
 	waitThreadBackendLock(t, database, <-started)
@@ -160,41 +160,41 @@ func TestThreadTaskShareLockAllowsAppendWhileProjectMutationWaits(t *testing.T) 
 			}
 			defer connection.Rollback(context.Background())
 			thread := &ThreadTx{tx: connection}
-			if _, err := thread.LockTaskPresence(ctx, project.ID, task.ID); err != nil {
+			if _, err := thread.TaskDAO().LockTaskPresence(ctx, project.ID, task.ID); err != nil {
 				t.Fatal(err)
 			}
 			started := make(chan uint32, 1)
 			completed := make(chan error, 1)
 			go func() {
-				completed <- database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-					started <- tx.tx.Conn().PgConn().PID()
-					if _, err := tx.Task(ctx, task.ID); err != nil {
+				completed <- writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+					started <- tx.(*ProjectTx).tx.Conn().PgConn().PID()
+					if _, err := tx.TaskDAO().Task(ctx, task.ID); err != nil {
 						return err
 					}
 					if mutation == "delete" {
-						return tx.DeleteTask(ctx, task.ID, false)
+						return tx.TaskDAO().DeleteTask(ctx, task.ID, false)
 					}
-					_, err := tx.tx.Exec(ctx, `UPDATE tasks SET status='in_progress' WHERE id=$1`, task.ID)
+					_, err := tx.(*ProjectTx).tx.Exec(ctx, `UPDATE tasks SET status='in_progress' WHERE id=$1`, task.ID)
 					return err
 				})
 			}()
 			waitThreadBackendLock(t, database, <-started)
 			// The ordinary writer now owns the project row. Thread may not acquire
 			// a project lock after its task lock or both transactions would deadlock.
-			if _, err := thread.Credential(ctx, principal); err != nil {
+			if _, err := thread.CredentialDAO().Credential(ctx, principal); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := thread.LockProjectAuthorization(ctx, principal, project.ID); err != nil {
+			if _, err := thread.ProjectDAO().LockProjectAuthorization(ctx, principal, project.ID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := thread.LockHead(ctx, task.ID); err != nil {
+			if _, err := thread.ThreadDAO().LockHead(ctx, task.ID); err != nil {
 				t.Fatal(err)
 			}
-			message, err := thread.InsertMessage(ctx, model.ThreadMessage{TaskID: task.ID, Author: model.ThreadAuthor{UserID: principal.UserID}, Body: "authorized before mutation"})
+			message, err := thread.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: task.ID, Author: model.ThreadAuthor{UserID: principal.UserID}, Body: "authorized before mutation"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := thread.AdvanceHead(ctx, task.ID, message.Position()); err != nil {
+			if err := thread.ThreadDAO().AdvanceHead(ctx, task.ID, message.Position()); err != nil {
 				t.Fatal(err)
 			}
 			if err := connection.Commit(ctx); err != nil {
@@ -219,10 +219,10 @@ func TestThreadCredentialAndGrantLocksBlockRevocation(t *testing.T) {
 			}
 			defer connection.Rollback(context.Background())
 			thread := &ThreadTx{tx: connection}
-			if _, err := thread.Credential(ctx, principal); err != nil {
+			if _, err := thread.CredentialDAO().Credential(ctx, principal); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := thread.LockProjectAuthorization(ctx, principal, project.ID); err != nil {
+			if _, err := thread.ProjectDAO().LockProjectAuthorization(ctx, principal, project.ID); err != nil {
 				t.Fatal(err)
 			}
 			revoker, err := database.Pool.Acquire(ctx)
@@ -255,8 +255,8 @@ func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 	for _, mutation := range []string{"role", "delete"} {
 		t.Run(mutation, func(t *testing.T) {
 			database, _, principal, project := membershipFixture(t)
-			if err := database.WriteProject(context.Background(), project.ID, func(tx *ProjectTx) error {
-				_, err := tx.AddInvitedMember(context.Background(), principal.UserID)
+			if err := writeProjectForTest(database, context.Background(), project.ID, func(tx ProjectWriteScope) error {
+				_, err := tx.ProjectDAO().AddInvitedMember(context.Background(), principal.UserID)
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -283,16 +283,16 @@ func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 			completed := make(chan error, 1)
 			var access model.ProjectAccess
 			go func() {
-				completed <- database.WriteThread(ctx, func(thread *ThreadTx) error {
-					started <- thread.tx.Conn().PgConn().PID()
-					if _, err := thread.LockTaskPresence(ctx, project.ID, task.ID); err != nil {
+				completed <- threadTestWrite(database, ctx, func(thread ThreadScope) error {
+					started <- thread.(*ThreadTx).tx.Conn().PgConn().PID()
+					if _, err := thread.TaskDAO().LockTaskPresence(ctx, project.ID, task.ID); err != nil {
 						return err
 					}
-					if _, err := thread.Credential(ctx, principal); err != nil {
+					if _, err := thread.CredentialDAO().Credential(ctx, principal); err != nil {
 						return err
 					}
 					var err error
-					access, err = thread.LockProjectAuthorization(ctx, principal, project.ID)
+					access, err = thread.ProjectDAO().LockProjectAuthorization(ctx, principal, project.ID)
 					return err
 				})
 			}()
@@ -360,16 +360,16 @@ func TestThreadAuthorizationUsesDestinationAfterOwnershipLockWait(t *testing.T) 
 				completed := make(chan error, 1)
 				var access model.ProjectAccess
 				go func() {
-					completed <- database.WriteThread(ctx, func(thread *ThreadTx) error {
-						started <- thread.tx.Conn().PgConn().PID()
-						if _, err := thread.LockTaskPresence(ctx, project.ID, task.ID); err != nil {
+					completed <- threadTestWrite(database, ctx, func(thread ThreadScope) error {
+						started <- thread.(*ThreadTx).tx.Conn().PgConn().PID()
+						if _, err := thread.TaskDAO().LockTaskPresence(ctx, project.ID, task.ID); err != nil {
 							return err
 						}
-						if _, err := thread.Credential(ctx, principal); err != nil {
+						if _, err := thread.CredentialDAO().Credential(ctx, principal); err != nil {
 							return err
 						}
 						var err error
-						access, err = thread.LockProjectAuthorization(ctx, principal, project.ID)
+						access, err = thread.ProjectDAO().LockProjectAuthorization(ctx, principal, project.ID)
 						return err
 					})
 				}()
@@ -414,8 +414,8 @@ func TestThreadAuthorizationUsesDestinationAfterOwnershipLockWait(t *testing.T) 
 
 func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T) {
 	database, _, principal, project := membershipFixture(t)
-	if err := database.WriteProject(context.Background(), project.ID, func(tx *ProjectTx) error {
-		_, err := tx.AddInvitedMember(context.Background(), principal.UserID)
+	if err := writeProjectForTest(database, context.Background(), project.ID, func(tx ProjectWriteScope) error {
+		_, err := tx.ProjectDAO().AddInvitedMember(context.Background(), principal.UserID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -475,7 +475,7 @@ func TestThreadHeadLockCancellationReleasesConnection(t *testing.T) {
 	}
 	bounded, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
 	defer cancel()
-	err = database.WriteThread(bounded, func(tx *ThreadTx) error { _, err := tx.LockHead(bounded, queryID(1)); return err })
+	err = threadTestWrite(database, bounded, func(tx ThreadScope) error { _, err := tx.ThreadDAO().LockHead(bounded, queryID(1)); return err })
 	if err == nil {
 		t.Fatal("head lock ignored cancellation")
 	}

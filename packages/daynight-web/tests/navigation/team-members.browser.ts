@@ -1,4 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { detailFixture, graphFixture } from '../helpers/taskDetail';
+import { directAccessFixture, taskSyncFixture, taskSyncQuery } from '../helpers/taskSync';
+import { stringifyWireJson } from '../helpers/wireJson';
 
 const alice = '00000000-0000-4000-8000-000000000001';
 const bob = '00000000-0000-4000-8000-000000000002';
@@ -14,6 +17,9 @@ type Role = 'admin' | 'member';
 type Member = { role: Role; version: number; name: string | null; email: string | null };
 type Gate = { started: () => void; wait: Promise<void> };
 type State = { members: Map<string, Member>; betaMember: Member; writeEvents: string[]; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; holdInvitationRead: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; rosterReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
+const task = detailFixture(projectId, taskId, { title: 'Retained Task', version: 9_223_372_036_854_775_807n });
+const graph = graphFixture([task]);
+const access = directAccessFixture(projectId, alice, 'admin');
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> => {
   const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writeEvents: [], writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdInvitation: null, holdInvitationRead: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, rosterReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
@@ -21,10 +27,16 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : id === betaId ? 'Beta' : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: id === betaId ? { teamId: betaId, userId: alice, role: 'admin', version: 20, createdAt: time, updatedAt: time } : membership(alice, id) });
   const roster = (id: string) => id === personalId ? [{ ...membership(alice, id), profile: { name: 'Alice', email: null, avatarUrl: null } }] : [...state.members].map(([userId, m]) => ({ ...membership(userId), profile: { name: m.name, email: m.email, avatarUrl: null } }));
   await page.route('**/api/v1/**', async (route: Route) => {
-    const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
+    const request = route.request(), url = new URL(request.url()), path = url.pathname, method = request.method();
     const send = (body: unknown, status = 200) => route.fulfill({ json: body, status, headers: { 'Daynight-User-ID': alice } });
     if (path === '/api/v1/me') { const gate = state.holdMe; state.holdMe = null; if (gate) { gate.started(); await gate.wait; } return send({ id: alice, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }); }
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    const sendWire = (body: unknown) => route.fulfill({ body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': alice } });
+    if (path === `/api/v1/projects/${projectId}/access`) return sendWire(access);
+    if (path === `/api/v1/projects/${projectId}/task-sync`) return sendWire(taskSyncFixture(graph, { actorAccess: access, query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
+    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}`) return sendWire(task);
+    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/steps`) return sendWire({ projectId, taskId, version: task.version, steps: [] });
+    if (path.startsWith(`/api/v1/projects/${projectId}/tasks/${taskId}/`) && (path.endsWith('/sessions') || path.endsWith('/attachments'))) return send({ items: [], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: state.members.has(alice) ? [team(teamId)] : [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team(personalId));
     if (path === `/api/v1/teams/${betaId}`) return send(team(betaId));
@@ -93,6 +105,20 @@ const foreground = async (page: Page, api: State) => {
   await started.promise;
   return { finish: finish.resolve };
 };
+
+test('Task Steps use the empty resource contract after Team navigation', async ({ page }) => {
+  await install(page); await start(page);
+  await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
+  await expect(page.getByRole('heading', { name: 'Retained Task', exact: true })).toBeVisible();
+  const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${taskId}/steps`);
+  await page.getByRole('tab', { name: 'Steps' }).click();
+  const steps = await response;
+  expect(steps.status()).toBe(200);
+  expect(steps.headers()['daynight-user-id']).toBe(alice);
+  expect(await steps.text()).toBe(`{"projectId":"${projectId}","taskId":"${taskId}","version":${task.version},"steps":[]}`);
+  await expect(page.getByText('No steps yet')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
 
 for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN']) {
   test(`member role columns align at ${width}px in ${locale}`, async ({ page }, testInfo) => {
@@ -404,6 +430,7 @@ test('a pending self exit survives navigation to another Team and a Task, then e
       await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
       await expect.poll(() => new URL(page.url()).pathname).toBe(`/projects/${projectId}/tasks/${taskId}`);
       await expect(page.locator('main.task-detail-page')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Retained Task', exact: true })).toBeVisible();
     });
     await test.step('lose the response and inspect the retained result after 404', async () => {
       finish.resolve();
@@ -477,7 +504,9 @@ test('same-account checking retains a pending exit until a confirmed Team 404', 
   api.holdWrite = { started: started.resolve, wait: finish.promise }; api.lost = true;
   await page.getByRole('button', { name: 'Leave Team' }).click();
   const dialog = page.getByRole('dialog'); await dialog.getByRole('button', { name: 'Leave Team' }).click(); await started.promise;
-  api.holdTeamRead = { started: teamStarted.resolve, wait: teamFinish.promise };
+  await page.route(`**/api/v1/teams/${teamId}`, async (route) => {
+    teamStarted.resolve(); await teamFinish.promise; await route.fallback();
+  });
   api.holdRosterRead = { started: rosterStarted.resolve, wait: rosterFinish.promise };
   const revalidation = await foreground(page, api);
   try {

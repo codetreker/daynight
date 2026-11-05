@@ -6,12 +6,12 @@ import { useProjectSettings } from "./useProjectSettings";
 import { ProjectOwnership } from "./ProjectOwnership";
 import type { ProjectTransferReceipt } from "../../api/project-transfer";
 
-export const ProjectSettingsPanel = ({ projectId, user, onTransferred, active = true, onRetentionChange }: { readonly projectId: string; readonly user: CurrentUser; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined }) =>
-  <ProjectAccessBoundary projectId={projectId} initialRead active={active}><ProjectSettingsContent key={`${user.id}:${projectId}`} projectId={projectId} user={user} onTransferred={onTransferred} active={active} onRetentionChange={onRetentionChange} /></ProjectAccessBoundary>;
+export const ProjectSettingsPanel = ({ projectId, user, onTransferred, active = true, onRoute = true, onRetentionChange }: { readonly projectId: string; readonly user: CurrentUser; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active?: boolean; readonly onRoute?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined }) =>
+  <ProjectAccessBoundary projectId={projectId} initialRead active={active}><ProjectSettingsContent key={`${user.id}:${projectId}`} projectId={projectId} user={user} onTransferred={onTransferred} active={active} onRoute={onRoute} onRetentionChange={onRetentionChange} /></ProjectAccessBoundary>;
 
-const ProjectSettingsContent = ({ projectId, user, onTransferred, active, onRetentionChange }: { readonly projectId: string; readonly user: CurrentUser; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined }) => {
+const ProjectSettingsContent = ({ projectId, user, onTransferred, active, onRoute, onRetentionChange }: { readonly projectId: string; readonly user: CurrentUser; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active: boolean; readonly onRoute: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined }) => {
   const { messages: { auth: { management: { settings: m, common } } } } = useI18n();
-  const state = useProjectSettings(projectId, user.id);
+  const state = useProjectSettings(projectId, user.id, onRoute);
   const disabled = state.pending || state.loading || state.uncertain || state.role !== "admin";
   return <>
     <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{state.project?.name ?? m.title}</h1><p className="subtitle">{m.scopeHint}</p></div></div>
@@ -29,6 +29,6 @@ const ProjectSettingsContent = ({ projectId, user, onTransferred, active, onRete
         </form>
       </section>
     </>}
-    <ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={active} onRetentionChange={onRetentionChange} />
+    <ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={active} onRoute={onRoute} onRetentionChange={onRetentionChange} />
   </>;
 };

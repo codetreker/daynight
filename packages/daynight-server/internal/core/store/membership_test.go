@@ -83,19 +83,19 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	invitation := newStoredInvitation(project, admin, "lifecycle")
-	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		current, err := tx.DirectProjectMember(ctx, admin.UserID)
+	if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+		current, err := tx.ProjectDAO().DirectProjectMember(ctx, admin.UserID)
 		if err != nil {
 			return err
 		}
 		if current.Grant.Version != original.Grant.Version {
 			t.Fatal("snapshot mismatch")
 		}
-		access, err := tx.ProjectAccess(ctx, admin)
+		access, err := tx.ProjectDAO().ProjectAccess(ctx, admin)
 		if err != nil || (access.ProjectID != project.ID || access.UserID != admin.UserID || access.Role != model.ProjectAdmin || !reflect.DeepEqual(access.DirectGrant, &current.Grant)) {
 			t.Fatalf("write admission: %+v %v", access, err)
 		}
-		return tx.CreateInvitation(ctx, invitation)
+		return tx.ProjectDAO().CreateInvitation(ctx, invitation)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -119,19 +119,19 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	var invited model.ProjectMember
-	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		invite, err := tx.LockInvitation(ctx, invitation.TokenHash)
+	if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+		invite, err := tx.ProjectDAO().LockInvitation(ctx, invitation.TokenHash)
 		if err != nil {
 			return err
 		}
-		invited, err = tx.AddInvitedMember(ctx, member.UserID)
+		invited, err = tx.ProjectDAO().AddInvitedMember(ctx, member.UserID)
 		if err != nil {
 			return err
 		}
 		if invited.Grant.Role != model.ProjectMemberRole || invited.Grant.Version <= original.Grant.Version {
 			t.Fatal("invited role/version")
 		}
-		return tx.ConsumeInvitation(ctx, invite.ID, member.UserID, time.Now())
+		return tx.ProjectDAO().ConsumeInvitation(ctx, invite.ID, member.UserID, time.Now())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -158,18 +158,18 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		changed, err := tx.SetMemberRole(ctx, member.UserID, model.ProjectAdmin)
+	if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+		changed, err := tx.ProjectDAO().SetMemberRole(ctx, member.UserID, model.ProjectAdmin)
 		if err != nil {
 			return err
 		}
 		if changed.Grant.Version <= invited.Grant.Version {
 			t.Fatal("version did not advance")
 		}
-		if err := tx.RemoveMember(ctx, member.UserID); err != nil {
+		if err := tx.ProjectDAO().RemoveMember(ctx, member.UserID); err != nil {
 			return err
 		}
-		rejoined, err := tx.AddInvitedMember(ctx, member.UserID)
+		rejoined, err := tx.ProjectDAO().AddInvitedMember(ctx, member.UserID)
 		if err != nil {
 			return err
 		}
@@ -177,11 +177,11 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 			t.Fatal("rejoin reused old observation version")
 		}
 		second := newStoredInvitation(project, admin, "revoked")
-		if err := tx.CreateInvitation(ctx, second); err != nil {
+		if err := tx.ProjectDAO().CreateInvitation(ctx, second); err != nil {
 			return err
 		}
 		for range 2 {
-			if err := tx.RevokeInvitation(ctx, second.ID, time.Now()); err != nil {
+			if err := tx.ProjectDAO().RevokeInvitation(ctx, second.ID, time.Now()); err != nil {
 				return err
 			}
 		}
@@ -224,8 +224,8 @@ func TestMembershipStorageConstraintsRollbackAndBoundedCleanup(t *testing.T) {
 	if _, err := s.Pool.Exec(ctx, `INSERT INTO project_invitations (id,project_id,created_by,token_hash,created_at,expires_at) SELECT md5(n::text)::uuid,$1,$2,sha256(n::text::bytea),$3::timestamptz-interval '2 hours',$3::timestamptz-interval '1 hour' FROM generate_series(1,120) n`, project.ID, admin.UserID, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		return tx.CreateInvitation(ctx, newStoredInvitation(project, admin, "fresh"))
+	if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+		return tx.ProjectDAO().CreateInvitation(ctx, newStoredInvitation(project, admin, "fresh"))
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -275,27 +275,27 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 					return err
 				})
 			default:
-				err = s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+				err = writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
 					var err error
 					switch phase {
 					case "write-access":
-						_, err = tx.ProjectAccess(ctx, admin)
+						_, err = tx.ProjectDAO().ProjectAccess(ctx, admin)
 					case "target-member":
-						_, err = tx.DirectProjectMember(ctx, member.UserID)
+						_, err = tx.ProjectDAO().DirectProjectMember(ctx, member.UserID)
 					case "set-role":
-						_, err = tx.SetMemberRole(ctx, admin.UserID, model.ProjectMemberRole)
+						_, err = tx.ProjectDAO().SetMemberRole(ctx, admin.UserID, model.ProjectMemberRole)
 					case "remove":
-						err = tx.RemoveMember(ctx, member.UserID)
+						err = tx.ProjectDAO().RemoveMember(ctx, member.UserID)
 					case "add":
-						_, err = tx.AddInvitedMember(ctx, member.UserID)
+						_, err = tx.ProjectDAO().AddInvitedMember(ctx, member.UserID)
 					case "lock":
-						_, err = tx.LockInvitation(ctx, invite.TokenHash)
+						_, err = tx.ProjectDAO().LockInvitation(ctx, invite.TokenHash)
 					case "create":
-						err = tx.CreateInvitation(ctx, invite)
+						err = tx.ProjectDAO().CreateInvitation(ctx, invite)
 					case "revoke":
-						err = tx.RevokeInvitation(ctx, invite.ID, time.Now())
+						err = tx.ProjectDAO().RevokeInvitation(ctx, invite.ID, time.Now())
 					case "consume":
-						err = tx.ConsumeInvitation(ctx, invite.ID, member.UserID, time.Now())
+						err = tx.ProjectDAO().ConsumeInvitation(ctx, invite.ID, member.UserID, time.Now())
 					}
 					return err
 				})
@@ -317,9 +317,9 @@ func TestProjectParticipantsKeepGrantFactsAndRequireCanonicalProfiles(t *testing
 	s, admin, member, project := membershipFixture(t)
 	ctx := context.Background()
 	var direct model.ProjectMember
-	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+	if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
 		var err error
-		direct, err = tx.AddInvitedMember(ctx, member.UserID)
+		direct, err = tx.ProjectDAO().AddInvitedMember(ctx, member.UserID)
 		return err
 	}); err != nil {
 		t.Fatal(err)

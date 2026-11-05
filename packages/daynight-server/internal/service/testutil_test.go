@@ -1,81 +1,38 @@
 package service
 
 import (
-	"context"
-	"crypto/rand"
-	"net/url"
-	"os"
-	"strings"
+	"errors"
 	"testing"
-	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
+
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func serviceDatabaseURL(t *testing.T) string {
-	t.Helper()
-	databaseURL := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema := "service_" + strings.ToLower(rand.Text())
-	if _, err := pool.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if _, err := pool.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE"); err != nil {
-			t.Error(err)
-		}
-		pool.Close()
-	})
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	query.Set("timezone", "UTC")
-	query.Set("application_name", schema)
-	parsed.RawQuery = query.Encode()
-	return parsed.String()
+	return testsupport.ServiceDatabaseURL(t)
 }
 
-func projectService(t *testing.T) (*Projects, *store.Store, string, model.Principal) {
-	t.Helper()
-	databaseURL := serviceDatabaseURL(t)
-	database, err := store.Open(context.Background(), databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(database.Close)
-	return NewProjects(database), database, databaseURL, servicePrincipal(t, database)
+func projectService(t *testing.T) (*projectservice.Projects, *store.Store, string, model.Principal) {
+	return testsupport.ProjectService(t)
 }
 
 func servicePrincipal(t *testing.T, database *store.Store) model.Principal {
+	return testsupport.ServicePrincipal(t, database)
+}
+
+func requireIdentityOperationalError(t *testing.T, err error) {
 	t.Helper()
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	secret := randomSecret("dnst_")
-	credential := model.Session{ID: uuid.NewString(), TokenHash: secretHash(secret), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}
-	if _, err := database.CreateIdentitySession(ctx, model.User{ID: uuid.NewString(), UniAuthID: uuid.NewString()}, credential); err != nil {
-		t.Fatal(err)
+	var fault *model.Fault
+	var databaseError *store.Error
+	if err == nil || errors.As(err, &fault) || !errors.As(err, &databaseError) || databaseError.Unwrap() == nil {
+		t.Fatalf("expected retained database failure, got %#v", err)
 	}
-	principal, err := database.Authenticate(ctx, model.SessionCredential, secretHash(secret), now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return principal
+}
+
+func fixtureIdentitySession(t *testing.T, database *store.Store, user model.User, session model.Session) model.Principal {
+	return testsupport.FixtureIdentitySession(t, database, user, session)
 }

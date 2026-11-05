@@ -10,7 +10,9 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
 const attachmentBucket = "task-attachments"
@@ -32,7 +34,7 @@ func NewAttachments(database *store.Store, files filestorage.Storage) *Attachmen
 func (s *Attachments) read(ctx context.Context, principal model.Principal, projectID, taskID string, operation func(store.AttachmentReader) error) error {
 	var missing *model.Fault
 	err := s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &missing) {
 				return nil
 			}
@@ -40,7 +42,7 @@ func (s *Attachments) read(ctx context.Context, principal model.Principal, proje
 		}
 		if _, err := snapshot.TaskDAO().Task(ctx, projectID, taskID); err != nil {
 			if errors.Is(err, model.ErrNotFound) {
-				missing = taskNotFound(err)
+				missing = taskcore.NotFound(err)
 				return nil
 			}
 			return err
@@ -65,7 +67,7 @@ func (s *Attachments) read(ctx context.Context, principal model.Principal, proje
 }
 
 func (s *Attachments) Put(ctx context.Context, principal model.Principal, projectID, taskID, path, contentType string, content io.Reader) (model.Attachment, bool, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Attachment{}, false, err
 	}
 	address, err := newAttachmentAddress(projectID, taskID, path)
@@ -105,7 +107,7 @@ func (s *Attachments) Put(ctx context.Context, principal model.Principal, projec
 }
 
 func (s *Attachments) Open(ctx context.Context, principal model.Principal, projectID, taskID, path string) (model.Attachment, filestorage.Object, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Attachment{}, filestorage.Object{}, err
 	}
 	address, err := newAttachmentAddress(projectID, taskID, path)
@@ -129,7 +131,7 @@ func (s *Attachments) Open(ctx context.Context, principal model.Principal, proje
 }
 
 func (s *Attachments) Delete(ctx context.Context, principal model.Principal, projectID, taskID, path string) error {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
 	address, err := newAttachmentAddress(projectID, taskID, path)

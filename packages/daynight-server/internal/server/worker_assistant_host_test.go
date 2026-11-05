@@ -3,13 +3,14 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/google/uuid"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/google/uuid"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"

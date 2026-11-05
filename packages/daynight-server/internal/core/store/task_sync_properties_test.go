@@ -55,8 +55,8 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQuery(t *testing.T) {
 	}
 	mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2),($3,'unknown','null')`, task.ID, string(before["pullRequests"]), foreign.ID)
 	tracer := &syncPropertiesTracer{afterTasks: func() {
-		if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-			_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: task.Title, Description: task.Description, Status: task.Status, Properties: model.TaskProperties{}})
+		if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+			_, err := tx.TaskDAO().UpdateTask(ctx, task.ID, TaskWrite{Title: task.Title, Description: task.Description, Status: task.Status, Properties: model.TaskProperties{}})
 			return err
 		}); err != nil {
 			t.Fatal(err)

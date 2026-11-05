@@ -40,7 +40,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 | 事实 | 证据与影响 |
 |---|---|
 | Go 服务已有项目与任务 JSON API | `packages/daynight-server/api/projects.go` 的 `ProjectPage` 返回项目及 `nextCursor`；`api/tasks.go` 的 `Task` 包含 `dependsOn`、`externalDependsOn`、`blockedBy`、`ready`、`allowAgents`、`requiredPlatform`。 |
-| 页面与 API 同源 | `internal/server` 在同一 mux 注册精确页面、静态资源及 API 路由；`internal/webui` 内嵌真实构建产物，未知 API 保留 JSON 404。 |
+| 页面与 API 同源 | `internal/server/webui` 在同一 mux 注册精确页面和静态资源路由，`internal/server` 注册 API 路由；`internal/service/webui` 内嵌真实构建产物，未知 API 保留 JSON 404。 |
 | 已有一致读取机制 | `packages/daynight-server/internal/core/store/snapshot.go` 的 `ReadSnapshot` 使用只读 `REPEATABLE READ`。 |
 | 分页之间没有共同快照 | [服务端分页约定](../spec/daynight-server.md)明确这一边界；不能用多次 task list 拼成准确的项目全图。 |
 | web 与 CLI 工作区独立 | 私有 React/TypeScript/Vite 包使用显式 `web:*` 命令；根 build/typecheck/test 继续只覆盖 CLI，web 使用按[CI 路由](../../README.md#ci-selection)选择的独立 job。 |
@@ -142,6 +142,7 @@ Escape 后焦点回到触发器。菜单限制在视口内，适应窄屏、长�
 
 ### Team 管理与共享项目列表
 
+- `ProjectsPage` 的标题和副标题组成信息区，随后是创建和刷新操作；Shared 页面保持只有刷新。项目列表专属 `.project-list-heading` 允许换行，信息区使用 `flex: 1 1 240px`，操作组通过自动左外边距保持靠右。320、390 CSS px 下信息区占据内容宽度，操作组整体落到下一行；空间充足时左右并排，随实际内容宽度和侧栏宽度自适应。长名称在信息区内换行，既有字号、按钮、数据状态、请求和焦点顺序不变。取舍与几何验证边界见[标题换行决策](../../.agents/notes/implemented/bug-fix/2026-11-05-project-list-heading-wrap.md)。
 - `/projects` 是默认 Team 入口；`/teams/{teamId}` 读取指定 Team，`/shared-projects` 使用共享范围。没有记忆时默认使用 `/me.personalTeam`，明确项目与任务链接保持原地址。
 - Team 偏好按当前站点与账号独立保存：`localStorage` 的 `daynight.selectedTeam:<userId>` 只含已确认的 Team UUID，不保存名称、角色或成员资料。认证 scope 内首次显示工作空间时，无论入口是项目、Worker、账户还是共享页面，都恢复记忆并以精确 `GET /teams/{id}` 验证；明确 Team 路由优先使用 URL 中的 ID。一次成功安装选择后，普通导航继续使用当前内存选择；`/projects` 默认入口保留重新读取记忆的语义。独立 Task、附件、邀请与授权入口延后恢复，直到显示工作空间。只有可信 404 清除对应记忆并回 Personal，分页 Team 目录的缺项不代表失权。网络、5xx 或存储读取失败保留记忆并在工作空间提供重试；取消结果不能安装。写入失败保留当前内存选择，提示未保存并提供重试。共享范围不写 Team ID，CLI 默认配置独立。
 - 普通 Team 范围的项目目录等待偏好 ready，避免恢复期间读取初始 Personal 范围；共享目录及明确资源的主体读取独立。侧栏的 Team 项目、成员和设置链接在选择未就绪时不可导航到初始 Personal ID。`WorkspaceSidebar` 使用认证用户的 Personal Team ID 与可见性身份比较，确认 Personal 时不渲染成员和设置入口；普通 Team 不受名称影响，仍使用所选 ID 生成链接。此条件复用于桌面和窄屏导航，不改变直接地址的页面与权限。恢复与失败不改写明确 Project、Task 或附件地址，也不阻塞其主体。可见性取舍见[个人 Team 导航决策](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)。
@@ -150,7 +151,7 @@ Escape 后焦点回到触发器。菜单限制在视口内，适应窄屏、长�
 - Team 选择器打开创建窗口，`/teams/{teamId}/settings` 按身份读取完整 Team 和真实版本，以静态文本展示名称和 ID；普通 admin 可通过名称旁按钮打开改名浮层并可删除，成员及 Personal 只读。名称行使用可换行的 flex 布局，使同排名称与按钮垂直居中；名称保留空白并可在长词内换行，按钮保持完整尺寸。浮层的名称输入使用多行控件，未编辑的原始名称不被控件换行规范化改写。删除确认展示重新读取的名称，比较控件规范化后的手输内容，请求仍携带原始名称和精确版本。
 - 创建直接提交表单，改名和删除复用 `ManagementDialog` 的焦点与取消行为。mutation 在派发后无法确认结果时保留 unknown 和只读核对入口；确认的版本冲突触发重新读取，不能以旧版本重发。成功回执受身份和资源校验，创建进入新 Team，改名更新共享名称，删除进入 Personal 并经现有偏好机制保存。同账号重验保留设置草稿、确认和已派发操作；普通身份核验期间保留弹窗展示，恢复后由设置页重新读取 Team。待定或未知操作期间的 404 只说明当前不可见，不能抢先导航或丢弃结果；无操作时确认失权仍由偏好所有者安全清理记忆。
 
-- 项目设置同时保留执行提醒表单和归属区段。`ProjectOwnership` 使用当前 `ProjectAccess.canTransfer` 控制入口，打开确认前重验权限；目标来自已加入 Team 的分页列表、UUID 或同 origin 的 Team 页面链接。预览返回目标名称、精确版本和转移后的预期角色，确认提交观察到的 ownership、目标版本与当前用户。冲突要求重新预览并确认；派发后未确认的结果保持 unknown，重读只展示当前事实，不重发或把 404 解释为成功。
+- 项目设置同时保留执行提醒表单和归属区段。`ProjectOwnership` 使用已确认的 `ProjectAccess.canTransfer` 展示入口，打开确认前重验权限；目标来自已加入 Team 的分页列表、UUID 或同 origin 的 Team 页面链接。普通复核保留对话框、目录页与选择；确认等待在途复核并核对操作身份及归属版本。预览返回目标名称、精确版本和转移后的预期角色，确认提交观察到的 ownership、目标版本与当前用户。冲突要求重新预览并确认；派发后未确认的结果保持 unknown，重读只展示当前事实，不重发或把 404 解释为成功。
 - 成功回执直接安装 access 或撤回对应 `TaskCacheScope` generation，清除项目私有视图与打开的任务。失权后按 source Team ID 点读：成功进入原 Team，确定 404 才进入 Personal，网络失败保留成功结果并提供导航重试。结果显示归属认证 Workspace，跨导航保留；权限仍在时留在项目并刷新 access。[转移决策](../../.agents/notes/implemented/feature/2026-11-05-web-project-transfer.md)记录原因和代价。
 - `/teams/{teamId}/members` 按身份读取 Team 和完整成员目录，不使用 Project participant 代替 Team 目录。目录保留 nullable profile 和真实成员版本，以用户 ID 作为资料缺失时的展示回退。角色与移除确认复用 `ManagementDialog` 和 Team mutation 状态；派发后的未知结果保留只读核对，冲突或权限拒绝刷新后要求重新确认。成员操作按登录身份和 Team 保持到跨路由的回执或未知结果；待定与未知操作阻止偏好读取的 404 抢先丢弃结果，核对只展示当前事实。成功回执独立于刷新结果显示，并刷新本人角色与 Team 列表；仍在成员页时自退回执导航 Personal，离页后的迟到回执只回退仍指向该 Team 的内存选择，不改变新路由。`useTeamPreference.leaveTeam` 丢弃已退出 Team 的待保存值，复用保存与重试机制将已退出 Team ID 作为替换条件；每次尝试均读取当前存储，仅当仍保存为该 ID 时写入 Personal，其他 Team 或缺失值保持原样。读取或写入失败保留这个条件，沿用保存错误与人工重试入口，后来的本地选择接替待保存值。生产 hook 测试覆盖正常回退、另一标签页选择、缺失记忆、未保存选择及存储故障恢复；完整 `AuthenticatedApp` 测试以延迟自退回执验证 Shared 和 Task 路由及下次默认入口恢复。独立 Project grant 保持不变。Personal 和最后 admin 的控件不可用，服务端仍负责并发权限与最后 admin 检查。
 - Team 成员列表以共享 grid 列轨道和行 subgrid 对齐身份、角色及操作；最后 admin 说明占独立行，避免其高度改变控件与操作的对齐。窄屏把身份移到上一行，说明可换行。角色控件保留原生 select 交互，使用固定尺寸与独立绘制的箭头控制留白；Project 授权的控件样式独立保留。取舍见[成员角色对齐决策](../../.agents/notes/implemented/bug-fix/2026-11-05-team-member-role-alignment.md)。
@@ -584,7 +585,7 @@ React Flow 12.12.0保留220px宽、96px或136px高的可见卡片、原生测量
 切换本身不执行复制。页面、命令块与顶栏在公开阅读布局的可用宽度内自然换行或局部滚动，
 320px/390px 下没有整页横向溢出。
 
-`server.uiRoutes` 以现有 handler 注册 `/setup`，与其他页面共享 GET/HEAD、
+`server/webui.UI.RegisterRoutes` 注册 `/setup`，与其他页面共享 GET/HEAD、
 `no-store`、方法拒绝和请求记录。`validateAuthSettings` 同时保留 `/setup` 根和后代
 命名空间，配置及启动验证先于路由注册，避免 callback 冲突导致 ServeMux panic。
 已有冲突配置须更换 callback 并同步 UniAuth 登记值；页面无需增加 API 或数据库字段。
@@ -611,9 +612,11 @@ packages/daynight-server/
   api/task_graph.go                 HTTP 图 DTO
   internal/core/model/task_graph.go 无传输依赖的读取模型
   internal/core/store/task_graph.go PostgreSQL 快照查询
-  internal/service/task_graph.go    图读取编排、上限与统计
-  internal/server/task_graph.go     图 HTTP handler 与 DTO 转换
-  internal/webui/                   内嵌 FS、HTML 与资源 handler
+  internal/service/task/task_graph.go 图读取编排
+  internal/core/task/projection/   图限制与统计规则
+  internal/server/task/task_graph.go  图 HTTP handler 与 DTO 转换
+  internal/service/webui/           内嵌 FS 和资源读取
+  internal/server/webui/            页面与资源 HTTP 路由和响应
 ```
 
 | 模块 | 拥有的内容 | 依赖方向 |
@@ -639,7 +642,8 @@ packages/daynight-server/
 | Go server | HTTP 解析、响应、路由与方法语义 | 调用 service 或 webui |
 | Go service | 具体 store 的读取事务、领域拒绝、图摘要 | 调用 core/store，返回 core 模型 |
 | core/store | 同一快照内的具体 SQL 查询与扫描 | 使用 pgx，不依赖 HTTP、React 或 API DTO |
-| webui | 内嵌资源及正确的 Content-Type、缓存策略 | 不访问 service/store，不另包日志中间件 |
+| service/webui | 内嵌资源及文件读取 | 不访问业务 store |
+| server/webui | 页面与资源路由、Content-Type 和缓存策略 | 读取资源，不另包日志中间件 |
 
 ```mermaid
 flowchart LR
@@ -726,11 +730,11 @@ Go 服务在同一 origin 提供 JSON API、页面和真实内嵌资源。
 GET 沿用 Go 的 HEAD 语义；已知 UI、asset 和图路径不支持的方法返回 405 与 Allow。
 已知页面形状的 ID 由前端解析，错误 ID 仍交付 index 后显示未找到页面。附件页面
 路径先经过既有原始附件路径守卫，非法分隔符、空段、点段和上越在 ServeMux
-规范化之前拒绝，不扩大任意页面回退范围。`internal/webui` 暴露具体 HTML/asset handler，server 拥有路由注册，不用外层 URL dispatcher 绕过原 mux。HTML、图、Worker 观测、Worker 配置和最新详情响应采用 `Cache-Control: no-store`，内容哈希资源采用长期 immutable 缓存；不注册 Service Worker。
+规范化之前拒绝，不扩大任意页面回退范围。`internal/server/webui` 注册具体 HTML/asset handler，读取 `internal/service/webui` 资源，不用外层 URL dispatcher 绕过原 mux。HTML、图、Worker 观测、Worker 配置和最新详情响应采用 `Cache-Control: no-store`，内容哈希资源采用长期 immutable 缓存；不注册 Service Worker。
 
 ### 本地构建与开发
 
-生产构建采用 web typecheck → Vite build → 完整产物发布到 Go 的 `internal/webui/dist/` → Go build。生成目录忽略 Git；不提交占位页面。发布产物前验证 index 及引用资源存在，以临时目录准备完整新产物后替换旧产物；构建失败必须阻止 Go 构建，不能继续使用旧页面。
+生产构建采用 web typecheck → Vite build → 完整产物发布到 Go 的 `internal/service/webui/dist/` → Go build。生成目录忽略 Git；不提交占位页面。发布产物前验证 index 及引用资源存在，以临时目录准备完整新产物后替换旧产物；构建失败必须阻止 Go 构建，不能继续使用旧页面。
 
 ```text
 # 仓库根目录：本地依赖安装
@@ -900,7 +904,7 @@ TaskNode 保留主体检查与 Details/展开独立控件，底部 42px 预留�
 
 `AuthenticatedApp` 注册 `/projects/:id/settings`，与成员路由共用项目管理导航、面包屑和本地化标题；Go 同源页面入口提供 GET/HEAD 深链接及既有方法拒绝。
 `ProjectSettingsPanel` 按 user/project 键隔离，`useProjectSettings` 读取完整 Project，
-共享内存 access 提供当前本人角色；只有完成当前权限核验的 admin 可编辑。
+共享内存 access 提供已确认的本人角色；后台复核保留 admin 的编辑界面，但写入等待新鲜权限。
 权限刷新沿身份/项目生命周期发布，保留独立设置草稿；成员资料不再承担本人准入。
 草稿、已保存资源、角色、pending、uncertain 与语义反馈独立；语言切换不重新发请求或丢失输入。
 `api/project-settings.ts` 的 GET 使用权威 Project，PATCH 使用完整 bigint version 编码并返回完整 Project；输入使用正 int32 分钟校验。
@@ -912,7 +916,7 @@ TaskNode 保留主体检查与 Details/展开独立控件，底部 42px 预留�
 路由/项目/身份切换取消旧请求并忽略晚到结果，但不把 abort 当作远端回滚；重新进入时必须完成初始权威读取。
 共享 request 边界保持前台身份核验隔离，同用户后台确认不卸载表单，换号 generation 使旧结果失效。
 
-共享 access 与设置/成员资源的加载分别归各自所有者。确认撤权必须使现有资源请求的
+共享 access 与设置/成员资源的加载分别归各自所有者。普通权限复核不启动覆盖设置草稿的资源读取；成员和邀请在后台读取完整结果期间保持已展示内容。写操作先锁定原操作，再等待现有 access、身份准入与相关成员资源读取，并重新核对角色、归属、资源版本及原操作身份。阻塞恢复后的写入还等待页面重新激活及新的权限核验；离开路由取消尚未派发的确认，不取消已派发操作的归属。确认撤权必须使现有资源请求的
 generation 或读取寿命失效，响应发布时再次核对当前准入；渲染也排除 unavailable，
 防止旧成功响应恢复私有名册。该读取失效不把已接受的写入当作回滚或释放 unknown。
 资源读取已成功而并发 access 暂时失败时，保留可恢复资源或资源自己的失败状态；后续

@@ -16,8 +16,8 @@ validation and storage codecs. `internal/core/task/properties` applies public
 write policy and the Worker/sessionStartup association using those definitions.
 `internal/core/task/codec` owns Steps and Thread response types and exact
 encoding; API reuses its types. `internal/core/task/steps` owns ordered candidate
-operations. Existing transaction and permission orchestration remains in its
-current owner.
+operations. The [Task boundary](2026-11-05-server-task-boundaries.md) owns transaction and
+permission orchestration.
 
 ## Alternatives
 
@@ -34,6 +34,5 @@ could diverge on valid stored values and public write protection.
 Protected values remain readable from storage and are rejected by public writes.
 Steps retain Encoder output with its newline and version budget; Thread retains
 its newline-free encoding and capacity rules. The split preserves a single
-registry and encoding owner without compatibility forwarding packages. Moving
-Task transactions and permission orchestration remains separate work; consumers
-can use the final helpers without repeating this split.
+registry and encoding owner without compatibility forwarding packages. Task transactions and permission orchestration use these helpers without
+repeating their definitions.

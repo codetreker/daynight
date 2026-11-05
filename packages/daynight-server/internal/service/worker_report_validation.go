@@ -14,12 +14,12 @@ var workerProbeCodes = []string{"not_found", "permission_denied", "timeout", "co
 
 func validateWorkerReport(input model.WorkerReport) (model.WorkerReport, error) {
 	telemetry := &input.Telemetry
-	machineID, err := CanonicalID(telemetry.Machine.ID)
+	machineID, err := model.CanonicalID(telemetry.Machine.ID)
 	if err != nil {
 		return model.WorkerReport{}, err
 	}
 	telemetry.Machine.ID = machineID
-	if !workerText(telemetry.Machine.Name) || !workerText(telemetry.WorkingDirectory) || !workerText(telemetry.Versions.Daynight) {
+	if !model.ValidWorkerText(telemetry.Machine.Name) || !model.ValidWorkerText(telemetry.WorkingDirectory) || !model.ValidWorkerText(telemetry.Versions.Daynight) {
 		return model.WorkerReport{}, invalidInput("Worker machine name, working directory and Daynight version must be nonempty UTF-8 text without NUL.")
 	}
 	if !telemetry.Platform.Valid() || !workerReportTime(telemetry.SampledAt) {
@@ -28,10 +28,10 @@ func validateWorkerReport(input model.WorkerReport) (model.WorkerReport, error) 
 	checks := []error{
 		validateWorkerAssistantHost(telemetry.AssistantHost, telemetry.Platform),
 		validateWorkerProbe(telemetry.OS, "", func(value model.WorkerOS) bool {
-			return workerText(value.Type) && workerText(value.Release) && workerText(value.Version) && workerText(value.Arch)
+			return model.ValidWorkerText(value.Type) && model.ValidWorkerText(value.Release) && model.ValidWorkerText(value.Version) && model.ValidWorkerText(value.Arch)
 		}),
 		validateWorkerProbe(telemetry.CPU, "", func(value model.WorkerCPU) bool {
-			return workerText(value.Model) && value.LogicalProcessors > 0 && value.LogicalProcessors <= workerSafeInteger && !math.IsNaN(value.UsagePercent) && !math.IsInf(value.UsagePercent, 0) && value.UsagePercent >= 0 && value.UsagePercent <= 100
+			return model.ValidWorkerText(value.Model) && value.LogicalProcessors > 0 && value.LogicalProcessors <= workerSafeInteger && !math.IsNaN(value.UsagePercent) && !math.IsInf(value.UsagePercent, 0) && value.UsagePercent >= 0 && value.UsagePercent <= 100
 		}),
 		validateWorkerProbe(telemetry.Memory, "", func(value model.WorkerMemory) bool {
 			return workerBytes(value.UsedBytes) && workerBytes(value.TotalBytes) && value.UsedBytes <= value.TotalBytes
@@ -39,9 +39,9 @@ func validateWorkerReport(input model.WorkerReport) (model.WorkerReport, error) 
 		validateWorkerProbe(telemetry.Disk, "", func(value model.WorkerDisk) bool {
 			return workerBytes(value.AvailableBytes) && workerBytes(value.TotalBytes) && value.AvailableBytes <= value.TotalBytes
 		}),
-		validateWorkerProbe(telemetry.Versions.Herdr, "not_running", workerText),
-		validateWorkerProbe(telemetry.Versions.Codex, "not_installed", workerText),
-		validateWorkerProbe(telemetry.Versions.Copilot, "not_installed", workerText),
+		validateWorkerProbe(telemetry.Versions.Herdr, "not_running", model.ValidWorkerText),
+		validateWorkerProbe(telemetry.Versions.Codex, "not_installed", model.ValidWorkerText),
+		validateWorkerProbe(telemetry.Versions.Copilot, "not_installed", model.ValidWorkerText),
 	}
 	for _, err := range checks {
 		if err != nil {
@@ -59,7 +59,7 @@ func validateWorkerReport(input model.WorkerReport) (model.WorkerReport, error) 
 	seen := make(map[string]bool, len(inventory.Claims))
 	for index, reference := range inventory.Claims {
 		for _, destination := range []*string{&reference.ProjectID, &reference.TaskID, &reference.ClaimID} {
-			id, err := CanonicalID(*destination)
+			id, err := model.CanonicalID(*destination)
 			if err != nil {
 				return model.WorkerReport{}, err
 			}

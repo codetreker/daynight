@@ -481,8 +481,9 @@ separately establish real reporting, resources, permissions and recovery.
 
 ## Project ownership transfer
 
-Project settings show the current owner and offer transfer only to a freshly
-verified owner Team admin. The dialog accepts a Team selected from the paged
+Project settings show the confirmed owner and offer transfer to an owner Team
+admin. Background checks preserve the dialog and its paged selection; transfer
+waits for current authorization and verifies ownership again. The dialog accepts a Team selected from the paged
 membership list, a UUID, or a same-origin Team page URL. Preview displays the
 target and predicted access before confirmation. The request binds the observed
 ownership and target versions and the authenticated user; conflicts require a
@@ -521,7 +522,9 @@ form reconciles Project and membership before enabling another mutation. Failed
 reconciliation leaves Save blocked and exposes a read retry. Navigation aborts
 obsolete client work without claiming that a committed write was rolled back;
 returning to the page loads authoritative state before editing. The existing
-foreground identity guard preserves same-user drafts and focus, while identity
+foreground identity guard preserves same-user drafts and focus. Ordinary access
+checks do not reload the settings resource; Save waits for the current check and
+verifies the role, ownership and observed settings version before dispatch. Identity
 or project replacement invalidates old requests and results.
 
 Project resources include required `settings.version`,
@@ -548,8 +551,12 @@ edit changes task time or graph geometry.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 6 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details` and
-`profiles` stores. Upgrading the ownership-complete schema 5 adds profiles while
+schema 8 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles` and `sessionHistory` stores. Upgrading schema 7 clears its Session
+records, which lack the complete-empty proof, and preserves compatible project,
+task, profile and lifecycle data. Upgrading schema 6 adds the Session records
+store while retaining compatible task and profile data and lifecycle.
+Upgrading the ownership-complete schema 5 adds profiles while
 preserving compatible task records, user fences and watermarks. Upgrades from
 schema 1, 2, 3 or 4 rebuild incompatible projects, summaries and details, rotate
 user fences and clear old epochs/watermarks before a complete snapshot. Missing
@@ -869,6 +876,22 @@ The Session selector and the managed Session recordings section in the attachmen
 sidebar open fixed original executions in the shared reading area. These entries
 have no attachment mutation actions. Ordinary file previews and upload drafts
 retain their state while a recording is selected.
+The shared cache stores successful first pages and confirmed empty catalogues per
+authenticated user, project and task. Opening or reactivating the view refreshes
+the first page even when cached: confirmed empty stays hidden during refresh and
+existing entries remain readable. An empty first page with a continuation does
+not by itself confirm an empty catalogue. Exhausting later pages establishes a
+separate persisted empty proof while retaining the original first page and cursor.
+Refreshing a confirmed empty catalogue follows an empty first page through its
+continuations until a record appears or the catalogue is exhausted. Failures
+retain eligible content and offer retry. When cache reads work but a refresh or
+pagination transaction cannot write, the view retains valid content and offers
+retry without publishing a successful response whose ordering is unproven. Task
+version does not establish history freshness. Fences and generations guard revoked or stale
+results; complete storage failure can conservatively hide a newer result or lose
+a denial across a restart after all tabs close, as described in the
+[cache design](../../docs/design/daynight-task-sync.md#5-indexeddb-与去重).
+This cache grants no live control or archive access.
 Verified complete frames support direct seeking, stepping and playback; partial
 recordings remain labeled and playback stops at every gap until the reader
 explicitly continues. Archive reading establishes no control connection.
@@ -1789,7 +1812,7 @@ pnpm web:test
 The build typechecks the package and emits production HTML and hashed assets to
 `packages/daynight-web/dist/`. `scripts/publish-assets.mts` validates the index,
 its local asset references and ordinary files, prepares a complete staged copy,
-and replaces `packages/daynight-server/internal/webui/dist/`. Failed validation
+and replaces `packages/daynight-server/internal/service/webui/dist/`. Failed validation
 or publication fails the build; a failed swap attempts to restore previous assets
 and reports both causes if rollback also fails.
 The Go binary embeds the published output. Both generated directories are ignored

@@ -53,8 +53,8 @@ func TestGrantCommitResponseLostKeepsUnknownAfterRealCommit(t *testing.T) {
 func TestCreateGrantPropagatesConstraintFailure(t *testing.T) {
 	s, owner, _, project := membershipFixture(t)
 	ctx := context.Background()
-	err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		_, err := tx.CreateGrant(ctx, owner.UserID, model.ProjectMemberRole)
+	err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+		_, err := tx.ProjectDAO().CreateGrant(ctx, owner.UserID, model.ProjectMemberRole)
 		return err
 	})
 	var databaseError *pgconn.PgError

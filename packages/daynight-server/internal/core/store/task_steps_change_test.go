@@ -29,7 +29,7 @@ func TestTaskStepsChangeStoreUpdatesOneExistingTarget(t *testing.T) {
 	stamp := time.Date(2026, 11, 4, 3, 4, 5, 654321000, time.UTC)
 	target := before[0]
 	target.Title, target.Description, target.Status, target.UpdatedAt = "  Paired title  ", "# Paired body\n", model.TaskStepSkipped, stamp
-	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error { return tx.UpdateTaskStep(ctx, task.ID, target) }); err != nil {
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error { return tx.TaskDAO().UpdateTaskStep(ctx, task.ID, target) }); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
@@ -63,8 +63,8 @@ func TestTaskStepsChangeStoreFailuresKeepCausesAndRollback(t *testing.T) {
 	before := state()
 	for _, mode := range []string{"missing", "query", "constraint"} {
 		t.Run(mode, func(t *testing.T) {
-			err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-				rows, err := tx.TaskSteps(ctx, task.ID)
+			err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+				rows, err := tx.TaskDAO().TaskSteps(ctx, task.ID)
 				if err != nil {
 					return err
 				}
@@ -74,13 +74,13 @@ func TestTaskStepsChangeStoreFailuresKeepCausesAndRollback(t *testing.T) {
 				case "missing":
 					target.ID = "ffffffff"
 				case "query":
-					if _, err := tx.tx.Exec(ctx, `ALTER TABLE task_steps RENAME COLUMN description TO missing_description`); err != nil {
+					if _, err := tx.(*ProjectTx).tx.Exec(ctx, `ALTER TABLE task_steps RENAME COLUMN description TO missing_description`); err != nil {
 						return err
 					}
 				case "constraint":
 					target.Status = "invalid"
 				}
-				return tx.UpdateTaskStep(ctx, task.ID, target)
+				return tx.TaskDAO().UpdateTaskStep(ctx, task.ID, target)
 			})
 			var transaction *TransactionError
 			if !errors.As(err, &transaction) || transaction.CommitAttempted || transaction.CleanupFailed || transaction.Outcome != TransactionNotCommitted {

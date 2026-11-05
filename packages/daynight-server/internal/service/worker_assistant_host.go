@@ -40,7 +40,7 @@ func validateWorkerAssistantHost(host *model.WorkerAssistantHost, platform model
 }
 
 func workerAssistantText(value string, limit int) bool {
-	return workerText(value) && len(value) <= limit && !strings.ContainsFunc(value, unicode.IsControl)
+	return model.ValidWorkerText(value) && len(value) <= limit && !strings.ContainsFunc(value, unicode.IsControl)
 }
 
 func workerAssistantAbsolutePath(value string, platform model.TaskPlatform) bool {

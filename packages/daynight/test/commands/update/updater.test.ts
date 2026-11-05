@@ -219,6 +219,41 @@ const directories: string[] = [];
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
 describe("update subprocess supervision", () => {
+  it.skipIf(process.platform !== "win32").each(["capture", "inherit"] as const)("keeps Windows console handles usable with %s output", async (output) => {
+    const { spawn: spawnTerminal } = await import("node-pty");
+    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/update-console");
+    await mkdir(temporary, { recursive: true });
+    const directory = await mkdtemp(path.join(temporary, "Console 中文 "));
+    directories.push(directory);
+    const driver = path.join(directory, "driver.mjs");
+    const moduleUrl = new URL("../../../dist/commands/update/updater.js", import.meta.url).href;
+    const childScript = "process.stdout.write('update child stdout\\n');process.stderr.write('update child stderr\\n');";
+    await writeFile(driver, `import { runUpdateCommand } from ${JSON.stringify(moduleUrl)};
+try {
+  if (!process.stdin.isTTY || !process.stdout.isTTY || !process.stderr.isTTY) throw new Error('Expected console handles in the update parent.');
+  const output = await runUpdateCommand({ executable: process.execPath, arguments: ['--eval', ${JSON.stringify(childScript)}], cwd: process.cwd(), environment: process.env, timeoutMs: 5000, output: ${JSON.stringify(output)} });
+  process.stdout.write(output);
+} catch (error) { console.error(error); process.exitCode = 1; }
+`);
+    // Pipes keep detached Windows children working and cannot reproduce console EBADF failures.
+    const terminal = spawnTerminal(process.execPath, [driver], { cwd: directory, env: process.env, cols: 120, rows: 30, useConpty: true });
+    let transcript = "";
+    const listener = terminal.onData((data) => { transcript += data; });
+    let exited = false;
+    const closed = new Promise<number>((resolve) => terminal.onExit(({ exitCode }) => { exited = true; resolve(exitCode); }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const code = await Promise.race([closed, new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), 10_000); })]);
+      expect(code, transcript).toBe(0);
+      expect(transcript).toContain("update child stdout");
+      expect(transcript).toContain("update child stderr");
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (!exited) { terminal.kill(); await closed; }
+      listener.dispose();
+    }
+  });
+
   it.each(["SIGINT", "SIGTERM", "timeout"] as const)("stops the owned command tree on %s and removes signal handlers", async (interruption) => {
     const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/update-command-tests");
     await mkdir(temporary, { recursive: true });

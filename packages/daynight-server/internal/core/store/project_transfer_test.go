@@ -16,7 +16,7 @@ import (
 func TestTransferTeamReadsMinimalMetadataAndPreservesFailures(t *testing.T) {
 	s, actor, _, project := membershipFixture(t)
 	ctx := context.Background()
-	ordinary, err := s.CreateTeam(ctx, actor.UserID, uuid.NewString(), "Target")
+	ordinary, err := testCreateTeam(s, ctx, actor.UserID, uuid.NewString(), "Target")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestTransferUpdateFailureRollsBackOwnershipAndProject(t *testing.T) {
 		t.Run(table, func(t *testing.T) {
 			s, actor, _, project := membershipFixture(t)
 			ctx := context.Background()
-			target, err := s.CreateTeam(ctx, actor.UserID, uuid.NewString(), "Target")
+			target, err := testCreateTeam(s, ctx, actor.UserID, uuid.NewString(), "Target")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,11 +95,11 @@ func TestTransferUpdateFailureRollsBackOwnershipAndProject(t *testing.T) {
 			mustQueryExec(t, s, `CREATE FUNCTION refuse_transfer_update() RETURNS trigger LANGUAGE plpgsql AS $$
  BEGIN RAISE EXCEPTION USING ERRCODE='P0001', MESSAGE='transfer update rejected'; END $$;
  CREATE TRIGGER refuse_transfer_update BEFORE UPDATE ON `+table+` FOR EACH ROW EXECUTE FUNCTION refuse_transfer_update()`)
-			err = s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-				if _, err := tx.LockTransferOwnership(ctx); err != nil {
+			err = writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+				if _, err := tx.ProjectDAO().LockTransferOwnership(ctx); err != nil {
 					return err
 				}
-				_, err := tx.MoveOwnership(ctx, target.ID)
+				_, err := tx.ProjectDAO().MoveOwnership(ctx, target.ID)
 				return err
 			})
 			var postgres *pgconn.PgError
@@ -129,7 +129,7 @@ func TestTransferCommitResponseLossRemainsUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := s.CreateTeam(ctx, other.UserID, uuid.NewString(), "Target")
+	target, err := testCreateTeam(s, ctx, other.UserID, uuid.NewString(), "Target")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestTransferPreviewRoleCombinesDestinationAndDirectGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	team, err := s.CreateTeam(ctx, other.UserID, uuid.NewString(), "Destination")
+	team, err := testCreateTeam(s, ctx, other.UserID, uuid.NewString(), "Destination")
 	if err != nil {
 		t.Fatal(err)
 	}

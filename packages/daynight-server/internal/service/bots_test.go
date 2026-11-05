@@ -1,6 +1,9 @@
 package service
 
 import (
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+
 	"context"
 	"errors"
 	"math"
@@ -9,8 +12,13 @@ import (
 	"testing"
 	"time"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/google/uuid"
 )
 
@@ -285,12 +293,12 @@ func TestBotsPaginationAndCompositeWorkerIdentity(t *testing.T) {
 func TestBotsVersionsBoundSessionAndIndependentTasks(t *testing.T) {
 	bots, database, principal, workerID := botService(t)
 	ctx := context.Background()
-	project, err := NewProjects(database).Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Independent tasks", RepoURL: "https://github.com/example/independent"})
+	project, err := projectservice.NewProjects(database).Create(ctx, principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Independent tasks", RepoURL: "https://github.com/example/independent"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tasks := NewTasks(database)
-	task, err := tasks.Create(ctx, principal, project.ID, CreateTask{Title: "A task stays independent"})
+	tasks := taskservice.NewTasks(database)
+	task, err := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "A task stays independent"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,8 +340,8 @@ func TestBotsVersionsBoundSessionAndIndependentTasks(t *testing.T) {
 func TestBotsPATLifecycleAndCompletedCleanupInventory(t *testing.T) {
 	bots, database, browser, workerID := botService(t)
 	ctx := context.Background()
-	identity := NewIdentity(database, nil, "")
-	token, err := identity.CreatePAT(ctx, browser, CreatePAT{Name: "Bot owner"})
+	identity := identityservice.New(database, nil, "")
+	token, err := identity.CreatePAT(ctx, browser, identitycore.CreatePAT{Name: "Bot owner"})
 	if err != nil {
 		t.Fatal(err)
 	}

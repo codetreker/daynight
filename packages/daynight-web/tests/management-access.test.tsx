@@ -213,8 +213,8 @@ it.each([false, true])('keeps an acknowledged invitation and its full catalogue 
     if (url === `${root}/invitations` && init?.method === 'POST') { writes++; writeSignal = init.signal as AbortSignal; return heldWrite.promise; }
     if (url === `${root}/invitations`) {
       invitationReads++;
-      if (invitationReads === 2) return heldInvitations.promise;
-      if (invitationReads === 3 && postAckReadFails) return failure(503);
+      if (invitationReads === 3) return heldInvitations.promise;
+      if (invitationReads === 4 && postAckReadFails) return failure(503);
       return json({ items: committed ? [created, existing] : [existing] });
     }
     throw new Error(`Unexpected request ${url}`);
@@ -230,15 +230,14 @@ it.each([false, true])('keeps an acknowledged invitation and its full catalogue 
     await focus(mounted.access());
     allowed = true;
     await focus(mounted.access());
-    await waitFor(() => expect(invitationReads).toBe(2));
+    await waitFor(() => expect(invitationReads).toBe(3));
     committed = true;
     await act(async () => { heldWrite.resolve(json({ ...created, link }, 201)); await nextEventLoopTurn(); });
     expect(await screen.findByLabelText('One-time invitation link')).toHaveValue(link);
     await act(async () => { heldInvitations.resolve(json({ items: [existing] })); await nextEventLoopTurn(); });
     fireEvent.click(screen.getByRole('button', { name: 'I have saved it, close' }));
     if (postAckReadFails) {
-      await screen.findByRole('alert');
-      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
     }
     await screen.findByRole('button', { name: `Revoke invitation ${created.id}` });
     expect(screen.getByRole('button', { name: `Revoke invitation ${existing.id}` })).toBeVisible();
@@ -308,7 +307,7 @@ it('marks a superseded grant reconciliation observed only after the replacement 
   let rosterReads = 0;
   const mounted = mount('members', (url, init) => {
     if (url === `${root}/access`) return json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
-    if (url === `${root}/members`) return ++rosterReads === 2 ? held.promise : json(roster(freshEmail, 'admin'));
+    if (url === `${root}/members`) return ++rosterReads === 3 ? held.promise : json(roster(freshEmail, 'admin'));
     if (url === `${root}/invitations`) return json({ items: [] });
     if (url === `${root}/grants/${otherId}` && init?.method === 'PUT') return failure(500);
     throw new Error(`Unexpected request ${url}`);
@@ -322,10 +321,10 @@ it('marks a superseded grant reconciliation observed only after the replacement 
     fireEvent.click(confirm);
     const read = await screen.findByRole('button', { name: 'Read current members' });
     fireEvent.click(read);
-    await waitFor(() => expect(rosterReads).toBe(2));
+    await waitFor(() => expect(rosterReads).toBe(3));
     await focus(mounted.access());
     await act(async () => { held.resolve(json(roster(oldEmail, 'admin'))); await nextEventLoopTurn(); });
-    await waitFor(() => expect(rosterReads).toBe(3));
+    await waitFor(() => expect(rosterReads).toBe(4));
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Direct grant for Collaborator' })).not.toBeDisabled());
     expect(screen.queryByText(oldEmail)).toBeNull();
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }

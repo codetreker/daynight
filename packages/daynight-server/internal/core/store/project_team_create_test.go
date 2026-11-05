@@ -19,7 +19,7 @@ func TestProjectCreationWaitsForTeamDeletion(t *testing.T) {
 			done := make(chan error, 1)
 			projectID := uuid.NewString()
 			abort := errors.New("abort deletion")
-			err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+			err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 				if err := tx.Delete(ctx); err != nil {
 					return err
 				}
@@ -77,7 +77,7 @@ func TestTeamDeletionWaitsForActualProjectCreation(t *testing.T) {
 			occupied := errors.New("Team has projects")
 			deleted := make(chan error, 1)
 			go func() {
-				deleted <- s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+				deleted <- testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 					found, err := tx.HasProjects(ctx)
 					if err != nil {
 						return err
@@ -113,7 +113,14 @@ func TestProjectCreationCommitResponseLoss(t *testing.T) {
 	}
 	lost := errors.New("commit response lost")
 	id := uuid.NewString()
-	_, _, err = createProjectInTeamTx(ctx, &threadCommitResponseLoss{Tx: tx, cause: lost}, actor, id, "Created", "host:repo", &team.ID)
+	err = writeProjectCreationTx(ctx, &threadCommitResponseLoss{Tx: tx, cause: lost}, actor.UserID, func(dao ProjectCreationDAO) error {
+		teamID, err := creationTeamForTest(ctx, dao, actor.UserID, &team.ID)
+		if err != nil {
+			return err
+		}
+		_, _, err = dao.InsertProject(ctx, id, "Created", "host:repo", teamID)
+		return err
+	})
 	var failure *TransactionError
 	if !errors.Is(err, lost) || !errors.As(err, &failure) || !failure.CommitAttempted || failure.Outcome != TransactionUnknown {
 		t.Fatalf("unknown commit: %#v %v", failure, err)

@@ -101,9 +101,10 @@ packages/daynight-server/
 ├── api/
 └── internal/
     ├── server/
+    │   └── webui/                页面和资源 HTTP 适配
     ├── service/
-    ├── webui/
-    │   └── dist/                 生成的真实页面与资源，不提交
+    │   └── webui/
+    │       └── dist/             生成的真实页面与资源，不提交
     └── core/
         ├── model/
         │   ├── project.go
@@ -118,9 +119,8 @@ packages/daynight-server/
 结构；`internal/server` 使用标准库 `net/http` 处理路由、JSON、请求大小限制、
 HTTP 错误映射和服务生命周期。`internal/service` 拥有 project/task 用例、业务
 校验与事务编排。`internal/core/model` 拥有共享领域模型；`internal/core/store` 使用具体的
-`pgx`/`pgxpool` 类型实现 PostgreSQL 查询、事务和迁移。`internal/webui` 拥有
-`go:embed` 资源及页面/资源响应，server 在既有 mux 精确注册路由。静态处理不经过
-service/store；请求仍只经过一次现有日志包装。HTML、图、Worker 观测及最新详情为 no-store，
+`pgx`/`pgxpool` 类型实现 PostgreSQL 查询、事务和迁移。`internal/service/webui` 拥有 `go:embed` 资源和读取，`internal/server/webui`
+在既有 mux 精确注册页面及资源响应。静态处理不访问业务 store；请求仍只经过一次现有日志包装。HTML、图、Worker 观测及最新详情为 no-store，
 哈希资源为 immutable，缺失资源不回退 HTML。精确 UI 页面形状包含公开根路径、
 `/login`、`/projects`、项目页、账号级 `/workers` 与 `/workers/{workerId}`、公开静态使用引导 `/setup`、
 `/projects/{projectId}/tasks/{taskId}` 完整详情和其附件路径入口。
@@ -134,8 +134,8 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 
 调用方向为 `server → service → core/store`。传输层将 API DTO 转换为 service
 参数，core 不依赖 HTTP，store 不决定状态转换或依赖规则。事务内查询所需的数据、
-加锁和持久化操作由 store 提供，是否接受候选变更由 service 决定。现有关系型数据只有 PostgreSQL 一个实现，
-`SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。当前 PostgreSQL 实现仍位于 store 根包，写作用域沿用各自现有合同。附件的字节存储接口由其独立
+加锁和持久化操作由 store 提供，已拆分领域的候选变更由 core 判断，service 编排作用域与跨领域操作。现有关系型数据只有 PostgreSQL 一个实现，
+`SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。Project 领域规则由 `core/project` 处理，`service/project` 选择快照、创建或已有项目写作用域并处理完成结果，`server/project` 负责 HTTP 和可复用投影。创建先锁用户和目标 Team，再原子写入 Project、ownership 与 creator admin grant；已有 Project 写在 callback 前锁项目，Project、Task 与 Session DAO 共享该事务。`ProjectScope` 仍是列表查询值。当前 PostgreSQL 实现仍位于 store 根包，其他写作用域沿用各自现有合同。附件的字节存储接口由其独立
 架构拥有，不替代这里的具体 PostgreSQL store。
 
 独立模块允许服务拥有自己的 Go/PostgreSQL 生命周期，避免将数据库事务接入现有

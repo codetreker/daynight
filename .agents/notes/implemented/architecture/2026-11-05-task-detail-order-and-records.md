@@ -18,15 +18,19 @@ controllers retain their selection and preview state. The
 [Steps reading decision](2026-11-04-task-steps-web-reading.md) owns the shared
 reader and its resource lifecycle.
 
-The managed records section is omitted only after the current history request
-succeeds with no accumulated records and no next cursor, with no loading or
-error. Unknown, loading, failed and incomplete results remain visible; every
-historical record remains an entry regardless of archive readiness. Once an
-empty inventory removes its refresh control, reactivating the owning tab reads
-it again so new records can be discovered. A nonempty inventory remains cached
-across tab changes and keeps its explicit refresh control. The
-[Herdr Session decision](2026-11-05-herdr-session-web.md) owns fixed identity,
-read-only replay and shared attachment preview behavior.
+The managed records section omits a successfully exhausted empty inventory;
+unknown, failed and incomplete results retain a loading or recovery path, and
+every historical record remains an entry regardless of archive readiness. The
+[records cache decision](2026-11-05-session-records-cache.md) replaces the
+original request-bound empty and reactivation policy, preserving confirmed
+content during background refresh. The [Herdr Session decision](2026-11-05-herdr-session-web.md)
+owns fixed identity, read-only replay and shared attachment preview behavior.
+
+The original policy required the current request to have no loading or error
+before hiding the section. After a confirmed empty result removed its refresh
+control, tab reactivation reread it to discover new records; a nonempty result
+remained in component memory with an explicit refresh control. This preserved
+visible loading and recovery paths when no durable content state was available.
 
 ## Alternatives
 
@@ -47,8 +51,8 @@ as absent. Successful exhaustion is required to establish emptiness.
 
 The order is consistent in dialog, standalone and fullscreen views and remains
 navigable by keyboard. A confirmed empty history removes the section and its
-refresh control; the next tab activation incurs a history read and can reveal
-new records. History is not polled continuously while the tab remains active.
+refresh control; activation reads the history again and can reveal new records.
+History is not polled continuously while the tab remains active.
 This does not change recording, ordinary attachments or Session execution.
 Visible loading and error states preserve recovery when absence has not been
 established.

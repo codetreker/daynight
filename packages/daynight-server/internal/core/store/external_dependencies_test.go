@@ -105,20 +105,20 @@ func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
 	if !slices.Equal(target.ExternalDependsOn, []string{done.ID, pending.ID}) || !slices.Equal(target.BlockedBy, []string{pending.ID}) || target.Ready {
 		t.Fatalf("external edges changed scheduling or ordering: %#v", target)
 	}
-	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		created, err := tx.CreateTask(ctx, queryID(13), TaskWrite{Title: "Mixed edge task", Status: model.TaskTodo, DependsOn: []string{pending.ID, done.ID}, ExternalDependsOn: []string{done.ID}})
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		created, err := tx.TaskDAO().CreateTask(ctx, queryID(13), TaskWrite{Title: "Mixed edge task", Status: model.TaskTodo, DependsOn: []string{pending.ID, done.ID}, ExternalDependsOn: []string{done.ID}})
 		if err != nil || !slices.Equal(created.ExternalDependsOn, []string{done.ID}) || !slices.Equal(created.BlockedBy, []string{pending.ID}) {
 			t.Fatalf("store did not persist mixed edge classification: %#v, %v", created, err)
 		}
-		read, err := tx.TasksByID(ctx, []string{target.ID, foreignTarget.ID})
+		read, err := tx.TaskDAO().TasksByID(ctx, []string{target.ID, foreignTarget.ID})
 		if err != nil || len(read) != 1 || !reflect.DeepEqual(read[0], target) {
 			t.Fatalf("transaction read lost classification or scope: %#v, %v", read, err)
 		}
-		reachable, err := tx.Reachable(ctx, target.ID, pending.ID, DependencyReplacement{TaskID: target.ID, DependsOn: target.DependsOn})
+		reachable, err := tx.TaskDAO().Reachable(ctx, target.ID, pending.ID, DependencyReplacement{TaskID: target.ID, DependsOn: target.DependsOn})
 		if err != nil || !reachable {
 			t.Fatalf("external edge disappeared from reachability: %v, %v", reachable, err)
 		}
-		updated, err := tx.UpdateTask(ctx, target.ID, TaskWrite{AllowAgents: target.AllowAgents, Title: "Preserved external edges", Status: target.Status, DependsOn: target.DependsOn, ExternalDependsOn: target.ExternalDependsOn})
+		updated, err := tx.TaskDAO().UpdateTask(ctx, target.ID, TaskWrite{AllowAgents: target.AllowAgents, Title: "Preserved external edges", Status: target.Status, DependsOn: target.DependsOn, ExternalDependsOn: target.ExternalDependsOn})
 		if err != nil || !updated.AllowAgents || !slices.Equal(updated.ExternalDependsOn, target.ExternalDependsOn) {
 			t.Fatalf("store replacement lost external classification: %#v, %v", updated, err)
 		}
@@ -132,7 +132,7 @@ func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
 		if err != nil || len(page.Items) != 4 || !reflect.DeepEqual(page.Items[2], target) {
 			t.Fatalf("scoped list lost classification: %#v, %v", page, err)
 		}
-		graph, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, target.ID, 160)
+		graph, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, target.ID, testGraphSelection(), 160)
 		if err != nil || len(graph) != 3 || !slices.Equal(graph[2].ExternalDependsOn, target.ExternalDependsOn) {
 			t.Fatalf("scoped graph lost classification: %#v, %v", graph, err)
 		}
@@ -144,8 +144,8 @@ func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		_, err := tx.UpdateTask(ctx, target.ID, TaskWrite{AllowAgents: target.AllowAgents, Title: "Rolled back", Status: target.Status, DependsOn: []string{done.ID, target.ID}, ExternalDependsOn: []string{done.ID}})
+	err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		_, err := tx.TaskDAO().UpdateTask(ctx, target.ID, TaskWrite{AllowAgents: target.AllowAgents, Title: "Rolled back", Status: target.Status, DependsOn: []string{done.ID, target.ID}, ExternalDependsOn: []string{done.ID}})
 		return err
 	})
 	var constraint *pgconn.PgError

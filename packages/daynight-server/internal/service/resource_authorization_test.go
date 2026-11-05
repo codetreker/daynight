@@ -1,6 +1,9 @@
 package service
 
 import (
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+
 	"context"
 	"io"
 	"strings"
@@ -8,10 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -19,23 +27,26 @@ import (
 func TestResourceServicesRejectAbsentPrincipals(t *testing.T) {
 	ctx := context.Background()
 	id := uuid.NewString()
-	projects, tasks, attachments := NewProjects(nil), NewTasks(nil), NewAttachments(nil, nil)
+	projects, tasks, attachments := projectservice.NewProjects(nil), taskservice.NewTasks(nil), NewAttachments(nil, nil)
 	for _, principal := range []model.Principal{{}, {UserID: id, CredentialID: id, Kind: "unknown"}} {
 		calls := []func() error{
 			func() error { _, err := projects.Get(ctx, principal, id); return err },
-			func() error { _, err := tasks.Create(ctx, principal, id, CreateTask{Title: "Hidden"}); return err },
 			func() error {
-				_, err := tasks.Update(ctx, principal, id, id, UpdateTask{Version: 1, Title: pointer("Hidden")})
+				_, err := tasks.Create(ctx, principal, id, taskcore.CreateTask{Title: "Hidden"})
+				return err
+			},
+			func() error {
+				_, err := tasks.Update(ctx, principal, id, id, taskcore.UpdateTask{Version: 1, Title: pointer("Hidden")})
 				return err
 			},
 			func() error { _, err := tasks.Get(ctx, principal, id, id); return err },
 			func() error {
-				_, err := tasks.List(ctx, principal, id, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}})
+				_, err := tasks.List(ctx, principal, id, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}})
 				return err
 			},
 			func() error { _, err := tasks.Graph(ctx, principal, id, id); return err },
 			func() error {
-				_, err := tasks.SetStatus(ctx, principal, id, id, SetTaskStatus{Version: 1, Status: model.TaskTodo})
+				_, err := tasks.SetStatus(ctx, principal, id, id, taskcore.SetTaskStatus{Version: 1, Status: model.TaskTodo})
 				return err
 			},
 			func() error {
@@ -60,7 +71,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 	admin, member, outsider := f.user(t), f.user(t), f.user(t)
 	project := f.project(t, admin, "Shared private resources")
 	joined := f.join(t, admin, member, project.ID)
-	tasks := NewTasks(f.database)
+	tasks := taskservice.NewTasks(f.database)
 	task := createTask(t, tasks, admin, project.ID, "Private task")
 	files, err := local.New(t.TempDir())
 	if err != nil {
@@ -80,16 +91,16 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 			func() error { _, err := f.projects.Get(ctx, principal, project.ID); return err },
 			func() error { _, err := tasks.Get(ctx, principal, project.ID, task.ID); return err },
 			func() error {
-				_, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}})
+				_, err := tasks.List(ctx, principal, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 1}})
 				return err
 			},
 			func() error { _, err := tasks.Graph(ctx, principal, project.ID, task.ID); return err },
 			func() error {
-				_, err := tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Attempt"})
+				_, err := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "Attempt"})
 				return err
 			},
 			func() error {
-				_, err := tasks.Update(ctx, principal, project.ID, task.ID, UpdateTask{Version: task.Version, Title: pointer(task.Title)})
+				_, err := tasks.Update(ctx, principal, project.ID, task.ID, taskcore.UpdateTask{Version: task.Version, Title: pointer(task.Title)})
 				return err
 			},
 			func() error {
@@ -114,7 +125,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 		calls := make([]func() error, 0, 3)
 		for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 			calls = append(calls, func() error {
-				_, err := tasks.SetStatus(ctx, principal, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: status})
+				_, err := tasks.SetStatus(ctx, principal, project.ID, task.ID, taskcore.SetTaskStatus{Version: task.Version, Status: status})
 				return err
 			})
 		}
@@ -138,7 +149,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 			t.Fatalf("member resource authority: %v", err)
 		}
 	}
-	if err := f.memberships.Remove(ctx, admin, project.ID, member.UserID, RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: admin.UserID}); err != nil {
+	if err := f.memberships.Remove(ctx, admin, project.ID, member.UserID, coreproject.RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: admin.UserID}); err != nil {
 		t.Fatal(err)
 	}
 	before := probe.count()
@@ -190,7 +201,7 @@ func TestAdmittedAttachmentWriteFinishesAfterMemberRemoval(t *testing.T) {
 	admin, member := f.user(t), f.user(t)
 	project := f.project(t, admin, "Admission")
 	joined := f.join(t, admin, member, project.ID)
-	tasks := NewTasks(f.database)
+	tasks := taskservice.NewTasks(f.database)
 	task := createTask(t, tasks, admin, project.ID, "Attachment admission")
 	files, err := local.New(t.TempDir())
 	if err != nil {
@@ -217,7 +228,7 @@ func TestAdmittedAttachmentWriteFinishesAfterMemberRemoval(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if err := f.memberships.Remove(context.Background(), admin, project.ID, member.UserID, RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: admin.UserID}); err != nil {
+	if err := f.memberships.Remove(context.Background(), admin, project.ID, member.UserID, coreproject.RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: admin.UserID}); err != nil {
 		close(probe.release)
 		t.Fatal(err)
 	}
@@ -246,10 +257,9 @@ func TestRevokedPATCannotAuthenticateForAnotherResourceRequest(t *testing.T) {
 	f := newMembershipFixture(t)
 	owner := f.user(t)
 	project := f.project(t, owner, "Revoked automation credential")
-	identity := NewIdentity(f.database, nil, "")
-	identity.now = func() time.Time { return f.now }
+	identity := identityservice.New(f.database, nil, "")
 	ctx := context.Background()
-	token, err := identity.CreatePAT(ctx, owner, CreatePAT{Name: "Resource access"})
+	token, err := identity.CreatePAT(ctx, owner, identitycore.CreatePAT{Name: "Resource access"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,23 +292,23 @@ func TestTaskWriteChecksMembershipAfterAcquiringProjectLock(t *testing.T) {
 	admin, member := f.user(t), f.user(t)
 	project := f.project(t, admin, "Membership write ordering")
 	f.join(t, admin, member, project.ID)
-	tasks := NewTasks(database)
+	tasks := taskservice.NewTasks(database)
 	task := createTask(t, tasks, admin, project.ID, "Unchanged")
 	todo := createTask(t, tasks, admin, project.ID, "Unstarted")
 	active := startTask(t, tasks, admin, createTask(t, tasks, admin, project.ID, "Incomplete"))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	results := make(chan taskResult, writerCount)
-	if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
-		if err := tx.RemoveMember(ctx, member.UserID); err != nil {
+	if _, err := database.WriteProject(ctx, project.ID, func(tx store.ProjectWriteScope) error {
+		if err := tx.ProjectDAO().RemoveMember(ctx, member.UserID); err != nil {
 			return err
 		}
 		go func() {
-			created, err := tasks.Create(ctx, member, project.ID, CreateTask{Title: "Must not exist"})
+			created, err := tasks.Create(ctx, member, project.ID, taskcore.CreateTask{Title: "Must not exist"})
 			results <- taskResult{task: created, err: err}
 		}()
 		go func() {
-			updated, err := tasks.Update(ctx, member, project.ID, task.ID, UpdateTask{Version: task.Version, Title: pointer("Must not change")})
+			updated, err := tasks.Update(ctx, member, project.ID, task.ID, taskcore.UpdateTask{Version: task.Version, Title: pointer("Must not change")})
 			results <- taskResult{task: updated, err: err}
 		}()
 		for _, action := range []struct {
@@ -306,7 +316,7 @@ func TestTaskWriteChecksMembershipAfterAcquiringProjectLock(t *testing.T) {
 			status model.TaskStatus
 		}{{task, model.TaskTodo}, {todo, model.TaskInProgress}, {active, model.TaskDone}} {
 			go func() {
-				updated, err := tasks.SetStatus(ctx, member, project.ID, action.task.ID, SetTaskStatus{Version: action.task.Version, Status: action.status})
+				updated, err := tasks.SetStatus(ctx, member, project.ID, action.task.ID, taskcore.SetTaskStatus{Version: action.task.Version, Status: action.status})
 				results <- taskResult{task: updated, err: err}
 			}()
 		}
@@ -321,7 +331,7 @@ func TestTaskWriteChecksMembershipAfterAcquiringProjectLock(t *testing.T) {
 	assertTaskUnchanged(t, tasks, admin, task)
 	assertTaskUnchanged(t, tasks, admin, todo)
 	assertTaskUnchanged(t, tasks, admin, active)
-	page, err := tasks.List(ctx, admin, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 100}})
+	page, err := tasks.List(ctx, admin, project.ID, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 100}})
 	if err != nil || len(page.Items) != 3 {
 		t.Fatalf("rejected creation persisted: %#v %v", page, err)
 	}
@@ -332,7 +342,7 @@ func TestMemberCanSetEveryTaskStatus(t *testing.T) {
 	admin, member := f.user(t), f.user(t)
 	project := f.project(t, admin, "Member task status authority")
 	f.join(t, admin, member, project.ID)
-	tasks := NewTasks(f.database)
+	tasks := taskservice.NewTasks(f.database)
 	task := createTask(t, tasks, member, project.ID, "Member-owned work")
 	if task.Status != model.TaskTodo {
 		t.Fatalf("new task status: %s", task.Status)

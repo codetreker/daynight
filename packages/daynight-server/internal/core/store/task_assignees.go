@@ -2,10 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
-	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
@@ -34,104 +30,42 @@ LEFT JOIN LATERAL (
 LEFT JOIN users profile ON profile.id = requested.user_id AND (access.user_id IS NOT NULL OR retained.id IS NOT NULL)
 ORDER BY requested.user_id`
 
-func taskAssigneeProfile(userID string, profileID, name, avatarURL *string, hasProjectAccess bool) (model.TaskAssignee, error) {
-	if profileID == nil || *profileID != userID {
-		return model.TaskAssignee{}, fmt.Errorf("task assignee profile is missing or inconsistent")
-	}
-	return model.TaskAssignee{UserID: userID, Version: taskAssigneeContentVersion(userID, name, avatarURL), Name: name, AvatarURL: avatarURL, HasProjectAccess: hasProjectAccess}, nil
-}
-
-func taskAssigneeContentVersion(userID string, name, avatarURL *string) string {
-	values := []*string{&userID, name, avatarURL}
-	size := len(values) * 9
-	for _, value := range values {
-		if value != nil {
-			size += len(*value)
-		}
-	}
-	content := make([]byte, 0, size)
-	for _, value := range values {
-		if value == nil {
-			content = append(content, 0)
-		} else {
-			content = append(content, 1)
-			content = binary.BigEndian.AppendUint64(content, uint64(len(*value)))
-			content = append(content, *value...)
-		}
-	}
-	digest := sha256.Sum256(content)
-	return hex.EncodeToString(digest[:])
-}
-
-func (s *Snapshot) TaskAssignees(ctx context.Context, projectID string) (model.TaskAssignees, error) {
+func (s *Snapshot) TaskAssignees(ctx context.Context, projectID string) ([]model.TaskAssigneeFact, error) {
 	rows, err := s.tx.Query(ctx, taskAssigneesCatalogueQuery, projectID)
 	if err != nil {
-		return model.TaskAssignees{}, queryError("list task assignees", err)
+		return nil, queryError("list task assignees", err)
 	}
 	defer rows.Close()
-	result := model.TaskAssignees{Items: []model.TaskAssignee{}, UnresolvedUserIDs: []string{}}
+	facts := make([]model.TaskAssigneeFact, 0)
 	for rows.Next() {
-		var userID string
-		var profileID, name, avatarURL *string
-		var hasProjectAccess bool
-		if err := rows.Scan(&userID, &profileID, &name, &avatarURL, &hasProjectAccess); err != nil {
-			return model.TaskAssignees{}, queryError("list task assignees", err)
+		var fact model.TaskAssigneeFact
+		if err := rows.Scan(&fact.UserID, &fact.ProfileID, &fact.Name, &fact.AvatarURL, &fact.HasProjectAccess); err != nil {
+			return nil, queryError("list task assignees", err)
 		}
-		person, err := taskAssigneeProfile(userID, profileID, name, avatarURL, hasProjectAccess)
-		if err != nil {
-			return model.TaskAssignees{}, queryError("list task assignees", err)
-		}
-		result.Items = append(result.Items, person)
+		facts = append(facts, fact)
 	}
 	if err := rows.Err(); err != nil {
-		return model.TaskAssignees{}, queryError("list task assignees", err)
+		return nil, queryError("list task assignees", err)
 	}
-	return result, nil
+	return facts, nil
 }
 
-func (s *Snapshot) ResolveTaskAssignees(ctx context.Context, projectID string, userIDs []string) (model.TaskAssignees, error) {
+func (s *Snapshot) ResolveTaskAssignees(ctx context.Context, projectID string, userIDs []string) ([]model.TaskAssigneeFact, error) {
 	rows, err := s.tx.Query(ctx, taskAssigneesResolveQuery, projectID, userIDs)
 	if err != nil {
-		return model.TaskAssignees{}, queryError("resolve task assignees", err)
+		return nil, queryError("resolve task assignees", err)
 	}
 	defer rows.Close()
-	result := model.TaskAssignees{Items: []model.TaskAssignee{}, UnresolvedUserIDs: []string{}}
-	expected := make(map[string]bool, len(userIDs))
-	for _, userID := range userIDs {
-		expected[userID] = false
-	}
+	facts := make([]model.TaskAssigneeFact, 0)
 	for rows.Next() {
-		var userID string
-		var profileID, name, avatarURL *string
-		var hasProjectAccess, qualified bool
-		if err := rows.Scan(&userID, &profileID, &name, &avatarURL, &hasProjectAccess, &qualified); err != nil {
-			return model.TaskAssignees{}, queryError("resolve task assignees", err)
+		var fact model.TaskAssigneeFact
+		if err := rows.Scan(&fact.UserID, &fact.ProfileID, &fact.Name, &fact.AvatarURL, &fact.HasProjectAccess, &fact.Qualified); err != nil {
+			return nil, queryError("resolve task assignees", err)
 		}
-		seen, exists := expected[userID]
-		if !exists || seen {
-			return model.TaskAssignees{}, queryError("resolve task assignees", fmt.Errorf("task assignee resolution contains an unexpected or duplicate user"))
-		}
-		expected[userID] = true
-		if !qualified {
-			if hasProjectAccess || profileID != nil || name != nil || avatarURL != nil {
-				return model.TaskAssignees{}, queryError("resolve task assignees", fmt.Errorf("task assignee resolution contains an unqualified profile"))
-			}
-			result.UnresolvedUserIDs = append(result.UnresolvedUserIDs, userID)
-			continue
-		}
-		person, err := taskAssigneeProfile(userID, profileID, name, avatarURL, hasProjectAccess)
-		if err != nil {
-			return model.TaskAssignees{}, queryError("resolve task assignees", err)
-		}
-		result.Items = append(result.Items, person)
+		facts = append(facts, fact)
 	}
 	if err := rows.Err(); err != nil {
-		return model.TaskAssignees{}, queryError("resolve task assignees", err)
+		return nil, queryError("resolve task assignees", err)
 	}
-	for _, seen := range expected {
-		if !seen {
-			return model.TaskAssignees{}, queryError("resolve task assignees", fmt.Errorf("task assignee resolution is incomplete"))
-		}
-	}
-	return result, nil
+	return facts, nil
 }

@@ -8,7 +8,7 @@
 
 原四个公开动作把状态修改绑定到有限前态，并让任务审批成为单独阶段。当前结构仅保留 todo、in_progress、done，默认 todo，任意状态对通过一个 setter 表达。旧 proposed 数据必须迁移，不以解码回退或兼容分支留在运行时。
 
-现有 [task_lifecycle.go](https://github.com/codetreker/daynight/blob/18c794918ef0506a04bf294dad9cd8058ef2696b/packages/daynight-server/internal/service/task_lifecycle.go)已将动作汇入一个事务函数；[Tasks.write](https://github.com/codetreker/daynight/blob/18c794918ef0506a04bf294dad9cd8058ef2696b/packages/daynight-server/internal/service/task.go#L139-L176)拥有锁后成员核验、changed=false 返回和错误传播。保留这些机制，替换公开契约、前态规则与旧状态读取模型。
+`core/task` 负责状态候选、前置与后继约束及版本检查；`service/task` 在 Project 写作用域中核验准入，并协调任务写入和 Session 冻结。同状态请求保留版本和时间，事务完成错误优先于领域拒绝。
 
 | 选择 | 收益 | 代价与结论 |
 |---|---|---|
@@ -78,7 +78,7 @@ Content-Type: application/json
 {"version":123,"status":"in_progress"}
 ```
 
-普通调用接受 version/status；done 目标另可提供 claimId，用于 owner 完成当前 active 执行。其他目标拒绝 claimId，不接受 query、时间、allowAgents、元数据或依赖。复用[严格对象和版本解析](https://github.com/codetreker/daynight/blob/18c794918ef0506a04bf294dad9cd8058ef2696b/packages/daynight-server/internal/server/http.go#L27-L68)，拒绝重复/未知/大小写变化字段、null、非正 int64 版本和无效状态，不归一化、不回退。
+普通调用接受 version/status；done 目标另可提供 claimId，用于 owner 完成当前 active 执行。其他目标拒绝 claimId，不接受 query、时间、allowAgents、元数据或依赖。复用[严格对象和版本解析](../../packages/daynight-server/internal/server/httpx/http.go)，拒绝重复/未知/大小写变化字段、null、非正 int64 版本和无效状态，不归一化、不回退。
 
 成功为 200、no-store 和现有完整 Task。保留 session/PAT、Cookie Origin、成员权限、非成员资源隐藏，以及受认证的 405 路径。普通成员与管理员的状态写入权限相同。删除四个旧动作路由，不重定向或保留别名。
 

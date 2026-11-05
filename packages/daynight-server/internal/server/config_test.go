@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 )
 
 func configuredTestConfig() Config {
@@ -168,7 +170,7 @@ func TestInvalidAppCredentialConfigurationPrecedesResourceOpening(t *testing.T) 
 		t.Fatal("invalid App credentials reached runtime composition")
 	}
 	for _, err := range []error{loadErr, validateErr, startErr} {
-		var failure *ConfigurationError
+		var failure *configpkg.ConfigurationError
 		if !errors.As(err, &failure) || !strings.Contains(failure.Field, "DAYNIGHT_UNIAUTH_APP_ID") {
 			t.Fatalf("App credential syntax did not retain a configuration error: %v", err)
 		}
@@ -208,7 +210,7 @@ func TestPublicPageCallbackConflictsPrecedeResourceOpening(t *testing.T) {
 				t.Fatal("conflicting public-page callback reached route or runtime composition")
 			}
 			for _, err := range []error{loadErr, validateErr, compositionErr, startErr} {
-				var failure *ConfigurationError
+				var failure *configpkg.ConfigurationError
 				if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_UNIAUTH_CALLBACK_URL" || failure.Rule != "must not overlap an application API, page, asset, or health route" {
 					t.Fatalf("public-page callback conflict lost configuration diagnosis: %v", err)
 				}

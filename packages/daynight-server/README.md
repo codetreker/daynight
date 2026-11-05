@@ -273,7 +273,8 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `cmd/daynight-server/` | Environment, process signals, dependency assembly, exit status and direct command tests |
 | `cmd/e2e_tests/` | Test-only package for built-process, installed-CLI and attachment-migration acceptance |
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
-| `internal/webui/` | Embedded production HTML/assets and static response policy |
+| `internal/service/webui/` | Embedded production HTML/assets and resource reads |
+| `internal/server/webui/` | Static routes and HTTP response policy |
 | `internal/core/store/` | PostgreSQL migrations, transactions, scoped writes and consistent reads |
 | `internal/core/filestorage/` | Generic bucket/path byte operations and address validation |
 | `internal/core/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
@@ -346,7 +347,7 @@ export DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1
 ```
 
 `web:build` typechecks and builds the web package, validates the real output and
-publishes it to `internal/webui/dist/`. Generated files are ignored by Git; a
+publishes it to `internal/service/webui/dist/`. Generated files are ignored by Git; a
 clean Go build without them fails at `go:embed`. No placeholder index or frontend
 runtime is used. Once built, the binary requires PostgreSQL and a writable,
 local storage directory and valid UniAuth App settings at runtime. Linux requires
@@ -1732,7 +1733,7 @@ Thread scenario also verifies the [discussion contract](../../docs/spec/daynight
 | V1: persistent resources | `workflow_restart_persistence`, `graceful_sigterm_drains_committed_request`, `forced_sigterm_cancels_without_late_write`; complete objects survive process restart and listener reuse |
 | V2: dependency refusal and rollback | `refusals_scopes_filters_and_cursors`, `partial_write_http_failure_rolls_back`; rejected writes preserve complete tasks, with a sequence proving metadata and the first edge changed before the injected failure |
 | V3: concurrency and project independence | `concurrent_reverse_dependencies`, `canceled_request_and_independent_project`; owned backend waiters prove competing requests and independent progress |
-| V4: state gates | `three_state_read_projection`, `concurrent_status_same_version`, `concurrent_dependency_update_and_status`, `concurrent_reopen_and_successor_status` plus installed start/done/distinct-target/dependency-edit/same-state races; [service tests](internal/service/task_test.go) and [HTTP status tests](internal/server/task_transitions_test.go) cover all nine pairs, +0/+1, stale no-op and ordinary/external predecessor/dependent protection |
+| V4: state gates | `three_state_read_projection`, `concurrent_status_same_version`, `concurrent_dependency_update_and_status`, `concurrent_reopen_and_successor_status` plus installed start/done/distinct-target/dependency-edit/same-state races; [service tests](internal/service/task/task_test.go) and [HTTP status tests](internal/server/task/task_transitions_test.go) cover all nine pairs, +0/+1, stale no-op and ordinary/external predecessor/dependent protection |
 | V5: revisions and no-ops | Workflow/refusal scenarios and `concurrent_same_version`; actual changes compete on one version and matching semantic no-ops retain fields/timestamps |
 | V6: listing and HTTP contract | `refusals_scopes_filters_and_cursors`, [HTTP tests](internal/server/tasks_test.go) and service tests cover tied keysets, scoped filters, initialized empty resources, DTOs and error mapping |
 | V7: transactions and lifecycle | Partial-failure, cancellation, graceful/forced-signal, unsupported/failed-migration-history, concurrent-startup and `installed_cli_pre_lifecycle_migration_restart` scenarios; owning store tests prove finer snapshot and cross-migration interleavings |
@@ -1925,7 +1926,7 @@ supplement the store/service/server package tests.
 The owning store/service tests retain deterministic snapshot and lock proofs:
 `TestQueriesSnapshotRetainsCompleteOldGraph` in [query tests](internal/core/store/query_test.go),
 `TestTaskSnapshotKeepsProjectAndDerivedTaskStateConsistent` in
-[service failure tests](internal/service/task_failure_test.go), and
+[service failure tests](internal/service/task/task_failure_test.go), and
 `TestMigrationsSessionLockSpansCommits` in [migration tests](internal/core/store/migrate_test.go).
 
 CI uploads `daynight-server-acceptance` after validation, including the JSON
