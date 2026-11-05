@@ -128,8 +128,14 @@ describe('localized built-in command descriptions', () => {
     for (const description of descriptions) expect(screen.getByText(description)).toBeVisible();
     expect(screen.getByText('Compact the current Codex thread')).toBeVisible();
     expect(screen.getByText('Provider-authored description')).toBeVisible();
+    expect(screen.queryByText('Native argument hint')).toBeNull();
+    fireEvent.pointerMove(screen.getByRole('option', { name: /Provider-authored description/ }), { pointerType: 'mouse', clientX: 20, clientY: 40 });
     expect(screen.getByText('Native argument hint')).toBeVisible();
-    if (provider === 'codex') expect(screen.getByText('Instructions for this skill')).toBeVisible();
+    if (provider === 'codex') {
+      fireEvent.pointerMove(screen.getByRole('option', { name: /Codex 技能/ }), { pointerType: 'mouse', clientX: 20, clientY: 80 });
+      expect(screen.getByText('Instructions for this skill')).toBeVisible();
+      expect(screen.queryByText('Native argument hint')).toBeNull();
+    }
     view.setLocale('en');
     for (const item of commands) expect(screen.getByRole('option', { name: new RegExp(`^/${item.name}`) })).toHaveTextContent(item.description);
     expect(props.state.snapshot!.controls!.commands).toEqual(originals);
