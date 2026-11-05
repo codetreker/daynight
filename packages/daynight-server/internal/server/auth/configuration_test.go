@@ -31,6 +31,9 @@ func TestIdentityAuthenticationConfiguration(t *testing.T) {
 		if (err == nil) != test.valid {
 			t.Fatalf("origin %s allow=%t: %v", test.origin, test.allow, err)
 		}
+		if err == nil && auth.Origin() != test.origin {
+			t.Fatalf("origin = %q, want %q", auth.Origin(), test.origin)
+		}
 		if err == nil && strings.HasPrefix(test.origin, "https:") {
 			cookie := auth.cookie(auth.SessionCookieName(), "secret", time.Now(), 60)
 			if cookie.Name != "__Host-daynight_session" || !cookie.Secure || cookie.Domain != "" || !strings.HasPrefix(auth.bindingCookieName("state"), "__Host-daynight_login_") {

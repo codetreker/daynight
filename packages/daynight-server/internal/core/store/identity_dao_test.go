@@ -259,3 +259,27 @@ func TestIdentityDAOFailuresPreserveTransactionOutcome(t *testing.T) {
 		t.Fatalf("canceled begin: %#v %v", completion, err)
 	}
 }
+
+func TestIdentityCleanupFailureRollsBackEarlierDeletes(t *testing.T) {
+	s := isolatedStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	_, _, session := testAuthRecords(t, s)
+	login := model.LoginTransaction{ID: uuid.NewString(), StateHash: deviceStoreHash("expired-state"), BrowserBindingHash: deviceStoreHash("expired-binding"), Provider: "github", ReturnPath: "/", ExpiresAt: now.Add(-time.Hour)}
+	identityScopeTest(t, s, func(scope IdentityScope) error { return scope.IdentityDAO().InsertLogin(ctx, login) })
+	if _, err := s.Pool.Exec(ctx, `UPDATE sessions SET created_at=$2,expires_at=$3 WHERE id=$1`, session.ID, now.Add(-2*time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Pool.Exec(ctx, `DROP TABLE personal_access_tokens`); err != nil {
+		t.Fatal(err)
+	}
+	completion, err := s.WriteIdentity(ctx, func(scope IdentityScope) error { return scope.IdentityDAO().CleanupCredentials(ctx, now) })
+	var databaseError *pgconn.PgError
+	if !errors.As(err, &databaseError) || databaseError.Code != "42P01" || completion.Outcome != TransactionNotCommitted {
+		t.Fatalf("cleanup failure: %#v %v", completion, err)
+	}
+	var logins, sessions int
+	if err := s.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM login_transactions WHERE id=$1),(SELECT count(*) FROM sessions WHERE id=$2)`, login.ID, session.ID).Scan(&logins, &sessions); err != nil || logins != 1 || sessions != 1 {
+		t.Fatalf("cleanup committed partial deletes: %d %d %v", logins, sessions, err)
+	}
+}

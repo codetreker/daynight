@@ -21,3 +21,29 @@ func TestPrincipalStructureValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestEqualOptionalComparesPresenceAndValue(t *testing.T) {
+	a, same, other := "a", "a", "b"
+	for _, test := range []struct {
+		left, right *string
+		want        bool
+	}{
+		{nil, nil, true}, {&a, nil, false}, {nil, &a, false}, {&a, &same, true}, {&a, &other, false},
+	} {
+		if got := EqualOptional(test.left, test.right); got != test.want {
+			t.Fatalf("EqualOptional(%v,%v) = %t", test.left, test.right, got)
+		}
+	}
+}
+
+func TestUnauthenticatedPreservesCause(t *testing.T) {
+	cause := errors.New("underlying credential failure")
+	err := Unauthenticated(cause)
+	var fault *Fault
+	if !errors.As(err, &fault) || fault.Code != "unauthenticated" || fault.Message != "Authentication is required. Please log in again." || !errors.Is(err, cause) {
+		t.Fatalf("authentication fault: %#v", err)
+	}
+	if errors.Unwrap(Unauthenticated(nil)) != nil {
+		t.Fatal("unexpected cause")
+	}
+}
