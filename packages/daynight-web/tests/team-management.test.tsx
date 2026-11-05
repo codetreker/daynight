@@ -57,8 +57,8 @@ describe("Team management", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("unknown"); expect(createTeam).toHaveBeenCalledTimes(1);
   });
   it("keeps Personal and member settings read-only", async () => {
-    vi.mocked(getTeam).mockResolvedValueOnce(team("Member", 1n, "member")); settings();
-    expect(await screen.findByDisplayValue("Member")).toBeDisabled(); expect(screen.getByRole("button", { name: "Delete Team" })).toBeDisabled();
+    vi.mocked(getTeam).mockResolvedValueOnce(team("Member Team", 1n, "member")); settings();
+    expect(await screen.findByText("Member Team")).toBeInTheDocument(); expect(screen.queryByRole("button", { name: "Edit" })).toBeNull(); expect(screen.getByRole("button", { name: "Delete Team" })).toBeDisabled();
   });
   it("localizes Team roles in both languages", async () => {
     const rendered = settings(); expect(await screen.findByText("Administrator")).toBeInTheDocument(); rendered.unmount();
@@ -68,7 +68,8 @@ describe("Team management", () => {
   });
   it("does not offer mutations on the Personal Team", async () => {
     vi.mocked(getTeam).mockResolvedValueOnce({ ...team("unused"), kind: "personal", name: null });
-    settings(); expect(await screen.findByDisplayValue("Personal")).toBeDisabled();
+    settings(); expect(await screen.findByText("Personal")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     expect(screen.getByRole("button", { name: "Delete Team" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
   });
@@ -79,7 +80,7 @@ describe("Team management", () => {
   });
   it("keeps delete outcome unknown after an unavailable reread", async () => {
     vi.mocked(deleteTeam).mockImplementation(async (_id, _team, _signal, _mismatch, dispatch) => { dispatch(); throw new ApiError("network"); });
-    settings(); await screen.findByLabelText("Team name"); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
+    settings(); await screen.findByRole("button", { name: "Edit" }); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
     const dialog = await screen.findByRole("dialog"); fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha\nTeam  " } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" })); expect(await within(dialog).findByRole("alert")).toHaveTextContent("unknown");
     vi.mocked(getTeam).mockRejectedValue(new ApiError("server", 404, "not_found")); fireEvent.click(within(dialog).getByRole("button", { name: "Check current state" }));
@@ -87,7 +88,7 @@ describe("Team management", () => {
   });
   it("requires typed name and sends original CRLF and exact version", async () => {
     vi.mocked(deleteTeam).mockImplementation(async (_id, target, _signal, _mismatch, dispatch) => { dispatch(); return { teamId: target.id, deleted: true }; });
-    settings(); await screen.findByLabelText("Team name"); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
+    settings(); await screen.findByRole("button", { name: "Edit" }); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
     const dialog = await screen.findByRole("dialog"), input = within(dialog).getByLabelText("Enter the Team name to confirm");
     fireEvent.change(input, { target: { value: "Alpha" } }); fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" })); expect(deleteTeam).not.toHaveBeenCalled();
     fireEvent.change(input, { target: { value: "  Alpha\nTeam  " } }); fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
@@ -95,22 +96,22 @@ describe("Team management", () => {
   });
   it("restores delete button focus after a delayed pre-confirmation read", async () => {
     const pending = Promise.withResolvers<Team>(); vi.mocked(getTeam).mockResolvedValueOnce(team("Old", 1n)).mockReturnValueOnce(pending.promise);
-    settings(); await screen.findByDisplayValue("Old"); const opener = screen.getByRole("button", { name: "Delete Team" }); opener.focus(); fireEvent.click(opener);
+    settings(); await screen.findByText("Old"); const opener = screen.getByRole("button", { name: "Delete Team" }); opener.focus(); fireEvent.click(opener);
     expect(opener).toBeDisabled(); opener.blur(); await act(async () => pending.resolve(team("Old", 1n)));
     const dialog = await screen.findByRole("dialog"); fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(opener).toHaveFocus());
   });
-  it("discards a stale draft when opening delete observes a newer version", async () => {
+  it("shows the newest name when opening delete observes a newer version", async () => {
     vi.mocked(getTeam).mockResolvedValueOnce(team("Old", 1n)).mockResolvedValue(team("New", 2n));
-    settings(); await screen.findByDisplayValue("Old"); fireEvent.change(screen.getByLabelText("Team name"), { target: { value: "Old draft" } });
+    settings(); await screen.findByText("Old");
     fireEvent.click(screen.getByRole("button", { name: "Delete Team" })); const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("alert")).toHaveTextContent("Team changed"); fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(screen.getByLabelText("Team name")).toHaveValue("New"); expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled(); expect(renameTeam).not.toHaveBeenCalled();
+    expect(screen.getByText("New")).toBeInTheDocument(); expect(renameTeam).not.toHaveBeenCalled();
   });
   it("re-reads a conflicting name and requires a new typed confirmation", async () => {
     vi.mocked(getTeam).mockResolvedValueOnce(team("Old", 1n)).mockResolvedValueOnce(team("Old", 1n)).mockResolvedValue(team("New", 2n));
     vi.mocked(deleteTeam).mockImplementation(async (_id, _team, _signal, _mismatch, dispatch) => { dispatch(); throw new ApiError("server", 409, "version_conflict"); });
-    settings(); await screen.findByDisplayValue("Old"); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
+    settings(); await screen.findByText("Old"); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
     const dialog = await screen.findByRole("dialog"); fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "Old" } }); fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
     expect(await within(dialog).findByText("New")).toBeInTheDocument(); expect(within(dialog).getByLabelText("Enter the Team name to confirm")).toHaveValue("");
     expect(deleteTeam).toHaveBeenCalledTimes(1);
@@ -123,10 +124,70 @@ describe("Team management", () => {
   it("saves raw names with the version read and reports a nonempty Team rejection", async () => {
     vi.mocked(renameTeam).mockImplementation(async (_id, old, name, _signal, _mismatch, dispatch) => { dispatch(); return team(name, old.version + 1n); });
     vi.mocked(deleteTeam).mockImplementation(async (_id, _target, _signal, _mismatch, dispatch) => { dispatch(); throw new ApiError("server", 409, "team_not_empty"); });
-    settings(); await screen.findByLabelText("Team name"); fireEvent.change(screen.getByLabelText("Team name"), { target: { value: " New " } }); fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    settings(); fireEvent.click(await screen.findByRole("button", { name: "Edit" })); fireEvent.change(screen.getByLabelText("Team name"), { target: { value: " New " } }); fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(updated).toHaveBeenCalledTimes(1)); expect(vi.mocked(renameTeam).mock.calls[0]?.[1].version).toBe(9007199254740993n);
     vi.mocked(getTeam).mockResolvedValue(team(" New ", 9007199254740994n)); fireEvent.click(screen.getByRole("button", { name: "Delete Team" })); const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: " New " } }); fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("still has projects"); expect(deleted).not.toHaveBeenCalled();
   });
+  it("shows static Team information and resets cancelled or escaped rename drafts", async () => {
+    settings(); const edit = await screen.findByRole("button", { name: "Edit" });
+    expect(screen.getByText(teamId)).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    fireEvent.click(edit); let dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByLabelText("Team name")).toHaveValue("  Alpha\nTeam  ");
+    fireEvent.change(within(dialog).getByLabelText("Team name"), { target: { value: "Cancelled" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(edit); dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByLabelText("Team name")).toHaveValue("  Alpha\nTeam  ");
+    fireEvent.change(within(dialog).getByLabelText("Team name"), { target: { value: "Escaped" } });
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull(); expect(renameTeam).not.toHaveBeenCalled();
+  });
+  it("retains the draft after rejection, validates names and prevents duplicate writes", async () => {
+    const response = Promise.withResolvers<Team>();
+    vi.mocked(renameTeam).mockImplementation(async (_id, _old, _name, _signal, _mismatch, dispatch) => { dispatch(); return response.promise; });
+    settings(); fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog"), input = within(dialog).getByLabelText("Team name"), save = within(dialog).getByRole("button", { name: "Save changes" });
+    fireEvent.change(input, { target: { value: "\u2003\n " } }); fireEvent.click(save);
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("valid name"); expect(renameTeam).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: " Duplicate\nName " } }); fireEvent.click(save); fireEvent.click(save);
+    await waitFor(() => expect(renameTeam).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(renameTeam).mock.calls[0]?.[0]).toBe(userId);
+    expect(vi.mocked(renameTeam).mock.calls[0]?.[1].version).toBe(9007199254740993n);
+    expect(vi.mocked(renameTeam).mock.calls[0]?.[2]).toBe(" Duplicate\nName ");
+    await act(async () => response.reject(new ApiError("server", 400, "bad_request")));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("operation failed"); expect(input).toHaveValue(" Duplicate\nName ");
+  });
+  it("does not allow a lost rename to be replayed after closing the dialog", async () => {
+    vi.mocked(renameTeam).mockImplementation(async (_id, _old, _name, _signal, _mismatch, dispatch) => { dispatch(); throw new ApiError("network"); });
+    settings(); fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog"); fireEvent.change(within(dialog).getByLabelText("Team name"), { target: { value: "New" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("unknown");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    const edit = screen.getByRole("button", { name: "Edit" }); expect(edit).toBeDisabled();
+    fireEvent.click(edit); expect(screen.queryByRole("dialog")).toBeNull(); expect(renameTeam).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the rename draft after a conflict and retries only on explicit submission with the latest version", async () => {
+    const reread = Promise.withResolvers<Team>();
+    vi.mocked(getTeam).mockResolvedValueOnce(team("Old", 1n)).mockReturnValueOnce(reread.promise);
+    vi.mocked(renameTeam).mockImplementationOnce(async (_id, _old, _name, _signal, _mismatch, dispatch) => { dispatch(); throw new ApiError("server", 409, "version_conflict"); })
+      .mockImplementationOnce(async (_id, old, name, _signal, _mismatch, dispatch) => { dispatch(); return team(name, old.version + 1n); });
+    settings(); fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog"), input = within(dialog).getByLabelText("Team name");
+    fireEvent.change(input, { target: { value: "Draft" } }); fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(getTeam).toHaveBeenCalledTimes(2));
+    expect(within(dialog).getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await act(async () => reread.resolve(team("Concurrent", 2n)));
+    expect(await within(dialog).findByText("Concurrent")).toBeInTheDocument();
+    expect(input).toHaveValue("Draft"); expect(renameTeam).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(updated).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(renameTeam).mock.calls[1]?.[1]).toMatchObject({ name: "Concurrent", version: 2n });
+    expect(vi.mocked(renameTeam).mock.calls[1]?.[2]).toBe("Draft");
+  });
+
 });

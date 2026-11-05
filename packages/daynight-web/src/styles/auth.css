@@ -85,6 +85,16 @@
 .panel-heading p { color: var(--muted); font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; }
 .panel-heading:last-child { border-bottom: 0; }
 .panel-body { padding: 23px; }
+.team-settings-details { margin: 0; }
+.team-settings-details > div + div { margin-top: 20px; }
+.team-settings-details dt { font-size: 12px; font-weight: 600; color: #4c5870; margin-bottom: 8px; }
+.team-settings-details dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.team-settings-name { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 12px; }
+.team-settings-name span { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.team-settings-name .button { flex: none; }
+.team-settings-id { user-select: text; }
+.team-settings-current { white-space: pre-wrap; overflow-wrap: anywhere; }
+.team-settings-details + :is(.settings-lock, [role="status"]) { margin-top: 20px; }
 .row { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(120px, .65fr) minmax(180px, .9fr); gap: 18px; align-items: center; padding: 19px 23px; border-bottom: 1px solid #edf0f4; min-width: 0; }
 .row > * { min-width: 0; }
 .row:last-child { border-bottom: 0; }
