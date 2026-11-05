@@ -2519,7 +2519,14 @@ same file, including Chromium's code-signing clone; a copy or a familiar path
 name cannot. Active recovery rechecks the file and original process identity;
 helper and companion executable paths retain exact membership checks. A browser
 installation replaced between launch inventory and ownership recording is
-rejected if its file identity no longer matches. Ambiguous startup processes, orphan-only groups
+rejected before its profile marker or process receipt is written. Combined
+authentication passes its saved receipt inventory; the Playwright fixture reads
+the runner's prelaunch inventory from the same phase's `target.json`. Recording
+requires that inventory, including macOS file identities; missing or invalid
+input fails without resampling or path-only trust. The caller still closes the
+launched browser. Once that browser has stopped and its profile is gone, the
+rejected recording leaves no new receipt to obstruct repeated recovery. Existing
+valid records remain intact. Ambiguous startup processes, orphan-only groups
 or unknown new profiles cause failure and remain for diagnosis. It does not kill
 unidentified processes or remove unidentified profiles. Dev-ci recovery uses the
 same recorded project identity and bounded cleanup entry.
