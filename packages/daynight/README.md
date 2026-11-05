@@ -1563,13 +1563,28 @@ bounded attempts, cancellation and sanitized diagnostics. Reporting uses the
 existing service credentials and stable worker identity, with no separate
 command or configuration switch.
 
-Start with interactive setup:
+The cloud target owns concurrency, polling and recovery limits, Project
+selection, and global/per-Project Agent, model and arguments. Repository roots,
+local paths, service credentials, Worker identity and `agentControlMode` stay
+local. First enrollment imports a candidate from the original local YAML only
+when no cloud target exists. Later starts and heartbeats always use the cloud
+target; a local copy cannot replace it. Configuration enrollment does not depend
+on active claims or alter task/claim formats, permission or recovery rules.
+
+For a Worker that has not enrolled, optional interactive setup prepares its local
+candidate:
 
 ```bash
 daynight login
 daynight worker setup
 daynight worker run
 ```
+
+A local candidate can have no Projects. Normal `worker run` authenticates and
+queries cloud configuration before managed local values, repository selection,
+repository preparation or business backend initialization. An existing target
+bypasses stale local managed fields. Empty cloud Projects keeps the Worker
+running and reporting; it does not open a picker or require `repo add`.
 
 `setup` requires terminal input and stderr. It reports environment checks and
 repair instructions, asks which native agent should execute tasks, then lists
@@ -1584,7 +1599,10 @@ per-Project values. Setup previews Projects, paths, removed registrations and
 native-setting resets before confirmation, then atomically saves agent settings
 and the complete selection. Cancellation, invalid choices, inaccessible Project
 inventory, related concurrent changes and write failures leave configuration
-unchanged.
+unchanged. Once a cloud target exists, local setup and managed-field writes
+require changing those values in the cloud instead. Writers check enrollment
+before interaction and final persistence; a missing local cache does not mean
+the Worker is unenrolled.
 
 Local diagnostics inspect tools and integration settings without starting Herdr
 or native agents. Missing prerequisites are reported together; selected-agent
@@ -1640,7 +1658,7 @@ hooks need PowerShell. Native capability and launch failures remain visible.
 Git transport and task tools, such as authenticated GitHub CLI for PR delivery,
 must be ready.
 
-Manage individual Project registrations with:
+Before enrollment, manage individual local Project registrations with:
 
 ```bash
 daynight worker repo add
@@ -1666,13 +1684,14 @@ they do not create Projects, clone repositories, acquire tasks or start Herdr.
 Cancellation, empty selection, failed remote reads and save errors leave the
 selection unchanged.
 
-With an empty repository list, interactive run guides the same selection before
-starting tasks. Noninteractive startup requires a configured repository and
-prints `worker repo add --project PROJECT_UUID` guidance. Service credentials
-and selected worker settings come from one captured configuration source;
-changed credentials require restarting the command. Startup resolves configured
-Projects into the local projects table before reading claim inventory, including
-when the state database is empty.
+Service credentials, local repository root, mode and the first-import candidate
+come from one captured source; changed credentials require restarting the
+command. Cloud lookup and reporting do not wait for Project preparation or task inventory.
+Existing prepared local bindings can supply selected Projects, while a Project
+without a confirmed prepared binding remains pending and is excluded from new
+execution. Native validation or receiving a Project ID is not readiness proof.
+Persistent local Project mappings remain available to ownership inventory and
+resource discovery independently of the selected/effective set.
 
 `worker.repositoryRoot` defaults to `~/daynights`, independently of review's
 root. New registration expands the actual home shortcut or resolves a path
@@ -1680,17 +1699,19 @@ relative to config.yml; existing paths are retained when the root changes.
 Ordinary repositories use `<root>/<host>/<owner>/<repo>`; generic transport,
 user, port and nested-path identities use distinct encoded coordinates.
 
-Network and prompts hold no configuration lock. The atomic writer rereads YAML,
-preserves comments and unrelated edits, and refuses changed worker root,
-repository selection or service credentials. Setup also protects observed global
+Network and prompts hold no configuration lock. The final cloud ownership check
+runs immediately before taking that lock; the atomic writer then rereads YAML,
+preserves comments and unrelated edits, and refuses changed Worker identity,
+worker root, repository selection or service credentials. Setup also protects observed global
 agent/model/args values and saves those fields with the selected Projects. Repo
 commands only own repositories; neither operation changes repositoryRoot. Shared aliases that would alter
 unrelated effective settings are rejected; unaffected aliases remain valid.
 Repository identities, Project IDs and physical paths must remain distinct,
 including the Daynight state directory.
 
-For explicit paths and runtime overrides, retain the shared service and review
-settings and configure worker directly:
+For explicit local paths and an initial runtime candidate, retain shared service
+and review settings and configure worker directly. After enrollment, edit the
+managed runtime fields in the cloud:
 
 ```yaml
 worker:
@@ -1712,19 +1733,22 @@ worker:
       args: []
 ```
 
-These are the defaults for optional runtime fields. A missing file, omitted
-worker mapping and `worker: {}` use the same defaults; omitted repositories is
-an empty list. Worker never infers repositories from review. Reads do not create
-or rewrite configuration. Unknown root, worker and repository-entry fields are
-ignored at runtime and preserved during configuration edits. Known non-nullable
-fields still reject explicit null, invalid types or values; malformed YAML,
-filesystem failures and cancellation remain errors. model:null clears the model
-setting.
+These are the defaults for the initial candidate. A missing file, omitted worker
+mapping and `worker: {}` use the same defaults; omitted repositories is an empty
+list. Worker never infers repositories from review. Reads do not create or
+rewrite configuration. Unknown root, worker and repository-entry fields are
+ignored during projection and preserved during configuration edits. Local fields
+and an initial candidate still reject invalid known values; malformed YAML,
+filesystem failures and cancellation remain errors. Existing cloud targets do
+not require parsing stale managed YAML values. `model: null` clears the model;
+omitted Project override fields preserve inheritance, while `args: []` clears
+arguments explicitly.
 
-Each repository requires remote/path and may specify projectId or agent/model/args.
-The service Project must already exist and match the repository; use projectId
-when remote discovery is ambiguous. Missing local repositories are cloned;
-existing roots and origins are verified without resetting files or branches.
+The initial candidate resolves each repository remote and optional projectId to
+an existing service Project, preserving native override intent. Use projectId
+when remote discovery is ambiguous. A local binding requires a valid path when
+used; selected existing bindings use the normal clone/origin checks without
+resetting files or branches. A Project without a prepared binding stays pending.
 Credentials belong in native authentication configuration, outside repository
 URLs and argument lists.
 
@@ -1740,10 +1764,40 @@ Repository agent settings override fields independently for the same type.
 Explicit null model or [] args clears that field; switching type clears omitted
 model/args, and args replaces the list. Worker owns cwd/session/model/mode
 arguments and the fixed full-access policy; conflicting arguments are rejected
-before launch. Configuration loads at startup without hot reload. Each claim
-retains its recorded agent type and native session ID; a restarted agent uses the
-current settings appropriate to that type. Settings for another type are not
-applied to it.
+before application.
+
+The Worker stores its target, successful per-item values, errors and observation
+acknowledgments in `worker/configuration.json`, scoped to the service origin,
+authenticated user and Worker ID. One serialized commit owner merges receives,
+application results and acknowledgments, atomically persists the latest state,
+then publishes an immutable effective view. Invalid scope, corrupt data and
+storage errors remain failures. Cached native success history is retained for
+observation, but a new runtime must validate it under the current local control
+mode before use. Atomic file replacement alone does not permit
+an older application result to overwrite a newer target.
+
+Heartbeats exchange targets and actual results; native and Project operations
+run outside the report attempt and cache commit queue. Independent successful
+items stay applied when another item fails. An item without a successful value
+remains unavailable. Failed items retry after 5, 10, 20, 40 and then 60 seconds;
+new targets replace old application retries. Already-started Project removal
+work retains its original revision until its adapter completes. A recovered
+failure remains reportable until
+accepted, and an acknowledgment cannot clear failures that arose during the
+request. The [Worker requirements](../../docs/spec/daynight-worker.md) and
+[configuration decision](../../.agents/notes/implemented/architecture/2026-11-04-worker-cloud-runtime-configuration.md)
+define the state and failure guarantees.
+
+The existing coordinator reads current successful concurrency, polling,
+recovery and native values. Lowering concurrency does not stop existing tasks;
+new starts wait until usage is below the limit. The next post-round polling wait
+uses the applied interval. Running native processes retain their launch
+arguments. Each claim retains its recorded agent type and native session ID;
+Herdr restarts use current settings appropriate to that type, while Web recovery
+keeps its existing frozen execution configuration. Settings for another type are
+not applied to it. A running disconnected Worker retains successful values;
+restart checks the cloud before normal scheduling. Task inventory or backend
+preparation failures do not disable configuration exchange.
 
 New tasks have automatic execution disabled. Enable it explicitly through the
 normal task update workflow after reading the current task and version. Worker
@@ -1755,7 +1809,7 @@ daynight worker run
 ```
 
 First use generates and atomically saves stable root workerId. One instance owns
-`worker/` state under the selected configuration root (default `~/.daynight/worker/`), its SQLite, lock, logs, temporary resources and
+`worker/` state under the selected configuration root (default `~/.daynight/worker/`), its configuration cache, SQLite, lock, logs, temporary resources and
 private Herdr resources. On macOS, each actual run has its own existing Herdr
 daemon and durable lifecycle record; Linux and Windows use the shared private
 daemon. Each task uses branch `daynight/<task-id>` and directory

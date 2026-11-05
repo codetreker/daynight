@@ -21,7 +21,12 @@ bodies. The [client design](../../../../docs/design/daynight-worker-reporting.md
 owns scheduling, sampling, cancellation and diagnostics; the
 [client requirements](../../../../docs/spec/daynight-worker-reporting.md) define
 the observable guarantees. The [account snapshot decision](2026-10-28-worker-runtime-snapshots.md)
-retains ownership of server normalization, persistence and queries.
+retains ownership of server normalization, persistence and queries. The
+[cloud application decision](2026-11-04-worker-cloud-runtime-configuration.md)
+owns the independent configuration extension: each report captures an immutable
+application snapshot and returns its target and observation acknowledgment to
+the manager. Native and Project side effects stay outside the report attempt;
+only configuration application state is persisted in its separate JSON owner.
 
 The reporter reuses the coordinator's complete immutable task references. It
 keeps unknown inventory as null, preserves successful observations through read

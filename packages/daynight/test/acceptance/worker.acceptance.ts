@@ -14,6 +14,8 @@ import crossSpawn from "cross-spawn";
 import { parse as parseYaml, stringify as yaml } from "yaml";
 import { expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
+import { parseWorkerCloudReport } from "../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, WorkerCloudObservation, WorkerCloudReport } from "../../src/api/worker-configuration.js";
 import type { Project, Task, UpdateWorkerClaimInput, WorkerClaimDescriptor, WorkerReport } from "../../src/api/types.js";
 import { codexProjectTrustArguments } from "../../src/commands/worker/herdr/arguments.js";
 import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
@@ -195,7 +197,12 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
   const cleanupEvidenceFile = path.join(workspace, ".tmp", `installed-worker-${scenario}-cleanup.json`);
   const logs: string[] = [];
   const requests: { method: string; path: string; taskId?: string }[] = [];
-  const reports: { workerId: string; input: WorkerReport }[] = [];
+  const reports: { workerId: string; input: WorkerReport & { readonly configuration: WorkerCloudReport } }[] = [];
+  let configurationWorkerId: string | null = null;
+  let cloudDesired: WorkerCloudDesired | null = null;
+  let cloudObservation: (WorkerCloudObservation & { readonly reportedAt: string }) | null = null;
+  let cloudObservationRevision = "0";
+  let bootstrapImports = 0;
   const inventoryResponses: { projectId: string; itemCount: number; status: number; mappedProjectCount: number }[] = [];
   const children = new Map<ChildProcess, Promise<unknown>>();
   let installed: Awaited<ReturnType<typeof createAcceptanceCli>> | undefined;
@@ -216,10 +223,35 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       const task = tasks.find((item) => item.id === parts[6]);
       if (request.headers.authorization !== "Bearer worker-fixture-token") { send(response, { error: { code: "unauthorized", message: "Fixture authentication mismatch", requestId: "worker-auth-fixture" } }, 401); return; }
       requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, ...(task === undefined ? {} : { taskId: task.id }) });
+      if (parts.length === 7 && parts[3] === "me" && parts[4] === "workers" && parts[6] === "configuration" && request.method === "GET") {
+        response.setHeader("Daynight-User-ID", uuid(100));
+        if (configurationWorkerId !== parts[5]) {
+          send(response, { error: { code: "not_found", message: "Worker not found.", requestId: "worker-configuration-fixture" } }, 404); return;
+        }
+        response.setHeader("Daynight-Worker-Configuration", "1");
+        send(response, { desired: cloudDesired, observationRevision: cloudObservationRevision, observation: cloudObservation }); return;
+      }
       if (parts.length === 7 && parts[3] === "me" && parts[4] === "workers" && parts[6] === "report" && request.method === "POST") {
-        reports.push({ workerId: parts[5]!, input: JSON.parse(Buffer.concat(chunks).toString("utf8")) as WorkerReport });
+        if (request.headers["daynight-worker-configuration"] !== "1") throw new Error("Installed Worker must use the configuration report capability.");
+        const input = JSON.parse(Buffer.concat(chunks).toString("utf8")) as WorkerReport & { readonly configuration: WorkerCloudReport };
+        const configuration = parseWorkerCloudReport(input.configuration);
+        reports.push({ workerId: parts[5]!, input });
         const observedAt = new Date().toISOString();
-        send(response, { observedAt, lastReportedAt: observedAt }); return;
+        if (configurationWorkerId !== null && configurationWorkerId !== parts[5]) throw new Error("Fixture configuration belongs to a different Worker.");
+        configurationWorkerId = parts[5]!;
+        if (cloudDesired === null && configuration.bootstrap !== null) {
+          cloudDesired = { revision: "1", updatedAt: observedAt, value: configuration.bootstrap };
+          bootstrapImports++;
+        }
+        let observationAccepted = false;
+        if (configuration.observation !== null && configuration.observation.baseRevision === cloudObservationRevision) {
+          if (cloudDesired === null || BigInt(configuration.observation.desiredRevision) > BigInt(cloudDesired.revision)) throw new Error("Configuration observation references an unavailable target.");
+          cloudObservation = { ...configuration.observation, reportedAt: observedAt };
+          cloudObservationRevision = (BigInt(cloudObservationRevision) + 1n).toString();
+          observationAccepted = true;
+        }
+        response.setHeader("Daynight-Worker-Configuration", "1");
+        send(response, { observedAt, lastReportedAt: observedAt, configuration: { desired: cloudDesired, observationRevision: cloudObservationRevision, observationAccepted } }); return;
       }
       if (url.pathname === "/api/v1/me" && request.method === "GET") { send(response, { id: uuid(100), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } }); return; }
       if (url.pathname === "/api/v1/projects" && request.method === "GET") { send(response, { items: projects, nextCursor: null }); return; }
@@ -291,6 +323,10 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       const code = await Promise.race([closed, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`Installed worker shutdown timed out.\n${logs.join("")}`)), 20_000); })]);
       expect(code, logs.join("")).toBe(expectedCode);
     } finally { if (timer !== undefined) clearTimeout(timer); }
+  };
+  const changeCloudModel = (model: string): void => {
+    if (cloudDesired === null) throw new Error("The fixture cloud configuration was not initialized.");
+    cloudDesired = { revision: (BigInt(cloudDesired.revision) + 1n).toString(), updatedAt: new Date().toISOString(), value: { ...cloudDesired.value, native: { ...cloudDesired.value.native, model } } };
   };
   const complete = (task: FixtureTask): void => {
     task.status = "done"; task.ready = false; task.completedAt = time; task.version += 1n;
@@ -410,8 +446,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         environment.FIXTURE_RESTORE_WORKSPACE = JSON.stringify({ label: previousWorkspace.label, cwd: previousWorkspace.cwd, sessionId: originalSession });
       }
       const configuration = parseYaml(await readFile(configFile, "utf8")) as { worker: { model: string } };
-      configuration.worker.model = "current-model";
+      configuration.worker.model = "stale-local-model";
       await writeFile(configFile, yaml(configuration));
+      changeCloudModel("current-model");
       if (scenario === "empty-database") await rm(databaseFile);
       else if (scenario === "null-session") {
         const database = new Database(databaseFile);
@@ -431,6 +468,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect(await readFile(sentinel, "utf8")).toBe("Keep the original uncommitted task result.\n");
       const latestStart = (await events()).filter((event) => event.kind === "native-start" && event.taskId === second.id).at(-1)!;
       expect(latestStart.argv).toContain("current-model");
+      expect(latestStart.argv).not.toContain("stale-local-model");
       if (scenario === "resume") {
         expect(restartedSession).toBe(originalSession);
         expect(latestStart.argv?.slice(0, 7)).toEqual(["codex", "--no-daemon", "resume", originalSession, "--model", "current-model", "--search"]);
@@ -511,6 +549,13 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     expect(claimRequests.map((request) => request.taskId)).toEqual(tasks.map((task) => task.id));
     expect(requests.filter((request) => request.method === "POST")).toHaveLength(claimRequests.length + reportRequests.length);
     expect(reportRequests).toHaveLength(reports.length);
+    expect(bootstrapImports).toBe(1);
+    expect(reports.filter(({ input }) => input.configuration.bootstrap !== null)).toHaveLength(1);
+    expect(reports.some(({ input }) => input.configuration.observation !== null)).toBe(true);
+    const firstConfigurationRead = requests.findIndex(request => request.method === "GET" && request.path.endsWith("/configuration"));
+    const firstProjectRead = requests.findIndex(request => request.path.startsWith("/api/v1/projects"));
+    expect(firstConfigurationRead).toBeGreaterThanOrEqual(0);
+    expect(firstProjectRead).toBeGreaterThan(firstConfigurationRead);
     expect(new Set(reports.map((report) => report.workerId))).toEqual(new Set([originalClaims.get(first.id)!.workerId]));
     const awaitHome = await realpath(home);
     expect(reports.every(({ input }) => input.workingDirectory === awaitHome && input.versions.daynight === installed!.receipt.packageVersion)).toBe(true);
@@ -518,7 +563,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     await expect(readFile(path.join(repositoryPaths[0]!, ".worktrees/daynight", first.id, "README.md"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(row(second.id)?.session_id).toMatch(/^[0-9a-f-]{36}$/);
     await mkdir(path.dirname(evidenceFile), { recursive: true });
-    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: "Installed public launcher with real Git/SQLite/HTTP and controlled Herdr/Codex metadata and real task-process substitutes", nativeAgentExecution: false, receipt: installed.receipt, requests, reports, inventoryResponses, events: observed, first: row(first.id), second: row(second.id), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
+    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: "Installed public launcher with real Git/SQLite/HTTP and controlled Herdr/Codex metadata and real task-process substitutes", nativeAgentExecution: false, receipt: installed.receipt, requests, reports, configuration: { bootstrapImports, desired: cloudDesired, observationRevision: cloudObservationRevision, observation: cloudObservation }, inventoryResponses, events: observed, first: row(first.id), second: row(second.id), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
   } catch (error) {
     failure = error;
     await mkdir(path.dirname(evidenceFile), { recursive: true });

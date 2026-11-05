@@ -33,7 +33,7 @@ const fixture = () => {
   const open = () => createDurableWorkerHerdr({ paths, homeDirectory: root, serverOrigin: origin, serverToken: "fixture", workerId, readTask: (...args) => remote.readTask(...args), currentUserId: (...args) => remote.currentUserId(...args), createAdapter: () => ({}) as WorkerHerdrAdapter });
   let herdr = open(); cleanups.push(() => herdr.lifecycle!.close());
   const configuration = { agent: "codex" as const, agentControlMode: "herdr" as const, args: [], model: null, recoveryLimit: 0 };
-  const coordinator = () => createWorkerCoordinator({ store, remote, git, herdr, serverOrigin: origin, workerId, platform: "macos", machine: { id: uuid(4), name: "fixture" }, repositories: [], globalConfiguration: configuration, maxConcurrent: 1, hasHerdrJournal: true, availableDiskBytes: () => 10_000_000_000n, buildPrompt: () => "fixture", emit: event => events.push(event) });
+  const coordinator = (selected = false) => createWorkerCoordinator({ store, remote, git, herdr, serverOrigin: origin, workerId, platform: "macos", machine: { id: uuid(4), name: "fixture" }, repositories: selected ? [{ project, configuration }] : [], globalConfiguration: configuration, maxConcurrent: 1, hasHerdrJournal: true, availableDiskBytes: () => 10_000_000_000n, buildPrompt: () => "fixture", emit: event => events.push(event) });
   const register = (n: number) => {
     const owner: ResourceOwner = { projectId: project.projectId, taskId: uuid(100 + n), claimId: uuid(200 + n), worktreeId: uuid(300 + n) };
     const task = { id: owner.taskId, projectId: owner.projectId, status: "in_progress", allowAgents: true, properties: { worker: { claimId: owner.claimId, worktreeId: owner.worktreeId, userId, workerId, state: "active", agent: "codex", agentControlMode: "herdr", platform: "macos", machine: { id: uuid(4), name: "fixture" }, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-05T00:00:00Z" } } } as unknown as Task;
@@ -144,7 +144,7 @@ it.each(["exact", "wrong-task", "unconfirmed"])("requires an authoritative origi
   else { await expect(retirement(f, owner)).rejects.toThrow(); expect(f.herdr.lifecycle!.responsibilities()).toHaveLength(1); }
 });
 it("waits for the original preparation job to settle before retiring its failed registration", async () => {
-  const f = fixture(), owner = f.register(0), coordinator = f.coordinator();
+  const f = fixture(), owner = f.register(0), coordinator = f.coordinator(true);
   vi.mocked(f.remote.ownInventory).mockImplementation(async () => [f.tasks.get(owner.taskId)!]);
   let rejectPreparation!: (error: Error) => void;
   vi.mocked(f.git.prepareWorktree).mockImplementation(() => new Promise((_resolve, reject) => { rejectPreparation = reject; }));

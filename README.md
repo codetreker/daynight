@@ -39,7 +39,7 @@ or run your own service. The interface supports English and Simplified Chinese.
   invitations and revocable CLI credentials. Set task platform requirements and
   agent permission, and view elapsed time and possible-stall warnings.
 - **Run ready tasks continuously.** Use `daynight worker run` to claim eligible
-  tasks across configured repositories, preserve ongoing work through restarts
+  tasks across selected, prepared Projects, preserve ongoing work through restarts
   and stop ended executions while retaining resources until their cleanup
   and archive requirements are satisfied.
 - **Observe and configure your Workers.** Open My Workers alongside My projects
@@ -167,8 +167,8 @@ for input, authentication and lifecycle limits.
 
 ## Worker configuration and startup
 
-Use interactive setup to inspect prerequisites, choose a provider, and
-select one or more existing Daynight Projects:
+Before the first cloud enrollment, use interactive setup to inspect prerequisites,
+choose a provider, and select existing Daynight Projects:
 
 ```bash
 daynight login
@@ -179,8 +179,21 @@ daynight worker run
 Setup reports missing tools or integration settings with repair instructions.
 It previews the selected Projects, paths and native-setting resets before saving
 the agent and complete selection together. Existing Projects are preselected on
-repeat setup. Missing native prerequisites can be repaired after saving; the
-command explicitly reports when the environment still needs attention.
+repeat setup before enrollment. Missing native prerequisites can be repaired after
+saving; the command explicitly reports when the environment still needs attention.
+
+The first run imports local managed settings only when no cloud target exists.
+After enrollment the cloud configuration resource owns concurrency, Project
+selection, global and Project-level Agent/model/args, polling and recovery limits.
+Local setup and repository edits direct managed changes to cloud management;
+repository paths, credentials, Worker identity and agentControlMode remain local.
+Startup checks the cloud before normal scheduling. Heartbeats receive targets
+and report actual application outcomes independently of task polling; settings
+apply separately, and failed items retain errors for the next accepted report.
+Running native processes keep their launch arguments. The
+[configuration contract](docs/spec/daynight-worker-configuration.md) and
+[worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+define ownership, retries and recovery boundaries.
 
 The default `herdr` execution mode requires Git, Herdr 0.9.5 or newer with the supported API, and
 the selected native CLI. Configure provider credentials before execution. Before
@@ -197,14 +210,14 @@ Controller and the Daynight relay, with no Herdr dependency. Each claim retains
 its original mode; a configuration change applies only to new claims. Herdr
 continues to own terminal sessions in the default mode.
 
-`repo add` lists accessible Projects for multiselection. Use `--project
-PROJECT_UUID` for an explicit noninteractive registration; `worker repo list`
-and `worker repo remove` inspect or change the selection. `worker run` accepts
-an empty repository list without prompting and can start from an ordinary
-directory. Add repositories explicitly to enable new task acquisition. Startup
-saves configured Project mappings before reading its complete current claim
-inventory, including after a local database reset; existing claims and cleanup
-responsibilities remain managed even when no repositories are configured.
+Before enrollment, `repo add` lists accessible Projects for multiselection. Use
+`--project PROJECT_UUID` for an explicit noninteractive registration;
+`worker repo list` and `worker repo remove` inspect or change local registrations.
+Normal `worker run` does not open a Project picker. An empty cloud selection keeps
+heartbeats active and does not create fictitious Task resources. Existing claims,
+cleanup responsibilities and local mappings remain available for reconciliation;
+only selected Projects with confirmed local preparation become eligible for
+execution. A Project without a prepared binding remains pending.
 
 New registrations use `worker.repositoryRoot`, defaulting to `~/daynights`, and
 keep existing paths when the root changes. Review's clone-root setting is

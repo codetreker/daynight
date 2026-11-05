@@ -12,7 +12,7 @@ sharing a global execution limit across repositories.
 
 ## Decision
 
-The foreground worker now uses current service/Git/Herdr facts and process-local jobs under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). The following records the original durable execution controller, including the uncertainty guarantees that motivated its checkpoints. Those persistent mechanisms are historical, not requirements on the current claim index.
+The foreground worker uses current service/Git/Herdr facts and process-local jobs under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). The later [cloud configuration application decision](2026-11-04-worker-cloud-runtime-configuration.md) owns cloud-first startup, managed-value hot loading and the separate JSON commit owner; it does not change task recovery. The following records the original durable execution controller, including the uncertainty guarantees that motivated its checkpoints. Those persistent mechanisms and startup-only configuration descriptions are historical, not requirements on the current claim index.
 
 ### Original implementation and rationale
 
