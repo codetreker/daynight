@@ -1227,8 +1227,15 @@ dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty �
 Playwright 的进程及其组必须已停止，再依据记录的平台、PID、
 executable、内核启动身份与源码身份处理资源。仍存活的原生服务必须额外匹配二进制摘要，Docker 只按本次精确标记
 和名称清理。Chromium 单独记录隔离进程组、已验证 executable 和项目内 profile
-所有权 marker；只对已确认的组和 profile 恢复。启动窗口出现未登记进程、无有效
-leader 的孤立组或未知新增 profile 时明确失败，保留现场，不能猜测归属后删除。
+所有权 marker；只对已确认的组和 profile 恢复。ownership 记录必须复用启动前已保存的
+`BrowserInventory`：`auth-combined` 直接传入 `receipt.browserInventory`，Playwright fixture
+读取同阶段 runner 写入的 `target.json` 中的库存。缺失或非法库存明确失败，不重新采样；
+macOS 必须包含预保存的 device/inode，允许同 inode 的 code-sign clone hardlink，不以
+相同路径替代文件身份。安装替换造成失配时，在写入该浏览器的 marker/receipt 之前拒绝，
+保留已有合法记录。调用层仍负责关闭已启动浏览器；进程正常停止且 profile 已清除后，
+此次拒绝不会留下阻塞重复恢复的新记录。旧恢复回执的兼容边界保持，不能用来放宽新记录。
+关闭失败、启动窗口出现未登记进程、无有效 leader 的孤立组或未知新增 profile 时明确失败，
+保留现场，不能猜测归属后删除。取舍见[启动前库存决策](../../.agents/notes/implemented/testing/2026-11-05-browser-prelaunch-inventory.md)。
 安装产物只有一个 `installedCli` 记录：在调用工厂前保存确定的
 `<acceptanceRun>/installed-cli` 根目录与 cleanup 状态，准备完成后才填入可选
 `receiptPath/receipt`。工厂排他创建根目录，已有目录保留并报错。清理先确认登记的

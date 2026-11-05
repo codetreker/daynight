@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { copyFile, link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { after } from 'node:test';
@@ -124,7 +124,10 @@ test('browser ownership reads exact argv with a profile containing spaces', { sk
   try {
     await once(child.stdout!, 'data');
     const browser = { newBrowserCDPSession: async () => ({ send: async () => ({ processInfo: [{ type: 'browser', id: child.pid }] }), detach: async () => {} }) } as unknown as Browser;
-    const owner = await browserModule.recordBrowserOwnership(browser, directory, { executables: [await realpath(process.execPath)], profilesBefore: [] });
+    const executable = await realpath(process.execPath);
+    const file = await stat(executable, { bigint: true });
+    const owner = await browserModule.recordBrowserOwnership(browser, directory, { executables: [executable], profilesBefore: [],
+      ...(process.platform === 'darwin' ? { executableFiles: [{ executable, device: String(file.dev), inode: String(file.ino) }] } : {}) });
     assert.equal(owner.profile, profile);
     assert.deepEqual(JSON.parse(await readFile(join(profile, 'daynight-acceptance-owner.json'), 'utf8')), owner);
   } finally {
@@ -188,6 +191,14 @@ const hardlinkBrowserFixture = async (copied = false) => {
 };
 
 const macOSFixtureOptions = { skip: process.platform !== 'darwin', timeout: 45_000 };
+for (const entry of ['combined', 'playwright']) {
+  test(`macOS ${entry} entry uses prelaunch inventory and preserves recovery after replacement`, { ...macOSFixtureOptions, timeout: 120_000 }, () => {
+    const output = execFileSync(process.execPath, ['--experimental-test-module-mocks', fileURLToPath(new URL('./browser-entry.fixture.mts', import.meta.url)), entry], {
+      encoding: 'utf8', timeout: 110_000,
+    });
+    assert.match(output, new RegExp(`${entry}: replaced passed`));
+  });
+}
 test('macOS browser recovery recognizes a hard-linked executable from its frozen inventory', macOSFixtureOptions, async () => {
   const f = await hardlinkBrowserFixture();
   try {
@@ -210,6 +221,30 @@ test('macOS browser recording rejects a byte-identical copy and an expired inven
       await assert.rejects(readFile(join(f.profile, 'daynight-acceptance-owner.json')), { code: 'ENOENT' });
     } finally { await f.cleanup(); }
   }
+});
+
+test('new macOS ownership rejects absent or malformed prelaunch inventories before writing markers', macOSFixtureOptions, async () => {
+  const f = await hardlinkBrowserFixture();
+  try {
+    const file = f.inventory.executableFiles![0]!;
+    const previous = process.env.DAYNIGHT_BROWSER_EXECUTABLE;
+    process.env.DAYNIGHT_BROWSER_EXECUTABLE = f.trusted;
+    try {
+      for (const inventory of [undefined, null, {},
+        { ...f.inventory, executables: [] }, { ...f.inventory, profilesBefore: [null] },
+        { ...f.inventory, executableFiles: undefined }, { ...f.inventory, executableFiles: [] },
+        { ...f.inventory, executableFiles: [null] },
+        { ...f.inventory, executableFiles: [{ ...file, executable: '/another/browser' }] },
+        { ...f.inventory, executableFiles: [{ ...file, inode: 123 }] },
+        { ...f.inventory, executableFiles: [{ ...file, device: '-1' }] },
+      ]) {
+        await assert.rejects(browserModule.recordBrowserOwnership(f.browser, f.directory, inventory as browserModule.BrowserInventory), /inventory/i);
+        await assert.rejects(readFile(join(f.profile, 'daynight-acceptance-owner.json')), { code: 'ENOENT' });
+        await assert.rejects(readdir(join(f.directory, 'browser-processes')), { code: 'ENOENT' });
+        assert.equal(f.child.exitCode, null); assert.equal(f.child.signalCode, null);
+      }
+    } finally { if (previous === undefined) delete process.env.DAYNIGHT_BROWSER_EXECUTABLE; else process.env.DAYNIGHT_BROWSER_EXECUTABLE = previous; }
+  } finally { await f.cleanup(); }
 });
 
 test('macOS recovery accepts a live executable hard-link path that differs from its receipt', macOSFixtureOptions, async () => {
@@ -319,11 +354,12 @@ test('pinned Chromium bundle processes recover using recorded ownership and pres
   let owned: Browser | undefined;
   try {
     const inventory = await browserModule.browserInventory(directory);
+    const unrelatedInventory = await browserModule.browserInventory(unrelatedDirectory);
     unrelated = await launch(unrelatedDirectory);
     owned = await launch(directory);
     await owned.newPage();
-    const ownership = await browserModule.recordBrowserOwnership(owned, directory);
-    const unrelatedOwner = await browserModule.recordBrowserOwnership(unrelated, unrelatedDirectory);
+    const ownership = await browserModule.recordBrowserOwnership(owned, directory, inventory);
+    const unrelatedOwner = await browserModule.recordBrowserOwnership(unrelated, unrelatedDirectory, unrelatedInventory);
     const processes = await findProcesses({ DAYNIGHT_ACCEPTANCE_DIRECTORY: directory });
     assert.ok(processes.length > 1, 'native Chromium must expose its renderer/helper process');
     assert.ok(processes.every((process) => inventory.executables.includes(process.executable)), JSON.stringify(processes));
@@ -363,7 +399,7 @@ test('normally closed pinned Chromium cleans its auto-created profile from the c
     process.env.TMPDIR = root;
     browser = await chromium.launch({ channel: 'chromium', headless: true, env: { ...process.env, TMPDIR: '.tmp', DAYNIGHT_ACCEPTANCE_DIRECTORY: directory } });
     if (previousTemporary === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previousTemporary;
-    const owner = await browserModule.recordBrowserOwnership(browser, directory);
+    const owner = await browserModule.recordBrowserOwnership(browser, directory, inventory);
     profile = owner.profile;
     await browser.close();
     await browserModule.recoverBrowsers(directory, inventory);

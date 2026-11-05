@@ -88,7 +88,27 @@ export const browserProfile = (arguments_: readonly string[] | null, directory: 
   return profile;
 };
 
-export const recordBrowserOwnership = async (browser: Browser, directory: string, selectedInventory?: BrowserInventory): Promise<BrowserOwnership> => {
+const selectedBrowserInventory = (value: unknown): BrowserInventory => {
+  const inventory = value as Partial<BrowserInventory> | null | undefined;
+  if (inventory === null || inventory === undefined || !Array.isArray(inventory.executables) || inventory.executables.length === 0
+    || inventory.executables.some((path) => typeof path !== 'string' || !path.startsWith('/'))
+    || !Array.isArray(inventory.profilesBefore) || inventory.profilesBefore.some((path) => typeof path !== 'string' || !path.startsWith('/'))
+    || process.platform === 'darwin' && (!Array.isArray(inventory.executableFiles) || inventory.executableFiles.length === 0)
+    || inventory.executableFiles !== undefined && (!Array.isArray(inventory.executableFiles) || inventory.executableFiles.some((file) =>
+      typeof file !== 'object' || file === null || !inventory.executables!.includes(file.executable)
+      || typeof file.device !== 'string' || !/^\d+$/.test(file.device) || typeof file.inode !== 'string' || !/^[1-9]\d*$/.test(file.inode)))) {
+    throw new Error('Invalid prelaunch browser inventory for ownership recording.');
+  }
+  return inventory as BrowserInventory;
+};
+
+export const readBrowserInventory = async (directory: string): Promise<BrowserInventory> => {
+  const target: unknown = JSON.parse(await readFile(join(directory, 'target.json'), 'utf8'));
+  return selectedBrowserInventory(typeof target === 'object' && target !== null && 'browserInventory' in target ? target.browserInventory : undefined);
+};
+
+export const recordBrowserOwnership = async (browser: Browser, directory: string, selectedInventory: BrowserInventory): Promise<BrowserOwnership> => {
+  selectedBrowserInventory(selectedInventory);
   const session = await browser.newBrowserCDPSession();
   const processes = await session.send('SystemInfo.getProcessInfo');
   await session.detach();
@@ -97,15 +117,15 @@ export const recordBrowserOwnership = async (browser: Browser, directory: string
   const identity = await processIdentity(browserPid);
   if (identity === null || identity.group !== identity.pid) throw new Error('Chromium browser group identity is not isolated.');
   const inventory: BrowserInventory = process.platform === 'darwin'
-    ? selectedInventory ?? await browserInventory(directory)
+    ? selectedInventory
     : { executables: await browserExecutables(identity.executable), profilesBefore: [] };
   let file: BrowserExecutableFile | undefined;
-  if (process.platform === 'darwin' && inventory.executableFiles !== undefined) {
+  if (process.platform === 'darwin') {
     const actual = await executableFile(identity.executable);
-    file = inventory.executableFiles.find((expected) => sameFile(expected, actual));
+    file = inventory.executableFiles!.find((expected) => sameFile(expected, actual));
     if (file === undefined || !inventoriedFile(file, inventory)) throw new Error('Chromium executable file differs from the selected browser inventory.');
     file = { ...file };
-  } else if (process.platform === 'darwin' && !inventory.executables.includes(identity.executable)) throw new Error('Chromium executable differs from the selected browser inventory.');
+  }
   const profile = browserProfile(await processArguments(identity.pid), directory);
   if (!await sameBrowserProcess(identity, await processIdentity(identity.pid), file)) throw new Error('Chromium identity changed before ownership recording.');
   const companions = (await ownedBrowserProcesses(directory, inventory.executables)).filter((process) => process.group !== identity.group);

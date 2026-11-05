@@ -458,7 +458,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     browser = await launchAuthCombinedBrowser(temporaryRoot, async () => chromium.launch({
       headless: true, channel: 'chromium', env: { ...process.env, TMPDIR: '.tmp', DAYNIGHT_ACCEPTANCE_DIRECTORY: options.directory },
       ...(process.env.DAYNIGHT_BROWSER_EXECUTABLE === undefined ? {} : { executablePath: process.env.DAYNIGHT_BROWSER_EXECUTABLE }) }));
-    await recordBrowserOwnership(browser, options.directory);
+    await recordBrowserOwnership(browser, options.directory, receipt.browserInventory);
     receipt.browser = { name: browser.browserType().name(), version: browser.version(), platform: process.platform, executableOverride: process.env.DAYNIGHT_BROWSER_EXECUTABLE !== undefined }; await save();
     const aliceContext = await browser.newContext({ baseURL: origin, locale: 'en-US', viewport: { width: 1440, height: 1000 } });
     const bobContext = await browser.newContext({ baseURL: origin, locale: 'en-US', viewport: { width: 1440, height: 1000 } });
