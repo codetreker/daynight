@@ -110,10 +110,12 @@ const matrixMarkdown = [
 const expectStableDiagrams = async (container: Locator, info?: TestInfo): Promise<void> => {
   const charts = container.locator('.mermaid-chart');
   await expect(charts).toHaveCount(stableDiagrams.length + 1);
-  const rejected = charts.nth(3);
-  await expect(rejected.getByRole('alert')).toContainText(/not supported|不支持/);
-  await expect(rejected.locator('pre code')).toHaveText(rejectedDiagram);
   for (const [index, fixture] of stableDiagrams.entries()) {
+    if (index === 3) {
+      const rejected = charts.nth(3);
+      await expect(rejected.getByRole('alert')).toContainText(/not supported|不支持/);
+      await expect(rejected.locator('pre code')).toHaveText(rejectedDiagram);
+    }
     const chart = charts.nth(index < 3 ? index : index + 1);
     const image = chart.getByRole('img');
     await expect(image, fixture.name).toHaveAttribute('src', /^blob:/, { timeout: 45_000 });
@@ -529,6 +531,8 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
       await capture(page, info, 'task-description-graph-inspection');
     });
     await test.step('renders the stable diagram matrix in the shared readers', async () => {
+      // Earlier graph assertions freeze the page clock; ELK requires timers to advance.
+      await page.clock.resume();
       const matrixTask = await createTask(request, project.id, { title: '稳定图表矩阵', description: `${matrixMarkdown}\n\n[图表附件](matrix.md)` });
       const matrixPut = await request.put(attachmentDownloadUrl(project.id, matrixTask.id, 'matrix.md'), { data: matrixMarkdown, headers: { 'content-type': 'text/markdown' } });
       expect(matrixPut.status()).toBe(201);
