@@ -1,4 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { detailFixture, graphFixture } from '../helpers/taskDetail';
+import { directAccessFixture, taskSyncFixture, taskSyncQuery } from '../helpers/taskSync';
+import { stringifyWireJson } from '../helpers/wireJson';
 
 const alice = '00000000-0000-4000-8000-000000000001';
 const bob = '00000000-0000-4000-8000-000000000002';
@@ -14,6 +17,9 @@ type Role = 'admin' | 'member';
 type Member = { role: Role; version: number; name: string | null; email: string | null };
 type Gate = { started: () => void; wait: Promise<void> };
 type State = { members: Map<string, Member>; betaMember: Member; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
+const task = detailFixture(projectId, taskId, { title: 'Retained Task' });
+const graph = graphFixture([task]);
+const access = directAccessFixture(projectId, alice, 'admin');
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> => {
   const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdInvitation: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
@@ -21,10 +27,15 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : id === betaId ? 'Beta' : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: id === betaId ? { teamId: betaId, userId: alice, role: 'admin', version: 20, createdAt: time, updatedAt: time } : membership(alice, id) });
   const roster = (id: string) => id === personalId ? [{ ...membership(alice, id), profile: { name: 'Alice', email: null, avatarUrl: null } }] : [...state.members].map(([userId, m]) => ({ ...membership(userId), profile: { name: m.name, email: m.email, avatarUrl: null } }));
   await page.route('**/api/v1/**', async (route: Route) => {
-    const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
+    const request = route.request(), url = new URL(request.url()), path = url.pathname, method = request.method();
     const send = (body: unknown, status = 200) => route.fulfill({ json: body, status, headers: { 'Daynight-User-ID': alice } });
     if (path === '/api/v1/me') { const gate = state.holdMe; state.holdMe = null; if (gate) { gate.started(); await gate.wait; } return send({ id: alice, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }); }
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    const sendWire = (body: unknown) => route.fulfill({ body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': alice } });
+    if (path === `/api/v1/projects/${projectId}/access`) return sendWire(access);
+    if (path === `/api/v1/projects/${projectId}/task-sync`) return sendWire(taskSyncFixture(graph, { actorAccess: access, query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
+    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}`) return sendWire(task);
+    if (path.startsWith(`/api/v1/projects/${projectId}/tasks/${taskId}/`) && (path.endsWith('/sessions') || path.endsWith('/attachments') || path.endsWith('/steps'))) return send({ items: [], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: state.members.has(alice) ? [team(teamId)] : [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team(personalId));
     if (path === `/api/v1/teams/${betaId}`) return send(team(betaId));
@@ -291,25 +302,29 @@ test('unknown removal reports the observed absence while retaining unknown', asy
 
 test('a pending self exit survives navigation to another Team and a Task, then exposes unknown after 404', async ({ page }) => {
   const api = await install(page, 'member'); await start(page);
-  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
-  api.holdWrite = { started: started.resolve, wait: finish.promise }; api.lost = true;
-  await page.getByRole('button', { name: 'Leave Team' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Leave Team' }).click(); await started.promise;
-  await traverse(page, `/teams/${betaId}/members`);
-  await expect(page.getByRole('heading', { name: 'Team members' })).toBeVisible();
-  await expect.poll(() => selected(page)).toBe(betaId);
-  await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
-  await expect.poll(() => new URL(page.url()).pathname).toBe(`/projects/${projectId}/tasks/${taskId}`);
-  finish.resolve();
-  await traverse(page, `/teams/${teamId}/members`);
-  await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
-  await expect(page.getByRole('alert').filter({ hasText: 'This Team is unavailable or you do not have access.' }).first()).toBeVisible();
-  await expect.poll(() => new URL(page.url()).pathname).toBe(`/teams/${teamId}/members`);
-  await page.getByRole('button', { name: 'Check current state' }).click();
-  await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
-  await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
-  expect(api.writes).toHaveLength(1);
+  let entered = false;
+  const finish = Promise.withResolvers<void>();
+  api.holdWrite = { started: () => { entered = true; }, wait: finish.promise }; api.lost = true;
+  try {
+    await page.getByRole('button', { name: 'Leave Team' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Leave Team' }).click();
+    await expect.poll(() => ({ entered, writes: api.writes }), { message: 'Self exit must reach the held write after authorization' }).toMatchObject({ entered: true, writes: [{ method: 'DELETE', path: `/api/v1/teams/${teamId}/members/${alice}`, body: { expectedUserId: alice, version: 1 } }] });
+    await traverse(page, `/teams/${betaId}/members`);
+    await expect(page.getByRole('heading', { name: 'Team members' })).toBeVisible();
+    await expect.poll(() => selected(page)).toBe(betaId);
+    await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
+    await expect(page.getByRole('heading', { name: 'Retained Task', exact: true })).toBeVisible();
+    finish.resolve();
+    await traverse(page, `/teams/${teamId}/members`);
+    await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
+    await expect(page.getByRole('alert').filter({ hasText: 'This Team is unavailable or you do not have access.' }).first()).toBeVisible();
+    await expect.poll(() => new URL(page.url()).pathname).toBe(`/teams/${teamId}/members`);
+    await page.getByRole('button', { name: 'Check current state' }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
+    expect(api.writes).toHaveLength(1);
+  } finally { finish.resolve(); }
 });
 
 test('a late successful self exit updates preference without navigating away from a Task', async ({ page }) => {

@@ -598,6 +598,7 @@ jobs:
             packages/daynight-web/.tmp/acceptance/
             .tmp/dev-ci/
             .tmp/attachment-deployment-*/
+            .tmp/team-members-results/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
