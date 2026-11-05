@@ -115,7 +115,7 @@ Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻�
 | 场景 | 验证内容 |
 |---|---|
 | `language-startup-preferences` | 浏览器语言、显式保存、重载与路由、标题和 HTML `lang`，以及用户原始数据。 |
-| `language-state-preservation` | 通过可操作入口切换并检查图节点/边/视口、全屏与模态焦点、PR 页码、附件输入/iframe 身份及内容；分别挂起上传、覆盖和删除，验证待完成状态和每项写入次数。 |
+| `language-state-preservation` | 通过可操作入口切换并检查图节点/边/视口；检查全屏与模态焦点，并验证详情页签往返保留 PR 页码、附件输入和 iframe 身份及内容；分别挂起上传、覆盖和删除，验证待完成状态和每项写入次数。 |
 | `language-errors-and-narrow` | 读/无效值/写入故障与重试、真实隔离数据库故障下错误重译及相同 request ID，两种语言的 1440px/320px 图、对话框与附件布局。 |
 
 三个场景使用现有受监控页面与场景级 `en-US` 浏览器 locale，继续由单一 Playwright project 执行一次、零 retry。需要精确比较语言切换前后业务请求数量的隔离阶段控制浏览器时钟，排除独立项目定时器触发；真实周期刷新由 `refresh-staleness` 单独验证。滚动恢复读取实际 `scrollTop`，以测试进程单调时钟观察其连续稳定状态，不依赖受控浏览器定时器。functional inventory、报告聚合与严格预期测试使用相同 annotation；
