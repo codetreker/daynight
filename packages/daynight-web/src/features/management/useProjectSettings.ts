@@ -133,10 +133,15 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
   const releaseResolvedRetention = () => {
     if (!submitting.current && !returnRead.current && !confirmedNeedsRead.current && reconciliationNotice.current === null && !uncertainRef.current) retention.current?.(false);
   };
+  const clearPrivateDraft = () => {
+    ++draftGeneration.current; discardedDraftGeneration.current = draftGeneration.current;
+    draftVersion.current = null; draftConflictRef.current = false; setDraftConflict(false);
+    projectRef.current = null; draftRef.current = "";
+    setProject(null); setDraft(""); setInvalid(false);
+  };
   const clearPrivate = () => {
     revokedAccess.current = false;
-    projectRef.current = null; draftRef.current = "";
-    setProject(null); setDraft(""); setUncertainState(false); setUnavailableState(true);
+    clearPrivateDraft(); setUncertainState(false); setUnavailableState(true);
     returnRead.current = false; setReturnReadRequired(false);
     confirmedNeedsRead.current = false; confirmedEditGeneration.current = null; confirmedFloor.current = null; setAwaitingSavedRead(false);
     reconciliationNotice.current = null; setReconciliationRequired(false); setWriteError(null);
@@ -159,7 +164,9 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
       || (!submitting.current && (returning || confirmedNeedsRead.current || reconciliationNotice.current !== null));
     const preserveError = returning || confirmedNeedsRead.current || reconciliationNotice.current !== null;
     const originalDraft = draftGeneration.current;
-    const wasDirty = projectRef.current !== null && draftRef.current !== String(projectRef.current.settings.executionWarningMinutes)
+    // During an unresolved read the version also records an edit back to the
+    // old value, so retries cannot mistake it for an explicit cancellation.
+    const hadDraftIntent = draftVersion.current !== null
       && (confirmedEditGeneration.current === null || draftGeneration.current !== confirmedEditGeneration.current);
     const currentRoute = () => routeGeneration.current === route && (!returning || activeRef.current && routeRef.current);
     if (!returning) setLoading(true);
@@ -185,7 +192,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
         returnRead.current = false; setReturnReadRequired(false);
       }
       projectRef.current = saved; setProject(saved);
-      const keepDraft = preserveDraft && discardedDraftGeneration.current !== draftGeneration.current && (wasDirty || draftGeneration.current !== originalDraft);
+      const keepDraft = preserveDraft && discardedDraftGeneration.current !== draftGeneration.current && (hadDraftIntent || draftGeneration.current !== originalDraft);
       if (!keepDraft) {
         discardedDraftGeneration.current = null;
         draftVersion.current = null;
@@ -218,8 +225,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
       if (failure instanceof ApiError && (failure.status === 404 || failure.status === 403)) {
         if (uncertainRef.current || reconciliationNotice.current !== null || confirmedNeedsRead.current) {
           revokedAccess.current = false;
-          projectRef.current = null; draftRef.current = "";
-          setProject(null); setDraft(""); setUnavailableState(true); setError(failure);
+          clearPrivateDraft(); setUnavailableState(true); setError(failure);
         } else clearPrivate();
       } else setError(failure);
       finishRead("failed");
@@ -235,11 +241,9 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     ++generation.current; readController.current?.abort(); routeRead.current = null;
     if (admission.current !== null && !admission.current.dispatched) admission.current.controller.abort();
     confirmedEditGeneration.current = null;
-    draftVersion.current = null; draftConflictRef.current = false; setDraftConflict(false);
     reloadAfterRevocation.current = true;
     revokedAccess.current = true;
-    projectRef.current = null; draftRef.current = "";
-    setProject(null); setDraft(""); setUnavailableState(true); setLoading(false); setError(null);
+    clearPrivateDraft(); setUnavailableState(true); setLoading(false); setError(null);
     releaseResolvedRetention();
   }), [projectId, access.session]);
   useEffect(() => {
@@ -371,7 +375,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     ++draftGeneration.current;
     discardedDraftGeneration.current = null;
     if (projectRef.current !== null && !draftConflictRef.current) {
-      if (!confirmedNeedsRead.current && value === String(projectRef.current.settings.executionWarningMinutes)) draftVersion.current = null;
+      if (!returnRead.current && !confirmedNeedsRead.current && reconciliationNotice.current === null && value === String(projectRef.current.settings.executionWarningMinutes)) draftVersion.current = null;
       else draftVersion.current ??= confirmedNeedsRead.current && confirmedFloor.current !== null ? confirmedFloor.current : projectRef.current.settings.version;
     }
     draftRef.current = value; setDraft(value); setInvalid(false);
@@ -403,7 +407,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
 
   return {
     project: unavailable || access.status === "unavailable" ? null : project, role, draft, canSubmit: access.status === "ready" && !awaitingSavedRead && !returnReadRequired && !returnRead.current && !draftConflict && !reconciliationRequired, loading: loading || access.status === "loading", pending, unavailable: unavailable || access.status === "unavailable", uncertain: !unavailable && access.status !== "unavailable" && uncertain, error: error ?? access.error, writeError: unavailable || access.status === "unavailable" ? null : writeError, reconciliation: !unavailable && access.status !== "unavailable" && reconciliationRequired ? reconciliationNotice.current : null, draftConflict, invalid, notice: unavailable || access.status === "unavailable" ? null : notice,
-    dirty: project !== null && draft !== String(project.settings.executionWarningMinutes),
+    dirty: project !== null && (draftVersion.current !== null || draft !== String(project.settings.executionWarningMinutes)),
     change,
     cancel,
     retry: () => {

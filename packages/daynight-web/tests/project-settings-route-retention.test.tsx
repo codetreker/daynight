@@ -467,6 +467,36 @@ it("keeps a dispatched save private after a Project 404 until a successful resou
   expect(app.saves()).toBe(1);
 });
 
+it("retires a private draft on Project 404 but keeps the dispatched rejection until recovery", async () => {
+  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
+  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  await waitFor(() => expect(app.denials).toBeGreaterThan(0));
+  expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
+  const denials = app.denials; returnToSettings();
+  await waitFor(() => expect(app.denials).toBeGreaterThan(denials));
+  const held = app.holdNextProjectRead(), before = app.projectReads;
+  app.setDenyAccess(false); fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(app.projectReads).toBeGreaterThan(before));
+  await act(async () => held.resolve(fail(404, "not_found", "project-not-found")));
+  await waitFor(() => expect(screen.queryByLabelText("Alert threshold")).toBeNull());
+  expect(app.saveSignal?.aborted).toBe(false);
+  await act(async () => app.save.resolve(fail(400, "invalid_input", "rejected-save")));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(screen.queryByText("rejected-save")).toBeNull();
+  expect(screen.queryByLabelText("Alert threshold")).toBeNull();
+  app.setSavedProject(project(120, 2n));
+  const reads = app.projectReads, retry = screen.queryByRole("button", { name: "Retry" });
+  if (retry !== null) fireEvent.click(retry); else fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(app.projectReads).toBeGreaterThan(reads));
+  expect(await screen.findByText("rejected-save")).toBeVisible();
+  const returned = await screen.findByLabelText("Alert threshold");
+  await waitFor(() => expect(returned).toHaveValue(120));
+  expect(screen.queryByText(/settings changed while you were away/i)).toBeNull();
+  expect(screen.queryByText("Settings saved.")).toBeNull();
+  expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  expect(app.saves()).toBe(1);
+});
+
 it("keeps the save owner when a simultaneous rejected transfer is closed first", async () => {
   const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
   await startTransfer(); await waitFor(() => expect(app.transfers()).toBe(1));
@@ -571,6 +601,97 @@ it.each([false, true])("treats a cancelled draft and subsequent edit=%s correctl
     expect(screen.queryByText(/settings changed while you were away/i)).toBeNull();
   }
   expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  expect(app.saves()).toBe(0); expect(app.transfers()).toBe(1);
+});
+
+it.each([
+  { action: "restore", saved: 120, conflict: true },
+  { action: "restore", saved: 60, conflict: false },
+  { action: "cancel", saved: 120, conflict: false },
+] as const)("keeps the user's $action choice while a return read resolves to $saved", async ({ action, saved, conflict }) => {
+  const app = setup(); const field = await screen.findByLabelText("Alert threshold");
+  await waitFor(() => expect(field).toBeEnabled()); fireEvent.change(field, { target: { value: "90" } });
+  await startTransfer(); await waitFor(() => expect(app.transfers()).toBe(1));
+  await act(async () => app.transfer.reject(new TypeError("transfer response lost")));
+  const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
+  expect(await within(dialog).findByText(/transfer result is unknown/i)).toBeVisible();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+  leave(); const held = app.holdNextProjectRead(), before = app.projectReads;
+  returnToSettings(); await waitFor(() => expect(app.projectReads).toBeGreaterThan(before));
+  const returned = screen.getByLabelText("Alert threshold"); await waitFor(() => expect(returned).toBeEnabled());
+  expect(returned).toHaveValue(90);
+  if (action === "cancel") {
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  } else fireEvent.change(returned, { target: { value: "60" } });
+  expect(returned).toHaveValue(60);
+  expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  app.setSavedProject(project(saved, 2n)); await act(async () => held.resolve(json(project(saved, 2n))));
+  if (conflict) {
+    expect(await screen.findByText(/settings changed while you were away/i)).toBeVisible();
+    expect(returned).toHaveValue(60);
+    expect(returned.closest(".project-settings-panel")).toHaveTextContent("120");
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(returned).toHaveValue(120);
+  } else {
+    await waitFor(() => expect(returned).toHaveValue(saved));
+    expect(screen.queryByText(/settings changed while you were away/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  }
+  expect(screen.queryByText("Settings saved.")).toBeNull();
+  expect(app.saves()).toBe(0); expect(app.transfers()).toBe(1);
+});
+
+it.each([
+  { failure: "access", action: "restore" },
+  { failure: "project", action: "restore" },
+  { failure: "access", action: "cancel" },
+  { failure: "project", action: "cancel" },
+] as const)("keeps the user's $action choice across a failed $failure read and retry", async ({ failure, action }) => {
+  const app = setup(); const field = await screen.findByLabelText("Alert threshold");
+  await waitFor(() => expect(field).toBeEnabled()); fireEvent.change(field, { target: { value: "90" } });
+  await startTransfer(); await waitFor(() => expect(app.transfers()).toBe(1));
+  await act(async () => app.transfer.reject(new TypeError("transfer response lost")));
+  const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
+  expect(await within(dialog).findByText(/transfer result is unknown/i)).toBeVisible();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+  leave();
+  const held = app.holdNextProjectRead(), before = app.projectReads;
+  const accessReads = app.fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length;
+  if (failure === "access") app.setHoldPermission(true);
+  returnToSettings();
+  await waitFor(() => expect(app.projectReads).toBeGreaterThan(before));
+  if (failure === "access") await waitFor(() => expect(app.fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(accessReads));
+  const returned = screen.getByLabelText("Alert threshold"); await waitFor(() => expect(returned).toBeEnabled());
+  expect(returned).toHaveValue(90);
+  if (action === "cancel") fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  else fireEvent.change(returned, { target: { value: "60" } });
+  expect(returned).toHaveValue(60);
+  app.setSavedProject(project(120, 2n));
+  if (failure === "access") await act(async () => { held.resolve(json(project(120, 2n))); app.permission.resolve(fail(503, "unavailable", "access-failed")); });
+  else await act(async () => held.resolve(fail(503, "unavailable", "project-read-failed")));
+  const requestId = failure === "access" ? "access-failed" : "project-read-failed";
+  expect(await screen.findByText(requestId)).toBeVisible();
+  expect(returned).toHaveValue(60);
+  if (failure === "access") expect(returned).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  app.setHoldPermission(false);
+  const readsAfterFailure = app.projectReads;
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(app.projectReads).toBeGreaterThan(readsAfterFailure));
+  if (action === "restore") {
+    expect(await screen.findByText(/settings changed while you were away/i)).toBeVisible();
+    expect(returned).toHaveValue(60);
+    expect(returned.closest(".project-settings-panel")).toHaveTextContent("120");
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  } else {
+    await waitFor(() => expect(returned).toHaveValue(120));
+    expect(screen.queryByText(/settings changed while you were away/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  }
+  expect(screen.queryByText("Settings saved.")).toBeNull();
   expect(app.saves()).toBe(0); expect(app.transfers()).toBe(1);
 });
 
