@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionSnapshot, SessionOperation } from '../src/api/types';
 import type { SessionControls } from '../../daynight/src/session/controls';
@@ -15,6 +16,101 @@ const controls: SessionControls = { revision: '3', settings: [
 const snapshot = (): SessionSnapshot => ({ ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), controls, turnStartedAt: null });
 const state = () => hydrateSession(emptySessionState(), snapshot(), []);
 const base = () => ({ state: state(), connected: true, onSend: vi.fn(async () => {}), onCancel: vi.fn(async () => {}), onExecuteCommand: vi.fn(async () => {}), onUpdateSetting: vi.fn(async () => {}), onRefreshControls: vi.fn(async () => {}) });
+
+describe('command candidate reverse navigation', () => {
+  it.each(['/model', '/permissions', '/compact', '/rev'])('preserves plain Tab confirmation for %s', async value => {
+    const props = base(); render(<SessionComposer {...props} />);
+    const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value } });
+    expect(fireEvent.keyDown(input, { key: 'Tab' })).toBe(false);
+    if (value === '/model') expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible();
+    else if (value === '/permissions') expect(screen.getByRole('combobox', { name: 'Approval policy' })).toBeVisible();
+    else if (value === '/rev') expect(input).toHaveValue('/review ');
+    else await waitFor(() => expect(props.onExecuteCommand).toHaveBeenCalledExactlyOnceWith('compact', '', '3', '/compact'));
+    if (value !== '/compact') expect(props.onExecuteCommand).not.toHaveBeenCalled();
+    expect(props.onSend).not.toHaveBeenCalled(); expect(props.onUpdateSetting).not.toHaveBeenCalled();
+  });
+
+  it('preserves an externally owned draft and reverse navigation with the menu already closed', async () => {
+    const user = userEvent.setup(), props = base(), onDraftChange = vi.fn();
+    render(<><button>Previous control</button><SessionComposer {...props} draft={{ text: '/model', revision: 'draft-1', submission: null }} onDraftChange={onDraftChange} /></>);
+    const input = screen.getByRole('textbox');
+    for (let index = 0; index < 2; index++) {
+      act(() => input.focus()); await user.tab({ shift: true });
+      expect(screen.getByRole('button', { name: 'Previous control' })).toHaveFocus();
+      expect(input).toHaveValue('/model'); expect(screen.queryByRole('listbox')).toBeNull();
+    }
+    expect(onDraftChange).not.toHaveBeenCalled(); expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
+  });
+
+  it.each(['/model', '/permissions', '/compact', '/rev', '/missing', '/'])('leaves %s unchanged and skips the dismissed menu', async value => {
+    const user = userEvent.setup(), props = base();
+    render(<><button>Previous control</button><SessionComposer {...props} /></>);
+    const input = screen.getByRole('textbox');
+    for (const explicit of [false, true]) {
+      fireEvent.change(input, { target: { value } });
+      if (explicit) fireEvent.keyDown(input, { key: 'ArrowDown' });
+      act(() => input.focus());
+      await user.tab({ shift: true });
+      expect(screen.getByRole('button', { name: 'Previous control' })).toHaveFocus();
+      expect(input).toHaveValue(value);
+      expect(screen.queryByRole('listbox')).toBeNull();
+      expect(screen.queryByRole('combobox')).toBeNull();
+      // Reopen even when the next iteration uses the same draft.
+      if (!explicit) fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+    }
+    expect(props.onSend).not.toHaveBeenCalled();
+    expect(props.onExecuteCommand).not.toHaveBeenCalled();
+    expect(props.onUpdateSetting).not.toHaveBeenCalled();
+  });
+
+  it.each(['offline', 'auth', 'unavailable', 'pending', 'empty-catalog'] as const)('retains reverse navigation while %s', async mode => {
+    const user = userEvent.setup(), props = base();
+    if (mode === 'unavailable') props.state = { ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, commands: controls.commands.map(command => ({ ...command, available: false })) } } };
+    if (mode === 'empty-catalog') { const { controls: omitted, ...withoutControls } = props.state.snapshot!; props.state = { ...props.state, snapshot: withoutControls }; }
+    let finish!: () => void;
+    if (mode === 'pending') props.onExecuteCommand.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    render(<><button>Previous control</button><SessionComposer {...props} connected={mode !== 'offline'} authPaused={mode === 'auth'} /></>);
+    const input = screen.getByRole('textbox');
+    if (mode === 'pending') {
+      fireEvent.change(input, { target: { value: '/compact' } });
+      fireEvent.keyDown(input, { key: 'Tab' });
+      expect(props.onExecuteCommand).toHaveBeenCalledOnce();
+      props.onExecuteCommand.mockClear();
+    }
+    const value = mode === 'offline' ? '/' : '/rev';
+    fireEvent.change(input, { target: { value } });
+    act(() => input.focus());
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: 'Previous control' })).toHaveFocus();
+    expect(input).toHaveValue(value);
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
+    if (mode === 'pending') await act(async () => finish());
+  });
+
+  it('removes menu controls before outer native Tab handlers inspect the focus order', () => {
+    render(<SessionComposer {...base()} />);
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: '/model' } });
+    const observed: boolean[] = [];
+    const outer = (event: KeyboardEvent) => { if (event.key === 'Tab') observed.push(event.defaultPrevented || document.querySelector('.session-command-menu') !== null); };
+    document.addEventListener('keydown', outer);
+    try { expect(fireEvent.keyDown(input, { key: 'Tab', shiftKey: true })).toBe(true); }
+    finally { document.removeEventListener('keydown', outer); }
+    expect(observed).toEqual([false]);
+  });
+
+  it.each(['native', '229', 'composition'] as const)('leaves %s IME Shift+Tab untouched', mode => {
+    const props = base(); render(<SessionComposer {...props} />);
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: '/model' } });
+    if (mode === 'composition') fireEvent.compositionStart(input);
+    expect(fireEvent.keyDown(input, { key: 'Tab', shiftKey: true, isComposing: mode === 'native', keyCode: mode === '229' ? 229 : 9 })).toBe(true);
+    expect(screen.getByRole('listbox')).toBeInTheDocument(); expect(input).toHaveValue('/model');
+    expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
+  });
+});
 describe('composer provider controls', () => {
   it('opens native model and permission settings without changing the draft or submitting input', async () => {
     const props = base(); render(<SessionComposer {...props} />);
