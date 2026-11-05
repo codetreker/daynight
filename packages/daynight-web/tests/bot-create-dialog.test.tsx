@@ -5,6 +5,7 @@ import * as api from '../src/api/bots';
 import { ApiError } from '../src/api/client';
 import { BotCreateDialog } from '../src/features/bots/BotCreateDialog';
 import { renderWithLocale } from './helpers/renderWithLocale';
+import { assistantCreateSubmit, assistantNameInput, expandAssistantAdvancedSettings, pressAssistantEscape } from './helpers/assistant-ui';
 
 vi.mock('../src/api/bots', async importOriginal => {
   const original = await importOriginal<typeof api>();
@@ -25,15 +26,16 @@ function Harness() {
   return <><button onClick={() => setOpen(true)}>Open form</button>{open && <BotCreateDialog unresolvedRequest={unresolvedRequest} onUnresolvedRequestChange={onUnresolvedRequestChange} onClose={() => { onClose(); setOpen(false); }} onCreated={onCreated} />}</>;
 }
 const mount = () => renderWithLocale(<Harness />, { locale: 'en', taskCache: { viewerId: owner } });
-const name = (value = 'Helper') => fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value } });
-const submit = () => fireEvent.click(screen.getByRole('button', { name: 'Create assistant' }));
-const advanced = () => fireEvent.click(screen.getByText('Advanced settings'));
+const name = (value = 'Helper') => fireEvent.change(assistantNameInput(), { target: { value } });
+const submit = () => fireEvent.click(assistantCreateSubmit());
+const advanced = expandAssistantAdvancedSettings;
 beforeEach(() => { vi.mocked(api.getBotDefaults).mockResolvedValue(defaults()); vi.mocked(api.createBot).mockResolvedValue(bot); vi.mocked(api.getBot).mockResolvedValue(bot); onCreated.mockClear(); onClose.mockClear(); });
 
 it('requires only a name and leaves defaults implicit on creation', async () => {
   mount(); await flush();
   expect(screen.getByRole('textbox', { name: 'Name' })).toHaveFocus();
-  expect(document.querySelector('details')).not.toHaveAttribute('open');
+  const workerChoice = screen.queryByRole('combobox', { name: 'Worker' });
+  if (workerChoice) expect(workerChoice).not.toBeVisible();
   expect(document.querySelectorAll('[required]')).toHaveLength(1);
   name(); submit(); await flush();
   expect(api.createBot).toHaveBeenCalledTimes(1);
@@ -131,7 +133,8 @@ it('retries failed defaults without losing the name', async () => {
 it('cannot dismiss or resubmit while a request is in flight', async () => {
   const pending = deferred<api.BotDefinition>(); vi.mocked(api.createBot).mockReturnValueOnce(pending.promise);
   mount(); await flush(); name(); submit(); await flush();
-  fireEvent(screen.getByRole('dialog'), new Event('cancel', { bubbles: false, cancelable: true })); fireEvent.click(screen.getByRole('button', { name: 'Close' })); await flush();
+  pressAssistantEscape(); fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Creating…' })); await flush();
   expect(onClose).not.toHaveBeenCalled(); expect(api.createBot).toHaveBeenCalledOnce();
   pending.resolve(bot); await flush(); expect(onCreated).toHaveBeenCalledWith(bot);
 });
@@ -141,20 +144,22 @@ it('keeps failed startup distinct from successful startup', async () => {
   mount(); await flush(); name(); submit(); await flush();
   expect(onCreated).toHaveBeenCalledWith(failed); expect(screen.queryByText('Started')).toBeNull();
 });
-it('closes the native modal before restoring focus to its opener on Escape', async () => {
+it('dismisses creation on Escape and returns focus to its opener', async () => {
   function ClosedHarness() {
     const [open, setOpen] = useState(false);
     return <><button onClick={() => setOpen(true)}>Create a helper</button>{open && <BotCreateDialog unresolvedRequest={null} onUnresolvedRequestChange={() => {}} onClose={() => setOpen(false)} onCreated={onCreated} />}</>;
   }
   renderWithLocale(<ClosedHarness />, { locale: 'en', taskCache: { viewerId: owner } });
   const opener = screen.getByRole('button', { name: 'Create a helper' }); opener.focus(); fireEvent.click(opener); await flush();
-  const dialog = screen.getByRole('dialog') as HTMLDialogElement;
-  const restoredWhileOpen: boolean[] = [], focus = opener.focus.bind(opener);
+  expect(assistantNameInput()).toHaveFocus();
+  const modal = document.querySelector('dialog[open]'), focus = opener.focus.bind(opener);
   vi.spyOn(opener, 'focus').mockImplementation(() => {
-    restoredWhileOpen.push(dialog.open);
-    // Real browsers reject focus outside an open modal; jsdom does not implement inertness.
-    if (!dialog.open) focus();
+    // Model native modality only when present: a still-open modal prevents
+    // returning focus outside it, while an inline form imposes no such limit.
+    if (!(modal instanceof HTMLDialogElement) || !modal.open) focus();
   });
-  fireEvent(dialog, new Event('cancel', { bubbles: false, cancelable: true })); await flush();
-  expect(restoredWhileOpen).toEqual([false]); expect(opener).toHaveFocus(); expect(dialog.open).toBe(false);
+  pressAssistantEscape(); await flush();
+  expect(screen.queryByRole('textbox', { name: 'Name' })).toBeNull();
+  expect(opener).toHaveFocus(); expect(document.body.style.overflow).not.toBe('hidden');
+  expect(onCreated).not.toHaveBeenCalled();
 });
