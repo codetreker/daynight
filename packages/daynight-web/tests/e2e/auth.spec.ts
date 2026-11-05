@@ -202,6 +202,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     const rawRepo = `git@example.org:group/${randomUUID()}.git`;
     allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 1 }]);
     await page.goto('/projects');
+    await expect(page.locator('.topbar')).toBeVisible();
     // Exercise recovery over an existing draft using the native browser modal and
     // real tab focus changes. Only the identity failure is injected.
     const primaryFocusForRecovery = await context.newCDPSession(page);
@@ -241,10 +242,14 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
           if (draftNode === null) throw new Error('The project draft was not mounted.');
           let checks = 0;
           let writes = 0;
-          const countWrites = (request: import('@playwright/test').Request) => {
-            if (new URL(request.url()).pathname.startsWith('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes++;
+          let reads = 0;
+          const countRequests = (request: import('@playwright/test').Request) => {
+            const path = new URL(request.url()).pathname;
+            if (!path.startsWith('/api/v1/') || path === '/api/v1/me') return;
+            if (['GET', 'HEAD'].includes(request.method())) reads++;
+            else writes++;
           };
-          page.on('request', countWrites);
+          page.on('request', countRequests);
           const releaseRetry = Promise.withResolvers<void>();
           const identityRoute = async (route: Route) => {
             checks++;
@@ -268,21 +273,24 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
             await expect(overlay.locator('select, .locale-preference, .locale-notice')).toHaveCount(0);
             await page.keyboard.press('Escape');
             await expect(overlay).toBeVisible();
-            await page.keyboard.press('Tab');
-            expect(await overlay.evaluate((dialog) => document.activeElement === document.body || dialog.contains(document.activeElement))).toBe(true);
             const retry = overlay.getByRole('button', { name: messages.auth.shell.revalidationRetry });
             await expect(retry).toBeVisible();
+            await retry.focus();
+            await page.locator('#project-name').evaluate((input: HTMLInputElement) => input.focus());
+            await expect(retry).toBeFocused();
             const bounds = await retry.boundingBox();
             expect(bounds).not.toBeNull();
             expect(bounds!.x).toBeGreaterThanOrEqual(0);
             expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
             expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
             await picture(page, info, `auth-revalidation-${locale}-${width}-failure`);
-            await retry.click();
+            await page.keyboard.press('Enter');
             await expect.poll(() => checks).toBe(2);
             await expect(overlay.getByRole('status')).toHaveText(messages.auth.shell.revalidationLoading);
             await expect(overlay.locator('select, .locale-preference, .locale-notice')).toHaveCount(0);
             await picture(page, info, `auth-revalidation-${locale}-${width}-retry`);
+            expect(reads).toBe(0);
+            expect(writes).toBe(0);
             releaseRetry.resolve();
             await expect(overlay).toHaveCount(0);
             expect(await draft.evaluate((element, original) => element === original, draftNode)).toBe(true);
@@ -293,7 +301,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
           } finally {
             releaseRetry.resolve();
             await page.unroute(`${baseURL}/api/v1/me`, identityRoute);
-            page.off('request', countWrites);
+            page.off('request', countRequests);
           }
           await draft.getByRole('button', { name: messages.auth.createProject.cancel }).click();
         }
