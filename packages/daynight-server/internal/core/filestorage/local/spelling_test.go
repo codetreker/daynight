@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 )
 
 func TestCaseDistinctAddressesAndBytes(t *testing.T) {

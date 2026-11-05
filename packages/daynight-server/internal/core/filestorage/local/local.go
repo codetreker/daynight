@@ -15,7 +15,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 )
 
 var ErrCaseInsensitive = errors.New("file storage root must distinguish uppercase and lowercase names")

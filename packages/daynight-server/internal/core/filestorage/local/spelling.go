@@ -7,7 +7,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 )
 
 // The caller holds namespace until its filesystem operation completes. Directory

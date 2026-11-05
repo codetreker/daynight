@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 )
 
 func attachmentPathGuard(mux *http.ServeMux, logger *slog.Logger) http.Handler {

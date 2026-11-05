@@ -275,8 +275,8 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
 | `internal/webui/` | Embedded production HTML/assets and static response policy |
 | `internal/core/store/` | PostgreSQL migrations, transactions, scoped writes and consistent reads |
-| `internal/filestorage/` | Generic bucket/path byte operations and address validation |
-| `internal/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
+| `internal/core/filestorage/` | Generic bucket/path byte operations and address validation |
+| `internal/core/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
 | `api/` | Project/task/attachment, identity and membership DTOs; common HTTP error envelopes |
 | `internal/service/` | Project/task use cases, identity/credentials, project membership/invitations, state/version policy and scoped cursors |
 | `internal/core/model/` | Shared project/task, identity/member models and resource-not-found markers |

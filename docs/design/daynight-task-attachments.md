@@ -75,7 +75,7 @@ flowchart TD
     Storage --> Local[LocalStorage]
 ```
 
-服务内通用文件存储包位于 `internal/filestorage/`，本地实现在其
+服务内通用文件存储包位于 `internal/core/filestorage/`，本地实现在其
 `local/` 子包。该包不依赖 task、project、HTTP 或 PG。附件服务选择 bucket、组成
 存储路径，调用 Storage 并读写附件元数据；其他业务可以用自己的 bucket 复用它。
 
