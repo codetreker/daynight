@@ -204,7 +204,8 @@ test.describe('visible authentication protocol', () => {
         await operation('Assert workspace heading', () => expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible());
         const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
         const logoutOutcome = signedOut.then((response) => ({ status: 'passed' as const, response }), (error: unknown) => ({ status: 'failed' as const, error }));
-        await operation('Click logout', () => page.getByRole('button', { name: '退出登录', exact: true }).click());
+        await operation('Open account menu', () => page.getByRole('button', { name: /^账户菜单：/ }).click());
+        await operation('Click logout', () => page.getByRole('menuitem', { name: '退出登录', exact: true }).click());
         await operation('Verify logout response', async () => {
           const outcome = await logoutOutcome;
           if (outcome.status === 'failed') throw outcome.error;
@@ -1233,7 +1234,8 @@ test('auth-resource-session', scenario('auth-resource-session'), async ({ page, 
   await frame.locator('#counter').press('Escape');
   await expect(detail).toHaveCount(0);
   const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
-  await page.getByRole('button', { name: '退出登录', exact: true }).click();
+  await page.getByRole('button', { name: /^账户菜单：/ }).click();
+  await page.getByRole('menuitem', { name: '退出登录', exact: true }).click();
   expect((await signedOut).status()).toBe(204);
   await expect(page).toHaveURL(`${baseURL}/`);
   await expect(page.locator('.landing-page')).toBeVisible();

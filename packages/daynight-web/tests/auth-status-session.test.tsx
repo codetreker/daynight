@@ -153,7 +153,8 @@ describe('authenticated status ownership', () => {
     mount(); await screen.findByRole('heading', { name: 'Alice project P' });
     const dialog = await open('Alice task P');
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' })); close(dialog);
-    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Account menu:/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
     await waitFor(() => expect(window.location.pathname).toBe('/'));
     const reads = vi.mocked(getTask).mock.calls.length;
     await act(async () => { mutation.reject(new ApiError('network')); });
