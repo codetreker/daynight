@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -12,19 +12,19 @@ type UpdateProjectSettings struct {
 	ExecutionWarningMinutes int32
 }
 
-func (s *Projects) UpdateSettings(ctx context.Context, principal core.Principal, projectID string, input UpdateProjectSettings) (core.Project, error) {
+func (s *Projects) UpdateSettings(ctx context.Context, principal model.Principal, projectID string, input UpdateProjectSettings) (model.Project, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.Project{}, err
+		return model.Project{}, err
 	}
 	id, err := CanonicalID(projectID)
 	if err != nil {
-		return core.Project{}, err
+		return model.Project{}, err
 	}
 	if input.Version < 1 || input.ExecutionWarningMinutes < 1 {
-		return core.Project{}, invalidInput("Settings version and execution warning minutes must be positive integers.")
+		return model.Project{}, invalidInput("Settings version and execution warning minutes must be positive integers.")
 	}
-	var project core.Project
-	var refusal *Fault
+	var project model.Project
+	var refusal *model.Fault
 	err = s.store.WriteProject(ctx, id, func(tx *store.ProjectTx) error {
 		return completeMembershipOperation(func() error {
 			access, err := RequireProjectWrite(ctx, tx, principal)
@@ -39,7 +39,7 @@ func (s *Projects) UpdateSettings(ctx context.Context, principal core.Principal,
 				return err
 			}
 			if project.Settings.Version != input.Version {
-				return &Fault{Code: "version_conflict", Message: "Project settings version does not match."}
+				return &model.Fault{Code: "version_conflict", Message: "Project settings version does not match."}
 			}
 			if project.Settings.ExecutionWarningMinutes == input.ExecutionWarningMinutes {
 				return nil
@@ -49,10 +49,10 @@ func (s *Projects) UpdateSettings(ctx context.Context, principal core.Principal,
 		}, &refusal)
 	})
 	if err != nil {
-		return core.Project{}, membershipLookupError(err)
+		return model.Project{}, membershipLookupError(err)
 	}
 	if refusal != nil {
-		return core.Project{}, refusal
+		return model.Project{}, refusal
 	}
 	return project, nil
 }

@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
-func encodedProperties(t *testing.T, properties core.TaskProperties) string {
+func encodedProperties(t *testing.T, properties model.TaskProperties) string {
 	t.Helper()
 	value, err := Encode(properties)
 	if err != nil {
@@ -20,9 +20,9 @@ func encodedProperties(t *testing.T, properties core.TaskProperties) string {
 	return value
 }
 
-func propertyFixture(t *testing.T, requests []core.PullRequestProperty, worker *core.WorkerClaim) core.TaskProperties {
+func propertyFixture(t *testing.T, requests []model.PullRequestProperty, worker *model.WorkerClaim) model.TaskProperties {
 	t.Helper()
-	properties := core.TaskProperties{}
+	properties := model.TaskProperties{}
 	if requests != nil {
 		items := make([]map[string]string, len(requests))
 		for index, request := range requests {
@@ -45,7 +45,7 @@ func propertyFixture(t *testing.T, requests []core.PullRequestProperty, worker *
 	return properties
 }
 
-func pullRequestsValue(t *testing.T, properties core.TaskProperties) []core.PullRequestProperty {
+func pullRequestsValue(t *testing.T, properties model.TaskProperties) []model.PullRequestProperty {
 	t.Helper()
 	value, err := PullRequests(properties)
 	if err != nil {
@@ -54,7 +54,7 @@ func pullRequestsValue(t *testing.T, properties core.TaskProperties) []core.Pull
 	return value
 }
 
-func workerValue(t *testing.T, properties core.TaskProperties) *core.WorkerClaim {
+func workerValue(t *testing.T, properties model.TaskProperties) *model.WorkerClaim {
 	t.Helper()
 	value, err := Worker(properties)
 	if err != nil {
@@ -64,7 +64,7 @@ func workerValue(t *testing.T, properties core.TaskProperties) *core.WorkerClaim
 }
 
 func TestCodecPreservesPropertiesAndPatchPresence(t *testing.T) {
-	items := []core.PullRequestProperty{{URL: "  any\x00\ntext 中文 ", Title: ""}, {URL: "  any\x00\ntext 中文 ", Title: ""}, {URL: "", Title: strings.Repeat("long", 20000)}}
+	items := []model.PullRequestProperty{{URL: "  any\x00\ntext 中文 ", Title: ""}, {URL: "  any\x00\ntext 中文 ", Title: ""}, {URL: "", Title: strings.Repeat("long", 20000)}}
 	encoded := encodedProperties(t, propertyFixture(t, items, nil))
 	if strings.ContainsRune(encoded, 0) || !strings.Contains(encoded, `\u0000`) {
 		t.Fatal("NUL was not escaped for PostgreSQL text")
@@ -73,17 +73,17 @@ func TestCodecPreservesPropertiesAndPatchPresence(t *testing.T) {
 	if err != nil || !slices.Equal(pullRequestsValue(t, decoded), items) {
 		t.Fatalf("property content changed: %+v, %v", decoded, err)
 	}
-	for _, properties := range []core.TaskProperties{{}, {"pullRequests": json.RawMessage(`[]`)}, {"paused": json.RawMessage(`true`)}, {"paused": json.RawMessage(`false`)}} {
+	for _, properties := range []model.TaskProperties{{}, {"pullRequests": json.RawMessage(`[]`)}, {"paused": json.RawMessage(`true`)}, {"paused": json.RawMessage(`false`)}} {
 		decoded, err := Decode([]byte(encodedProperties(t, properties)))
 		if err != nil || !reflect.DeepEqual(decoded, properties) {
 			t.Fatalf("storage document changed presence: %+v, %v", decoded, err)
 		}
 		patch, err := DecodePatch([]byte(encodedProperties(t, properties)))
-		if err != nil || !reflect.DeepEqual(patch, core.TaskPropertiesPatch(properties)) {
+		if err != nil || !reflect.DeepEqual(patch, model.TaskPropertiesPatch(properties)) {
 			t.Fatalf("property patch changed presence: %+v, %v", patch, err)
 		}
 	}
-	for _, properties := range []core.TaskProperties{nil, {}} {
+	for _, properties := range []model.TaskProperties{nil, {}} {
 		if got := encodedProperties(t, properties); got != `{}` {
 			t.Fatalf("empty property object encoded as %s", got)
 		}
@@ -128,7 +128,7 @@ func TestCodecNormalizationPreservesLegacyDecodedTextAndValueSemantics(t *testin
 	if value := pullRequestsValue(t, left)[0]; value.URL != "a\x00b" || value.Title != "�" {
 		t.Fatalf("typed string semantics changed: %#v", value)
 	}
-	_, err = Encode(core.TaskProperties{"pullRequests": json.RawMessage(`null`)})
+	_, err = Encode(model.TaskProperties{"pullRequests": json.RawMessage(`null`)})
 	var invalidValue *ValidationError
 	if !errors.As(err, &invalidValue) {
 		t.Fatalf("Encode silently accepted invalid values: %v", err)

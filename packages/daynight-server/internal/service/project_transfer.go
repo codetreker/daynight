@@ -5,7 +5,7 @@ import (
 	"errors"
 	"math"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -14,32 +14,32 @@ type TeamVersion struct {
 	Version int64
 }
 type TransferInput struct {
-	Ownership      core.ProjectOwnership
+	Ownership      model.ProjectOwnership
 	TargetTeam     TeamVersion
 	ExpectedUserID string
 }
 type TransferPreview struct {
-	SourceTeam, TargetTeam core.TeamRef
-	Ownership              core.ProjectOwnership
+	SourceTeam, TargetTeam model.TeamRef
+	Ownership              model.ProjectOwnership
 	TargetTeamVersion      int64
-	ActorRole              *core.ProjectRole
+	ActorRole              *model.ProjectRole
 }
 type TransferReceipt struct {
 	ProjectID             string
 	Changed               bool
-	SourceTeam, OwnerTeam core.TeamRef
-	Ownership             core.ProjectOwnership
-	ActorAccess           *core.ProjectAccess
+	SourceTeam, OwnerTeam model.TeamRef
+	Ownership             model.ProjectOwnership
+	ActorAccess           *model.ProjectAccess
 }
 
-func requireTransferAdmin(access core.ProjectAccess) error {
-	if access.TeamRole == nil || *access.TeamRole != core.ProjectAdmin {
-		return &Fault{Code: "forbidden", Message: "Owner Team administrator access is required."}
+func requireTransferAdmin(access model.ProjectAccess) error {
+	if access.TeamRole == nil || *access.TeamRole != model.ProjectAdmin {
+		return &model.Fault{Code: "forbidden", Message: "Owner Team administrator access is required."}
 	}
 	return nil
 }
 
-func (s *Projects) TransferPreview(ctx context.Context, principal core.Principal, projectID, targetTeamID string) (TransferPreview, error) {
+func (s *Projects) TransferPreview(ctx context.Context, principal model.Principal, projectID, targetTeamID string) (TransferPreview, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return TransferPreview{}, err
 	}
@@ -52,7 +52,7 @@ func (s *Projects) TransferPreview(ctx context.Context, principal core.Principal
 		return TransferPreview{}, err
 	}
 	var result TransferPreview
-	var refusal *Fault
+	var refusal *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		return completeMembershipOperation(func() error {
 			access, err := RequireProjectRead(ctx, snapshot, principal, id)
@@ -63,8 +63,8 @@ func (s *Projects) TransferPreview(ctx context.Context, principal core.Principal
 				return err
 			}
 			team, err := snapshot.TransferTeam(ctx, target)
-			if errors.Is(err, core.ErrNotFound) {
-				return &Fault{Code: "not_found", Message: "Target Team was not found.", Cause: err}
+			if errors.Is(err, model.ErrNotFound) {
+				return &model.Fault{Code: "not_found", Message: "Target Team was not found.", Cause: err}
 			}
 			if err != nil {
 				return err
@@ -86,7 +86,7 @@ func (s *Projects) TransferPreview(ctx context.Context, principal core.Principal
 	return result, nil
 }
 
-func (s *Projects) Transfer(ctx context.Context, principal core.Principal, projectID string, input TransferInput) (TransferReceipt, error) {
+func (s *Projects) Transfer(ctx context.Context, principal model.Principal, projectID string, input TransferInput) (TransferReceipt, error) {
 	if err := requireTeamActor(principal, input.ExpectedUserID); err != nil {
 		return TransferReceipt{}, err
 	}
@@ -123,18 +123,18 @@ func (s *Projects) Transfer(ctx context.Context, principal core.Principal, proje
 			return err
 		}
 		if ownership.TeamID != source || ownership.Version != input.Ownership.Version {
-			return &Fault{Code: "version_conflict", Message: "Project ownership has changed."}
+			return &model.Fault{Code: "version_conflict", Message: "Project ownership has changed."}
 		}
 		if targetTeam.Ref.ID == "" {
-			return &Fault{Code: "not_found", Message: "Target Team was not found."}
+			return &model.Fault{Code: "not_found", Message: "Target Team was not found."}
 		}
 		if targetTeam.Version != input.TargetTeam.Version {
-			return &Fault{Code: "version_conflict", Message: "Target Team has changed."}
+			return &model.Fault{Code: "version_conflict", Message: "Target Team has changed."}
 		}
 		changed := ownership.TeamID != target
 		if changed {
 			if ownership.Version == math.MaxInt64 {
-				return &Fault{Code: "version_exhausted", Message: "Project ownership version is exhausted."}
+				return &model.Fault{Code: "version_exhausted", Message: "Project ownership version is exhausted."}
 			}
 			ownership, err = tx.MoveOwnership(ctx, target)
 			if err != nil {
@@ -142,10 +142,10 @@ func (s *Projects) Transfer(ctx context.Context, principal core.Principal, proje
 			}
 		}
 		current, err := tx.ProjectAccess(ctx, principal)
-		var actorAccess *core.ProjectAccess
+		var actorAccess *model.ProjectAccess
 		if err == nil {
 			actorAccess = &current
-		} else if !errors.Is(err, core.ErrNotFound) {
+		} else if !errors.Is(err, model.ErrNotFound) {
 			return err
 		}
 		result = TransferReceipt{ProjectID: id, Changed: changed, SourceTeam: sourceTeam.Ref, OwnerTeam: targetTeam.Ref, Ownership: ownership, ActorAccess: actorAccess}

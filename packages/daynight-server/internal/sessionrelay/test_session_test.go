@@ -3,7 +3,7 @@ package sessionrelay
 import (
 	"context"
 	"encoding/json"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
 	"testing"
@@ -132,9 +132,9 @@ func TestTestSessionUsesSharedRelayAndOwnerScope(t *testing.T) {
 func TestTestSessionParentRevocationProtectsAllReads(t *testing.T) {
 	f, v, _ := testSession(t, "prompt")
 	ctx := context.Background()
-	login := core.Principal{Kind: core.SessionCredential, UserID: f.p.UserID, CredentialID: uuid.NewString()}
+	login := model.Principal{Kind: model.SessionCredential, UserID: f.p.UserID, CredentialID: uuid.NewString()}
 	// Use a second valid PAT as a browser actor; parent revocation must still win.
-	login.Kind = core.PATCredential
+	login.Kind = model.PATCredential
 	if _, e := f.s.DB.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'second',now())`, login.CredentialID, login.UserID, []byte("01234567890123456789012345678901")); e != nil {
 		t.Fatal(e)
 	}
@@ -322,7 +322,7 @@ func TestTestSessionStopPreservesUncertainEffectsAndRejectsBadProofs(t *testing.
 		t.Fatal("future stop proof")
 	}
 	login := f.p
-	login.Kind = core.SessionCredential
+	login.Kind = model.SessionCredential
 	if _, err := f.s.StopTest(ctx, login, v.SessionID, stop); err == nil {
 		t.Fatal("browser submitted OS proof")
 	}
@@ -347,7 +347,7 @@ func TestTestRegistrationRefusesBrowserAndExpiredCredentials(t *testing.T) {
 	ctx := context.Background()
 	input := sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}
 	browser := f.p
-	browser.Kind = core.SessionCredential
+	browser.Kind = model.SessionCredential
 	if _, err := f.s.RegisterTest(ctx, browser, input); err == nil {
 		t.Fatal("browser registration admitted")
 	}

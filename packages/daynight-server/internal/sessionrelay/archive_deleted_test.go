@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
@@ -15,16 +15,16 @@ import (
 	"github.com/google/uuid"
 )
 
-func endArchiveTask(t *testing.T, f fixture, state string) core.Task {
+func endArchiveTask(t *testing.T, f fixture, state string) model.Task {
 	t.Helper()
 	ctx := context.Background()
 	tasks := service.NewTasks(f.s.DB)
-	var ended core.Task
+	var ended model.Task
 	var err error
 	if state == "released" {
 		ended, err = tasks.ReleaseWorker(ctx, f.p, f.project, f.task, service.ReleaseWorker{Version: 1, ClaimID: f.r.ClaimID, StoppedConfirmed: true})
 	} else {
-		ended, err = tasks.SetStatus(ctx, f.p, f.project, f.task, service.SetTaskStatus{Version: 1, Status: core.TaskDone, ClaimID: &f.r.ClaimID})
+		ended, err = tasks.SetStatus(ctx, f.p, f.project, f.task, service.SetTaskStatus{Version: 1, Status: model.TaskDone, ClaimID: &f.r.ClaimID})
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestDeletedTaskArchiveCanFinishWithoutReopeningSession(t *testing.T) {
 					t.Fatal("deleted task allowed control")
 				}
 				_, err = service.NewTasks(f.s.DB).Get(ctx, f.p, f.project, f.task)
-				var fault *service.Fault
+				var fault *model.Fault
 				if !errors.As(err, &fault) || fault.Code != "task_deleted" {
 					t.Fatal("ordinary deleted task became visible", err)
 				}
@@ -106,9 +106,9 @@ func TestDeletedTaskArchiveRequiresCurrentOwnerCredentialAndMembership(t *testin
 			var err error
 			switch kind {
 			case "browser":
-				principal = listCredential(t, f, f.p.UserID, core.SessionCredential)
+				principal = listCredential(t, f, f.p.UserID, model.SessionCredential)
 			case "other member":
-				principal = listCredential(t, f, uuid.NewString(), core.PATCredential)
+				principal = listCredential(t, f, uuid.NewString(), model.PATCredential)
 				_, err = f.s.DB.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, f.project, principal.UserID)
 			case "removed member":
 				_, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, principal.UserID)

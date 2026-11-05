@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -122,7 +122,7 @@ func (s *Service) acceptContent(tx pgx.Tx, r *record, m sp.ControllerMessage) (m
 	})
 	return nil, nil
 }
-func (s *Service) localContent(ctx context.Context, p core.Principal, project, taskID, id string, fields map[string]any) (contentReply, error) {
+func (s *Service) localContent(ctx context.Context, p model.Principal, project, taskID, id string, fields map[string]any) (contentReply, error) {
 	var pending *pendingContent
 	err := s.browser(ctx, p, project, taskID, id, func(_ pgx.Tx, r *record, _ task, _ bool) error {
 		if err := onlineContent(r, s.now()); err != nil {

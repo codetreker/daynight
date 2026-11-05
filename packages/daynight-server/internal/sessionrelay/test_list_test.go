@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
 )
 
-func listRegistration(t *testing.T, f fixture, p core.Principal, provider string) sp.Snapshot {
+func listRegistration(t *testing.T, f fixture, p model.Principal, provider string) sp.Snapshot {
 	t.Helper()
 	v, err := f.s.RegisterTest(context.Background(), p, sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: provider, InitialInput: "none"})
 	if err != nil {
@@ -21,10 +21,10 @@ func listRegistration(t *testing.T, f fixture, p core.Principal, provider string
 	}
 	return v
 }
-func listCredential(t *testing.T, f fixture, user string, kind core.CredentialKind) core.Principal {
+func listCredential(t *testing.T, f fixture, user string, kind model.CredentialKind) model.Principal {
 	t.Helper()
 	ctx := context.Background()
-	p := core.Principal{Kind: kind, UserID: user, CredentialID: uuid.NewString()}
+	p := model.Principal{Kind: kind, UserID: user, CredentialID: uuid.NewString()}
 	hash := sha256.Sum256([]byte(p.CredentialID))
 	if _, err := f.s.DB.Pool.Exec(ctx, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1::uuid,($1::uuid)::text,now(),now()) ON CONFLICT DO NOTHING`, user); err != nil {
 		t.Fatal(err)
@@ -32,7 +32,7 @@ func listCredential(t *testing.T, f fixture, user string, kind core.CredentialKi
 	table := "personal_access_tokens"
 	columns := "id,user_id,token_hash,name,created_at,expires_at"
 	values := "$1,$2,$3,'list',now(),now()+interval '1 day'"
-	if kind == core.SessionCredential {
+	if kind == model.SessionCredential {
 		table = "sessions"
 		columns = "id,user_id,token_hash,created_at,expires_at"
 		values = "$1,$2,$3,now(),now()+interval '1 day'"
@@ -47,8 +47,8 @@ func TestListTestSessionsUsesOwnerParentAndStableActivityPagination(t *testing.T
 	ctx := context.Background()
 	now := time.Now().UTC()
 	created := now.Add(-time.Hour).Truncate(time.Microsecond)
-	browser := listCredential(t, f, f.p.UserID, core.SessionCredential)
-	other := listCredential(t, f, uuid.NewString(), core.PATCredential)
+	browser := listCredential(t, f, f.p.UserID, model.SessionCredential)
+	other := listCredential(t, f, uuid.NewString(), model.PATCredential)
 	listRegistration(t, f, other, "codex")
 	if _, err := f.s.Register(ctx, f.p, f.project, f.task, f.r); err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestListTestSessionsUsesOwnerParentAndStableActivityPagination(t *testing.T
 	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE task_sessions SET last_seen=$2 WHERE id=$1`, values[0].SessionID, eventTime); err != nil {
 		t.Fatal(err)
 	}
-	expired := listCredential(t, f, f.p.UserID, core.PATCredential)
+	expired := listCredential(t, f, f.p.UserID, model.PATCredential)
 	listRegistration(t, f, expired, "copilot")
 	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE personal_access_tokens SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 second' WHERE id=$1`, expired.CredentialID); err != nil {
 		t.Fatal(err)
@@ -156,9 +156,9 @@ func TestListOnlineTestSessionsFiltersBeforePaginationAndBindsCursor(t *testing.
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	f.s.now = func() time.Time { return now }
-	connection := listCredential(t, f, f.p.UserID, core.PATCredential)
-	foreign := listCredential(t, f, uuid.NewString(), core.PATCredential)
-	expired := listCredential(t, f, f.p.UserID, core.PATCredential)
+	connection := listCredential(t, f, f.p.UserID, model.PATCredential)
+	foreign := listCredential(t, f, uuid.NewString(), model.PATCredential)
+	expired := listCredential(t, f, f.p.UserID, model.PATCredential)
 	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE personal_access_tokens SET created_at=$2::timestamptz-interval '1 hour',expires_at=$2 WHERE id=$1`, expired.CredentialID, now); err != nil {
 		t.Fatal(err)
 	}

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -42,7 +42,7 @@ func TestPropertyRowsMigrationPreservesValuesAndTaskFacts(t *testing.T) {
 	database := &Store{Pool: pool}
 	project := queryProject(t, database, 1)
 	stamp := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
-	expected := make(map[string]core.TaskProperties)
+	expected := make(map[string]model.TaskProperties)
 	for i := 0; i < 105; i++ {
 		var worker any
 		if i%4 != 0 {
@@ -70,7 +70,7 @@ func TestPropertyRowsMigrationPreservesValuesAndTaskFacts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		expected[id] = core.TaskProperties(values)
+		expected[id] = model.TaskProperties(values)
 	}
 	var before string
 	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(t)-'properties' ORDER BY id)::text FROM tasks t`).Scan(&before); err != nil {
@@ -168,12 +168,12 @@ func TestPropertyRowsWritesAreAtomicWithTaskMetadata(t *testing.T) {
 	ctx := context.Background()
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 2, core.TaskTodo)
-	properties := core.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque","title":"PR"}]`)}
+	task := queryTask(t, database, project.ID, 2, model.TaskTodo)
+	properties := model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque","title":"PR"}]`)}
 	for _, table := range []string{"tasks", "task_properties"} {
 		mustQueryExec(t, database, `CREATE FUNCTION refuse_property_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'property transaction refusal'; END $$; CREATE TRIGGER refuse_property_write BEFORE INSERT OR UPDATE ON `+table+` FOR EACH ROW EXECUTE FUNCTION refuse_property_write()`)
 		err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-			_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: "Changed", Status: core.TaskTodo, Properties: properties})
+			_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: "Changed", Status: model.TaskTodo, Properties: properties})
 			return err
 		})
 		if err == nil {
@@ -186,7 +186,7 @@ func TestPropertyRowsWritesAreAtomicWithTaskMetadata(t *testing.T) {
 		mustQueryExec(t, database, `DROP TRIGGER refuse_property_write ON `+table+`; DROP FUNCTION refuse_property_write()`)
 	}
 	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: "Changed", Status: core.TaskTodo, Properties: properties})
+		_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: "Changed", Status: model.TaskTodo, Properties: properties})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -196,7 +196,7 @@ func TestPropertyRowsWritesAreAtomicWithTaskMetadata(t *testing.T) {
 		t.Fatalf("successful property write missing: %#v", actual)
 	}
 	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: actual.Title, Status: actual.Status, Properties: core.TaskProperties{}})
+		_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: actual.Title, Status: actual.Status, Properties: model.TaskProperties{}})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -209,7 +209,7 @@ func TestPropertyRowsWritesAreAtomicWithTaskMetadata(t *testing.T) {
 func TestPropertyRowsInvalidStoredValuePreservesValidationError(t *testing.T) {
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 2, core.TaskTodo)
+	task := queryTask(t, database, project.ID, 2, model.TaskTodo)
 	for _, value := range []struct{ name, raw string }{{"unknown", "[]"}, {"pullRequests", "null"}, {"worker", "{}"}} {
 		mustQueryExec(t, database, `DELETE FROM task_properties WHERE task_id=$1`, task.ID)
 		mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,$2,$3)`, task.ID, value.name, value.raw)

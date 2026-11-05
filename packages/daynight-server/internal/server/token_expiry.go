@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -38,7 +38,7 @@ func utcTokenExpiry(value *time.Time) *time.Time {
 	return &stamp
 }
 
-func (h *Authentication) updateToken(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *Authentication) updateToken(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	fields, err := decodeObject(w, r, "expiresAt", "expectedExpiresAt", "expectedUserId")
 	if err != nil {
 		writeError(w, r, h.logger, "auth", "update_token", err)

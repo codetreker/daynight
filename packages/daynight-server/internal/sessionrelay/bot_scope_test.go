@@ -8,27 +8,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
 )
 
-func botFixture(t *testing.T) (fixture, core.Bot, BotRegistration) {
+func botFixture(t *testing.T) (fixture, model.Bot, BotRegistration) {
 	t.Helper()
 	f := setup(t)
 	ctx := context.Background()
 	if _, err := f.s.DB.Pool.Exec(ctx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now(),now(),'{}','{}')`, f.p.UserID, f.r.WorkerID); err != nil {
 		t.Fatal(err)
 	}
-	configuration := core.BotConfiguration{WorkerID: f.r.WorkerID, Cwd: "/ordinary/directory", Provider: "codex", Args: []string{}}
+	configuration := model.BotConfiguration{WorkerID: f.r.WorkerID, Cwd: "/ordinary/directory", Provider: "codex", Args: []string{}}
 	worker := f.r.WorkerID
-	bot, err := service.NewBots(f.s.DB).Create(ctx, f.p, service.CreateBot{ID: uuid.NewString(), Name: "Assistant", Overrides: core.BotOverrides{WorkerID: &worker}, ResolvedConfiguration: configuration})
+	bot, err := service.NewBots(f.s.DB).Create(ctx, f.p, service.CreateBot{ID: uuid.NewString(), Name: "Assistant", Overrides: model.BotOverrides{WorkerID: &worker}, ResolvedConfiguration: configuration})
 	if err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256([]byte("Use Daynight CLI."))
-	input := BotRegistration{BotVersion: bot.Version, Configuration: configuration, RoleConfiguration: core.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: hex.EncodeToString(digest[:])}, Registration: sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}}
+	input := BotRegistration{BotVersion: bot.Version, Configuration: configuration, RoleConfiguration: model.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: hex.EncodeToString(digest[:])}, Registration: sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}}
 	return f, bot, input
 }
 
@@ -114,7 +114,7 @@ func connectBot(t *testing.T) (fixture, BotRegistrationResult, BotRegistration, 
 }
 func readyBotReport(out BotRegistrationResult) BotReport {
 	fence := out.Session.ControllerFence
-	return BotReport{BotVersion: out.Bot.Version, Fence: &fence, ControllerID: out.Session.Identity.ControllerID, ControllerInstanceID: out.Session.Identity.ControllerInstanceID, NativeSessionID: out.Session.Identity.NativeSessionID, Result: core.BotStartupResult{State: "ready"}}
+	return BotReport{BotVersion: out.Bot.Version, Fence: &fence, ControllerID: out.Session.Identity.ControllerID, ControllerInstanceID: out.Session.Identity.ControllerInstanceID, NativeSessionID: out.Session.Identity.NativeSessionID, Result: model.BotStartupResult{State: "ready"}}
 }
 func TestBotGrantAndReportRequireCurrentBindingAndLiveSynchronization(t *testing.T) {
 	f, out, _, _ := connectBot(t)
@@ -175,7 +175,7 @@ func TestBotPreflightFailureCannotInventSessionOrSuccessfulPreference(t *testing
 	f, bot, _ := botFixture(t)
 	ctx := context.Background()
 	code := "directory_missing"
-	report := BotReport{BotVersion: 1, Result: core.BotStartupResult{State: "failed", Code: &code}}
+	report := BotReport{BotVersion: 1, Result: model.BotStartupResult{State: "failed", Code: &code}}
 	out, err := f.s.ReportBot(ctx, f.p, bot.WorkerID, bot.ID, report)
 	if err != nil || out.Version != 2 || out.StartupResult.State != "failed" || out.SessionID != nil {
 		t.Fatalf("preflight result %+v %v", out, err)
@@ -185,7 +185,7 @@ func TestBotPreflightFailureCannotInventSessionOrSuccessfulPreference(t *testing
 		t.Fatalf("failure saved preference %d %v", count, err)
 	}
 	report.BotVersion = 2
-	report.Result = core.BotStartupResult{State: "ready"}
+	report.Result = model.BotStartupResult{State: "ready"}
 	if _, err = f.s.ReportBot(ctx, f.p, bot.WorkerID, bot.ID, report); err == nil {
 		t.Fatal("preflight reported ready without a Session")
 	}

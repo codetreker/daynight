@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"strconv"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -18,7 +18,7 @@ func workerConfigurationError(operation string, err error) error {
 	if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted) {
 		return fmt.Errorf("%s: %w", operation, err)
 	}
-	var fault *Fault
+	var fault *model.Fault
 	if errors.As(err, &fault) {
 		return fault
 	}
@@ -26,42 +26,42 @@ func workerConfigurationError(operation string, err error) error {
 }
 
 func configurationNotFound(err error) error {
-	if errors.Is(err, core.ErrNotFound) {
-		return &Fault{Code: "not_found", Message: "Worker was not found.", Cause: err}
+	if errors.Is(err, model.ErrNotFound) {
+		return &model.Fault{Code: "not_found", Message: "Worker was not found.", Cause: err}
 	}
 	return err
 }
 
-func (s *Workers) Configuration(ctx context.Context, principal core.Principal, workerID string) (core.WorkerConfigurationResource, error) {
+func (s *Workers) Configuration(ctx context.Context, principal model.Principal, workerID string) (model.WorkerConfigurationResource, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.WorkerConfigurationResource{}, err
+		return model.WorkerConfigurationResource{}, err
 	}
 	workerID, err := CanonicalID(workerID)
 	if err != nil {
-		return core.WorkerConfigurationResource{}, err
+		return model.WorkerConfigurationResource{}, err
 	}
-	var result core.WorkerConfigurationResource
+	var result model.WorkerConfigurationResource
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		var err error
 		result, err = snapshot.WorkerConfiguration(ctx, principal.UserID, workerID)
 		return configurationNotFound(err)
 	})
 	if err != nil {
-		return core.WorkerConfigurationResource{}, workerConfigurationError("get worker configuration", err)
+		return model.WorkerConfigurationResource{}, workerConfigurationError("get worker configuration", err)
 	}
 	return result, nil
 }
 
-func normalizeWorkerConfiguration(value core.WorkerConfiguration) (core.WorkerConfiguration, error) {
+func normalizeWorkerConfiguration(value model.WorkerConfiguration) (model.WorkerConfiguration, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
-		return core.WorkerConfiguration{}, invalidInput("Worker configuration is invalid.")
+		return model.WorkerConfiguration{}, invalidInput("Worker configuration is invalid.")
 	}
 	return ParseWorkerConfiguration(raw)
 }
 
-func configurationProjects(ctx context.Context, tx *store.WorkerTx, userID string, current *core.WorkerDesiredConfiguration, value core.WorkerConfiguration) error {
-	retained := map[string]core.WorkerProjectConfiguration{}
+func configurationProjects(ctx context.Context, tx *store.WorkerTx, userID string, current *model.WorkerDesiredConfiguration, value model.WorkerConfiguration) error {
+	retained := map[string]model.WorkerProjectConfiguration{}
 	if current != nil {
 		for _, project := range current.Value.Projects {
 			retained[project.ProjectID] = project
@@ -72,8 +72,8 @@ func configurationProjects(ctx context.Context, tx *store.WorkerTx, userID strin
 			continue
 		}
 		if err := tx.ConfigurationProjectAccess(ctx, userID, project.ProjectID); err != nil {
-			if errors.Is(err, core.ErrNotFound) {
-				return &Fault{Code: "not_found", Message: "A selected project was not found or is inaccessible.", Cause: err}
+			if errors.Is(err, model.ErrNotFound) {
+				return &model.Fault{Code: "not_found", Message: "A selected project was not found or is inaccessible.", Cause: err}
 			}
 			return err
 		}
@@ -81,34 +81,34 @@ func configurationProjects(ctx context.Context, tx *store.WorkerTx, userID strin
 	return nil
 }
 
-func (s *Workers) PutConfiguration(ctx context.Context, principal core.Principal, workerID, revision string, value core.WorkerConfiguration) (core.WorkerConfigurationResource, error) {
+func (s *Workers) PutConfiguration(ctx context.Context, principal model.Principal, workerID, revision string, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.WorkerConfigurationResource{}, err
+		return model.WorkerConfigurationResource{}, err
 	}
 	workerID, err := CanonicalID(workerID)
 	if err != nil {
-		return core.WorkerConfigurationResource{}, err
+		return model.WorkerConfigurationResource{}, err
 	}
 	expected, err := ConfigurationRevision(revision, false)
 	if err != nil {
-		return core.WorkerConfigurationResource{}, err
+		return model.WorkerConfigurationResource{}, err
 	}
 	value, err = normalizeWorkerConfiguration(value)
 	if err != nil {
-		return core.WorkerConfigurationResource{}, err
+		return model.WorkerConfigurationResource{}, err
 	}
-	var result core.WorkerConfigurationResource
+	var result model.WorkerConfigurationResource
 	err = s.store.WriteWorker(ctx, func(tx *store.WorkerTx) error {
 		current, err := tx.WorkerConfiguration(ctx, principal.UserID, workerID)
 		if err != nil {
 			return configurationNotFound(err)
 		}
 		if current.Desired == nil {
-			return &Fault{Code: "configuration_not_initialized", Message: "Worker has not imported its initial configuration."}
+			return &model.Fault{Code: "configuration_not_initialized", Message: "Worker has not imported its initial configuration."}
 		}
 		actual, _ := strconv.ParseInt(current.Desired.Revision, 10, 64)
 		if actual != expected {
-			return &Fault{Code: "version_conflict", Message: "Worker configuration revision does not match."}
+			return &model.Fault{Code: "version_conflict", Message: "Worker configuration revision does not match."}
 		}
 		current.Desired.Value, err = normalizeWorkerConfiguration(current.Desired.Value)
 		if err != nil {
@@ -122,7 +122,7 @@ func (s *Workers) PutConfiguration(ctx context.Context, principal core.Principal
 			return nil
 		}
 		if actual == math.MaxInt64 {
-			return &Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
+			return &model.Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
 		}
 		desired, err := tx.SetWorkerConfiguration(ctx, principal.UserID, workerID, actual+1, value)
 		if err != nil {
@@ -132,12 +132,12 @@ func (s *Workers) PutConfiguration(ctx context.Context, principal core.Principal
 		return nil
 	})
 	if err != nil {
-		return core.WorkerConfigurationResource{}, workerConfigurationError("save worker configuration", err)
+		return model.WorkerConfigurationResource{}, workerConfigurationError("save worker configuration", err)
 	}
 	return result, nil
 }
 
-func exchangeWorkerConfiguration(ctx context.Context, tx *store.WorkerTx, principal core.Principal, workerID string, input core.WorkerConfigurationExchange) (*core.WorkerConfigurationReceipt, error) {
+func exchangeWorkerConfiguration(ctx context.Context, tx *store.WorkerTx, principal model.Principal, workerID string, input model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error) {
 	current, err := tx.WorkerConfiguration(ctx, principal.UserID, workerID)
 	if err != nil {
 		return nil, err
@@ -152,7 +152,7 @@ func exchangeWorkerConfiguration(ctx context.Context, tx *store.WorkerTx, princi
 		}
 		current.Desired = &desired
 	}
-	receipt := &core.WorkerConfigurationReceipt{Desired: current.Desired, ObservationRevision: current.ObservationRevision}
+	receipt := &model.WorkerConfigurationReceipt{Desired: current.Desired, ObservationRevision: current.ObservationRevision}
 	if input.Observation != nil && input.Observation.BaseRevision == current.ObservationRevision {
 		if current.Desired == nil {
 			return nil, invalidInput("Configuration observations require a desired configuration.")
@@ -164,7 +164,7 @@ func exchangeWorkerConfiguration(ctx context.Context, tx *store.WorkerTx, princi
 		}
 		base, _ := strconv.ParseInt(current.ObservationRevision, 10, 64)
 		if base == math.MaxInt64 {
-			return nil, &Fault{Code: "version_exhausted", Message: "Worker configuration observation revision is exhausted."}
+			return nil, &model.Fault{Code: "version_exhausted", Message: "Worker configuration observation revision is exhausted."}
 		}
 		if err := tx.SetWorkerConfigurationObservation(ctx, principal.UserID, workerID, base+1, *input.Observation); err != nil {
 			return nil, err

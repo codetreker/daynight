@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
@@ -26,7 +26,7 @@ type membershipHarness struct {
 	admin    *http.Cookie
 	member   *http.Cookie
 	outsider *http.Cookie
-	project  core.Project
+	project  model.Project
 	adminID  string
 	memberID string
 }
@@ -42,7 +42,7 @@ func membershipTestHarness(t *testing.T) *membershipHarness {
 	h.admin = h.login(t, "membership-admin")
 	h.member = h.login(t, "membership-member")
 	h.outsider = h.login(t, "membership-outsider")
-	principal, err := h.auth.identity.Authenticate(context.Background(), core.SessionCredential, h.admin.Value)
+	principal, err := h.auth.identity.Authenticate(context.Background(), model.SessionCredential, h.admin.Value)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestInvitationInspectRejectsMalformedJSONWithoutDisclosingToken(t *testing.
 		request.Header.Set("X-Request-ID", "project-test")
 		response := httptest.NewRecorder()
 		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			routes.inspectInvitation(w, r, core.Principal{})
+			routes.inspectInvitation(w, r, model.Principal{})
 		})).ServeHTTP(response, request)
 		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 		if strings.Contains(response.Body.String(), "secret") || strings.Contains(logs.String(), "secret") {

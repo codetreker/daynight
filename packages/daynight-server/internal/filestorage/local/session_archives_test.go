@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
 )
 
 const archiveSession = "7540b06e-11f4-4a2b-94af-f3e7ea790c85"

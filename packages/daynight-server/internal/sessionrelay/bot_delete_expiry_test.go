@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/google/uuid"
 )
@@ -20,7 +20,7 @@ func deletionAdmissionState(t *testing.T, f fixture, id string) string {
 }
 
 func TestBotDeleteRejectsCredentialsExpiringDuringLockWait(t *testing.T) {
-	for _, kind := range []core.CredentialKind{core.PATCredential, core.SessionCredential} {
+	for _, kind := range []model.CredentialKind{model.PATCredential, model.SessionCredential} {
 		for _, phase := range []string{"bot", "session", "replay"} {
 			t.Run(string(kind)+"/"+phase, func(t *testing.T) {
 				f, out, _, _ := connectBot(t)
@@ -28,7 +28,7 @@ func TestBotDeleteRejectsCredentialsExpiringDuringLockWait(t *testing.T) {
 				defer cancel()
 				principal := f.p
 				table := "personal_access_tokens"
-				if kind == core.SessionCredential {
+				if kind == model.SessionCredential {
 					principal = listCredential(t, f, f.p.UserID, kind)
 					table = "sessions"
 				}

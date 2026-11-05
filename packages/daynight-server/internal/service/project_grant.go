@@ -4,36 +4,36 @@ import (
 	"context"
 	"errors"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 type SetProjectGrant struct {
 	Version        *int64
-	Role           core.ProjectRole
+	Role           model.ProjectRole
 	ExpectedUserID string
 }
 
 type SetGrantResult struct {
-	Grant       core.ProjectGrant
-	ActorAccess *core.ProjectAccess
+	Grant       model.ProjectGrant
+	ActorAccess *model.ProjectAccess
 }
 
 type RemoveGrantResult struct {
 	ProjectID   string
 	UserID      string
-	ActorAccess *core.ProjectAccess
+	ActorAccess *model.ProjectAccess
 }
 
 func grantConflict() error {
-	return &Fault{Code: "version_conflict", Message: "Project grant version does not match."}
+	return &model.Fault{Code: "version_conflict", Message: "Project grant version does not match."}
 }
 
 // actorGrantAccess is read in the write transaction, after the mutation. Loss
 // of all access is an expected result, while integrity and query errors remain failures.
-func actorGrantAccess(ctx context.Context, tx *store.ProjectTx, principal core.Principal) (*core.ProjectAccess, error) {
+func actorGrantAccess(ctx context.Context, tx *store.ProjectTx, principal model.Principal) (*model.ProjectAccess, error) {
 	access, err := tx.ProjectAccess(ctx, principal)
-	if errors.Is(err, core.ErrNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
@@ -42,7 +42,7 @@ func actorGrantAccess(ctx context.Context, tx *store.ProjectTx, principal core.P
 	return &access, nil
 }
 
-func (s *Memberships) SetGrant(ctx context.Context, principal core.Principal, projectID, userID string, input SetProjectGrant) (SetGrantResult, error) {
+func (s *Memberships) SetGrant(ctx context.Context, principal model.Principal, projectID, userID string, input SetProjectGrant) (SetGrantResult, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return SetGrantResult{}, err
 	}
@@ -56,13 +56,13 @@ func (s *Memberships) SetGrant(ctx context.Context, principal core.Principal, pr
 	if input.Version != nil && *input.Version < 1 {
 		return SetGrantResult{}, invalidInput("Version must be null or a positive integer.")
 	}
-	if input.Role != core.ProjectAdmin && input.Role != core.ProjectMemberRole {
+	if input.Role != model.ProjectAdmin && input.Role != model.ProjectMemberRole {
 		return SetGrantResult{}, invalidInput("Role must be admin or member.")
 	}
 	var result SetGrantResult
 	err = s.write(ctx, principal, projectID, func(tx *store.ProjectTx) error {
 		grant, err := tx.DirectGrant(ctx, id)
-		if err != nil && !errors.Is(err, core.ErrNotFound) {
+		if err != nil && !errors.Is(err, model.ErrNotFound) {
 			return err
 		}
 		exists := err == nil
@@ -71,9 +71,9 @@ func (s *Memberships) SetGrant(ctx context.Context, principal core.Principal, pr
 				return grantConflict()
 			}
 			// Only an existing participant can receive a new direct grant.
-			if _, err := tx.ProjectAccess(ctx, core.Principal{UserID: id}); err != nil {
-				if errors.Is(err, core.ErrNotFound) {
-					return &Fault{Code: "not_found", Message: "Project participant was not found.", Cause: err}
+			if _, err := tx.ProjectAccess(ctx, model.Principal{UserID: id}); err != nil {
+				if errors.Is(err, model.ErrNotFound) {
+					return &model.Fault{Code: "not_found", Message: "Project participant was not found.", Cause: err}
 				}
 				return err
 			}
@@ -97,7 +97,7 @@ func (s *Memberships) SetGrant(ctx context.Context, principal core.Principal, pr
 	return result, err
 }
 
-func (s *Memberships) RemoveGrant(ctx context.Context, principal core.Principal, projectID, userID string, input RemoveProjectMember) (RemoveGrantResult, error) {
+func (s *Memberships) RemoveGrant(ctx context.Context, principal model.Principal, projectID, userID string, input RemoveProjectMember) (RemoveGrantResult, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return RemoveGrantResult{}, err
 	}
@@ -115,7 +115,7 @@ func (s *Memberships) RemoveGrant(ctx context.Context, principal core.Principal,
 	result := RemoveGrantResult{ProjectID: projectID, UserID: id}
 	err = s.write(ctx, principal, projectID, func(tx *store.ProjectTx) error {
 		grant, err := tx.DirectGrant(ctx, id)
-		if err != nil && !errors.Is(err, core.ErrNotFound) {
+		if err != nil && !errors.Is(err, model.ErrNotFound) {
 			return err
 		}
 		if err != nil || grant.Version != input.Version {

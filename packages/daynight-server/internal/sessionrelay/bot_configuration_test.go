@@ -1,5 +1,6 @@
 package sessionrelay
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
 	"errors"
@@ -81,7 +82,7 @@ func TestBotRegistrationPreservesDatabaseFailureInsteadOfReportingMissingBot(t *
 	})
 	_, err := f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, input)
 	var pgError *pgconn.PgError
-	var businessError *service.Fault
+	var businessError *model.Fault
 	if !errors.As(err, &pgError) || pgError.Code != "42P01" || errors.As(err, &businessError) {
 		t.Fatalf("storage outage was converted to a business refusal: %v", err)
 	}

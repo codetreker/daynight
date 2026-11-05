@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -24,24 +24,24 @@ func NewTaskSync(database *store.Store, overlap time.Duration) *TaskSync {
 	return &TaskSync{store: database, overlap: overlap}
 }
 
-func (s *TaskSync) Get(ctx context.Context, principal core.Principal, projectID string, input TaskSyncRequest) (core.TaskSync, error) {
+func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID string, input TaskSyncRequest) (model.TaskSync, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.TaskSync{}, err
+		return model.TaskSync{}, err
 	}
 	projectID, err := CanonicalID(projectID)
 	if err != nil {
-		return core.TaskSync{}, err
+		return model.TaskSync{}, err
 	}
 	if input.Epoch != "" {
 		canonical, err := CanonicalID(input.Epoch)
 		if err != nil || canonical != input.Epoch {
-			return core.TaskSync{}, invalidInput("Epoch must be a canonical UUID.")
+			return model.TaskSync{}, invalidInput("Epoch must be a canonical UUID.")
 		}
 	} else if input.Since != nil {
-		return core.TaskSync{}, invalidInput("Since requires an epoch.")
+		return model.TaskSync{}, invalidInput("Since requires an epoch.")
 	}
-	var result core.TaskSync
-	var refusal *Fault
+	var result model.TaskSync
+	var refusal *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		var err error
 		result.ActorAccess, err = RequireProjectRead(ctx, snapshot, principal, projectID)
@@ -52,8 +52,8 @@ func (s *TaskSync) Get(ctx context.Context, principal core.Principal, projectID 
 			return err
 		}
 		result.Project, err = snapshot.Project(ctx, projectID)
-		if errors.Is(err, core.ErrNotFound) {
-			refusal = &Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
+		if errors.Is(err, model.ErrNotFound) {
+			refusal = &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
 			return nil
 		}
 		if err != nil {
@@ -68,8 +68,8 @@ func (s *TaskSync) Get(ctx context.Context, principal core.Principal, projectID 
 			return err
 		}
 		if size.NodeCount > maxGraphNodes || size.EdgeCount > maxGraphEdges {
-			refusal = &Fault{Code: "graph_limit_exceeded", Message: "Task graph exceeds the supported size.",
-				GraphLimit: &GraphLimitDetails{NodeCount: size.NodeCount, EdgeCount: size.EdgeCount, MaxNodes: maxGraphNodes, MaxEdges: maxGraphEdges}}
+			refusal = &model.Fault{Code: "graph_limit_exceeded", Message: "Task graph exceeds the supported size.",
+				GraphLimit: &model.GraphLimitDetails{NodeCount: size.NodeCount, EdgeCount: size.EdgeCount, MaxNodes: maxGraphNodes, MaxEdges: maxGraphEdges}}
 			return nil
 		}
 		result.Mode = "snapshot"
@@ -93,18 +93,18 @@ func (s *TaskSync) Get(ctx context.Context, principal core.Principal, projectID 
 		if err != nil {
 			return err
 		}
-		result.AssigneeVersions = make([]core.TaskAssigneeVersion, 0, len(people.Items))
+		result.AssigneeVersions = make([]model.TaskAssigneeVersion, 0, len(people.Items))
 		for _, person := range people.Items {
-			result.AssigneeVersions = append(result.AssigneeVersions, core.TaskAssigneeVersion{UserID: person.UserID, Version: person.Version, HasProjectAccess: person.HasProjectAccess})
+			result.AssigneeVersions = append(result.AssigneeVersions, model.TaskAssigneeVersion{UserID: person.UserID, Version: person.Version, HasProjectAccess: person.HasProjectAccess})
 		}
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		return err
 	})
 	if err != nil {
-		return core.TaskSync{}, fmt.Errorf("read task sync: %w", err)
+		return model.TaskSync{}, fmt.Errorf("read task sync: %w", err)
 	}
 	if refusal != nil {
-		return core.TaskSync{}, refusal
+		return model.TaskSync{}, refusal
 	}
 	return result, nil
 }

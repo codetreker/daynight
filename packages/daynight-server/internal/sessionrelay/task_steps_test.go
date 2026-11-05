@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
@@ -31,7 +31,7 @@ func TestTaskStepMutationsPreserveActiveSessionPublicationAndControl(t *testing.
 	if err != nil || result.Resource.Version != version+2 || !result.Changed {
 		t.Fatalf("Step content update: %+v %v", result.Resource, err)
 	}
-	result, err = service.NewTaskSteps(f.s.DB).SetStatus(ctx, f.p, f.project, f.task, "ABCDEF01", service.SetTaskStepStatus{Version: version + 2, Status: core.TaskStepInProgress})
+	result, err = service.NewTaskSteps(f.s.DB).SetStatus(ctx, f.p, f.project, f.task, "ABCDEF01", service.SetTaskStepStatus{Version: version + 2, Status: model.TaskStepInProgress})
 	if err != nil || result.Resource.Version != version+3 || !result.Changed {
 		t.Fatalf("Step status update: %+v %v", result.Resource, err)
 	}

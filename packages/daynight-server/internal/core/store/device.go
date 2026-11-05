@@ -5,11 +5,11 @@ import (
 	"errors"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Store) TakeDeviceRate(ctx context.Context, buckets []core.DeviceRateBucket, now time.Time) (bool, error) {
+func (s *Store) TakeDeviceRate(ctx context.Context, buckets []model.DeviceRateBucket, now time.Time) (bool, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return false, authQueryError("begin device limit", err)
@@ -35,7 +35,7 @@ func (s *Store) TakeDeviceRate(ctx context.Context, buckets []core.DeviceRateBuc
 	return allowed, authQueryError("device limit", err)
 }
 
-func (s *Store) CreateDeviceAuthorization(ctx context.Context, d core.DeviceAuthorization) error {
+func (s *Store) CreateDeviceAuthorization(ctx context.Context, d model.DeviceAuthorization) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return authQueryError("begin device authorization", err)
@@ -50,16 +50,16 @@ func (s *Store) CreateDeviceAuthorization(ctx context.Context, d core.DeviceAuth
 	return authQueryError("create device authorization", err)
 }
 
-func scanDevice(row pgx.Row) (core.DeviceAuthorization, error) {
-	var d core.DeviceAuthorization
+func scanDevice(row pgx.Row) (model.DeviceAuthorization, error) {
+	var d model.DeviceAuthorization
 	err := row.Scan(&d.ID, &d.DeviceCodeHash, &d.UserCode, &d.Status, &d.UserID, &d.CreatedAt, &d.ExpiresAt, &d.NextPollAt, &d.PollIntervalSeconds)
 	return d, err
 }
 
 const deviceFields = `id::text,device_code_hash,user_code,status,user_id::text,created_at,expires_at,next_poll_at,poll_interval_seconds`
 
-func (s *Store) InspectDeviceAuthorization(ctx context.Context, p core.Principal, code string, now time.Time) (core.DeviceAuthorization, error) {
-	var d core.DeviceAuthorization
+func (s *Store) InspectDeviceAuthorization(ctx context.Context, p model.Principal, code string, now time.Time) (model.DeviceAuthorization, error) {
+	var d model.DeviceAuthorization
 	err := s.withSession(ctx, p, now, func(tx pgx.Tx) error {
 		var err error
 		d, err = scanDevice(tx.QueryRow(ctx, `SELECT `+deviceFields+` FROM device_authorizations WHERE user_code=$1 AND (user_id IS NULL OR user_id=$2)`, code, p.UserID))
@@ -68,7 +68,7 @@ func (s *Store) InspectDeviceAuthorization(ctx context.Context, p core.Principal
 	return d, err
 }
 
-func (s *Store) DecideDeviceAuthorization(ctx context.Context, p core.Principal, code, status string, now time.Time) (string, error) {
+func (s *Store) DecideDeviceAuthorization(ctx context.Context, p model.Principal, code, status string, now time.Time) (string, error) {
 	outcome := ""
 	err := s.withSession(ctx, p, now, func(tx pgx.Tx) error {
 		d, err := scanDevice(tx.QueryRow(ctx, `SELECT `+deviceFields+` FROM device_authorizations WHERE user_code=$1 AND (user_id IS NULL OR user_id=$2) FOR UPDATE`, code, p.UserID))
@@ -90,7 +90,7 @@ func (s *Store) DecideDeviceAuthorization(ctx context.Context, p core.Principal,
 }
 
 // A successful redemption consumes the grant and inserts its credential in one commit.
-func (s *Store) RedeemDeviceAuthorization(ctx context.Context, hash []byte, c core.PersonalAccessToken) (string, error) {
+func (s *Store) RedeemDeviceAuthorization(ctx context.Context, hash []byte, c model.PersonalAccessToken) (string, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return "", authQueryError("begin device redemption", err)
@@ -135,7 +135,7 @@ func (s *Store) RedeemDeviceAuthorization(ctx context.Context, hash []byte, c co
 	return outcome, authQueryError("redeem device authorization", err)
 }
 
-func (s *Store) DeleteCurrentPAT(ctx context.Context, p core.Principal) error {
+func (s *Store) DeleteCurrentPAT(ctx context.Context, p model.Principal) error {
 	_, err := s.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1 AND user_id=$2`, p.CredentialID, p.UserID)
 	return authQueryError("delete current token", err)
 }

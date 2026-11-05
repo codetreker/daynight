@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/google/uuid"
 )
@@ -150,8 +150,8 @@ func TestTeamMembersHTTP(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	principal := core.Principal{Kind: core.SessionCredential, CredentialID: uuid.NewString(), UserID: au.ID}
-	_, err = service.NewTeams(h.database).SetMemberRole(canceled, principal, team.ID, au.ID, service.ChangeTeamMember{Version: precise, Role: core.ProjectMemberRole, ExpectedUserID: au.ID})
+	principal := model.Principal{Kind: model.SessionCredential, CredentialID: uuid.NewString(), UserID: au.ID}
+	_, err = service.NewTeams(h.database).SetMemberRole(canceled, principal, team.ID, au.ID, service.ChangeTeamMember{Version: precise, Role: model.ProjectMemberRole, ExpectedUserID: au.ID})
 	if err == nil {
 		t.Fatal("canceled operation succeeded")
 	}
@@ -183,8 +183,8 @@ func TestTeamMembersConcurrentLastAdmin(t *testing.T) {
 	au := decodeResponse[api.User](t, h.request("GET", "/api/v1/me", "", ac, nil, ""), 200)
 	bu := decodeResponse[api.User](t, h.request("GET", "/api/v1/me", "", bc, nil, ""), 200)
 	s := service.NewTeams(h.database)
-	pa := core.Principal{Kind: core.SessionCredential, CredentialID: uuid.NewString(), UserID: au.ID}
-	pb := core.Principal{Kind: core.SessionCredential, CredentialID: uuid.NewString(), UserID: bu.ID}
+	pa := model.Principal{Kind: model.SessionCredential, CredentialID: uuid.NewString(), UserID: au.ID}
+	pb := model.Principal{Kind: model.SessionCredential, CredentialID: uuid.NewString(), UserID: bu.ID}
 	for _, remove := range []bool{false, true} {
 		team, err := s.Create(context.Background(), pa, service.CreateTeam{Name: "race", ExpectedUserID: au.ID})
 		if err != nil {
@@ -196,7 +196,7 @@ func TestTeamMembersConcurrentLastAdmin(t *testing.T) {
 			t.Fatal(err)
 		}
 		joined := decodeResponse[api.TeamInvitationAcceptance](t, h.request("POST", "/api/v1/team-invitations/accept", jsonBody(t, api.AcceptProjectInvitationRequest{Token: link.Fragment, ExpectedUserID: bu.ID}), bc, nil, h.auth.origin), 200)
-		promoted, err := s.SetMemberRole(context.Background(), pa, team.ID, bu.ID, service.ChangeTeamMember{Version: joined.Membership.Version, Role: core.ProjectAdmin, ExpectedUserID: au.ID})
+		promoted, err := s.SetMemberRole(context.Background(), pa, team.ID, bu.ID, service.ChangeTeamMember{Version: joined.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: au.ID})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -204,7 +204,7 @@ func TestTeamMembersConcurrentLastAdmin(t *testing.T) {
 		start := make(chan struct{})
 		errs := make([]error, 2)
 		var wg sync.WaitGroup
-		for i, p := range []core.Principal{pa, pb} {
+		for i, p := range []model.Principal{pa, pb} {
 			i, p := i, p
 			wg.Add(1)
 			go func() {
@@ -214,7 +214,7 @@ func TestTeamMembersConcurrentLastAdmin(t *testing.T) {
 				if i == 1 {
 					v = bv
 				}
-				input := service.ChangeTeamMember{Version: v, Role: core.ProjectMemberRole, ExpectedUserID: p.UserID}
+				input := service.ChangeTeamMember{Version: v, Role: model.ProjectMemberRole, ExpectedUserID: p.UserID}
 				if remove {
 					_, errs[i] = s.RemoveMember(context.Background(), p, team.ID, p.UserID, input)
 				} else {
@@ -230,7 +230,7 @@ func TestTeamMembersConcurrentLastAdmin(t *testing.T) {
 				successes++
 				continue
 			}
-			var fault *service.Fault
+			var fault *model.Fault
 			if errors.As(err, &fault) && fault.Code == "last_admin" {
 				refusals++
 				continue

@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestTaskSoftDeleteMigrationPreservesHistory(t *testing.T) {
@@ -32,7 +32,7 @@ func TestTaskSoftDeleteMigrationPreservesHistory(t *testing.T) {
 			t.Fatalf("migration changed existing task facts: %s %s %v", before, after, err)
 		}
 	}
-	if task := snapshotHistoricalTask(t, database, project.ID, queryID(11)); task.Version != 9007199254740993 || task.Status != core.TaskDone {
+	if task := snapshotHistoricalTask(t, database, project.ID, queryID(11)); task.Version != 9007199254740993 || task.Status != model.TaskDone {
 		t.Fatal("existing task no longer decodes")
 	}
 }
@@ -41,8 +41,8 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	pre := queryTask(t, database, project.ID, 11, core.TaskDone)
-	dependent := queryTask(t, database, project.ID, 12, core.TaskTodo, pre.ID)
+	pre := queryTask(t, database, project.ID, 11, model.TaskDone)
+	dependent := queryTask(t, database, project.ID, 12, model.TaskTodo, pre.ID)
 	var expired *ProjectTx
 	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
 		expired = tx
@@ -50,7 +50,7 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(ids, []string{dependent.ID}) {
 			t.Fatalf("direct dependent lookup: %v %v", ids, err)
 		}
-		if err := tx.DeleteTask(ctx, queryID(99), false); !errors.Is(err, core.ErrNotFound) {
+		if err := tx.DeleteTask(ctx, queryID(99), false); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing delete swallowed: %v", err)
 		}
 		return nil
@@ -71,7 +71,7 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 	}
 	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		_, err := snapshot.Task(ctx, project.ID, pre.ID)
-		if !errors.Is(err, core.ErrTaskDeleted) {
+		if !errors.Is(err, model.ErrTaskDeleted) {
 			t.Fatalf("deleted marker was not observed: %v", err)
 		}
 		return nil
@@ -85,7 +85,7 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 	} {
 		err := operation()
 		var failure *Error
-		if !errors.As(err, &failure) || errors.Is(err, core.ErrNotFound) {
+		if !errors.As(err, &failure) || errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("closed transaction lost database cause: %v", err)
 		}
 	}
@@ -95,10 +95,10 @@ func TestTaskDeleteRemoveDependsUpdatesOnlyIncomingSources(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project, other := queryProject(t, database, 1), queryProject(t, database, 2)
-	root := queryTask(t, database, project.ID, 10, core.TaskDone)
-	target := queryTask(t, database, project.ID, 11, core.TaskTodo, root.ID)
-	source := queryTask(t, database, project.ID, 12, core.TaskTodo, target.ID, root.ID)
-	foreign := queryTask(t, database, other.ID, 13, core.TaskTodo)
+	root := queryTask(t, database, project.ID, 10, model.TaskDone)
+	target := queryTask(t, database, project.ID, 11, model.TaskTodo, root.ID)
+	source := queryTask(t, database, project.ID, 12, model.TaskTodo, target.ID, root.ID)
+	foreign := queryTask(t, database, other.ID, 13, model.TaskTodo)
 	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
 		return tx.DeleteTask(ctx, target.ID, true)
 	}); err != nil {

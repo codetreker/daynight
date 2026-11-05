@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestSessionStartupIsStrictAndReadOnly(t *testing.T) {
@@ -18,13 +18,13 @@ func TestSessionStartupIsStrictAndReadOnly(t *testing.T) {
 	if _, err := NormalizeValue("sessionStartup", json.RawMessage(`{"schemaVersion":2}`), false); err == nil {
 		t.Fatal("invalid stored property passed normalization")
 	}
-	if report, err := SessionStartup(core.TaskProperties{"sessionStartup": raw}); err != nil || report == nil || report.Startup.ReasonCode != "native_timeout" {
+	if report, err := SessionStartup(model.TaskProperties{"sessionStartup": raw}); err != nil || report == nil || report.Startup.ReasonCode != "native_timeout" {
 		t.Fatalf("stored evidence: %#v %v", report, err)
 	}
-	if report, err := SessionStartup(core.TaskProperties{}); err != nil || report != nil {
+	if report, err := SessionStartup(model.TaskProperties{}); err != nil || report != nil {
 		t.Fatalf("missing evidence must remain absent: %#v %v", report, err)
 	}
-	if _, err := SessionStartup(core.TaskProperties{"sessionStartup": json.RawMessage(`{"schemaVersion":2}`)}); err == nil {
+	if _, err := SessionStartup(model.TaskProperties{"sessionStartup": json.RawMessage(`{"schemaVersion":2}`)}); err == nil {
 		t.Fatal("invalid stored evidence became readable")
 	}
 }

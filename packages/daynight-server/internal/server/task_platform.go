@@ -3,7 +3,7 @@ package server
 import (
 	"encoding/json"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func optionalRequiredPlatform(fields map[string]json.RawMessage) (**string, error) {
@@ -12,21 +12,21 @@ func optionalRequiredPlatform(fields map[string]json.RawMessage) (**string, erro
 		return nil, nil
 	}
 	var value *string
-	if err := json.Unmarshal(raw, &value); err != nil || value != nil && !core.TaskPlatform(*value).Valid() {
+	if err := json.Unmarshal(raw, &value); err != nil || value != nil && !model.TaskPlatform(*value).Valid() {
 		return nil, invalidInput("requiredPlatform must be windows, linux, macos or null")
 	}
 	return &value, nil
 }
 
-func platformValue(value *string) *core.TaskPlatform {
+func platformValue(value *string) *model.TaskPlatform {
 	if value == nil {
 		return nil
 	}
-	platform := core.TaskPlatform(*value)
+	platform := model.TaskPlatform(*value)
 	return &platform
 }
 
-func platformPatch(value **string) **core.TaskPlatform {
+func platformPatch(value **string) **model.TaskPlatform {
 	if value == nil {
 		return nil
 	}
@@ -34,7 +34,7 @@ func platformPatch(value **string) **core.TaskPlatform {
 	return &platform
 }
 
-func platformResponse(value *core.TaskPlatform) *string {
+func platformResponse(value *model.TaskPlatform) *string {
 	if value == nil {
 		return nil
 	}

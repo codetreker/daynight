@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 )
 
-func (h *taskStepsHandler) delete(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskStepsHandler) delete(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := taskResource(request, principal, h.logger.With("operation", "delete"))
 	refuse := func(err error) {

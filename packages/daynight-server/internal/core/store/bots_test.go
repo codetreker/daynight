@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 	"errors"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"strings"
@@ -29,13 +29,13 @@ func TestBotDefinitionsHaveNoProjectDependency(t *testing.T) {
 	}
 }
 
-func storedBotCandidate(t *testing.T, database *Store) (core.Bot, core.Principal) {
+func storedBotCandidate(t *testing.T, database *Store) (model.Bot, model.Principal) {
 	t.Helper()
 	_, principal, _ := testAuthRecords(t, database)
 	workerID := uuid.NewString()
 	putWorkerSnapshot(t, database, workerSnapshotFixture(principal.UserID, workerID, time.Now().UTC()))
-	return core.Bot{ID: uuid.NewString(), OwnerUserID: principal.UserID, WorkerID: workerID, Name: "Stored Bot",
-		RequestFingerprint: strings.Repeat("a", 64), ResolvedConfiguration: core.BotConfiguration{WorkerID: workerID, Cwd: "/ordinary", Provider: "codex", Args: []string{}}}, principal
+	return model.Bot{ID: uuid.NewString(), OwnerUserID: principal.UserID, WorkerID: workerID, Name: "Stored Bot",
+		RequestFingerprint: strings.Repeat("a", 64), ResolvedConfiguration: model.BotConfiguration{WorkerID: workerID, Cwd: "/ordinary", Provider: "codex", Args: []string{}}}, principal
 }
 
 func TestBotTransactionRollbackAndCompositeWorkerForeignKey(t *testing.T) {
@@ -63,7 +63,7 @@ func TestBotTransactionRollbackAndCompositeWorkerForeignKey(t *testing.T) {
 		t.Fatalf("rollback outcome: %v", err)
 	}
 	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error { _, err := snapshot.Bot(ctx, candidate.ID); return err })
-	if !errors.Is(err, core.ErrNotFound) {
+	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("rolled back Bot remained: %v", err)
 	}
 	other, _, _ := testAuthRecords(t, database)
@@ -108,7 +108,7 @@ func TestBotStorageFailuresRemainErrors(t *testing.T) {
 			return err
 		},
 	} {
-		if err := database.ReadSnapshot(ctx, read); err == nil || errors.Is(err, core.ErrNotFound) {
+		if err := database.ReadSnapshot(ctx, read); err == nil || errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("corrupt Bot was an empty read: %v", err)
 		}
 	}
@@ -122,12 +122,12 @@ func TestBotStorageFailuresRemainErrors(t *testing.T) {
 	closed := &BotTx{tx: tx}
 	snapshot := &Snapshot{tx: tx}
 	for _, operation := range []func() error{
-		func() error { return closed.Credential(ctx, core.Principal{Kind: core.SessionCredential}) },
-		func() error { return closed.Credential(ctx, core.Principal{Kind: "unknown"}) },
+		func() error { return closed.Credential(ctx, model.Principal{Kind: model.SessionCredential}) },
+		func() error { return closed.Credential(ctx, model.Principal{Kind: "unknown"}) },
 		func() error { return closed.Worker(ctx, candidate.OwnerUserID, candidate.WorkerID) },
 		func() error { _, err := closed.Bot(ctx, candidate.ID); return err },
 		func() error { return closed.InsertBot(ctx, candidate) },
-		func() error { _, err := closed.DeleteBot(ctx, candidate.ID, 1, core.BotDeletion{}); return err },
+		func() error { _, err := closed.DeleteBot(ctx, candidate.ID, 1, model.BotDeletion{}); return err },
 		func() error { _, err := snapshot.Bot(ctx, candidate.ID); return err },
 		func() error { return snapshot.BotWorker(ctx, candidate.OwnerUserID, candidate.WorkerID) },
 		func() error { _, err := snapshot.Bots(ctx, candidate.OwnerUserID, nil, Page{Limit: 10}); return err },
@@ -210,9 +210,9 @@ func TestBotStorageDeletionAndScopedPagination(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].ID != otherWorkerBot.ID {
 		t.Fatalf("other Worker scope: %+v", page)
 	}
-	deletion := core.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: 1,
-		WorkerCleanup: core.BotCleanupResult{State: "pending"}, ServerCleanup: core.BotCleanupResult{State: "pending"}}
-	var deleted core.Bot
+	deletion := model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: 1,
+		WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
+	var deleted model.Bot
 	if err := database.WriteBot(ctx, func(tx *BotTx) error {
 		current, err := tx.Bot(ctx, candidate.ID)
 		if err != nil {

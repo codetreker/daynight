@@ -5,24 +5,24 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func (s *Tasks) Get(ctx context.Context, principal core.Principal, projectID, id string) (core.Task, error) {
+func (s *Tasks) Get(ctx context.Context, principal model.Principal, projectID, id string) (model.Task, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	projectID, err := CanonicalID(projectID)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	id, err = CanonicalID(id)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
-	var result core.Task
-	var missing *Fault
+	var result model.Task
+	var missing *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
 			if errors.As(err, &missing) {
@@ -36,22 +36,22 @@ func (s *Tasks) Get(ctx context.Context, principal core.Principal, projectID, id
 			missing = validation
 			return nil
 		}
-		if errors.Is(err, core.ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			missing = taskNotFound(err)
 			return nil
 		}
 		return err
 	})
 	if err != nil {
-		return core.Task{}, fmt.Errorf("get task: %w", err)
+		return model.Task{}, fmt.Errorf("get task: %w", err)
 	}
 	if missing != nil {
-		return core.Task{}, missing
+		return model.Task{}, missing
 	}
 	return result, nil
 }
 
-func (s *Tasks) List(ctx context.Context, principal core.Principal, projectID string, request TaskListRequest) (TaskPage, error) {
+func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID string, request TaskListRequest) (TaskPage, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return TaskPage{}, err
 	}
@@ -88,7 +88,7 @@ func (s *Tasks) List(ctx context.Context, principal core.Principal, projectID st
 		return TaskPage{}, err
 	}
 	var result store.TaskPage
-	var missing *Fault
+	var missing *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
 			if errors.As(err, &missing) {

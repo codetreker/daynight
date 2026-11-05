@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
@@ -17,13 +17,13 @@ import (
 )
 
 type BotRegistration struct {
-	BotVersion        int64                     `json:"botVersion,string"`
-	Registration      sp.TestRegistration       `json:"registration"`
-	Configuration     core.BotConfiguration     `json:"configuration"`
-	RoleConfiguration core.BotRoleConfiguration `json:"roleConfiguration"`
+	BotVersion        int64                      `json:"botVersion,string"`
+	Registration      sp.TestRegistration        `json:"registration"`
+	Configuration     model.BotConfiguration     `json:"configuration"`
+	RoleConfiguration model.BotRoleConfiguration `json:"roleConfiguration"`
 }
 type BotRegistrationResult struct {
-	Bot     core.Bot
+	Bot     model.Bot
 	Session sp.Snapshot
 }
 type BotGrant struct {
@@ -32,12 +32,12 @@ type BotGrant struct {
 	NativeSessionID *string  `json:"nativeSessionId"`
 }
 type BotReport struct {
-	BotVersion           int64                 `json:"botVersion,string"`
-	Fence                *sp.ControllerFence   `json:"fence"`
-	ControllerID         string                `json:"controllerId"`
-	ControllerInstanceID string                `json:"controllerInstanceId"`
-	NativeSessionID      *string               `json:"nativeSessionId"`
-	Result               core.BotStartupResult `json:"result"`
+	BotVersion           int64                  `json:"botVersion,string"`
+	Fence                *sp.ControllerFence    `json:"fence"`
+	ControllerID         string                 `json:"controllerId"`
+	ControllerInstanceID string                 `json:"controllerInstanceId"`
+	NativeSessionID      *string                `json:"nativeSessionId"`
+	Result               model.BotStartupResult `json:"result"`
 }
 
 func botID(value string) bool {
@@ -47,8 +47,8 @@ func botID(value string) bool {
 func botText(value string) bool {
 	return utf8.ValidString(value) && strings.TrimSpace(value) != "" && !strings.ContainsRune(value, 0)
 }
-func validBotConfiguration(value core.BotConfiguration) bool {
-	if !botID(value.WorkerID) || !botText(value.Cwd) || !core.WorkerAgent(value.Provider).Valid() || (value.Model != nil && !botText(*value.Model)) {
+func validBotConfiguration(value model.BotConfiguration) bool {
+	if !botID(value.WorkerID) || !botText(value.Cwd) || !model.WorkerAgent(value.Provider).Valid() || (value.Model != nil && !botText(*value.Model)) {
 		return false
 	}
 	for _, arg := range value.Args {
@@ -58,24 +58,24 @@ func validBotConfiguration(value core.BotConfiguration) bool {
 	}
 	return true
 }
-func botVersion(bot core.Bot, version int64) error {
+func botVersion(bot model.Bot, version int64) error {
 	if version != bot.Version {
 		return fault("version_conflict", "Bot version has changed.")
 	}
 	return nil
 }
 func botMissing(err error) error {
-	if errors.Is(err, core.ErrNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		return fault("not_found", "Bot was not found.")
 	}
 	return err
 }
-func (s *Service) runtimeBot(ctx context.Context, tx pgx.Tx, p core.Principal, workerID, botID string) (core.Bot, error) {
-	if p.Kind != core.PATCredential {
-		return core.Bot{}, denied()
+func (s *Service) runtimeBot(ctx context.Context, tx pgx.Tx, p model.Principal, workerID, botID string) (model.Bot, error) {
+	if p.Kind != model.PATCredential {
+		return model.Bot{}, denied()
 	}
 	if err := credential(ctx, tx, p, s.now()); err != nil {
-		return core.Bot{}, err
+		return model.Bot{}, err
 	}
 	bot, err := store.ReadBotForUpdate(ctx, tx, botID)
 	if err != nil {
@@ -92,7 +92,7 @@ func (s *Service) runtimeBot(ctx context.Context, tx pgx.Tx, p core.Principal, w
 
 // A Session's Bot association is immutable. Read that association without a
 // Session lock, then acquire Bot before Session; deletion uses the same order.
-func lockSessionBot(ctx context.Context, tx pgx.Tx, id string) (*core.Bot, error) {
+func lockSessionBot(ctx context.Context, tx pgx.Tx, id string) (*model.Bot, error) {
 	var botID *string
 	if err := tx.QueryRow(ctx, `SELECT bot_id::text FROM task_sessions WHERE id=$1 AND backend='web'`, id).Scan(&botID); err != nil {
 		return nil, err
@@ -112,14 +112,14 @@ func lockSessionBot(ctx context.Context, tx pgx.Tx, id string) (*core.Bot, error
 	}
 	return &bot, nil
 }
-func validSessionBot(bot *core.Bot, r *record) bool {
+func validSessionBot(bot *model.Bot, r *record) bool {
 	if bot == nil {
 		return r.BotID == nil
 	}
 	return r.BotID != nil && *r.BotID == bot.ID && bot.SessionID != nil && *bot.SessionID == r.Snapshot.SessionID && bot.TestExecutionID != nil && *bot.TestExecutionID == r.Snapshot.TestExecutionID && r.Owner == bot.OwnerUserID && r.Snapshot.Identity.OwnerUserID == bot.OwnerUserID && r.Snapshot.Identity.Provider == bot.ResolvedConfiguration.Provider
 }
 
-func (s *Service) RegisterBot(ctx context.Context, p core.Principal, workerID, id string, input BotRegistration) (BotRegistrationResult, error) {
+func (s *Service) RegisterBot(ctx context.Context, p model.Principal, workerID, id string, input BotRegistration) (BotRegistrationResult, error) {
 	var out BotRegistrationResult
 	role := input.RoleConfiguration
 	sum := sha256.Sum256([]byte(role.Instructions))
@@ -180,7 +180,7 @@ func (s *Service) RegisterBot(ctx context.Context, p core.Principal, workerID, i
 	return out, err
 }
 
-func initialTestSnapshot(p core.Principal, input sp.TestRegistration) sp.Snapshot {
+func initialTestSnapshot(p model.Principal, input sp.TestRegistration) sp.Snapshot {
 	initial := "not_submitted"
 	if input.InitialInput == "none" {
 		initial = "not_required"
@@ -191,7 +191,7 @@ func initialTestSnapshot(p core.Principal, input sp.TestRegistration) sp.Snapsho
 func equalNative(a, b *string) bool {
 	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
 }
-func (s *Service) GrantBot(ctx context.Context, p core.Principal, workerID, id string, input BotGrant) (GrantResult, error) {
+func (s *Service) GrantBot(ctx context.Context, p model.Principal, workerID, id string, input BotGrant) (GrantResult, error) {
 	var out GrantResult
 	if !botID(workerID) || !botID(id) || input.BotVersion < 1 {
 		return out, fault("invalid_input", "Invalid Bot grant identity or version.")
@@ -232,8 +232,8 @@ func (s *Service) GrantBot(ctx context.Context, p core.Principal, workerID, id s
 	return out, err
 }
 
-func (s *Service) ReportBot(ctx context.Context, p core.Principal, workerID, id string, input BotReport) (core.Bot, error) {
-	var out core.Bot
+func (s *Service) ReportBot(ctx context.Context, p model.Principal, workerID, id string, input BotReport) (model.Bot, error) {
+	var out model.Bot
 	if !botID(workerID) || !botID(id) || input.BotVersion < 1 || (input.Result.State != "ready" && input.Result.State != "failed") || (input.Result.State == "ready" && input.Result.Code != nil) || (input.Result.State == "failed" && (input.Result.Code == nil || !botText(*input.Result.Code))) {
 		return out, fault("invalid_input", "Invalid Bot startup report.")
 	}
@@ -273,7 +273,7 @@ func (s *Service) ReportBot(ctx context.Context, p core.Principal, workerID, id 
 				}
 				// A replacement grant does not transfer the existing connection's
 				// synchronization proof to its new parent credential.
-				if err = credential(ctx, tx, core.Principal{Kind: core.PATCredential, UserID: r.Owner, CredentialID: r.ConnectionParent}, s.now()); err != nil {
+				if err = credential(ctx, tx, model.Principal{Kind: model.PATCredential, UserID: r.Owner, CredentialID: r.ConnectionParent}, s.now()); err != nil {
 					return err
 				}
 			}

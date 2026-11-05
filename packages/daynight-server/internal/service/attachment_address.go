@@ -1,5 +1,6 @@
 package service
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import "github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
 
 type attachmentAddress struct {
@@ -19,7 +20,7 @@ func newAttachmentAddress(projectID, taskID, relativePath string) (attachmentAdd
 		return attachmentAddress{}, err
 	}
 	if err := filestorage.ValidateAddress(attachmentBucket, relativePath); err != nil {
-		return attachmentAddress{}, &Fault{Code: "invalid_input", Message: "Attachment path is invalid.", Cause: err}
+		return attachmentAddress{}, &model.Fault{Code: "invalid_input", Message: "Attachment path is invalid.", Cause: err}
 	}
 	return attachmentAddress{
 		projectID:    projectID,

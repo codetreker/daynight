@@ -213,7 +213,7 @@ Task 软删除保留原 Session 的归档收尾能力：仅原 owner 的有效 P
 
 ### 服务端归档布局
 
-服务端复用 filestorage 保存新归档正文，`internal/sessionarchive.Namespace` 统一派生新归档写入与 Session 清理使用的物理地址：
+服务端复用 filestorage 保存新归档正文，`internal/core/model/sessionarchive.Namespace` 统一派生新归档写入与 Session 清理使用的物理地址：
 
 | Session 归属 | `session-archives` 内的对象路径 |
 |---|---|

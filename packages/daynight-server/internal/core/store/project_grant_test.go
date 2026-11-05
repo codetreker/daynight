@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -29,7 +29,7 @@ func TestGrantCommitResponseLostKeepsUnknownAfterRealCommit(t *testing.T) {
 		if _, err := tx.ProjectAccess(ctx, target); err != nil {
 			return err
 		}
-		_, err := tx.CreateGrant(ctx, target.UserID, core.ProjectAdmin)
+		_, err := tx.CreateGrant(ctx, target.UserID, model.ProjectAdmin)
 		return err
 	})
 	var failure *TransactionError
@@ -41,7 +41,7 @@ func TestGrantCommitResponseLostKeepsUnknownAfterRealCommit(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if member.Grant.Role != core.ProjectAdmin || member.Grant.Version <= 0 {
+		if member.Grant.Role != model.ProjectAdmin || member.Grant.Version <= 0 {
 			t.Fatalf("committed grant: %#v", member.Grant)
 		}
 		return nil
@@ -54,7 +54,7 @@ func TestCreateGrantPropagatesConstraintFailure(t *testing.T) {
 	s, owner, _, project := membershipFixture(t)
 	ctx := context.Background()
 	err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		_, err := tx.CreateGrant(ctx, owner.UserID, core.ProjectMemberRole)
+		_, err := tx.CreateGrant(ctx, owner.UserID, model.ProjectMemberRole)
 		return err
 	})
 	var databaseError *pgconn.PgError
@@ -66,7 +66,7 @@ func TestCreateGrantPropagatesConstraintFailure(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if member.Grant.Role != core.ProjectAdmin {
+		if member.Grant.Role != model.ProjectAdmin {
 			t.Fatalf("duplicate changed stored grant: %#v", member.Grant)
 		}
 		return nil

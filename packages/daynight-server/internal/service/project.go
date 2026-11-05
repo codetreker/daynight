@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -25,69 +25,64 @@ type CreateProject struct {
 	ExpectedUserID string
 }
 
-type PageRequest struct {
-	Limit  int
-	Cursor *string
-}
-
 type ProjectListRequest struct {
-	Page   PageRequest
+	Page   model.PageRequest
 	TeamID *string
 	Shared bool
 }
 
 type ProjectPage struct {
-	Items      []core.Project
+	Items      []model.Project
 	NextCursor *string
 }
 
-func (s *Projects) Create(ctx context.Context, principal core.Principal, input CreateProject) (core.Project, error) {
+func (s *Projects) Create(ctx context.Context, principal model.Principal, input CreateProject) (model.Project, error) {
 	project, _, err := s.CreateWithAccess(ctx, principal, input)
 	return project, err
 }
 
-func (s *Projects) CreateWithAccess(ctx context.Context, principal core.Principal, input CreateProject) (core.Project, core.ProjectAccess, error) {
+func (s *Projects) CreateWithAccess(ctx context.Context, principal model.Principal, input CreateProject) (model.Project, model.ProjectAccess, error) {
 	if err := requireTeamActor(principal, input.ExpectedUserID); err != nil {
-		return core.Project{}, core.ProjectAccess{}, err
+		return model.Project{}, model.ProjectAccess{}, err
 	}
 	if input.TeamID != nil {
 		if _, err := canonicalTeamID(*input.TeamID); err != nil {
-			return core.Project{}, core.ProjectAccess{}, err
+			return model.Project{}, model.ProjectAccess{}, err
 		}
 	}
 	if strings.TrimSpace(input.Name) == "" || !utf8.ValidString(input.Name) || strings.ContainsRune(input.Name, 0) {
-		return core.Project{}, core.ProjectAccess{}, invalidInput("Project name must be nonempty UTF-8 text without NUL characters.")
+		return model.Project{}, model.ProjectAccess{}, invalidInput("Project name must be nonempty UTF-8 text without NUL characters.")
 	}
 	if err := validateRepoURL(input.RepoURL); err != nil {
-		return core.Project{}, core.ProjectAccess{}, err
+		return model.Project{}, model.ProjectAccess{}, err
 	}
 	id, err := uuid.NewRandom()
 	if err != nil {
-		return core.Project{}, core.ProjectAccess{}, fmt.Errorf("generate project ID: %w", err)
+		return model.Project{}, model.ProjectAccess{}, fmt.Errorf("generate project ID: %w", err)
 	}
 	project, access, err := s.store.CreateProjectInTeam(ctx, principal, id.String(), input.Name, input.RepoURL, input.TeamID)
 	if err != nil {
-		return core.Project{}, core.ProjectAccess{}, fmt.Errorf("create project: %w", err)
+		return model.Project{}, model.ProjectAccess{}, fmt.Errorf("create project: %w", err)
 	}
 	return project, access, nil
 }
 
-func (s *Projects) Get(ctx context.Context, principal core.Principal, id string) (core.Project, error) {
+func (s *Projects) Get(ctx context.Context, principal model.Principal, id string) (model.Project, error) {
 	project, _, err := s.GetWithAccess(ctx, principal, id)
 	return project, err
 }
 
-func (s *Projects) GetWithAccess(ctx context.Context, principal core.Principal, id string) (core.Project, core.ProjectAccess, error) {
+func (s *Projects) GetWithAccess(ctx context.Context, principal model.Principal, id string) (model.Project, model.ProjectAccess, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.Project{}, core.ProjectAccess{}, err
+		return model.Project{}, model.ProjectAccess{}, err
 	}
 	id, err := CanonicalID(id)
 	if err != nil {
-		return core.Project{}, core.ProjectAccess{}, err
+		return model.Project{}, model.ProjectAccess{}, err
 	}
-	var project core.Project
-	var access core.ProjectAccess
-	var refusal *Fault
+	var project model.Project
+	var access model.ProjectAccess
+	var refusal *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		var err error
 		access, err = RequireProjectRead(ctx, snapshot, principal, id)
@@ -98,26 +93,26 @@ func (s *Projects) GetWithAccess(ctx context.Context, principal core.Principal, 
 			return err
 		}
 		project, err = snapshot.Project(ctx, id)
-		if errors.Is(err, core.ErrNotFound) {
-			refusal = &Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
+		if errors.Is(err, model.ErrNotFound) {
+			refusal = &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
 			return nil
 		}
 		return err
 	})
 	if err != nil {
-		return core.Project{}, core.ProjectAccess{}, fmt.Errorf("get project: %w", err)
+		return model.Project{}, model.ProjectAccess{}, fmt.Errorf("get project: %w", err)
 	}
 	if refusal != nil {
-		return core.Project{}, core.ProjectAccess{}, refusal
+		return model.Project{}, model.ProjectAccess{}, refusal
 	}
 	return project, access, nil
 }
 
-func (s *Projects) List(ctx context.Context, principal core.Principal, request PageRequest) (ProjectPage, error) {
+func (s *Projects) List(ctx context.Context, principal model.Principal, request model.PageRequest) (ProjectPage, error) {
 	return s.ListScoped(ctx, principal, ProjectListRequest{Page: request})
 }
 
-func (s *Projects) ListScoped(ctx context.Context, principal core.Principal, request ProjectListRequest) (ProjectPage, error) {
+func (s *Projects) ListScoped(ctx context.Context, principal model.Principal, request ProjectListRequest) (ProjectPage, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return ProjectPage{}, err
 	}
@@ -145,8 +140,8 @@ func (s *Projects) ListScoped(ctx context.Context, principal core.Principal, req
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		var err error
 		result, err = snapshot.ScopedProjects(ctx, principal, scope, page)
-		if errors.Is(err, core.ErrNotFound) {
-			refusal = &Fault{Code: "not_found", Message: "Team was not found.", Cause: err}
+		if errors.Is(err, model.ErrNotFound) {
+			refusal = &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: err}
 			return nil
 		}
 		return err

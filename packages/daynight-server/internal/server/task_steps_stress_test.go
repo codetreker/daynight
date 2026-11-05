@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 	"github.com/jackc/pgx/v5"
@@ -28,10 +28,10 @@ import (
 func TestStepsHTTPExactCapacityStress(t *testing.T) {
 	database, handler, task := stepsHTTPFixture(t, io.Discard)
 	stamp := time.Date(2026, 11, 3, 10, 11, 12, 123456000, time.UTC)
-	header := core.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: math.MaxInt64}
-	steps := make([]core.TaskStep, 128)
+	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: math.MaxInt64}
+	steps := make([]model.TaskStep, 128)
 	for index := range steps {
-		steps[index] = core.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "<中文&>\u2028\u2029", Status: core.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
+		steps[index] = model.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "<中文&>\u2028\u2029", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
 	}
 	_, base, err := tasksteps.EncodeCollection(header, steps)
 	if err != nil {
@@ -119,12 +119,12 @@ func (*stepWriteAudit) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryE
 func TestStepsHTTPAddCapacityStress(t *testing.T) {
 	database, _, task := stepsHTTPFixture(t, io.Discard)
 	stamp := time.Date(2026, 11, 3, 10, 11, 12, 123456000, time.UTC)
-	steps := make([]core.TaskStep, 128)
+	steps := make([]model.TaskStep, 128)
 	for index := range steps {
-		steps[index] = core.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "<中文&>\u2028\u2029", Status: core.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
+		steps[index] = model.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "<中文&>\u2028\u2029", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
 	}
-	candidate := append(append([]core.TaskStep{}, steps...), core.TaskStep{ID: "ffffffff", Position: 128, Title: "New <&> 中文", Status: core.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
-	header := core.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: math.MaxInt64}
+	candidate := append(append([]model.TaskStep{}, steps...), model.TaskStep{ID: "ffffffff", Position: 128, Title: "New <&> 中文", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
+	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: math.MaxInt64}
 	_, base, err := tasksteps.EncodeCollection(header, candidate)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestStepsHTTPAddCapacityStress(t *testing.T) {
 			}
 		}
 		added := resource.Steps[128]
-		if added.ID != "ffffffff" || added.Title != "New <&> 中文" || added.Description != "" || added.Status != core.TaskStepTodo || added.CreatedAt.IsZero() || added.CreatedAt != added.UpdatedAt || added.CreatedAt.Nanosecond()%1000 != 0 || added.CreatedAt.Location() != time.UTC {
+		if added.ID != "ffffffff" || added.Title != "New <&> 中文" || added.Description != "" || added.Status != model.TaskStepTodo || added.CreatedAt.IsZero() || added.CreatedAt != added.UpdatedAt || added.CreatedAt.Nanosecond()%1000 != 0 || added.CreatedAt.Location() != time.UTC {
 			t.Fatal("invalid new Step in calibration receipt")
 		}
 		if len(data) > tasksteps.MaxEncodedBytes || audit.shifts.Load() != 1 || audit.inserts.Load() != 1 || audit.touches.Load() != 1 {

@@ -13,10 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	"github.com/google/uuid"
@@ -48,7 +47,7 @@ func New(db *store.Store, files ...filestorage.Storage) *Service {
 	}
 	return s
 }
-func fault(code, message string) error { return &service.Fault{Code: code, Message: message} }
+func fault(code, message string) error { return &model.Fault{Code: code, Message: message} }
 func conflict() error {
 	return fault("session_conflict", "Session identity or state no longer matches.")
 }
@@ -126,13 +125,13 @@ func save(ctx context.Context, tx pgx.Tx, r *record) error {
 	_, err := tx.Exec(ctx, `UPDATE task_sessions SET snapshot=$2,source_epoch=$3,source_epochs=$4,last_source_seq=$5,last_operation_seq=$6 WHERE id=$1`, r.Snapshot.SessionID, encode(durableSnapshot(r.Snapshot)), r.SourceEpoch, r.SourceEpochs, r.SourceSeq, r.OperationSeq)
 	return err
 }
-func credential(ctx context.Context, tx pgx.Tx, p core.Principal, now time.Time) error {
+func credential(ctx context.Context, tx pgx.Tx, p model.Principal, now time.Time) error {
 	table := "sessions"
 	predicate := "expires_at>$3"
-	if p.Kind == core.PATCredential {
+	if p.Kind == model.PATCredential {
 		table = "personal_access_tokens"
 		predicate = "(expires_at IS NULL OR expires_at>$3)"
-	} else if p.Kind != core.SessionCredential {
+	} else if p.Kind != model.SessionCredential {
 		return denied()
 	}
 	var id string
@@ -144,7 +143,7 @@ func credential(ctx context.Context, tx pgx.Tx, p core.Principal, now time.Time)
 	}
 	return nil
 }
-func member(ctx context.Context, tx pgx.Tx, p core.Principal, project string, now time.Time) (bool, error) {
+func member(ctx context.Context, tx pgx.Tx, p model.Principal, project string, now time.Time) (bool, error) {
 	if err := credential(ctx, tx, p, now); err != nil {
 		return false, err
 	}
@@ -152,11 +151,11 @@ func member(ctx context.Context, tx pgx.Tx, p core.Principal, project string, no
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, denied()
 	}
-	return access.Role == core.ProjectAdmin, err
+	return access.Role == model.ProjectAdmin, err
 }
 
 type task struct {
-	Worker        *core.WorkerClaim
+	Worker        *model.WorkerClaim
 	Status        string
 	StartupReport *sp.StartupReport
 }
@@ -174,7 +173,7 @@ func taskWorker(ctx context.Context, tx pgx.Tx, id string, t task) (task, error)
 		return task{}, err
 	}
 	defer rows.Close()
-	properties := core.TaskProperties{}
+	properties := model.TaskProperties{}
 	for rows.Next() {
 		var name, value string
 		if err := rows.Scan(&name, &value); err != nil {
@@ -200,12 +199,12 @@ func current(t task, r *record) bool {
 		return true
 	}
 	w := t.Worker
-	return w != nil && w.ClaimID == r.Snapshot.ClaimID && w.AgentControlMode == core.AgentControlModeWeb
+	return w != nil && w.ClaimID == r.Snapshot.ClaimID && w.AgentControlMode == model.AgentControlModeWeb
 }
 func active(t task, r *record) bool {
-	return r.Snapshot.Lifecycle == "active" && (r.Snapshot.TestExecutionID != "" || current(t, r) && t.Status == "in_progress" && t.Worker.State == core.WorkerActive)
+	return r.Snapshot.Lifecycle == "active" && (r.Snapshot.TestExecutionID != "" || current(t, r) && t.Status == "in_progress" && t.Worker.State == model.WorkerActive)
 }
-func (s *Service) browser(ctx context.Context, p core.Principal, project, taskID, id string, fn func(pgx.Tx, *record, task, bool) error) error {
+func (s *Service) browser(ctx context.Context, p model.Principal, project, taskID, id string, fn func(pgx.Tx, *record, task, bool) error) error {
 	return s.transact(ctx, func(tx pgx.Tx) error {
 		if project == "" && taskID == "" {
 			r, err := load(ctx, tx, id)
@@ -300,9 +299,9 @@ func permissions(r *record, write bool, now time.Time) sp.Snapshot {
 	v.Operations.CanRespond = v.Capabilities.Respond
 	return v
 }
-func (s *Service) Register(ctx context.Context, p core.Principal, project, taskID string, input sp.Registration) (sp.Snapshot, error) {
+func (s *Service) Register(ctx context.Context, p model.Principal, project, taskID string, input sp.Registration) (sp.Snapshot, error) {
 	var result sp.Snapshot
-	if p.Kind != core.PATCredential {
+	if p.Kind != model.PATCredential {
 		return result, denied()
 	}
 	err := s.transact(ctx, func(tx pgx.Tx) error {
@@ -318,7 +317,7 @@ func (s *Service) Register(ctx context.Context, p core.Principal, project, taskI
 			return err
 		}
 		w := t.Worker
-		if w == nil || t.Status != "in_progress" || w.State != core.WorkerActive || w.AgentControlMode != core.AgentControlModeWeb || w.UserID != p.UserID || w.ClaimID != input.ClaimID || w.WorkerID != input.WorkerID || w.WorktreeID != input.WorktreeID || string(w.Agent) != input.Provider {
+		if w == nil || t.Status != "in_progress" || w.State != model.WorkerActive || w.AgentControlMode != model.AgentControlModeWeb || w.UserID != p.UserID || w.ClaimID != input.ClaimID || w.WorkerID != input.WorkerID || w.WorktreeID != input.WorktreeID || string(w.Agent) != input.Provider {
 			return conflict()
 		}
 		var existing string
@@ -356,9 +355,9 @@ type GrantResult struct {
 	ControllerInstanceID string    `json:"controllerInstanceId"`
 }
 
-func (s *Service) Grant(ctx context.Context, p core.Principal, project, taskID, id string, g sp.Grant) (GrantResult, error) {
+func (s *Service) Grant(ctx context.Context, p model.Principal, project, taskID, id string, g sp.Grant) (GrantResult, error) {
 	var out GrantResult
-	if p.Kind != core.PATCredential {
+	if p.Kind != model.PATCredential {
 		return out, denied()
 	}
 	err := s.browser(ctx, p, project, taskID, id, func(tx pgx.Tx, r *record, t task, _ bool) error {
@@ -375,7 +374,7 @@ func (s *Service) Grant(ctx context.Context, p core.Principal, project, taskID, 
 	return out, err
 }
 
-func (s *Service) grantRecord(ctx context.Context, tx pgx.Tx, p core.Principal, r *record, t task, g sp.Grant) (GrantResult, error) {
+func (s *Service) grantRecord(ctx context.Context, tx pgx.Tx, p model.Principal, r *record, t task, g sp.Grant) (GrantResult, error) {
 	var out GrantResult
 	id := r.Snapshot.SessionID
 	v := &r.Snapshot
@@ -450,7 +449,7 @@ func (s *Service) controllerGrant(ctx context.Context, tx pgx.Tx, hash []byte) (
 	if err != nil {
 		return nil, err
 	}
-	if _, err = s.scopePermission(ctx, tx, core.Principal{Kind: core.PATCredential, UserID: r.Owner, CredentialID: r.Parent}, r); err != nil {
+	if _, err = s.scopePermission(ctx, tx, model.Principal{Kind: model.PATCredential, UserID: r.Owner, CredentialID: r.Parent}, r); err != nil {
 		return nil, err
 	}
 	if !bytes.Equal(hash, r.GrantHash) || r.GrantExpiry == nil || !s.now().Before(*r.GrantExpiry) || r.Consumed && r.GrantKind == "bootstrap" || !active(t, r) {
@@ -525,7 +524,7 @@ func (s *Service) controller(ctx context.Context, f sp.ControllerFence, fn func(
 		if err != nil {
 			return err
 		}
-		if _, err = s.scopePermission(ctx, tx, core.Principal{Kind: core.PATCredential, UserID: r.Owner, CredentialID: r.ConnectionParent}, r); err != nil {
+		if _, err = s.scopePermission(ctx, tx, model.Principal{Kind: model.PATCredential, UserID: r.Owner, CredentialID: r.ConnectionParent}, r); err != nil {
 			return err
 		}
 		if r.ServerInstance == nil || *r.ServerInstance != s.instance || r.Live == nil || r.Snapshot.ControllerFence != f || r.ConnectionExpiry == nil || !s.now().Before(*r.ConnectionExpiry) || r.Snapshot.Lifecycle == "archived" || r.DrainUntil != nil && !s.now().Before(*r.DrainUntil) {

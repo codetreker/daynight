@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
-func encodedWorkerMode(t *testing.T, properties core.TaskProperties) string {
+func encodedWorkerMode(t *testing.T, properties model.TaskProperties) string {
 	t.Helper()
 	var document struct {
 		Worker struct {

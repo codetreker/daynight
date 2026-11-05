@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -29,11 +29,11 @@ func TestDeviceCredentialNeverExpiresAndSessionStillExpires(t *testing.T) {
 		t.Fatal("device credential has forced expiration")
 	}
 	f.now = f.now.Add(31 * 24 * time.Hour)
-	pat, err := f.identity.Authenticate(ctx, core.PATCredential, minted.Secret)
+	pat, err := f.identity.Authenticate(ctx, model.PATCredential, minted.Secret)
 	if err != nil {
 		t.Fatalf("monthly login was forced: %v", err)
 	}
-	_, err = f.identity.Authenticate(ctx, core.SessionCredential, login.Secret)
+	_, err = f.identity.Authenticate(ctx, model.SessionCredential, login.Secret)
 	requireFault(t, err, "unauthenticated")
 	renewedBrowser := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
 	if renewedBrowser.UserID != pat.UserID {
@@ -48,11 +48,11 @@ func TestDeviceCredentialNeverExpiresAndSessionStillExpires(t *testing.T) {
 	if err != nil || changed.ID != pat.CredentialID {
 		t.Fatalf("issued credential could not be managed: %v", err)
 	}
-	if current, err := f.identity.Authenticate(ctx, core.PATCredential, minted.Secret); err != nil || current != pat {
+	if current, err := f.identity.Authenticate(ctx, model.PATCredential, minted.Secret); err != nil || current != pat {
 		t.Fatal("expiry edit replaced current credential")
 	}
 	f.now = *deadline
-	_, err = f.identity.Authenticate(ctx, core.PATCredential, minted.Secret)
+	_, err = f.identity.Authenticate(ctx, model.PATCredential, minted.Secret)
 	requireFault(t, err, "unauthenticated")
 	_, err = f.identity.UpdatePATExpiry(ctx, renewedBrowser, pat.CredentialID, UpdatePATExpiry{ExpectedExpiresAt: deadline, ExpectedUserID: pat.UserID})
 	requireFault(t, err, "not_found")
@@ -92,7 +92,7 @@ func TestTokenExpiryEditsValidateAccountObservationAndTarget(t *testing.T) {
 	requireFault(t, err, "invalid_input")
 	_, err = f.identity.UpdatePATExpiry(ctx, alice, uuid.NewString(), UpdatePATExpiry{ExpectedUserID: alice.UserID})
 	requireFault(t, err, "not_found")
-	pat, err := f.identity.Authenticate(ctx, core.PATCredential, minted.Secret)
+	pat, err := f.identity.Authenticate(ctx, model.PATCredential, minted.Secret)
 	if err != nil {
 		t.Fatal(err)
 	}

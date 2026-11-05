@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 	"github.com/google/uuid"
@@ -22,7 +22,7 @@ var moveStepIDs = []string{"00000000", "11111111", "abcdef01", "fedcba98"}
 func seedMoveSteps(t *testing.T, database *store.Store, taskID string) {
 	t.Helper()
 	for index, id := range moveStepIDs {
-		if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,$2,$3,'same',$4,$5,'2026-01-02T03:04:05.123456Z'::timestamptz+$3::bigint*interval '1 day','2026-02-03T04:05:06.654321Z'::timestamptz+$3::bigint*interval '1 day')`, taskID, id, index, "  # "+id+"\n<原值&>  ", []core.TaskStepStatus{core.TaskStepTodo, core.TaskStepInProgress, core.TaskStepDone, core.TaskStepSkipped}[index]); err != nil {
+		if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,$2,$3,'same',$4,$5,'2026-01-02T03:04:05.123456Z'::timestamptz+$3::bigint*interval '1 day','2026-02-03T04:05:06.654321Z'::timestamptz+$3::bigint*interval '1 day')`, taskID, id, index, "  # "+id+"\n<原值&>  ", []model.TaskStepStatus{model.TaskStepTodo, model.TaskStepInProgress, model.TaskStepDone, model.TaskStepSkipped}[index]); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -52,7 +52,7 @@ func TestTaskStepsMovePreservesAllStepTimesAndParentPolicies(t *testing.T) {
 	for _, policy := range []string{"todo", "in_progress", "done", "active_worker", "invalid_worker"} {
 		t.Run(policy, func(t *testing.T) {
 			task := createTask(t, tasks, admin, project.ID, "Parent", dependency.ID)
-			task = updateTask(t, tasks, admin, task, UpdateTask{Description: pointer("Parent description"), Properties: propertyPatch(core.PullRequestProperty{URL: "opaque\x00url", Title: "Evidence"}), ExternalDependsOn: pointer([]string{dependency.ID}), RequiredPlatform: platformChange(pointer(core.PlatformLinux))})
+			task = updateTask(t, tasks, admin, task, UpdateTask{Description: pointer("Parent description"), Properties: propertyPatch(model.PullRequestProperty{URL: "opaque\x00url", Title: "Evidence"}), ExternalDependsOn: pointer([]string{dependency.ID}), RequiredPlatform: platformChange(pointer(model.PlatformLinux))})
 			if policy == "active_worker" {
 				task = updateTask(t, tasks, admin, task, UpdateTask{AssignedTo: pointer(pointer(owner.UserID))})
 				task = updateTask(t, tasks, admin, task, UpdateTask{AllowAgents: pointer(true)})
@@ -194,11 +194,11 @@ func TestTaskStepsMoveAdmissionPlacementAndTaskLocalErrors(t *testing.T) {
 		requireThreadFault(t, err, "invalid_input")
 	}
 	for _, tc := range []struct {
-		principal                   core.Principal
+		principal                   model.Principal
 		project, task, target, code string
 		version                     int64
 	}{
-		{core.Principal{}, project.ID, task.ID, moveStepIDs[0], "unauthenticated", 1}, {principal, "bad", task.ID, moveStepIDs[0], "invalid_input", 1}, {principal, project.ID, "bad", moveStepIDs[0], "invalid_input", 1}, {principal, project.ID, task.ID, "bad", "invalid_input", 1}, {principal, project.ID, task.ID, moveStepIDs[0], "invalid_input", 0},
+		{model.Principal{}, project.ID, task.ID, moveStepIDs[0], "unauthenticated", 1}, {principal, "bad", task.ID, moveStepIDs[0], "invalid_input", 1}, {principal, project.ID, "bad", moveStepIDs[0], "invalid_input", 1}, {principal, project.ID, task.ID, "bad", "invalid_input", 1}, {principal, project.ID, task.ID, moveStepIDs[0], "invalid_input", 0},
 		{principal, uuid.NewString(), task.ID, moveStepIDs[0], "not_found", 1}, {principal, project.ID, uuid.NewString(), moveStepIDs[0], "not_found", 1}, {servicePrincipal(t, database), project.ID, task.ID, moveStepIDs[0], "not_found", 1},
 	} {
 		_, err := steps.Move(context.Background(), tc.principal, tc.project, tc.task, tc.target, MoveTaskStep{Version: tc.version, Position: pointer("first")})
@@ -306,7 +306,7 @@ func TestTaskStepsMovePartialIntervalAndParentSQLFailuresRollBack(t *testing.T) 
 				t.Fatalf("move SQL completion: %+v %v", failure, err)
 			}
 			if mode == "suppressed_interval" {
-				if !errors.Is(err, core.ErrNotFound) {
+				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatal("suppressed interval count mismatch cause lost")
 				}
 			} else {
@@ -338,22 +338,22 @@ func TestTaskStepsMoveSameVersionCompetition(t *testing.T) {
 			task := createTask(t, tasks, principal, project.ID, "Parent")
 			seedMoveSteps(t, database, task.ID)
 			steps := NewTaskSteps(database)
-			move := func(ctx context.Context) (core.Task, error) {
+			move := func(ctx context.Context) (model.Task, error) {
 				result, err := steps.Move(ctx, principal, project.ID, task.ID, moveStepIDs[0], MoveTaskStep{Version: 1, Position: pointer("last")})
-				return core.Task{Version: result.Resource.Version}, err
+				return model.Task{Version: result.Resource.Version}, err
 			}
-			other := func(ctx context.Context) (core.Task, error) {
+			other := func(ctx context.Context) (model.Task, error) {
 				result, err := steps.Move(ctx, principal, project.ID, task.ID, moveStepIDs[3], MoveTaskStep{Version: 1, Position: pointer("first")})
-				return core.Task{Version: result.Resource.Version}, err
+				return model.Task{Version: result.Resource.Version}, err
 			}
 			if kind == "add" {
-				other = func(ctx context.Context) (core.Task, error) {
+				other = func(ctx context.Context) (model.Task, error) {
 					result, err := steps.Add(ctx, principal, project.ID, task.ID, AddTaskStep{Version: 1, ID: "12345678", Title: "Added"})
-					return core.Task{Version: result.Resource.Version}, err
+					return model.Task{Version: result.Resource.Version}, err
 				}
 			}
 			if kind == "task" {
-				other = func(ctx context.Context) (core.Task, error) {
+				other = func(ctx context.Context) (model.Task, error) {
 					return tasks.Update(ctx, principal, project.ID, task.ID, UpdateTask{Version: 1, Title: pointer("Parent changed")})
 				}
 			}
@@ -410,13 +410,13 @@ func TestTaskStepsMoveNoOpVersusRealChange(t *testing.T) {
 	seedMoveSteps(t, database, task.ID)
 	steps := NewTaskSteps(database)
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			result, err := steps.Move(ctx, principal, project.ID, task.ID, moveStepIDs[0], MoveTaskStep{Version: 1, Position: pointer("first")})
-			return core.Task{Version: result.Resource.Version}, err
+			return model.Task{Version: result.Resource.Version}, err
 		},
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			result, err := steps.Move(ctx, principal, project.ID, task.ID, moveStepIDs[3], MoveTaskStep{Version: 1, Position: pointer("first")})
-			return core.Task{Version: result.Resource.Version}, err
+			return model.Task{Version: result.Resource.Version}, err
 		})
 	successes := 0
 	for _, result := range results {

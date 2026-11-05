@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"testing"
 )
@@ -22,7 +22,7 @@ func TestTaskSessionFreezeAndReceiptFailureRollBackTaskCompletion(t *testing.T) 
 	ctx := context.Background()
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
-	queryTask(t, s, project.ID, 2, core.TaskInProgress)
+	queryTask(t, s, project.ID, 2, model.TaskInProgress)
 	session, claim, operation := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	snapshot := map[string]any{"sessionId": session, "claimId": claim, "executionGeneration": "1", "connectionEpoch": "1", "sessionRevision": "1", "lastEventSeq": "0", "historyEpoch": uuid.NewString(), "lifecycle": "active"}
 	raw, _ := json.Marshal(snapshot)
@@ -31,7 +31,7 @@ func TestTaskSessionFreezeAndReceiptFailureRollBackTaskCompletion(t *testing.T) 
 	mustQueryExec(t, s, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt) VALUES($1,$2,1,'\x01','{}',$3,$4,'pat',$5)`, session, operation, uuid.NewString(), uuid.NewString(), receipt)
 	complete := func() error {
 		return s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-			_, err := tx.UpdateTask(ctx, queryID(2), TaskWrite{Title: "Completed", Status: core.TaskDone, Properties: fixtureTaskProperties(t, nil)})
+			_, err := tx.UpdateTask(ctx, queryID(2), TaskWrite{Title: "Completed", Status: model.TaskDone, Properties: fixtureTaskProperties(t, nil)})
 			return err
 		})
 	}

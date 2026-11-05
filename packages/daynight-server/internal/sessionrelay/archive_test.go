@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
@@ -170,7 +170,7 @@ func TestArchiveUploadFencingAndOwner(t *testing.T) {
 	if _, err = f.s.PutArchive(ctx, wrong, f.project, f.task, v.SessionID, data); err == nil {
 		t.Fatal("wrong owner")
 	}
-	if err = archiveWriter(core.Principal{Kind: core.SessionCredential, UserID: f.p.UserID}, &record{Owner: f.p.UserID}, v.Fence, "", ""); err == nil {
+	if err = archiveWriter(model.Principal{Kind: model.SessionCredential, UserID: f.p.UserID}, &record{Owner: f.p.UserID}, v.Fence, "", ""); err == nil {
 		t.Fatal("browser uploader")
 	}
 }
@@ -227,7 +227,7 @@ func TestArchiveMemberCanReadButCannotPublish(t *testing.T) {
 	f, v, data := archiveFixture(t)
 	ctx := context.Background()
 	archiveTerminal(t, f)
-	member := core.Principal{Kind: core.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	member := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 	for _, statement := range []struct {
 		sql  string
 		args []any

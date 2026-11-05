@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 	"github.com/google/uuid"
@@ -111,9 +111,9 @@ func completeIdentityLogin(t *testing.T, fixture *identityFixture, code string) 
 	return result
 }
 
-func identityPrincipal(t *testing.T, fixture *identityFixture, completion LoginCompletion) core.Principal {
+func identityPrincipal(t *testing.T, fixture *identityFixture, completion LoginCompletion) model.Principal {
 	t.Helper()
-	principal, err := fixture.identity.Authenticate(context.Background(), core.SessionCredential, completion.Secret)
+	principal, err := fixture.identity.Authenticate(context.Background(), model.SessionCredential, completion.Secret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func identityPrincipal(t *testing.T, fixture *identityFixture, completion LoginC
 
 func requireIdentityOperationalError(t *testing.T, err error) {
 	t.Helper()
-	var fault *Fault
+	var fault *model.Fault
 	var databaseError *store.Error
 	if err == nil || errors.As(err, &fault) || !errors.As(err, &databaseError) || databaseError.Unwrap() == nil {
 		t.Fatalf("expected retained database failure, got %#v", err)
@@ -265,7 +265,7 @@ func TestIdentityCompletionAndSession(t *testing.T) {
 		t.Fatalf("issued session: %#v", result.Session)
 	}
 	principal := identityPrincipal(t, fixture, result)
-	if principal.UserID != result.User.ID || principal.CredentialID != result.Session.ID || principal.Kind != core.SessionCredential {
+	if principal.UserID != result.User.ID || principal.CredentialID != result.Session.ID || principal.Kind != model.SessionCredential {
 		t.Fatalf("session principal: %#v", principal)
 	}
 	user, err := fixture.identity.User(context.Background(), principal)
@@ -278,7 +278,7 @@ func TestIdentityCompletionAndSession(t *testing.T) {
 		t.Fatalf("callback was retrieved %d times", fixture.calls.Load())
 	}
 	fixture.now = result.Session.ExpiresAt
-	_, err = fixture.identity.Authenticate(context.Background(), core.SessionCredential, result.Secret)
+	_, err = fixture.identity.Authenticate(context.Background(), model.SessionCredential, result.Secret)
 	requireFault(t, err, "unauthenticated")
 }
 
@@ -342,7 +342,7 @@ func TestIdentitySessionCreationFailureRetainsDestination(t *testing.T) {
 			if result.LoginID != start.ID || result.ReturnPath != destination {
 				t.Fatal("session creation failure lost its consumed login or validated destination")
 			}
-			if result.Secret != "" || result.User.ID != "" || !reflect.DeepEqual(result.Session, core.Session{}) {
+			if result.Secret != "" || result.User.ID != "" || !reflect.DeepEqual(result.Session, model.Session{}) {
 				t.Fatal("session creation failure exposed unissued credentials")
 			}
 			var logins, users, sessions int
@@ -465,11 +465,11 @@ func TestIdentityPATLifecycleAndOwnerIsolation(t *testing.T) {
 	if !validSecret(minted.Secret, "dnpat_") || minted.Credential.UserID != alice.UserID || minted.Credential.Name != " Build agent " || !minted.Credential.CreatedAt.Equal(fixture.now) || !minted.Credential.ExpiresAt.Equal(fixture.now.Add(30*24*time.Hour)) || !bytes.Equal(minted.Credential.TokenHash, secretHash(minted.Secret)) {
 		t.Fatalf("issued PAT: %#v", minted)
 	}
-	pat, err := fixture.identity.Authenticate(ctx, core.PATCredential, minted.Secret)
-	if err != nil || pat.UserID != alice.UserID || pat.CredentialID != minted.Credential.ID || pat.Kind != core.PATCredential {
+	pat, err := fixture.identity.Authenticate(ctx, model.PATCredential, minted.Secret)
+	if err != nil || pat.UserID != alice.UserID || pat.CredentialID != minted.Credential.ID || pat.Kind != model.PATCredential {
 		t.Fatalf("PAT principal: %#v, %v", pat, err)
 	}
-	for _, principal := range []core.Principal{alice, bob} {
+	for _, principal := range []model.Principal{alice, bob} {
 		listed, err := fixture.identity.ListPATs(ctx, principal)
 		if err != nil {
 			t.Fatal(err)
@@ -485,13 +485,13 @@ func TestIdentityPATLifecycleAndOwnerIsolation(t *testing.T) {
 	if err := fixture.identity.RevokePAT(ctx, bob, minted.Credential.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.identity.Authenticate(ctx, core.PATCredential, minted.Secret); err != nil {
+	if _, err := fixture.identity.Authenticate(ctx, model.PATCredential, minted.Secret); err != nil {
 		t.Fatalf("another user revoked the PAT: %v", err)
 	}
 	if err := fixture.identity.RevokePAT(ctx, alice, strings.ToUpper(minted.Credential.ID)); err != nil {
 		t.Fatal(err)
 	}
-	_, err = fixture.identity.Authenticate(ctx, core.PATCredential, minted.Secret)
+	_, err = fixture.identity.Authenticate(ctx, model.PATCredential, minted.Secret)
 	requireFault(t, err, "unauthenticated")
 	if err := fixture.identity.RevokePAT(ctx, alice, minted.Credential.ID); err != nil {
 		t.Fatalf("repeated revoke: %v", err)
@@ -524,14 +524,14 @@ func TestIdentityPATValidationAndSessionOnlyOperations(t *testing.T) {
 	} else {
 		requireFault(t, err, "invalid_input")
 	}
-	pat := core.Principal{Kind: core.PATCredential, UserID: principal.UserID, CredentialID: uuid.NewString()}
+	pat := model.Principal{Kind: model.PATCredential, UserID: principal.UserID, CredentialID: uuid.NewString()}
 	_, err := fixture.identity.CreatePAT(ctx, pat, CreatePAT{Name: "Agent", ExpiresAt: tokenExpiryAt(fixture.now.Add(24 * time.Hour))})
 	requireFault(t, err, "forbidden")
 	_, err = fixture.identity.ListPATs(ctx, pat)
 	requireFault(t, err, "forbidden")
 	requireFault(t, fixture.identity.RevokePAT(ctx, pat, uuid.NewString()), "forbidden")
 	requireFault(t, fixture.identity.Logout(ctx, pat), "forbidden")
-	for _, kind := range []core.CredentialKind{core.SessionCredential, core.PATCredential, "unknown"} {
+	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential, "unknown"} {
 		for _, secret := range []string{"", "wrong", "dnst_" + strings.Repeat("!", 43), "dnpat_" + strings.Repeat("A", 42), "dnst_" + strings.Repeat("A", 43) + "="} {
 			_, err := fixture.identity.Authenticate(ctx, kind, secret)
 			requireFault(t, err, "unauthenticated")
@@ -539,7 +539,7 @@ func TestIdentityPATValidationAndSessionOnlyOperations(t *testing.T) {
 	}
 	_, err = fixture.identity.Authenticate(ctx, "unknown", randomSecret("dnst_"))
 	requireFault(t, err, "unauthenticated")
-	_, err = fixture.identity.User(ctx, core.Principal{UserID: uuid.NewString()})
+	_, err = fixture.identity.User(ctx, model.Principal{UserID: uuid.NewString()})
 	requireFault(t, err, "unauthenticated")
 }
 
@@ -553,7 +553,7 @@ func TestIdentityLogoutAndCredentialExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture.now = *pat.Credential.ExpiresAt
-	_, err = fixture.identity.Authenticate(ctx, core.PATCredential, pat.Secret)
+	_, err = fixture.identity.Authenticate(ctx, model.PATCredential, pat.Secret)
 	requireFault(t, err, "unauthenticated")
 	listed, err := fixture.identity.ListPATs(ctx, principal)
 	if err != nil || len(listed) != 0 {
@@ -562,7 +562,7 @@ func TestIdentityLogoutAndCredentialExpiry(t *testing.T) {
 	if err := fixture.identity.Logout(ctx, principal); err != nil {
 		t.Fatal(err)
 	}
-	_, err = fixture.identity.Authenticate(ctx, core.SessionCredential, login.Secret)
+	_, err = fixture.identity.Authenticate(ctx, model.SessionCredential, login.Secret)
 	requireFault(t, err, "unauthenticated")
 	_, err = fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: "Stale", ExpiresAt: tokenExpiryAt(fixture.now.Add(24 * time.Hour))})
 	requireFault(t, err, "unauthenticated")
@@ -585,7 +585,7 @@ func TestIdentityStoreFailuresRemainOperational(t *testing.T) {
 	requireIdentityOperationalError(t, err)
 	_, err = fixture.identity.CompleteLogin(ctx, identityQuery(start, "alice"), start.BrowserBinding)
 	requireIdentityOperationalError(t, err)
-	_, err = fixture.identity.Authenticate(ctx, core.SessionCredential, login.Secret)
+	_, err = fixture.identity.Authenticate(ctx, model.SessionCredential, login.Secret)
 	requireIdentityOperationalError(t, err)
 	_, err = fixture.identity.User(ctx, principal)
 	requireIdentityOperationalError(t, err)
@@ -730,7 +730,7 @@ func TestIdentityProviderDiscovery(t *testing.T) {
 	for _, status := range []int{400, 401, 500, 503} {
 		response.Store(identityReply{status: status, body: map[string]any{"error": map[string]string{"code": "upstream_code", "message": "private-upstream-message"}}})
 		_, err := identity.Providers(context.Background())
-		var failure *IdentityProviderError
+		var failure *model.IdentityProviderError
 		var upstream *uniauth.APIError
 		expected := "identity_unavailable"
 		if status == 400 || status == 401 {
@@ -742,7 +742,7 @@ func TestIdentityProviderDiscovery(t *testing.T) {
 	}
 	response.Store(identityReply{status: 200, body: map[string]any{"providers": nil}})
 	_, err = identity.Providers(context.Background())
-	var failure *IdentityProviderError
+	var failure *model.IdentityProviderError
 	var protocol *uniauth.ProtocolError
 	if !errors.As(err, &failure) || failure.Code != "identity_unavailable" || !errors.As(err, &protocol) {
 		t.Fatalf("invalid provider response hidden: %v", err)
@@ -760,7 +760,7 @@ func TestIdentityProviderTransportCancellation(t *testing.T) {
 	}
 	identity := NewIdentity(nil, client, "https://daynight.example/auth/callback")
 	_, err = identity.Providers(context.Background())
-	var failure *IdentityProviderError
+	var failure *model.IdentityProviderError
 	if !errors.Is(err, cause) || !errors.As(err, &failure) || failure.Code != "identity_unavailable" || strings.Contains(err.Error(), "private") {
 		t.Fatalf("transport chain: %v", err)
 	}

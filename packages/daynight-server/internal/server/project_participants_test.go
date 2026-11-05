@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestProjectParticipantHTTPContractGrantWritesAndIdentity(t *testing.T) {
@@ -92,12 +92,12 @@ func TestProjectParticipantHTTPContractGrantWritesAndIdentity(t *testing.T) {
 }
 
 func TestProjectParticipantDTOKeepsSourcesIndependent(t *testing.T) {
-	grant := core.ProjectGrant{ProjectID: "project", UserID: "user", Role: core.ProjectMemberRole, Version: 9007199254740993}
-	participant := participantResponse(core.ProjectParticipant{UserID: "user", EffectiveRole: core.ProjectAdmin, DirectGrant: &grant})
+	grant := model.ProjectGrant{ProjectID: "project", UserID: "user", Role: model.ProjectMemberRole, Version: 9007199254740993}
+	participant := participantResponse(model.ProjectParticipant{UserID: "user", EffectiveRole: model.ProjectAdmin, DirectGrant: &grant})
 	if participant.EffectiveRole != "admin" || participant.DirectGrant == nil || participant.DirectGrant.Role != "member" || participant.DirectGrant.Version != grant.Version {
 		t.Fatalf("effective role overwrote a direct grant: %#v", participant)
 	}
-	participant = participantResponse(core.ProjectParticipant{UserID: "user", EffectiveRole: core.ProjectMemberRole})
+	participant = participantResponse(model.ProjectParticipant{UserID: "user", EffectiveRole: model.ProjectMemberRole})
 	encoded, err := json.Marshal(participant)
 	if err != nil || !strings.Contains(string(encoded), `"directGrant":null`) || !strings.Contains(string(encoded), `"profile":{"name":null,"email":null,"avatarUrl":null}`) {
 		t.Fatalf("nullable grant model invented a stored row: %s %v", encoded, err)

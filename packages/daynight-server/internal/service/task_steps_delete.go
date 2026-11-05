@@ -5,14 +5,14 @@ import (
 	"errors"
 	"math"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 )
 
 type DeleteTaskStep struct{ Version int64 }
 
-func (s *TaskSteps) Delete(ctx context.Context, principal core.Principal, projectID, taskID, stepID string, input DeleteTaskStep) (StepsWriteResult, error) {
+func (s *TaskSteps) Delete(ctx context.Context, principal model.Principal, projectID, taskID, stepID string, input DeleteTaskStep) (StepsWriteResult, error) {
 	result := StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}
 	projectID, taskID, err := taskWriteIdentity(principal, projectID, taskID, input.Version)
 	if err != nil {
@@ -41,13 +41,13 @@ func (s *TaskSteps) Delete(ctx context.Context, principal core.Principal, projec
 		}
 		candidate, index, err := tasksteps.DeleteCandidate(current, stepID)
 		if errors.Is(err, tasksteps.ErrTargetNotFound) {
-			return &Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
+			return &model.Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
 		}
 		if err != nil {
 			return err
 		}
 		if header.Version == math.MaxInt64 {
-			return &Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
+			return &model.Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
 		}
 		observed, err := tx.ObservedAt(ctx)
 		if err != nil {

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -29,7 +29,7 @@ func workersRoutes(mux *http.ServeMux, workers *service.Workers, auth *Authentic
 	mux.HandleFunc(base+"/{workerId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
 }
 
-func (h *workersHandler) resource(request *http.Request, principal core.Principal) (string, *slog.Logger, error) {
+func (h *workersHandler) resource(request *http.Request, principal model.Principal) (string, *slog.Logger, error) {
 	logger := h.logger.With("user_id", principal.UserID)
 	id, err := service.CanonicalID(request.PathValue("workerId"))
 	if err != nil {
@@ -38,7 +38,7 @@ func (h *workersHandler) resource(request *http.Request, principal core.Principa
 	return id, logger.With("worker_id", id), nil
 }
 
-func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	id, logger, err := h.resource(request, principal)
 	if err == nil && (request.URL.RawQuery != "" || request.URL.ForceQuery) {
 		err = invalidInput("worker reports do not accept query parameters")
@@ -87,16 +87,16 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 	if configurationAware {
 		w.Header().Set(workerConfigurationHeader, "1")
 		writeJSON(w, request, logger, http.StatusOK, struct {
-			ObservedAt     time.Time                        `json:"observedAt"`
-			LastReportedAt time.Time                        `json:"lastReportedAt"`
-			Configuration  *core.WorkerConfigurationReceipt `json:"configuration"`
+			ObservedAt     time.Time                         `json:"observedAt"`
+			LastReportedAt time.Time                         `json:"lastReportedAt"`
+			Configuration  *model.WorkerConfigurationReceipt `json:"configuration"`
 		}{result.ObservedAt.UTC(), result.LastReportedAt.UTC(), result.Configuration})
 		return
 	}
 	writeJSON(w, request, logger, http.StatusOK, api.WorkerReportResponse{ObservedAt: result.ObservedAt.UTC(), LastReportedAt: result.LastReportedAt.UTC()})
 }
 
-func (h *workersHandler) list(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *workersHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
 	page, err := pageRequest(request)
 	if err != nil {
@@ -115,7 +115,7 @@ func (h *workersHandler) list(w http.ResponseWriter, request *http.Request, prin
 	writeJSON(w, request, logger, http.StatusOK, response)
 }
 
-func (h *workersHandler) get(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *workersHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	id, logger, err := h.resource(request, principal)
 	if err == nil && (request.URL.RawQuery != "" || request.URL.ForceQuery) {
 		err = invalidInput("worker detail does not accept query parameters")
@@ -132,9 +132,9 @@ func (h *workersHandler) get(w http.ResponseWriter, request *http.Request, princ
 	writeJSON(w, request, logger, http.StatusOK, api.WorkerDetailResponse{ObservedAt: result.ObservedAt.UTC(), Worker: workerDetailResponse(result.Worker)})
 }
 
-func workerSummaryResponse(worker core.WorkerSnapshot) api.WorkerSummary {
+func workerSummaryResponse(worker model.WorkerSnapshot) api.WorkerSummary {
 	var count *int
-	if worker.TaskSnapshot.State != core.WorkerTasksUnavailable {
+	if worker.TaskSnapshot.State != model.WorkerTasksUnavailable {
 		value := len(worker.TaskSnapshot.Items)
 		count = &value
 	}
@@ -144,15 +144,15 @@ func workerSummaryResponse(worker core.WorkerSnapshot) api.WorkerSummary {
 		TaskObservedAt: workerOptionalTime(worker.TaskSnapshot.ObservedAt), ActiveTaskCount: count}
 }
 
-func workerDetailResponse(worker core.WorkerSnapshot) api.WorkerDetail {
+func workerDetailResponse(worker model.WorkerSnapshot) api.WorkerDetail {
 	telemetry := worker.Telemetry
 	response := api.WorkerDetail{WorkerSummary: workerSummaryResponse(worker), InventoryObservedAt: workerOptionalTime(worker.TaskSnapshot.InventoryObservedAt), Tasks: make([]api.WorkerTaskSnapshot, 0, len(worker.TaskSnapshot.Items)),
 		Telemetry: api.WorkerTelemetry{Machine: api.WorkerMachine{ID: telemetry.Machine.ID, Name: telemetry.Machine.Name}, Platform: string(telemetry.Platform),
 			WorkingDirectory: telemetry.WorkingDirectory, SampledAt: telemetry.SampledAt.UTC(), AssistantHost: workerAssistantHostResponse(telemetry.AssistantHost),
-			OS:     workerProbeResponse(telemetry.OS, func(value core.WorkerOS) api.WorkerOS { return api.WorkerOS(value) }),
-			CPU:    workerProbeResponse(telemetry.CPU, func(value core.WorkerCPU) api.WorkerCPU { return api.WorkerCPU(value) }),
-			Memory: workerProbeResponse(telemetry.Memory, func(value core.WorkerMemory) api.WorkerMemory { return api.WorkerMemory(value) }),
-			Disk:   workerProbeResponse(telemetry.Disk, func(value core.WorkerDisk) api.WorkerDisk { return api.WorkerDisk(value) }),
+			OS:     workerProbeResponse(telemetry.OS, func(value model.WorkerOS) api.WorkerOS { return api.WorkerOS(value) }),
+			CPU:    workerProbeResponse(telemetry.CPU, func(value model.WorkerCPU) api.WorkerCPU { return api.WorkerCPU(value) }),
+			Memory: workerProbeResponse(telemetry.Memory, func(value model.WorkerMemory) api.WorkerMemory { return api.WorkerMemory(value) }),
+			Disk:   workerProbeResponse(telemetry.Disk, func(value model.WorkerDisk) api.WorkerDisk { return api.WorkerDisk(value) }),
 			Versions: api.WorkerVersions{Daynight: telemetry.Versions.Daynight,
 				Herdr:   workerProbeResponse(telemetry.Versions.Herdr, func(value string) string { return value }),
 				Codex:   workerProbeResponse(telemetry.Versions.Codex, func(value string) string { return value }),
@@ -163,7 +163,7 @@ func workerDetailResponse(worker core.WorkerSnapshot) api.WorkerDetail {
 	return response
 }
 
-func workerProbeResponse[S, T any](probe core.WorkerProbe[S], convert func(S) T) api.WorkerProbe[T] {
+func workerProbeResponse[S, T any](probe model.WorkerProbe[S], convert func(S) T) api.WorkerProbe[T] {
 	response := api.WorkerProbe[T]{State: probe.State, CheckedAt: probe.CheckedAt.UTC(), Code: probe.Code}
 	if probe.Value != nil {
 		value := convert(*probe.Value)
@@ -180,7 +180,7 @@ func workerOptionalTime(value *time.Time) *time.Time {
 	return &utc
 }
 
-func workerAssistantHostResponse(host *core.WorkerAssistantHost) *api.WorkerAssistantHost {
+func workerAssistantHostResponse(host *model.WorkerAssistantHost) *api.WorkerAssistantHost {
 	if host == nil {
 		return nil
 	}

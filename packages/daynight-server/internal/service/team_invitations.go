@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -13,32 +13,32 @@ import (
 const teamInvitationPrefix = "dnteam_"
 
 type MintedTeamInvitation struct {
-	Invitation core.TeamInvitation
+	Invitation model.TeamInvitation
 	Secret     string
 }
 type TeamInvitationInspection struct {
-	Team       core.TeamRef
-	Membership *core.TeamMember
+	Team       model.TeamRef
+	Membership *model.TeamMember
 }
 type TeamInvitationAcceptance struct {
-	Team             core.TeamRef
-	Membership       core.TeamMember
+	Team             model.TeamRef
+	Membership       model.TeamMember
 	Joined, Consumed bool
 }
 
-func teamInvitationAvailable(i core.TeamInvitation, now time.Time) bool {
+func teamInvitationAvailable(i model.TeamInvitation, now time.Time) bool {
 	return i.ConsumedAt == nil && i.RevokedAt == nil && i.ExpiresAt.After(now)
 }
-func requireOrdinaryTeamAdmin(team core.Team) error {
-	if team.Membership.Role != core.ProjectAdmin {
-		return &Fault{Code: "forbidden", Message: "Team administrator access is required."}
+func requireOrdinaryTeamAdmin(team model.Team) error {
+	if team.Membership.Role != model.ProjectAdmin {
+		return &model.Fault{Code: "forbidden", Message: "Team administrator access is required."}
 	}
 	if team.Kind == "personal" {
-		return &Fault{Code: "personal_team_immutable", Message: "Personal Team invitations are unavailable."}
+		return &model.Fault{Code: "personal_team_immutable", Message: "Personal Team invitations are unavailable."}
 	}
 	return nil
 }
-func (s *Teams) CreateInvitation(ctx context.Context, p core.Principal, teamID, expected string) (MintedTeamInvitation, error) {
+func (s *Teams) CreateInvitation(ctx context.Context, p model.Principal, teamID, expected string) (MintedTeamInvitation, error) {
 	if err := requireTeamActor(p, expected); err != nil {
 		return MintedTeamInvitation{}, err
 	}
@@ -57,7 +57,7 @@ func (s *Teams) CreateInvitation(ctx context.Context, p core.Principal, teamID, 
 		}
 		now := time.Now().UTC()
 		result.Secret = randomSecret(teamInvitationPrefix)
-		result.Invitation = core.TeamInvitation{ID: uuid.NewString(), TeamID: id, CreatedBy: p.UserID, TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(InvitationLifetime)}
+		result.Invitation = model.TeamInvitation{ID: uuid.NewString(), TeamID: id, CreatedBy: p.UserID, TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(InvitationLifetime)}
 		return tx.CreateInvitation(ctx, result.Invitation)
 	})
 	if err != nil {
@@ -66,7 +66,7 @@ func (s *Teams) CreateInvitation(ctx context.Context, p core.Principal, teamID, 
 	result.Invitation.TokenHash = nil
 	return result, nil
 }
-func (s *Teams) ListInvitations(ctx context.Context, p core.Principal, teamID string) ([]core.TeamInvitation, error) {
+func (s *Teams) ListInvitations(ctx context.Context, p model.Principal, teamID string) ([]model.TeamInvitation, error) {
 	if err := requirePrincipal(p); err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func (s *Teams) ListInvitations(ctx context.Context, p core.Principal, teamID st
 	if err != nil {
 		return nil, err
 	}
-	var result []core.TeamInvitation
+	var result []model.TeamInvitation
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		team, err := snapshot.Team(ctx, p.UserID, id)
 		if err != nil {
@@ -88,7 +88,7 @@ func (s *Teams) ListInvitations(ctx context.Context, p core.Principal, teamID st
 	})
 	return result, err
 }
-func (s *Teams) RevokeInvitation(ctx context.Context, p core.Principal, teamID, invitationID, expected string) (bool, error) {
+func (s *Teams) RevokeInvitation(ctx context.Context, p model.Principal, teamID, invitationID, expected string) (bool, error) {
 	if err := requireTeamActor(p, expected); err != nil {
 		return false, err
 	}
@@ -117,18 +117,18 @@ func (s *Teams) RevokeInvitation(ctx context.Context, p core.Principal, teamID, 
 	}
 	return changed, nil
 }
-func (s *Teams) inspectInvitation(ctx context.Context, p core.Principal, secret string, operation func(*store.Snapshot, core.TeamInvitation) error) error {
+func (s *Teams) inspectInvitation(ctx context.Context, p model.Principal, secret string, operation func(*store.Snapshot, model.TeamInvitation) error) error {
 	if err := requirePrincipal(p); err != nil {
 		return err
 	}
 	if !validSecret(secret, teamInvitationPrefix) {
 		return invitationUnavailable(nil)
 	}
-	var refusal *Fault
+	var refusal *model.Fault
 	err := s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		return completeMembershipOperation(func() error {
 			i, err := snapshot.TeamInvitation(ctx, secretHash(secret))
-			if errors.Is(err, core.ErrNotFound) {
+			if errors.Is(err, model.ErrNotFound) {
 				return invitationUnavailable(nil)
 			}
 			if err != nil {
@@ -148,11 +148,11 @@ func (s *Teams) inspectInvitation(ctx context.Context, p core.Principal, secret 
 	}
 	return nil
 }
-func (s *Teams) InspectInvitation(ctx context.Context, p core.Principal, secret string) (TeamInvitationInspection, error) {
+func (s *Teams) InspectInvitation(ctx context.Context, p model.Principal, secret string) (TeamInvitationInspection, error) {
 	var result TeamInvitationInspection
-	err := s.inspectInvitation(ctx, p, secret, func(snapshot *store.Snapshot, i core.TeamInvitation) error {
+	err := s.inspectInvitation(ctx, p, secret, func(snapshot *store.Snapshot, i model.TeamInvitation) error {
 		team, err := snapshot.InvitationTeam(ctx, i.TeamID)
-		if errors.Is(err, core.ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return invitationUnavailable(nil)
 		}
 		if err != nil {
@@ -163,7 +163,7 @@ func (s *Teams) InspectInvitation(ctx context.Context, p core.Principal, secret 
 		}
 		result.Team = team
 		member, err := snapshot.InvitationTeamMember(ctx, i.TeamID, p.UserID)
-		if errors.Is(err, core.ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return nil
 		}
 		if err != nil {
@@ -174,20 +174,20 @@ func (s *Teams) InspectInvitation(ctx context.Context, p core.Principal, secret 
 	})
 	return result, err
 }
-func (s *Teams) AcceptInvitation(ctx context.Context, p core.Principal, secret, expected string) (TeamInvitationAcceptance, error) {
+func (s *Teams) AcceptInvitation(ctx context.Context, p model.Principal, secret, expected string) (TeamInvitationAcceptance, error) {
 	if err := requireTeamActor(p, expected); err != nil {
 		return TeamInvitationAcceptance{}, err
 	}
 	var teamID string
-	if err := s.inspectInvitation(ctx, p, secret, func(_ *store.Snapshot, i core.TeamInvitation) error { teamID = i.TeamID; return nil }); err != nil {
+	if err := s.inspectInvitation(ctx, p, secret, func(_ *store.Snapshot, i model.TeamInvitation) error { teamID = i.TeamID; return nil }); err != nil {
 		return TeamInvitationAcceptance{}, err
 	}
 	var result TeamInvitationAcceptance
-	var refusal *Fault
+	var refusal *model.Fault
 	err := s.store.WriteTeam(ctx, teamID, func(tx *store.TeamTx) error {
 		return completeMembershipOperation(func() error {
 			i, err := tx.LockInvitation(ctx, secretHash(secret))
-			if errors.Is(err, core.ErrNotFound) {
+			if errors.Is(err, model.ErrNotFound) {
 				return invitationUnavailable(nil)
 			}
 			if err != nil {
@@ -205,10 +205,10 @@ func (s *Teams) AcceptInvitation(ctx context.Context, p core.Principal, secret, 
 				return invitationUnavailable(nil)
 			}
 			member, err := tx.InvitationMember(ctx, p.UserID)
-			if err != nil && !errors.Is(err, core.ErrNotFound) {
+			if err != nil && !errors.Is(err, model.ErrNotFound) {
 				return err
 			}
-			if errors.Is(err, core.ErrNotFound) {
+			if errors.Is(err, model.ErrNotFound) {
 				member, err = tx.AddInvitedMember(ctx, p.UserID)
 				if err != nil {
 					return err

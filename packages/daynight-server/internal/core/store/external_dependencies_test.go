@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -39,7 +39,7 @@ func TestExternalDependencyMigrationPreservesExistingFactsAndDefaults(t *testing
 	database := &Store{Pool: pool}
 	project := queryProject(t, database, 1)
 	stamp := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
-	for number, status := range map[int]core.TaskStatus{10: core.TaskDone, 11: core.TaskTodo, 12: core.TaskStatus("proposed")} {
+	for number, status := range map[int]model.TaskStatus{10: model.TaskDone, 11: model.TaskTodo, 12: model.TaskStatus("proposed")} {
 		mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,description,status,version,created_at,updated_at,started_at,completed_at,properties)
 			VALUES ($1,$2,'Preserved title','Preserved description',$3,17,$4,$5,$4,$5,'{"pullRequests":[{"url":"https://example.com/pr/1","title":"Preserved"}]}')`,
 			queryID(number), project.ID, status, stamp, stamp.Add(time.Hour))
@@ -94,11 +94,11 @@ func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project, foreign := queryProject(t, database, 1), queryProject(t, database, 2)
-	done := queryTask(t, database, project.ID, 10, core.TaskDone)
-	pending := queryTask(t, database, project.ID, 11, core.TaskTodo)
-	target := queryTask(t, database, project.ID, 12, core.TaskTodo, pending.ID, done.ID)
-	foreignDone := queryTask(t, database, foreign.ID, 20, core.TaskDone)
-	foreignTarget := queryTask(t, database, foreign.ID, 21, core.TaskTodo, foreignDone.ID)
+	done := queryTask(t, database, project.ID, 10, model.TaskDone)
+	pending := queryTask(t, database, project.ID, 11, model.TaskTodo)
+	target := queryTask(t, database, project.ID, 12, model.TaskTodo, pending.ID, done.ID)
+	foreignDone := queryTask(t, database, foreign.ID, 20, model.TaskDone)
+	foreignTarget := queryTask(t, database, foreign.ID, 21, model.TaskTodo, foreignDone.ID)
 	mustQueryExec(t, database, `UPDATE tasks SET allow_agents=true WHERE id=$1`, target.ID)
 	mustQueryExec(t, database, `UPDATE task_dependencies SET external=true WHERE task_id=ANY($1::uuid[])`, []string{target.ID, foreignTarget.ID})
 	target = snapshotTask(t, database, project.ID, target.ID)
@@ -106,7 +106,7 @@ func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
 		t.Fatalf("external edges changed scheduling or ordering: %#v", target)
 	}
 	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		created, err := tx.CreateTask(ctx, queryID(13), TaskWrite{Title: "Mixed edge task", Status: core.TaskTodo, DependsOn: []string{pending.ID, done.ID}, ExternalDependsOn: []string{done.ID}})
+		created, err := tx.CreateTask(ctx, queryID(13), TaskWrite{Title: "Mixed edge task", Status: model.TaskTodo, DependsOn: []string{pending.ID, done.ID}, ExternalDependsOn: []string{done.ID}})
 		if err != nil || !slices.Equal(created.ExternalDependsOn, []string{done.ID}) || !slices.Equal(created.BlockedBy, []string{pending.ID}) {
 			t.Fatalf("store did not persist mixed edge classification: %#v, %v", created, err)
 		}
@@ -159,8 +159,8 @@ func TestExternalDependencyStoreReadFailuresPreserveCauses(t *testing.T) {
 		t.Run(map[bool]string{true: "cancellation", false: "missing marker column"}[canceled], func(t *testing.T) {
 			database := isolatedStore(t)
 			project := queryProject(t, database, 1)
-			predecessor := queryTask(t, database, project.ID, 10, core.TaskDone)
-			target := queryTask(t, database, project.ID, 11, core.TaskTodo, predecessor.ID)
+			predecessor := queryTask(t, database, project.ID, 10, model.TaskDone)
+			target := queryTask(t, database, project.ID, 11, model.TaskTodo, predecessor.ID)
 			if !canceled {
 				mustQueryExec(t, database, "ALTER TABLE task_dependencies DROP COLUMN external")
 			}

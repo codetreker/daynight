@@ -8,21 +8,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func appendStoredThread(t *testing.T, database *Store, taskID, userID, body string) core.ThreadMessage {
+func appendStoredThread(t *testing.T, database *Store, taskID, userID, body string) model.ThreadMessage {
 	t.Helper()
 	ctx := context.Background()
-	var message core.ThreadMessage
+	var message model.ThreadMessage
 	err := database.WriteThread(ctx, func(tx *ThreadTx) error {
 		head, err := tx.LockHead(ctx, taskID)
 		if err != nil {
 			return err
 		}
-		message, err = tx.InsertMessage(ctx, core.ThreadMessage{TaskID: taskID, Author: core.ThreadAuthor{UserID: userID}, Body: body})
+		message, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: taskID, Author: model.ThreadAuthor{UserID: userID}, Body: body})
 		if err != nil {
 			return err
 		}
@@ -84,7 +84,7 @@ func TestThreadMigrationDefaultsCompositeIdentityAndRestart(t *testing.T) {
 			}
 		}
 		_, err := snapshot.ThreadMessage(ctx, queryID(1), queryID(99))
-		if !errors.Is(err, core.ErrNotFound) {
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("foreign task message resolved: %v", err)
 		}
 		return nil
@@ -106,13 +106,13 @@ func TestThreadMigrationDefaultsCompositeIdentityAndRestart(t *testing.T) {
 func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 	database, principal, _, project := membershipFixture(t)
 	ctx := context.Background()
-	task := queryTask(t, database, project.ID, 10, core.TaskDone)
+	task := queryTask(t, database, project.ID, 10, model.TaskDone)
 	before := snapshotTask(t, database, project.ID, task.ID)
 	var epoch string
 	if err := database.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&epoch); err != nil {
 		t.Fatal(err)
 	}
-	var first, reply core.ThreadMessage
+	var first, reply model.ThreadMessage
 	if err := database.WriteThread(ctx, func(tx *ThreadTx) error {
 		presence, err := tx.LockTaskPresence(ctx, project.ID, task.ID)
 		if err != nil || !presence.Found || presence.DeletedAt != nil {
@@ -123,7 +123,7 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 			return err
 		}
 		access, err := tx.LockProjectAuthorization(ctx, principal, project.ID)
-		if err != nil || access.ProjectID != project.ID || access.UserID != principal.UserID || access.Role != core.ProjectAdmin ||
+		if err != nil || access.ProjectID != project.ID || access.UserID != principal.UserID || access.Role != model.ProjectAdmin ||
 			access.DirectGrant == nil || access.DirectGrant.ProjectID != project.ID || access.DirectGrant.UserID != principal.UserID ||
 			access.DirectGrant.Role != access.Role || access.DirectGrant.Version <= 0 {
 			t.Fatalf("locked authorization: %#v %v", access, err)
@@ -133,14 +133,14 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 			t.Fatalf("nullable author: %#v %v", name, err)
 		}
 		source, err := tx.SourceTask(ctx, project.ID, task.ID)
-		if err != nil || source.Status != core.TaskDone || len(source.Properties) != 0 {
+		if err != nil || source.Status != model.TaskDone || len(source.Properties) != 0 {
 			t.Fatalf("minimal source: %#v %v", source, err)
 		}
 		head, err := tx.LockHead(ctx, task.ID)
 		if err != nil || head != nil {
 			t.Fatalf("empty head: %#v %v", head, err)
 		}
-		first, err = tx.InsertMessage(ctx, core.ThreadMessage{TaskID: task.ID, Author: core.ThreadAuthor{UserID: principal.UserID}, Body: "  immutable\n<>& 中文 😀\t  "})
+		first, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: task.ID, Author: model.ThreadAuthor{UserID: principal.UserID}, Body: "  immutable\n<>& 中文 😀\t  "})
 		if err != nil {
 			return err
 		}
@@ -163,8 +163,8 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 		if _, err := tx.ThreadMessage(ctx, task.ID, first.ID); err != nil {
 			return err
 		}
-		reply, err = tx.InsertMessage(ctx, core.ThreadMessage{TaskID: task.ID, Author: core.ThreadAuthor{UserID: principal.UserID, Agent: true,
-			Execution: &core.ThreadExecution{ClaimID: queryID(900), WorkerID: queryID(901), Provider: "codex"}}, Body: "reply", ReplyTo: &first.ID})
+		reply, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: task.ID, Author: model.ThreadAuthor{UserID: principal.UserID, Agent: true,
+			Execution: &model.ThreadExecution{ClaimID: queryID(900), WorkerID: queryID(901), Provider: "codex"}}, Body: "reply", ReplyTo: &first.ID})
 		if err != nil {
 			return err
 		}
@@ -232,11 +232,11 @@ func TestThreadCredentialKindsAndExpiry(t *testing.T) {
 	database := isolatedStore(t)
 	_, principal, session := testAuthRecords(t, database)
 	ctx := context.Background()
-	pat := core.PersonalAccessToken{ID: queryID(1), TokenHash: []byte(strings.Repeat("x", 32)), Name: "thread PAT", CreatedAt: time.Now().UTC()}
+	pat := model.PersonalAccessToken{ID: queryID(1), TokenHash: []byte(strings.Repeat("x", 32)), Name: "thread PAT", CreatedAt: time.Now().UTC()}
 	if err := database.CreatePAT(ctx, principal, pat); err != nil {
 		t.Fatal(err)
 	}
-	patPrincipal := core.Principal{Kind: core.PATCredential, UserID: principal.UserID, CredentialID: pat.ID}
+	patPrincipal := model.Principal{Kind: model.PATCredential, UserID: principal.UserID, CredentialID: pat.ID}
 	if err := database.WriteThread(ctx, func(tx *ThreadTx) error {
 		credential, err := tx.Credential(ctx, patPrincipal)
 		if err != nil || credential.ExpiresAt != nil {
@@ -256,9 +256,9 @@ func TestThreadCredentialKindsAndExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustQueryExec(t, database, `UPDATE sessions SET expires_at=$2 WHERE id=$1`, session.ID, session.CreatedAt.Add(time.Microsecond))
-	for _, principal := range []core.Principal{principal, {Kind: "invalid", UserID: principal.UserID, CredentialID: principal.CredentialID}, {Kind: core.PATCredential, UserID: queryID(999), CredentialID: pat.ID}} {
+	for _, principal := range []model.Principal{principal, {Kind: "invalid", UserID: principal.UserID, CredentialID: principal.CredentialID}, {Kind: model.PATCredential, UserID: queryID(999), CredentialID: pat.ID}} {
 		err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error { _, err := snapshot.Credential(ctx, principal); return err })
-		if !errors.Is(err, core.ErrNotFound) {
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("invalid credential accepted: %#v %v", principal, err)
 		}
 	}
@@ -272,7 +272,7 @@ func TestThreadRejectedAppendRollsBackCandidateAndLazyHead(t *testing.T) {
 		if _, err := tx.LockHead(ctx, queryID(1)); err != nil {
 			return err
 		}
-		if _, err := tx.InsertMessage(ctx, core.ThreadMessage{TaskID: queryID(1), Author: core.ThreadAuthor{UserID: queryID(9)}, Body: "rejected"}); err != nil {
+		if _, err := tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "rejected"}); err != nil {
 			return err
 		}
 		return rejected
@@ -300,21 +300,21 @@ func TestThreadClosedTransactionsKeepStoreFailures(t *testing.T) {
 	checks := []func() error{
 		func() error { _, err := closed.LockTaskPresence(ctx, queryID(1), queryID(2)); return err },
 		func() error {
-			_, err := closed.Credential(ctx, core.Principal{Kind: core.PATCredential, UserID: queryID(1), CredentialID: queryID(2)})
+			_, err := closed.Credential(ctx, model.Principal{Kind: model.PATCredential, UserID: queryID(1), CredentialID: queryID(2)})
 			return err
 		},
 		func() error {
-			_, err := closed.LockProjectAuthorization(ctx, core.Principal{UserID: queryID(1)}, queryID(2))
+			_, err := closed.LockProjectAuthorization(ctx, model.Principal{UserID: queryID(1)}, queryID(2))
 			return err
 		},
 		func() error { _, err := closed.AuthorName(ctx, queryID(1)); return err },
 		func() error { _, err := closed.SourceTask(ctx, queryID(1), queryID(2)); return err },
 		func() error { _, err := closed.LockHead(ctx, queryID(1)); return err },
 		func() error { _, err := closed.ThreadMessage(ctx, queryID(1), queryID(2)); return err },
-		func() error { _, err := closed.InsertMessage(ctx, core.ThreadMessage{TaskID: queryID(1)}); return err },
+		func() error { _, err := closed.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1)}); return err },
 		func() error { _, err := closed.CredentialValid(ctx, ThreadCredential{}); return err },
 		func() error {
-			return closed.AdvanceHead(ctx, queryID(1), core.ThreadPosition{CreatedAt: time.Now(), ID: queryID(2)})
+			return closed.AdvanceHead(ctx, queryID(1), model.ThreadPosition{CreatedAt: time.Now(), ID: queryID(2)})
 		},
 	}
 	for index, check := range checks {
@@ -329,7 +329,7 @@ func TestThreadClosedTransactionsKeepStoreFailures(t *testing.T) {
 	for _, check := range []func() error{
 		func() error { _, err := snapshot.ThreadCandidates(ctx, queryID(1), nil, false, 2); return err },
 		func() error {
-			_, _, err := snapshot.ThreadSides(ctx, queryID(1), core.ThreadPosition{}, core.ThreadPosition{})
+			_, _, err := snapshot.ThreadSides(ctx, queryID(1), model.ThreadPosition{}, model.ThreadPosition{})
 			return err
 		},
 	} {
@@ -342,7 +342,7 @@ func TestThreadClosedTransactionsKeepStoreFailures(t *testing.T) {
 func TestThreadSourceReadsOnlyValidatedWorkerAttribution(t *testing.T) {
 	database, principal, _, project := membershipFixture(t)
 	ctx := context.Background()
-	ordinary := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	ordinary := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	reference := setSnapshotTaskClaim(t, database, project.ID, 11, principal.UserID, queryID(900))
 	// Unrelated properties are not source attribution inputs. Reading a worker
 	// must not parse them or make ordinary posting depend on their structure.
@@ -356,14 +356,14 @@ func TestThreadSourceReadsOnlyValidatedWorkerAttribution(t *testing.T) {
 			return err
 		}
 		worker := fixtureWorker(t, source.Properties)
-		if source.Status != core.TaskInProgress || len(source.Properties) != 1 || worker == nil || worker.ClaimID != reference.ClaimID || worker.WorkerID != queryID(900) || worker.UserID != principal.UserID || worker.Agent != core.AgentClaude {
+		if source.Status != model.TaskInProgress || len(source.Properties) != 1 || worker == nil || worker.ClaimID != reference.ClaimID || worker.WorkerID != queryID(900) || worker.UserID != principal.UserID || worker.Agent != model.AgentClaude {
 			t.Fatalf("validated worker source: %#v worker=%#v", source, worker)
 		}
 		if _, err := tx.LockTaskPresence(ctx, project.ID, ordinary.ID); err != nil {
 			return err
 		}
 		source, err = tx.SourceTask(ctx, project.ID, ordinary.ID)
-		if err != nil || source.Status != core.TaskTodo || len(source.Properties) != 0 {
+		if err != nil || source.Status != model.TaskTodo || len(source.Properties) != 0 {
 			t.Fatalf("absent worker source: %#v %v", source, err)
 		}
 		return nil
@@ -380,7 +380,7 @@ func TestThreadSourceReadsOnlyValidatedWorkerAttribution(t *testing.T) {
 	})
 	var transaction *ThreadTransactionError
 	var failure *Error
-	if !errors.As(err, &transaction) || transaction.CommitAttempted || !errors.As(err, &failure) || failure.Phase != "decode thread source" || strings.Contains(err.Error(), "untrusted") || errors.Is(err, core.ErrNotFound) {
+	if !errors.As(err, &transaction) || transaction.CommitAttempted || !errors.As(err, &failure) || failure.Phase != "decode thread source" || strings.Contains(err.Error(), "untrusted") || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("malformed source was hidden or exposed: %v", err)
 	}
 	assertMigrationPoolReusable(t, database.Pool)

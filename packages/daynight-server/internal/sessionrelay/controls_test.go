@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
 )
@@ -173,7 +173,7 @@ func TestControlAuthorizationRejectsCatalogAndRuntimeMismatch(t *testing.T) {
 	}
 	publishState(t, f, v, controlState())
 	c := controlCommand(v, "update_setting")
-	outsider := core.Principal{Kind: core.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	outsider := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 	if _, err := f.s.Submit(ctx, outsider, f.project, f.task, v.SessionID, c); err == nil {
 		t.Fatal("outsider submitted control")
 	}

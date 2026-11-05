@@ -3,7 +3,7 @@ package sessionrelay
 import (
 	"context"
 	"errors"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/jackc/pgx/v5"
 	"time"
@@ -16,7 +16,7 @@ func scopeTask(ctx context.Context, tx pgx.Tx, project, id string) (task, error)
 	}
 	return lockTask(ctx, tx, project, id)
 }
-func (s *Service) scopePermission(ctx context.Context, tx pgx.Tx, p core.Principal, r *record) (bool, error) {
+func (s *Service) scopePermission(ctx context.Context, tx pgx.Tx, p model.Principal, r *record) (bool, error) {
 	if r.Snapshot.TestExecutionID == "" {
 		return member(ctx, tx, p, r.Snapshot.Identity.ProjectID, s.now())
 	}
@@ -28,15 +28,15 @@ func (s *Service) scopePermission(ctx context.Context, tx pgx.Tx, p core.Princip
 	}
 	// The browser's own login does not outlive the controller's revoked parent PAT.
 	if r.Parent != "" {
-		if err := credential(ctx, tx, core.Principal{Kind: core.PATCredential, UserID: r.Owner, CredentialID: r.Parent}, s.now()); err != nil {
+		if err := credential(ctx, tx, model.Principal{Kind: model.PATCredential, UserID: r.Owner, CredentialID: r.Parent}, s.now()); err != nil {
 			return false, err
 		}
 	}
 	return true, nil
 }
-func (s *Service) RegisterTest(ctx context.Context, p core.Principal, input sp.TestRegistration) (sp.Snapshot, error) {
+func (s *Service) RegisterTest(ctx context.Context, p model.Principal, input sp.TestRegistration) (sp.Snapshot, error) {
 	var out sp.Snapshot
-	if p.Kind != core.PATCredential {
+	if p.Kind != model.PATCredential {
 		return out, denied()
 	}
 	err := s.transact(ctx, func(tx pgx.Tx) error {
@@ -76,7 +76,7 @@ func (s *Service) RegisterTest(ctx context.Context, p core.Principal, input sp.T
 	})
 	return out, err
 }
-func (s *Service) TestSnapshot(ctx context.Context, p core.Principal, id string) (sp.Snapshot, error) {
+func (s *Service) TestSnapshot(ctx context.Context, p model.Principal, id string) (sp.Snapshot, error) {
 	var out sp.Snapshot
 	err := s.browser(ctx, p, "", "", id, func(_ pgx.Tx, r *record, t task, write bool) error {
 		out = permissions(r, write && active(t, r), s.now())
@@ -84,9 +84,9 @@ func (s *Service) TestSnapshot(ctx context.Context, p core.Principal, id string)
 	})
 	return out, err
 }
-func (s *Service) StopTest(ctx context.Context, p core.Principal, id string, input sp.TestStop) (sp.Snapshot, error) {
+func (s *Service) StopTest(ctx context.Context, p model.Principal, id string, input sp.TestStop) (sp.Snapshot, error) {
 	var out sp.Snapshot
-	if p.Kind != core.PATCredential {
+	if p.Kind != model.PATCredential {
 		return out, denied()
 	}
 	err := s.browser(ctx, p, "", "", id, func(tx pgx.Tx, r *record, _ task, _ bool) error {

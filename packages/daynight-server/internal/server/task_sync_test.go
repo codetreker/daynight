@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -178,7 +178,7 @@ func TestTaskSyncHTTPFullLimitAndDatabaseError(t *testing.T) {
 
 func TestTaskSyncDTOUTCAndExactVersion(t *testing.T) {
 	stamp := time.Date(2026, 10, 24, 1, 2, 3, 123456789, time.FixedZone("offset", 8*60*60))
-	got := taskSyncResponse(core.TaskSync{ObservedAt: stamp, Project: core.Project{CreatedAt: stamp, UpdatedAt: stamp}, ActorAccess: core.ProjectAccess{Role: core.ProjectAdmin, DirectGrant: &core.ProjectGrant{Version: 9223372036854775807, CreatedAt: stamp, UpdatedAt: stamp}}, Tasks: []core.TaskViewRecord{{Version: 9223372036854775807, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp}}})
+	got := taskSyncResponse(model.TaskSync{ObservedAt: stamp, Project: model.Project{CreatedAt: stamp, UpdatedAt: stamp}, ActorAccess: model.ProjectAccess{Role: model.ProjectAdmin, DirectGrant: &model.ProjectGrant{Version: 9223372036854775807, CreatedAt: stamp, UpdatedAt: stamp}}, Tasks: []model.TaskViewRecord{{Version: 9223372036854775807, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp}}})
 	if got.Tasks[0].Version != "9223372036854775807" || got.ObservedAt.Location() != time.UTC || got.Project.CreatedAt.Location() != time.UTC || got.Tasks[0].CreatedAt.Location() != time.UTC || got.Tasks[0].UpdatedAt.Location() != time.UTC || got.Tasks[0].StartedAt.Location() != time.UTC || got.Tasks[0].CompletedAt.Location() != time.UTC || got.Tasks[0].DependsOn == nil || got.Tasks[0].ExternalDependsOn == nil || got.Tasks[0].Properties == nil || len(got.Tasks[0].Properties) != 0 {
 		t.Fatalf("DTO conversion: %#v", got)
 	}

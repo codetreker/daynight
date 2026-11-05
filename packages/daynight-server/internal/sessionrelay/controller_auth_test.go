@@ -1,5 +1,6 @@
 package sessionrelay
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
 	"errors"
@@ -85,7 +86,7 @@ func TestControllerUpgradeAuthenticationRechecksGrantAuthority(t *testing.T) {
 				t.Fatal("changed grant authority authenticated", condition)
 			}
 			if condition == "storage_failure" {
-				var refusal *service.Fault
+				var refusal *model.Fault
 				if errors.As(err, &refusal) {
 					t.Fatal("storage failure was hidden as invalid credentials", err)
 				}

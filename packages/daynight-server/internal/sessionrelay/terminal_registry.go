@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
 	"github.com/jackc/pgx/v5"
 )
@@ -32,7 +32,7 @@ type terminalRecord struct {
 	ChannelEpoch         string
 	ControlEpoch         string
 	Control              *v2.ControlState
-	ControlActor         *core.Principal
+	ControlActor         *model.Principal
 	LastLeaseSeq         string
 	OperationSeq         int64
 	Snapshot             *v2.Snapshot `json:"-"`
@@ -57,15 +57,15 @@ func terminalEnvelope(r *terminalRecord, kind string, payload v2.Payload) v2.Mes
 	e.Type = kind
 	return v2.Message{Envelope: e, Payload: payload}
 }
-func terminalOwner(p core.Principal, r *terminalRecord) error {
-	if p.Kind != core.PATCredential || p.UserID != r.Owner.OwnerUserID {
+func terminalOwner(p model.Principal, r *terminalRecord) error {
+	if p.Kind != model.PATCredential || p.UserID != r.Owner.OwnerUserID {
 		return denied()
 	}
 	return nil
 }
 func terminalActive(t task, r *terminalRecord) bool {
 	w := t.Worker
-	return r.FinalizationID == nil && t.Status == "in_progress" && w != nil && w.State == core.WorkerActive && w.ClaimID == r.Envelope.ClaimID && w.UserID == r.Owner.OwnerUserID && w.WorkerID == r.Owner.WorkerID && w.WorktreeID == r.Owner.WorktreeID && w.AgentControlMode == core.AgentControlModeHerdr && string(w.Agent) == r.Owner.Provider
+	return r.FinalizationID == nil && t.Status == "in_progress" && w != nil && w.State == model.WorkerActive && w.ClaimID == r.Envelope.ClaimID && w.UserID == r.Owner.OwnerUserID && w.WorkerID == r.Owner.WorkerID && w.WorktreeID == r.Owner.WorktreeID && w.AgentControlMode == model.AgentControlModeHerdr && string(w.Agent) == r.Owner.Provider
 }
 func terminalRecordingReady(r *terminalRecord) bool {
 	rec := r.Recording[r.Envelope.ExecutionGeneration]
@@ -86,7 +86,7 @@ func saveTerminal(ctx context.Context, tx pgx.Tx, r *terminalRecord) error {
 	_, err := tx.Exec(ctx, `UPDATE task_sessions SET terminal_state=$2,last_seen=$3,server_instance=$4 WHERE id=$1 AND backend='herdr'`, r.Envelope.SessionID, encode(r), r.LastSeen, r.ServerInstance)
 	return err
 }
-func (s *Service) terminalAccess(ctx context.Context, p core.Principal, project, taskID, id string, finalize bool, fn func(pgx.Tx, *terminalRecord, task, bool) error) error {
+func (s *Service) terminalAccess(ctx context.Context, p model.Principal, project, taskID, id string, finalize bool, fn func(pgx.Tx, *terminalRecord, task, bool) error) error {
 	return s.transact(ctx, func(tx pgx.Tx) error {
 		t, deleted, err := scopeArchiveTask(ctx, tx, project, taskID, finalize)
 		if err != nil {
@@ -148,13 +148,13 @@ func terminalTime(t time.Time) string {
 
 // RegisterTerminal binds the original Worker to the shared Session registry.
 // Reconnect is a fenced, idempotent network transition, never a new native run.
-func (s *Service) RegisterTerminal(ctx context.Context, p core.Principal, project, taskID string, m v2.Message) (v2.Message, error) {
+func (s *Service) RegisterTerminal(ctx context.Context, p model.Principal, project, taskID string, m v2.Message) (v2.Message, error) {
 	var out v2.Message
 	if err := validTerminalMessage(m, "registration"); err != nil {
 		return out, err
 	}
 	in := m.Payload.(v2.Registration)
-	if p.Kind != core.PATCredential || in.Owner.OwnerUserID != p.UserID {
+	if p.Kind != model.PATCredential || in.Owner.OwnerUserID != p.UserID {
 		return out, denied()
 	}
 	if in.Owner.ProjectID != project || in.Owner.TaskID != taskID || s.Origin == "" || in.Owner.ServerOrigin != s.Origin {
@@ -270,7 +270,7 @@ func validRunProgression(old, nextRun v2.Run) error {
 
 // UpdateTerminalLedger grants exactly one next generation under the same lock as
 // finalization. A stopped generation and its segment ownership are immutable.
-func (s *Service) UpdateTerminalLedger(ctx context.Context, p core.Principal, project, taskID, id, epoch string, m v2.Message) (v2.Message, error) {
+func (s *Service) UpdateTerminalLedger(ctx context.Context, p model.Principal, project, taskID, id, epoch string, m v2.Message) (v2.Message, error) {
 	var out v2.Message
 	if err := validTerminalMessage(m, "generation_ledger"); err != nil {
 		return out, err
@@ -348,7 +348,7 @@ func (s *Service) UpdateTerminalLedger(ctx context.Context, p core.Principal, pr
 	})
 	return out, err
 }
-func (s *Service) FinalizeTerminal(ctx context.Context, p core.Principal, project, taskID, id, epoch string, m v2.Message) (v2.Message, error) {
+func (s *Service) FinalizeTerminal(ctx context.Context, p model.Principal, project, taskID, id, epoch string, m v2.Message) (v2.Message, error) {
 	var out v2.Message
 	if err := validTerminalMessage(m, "finalization"); err != nil {
 		return out, err
@@ -404,7 +404,7 @@ func (s *Service) FinalizeTerminal(ctx context.Context, p core.Principal, projec
 	return out, err
 }
 
-func (s *Service) UpdateTerminalRecording(ctx context.Context, p core.Principal, project, taskID, id, epoch string, m v2.Message) (v2.Message, error) {
+func (s *Service) UpdateTerminalRecording(ctx context.Context, p model.Principal, project, taskID, id, epoch string, m v2.Message) (v2.Message, error) {
 	var out v2.Message
 	if m.Type != "recording_responsibility" && m.Type != "recording_evidence" {
 		return out, fault("invalid_payload", "Expected recording responsibility or evidence.")
@@ -500,7 +500,7 @@ func (s *Service) UpdateTerminalRecording(ctx context.Context, p core.Principal,
 
 // BindTerminalConnection consumes a connection epoch once. Retrying registration
 // can recover its ACK, but opening another socket requires an explicit reconnect.
-func (s *Service) BindTerminalConnection(ctx context.Context, p core.Principal, project, taskID, id string, f v2.Envelope, epoch string) error {
+func (s *Service) BindTerminalConnection(ctx context.Context, p model.Principal, project, taskID, id string, f v2.Envelope, epoch string) error {
 	return s.terminalAccess(ctx, p, project, taskID, id, false, func(tx pgx.Tx, r *terminalRecord, t task, _ bool) error {
 		if err := terminalOwner(p, r); err != nil {
 			return err

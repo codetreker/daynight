@@ -321,7 +321,7 @@ upload HTML you trust with that authority.
 | Component | Role | Documentation |
 |---|---|---|
 | [`packages/daynight/`](packages/daynight/) | TypeScript CLI, task-management skill and Copilot review coordinator | [CLI manual](packages/daynight/README.md) |
-| [`packages/daynight-server/`](packages/daynight-server/) | Go service, authentication, memberships, PostgreSQL and file storage | [Server guide](packages/daynight-server/README.md) |
+| [`packages/daynight-server/`](packages/daynight-server/) | Go service, authentication, memberships, PostgreSQL and file storage | [Server guide](packages/daynight-server/README.md), [organization rules](docs/daynight-server.md) |
 | [`packages/daynight-web/`](packages/daynight-web/) | React/TypeScript browser workspace embedded in the service | [Web guide](packages/daynight-web/README.md) |
 | [`deployment/localhost/`](deployment/localhost/) | Persistent Docker Compose deployment | [Deployment guide](deployment/localhost/README.md) |
 | [`deployment/dev-ci/`](deployment/dev-ci/) | Disposable full-stack verification environment | [Dev-CI guide](deployment/dev-ci/README.md) |
@@ -482,6 +482,7 @@ for decision notes, scope choices and prose, and
 | `README.md` | Project purpose, capabilities, setup, development entry points and documentation conventions |
 | Package READMEs and `docs/development.md` | Component usage, development, release procedures and validation methods |
 | [`docs/ui-design.md`](docs/ui-design.md) | Shared UI design principles, examples and information boundaries |
+| [`docs/daynight-server.md`](docs/daynight-server.md) | Stable server code organization rules |
 | `docs/spec/` | Required product behavior and observable guarantees |
 | `docs/design/` | Current structure, mechanisms, rationale and implementation boundaries |
 | `docs/research/` | Investigations, evidence, sources and observation conditions |
@@ -501,6 +502,7 @@ must not be committed, including interactive previews composed from production
 components. Keep local prototypes in the task worktree's Git-ignored `.tmp/`
 and reviewable prototypes in their owning Daynight task's attachments.
 
-Specifications and designs use Chinese headings and prose while preserving
-technical literals. Other documents, skills, code, comments and commit messages
-use English unless explicitly instructed otherwise. Discuss work in Chinese.
+Specifications, designs, and the server organization rules use Chinese headings
+and prose while preserving technical literals. Other documents, skills, code,
+comments and commit messages use English unless explicitly instructed otherwise.
+Discuss work in Chinese.

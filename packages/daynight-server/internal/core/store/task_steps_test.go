@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -26,7 +26,7 @@ func TestTaskStepsMigrationPreservesExistingTaskAndAddsConstraints(t *testing.T)
 	}
 	database := &Store{Pool: pool}
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskInProgress)
+	task := queryTask(t, database, project.ID, 10, model.TaskInProgress)
 	var before, after string
 	if err := pool.QueryRow(ctx, `SELECT to_jsonb(t)::text FROM tasks t WHERE id=$1`, task.ID).Scan(&before); err != nil {
 		t.Fatal(err)
@@ -69,8 +69,8 @@ func TestTaskStepsParentAndRowsShareSnapshot(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
-	other := queryTask(t, database, project.ID, 11, core.TaskDone)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
+	other := queryTask(t, database, project.ID, 11, model.TaskDone)
 	seedStoreStep(t, database, task.ID, "00abcdef", 0)
 	seedStoreStep(t, database, other.ID, "00abcdef", 0)
 	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
@@ -91,10 +91,10 @@ func TestTaskStepsParentAndRowsShareSnapshot(t *testing.T) {
 		if err != nil || empty == nil || len(empty) != 0 {
 			t.Fatalf("empty: %+v %v", empty, err)
 		}
-		if _, err := snapshot.TaskStep(ctx, task.ID, "00000000"); !errors.Is(err, core.ErrNotFound) {
+		if _, err := snapshot.TaskStep(ctx, task.ID, "00000000"); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing child: %v", err)
 		}
-		if _, err := snapshot.TaskHeader(ctx, queryID(999), task.ID); !errors.Is(err, core.ErrNotFound) {
+		if _, err := snapshot.TaskHeader(ctx, queryID(999), task.ID); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("cross-project header: %v", err)
 		}
 		return nil
@@ -117,7 +117,7 @@ func TestTaskStepsStorageErrorsPropagate(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	seedStoreStep(t, database, task.ID, "00000000", 0)
 	mustQueryExec(t, database, `UPDATE task_steps SET created_at='infinity' WHERE task_id=$1`, task.ID)
 	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
@@ -151,7 +151,7 @@ func TestTaskStepsCommitLostReceiptKeepsUnknownAndCurrentFacts(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	transaction, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestTaskStepsCommitLostReceiptKeepsUnknownAndCurrentFacts(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if err := tx.InsertTaskStep(ctx, task.ID, core.TaskStep{ID: "abcdef01", Position: 0, Title: "Committed once", Status: core.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}); err != nil {
+		if err := tx.InsertTaskStep(ctx, task.ID, model.TaskStep{ID: "abcdef01", Position: 0, Title: "Committed once", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}); err != nil {
 			return err
 		}
 		if header.Version != task.Version {
@@ -204,7 +204,7 @@ func TestTaskStepsDeferredPositionFailureIsInternalAndRollsBack(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	seedStoreStep(t, database, task.ID, "00000000", 0)
 	err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
 		stamp, err := tx.ObservedAt(ctx)
@@ -232,7 +232,7 @@ func TestTaskStepsWriteStoreFailureChainsAndRollback(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	seedStoreStep(t, database, task.ID, "00000000", 0)
 	before := ""
 	state := func() string {
@@ -266,9 +266,9 @@ func TestTaskStepsWriteStoreFailureChainsAndRollback(t *testing.T) {
 					if _, err := tx.tx.Exec(ctx, `ALTER TABLE task_steps RENAME COLUMN position TO invalid_position`); err != nil {
 						return err
 					}
-					return tx.InsertTaskStep(ctx, task.ID, core.TaskStep{ID: "abcdef01", Position: 0, Title: "x", Status: core.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
+					return tx.InsertTaskStep(ctx, task.ID, model.TaskStep{ID: "abcdef01", Position: 0, Title: "x", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
 				case "insert":
-					return tx.InsertTaskStep(ctx, task.ID, core.TaskStep{ID: "00000000", Position: 0, Title: "x", Status: core.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
+					return tx.InsertTaskStep(ctx, task.ID, model.TaskStep{ID: "00000000", Position: 0, Title: "x", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
 				case "touch":
 					if _, err := tx.tx.Exec(ctx, `ALTER TABLE tasks RENAME COLUMN updated_at TO invalid_updated_at`); err != nil {
 						return err
@@ -283,7 +283,7 @@ func TestTaskStepsWriteStoreFailureChainsAndRollback(t *testing.T) {
 				t.Fatalf("store refusal completion: %+v %v", transaction, err)
 			}
 			if operation == "missing" {
-				if !errors.Is(err, core.ErrNotFound) {
+				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatal("missing touch marker lost")
 				}
 			} else {

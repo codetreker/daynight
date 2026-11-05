@@ -1,5 +1,6 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"bytes"
 	"context"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 func TestProjectGrantHTTPReceiptsAndIdentity(t *testing.T) {
@@ -117,9 +117,9 @@ func TestProjectGrantErrorTransactionOutcomes(t *testing.T) {
 		code   string
 	}{
 		{"unknown commit", &store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: context.DeadlineExceeded}, 503, "write_outcome_unknown"},
-		{"unknown cleanup", &store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: &service.Fault{Code: "version_conflict", Message: "private"}}, 503, "write_outcome_unknown"},
-		{"confirmed rollback", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &service.Fault{Code: "version_conflict", Message: "version conflict"}}, 409, "version_conflict"},
-		{"known rollback with cleanup failure", &store.TransactionError{Phase: "cleanup", CommitAttempted: true, CleanupFailed: true, Outcome: store.TransactionNotCommitted, Cause: &service.Fault{Code: "version_conflict", Message: "private"}}, 500, "internal_error"},
+		{"unknown cleanup", &store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: &model.Fault{Code: "version_conflict", Message: "private"}}, 503, "write_outcome_unknown"},
+		{"confirmed rollback", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &model.Fault{Code: "version_conflict", Message: "version conflict"}}, 409, "version_conflict"},
+		{"known rollback with cleanup failure", &store.TransactionError{Phase: "cleanup", CommitAttempted: true, CleanupFailed: true, Outcome: store.TransactionNotCommitted, Cause: &model.Fault{Code: "version_conflict", Message: "private"}}, 500, "internal_error"},
 		{"database failure", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: errors.New("private")}, 500, "internal_error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

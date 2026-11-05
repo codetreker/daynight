@@ -2,7 +2,7 @@ package service
 
 import (
 	"encoding/json"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"strings"
 	"testing"
 	"time"
@@ -18,11 +18,11 @@ func TestWorkerAssistantHostValidationRejectsUnknownProtocol(t *testing.T) {
 	}
 }
 
-func validAssistantHost() *core.WorkerAssistantHost {
-	return &core.WorkerAssistantHost{ProtocolVersion: 1, ObservedAt: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC), DefaultCwd: "/workspace", DefaultProvider: core.AgentCopilot, Providers: []core.WorkerAssistantProvider{
-		{Provider: core.AgentCodex, Available: true, Args: []string{}},
-		{Provider: core.AgentClaude, Reason: workerValidationValue("not_found"), Args: []string{}},
-		{Provider: core.AgentCopilot, Available: true, Model: workerValidationValue("gpt-5"), Args: []string{"--effort", "high"}},
+func validAssistantHost() *model.WorkerAssistantHost {
+	return &model.WorkerAssistantHost{ProtocolVersion: 1, ObservedAt: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC), DefaultCwd: "/workspace", DefaultProvider: model.AgentCopilot, Providers: []model.WorkerAssistantProvider{
+		{Provider: model.AgentCodex, Available: true, Args: []string{}},
+		{Provider: model.AgentClaude, Reason: workerValidationValue("not_found"), Args: []string{}},
+		{Provider: model.AgentCopilot, Available: true, Model: workerValidationValue("gpt-5"), Args: []string{"--effort", "high"}},
 	}}
 }
 
@@ -33,29 +33,29 @@ func TestWorkerAssistantHostDomainValidation(t *testing.T) {
 	if _, err := validateWorkerReport(report); err != nil {
 		t.Fatal(err)
 	}
-	cases := map[string]func(*core.WorkerAssistantHost){
-		"protocol":              func(h *core.WorkerAssistantHost) { h.ProtocolVersion = 2 },
-		"time":                  func(h *core.WorkerAssistantHost) { h.ObservedAt = time.Time{} },
-		"default provider":      func(h *core.WorkerAssistantHost) { h.DefaultProvider = "unknown" },
-		"relative directory":    func(h *core.WorkerAssistantHost) { h.DefaultCwd = "workspace" },
-		"control directory":     func(h *core.WorkerAssistantHost) { h.DefaultCwd = "/work\nspace" },
-		"large directory":       func(h *core.WorkerAssistantHost) { h.DefaultCwd = "/" + strings.Repeat("x", 4096) },
-		"missing provider":      func(h *core.WorkerAssistantHost) { h.Providers = h.Providers[:2] },
-		"unknown provider":      func(h *core.WorkerAssistantHost) { h.Providers[0].Provider = "unknown" },
-		"duplicate provider":    func(h *core.WorkerAssistantHost) { h.Providers[0].Provider = core.AgentCopilot },
-		"available reason":      func(h *core.WorkerAssistantHost) { h.Providers[0].Reason = workerValidationValue("timeout") },
-		"unavailable no reason": func(h *core.WorkerAssistantHost) { h.Providers[1].Reason = nil },
-		"unknown reason":        func(h *core.WorkerAssistantHost) { h.Providers[1].Reason = workerValidationValue("credential-secret") },
-		"blank model":           func(h *core.WorkerAssistantHost) { h.Providers[0].Model = workerValidationValue(" ") },
-		"large model": func(h *core.WorkerAssistantHost) {
+	cases := map[string]func(*model.WorkerAssistantHost){
+		"protocol":              func(h *model.WorkerAssistantHost) { h.ProtocolVersion = 2 },
+		"time":                  func(h *model.WorkerAssistantHost) { h.ObservedAt = time.Time{} },
+		"default provider":      func(h *model.WorkerAssistantHost) { h.DefaultProvider = "unknown" },
+		"relative directory":    func(h *model.WorkerAssistantHost) { h.DefaultCwd = "workspace" },
+		"control directory":     func(h *model.WorkerAssistantHost) { h.DefaultCwd = "/work\nspace" },
+		"large directory":       func(h *model.WorkerAssistantHost) { h.DefaultCwd = "/" + strings.Repeat("x", 4096) },
+		"missing provider":      func(h *model.WorkerAssistantHost) { h.Providers = h.Providers[:2] },
+		"unknown provider":      func(h *model.WorkerAssistantHost) { h.Providers[0].Provider = "unknown" },
+		"duplicate provider":    func(h *model.WorkerAssistantHost) { h.Providers[0].Provider = model.AgentCopilot },
+		"available reason":      func(h *model.WorkerAssistantHost) { h.Providers[0].Reason = workerValidationValue("timeout") },
+		"unavailable no reason": func(h *model.WorkerAssistantHost) { h.Providers[1].Reason = nil },
+		"unknown reason":        func(h *model.WorkerAssistantHost) { h.Providers[1].Reason = workerValidationValue("credential-secret") },
+		"blank model":           func(h *model.WorkerAssistantHost) { h.Providers[0].Model = workerValidationValue(" ") },
+		"large model": func(h *model.WorkerAssistantHost) {
 			h.Providers[0].Model = workerValidationValue(strings.Repeat("x", 257))
 		},
-		"nil args":              func(h *core.WorkerAssistantHost) { h.Providers[0].Args = nil },
-		"large args":            func(h *core.WorkerAssistantHost) { h.Providers[0].Args = make([]string, 129) },
-		"blank argument":        func(h *core.WorkerAssistantHost) { h.Providers[0].Args = []string{""} },
-		"invalid UTF8 argument": func(h *core.WorkerAssistantHost) { h.Providers[0].Args = []string{string([]byte{255})} },
-		"large argument":        func(h *core.WorkerAssistantHost) { h.Providers[0].Args = []string{strings.Repeat("x", 4097)} },
-		"unsupported configuration": func(h *core.WorkerAssistantHost) {
+		"nil args":              func(h *model.WorkerAssistantHost) { h.Providers[0].Args = nil },
+		"large args":            func(h *model.WorkerAssistantHost) { h.Providers[0].Args = make([]string, 129) },
+		"blank argument":        func(h *model.WorkerAssistantHost) { h.Providers[0].Args = []string{""} },
+		"invalid UTF8 argument": func(h *model.WorkerAssistantHost) { h.Providers[0].Args = []string{string([]byte{255})} },
+		"large argument":        func(h *model.WorkerAssistantHost) { h.Providers[0].Args = []string{strings.Repeat("x", 4097)} },
+		"unsupported configuration": func(h *model.WorkerAssistantHost) {
 			h.Providers[1].Reason = workerValidationValue("unsupported_arguments")
 			h.Providers[1].Args = []string{"--token", "secret"}
 		},
@@ -71,7 +71,7 @@ func TestWorkerAssistantHostDomainValidation(t *testing.T) {
 	}
 	for _, path := range []string{`C:\work`, `c:/work`, `\\server\share\work`} {
 		report.Telemetry.AssistantHost = validAssistantHost()
-		report.Telemetry.Platform = core.PlatformWindows
+		report.Telemetry.Platform = model.PlatformWindows
 		report.Telemetry.AssistantHost.DefaultCwd = path
 		if _, err := validateWorkerReport(report); err != nil {
 			t.Fatal(path, err)
@@ -105,7 +105,7 @@ func TestWorkerAssistantHostStateKeepsLivenessAndPreflightSeparate(t *testing.T)
 		{name: "inside boundary", host: true, reportAge: 119 * time.Second, probeAge: 119 * time.Second, want: "available"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			worker := core.WorkerSnapshot{LastReportedAt: now.Add(-tc.reportAge)}
+			worker := model.WorkerSnapshot{LastReportedAt: now.Add(-tc.reportAge)}
 			if tc.host {
 				worker.Telemetry.AssistantHost = validAssistantHost()
 				worker.Telemetry.AssistantHost.ObservedAt = now.Add(-tc.probeAge)

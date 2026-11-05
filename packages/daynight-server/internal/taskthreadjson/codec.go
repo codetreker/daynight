@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 const (
@@ -14,7 +14,7 @@ const (
 	PageLimit    = 256 * 1024
 )
 
-func messageDTO(message core.ThreadMessage, details bool) api.ThreadMessage {
+func messageDTO(message model.ThreadMessage, details bool) api.ThreadMessage {
 	result := api.ThreadMessage{
 		ID: message.ID,
 		Author: api.ThreadAuthor{
@@ -31,11 +31,11 @@ func messageDTO(message core.ThreadMessage, details bool) api.ThreadMessage {
 	return result
 }
 
-func EncodeMessage(message core.ThreadMessage, details bool) ([]byte, error) {
+func EncodeMessage(message model.ThreadMessage, details bool) ([]byte, error) {
 	return json.Marshal(messageDTO(message, details))
 }
 
-func EncodePage(page core.ThreadPage, details bool) ([]byte, error) {
+func EncodePage(page model.ThreadPage, details bool) ([]byte, error) {
 	result := api.ThreadPage{Items: make([]api.ThreadMessage, 0, len(page.Items)), HasMoreBefore: page.HasMoreBefore, HasMoreAfter: page.HasMoreAfter}
 	for _, message := range page.Items {
 		result.Items = append(result.Items, messageDTO(message, details))

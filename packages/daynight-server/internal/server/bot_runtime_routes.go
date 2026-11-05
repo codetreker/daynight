@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func (h *sessionRoutes) registerBotRuntimeRoutes(mux *http.ServeMux) {
@@ -17,7 +17,7 @@ func (h *sessionRoutes) registerBotRuntimeRoutes(mux *http.ServeMux) {
 	}
 }
 
-func (h *sessionRoutes) completeBotDeletion(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) completeBotDeletion(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	body, err := relayBody(w, r)
 	if err != nil {
 		h.failure(w, r, err)
@@ -32,7 +32,7 @@ func (h *sessionRoutes) completeBotDeletion(w http.ResponseWriter, r *http.Reque
 	h.result(w, r, http.StatusOK, botResponse(result), err)
 }
 
-func (h *sessionRoutes) registerBot(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) registerBot(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	body, err := relayBody(w, r)
 	if err != nil {
 		h.failure(w, r, err)
@@ -47,7 +47,7 @@ func (h *sessionRoutes) registerBot(w http.ResponseWriter, r *http.Request, p co
 	h.result(w, r, http.StatusOK, map[string]any{"bot": botResponse(result.Bot), "session": result.Session}, err)
 }
 
-func (h *sessionRoutes) grantBot(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) grantBot(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	body, err := relayBody(w, r)
 	if err != nil {
 		h.failure(w, r, err)
@@ -62,7 +62,7 @@ func (h *sessionRoutes) grantBot(w http.ResponseWriter, r *http.Request, p core.
 	h.result(w, r, http.StatusOK, result, err)
 }
 
-func (h *sessionRoutes) reportBot(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) reportBot(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	body, err := relayBody(w, r)
 	if err != nil {
 		h.failure(w, r, err)

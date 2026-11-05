@@ -4,7 +4,7 @@ import (
 	"context"
 	"reflect"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
 	"github.com/jackc/pgx/v5"
 )
@@ -33,7 +33,7 @@ func automationRecoveryMessage(r *terminalRecord, state v2.AutomationRecoverySta
 
 // TerminalAutomationRecovery observes the original receipt. A consumed receipt
 // identifies its exact new fence; it does not grant rights on a later connection.
-func (s *Service) TerminalAutomationRecovery(ctx context.Context, p core.Principal, project, taskID, id, recoveryID string) (v2.Message, error) {
+func (s *Service) TerminalAutomationRecovery(ctx context.Context, p model.Principal, project, taskID, id, recoveryID string) (v2.Message, error) {
 	var out v2.Message
 	err := s.terminalAccess(ctx, p, project, taskID, id, true, func(_ pgx.Tx, r *terminalRecord, _ task, _ bool) error {
 		if err := terminalOwner(p, r); err != nil {
@@ -52,7 +52,7 @@ func (s *Service) TerminalAutomationRecovery(ctx context.Context, p core.Princip
 // UpdateTerminalRecovery prepares while the old writer is online and consumes
 // only after its recorded stop and exact adjacent native-conversation recovery.
 // It never relaxes the separate human handback or combined UI capability gate.
-func (s *Service) UpdateTerminalRecovery(ctx context.Context, p core.Principal, project, taskID, id, epoch string, m v2.Message) (v2.Message, error) {
+func (s *Service) UpdateTerminalRecovery(ctx context.Context, p model.Principal, project, taskID, id, epoch string, m v2.Message) (v2.Message, error) {
 	var out v2.Message
 	if m.Type != "automation_recovery_prepare" && m.Type != "automation_recovery" {
 		return out, conflict()

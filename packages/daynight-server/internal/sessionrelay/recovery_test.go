@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
 )
@@ -229,7 +229,7 @@ func TestCurrentSessionsAndCredentialRevocation(t *testing.T) {
 		t.Fatal("registered Herdr")
 	}
 	invalid := f.p
-	invalid.Kind = core.CredentialKind("controller")
+	invalid.Kind = model.CredentialKind("controller")
 	if _, err = f.s.Current(ctx, invalid, f.project, f.task); err == nil {
 		t.Fatal("scoped identity used general API")
 	}

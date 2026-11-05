@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 type taskResult struct {
-	task core.Task
+	task model.Task
 	err  error
 }
 
@@ -51,7 +51,7 @@ func receiveTaskResult(t *testing.T, ctx context.Context, result <-chan taskResu
 	}
 }
 
-func competeTaskWrites(t *testing.T, database *store.Store, projectID string, operations ...func(context.Context) (core.Task, error)) []taskResult {
+func competeTaskWrites(t *testing.T, database *store.Store, projectID string, operations ...func(context.Context) (model.Task, error)) []taskResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -96,10 +96,10 @@ func TestConcurrentReverseDependenciesCannotCreateCycle(t *testing.T) {
 	a := createTask(t, tasks, principal, project.ID, "A")
 	b := createTask(t, tasks, principal, project.ID, "B")
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, principal, project.ID, a.ID, UpdateTask{Version: a.Version, DependsOn: pointer([]string{b.ID})})
 		},
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, principal, project.ID, b.ID, UpdateTask{Version: b.Version, DependsOn: pointer([]string{a.ID})})
 		})
 	assertOneTaskWinner(t, results, "dependency_cycle")
@@ -119,36 +119,36 @@ func TestConcurrentDependencyReplacementAndStartPreserveStateInvariant(t *testin
 	dependent := createTask(t, tasks, principal, project.ID, "Dependent")
 
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, principal, project.ID, dependent.ID, UpdateTask{Version: dependent.Version, DependsOn: pointer([]string{predecessor.ID})})
 		},
-		func(ctx context.Context) (core.Task, error) {
-			return tasks.SetStatus(ctx, principal, project.ID, dependent.ID, SetTaskStatus{Version: dependent.Version, Status: core.TaskInProgress})
+		func(ctx context.Context) (model.Task, error) {
+			return tasks.SetStatus(ctx, principal, project.ID, dependent.ID, SetTaskStatus{Version: dependent.Version, Status: model.TaskInProgress})
 		})
 	assertOneTaskWinner(t, results, "version_conflict")
 	after, err := tasks.Get(context.Background(), principal, project.ID, dependent.ID)
 	if err != nil || after.Version != dependent.Version+1 {
 		t.Fatalf("concurrent dependency/start result: %#v, %v", after, err)
 	}
-	if after.Status == core.TaskInProgress {
+	if after.Status == model.TaskInProgress {
 		if len(after.DependsOn) != 0 || len(after.BlockedBy) != 0 {
 			t.Fatalf("started task acquired unfinished prerequisite: %#v", after)
 		}
-	} else if after.Status != core.TaskTodo || len(after.DependsOn) != 1 || after.DependsOn[0] != predecessor.ID || after.Ready {
+	} else if after.Status != model.TaskTodo || len(after.DependsOn) != 1 || after.DependsOn[0] != predecessor.ID || after.Ready {
 		t.Fatalf("dependency replacement lost blocked todo state: %#v", after)
 	}
 	assertTaskUnchanged(t, tasks, principal, predecessor)
 }
 
 func TestConcurrentSetStatusSameVersionOnlyChangesOnce(t *testing.T) {
-	for _, to := range []core.TaskStatus{core.TaskTodo, core.TaskInProgress, core.TaskDone} {
+	for _, to := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 		t.Run(string(to), func(t *testing.T) {
 			tasks, database, project, _, principal := taskService(t)
 			target := createTask(t, tasks, principal, project.ID, "Concurrent status")
-			if to == core.TaskTodo {
+			if to == model.TaskTodo {
 				target = startTask(t, tasks, principal, target)
 			}
-			write := func(ctx context.Context) (core.Task, error) {
+			write := func(ctx context.Context) (model.Task, error) {
 				return tasks.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: to})
 			}
 			results := competeTaskWrites(t, database, project.ID, write, write)
@@ -164,8 +164,8 @@ func TestConcurrentSetStatusSameVersionOnlyChangesOnce(t *testing.T) {
 func TestConcurrentSameStatusIsReadOnly(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	target := createTask(t, tasks, principal, project.ID, "Same status")
-	write := func(ctx context.Context) (core.Task, error) {
-		return tasks.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: core.TaskTodo})
+	write := func(ctx context.Context) (model.Task, error) {
+		return tasks.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: model.TaskTodo})
 	}
 	for _, result := range competeTaskWrites(t, database, project.ID, write, write) {
 		if result.err != nil || result.task.Version != target.Version {
@@ -179,10 +179,10 @@ func TestConcurrentSameVersionUpdatesOnlyChangeOnce(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	target := createTask(t, tasks, principal, project.ID, "Original")
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version, Title: pointer("First")})
 		},
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version, Title: pointer("Second")})
 		})
 	assertOneTaskWinner(t, results, "version_conflict")
@@ -194,7 +194,7 @@ func TestConcurrentSameVersionUpdatesOnlyChangeOnce(t *testing.T) {
 
 func TestConcurrentReopenAndSuccessorStartPreserveStateInvariant(t *testing.T) {
 	for _, external := range []bool{false, true} {
-		for _, to := range []core.TaskStatus{core.TaskInProgress, core.TaskDone} {
+		for _, to := range []model.TaskStatus{model.TaskInProgress, model.TaskDone} {
 			t.Run(string(to)+fmt.Sprint(external), func(t *testing.T) {
 				tasks, database, project, _, principal := taskService(t)
 				predecessor := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Prerequisite"))
@@ -203,10 +203,10 @@ func TestConcurrentReopenAndSuccessorStartPreserveStateInvariant(t *testing.T) {
 					successor = updateTask(t, tasks, principal, successor, UpdateTask{ExternalDependsOn: pointer([]string{predecessor.ID})})
 				}
 				results := competeTaskWrites(t, database, project.ID,
-					func(ctx context.Context) (core.Task, error) {
-						return tasks.SetStatus(ctx, principal, project.ID, predecessor.ID, SetTaskStatus{Version: predecessor.Version, Status: core.TaskTodo})
+					func(ctx context.Context) (model.Task, error) {
+						return tasks.SetStatus(ctx, principal, project.ID, predecessor.ID, SetTaskStatus{Version: predecessor.Version, Status: model.TaskTodo})
 					},
-					func(ctx context.Context) (core.Task, error) {
+					func(ctx context.Context) (model.Task, error) {
 						return tasks.SetStatus(ctx, principal, project.ID, successor.ID, SetTaskStatus{Version: successor.Version, Status: to})
 					})
 				assertOneTaskWinner(t, results, "dependency_unsatisfied")
@@ -218,7 +218,7 @@ func TestConcurrentReopenAndSuccessorStartPreserveStateInvariant(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if afterSuccessor.Status != core.TaskTodo && afterPredecessor.Status != core.TaskDone {
+				if afterSuccessor.Status != model.TaskTodo && afterPredecessor.Status != model.TaskDone {
 					t.Fatalf("active successor has reopened prerequisite: %#v %#v", afterPredecessor, afterSuccessor)
 				}
 				if afterPredecessor.Version+afterSuccessor.Version != predecessor.Version+successor.Version+1 {
@@ -273,7 +273,7 @@ func TestTaskLockWaitCancellationAndIndependentProjectProgress(t *testing.T) {
 
 func TestConcurrentReopenAndActiveSuccessorEdgeWritePreserveInvariant(t *testing.T) {
 	for _, external := range []bool{false, true} {
-		for _, activeStatus := range []core.TaskStatus{core.TaskInProgress, core.TaskDone} {
+		for _, activeStatus := range []model.TaskStatus{model.TaskInProgress, model.TaskDone} {
 			t.Run(string(activeStatus)+fmt.Sprint(external), func(t *testing.T) {
 				tasks, database, project, _, principal := taskService(t)
 				predecessor := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Predecessor"))
@@ -284,10 +284,10 @@ func TestConcurrentReopenAndActiveSuccessorEdgeWritePreserveInvariant(t *testing
 					externalDependencies = dependencies
 				}
 				results := competeTaskWrites(t, database, project.ID,
-					func(ctx context.Context) (core.Task, error) {
-						return tasks.SetStatus(ctx, principal, project.ID, predecessor.ID, SetTaskStatus{Version: predecessor.Version, Status: core.TaskTodo})
+					func(ctx context.Context) (model.Task, error) {
+						return tasks.SetStatus(ctx, principal, project.ID, predecessor.ID, SetTaskStatus{Version: predecessor.Version, Status: model.TaskTodo})
 					},
-					func(ctx context.Context) (core.Task, error) {
+					func(ctx context.Context) (model.Task, error) {
 						return tasks.Update(ctx, principal, project.ID, successor.ID, UpdateTask{Version: successor.Version, DependsOn: &dependencies, ExternalDependsOn: &externalDependencies})
 					})
 				assertOneTaskWinner(t, results, "dependency_unsatisfied")
@@ -299,7 +299,7 @@ func TestConcurrentReopenAndActiveSuccessorEdgeWritePreserveInvariant(t *testing
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(afterSuccessor.DependsOn) > 0 && afterPredecessor.Status != core.TaskDone {
+				if len(afterSuccessor.DependsOn) > 0 && afterPredecessor.Status != model.TaskDone {
 					t.Fatal("active successor gained unfinished prerequisite")
 				}
 				if afterPredecessor.Version+afterSuccessor.Version != predecessor.Version+successor.Version+1 {

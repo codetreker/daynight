@@ -607,7 +607,7 @@ packages/daynight-web/
 
 packages/daynight-server/
   api/task_graph.go                 HTTP 图 DTO
-  internal/core/task_graph.go       无传输依赖的读取模型
+  internal/core/model/task_graph.go 无传输依赖的读取模型
   internal/core/store/task_graph.go PostgreSQL 快照查询
   internal/service/task_graph.go    图读取编排、上限与统计
   internal/server/task_graph.go     图 HTTP handler 与 DTO 转换

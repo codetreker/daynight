@@ -1,5 +1,6 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"bytes"
 	"context"
@@ -203,9 +204,9 @@ func TestTeamHTTPOutcomeClassificationAndResponseFailures(t *testing.T) {
 	}{
 		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: context.DeadlineExceeded}, 503, "write_outcome_unknown"},
 		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: &pgconn.PgError{Code: "08006", Message: "private database failure"}}, 503, "write_outcome_unknown"},
-		{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: &service.Fault{Code: "forbidden", Message: "private refusal"}}, 500, "internal_error"},
+		{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: &model.Fault{Code: "forbidden", Message: "private refusal"}}, 500, "internal_error"},
 		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionNotCommitted, Cause: errors.New("private rolled back")}, 500, "internal_error"},
-		{&service.Fault{Code: "team_not_empty", Message: "Transfer projects first"}, 409, "team_not_empty"},
+		{&model.Fault{Code: "team_not_empty", Message: "Transfer projects first"}, 409, "team_not_empty"},
 	} {
 		w := httptest.NewRecorder()
 		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeTeamError(w, r, logger, "rename", test.err) })).ServeHTTP(w, request)

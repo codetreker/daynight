@@ -5,38 +5,38 @@ import (
 	"slices"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 const workerSafeInteger = int64(1<<53 - 1)
 
 var workerProbeCodes = []string{"not_found", "permission_denied", "timeout", "command_failed", "invalid_output", "invalid_sample", "out_of_range", "io_error", "unavailable"}
 
-func validateWorkerReport(input core.WorkerReport) (core.WorkerReport, error) {
+func validateWorkerReport(input model.WorkerReport) (model.WorkerReport, error) {
 	telemetry := &input.Telemetry
 	machineID, err := CanonicalID(telemetry.Machine.ID)
 	if err != nil {
-		return core.WorkerReport{}, err
+		return model.WorkerReport{}, err
 	}
 	telemetry.Machine.ID = machineID
 	if !workerText(telemetry.Machine.Name) || !workerText(telemetry.WorkingDirectory) || !workerText(telemetry.Versions.Daynight) {
-		return core.WorkerReport{}, invalidInput("Worker machine name, working directory and Daynight version must be nonempty UTF-8 text without NUL.")
+		return model.WorkerReport{}, invalidInput("Worker machine name, working directory and Daynight version must be nonempty UTF-8 text without NUL.")
 	}
 	if !telemetry.Platform.Valid() || !workerReportTime(telemetry.SampledAt) {
-		return core.WorkerReport{}, invalidInput("Worker platform and sample time are invalid.")
+		return model.WorkerReport{}, invalidInput("Worker platform and sample time are invalid.")
 	}
 	checks := []error{
 		validateWorkerAssistantHost(telemetry.AssistantHost, telemetry.Platform),
-		validateWorkerProbe(telemetry.OS, "", func(value core.WorkerOS) bool {
+		validateWorkerProbe(telemetry.OS, "", func(value model.WorkerOS) bool {
 			return workerText(value.Type) && workerText(value.Release) && workerText(value.Version) && workerText(value.Arch)
 		}),
-		validateWorkerProbe(telemetry.CPU, "", func(value core.WorkerCPU) bool {
+		validateWorkerProbe(telemetry.CPU, "", func(value model.WorkerCPU) bool {
 			return workerText(value.Model) && value.LogicalProcessors > 0 && value.LogicalProcessors <= workerSafeInteger && !math.IsNaN(value.UsagePercent) && !math.IsInf(value.UsagePercent, 0) && value.UsagePercent >= 0 && value.UsagePercent <= 100
 		}),
-		validateWorkerProbe(telemetry.Memory, "", func(value core.WorkerMemory) bool {
+		validateWorkerProbe(telemetry.Memory, "", func(value model.WorkerMemory) bool {
 			return workerBytes(value.UsedBytes) && workerBytes(value.TotalBytes) && value.UsedBytes <= value.TotalBytes
 		}),
-		validateWorkerProbe(telemetry.Disk, "", func(value core.WorkerDisk) bool {
+		validateWorkerProbe(telemetry.Disk, "", func(value model.WorkerDisk) bool {
 			return workerBytes(value.AvailableBytes) && workerBytes(value.TotalBytes) && value.AvailableBytes <= value.TotalBytes
 		}),
 		validateWorkerProbe(telemetry.Versions.Herdr, "not_running", workerText),
@@ -45,7 +45,7 @@ func validateWorkerReport(input core.WorkerReport) (core.WorkerReport, error) {
 	}
 	for _, err := range checks {
 		if err != nil {
-			return core.WorkerReport{}, err
+			return model.WorkerReport{}, err
 		}
 	}
 	if input.TaskInventory == nil {
@@ -53,7 +53,7 @@ func validateWorkerReport(input core.WorkerReport) (core.WorkerReport, error) {
 	}
 	inventory := *input.TaskInventory
 	if !workerReportTime(inventory.ObservedAt) || inventory.Claims == nil {
-		return core.WorkerReport{}, invalidInput("Task inventory must contain an observation time and an explicit claims array.")
+		return model.WorkerReport{}, invalidInput("Task inventory must contain an observation time and an explicit claims array.")
 	}
 	inventory.Claims = slices.Clone(inventory.Claims)
 	seen := make(map[string]bool, len(inventory.Claims))
@@ -61,12 +61,12 @@ func validateWorkerReport(input core.WorkerReport) (core.WorkerReport, error) {
 		for _, destination := range []*string{&reference.ProjectID, &reference.TaskID, &reference.ClaimID} {
 			id, err := CanonicalID(*destination)
 			if err != nil {
-				return core.WorkerReport{}, err
+				return model.WorkerReport{}, err
 			}
 			*destination = id
 		}
 		if seen[reference.TaskID] {
-			return core.WorkerReport{}, invalidInput("Task inventory contains duplicate task references.")
+			return model.WorkerReport{}, invalidInput("Task inventory contains duplicate task references.")
 		}
 		seen[reference.TaskID] = true
 		inventory.Claims[index] = reference
@@ -81,7 +81,7 @@ func workerReportTime(value time.Time) bool {
 
 func workerBytes(value int64) bool { return value >= 0 && value <= workerSafeInteger }
 
-func validateWorkerProbe[T any](probe core.WorkerProbe[T], special string, valid func(T) bool) error {
+func validateWorkerProbe[T any](probe model.WorkerProbe[T], special string, valid func(T) bool) error {
 	if !workerReportTime(probe.CheckedAt) {
 		return invalidInput("Probe checkedAt must be a valid observation time.")
 	}

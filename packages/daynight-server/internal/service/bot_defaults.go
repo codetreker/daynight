@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -13,23 +13,23 @@ import (
 type BotDefaults struct {
 	ObservedAt    time.Time
 	WorkerID      *string
-	Configuration *core.BotConfiguration
+	Configuration *model.BotConfiguration
 	Reason        *string
 	Workers       []BotWorkerDefaults
 }
 
 type BotWorkerDefaults struct {
 	WorkerID      string
-	Machine       core.WorkerMachine
-	Platform      core.TaskPlatform
+	Machine       model.WorkerMachine
+	Platform      model.TaskPlatform
 	State         string
 	Reason        *string
-	Configuration *core.BotConfiguration
-	Providers     []core.WorkerAssistantProvider
+	Configuration *model.BotConfiguration
+	Providers     []model.WorkerAssistantProvider
 }
 
 // Defaults reads current owner-scoped choices without recording a preference.
-func (s *Bots) Defaults(ctx context.Context, principal core.Principal, workerID *string) (BotDefaults, error) {
+func (s *Bots) Defaults(ctx context.Context, principal model.Principal, workerID *string) (BotDefaults, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return BotDefaults{}, err
 	}
@@ -49,7 +49,7 @@ func (s *Bots) Defaults(ctx context.Context, principal core.Principal, workerID 
 		if err != nil {
 			return err
 		}
-		result, err = resolveBotDefaults(input, core.BotOverrides{WorkerID: workerID})
+		result, err = resolveBotDefaults(input, model.BotOverrides{WorkerID: workerID})
 		return err
 	})
 	if err != nil {
@@ -60,11 +60,11 @@ func (s *Bots) Defaults(ctx context.Context, principal core.Principal, workerID 
 
 // CreateResolved resolves only the original missing identity. Identical retries
 // return the persisted definition even when its Worker is no longer available.
-func (s *Bots) CreateResolved(ctx context.Context, principal core.Principal, input CreateBot) (core.Bot, error) {
+func (s *Bots) CreateResolved(ctx context.Context, principal model.Principal, input CreateBot) (model.Bot, error) {
 	return s.create(ctx, principal, input, true)
 }
 
-func resolveBotDefaults(input core.BotDefaultsInput, overrides core.BotOverrides) (BotDefaults, error) {
+func resolveBotDefaults(input model.BotDefaultsInput, overrides model.BotOverrides) (BotDefaults, error) {
 	result := BotDefaults{ObservedAt: input.ObservedAt, Workers: make([]BotWorkerDefaults, 0, len(input.Workers))}
 	for _, worker := range input.Workers {
 		result.Workers = append(result.Workers, resolveBotWorker(worker, input.ObservedAt, input.WorkerPreferences[worker.WorkerID], overrides))
@@ -101,9 +101,9 @@ func selectBotWorker(result BotDefaults, worker BotWorkerDefaults) BotDefaults {
 	return result
 }
 
-func resolveBotWorker(worker core.WorkerSnapshot, now time.Time, preference core.BotWorkerPreference, overrides core.BotOverrides) BotWorkerDefaults {
+func resolveBotWorker(worker model.WorkerSnapshot, now time.Time, preference model.BotWorkerPreference, overrides model.BotOverrides) BotWorkerDefaults {
 	result := BotWorkerDefaults{WorkerID: worker.WorkerID, Machine: worker.Telemetry.Machine, Platform: worker.Telemetry.Platform,
-		State: WorkerAssistantHostState(worker, now), Providers: []core.WorkerAssistantProvider{}}
+		State: WorkerAssistantHostState(worker, now), Providers: []model.WorkerAssistantProvider{}}
 	host := worker.Telemetry.AssistantHost
 	if host != nil {
 		result.Providers = host.Providers
@@ -144,7 +144,7 @@ func resolveBotWorker(worker core.WorkerSnapshot, now time.Time, preference core
 			return result
 		}
 		// Model and arguments always come from this Worker's selected provider.
-		result.Configuration = &core.BotConfiguration{WorkerID: worker.WorkerID, Cwd: cwd, Provider: provider, Model: candidate.Model, Args: append([]string{}, candidate.Args...)}
+		result.Configuration = &model.BotConfiguration{WorkerID: worker.WorkerID, Cwd: cwd, Provider: provider, Model: candidate.Model, Args: append([]string{}, candidate.Args...)}
 		return result
 	}
 	reason := "provider_unavailable"
@@ -152,17 +152,17 @@ func resolveBotWorker(worker core.WorkerSnapshot, now time.Time, preference core
 	return result
 }
 
-func resolveBotCreation(ctx context.Context, tx *store.BotTx, principal core.Principal, input CreateBot) (core.BotConfiguration, error) {
+func resolveBotCreation(ctx context.Context, tx *store.BotTx, principal model.Principal, input CreateBot) (model.BotConfiguration, error) {
 	defaults, err := tx.BotDefaults(ctx, principal.UserID)
 	if err != nil {
-		return core.BotConfiguration{}, err
+		return model.BotConfiguration{}, err
 	}
 	resolved, err := resolveBotDefaults(defaults, input.Overrides)
 	if err != nil {
-		return core.BotConfiguration{}, err
+		return model.BotConfiguration{}, err
 	}
 	if resolved.Configuration == nil {
-		return core.BotConfiguration{}, botConflict(fmt.Sprintf("Bot configuration is unavailable: %s. Read current defaults before submitting a new request.", *resolved.Reason))
+		return model.BotConfiguration{}, botConflict(fmt.Sprintf("Bot configuration is unavailable: %s. Read current defaults before submitting a new request.", *resolved.Reason))
 	}
 	return *resolved.Configuration, nil
 }
