@@ -32,6 +32,14 @@ ledger hash remain mandatory. The execution driver receives the successful input
 receipt before ledger reconciliation can fail, so a failed publication remains
 visible without returning an already transmitted assignment to its pending queue.
 
+Restart topology is projected from the original hash-linked run and segment
+registrations. Adjacent generations retain a boundary even when preparation
+stopped before a sampler opened; their absent segment endpoints remain null.
+Original segment links must still match their actual preceding segments. This
+preserves empty leading, intermediate and trailing generations without inventing
+observation coverage, rewriting the journal or weakening archive validation.
+Both interval gaps and these boundaries count against capture and metadata limits.
+
 The original Session registers recording responsibility before native launch.
 After stopping it publishes closed evidence, then freezes one finalization
 identity before constructing a fixed seal. Immutable
@@ -101,6 +109,11 @@ event could remove one future crash window, but would not repair an existing
 journal prefix ending in gap_end. Deriving recovery coverage from every committed
 event preserves that prefix without changing the stored format or weakening
 archive interval validation.
+
+**Adding a boundary event only when a run closes.** That introduces another
+commit boundary and cannot repair existing closed journal prefixes. Run and
+segment registrations already establish the topology; projecting their verified
+relationships preserves those prefixes and includes empty generations in budgets.
 
 **Ignoring records with no runs.** Registration precedes worktree preparation,
 so a process can fail after Git creates the worktree but before native preparation
