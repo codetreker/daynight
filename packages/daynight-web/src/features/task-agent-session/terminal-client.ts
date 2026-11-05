@@ -11,7 +11,8 @@ export type TerminalClientSnapshot = {
 type Options = { api: TerminalSessionApi; claimId: string; userId: string; browserClientId?: string; isCurrent?: () => boolean; storage?: Storage | null };
 type TrackedCommand = Pick<TerminalCommand, 'sessionId' | 'claimId' | 'executionGeneration' | 'type'> & { payload: { operationId: string; controlEpoch: string } };
 type Pending = { command: TrackedCommand; generation: number; startedAt: number };
-const sameFence = (a: TerminalSessionState, b: TerminalSessionState) => a.sessionId === b.sessionId && a.claimId === b.claimId && a.executionGeneration === b.executionGeneration && a.connectionEpoch === b.connectionEpoch && canonicalSessionJson(a.binding) === canonicalSessionJson(b.binding);
+// Native conversation identity may be enriched without changing the execution target.
+export const sameTerminalFence = (a: TerminalSessionState, b: TerminalSessionState) => a.sessionId === b.sessionId && a.claimId === b.claimId && a.executionGeneration === b.executionGeneration && a.connectionEpoch === b.connectionEpoch && canonicalSessionJson({ ...a.binding, nativeSessionId: null }) === canonicalSessionJson({ ...b.binding, nativeSessionId: null });
 const terminal = (state: SessionV2Payloads['operation_result']['state']) => state === 'transport_completed' || state === 'rejected' || state === 'unknown';
 
 /** Owns one visible viewer, never a native attach or an automatic input retry. */
@@ -85,18 +86,22 @@ export class TerminalSessionClient {
     if (!visible) { this.stopTransport(); this.publish({ phase: 'disconnected', ownsControl: false }); }
     else void this.start();
   };
-  private receive(next: TerminalSessionState, generation: number) {
+  private receive(next: TerminalSessionState, generation: number, phase?: 'loading') {
     if (!this.live(generation)) return;
     if (next.claimId !== this.options.claimId) { this.invalidate(new ApiError('protocol', null, 'stale_fence')); return; }
     const previous = this.view.session;
     if (previous !== null && (BigInt(next.executionGeneration) < BigInt(previous.executionGeneration) || BigInt(next.connectionEpoch) < BigInt(previous.connectionEpoch))) return;
-    if (previous !== null && sameFence(previous, next)) {
-      if (previous.control && next.control && BigInt(next.control.controlEpoch) < BigInt(previous.control.controlEpoch)) next = { ...next, control: previous.control };
+    if (previous !== null && sameTerminalFence(previous, next)) {
+      if (previous.binding.nativeSessionId !== null) {
+        if (next.binding.nativeSessionId === null) return;
+        if (next.binding.nativeSessionId !== previous.binding.nativeSessionId) { this.invalidate(new ApiError('protocol', null, 'stale_fence')); return; }
+      }
+      if (previous.control && (next.control === null || BigInt(next.control.controlEpoch) < BigInt(previous.control.controlEpoch))) next = { ...next, control: previous.control };
       const before = previous.snapshot, after = next.snapshot;
-      if (before && after && (BigInt(after.segmentOrdinal) < BigInt(before.segmentOrdinal) || after.segmentId === before.segmentId && BigInt(after.frame.frameSeq) < BigInt(before.frame.frameSeq))) next = { ...next, snapshot: before };
+      if (before && after && (BigInt(after.segmentOrdinal) < BigInt(before.segmentOrdinal) || after.segmentId === before.segmentId && BigInt(after.frame.frameSeq) < BigInt(before.frame.frameSeq))) next = { ...next, snapshot: { ...before, binding: next.binding } };
     }
     if (previous !== null && previous.sessionId !== next.sessionId) { this.invalidate(new ApiError('protocol', null, 'stale_fence')); return; }
-    if (previous !== null && (!sameFence(previous, next) || this.pendingOperation?.command.type === 'operation' && previous.control?.controlEpoch !== next.control?.controlEpoch)) {
+    if (previous !== null && (!sameTerminalFence(previous, next) || this.pendingOperation?.command.type === 'operation' && previous.control?.controlEpoch !== next.control?.controlEpoch)) {
       if (this.view.pending && this.pendingOperation !== null) {
         if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null;
         this.publish({ pending: false, result: { operationId: this.pendingOperation.command.payload.operationId, state: 'unknown', errorCode: 'input_unknown' } });
@@ -107,7 +112,7 @@ export class TerminalSessionClient {
     const lease = next.control?.lease;
     const key = lease === null || lease === undefined ? null : `${lease.leaseId}:${lease.controlEpoch}`;
     if (key !== this.leaseKey) { this.leaseKey = key; this.leaseSeq = 0n; }
-    this.publish({ session: next, phase: next.connected ? 'ready' : 'disconnected', error: null });
+    this.publish({ session: next, phase: phase ?? (next.connected ? 'ready' : 'disconnected'), error: null });
   }
   private async start() {
     if (!this.live() || this.opening) return;
@@ -118,8 +123,9 @@ export class TerminalSessionClient {
       if (!this.live(generation)) return;
       if (current.status !== 'registered') { this.publish({ phase: 'unavailable', session: null }); this.scheduleReconnect(); return; }
       if (current.claimId !== this.options.claimId) { this.invalidate(new ApiError('protocol', null, 'stale_fence')); return; }
-      this.publish({ session: current, phase: 'loading' });
-      this.channel = this.options.api.channel(current.sessionId, this.browserClientId, state => this.receive(state, generation), error => {
+      this.receive(current, generation, 'loading');
+      if (!this.live(generation) || this.view.session === null) return;
+      this.channel = this.options.api.channel(this.view.session.sessionId, this.browserClientId, state => this.receive(state, generation), error => {
         if (!this.live(generation)) return;
         this.stopTransport(); this.publish({ phase: 'disconnected', error: error ?? null }); this.scheduleReconnect();
       });
@@ -209,7 +215,7 @@ export class TerminalSessionClient {
     const pending = this.pendingOperation; if (!this.live() || pending === null) return;
     if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null;
     const generation = this.generation, controller = this.request(), original = this.view.session;
-    const ownsQuery = () => this.live(generation) && this.pendingOperation === pending && (original === null || this.view.session !== null && sameFence(original, this.view.session) && (pending.command.type !== 'operation' || original.control?.controlEpoch === this.view.session.control?.controlEpoch));
+    const ownsQuery = () => this.live(generation) && this.pendingOperation === pending && (original === null || this.view.session !== null && sameTerminalFence(original, this.view.session) && (pending.command.type !== 'operation' || original.control?.controlEpoch === this.view.session.control?.controlEpoch));
     const remaining = automatic || this.view.pending ? pending.startedAt + SESSION_V2_LIMITS.inputTimeoutMs - Date.now() : SESSION_V2_LIMITS.inputTimeoutMs;
     try {
       const result = await this.boundedRequest(controller, remaining, async () => {

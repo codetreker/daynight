@@ -23,10 +23,19 @@ starve ordinary readers in short viewports. Switching to a recording hides and
 disables the retained file preview without discarding upload drafts or iframe
 state; selecting a file restores the ordinary reader.
 
+State admission compares the stable execution and terminal address separately
+from native Session ID discovery. A late state with a missing known native ID
+cannot replace the current state; a different known ID invalidates the viewer.
+Control epochs and frame positions advance independently within the stable
+execution. Initial reads, refreshes and reconnection use the same admission rules.
+
 Input sequences belong to the lease ID and control epoch. Discovering the native
 Session ID enriches an existing binding without resetting the relay's accepted
-sequence, so the client preserves its counter until the lease identity changes.
-Binding changes still independently fence pending operations and late receipts.
+sequence, pending operation or deadline. Actual execution, connection, terminal
+address and input control-epoch changes still fence pending operations and late
+receipts. Human confirmations retain their execution and control identity, plus
+the operation ID for unknown acknowledgements; submission checks that identity
+again so an old checkbox cannot authorize a new control context.
 
 Operation submission and receipt polling share one deadline. Explicit reads of
 an already unknown operation have a separate bounded window without replaying
@@ -62,6 +71,12 @@ section shares discovery and rendering while withholding attachment mutations.
 operation row and an inaccessible Session to 404. Closing the viewer on that
 status alone removes recovery from valid Sessions; an independent original
 Session read preserves recovery without relaxing actual access denial.
+
+**Use complete binding equality for every lifecycle.** Native Session discovery
+changes binding metadata while preserving the underlying terminal and lease.
+Treating it as a new target resets accepted input sequences and lets delayed
+pre-discovery reads bypass control and frame ordering. Separate admission rules
+preserve real target isolation while allowing monotonic identity enrichment.
 
 **Combine unknown disposition with resume.** The original control request could
 record disposition only while entering automation. That cannot represent a user

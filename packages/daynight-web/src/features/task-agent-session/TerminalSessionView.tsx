@@ -3,11 +3,18 @@ import type { SessionV2Key } from '../../../../daynight/src/session/v2/types';
 import { ApiError, authRequestsPaused } from '../../api/client';
 import type { TerminalSessionApi } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
-import { TerminalSessionClient } from './terminal-client';
+import { TerminalSessionClient, sameTerminalFence, type TerminalClientSnapshot } from './terminal-client';
 import { TerminalText } from './TerminalText';
 import { useTerminalHostMessages } from './terminal-host-messages';
 import { useSessionMessages } from './messages';
 import { useSessionFullscreen } from './useSessionFullscreen';
+
+type ConfirmationAction = 'resume_automation' | 'resolve_initial_assignment' | 'acknowledge_unknown';
+function sameConfirmationIdentity(before: TerminalClientSnapshot, current: TerminalClientSnapshot, action: ConfirmationAction): boolean {
+  const a = before.session, b = current.session;
+  const sameSession = a === null || b === null ? a === b : sameTerminalFence(a, b) && a.control?.controlEpoch === b.control?.controlEpoch;
+  return sameSession && (action !== 'acknowledge_unknown' || before.result?.operationId === current.result?.operationId);
+}
 
 const keys: readonly [SessionV2Key, string][] = [['Enter', 'Enter'], ['Escape', 'Esc'], ['Ctrl+C', 'Ctrl+C'], ['ArrowUp', '↑'], ['ArrowDown', '↓'], ['ArrowLeft', '←'], ['ArrowRight', '→'], ['Tab', 'Tab']];
 export function TerminalSessionView({ projectId, api, claimId, active, current }: {
@@ -25,7 +32,7 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
     return () => { clearInterval(timer); unsubscribe(); document.removeEventListener('visibilitychange', sync); scope.signal.removeEventListener('abort', invalidate); client.setVisible(false); };
   }, [client, scope, projectId, active, current]);
   useEffect(() => () => client.close(), [client]);
-  const [draft, setDraft] = useState(''); const [confirmation, setConfirmation] = useState<'resume_automation' | 'resolve_initial_assignment' | 'acknowledge_unknown' | null>(null);
+  const [draft, setDraft] = useState(''); const [confirmation, setConfirmation] = useState<{ action: ConfirmationAction; snapshot: TerminalClientSnapshot; client: TerminalSessionClient } | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const control = view.session?.control;
   const ownLease = view.ownsControl;
@@ -36,13 +43,16 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
   const tooLarge = new TextEncoder().encode(draft).byteLength > 16 * 1024;
   const fullscreen = useSessionFullscreen({ client, userId: scope.userId, identity: view.session?.sessionId ?? null, active });
   const stateLabel = !view.session?.connected || view.phase === 'disconnected' ? m.disconnected : control?.state === 'manual' ? ownLease ? m.manual : m.other : control ? m[control.state] : m.readonly;
-  useEffect(() => { if (!active || !current) setConfirmation(null); }, [active, current]);
-  const requestConfirmation = (action: 'resume_automation' | 'resolve_initial_assignment' | 'acknowledge_unknown') => { setConfirmed(false); setConfirmation(action); };
+  const confirmationCurrent = confirmation !== null && confirmation.client === client && sameConfirmationIdentity(confirmation.snapshot, view, confirmation.action);
+  useEffect(() => { if (!active || !current || !confirmationCurrent) { setConfirmation(null); setConfirmed(false); } }, [active, current, confirmationCurrent]);
+  const requestConfirmation = (action: ConfirmationAction) => { setConfirmed(false); setConfirmation({ action, snapshot: client.getSnapshot(), client }); };
   const submitConfirmation = () => {
     if (!confirmation || !confirmed) return;
-    if (confirmation === 'acknowledge_unknown') { client.acknowledgeUnknown(); setConfirmation(null); return; }
-    if (!allowed(confirmation)) return;
-    void client.control(confirmation, { draftHandled: confirmation === 'resume_automation', initialUnknownDisposition: confirmation === 'resolve_initial_assignment' ? 'delivered_continue' : null });
+    // Check the live identity again: the store can advance before React clears an old dialog.
+    if (!active || !current || confirmation.client !== client || !sameConfirmationIdentity(confirmation.snapshot, client.getSnapshot(), confirmation.action)) { setConfirmation(null); setConfirmed(false); return; }
+    if (confirmation.action === 'acknowledge_unknown') { client.acknowledgeUnknown(); setConfirmation(null); return; }
+    if (!allowed(confirmation.action)) return;
+    void client.control(confirmation.action, { draftHandled: confirmation.action === 'resume_automation', initialUnknownDisposition: confirmation.action === 'resolve_initial_assignment' ? 'delivered_continue' : null });
     setConfirmation(null);
   };
   let reason = m.readonlyReason;
@@ -74,6 +84,6 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
     </div>
     {view.pending ? <p role="status">{m.busy}</p> : null}
     {view.result?.state === 'unknown' ? <div role="status"><p>{m.unknown}</p><button className="button" disabled={view.pending} onClick={() => { void client.checkOperation(); }}>{m.check}</button>{!view.unknownAcknowledged ? <button className="button" disabled={view.pending} onClick={() => requestConfirmation('acknowledge_unknown')}>{m.acknowledge}</button> : null}</div> : view.result?.state === 'transport_completed' ? <p role="status">{m.transport}</p> : view.result?.state === 'rejected' ? <p role="status">{m.rejected}</p> : null}
-    {confirmation ? <div className="terminal-confirmation" role="group" aria-label={confirmation === 'resume_automation' ? m.resume : confirmation === 'resolve_initial_assignment' ? m.resolve : m.acknowledge}><label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />{confirmation === 'resume_automation' ? m.resumeConfirm : confirmation === 'resolve_initial_assignment' ? m.resolveConfirm : m.acknowledgeConfirm}</label><div className="terminal-host-toolbar"><button className="button" onClick={() => setConfirmation(null)}>{m.cancel}</button><button className="button primary" disabled={!confirmed || confirmation !== 'acknowledge_unknown' && !allowed(confirmation)} onClick={submitConfirmation}>{m.confirm}</button></div></div> : null}
+    {confirmation && confirmationCurrent ? <div className="terminal-confirmation" role="group" aria-label={confirmation.action === 'resume_automation' ? m.resume : confirmation.action === 'resolve_initial_assignment' ? m.resolve : m.acknowledge}><label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />{confirmation.action === 'resume_automation' ? m.resumeConfirm : confirmation.action === 'resolve_initial_assignment' ? m.resolveConfirm : m.acknowledgeConfirm}</label><div className="terminal-host-toolbar"><button className="button" onClick={() => setConfirmation(null)}>{m.cancel}</button><button className="button primary" disabled={!confirmed || confirmation.action !== 'acknowledge_unknown' && !allowed(confirmation.action)} onClick={submitConfirmation}>{m.confirm}</button></div></div> : null}
   </section>;
 }

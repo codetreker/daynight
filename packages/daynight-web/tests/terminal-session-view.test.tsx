@@ -13,7 +13,7 @@ function fixture() {
   let value = parseTerminalSessionState({ status: 'registered', ...terminalEnvelope(r), owner, binding: r.payload.binding, connectionEpoch: '1', connected: true, capabilities: r.payload.capabilities, control: { ...read('valid-control').payload, state: 'automation', lease: null, availableActions: ['acquire_control'] }, snapshot: read('valid-snapshot').payload, ledger: read('valid-active-ledger').payload, archive: read('valid-status-pending').payload, recording: [] }, owner.projectId, owner.taskId, owner.serverOrigin);
   let receive: (s: TerminalSessionState) => void = () => {}; const close = vi.fn();
   const api: TerminalSessionApi = { current: vi.fn(async () => value), state: vi.fn(async () => value), history: vi.fn(), archive: vi.fn(), nativeArchive: vi.fn(), command: vi.fn(async (_id, _browser, command) => ({ ...terminalEnvelope(value), type: 'operation_result' as const, payload: { operationId: command.payload.operationId, state: 'transport_completed' as const, errorCode: null } })), operation: vi.fn(), channel: vi.fn((_id, _browser, onState) => { receive = onState; return { close }; }) };
-  return { api, close, set(next: TerminalSessionState) { value = next; act(() => receive(value)); }, get: () => value, show: () => act(() => receive(value)), element: (active = true, current = true) => <TerminalSessionView projectId={owner.projectId} api={api} claimId={r.claimId} active={active} current={current} /> };
+  return { api, close, set(next: TerminalSessionState) { value = next; act(() => receive(value)); }, publish(next: TerminalSessionState) { value = next; receive(value); }, get: () => value, show: () => act(() => receive(value)), element: (active = true, current = true) => <TerminalSessionView projectId={owner.projectId} api={api} claimId={r.claimId} active={active} current={current} /> };
 }
 describe('terminal production view', () => {
   it('only observes by default and releases its subscription when the tab hides', async () => {
@@ -38,6 +38,55 @@ describe('terminal production view', () => {
     f.set({ ...f.get(), control: { ...f.get().control!, controlEpoch: '3', state: 'suspended', initialAssignment: 'transport_completed', availableActions: ['resume_automation', 'acquire_control'] } });
     fireEvent.click(screen.getByRole('button', { name: 'Resume automatic execution' })); fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     await waitFor(() => expect(f.api.command).toHaveBeenCalledTimes(2)); expect(vi.mocked(f.api.command).mock.calls[1]![2].payload).toMatchObject({ action: 'resume_automation', draftHandled: true, initialUnknownDisposition: null });
+  });
+  it.each([['resume_automation', 'Resume automatic execution', 'transport_completed'], ['resolve_initial_assignment', 'Resolve initial submission', 'unknown']] as const)('requires a new checked %s confirmation after another browser changes the control epoch', async (action, label, initialAssignment) => {
+    const f = fixture(); render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+    const suspended: TerminalSessionState = { ...f.get(), control: { ...f.get().control!, controlEpoch: '3', state: 'suspended', initialAssignment, availableActions: [action, 'acquire_control'] } };
+    f.set(suspended);
+    fireEvent.click(screen.getByRole('button', { name: label })); fireEvent.click(screen.getByRole('checkbox'));
+    const otherLease = { ...read('valid-control').payload.lease, controlEpoch: '4', expiresAt: '2099-01-01T00:00:00Z' };
+    f.set({ ...suspended, control: { ...suspended.control!, controlEpoch: '4', state: 'manual', lease: otherLease, availableActions: [] } });
+    f.set({ ...suspended, control: { ...suspended.control!, controlEpoch: '5' } });
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument(); expect(f.api.command).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: label }));
+    expect(screen.getByRole('checkbox')).not.toBeChecked(); expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(f.api.command).toHaveBeenCalledOnce());
+    expect(vi.mocked(f.api.command).mock.calls[0]![2].payload).toMatchObject({ action, controlEpoch: '5', draftHandled: action === 'resume_automation', initialUnknownDisposition: action === 'resolve_initial_assignment' ? 'delivered_continue' : null });
+  });
+  it('retains a checked confirmation across frames and native identity enrichment within the same control epoch', async () => {
+    const f = fixture(); render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+    const suspended = structuredClone(f.get()); suspended.binding.nativeSessionId = null; suspended.snapshot!.binding.nativeSessionId = null;
+    suspended.control = { ...suspended.control!, controlEpoch: '3', state: 'suspended', initialAssignment: 'transport_completed', availableActions: ['resume_automation', 'acquire_control'] };
+    f.set(suspended); fireEvent.click(screen.getByRole('button', { name: 'Resume automatic execution' })); fireEvent.click(screen.getByRole('checkbox'));
+    const enriched = structuredClone(suspended); enriched.binding.nativeSessionId = 'native-session'; enriched.snapshot!.binding.nativeSessionId = 'native-session'; enriched.snapshot!.frame.frameSeq = '8'; f.set(enriched);
+    expect(screen.getByRole('checkbox')).toBeChecked(); fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(f.api.command).toHaveBeenCalledOnce());
+    expect(vi.mocked(f.api.command).mock.calls[0]![2].payload).toMatchObject({ action: 'resume_automation', controlEpoch: '3', draftHandled: true });
+  });
+  it('checks the live control identity before a stale confirmation handler can dispatch', async () => {
+    const f = fixture(); render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+    const suspended: TerminalSessionState = { ...f.get(), control: { ...f.get().control!, controlEpoch: '3', state: 'suspended', initialAssignment: 'transport_completed', availableActions: ['resume_automation', 'acquire_control'] } };
+    f.set(suspended); fireEvent.click(screen.getByRole('button', { name: 'Resume automatic execution' })); fireEvent.click(screen.getByRole('checkbox'));
+    const confirm = screen.getByRole('button', { name: 'Confirm' });
+    act(() => { f.publish({ ...suspended, control: { ...suspended.control!, controlEpoch: '5' } }); confirm.click(); });
+    expect(f.api.command).not.toHaveBeenCalled(); expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+  });
+  it('requires a new acknowledgement when a different operation becomes unknown', async () => {
+    const f = fixture(); render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce()); f.show();
+    vi.mocked(f.api.command).mockRejectedValue(new Error('lost response'));
+    fireEvent.click(screen.getByRole('button', { name: 'Take control' }));
+    const acknowledge = await screen.findByRole('button', { name: 'Continue after checking' });
+    fireEvent.click(acknowledge); fireEvent.click(screen.getByRole('checkbox'));
+    const original = vi.mocked(f.api.command).mock.calls[0]![2];
+    vi.mocked(f.api.operation).mockResolvedValue({ ...terminalEnvelope(f.get()), type: 'operation_result', payload: { operationId: original.payload.operationId, state: 'transport_completed', errorCode: null } });
+    fireEvent.click(screen.getByRole('button', { name: 'Check original operation' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Take control' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Take control' }));
+    await waitFor(() => expect(f.api.command).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue after checking' }));
+    expect(screen.getByRole('checkbox')).not.toBeChecked(); expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled();
   });
   it('removes terminal content and reports permission loss', async () => {
     const f = fixture(); render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce()); f.show();

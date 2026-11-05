@@ -6,13 +6,14 @@ import { parseTerminalSessionState, terminalEnvelope, type TerminalSessionApi, t
 const fixture = (name: string) => JSON.parse(readFileSync(`../daynight/test/session/fixtures/v2/${name}.json`, 'utf8'));
 const r = fixture('valid-registration'), owner = r.payload.owner, browser = '00000000-0000-4000-8000-000000000012';
 function state(): TerminalSessionState { return parseTerminalSessionState({ status: 'registered', ...terminalEnvelope(r), owner, binding: r.payload.binding, connectionEpoch: '1', connected: true, capabilities: r.payload.capabilities, control: { ...fixture('valid-control').payload, state: 'automation', lease: null, availableActions: ['acquire_control'] }, snapshot: fixture('valid-snapshot').payload, ledger: fixture('valid-active-ledger').payload, archive: fixture('valid-status-pending').payload, recording: [] }, owner.projectId, owner.taskId, owner.serverOrigin); }
-function harness(isCurrent?: () => boolean) {
-  let current = state(); let receive: (s: TerminalSessionState) => void = () => {}; let disconnect: (e?: unknown) => void = () => {};
+function harness(isCurrent?: () => boolean, nativeSessionId?: string | null) {
+  const initialState = () => { const initial = state(); if (nativeSessionId !== undefined) { initial.binding.nativeSessionId = nativeSessionId; initial.snapshot!.binding.nativeSessionId = nativeSessionId; } return initial; };
+  let current = initialState(); let receive: (s: TerminalSessionState) => void = () => {}; let disconnect: (e?: unknown) => void = () => {};
   const close = vi.fn();
   const result = (operationId: string): TerminalResult => ({ ...terminalEnvelope(current), type: 'operation_result', payload: { operationId, state: 'queued', errorCode: null } });
   const api: TerminalSessionApi = { current: vi.fn(async () => current), state: vi.fn(async () => current), history: vi.fn(), archive: vi.fn(), nativeArchive: vi.fn(), command: vi.fn(async (_id, _browser, m) => result(m.payload.operationId)), operation: vi.fn(async (_id, id) => result(id)), channel: vi.fn((_id, _browser, onState, onClose) => { receive = onState; disconnect = onClose; return { close }; }) };
   const client = new TerminalSessionClient({ api, claimId: r.claimId, userId: owner.ownerUserId, browserClientId: browser, ...(isCurrent ? { isCurrent } : {}) });
-  return { client, api, close, publish(next = current) { current = next; receive(next); }, disconnect(error?: unknown) { disconnect(error); }, state: () => current, manual() { const next = state(); next.control = fixture('valid-control').payload; next.control!.lease!.expiresAt = '2099-01-01T00:00:00Z'; next.control!.availableActions = ['paste', 'keys', 'release_control', 'renew_control']; current = next; receive(next); } };
+  return { client, api, close, publish(next = current) { current = next; receive(next); }, disconnect(error?: unknown) { disconnect(error); }, state: () => current, manual() { const next = initialState(); next.control = fixture('valid-control').payload; next.control!.lease!.expiresAt = '2099-01-01T00:00:00Z'; next.control!.availableActions = ['paste', 'keys', 'release_control', 'renew_control']; current = next; receive(next); } };
 }
 afterEach(() => { vi.useRealTimers(); window.sessionStorage.clear(); });
 describe('terminal client control ownership', () => {
@@ -212,7 +213,7 @@ describe('terminal client control ownership', () => {
   });
 
   it.each(['paste', 'keys'] as const)('preserves the lease input sequence when native identity is enriched before %s', async kind => {
-    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    const h = harness(undefined, null); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
     const initial = structuredClone(h.state()); initial.binding.nativeSessionId = null; initial.snapshot!.binding.nativeSessionId = null; h.publish(initial);
     vi.mocked(h.api.command).mockImplementation(async (_id, _browser, command) => ({ ...terminalEnvelope(command), type: 'operation_result', payload: { operationId: command.payload.operationId, state: 'transport_completed', errorCode: null } }));
     await h.client.paste('first input'); await h.client.refresh();
@@ -234,17 +235,92 @@ describe('terminal client control ownership', () => {
     expect(vi.mocked(h.api.command).mock.calls[2]![2].payload).toMatchObject({ leaseSeq: '1', leaseId: replaced.control!.lease!.leaseId, controlEpoch: replaced.control!.controlEpoch }); h.client.close();
   });
 
-  it('keeps an in-flight old binding unknown after enrichment while retaining its lease sequence', async () => {
-    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+  it('preserves an in-flight operation and its receipt during native identity enrichment', async () => {
+    const h = harness(undefined, null); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
     const initial = structuredClone(h.state()); initial.binding.nativeSessionId = null; initial.snapshot!.binding.nativeSessionId = null; h.publish(initial);
     let resolve!: (result: TerminalResult) => void; vi.mocked(h.api.command).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
     const sending = h.client.paste('old binding'); const command = vi.mocked(h.api.command).mock.calls[0]![2];
     const enriched = structuredClone(h.state()); enriched.binding.nativeSessionId = 'discovered-native-session'; enriched.snapshot!.binding.nativeSessionId = 'discovered-native-session'; h.publish(enriched);
+    expect(h.client.getSnapshot()).toMatchObject({ pending: true, result: { operationId: command.payload.operationId, state: 'queued' } });
     resolve({ ...terminalEnvelope(command), type: 'operation_result', payload: { operationId: command.payload.operationId, state: 'transport_completed', errorCode: null } }); await sending;
-    expect(h.client.getSnapshot()).toMatchObject({ pending: false, result: { operationId: command.payload.operationId, state: 'unknown' } });
-    await h.client.key('Enter'); expect(h.api.command).toHaveBeenCalledOnce();
-    h.client.acknowledgeUnknown(); await h.client.key('Enter');
+    expect(h.client.getSnapshot()).toMatchObject({ pending: false, result: { operationId: command.payload.operationId, state: 'transport_completed' } });
+    await h.client.key('Enter');
     expect(vi.mocked(h.api.command).mock.calls[1]![2].payload).toMatchObject({ leaseSeq: '2', binding: { nativeSessionId: 'discovered-native-session' } }); h.client.close();
+  });
+
+  it('does not restore an older manual lease from a delayed pre-enrichment refresh', async () => {
+    const h = harness(undefined, null); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    const old = structuredClone(h.state()); old.binding.nativeSessionId = null; old.snapshot!.binding.nativeSessionId = null; old.control!.controlEpoch = '1'; old.control!.lease!.controlEpoch = '1'; h.publish(old);
+    let resolve!: (value: TerminalSessionState) => void; vi.mocked(h.api.state).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const refreshing = h.client.refresh();
+    const newer = structuredClone(old); newer.binding.nativeSessionId = 'discovered-native-session'; newer.snapshot!.binding.nativeSessionId = 'discovered-native-session'; newer.snapshot!.frame.frameSeq = '8';
+    newer.control = { ...newer.control!, state: 'suspended', controlEpoch: '2', lease: null, availableActions: ['acquire_control'] }; h.publish(newer);
+    expect(h.client.getSnapshot().ownsControl).toBe(false); resolve(old); await refreshing;
+    expect(h.client.getSnapshot()).toMatchObject({ ownsControl: false, session: { binding: { nativeSessionId: 'discovered-native-session' }, control: { state: 'suspended', controlEpoch: '2', lease: null }, snapshot: { frame: { frameSeq: '8' } } } });
+    await h.client.paste('must not send from the old lease'); expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
+  });
+
+  it.each(['control', 'frame'] as const)('preserves independent monotonic %s state while enriching native identity', async newerPart => {
+    const h = harness(undefined, null); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    const first = structuredClone(h.state());
+    if (newerPart === 'control') first.control = { ...first.control!, state: 'suspended', controlEpoch: '2', lease: null, availableActions: ['acquire_control'] };
+    else first.snapshot!.frame.frameSeq = '8';
+    h.publish(first);
+    const enriched = structuredClone(h.state()); enriched.binding.nativeSessionId = 'discovered-native-session'; enriched.snapshot!.binding.nativeSessionId = 'discovered-native-session';
+    if (newerPart === 'control') { enriched.control = { ...fixture('valid-control').payload, controlEpoch: '1' }; enriched.control!.lease!.controlEpoch = '1'; enriched.snapshot!.frame.frameSeq = '8'; }
+    else { enriched.control = { ...enriched.control!, state: 'suspended', controlEpoch: '2', lease: null, availableActions: ['acquire_control'] }; enriched.snapshot!.frame.frameSeq = '1'; }
+    h.publish(enriched);
+    expect(h.client.getSnapshot()).toMatchObject({ ownsControl: false, session: { binding: { nativeSessionId: 'discovered-native-session' }, control: { state: 'suspended', controlEpoch: '2', lease: null }, snapshot: { binding: { nativeSessionId: 'discovered-native-session' }, frame: { frameSeq: '8' } } } }); h.client.close();
+  });
+  it('fails closed when a known native identity is replaced within the same stable fence', async () => {
+    const h = harness(undefined, 'known-native-session'); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    const replacement = structuredClone(h.state()); replacement.binding.nativeSessionId = 'different-known-session'; replacement.snapshot!.binding.nativeSessionId = 'different-known-session'; h.publish(replacement);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'unavailable', session: null, ownsControl: false }); h.client.close();
+  });
+  it('keeps its enriched state baseline when a reconnect read returns older metadata', async () => {
+    const h = harness(undefined, null); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    const old = structuredClone(h.state()); const enriched = structuredClone(old); enriched.binding.nativeSessionId = 'discovered-native-session'; enriched.snapshot!.binding.nativeSessionId = 'discovered-native-session'; enriched.control = { ...enriched.control!, state: 'suspended', controlEpoch: '2', lease: null, availableActions: ['acquire_control'] }; h.publish(enriched);
+    h.client.setVisible(false); vi.mocked(h.api.state).mockResolvedValueOnce(old); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledTimes(2));
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'loading', ownsControl: false, session: { binding: { nativeSessionId: 'discovered-native-session' }, control: { controlEpoch: '2', state: 'suspended' } } });
+    h.publish(old); expect(h.client.getSnapshot().ownsControl).toBe(false); h.client.close();
+  });
+
+  it('keeps the lease sequence when an old null-identity automation read follows manual input', async () => {
+    const h = harness(undefined, null); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.publish();
+    const old = structuredClone(h.state()); let resolve!: (value: TerminalSessionState) => void;
+    vi.mocked(h.api.state).mockImplementationOnce(() => new Promise(done => { resolve = done; })); const refreshing = h.client.refresh();
+    h.manual(); const enriched = structuredClone(h.state()); enriched.binding.nativeSessionId = 'discovered-native-session'; enriched.snapshot!.binding.nativeSessionId = 'discovered-native-session'; h.publish(enriched);
+    vi.mocked(h.api.command).mockImplementation(async (_id, _browser, command) => ({ ...terminalEnvelope(command), type: 'operation_result', payload: { operationId: command.payload.operationId, state: 'transport_completed', errorCode: null } }));
+    await h.client.paste('first'); resolve(old); await refreshing; await h.client.key('Enter');
+    expect(vi.mocked(h.api.command).mock.calls.map(call => call[2].payload)).toMatchObject([{ leaseSeq: '1' }, { leaseSeq: '2', binding: { nativeSessionId: 'discovered-native-session' } }]); h.client.close();
+  });
+  it('admits the original queued operation receipt after native identity enrichment', async () => {
+    const h = harness(undefined, null); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual(); await h.client.paste('original');
+    const command = vi.mocked(h.api.command).mock.calls[0]![2]; let resolve!: (value: TerminalResult) => void;
+    vi.mocked(h.api.operation).mockImplementationOnce(() => new Promise(done => { resolve = done; })); const checking = h.client.checkOperation();
+    const enriched = structuredClone(h.state()); enriched.binding.nativeSessionId = 'discovered-native-session'; enriched.snapshot!.binding.nativeSessionId = 'discovered-native-session'; h.publish(enriched);
+    expect(h.client.getSnapshot().pending).toBe(true);
+    resolve({ ...terminalEnvelope(command), type: 'operation_result', payload: { operationId: command.payload.operationId, state: 'transport_completed', errorCode: null } }); await checking;
+    expect(h.client.getSnapshot()).toMatchObject({ pending: false, result: { state: 'transport_completed', operationId: command.payload.operationId } }); expect(h.api.command).toHaveBeenCalledOnce(); h.client.close();
+  });
+
+  it('retains known control and its input sequence across a delayed initial empty-control read', async () => {
+    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce());
+    const old = structuredClone(h.state()); old.control = null;
+    let resolve!: (value: TerminalSessionState) => void; vi.mocked(h.api.state).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const refreshing = h.client.refresh(); h.manual(); const manual = structuredClone(h.state());
+    vi.mocked(h.api.command).mockImplementation(async (_id, _browser, command) => ({ ...terminalEnvelope(command), type: 'operation_result', payload: { operationId: command.payload.operationId, state: 'transport_completed', errorCode: null } }));
+    await h.client.paste('first'); resolve(old); await refreshing;
+    const retained = h.client.getSnapshot().session?.control;
+    h.publish(manual); await h.client.key('Enter');
+    expect(vi.mocked(h.api.command).mock.calls.map(call => call[2].payload)).toMatchObject([{ leaseSeq: '1' }, { leaseSeq: '2' }]);
+    expect(retained).toEqual(manual.control); h.client.close();
+  });
+  it('accepts snapshot absence independently from an already established control state', async () => {
+    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    const missingFrame = structuredClone(h.state()); missingFrame.snapshot = null; h.publish(missingFrame);
+    expect(h.client.getSnapshot().session?.snapshot).toBeNull(); expect(h.client.getSnapshot().session?.control).toEqual(missingFrame.control);
+    await h.client.paste('no current snapshot'); expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
   });
 
 });
