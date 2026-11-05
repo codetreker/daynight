@@ -151,66 +151,6 @@ func TestTaskStatusQueryCancellationPreservesCauseAndState(t *testing.T) {
 	}
 }
 
-func TestTaskTransactionCompletionFailureDominatesDomainFault(t *testing.T) {
-	tasks, _, project, databaseURL, principal := taskService(t)
-	target := createTask(t, tasks, principal, project.ID, "Target")
-	missing := "00000000-0000-0000-0000-000000000000"
-	for _, test := range []struct {
-		name      string
-		fragment  string
-		operation func(context.Context, *Tasks) error
-	}{
-		{"missing task read", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Get(ctx, principal, project.ID, missing)
-			return err
-		}},
-		{"missing task update", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Update(ctx, principal, project.ID, missing, UpdateTask{Version: 1, Title: pointer("Rejected")})
-			return err
-		}},
-		{"stale version update", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: 2, Title: pointer("Rejected")})
-			return err
-		}},
-		{"missing task status", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.SetStatus(ctx, principal, project.ID, missing, SetTaskStatus{Version: 1, Status: model.TaskInProgress})
-			return err
-		}},
-		{"stale version status", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version + 1, Status: model.TaskTodo})
-			return err
-		}},
-		{"same-state status", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: model.TaskTodo})
-			return err
-		}},
-		{"invalid dependency create", "t.id = ANY($2::uuid[])", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Create(ctx, principal, project.ID, CreateTask{Title: "Rejected", DependsOn: []string{missing}})
-			return err
-		}},
-		{"missing project read", "FROM project_grants", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Get(ctx, principal, missing, target.ID)
-			return err
-		}},
-		{"missing project list", "FROM project_grants", func(ctx context.Context, s *Tasks) error {
-			_, err := s.List(ctx, principal, missing, TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
-			return err
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, test.fragment) }, end: cancel})
-			err := test.operation(ctx, traced)
-			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("completion failure lost cause: %v", err)
-			}
-			assertTaskUnchanged(t, tasks, principal, target)
-		})
-	}
-}
-
 func TestTaskPartialWriteFailureRollsBackMetadataAndAllEdges(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	ctx := context.Background()

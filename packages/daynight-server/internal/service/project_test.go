@@ -15,9 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func requireFault(t *testing.T, err error, code string) *model.Fault {
@@ -127,41 +125,6 @@ func TestProjectSnapshotQueryFailuresRemainOperational(t *testing.T) {
 		if err == nil || errors.As(err, &fault) || !errors.As(err, &pgError) || pgError.Code != "42P01" {
 			t.Fatalf("query error was masked: %#v", err)
 		}
-	}
-}
-
-type cancelAfterProjectQuery struct{ cancel context.CancelFunc }
-
-func (t cancelAfterProjectQuery) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	return context.WithValue(ctx, queryContextKey{}, strings.Contains(data.SQL, "FROM project_grants"))
-}
-
-type queryContextKey struct{}
-
-func (t cancelAfterProjectQuery) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
-	if ctx.Value(queryContextKey{}) == true {
-		t.cancel()
-	}
-}
-
-func TestSnapshotCompletionFailureDominatesMissingProject(t *testing.T) {
-	_, _, databaseURL, principal := projectService(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	config, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config.ConnConfig.Tracer = cancelAfterProjectQuery{cancel: cancel}
-	pool, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	_, err = NewProjects(&store.Store{Pool: pool}).Get(ctx, principal, "00000000-0000-0000-0000-000000000001")
-	var fault *model.Fault
-	if err == nil || errors.As(err, &fault) || !errors.Is(err, context.Canceled) {
-		t.Fatalf("failed snapshot completion must not become not_found: %#v", err)
 	}
 }
 

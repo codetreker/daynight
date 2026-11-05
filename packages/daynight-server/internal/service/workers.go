@@ -101,13 +101,13 @@ func (s *Workers) List(ctx context.Context, principal model.Principal, request m
 	}
 	var result WorkerPage
 	var records store.WorkerPage
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
-		records, err = snapshot.Workers(ctx, principal.UserID, result.ObservedAt, page)
+		records, err = snapshot.WorkerDAO().Workers(ctx, principal.UserID, result.ObservedAt, page)
 		return err
 	})
 	if err != nil {
@@ -135,13 +135,13 @@ func (s *Workers) Get(ctx context.Context, principal model.Principal, workerID s
 	}
 	var result WorkerDetailResult
 	var refusal *model.Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
-		result.Worker, err = snapshot.Worker(ctx, principal.UserID, workerID, result.ObservedAt)
+		result.Worker, err = snapshot.WorkerDAO().Worker(ctx, principal.UserID, workerID, result.ObservedAt)
 		if errors.Is(err, model.ErrNotFound) {
 			refusal = &model.Fault{Code: "not_found", Message: "Worker was not found.", Cause: err}
 			return nil

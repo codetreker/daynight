@@ -29,15 +29,15 @@ func (s *Tasks) Graph(ctx context.Context, principal model.Principal, projectID,
 	}
 	var graph model.TaskGraph
 	var refusal *model.Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
 			return err
 		}
 		var err error
-		graph.Project, err = snapshot.Project(ctx, projectID)
+		graph.Project, err = snapshot.ProjectDAO().Project(ctx, projectID)
 		if errors.Is(err, model.ErrNotFound) {
 			refusal = &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
 			return nil
@@ -45,14 +45,14 @@ func (s *Tasks) Graph(ctx context.Context, principal model.Principal, projectID,
 		if err != nil {
 			return err
 		}
-		if err := snapshot.TaskGraphRoot(ctx, projectID, taskID); err != nil {
+		if err := snapshot.TaskDAO().TaskGraphRoot(ctx, projectID, taskID); err != nil {
 			if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrTaskDeleted) {
 				refusal = taskNotFound(err)
 				return nil
 			}
 			return err
 		}
-		size, err := snapshot.TaskGraphProjectionSize(ctx, projectID, taskID)
+		size, err := snapshot.TaskDAO().TaskGraphProjectionSize(ctx, projectID, taskID)
 		if err != nil {
 			return err
 		}
@@ -62,7 +62,7 @@ func (s *Tasks) Graph(ctx context.Context, principal model.Principal, projectID,
 					MaxNodes: maxGraphNodes, MaxEdges: maxGraphEdges}}
 			return nil
 		}
-		graph.Tasks, err = snapshot.TaskGraphTasks(ctx, projectID, taskID, graphTitlePreviewCharacters)
+		graph.Tasks, err = snapshot.TaskDAO().TaskGraphTasks(ctx, projectID, taskID, graphTitlePreviewCharacters)
 		if err != nil {
 			return err
 		}

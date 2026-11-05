@@ -26,7 +26,7 @@ type StepDocument struct {
 	JSON     []byte
 }
 
-func (s *TaskSteps) read(ctx context.Context, principal model.Principal, projectID, taskID string, operation func(*store.Snapshot, model.TaskHeader) error) error {
+func (s *TaskSteps) read(ctx context.Context, principal model.Principal, projectID, taskID string, operation func(store.TaskReader, model.TaskHeader) error) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
@@ -38,11 +38,11 @@ func (s *TaskSteps) read(ctx context.Context, principal model.Principal, project
 	if err != nil {
 		return err
 	}
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			return err
 		}
-		header, err := snapshot.TaskHeader(ctx, projectID, taskID)
+		header, err := snapshot.TaskDAO().TaskHeader(ctx, projectID, taskID)
 		if errors.Is(err, model.ErrNotFound) {
 			return taskNotFound(err)
 		}
@@ -52,7 +52,7 @@ func (s *TaskSteps) read(ctx context.Context, principal model.Principal, project
 		if header.DeletedAt != nil {
 			return taskNotFound(model.ErrTaskDeleted)
 		}
-		return operation(snapshot, header)
+		return operation(snapshot.TaskDAO(), header)
 	})
 	if err != nil {
 		return fmt.Errorf("read task steps: %w", err)
@@ -62,8 +62,8 @@ func (s *TaskSteps) read(ctx context.Context, principal model.Principal, project
 
 func (s *TaskSteps) List(ctx context.Context, principal model.Principal, projectID, taskID string) (StepsDocument, error) {
 	var document StepsDocument
-	err := s.read(ctx, principal, projectID, taskID, func(snapshot *store.Snapshot, header model.TaskHeader) error {
-		steps, err := snapshot.TaskSteps(ctx, header.ID)
+	err := s.read(ctx, principal, projectID, taskID, func(reader store.TaskReader, header model.TaskHeader) error {
+		steps, err := reader.TaskSteps(ctx, header.ID)
 		if err != nil {
 			return err
 		}
@@ -85,8 +85,8 @@ func (s *TaskSteps) Get(ctx context.Context, principal model.Principal, projectI
 		return StepDocument{}, invalidInput(err.Error())
 	}
 	var document StepDocument
-	err = s.read(ctx, principal, projectID, taskID, func(snapshot *store.Snapshot, header model.TaskHeader) error {
-		step, err := snapshot.TaskStep(ctx, header.ID, id)
+	err = s.read(ctx, principal, projectID, taskID, func(reader store.TaskReader, header model.TaskHeader) error {
+		step, err := reader.TaskStep(ctx, header.ID, id)
 		if errors.Is(err, model.ErrNotFound) {
 			return &model.Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
 		}

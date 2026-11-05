@@ -149,20 +149,20 @@ func TestTaskStartAndSnapshotClockFollowTheActualLockWait(t *testing.T) {
 	if started.StartedAt == nil || started.StartedAt.Before(releaseAt) || !started.StartedAt.Equal(started.UpdatedAt) {
 		t.Fatalf("claim used pre-lock transaction time: released %v, task %#v", releaseAt, started)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		tasks, err := snapshot.TaskGraphTasks(ctx, project.ID, task.ID, 160)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, task.ID, 160)
 		if err != nil {
 			return err
 		}
 		var lower, upper time.Time
-		if err := snapshot.tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&lower); err != nil {
+		if err := snapshot.(*Snapshot).tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&lower); err != nil {
 			return err
 		}
 		observed, err := snapshot.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
-		if err := snapshot.tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&upper); err != nil {
+		if err := snapshot.(*Snapshot).tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&upper); err != nil {
 			return err
 		}
 		if len(tasks) != 1 || !reflect.DeepEqual(tasks[0].StartedAt, started.StartedAt) || observed.Before(lower) || observed.After(upper) || observed.Before(*started.StartedAt) || observed.Location() != time.UTC {

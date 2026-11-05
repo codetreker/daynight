@@ -37,8 +37,8 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 		ALTER TABLE tasks RENAME TO task_source;
 		CREATE VIEW tasks AS SELECT id, project_id, title, reject_sync_detail() AS description,
 		status, version, created_at, updated_at, started_at, completed_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`)
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		all, err := snapshot.TaskSyncTasks(ctx, project.ID, nil, 160)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		all, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 		if err != nil || len(all) != 3 || all[0].Version != 9007199254740993 || all[0].TitlePreview != strings.Repeat("😀", 160) || !all[0].TitleTruncated ||
 			all[0].RequiredPlatform != nil || all[2].RequiredPlatform == nil || *all[2].RequiredPlatform != model.TaskPlatform("linux") || !all[2].AllowAgents ||
 			!slices.Equal(all[2].DependsOn, []string{a.ID, b.ID}) || !slices.Equal(all[2].ExternalDependsOn, []string{b.ID}) {
@@ -51,7 +51,7 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 			{stamp, 3}, {stamp.Add(time.Nanosecond), 1}, {stamp.Add(999 * time.Nanosecond), 1},
 			{stamp.Add(time.Microsecond), 1}, {stamp.Add(time.Microsecond + time.Nanosecond), 0},
 		} {
-			got, err := snapshot.TaskSyncTasks(ctx, project.ID, &test.lower, 160)
+			got, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &test.lower, 160)
 			if err != nil || got == nil || len(got) != test.count {
 				t.Fatalf("lower %s: %#v, %v", test.lower.Format(time.RFC3339Nano), got, err)
 			}
@@ -91,9 +91,9 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 	}
 	s := &Store{Pool: pool}
 	var original string
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
-		original, err = snapshot.TaskCacheEpoch(ctx, queryID(1))
+		original, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, queryID(1))
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -111,19 +111,19 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		current, err := snapshot.TaskCacheEpoch(ctx, queryID(1))
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		current, err := snapshot.TaskDAO().TaskCacheEpoch(ctx, queryID(1))
 		if err != nil {
 			return err
 		}
-		otherEpoch, err := snapshot.TaskCacheEpoch(ctx, other.ID)
+		otherEpoch, err := snapshot.TaskDAO().TaskCacheEpoch(ctx, other.ID)
 		if err != nil {
 			return err
 		}
 		if current != original || otherEpoch == current {
 			t.Fatalf("epoch changed or shared: %s %s", current, otherEpoch)
 		}
-		_, err = snapshot.TaskCacheEpoch(ctx, queryID(99))
+		_, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, queryID(99))
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("epoch missing cause: %v", err)
 		}
@@ -216,8 +216,8 @@ func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 			project := queryProject(t, s, 1)
 			queryTask(t, s, project.ID, 11, model.TaskTodo)
 			mustQueryExec(t, s, test.ddl)
-			err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
-				_, err := snapshot.TaskSyncTasks(context.Background(), project.ID, nil, 160)
+			err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+				_, err := snapshot.TaskDAO().TaskSyncTasks(context.Background(), project.ID, nil, 160)
 				return err
 			})
 			if err == nil || errors.Is(err, model.ErrNotFound) || strings.Contains(err.Error(), "private") {
@@ -232,11 +232,11 @@ func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 		})
 	}
 	s := isolatedStore(t)
-	var expired *Snapshot
-	if err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error { expired = snapshot; return nil }); err != nil {
+	var expired SnapshotScope
+	if err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error { expired = snapshot; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := expired.TaskSyncTasks(context.Background(), queryID(1), nil, 160)
+	rows, err := expired.TaskDAO().TaskSyncTasks(context.Background(), queryID(1), nil, 160)
 	if !errors.Is(err, pgx.ErrTxClosed) || !reflect.DeepEqual(rows, []model.TaskViewRecord(nil)) {
 		t.Fatalf("closed snapshot: %#v %v", rows, err)
 	}

@@ -20,9 +20,9 @@ func TestMembershipExpectedActorRejectsBeforeDomainSQL(t *testing.T) {
 	}
 	target := workerMember(t, database, project.ID)
 	var before model.ProjectMember
-	if err := database.ReadSnapshot(context.Background(), func(snapshot *store.Snapshot) error {
+	if err := database.ReadSnapshot(context.Background(), func(snapshot store.SnapshotScope) error {
 		var err error
-		before, err = snapshot.DirectProjectMember(context.Background(), target.UserID, project.ID)
+		before, err = snapshot.ProjectDAO().DirectProjectMember(context.Background(), target.UserID, project.ID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -37,8 +37,8 @@ func TestMembershipExpectedActorRejectsBeforeDomainSQL(t *testing.T) {
 	if queries.Load() != 0 {
 		t.Fatalf("identity mismatch executed %d queries", queries.Load())
 	}
-	if err := database.ReadSnapshot(context.Background(), func(snapshot *store.Snapshot) error {
-		after, err := snapshot.DirectProjectMember(context.Background(), target.UserID, project.ID)
+	if err := database.ReadSnapshot(context.Background(), func(snapshot store.SnapshotScope) error {
+		after, err := snapshot.ProjectDAO().DirectProjectMember(context.Background(), target.UserID, project.ID)
 		if err == nil && !reflect.DeepEqual(before, after) {
 			t.Fatal("identity mismatch changed the direct grant")
 		}

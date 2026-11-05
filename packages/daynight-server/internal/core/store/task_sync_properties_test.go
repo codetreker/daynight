@@ -70,8 +70,8 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQuery(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	traced := &Store{Pool: pool}
-	if err := traced.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		actual, err := snapshot.TaskSyncTasks(ctx, project.ID, nil, 160)
+	if err := traced.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		actual, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 		if err != nil {
 			return err
 		}
@@ -86,8 +86,8 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQuery(t *testing.T) {
 	if tracer.taskQueries != 1 || tracer.propertyQueries != 1 {
 		t.Fatalf("properties were not loaded in one batch: task=%d properties=%d", tracer.taskQueries, tracer.propertyQueries)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		actual, err := snapshot.TaskSyncTasks(ctx, project.ID, nil, 160)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		actual, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 		if err != nil {
 			return err
 		}
@@ -99,8 +99,8 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	future := task.UpdatedAt.AddDate(100, 0, 0)
-	if err := traced.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		actual, err := snapshot.TaskSyncTasks(ctx, project.ID, &future, 160)
+	if err := traced.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		actual, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &future, 160)
 		if err != nil || actual == nil || len(actual) != 0 {
 			t.Fatalf("empty window changed: %#v %v", actual, err)
 		}
@@ -125,9 +125,9 @@ func TestTaskSyncPropertyFailuresReturnNoPartialRows(t *testing.T) {
 			bad := queryTask(t, database, project.ID, 11, model.TaskTodo)
 			mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,$2,$3)`, bad.ID, test.field, test.raw)
 			var actual []model.TaskViewRecord
-			err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+			err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 				var err error
-				actual, err = snapshot.TaskSyncTasks(ctx, project.ID, nil, 160)
+				actual, err = snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 				return err
 			})
 			var invalid *taskproperties.ValidationError
@@ -140,8 +140,8 @@ func TestTaskSyncPropertyFailuresReturnNoPartialRows(t *testing.T) {
 	project := queryProject(t, database, 1)
 	queryTask(t, database, project.ID, 10, model.TaskTodo)
 	mustQueryExec(t, database, `DROP TABLE task_properties`)
-	err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
-		actual, err := snapshot.TaskSyncTasks(context.Background(), project.ID, nil, 160)
+	err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+		actual, err := snapshot.TaskDAO().TaskSyncTasks(context.Background(), project.ID, nil, 160)
 		if actual != nil {
 			t.Fatalf("property query failure returned tasks: %#v", actual)
 		}

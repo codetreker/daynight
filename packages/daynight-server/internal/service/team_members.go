@@ -29,8 +29,8 @@ func (s *Teams) Members(ctx context.Context, principal model.Principal, teamID s
 	}
 	var result []model.TeamMemberProfile
 	var missing error
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := snapshot.Team(ctx, principal.UserID, id); err != nil {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := snapshot.TeamDAO().Team(ctx, principal.UserID, id); err != nil {
 			if errors.Is(err, model.ErrNotFound) {
 				missing = err
 				return nil
@@ -38,7 +38,7 @@ func (s *Teams) Members(ctx context.Context, principal model.Principal, teamID s
 			return err
 		}
 		var err error
-		result, err = snapshot.TeamMembers(ctx, id)
+		result, err = snapshot.TeamDAO().TeamMembers(ctx, id)
 		return err
 	})
 	if err != nil {

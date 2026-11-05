@@ -86,9 +86,9 @@ func (s *Teams) Get(ctx context.Context, principal model.Principal, teamID strin
 	}
 	var result model.Team
 	var missing error
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
-		result, err = snapshot.Team(ctx, principal.UserID, id)
+		result, err = snapshot.TeamDAO().Team(ctx, principal.UserID, id)
 		if errors.Is(err, model.ErrNotFound) {
 			missing = err
 			return nil
@@ -114,9 +114,9 @@ func (s *Teams) List(ctx context.Context, principal model.Principal, request mod
 		return TeamPage{}, err
 	}
 	var result store.TeamPage
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
-		result, err = snapshot.Teams(ctx, principal.UserID, page)
+		result, err = snapshot.TeamDAO().Teams(ctx, principal.UserID, page)
 		return err
 	})
 	if err != nil {

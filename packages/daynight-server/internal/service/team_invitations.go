@@ -75,15 +75,15 @@ func (s *Teams) ListInvitations(ctx context.Context, p model.Principal, teamID s
 		return nil, err
 	}
 	var result []model.TeamInvitation
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		team, err := snapshot.Team(ctx, p.UserID, id)
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		team, err := snapshot.TeamDAO().Team(ctx, p.UserID, id)
 		if err != nil {
 			return err
 		}
 		if err = requireOrdinaryTeamAdmin(team); err != nil {
 			return err
 		}
-		result, err = snapshot.TeamInvitations(ctx, id, time.Now().UTC())
+		result, err = snapshot.TeamDAO().TeamInvitations(ctx, id, time.Now().UTC())
 		return err
 	})
 	return result, err
@@ -117,7 +117,7 @@ func (s *Teams) RevokeInvitation(ctx context.Context, p model.Principal, teamID,
 	}
 	return changed, nil
 }
-func (s *Teams) inspectInvitation(ctx context.Context, p model.Principal, secret string, operation func(*store.Snapshot, model.TeamInvitation) error) error {
+func (s *Teams) inspectInvitation(ctx context.Context, p model.Principal, secret string, operation func(store.TeamReader, model.TeamInvitation) error) error {
 	if err := requirePrincipal(p); err != nil {
 		return err
 	}
@@ -125,9 +125,9 @@ func (s *Teams) inspectInvitation(ctx context.Context, p model.Principal, secret
 		return invitationUnavailable(nil)
 	}
 	var refusal *model.Fault
-	err := s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err := s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		return completeMembershipOperation(func() error {
-			i, err := snapshot.TeamInvitation(ctx, secretHash(secret))
+			i, err := snapshot.TeamDAO().TeamInvitation(ctx, secretHash(secret))
 			if errors.Is(err, model.ErrNotFound) {
 				return invitationUnavailable(nil)
 			}
@@ -137,7 +137,7 @@ func (s *Teams) inspectInvitation(ctx context.Context, p model.Principal, secret
 			if !teamInvitationAvailable(i, time.Now().UTC()) {
 				return invitationUnavailable(nil)
 			}
-			return operation(snapshot, i)
+			return operation(snapshot.TeamDAO(), i)
 		}, &refusal)
 	})
 	if err != nil {
@@ -150,8 +150,8 @@ func (s *Teams) inspectInvitation(ctx context.Context, p model.Principal, secret
 }
 func (s *Teams) InspectInvitation(ctx context.Context, p model.Principal, secret string) (TeamInvitationInspection, error) {
 	var result TeamInvitationInspection
-	err := s.inspectInvitation(ctx, p, secret, func(snapshot *store.Snapshot, i model.TeamInvitation) error {
-		team, err := snapshot.InvitationTeam(ctx, i.TeamID)
+	err := s.inspectInvitation(ctx, p, secret, func(reader store.TeamReader, i model.TeamInvitation) error {
+		team, err := reader.InvitationTeam(ctx, i.TeamID)
 		if errors.Is(err, model.ErrNotFound) {
 			return invitationUnavailable(nil)
 		}
@@ -162,7 +162,7 @@ func (s *Teams) InspectInvitation(ctx context.Context, p model.Principal, secret
 			return invitationUnavailable(nil)
 		}
 		result.Team = team
-		member, err := snapshot.InvitationTeamMember(ctx, i.TeamID, p.UserID)
+		member, err := reader.InvitationTeamMember(ctx, i.TeamID, p.UserID)
 		if errors.Is(err, model.ErrNotFound) {
 			return nil
 		}
@@ -179,7 +179,7 @@ func (s *Teams) AcceptInvitation(ctx context.Context, p model.Principal, secret,
 		return TeamInvitationAcceptance{}, err
 	}
 	var teamID string
-	if err := s.inspectInvitation(ctx, p, secret, func(_ *store.Snapshot, i model.TeamInvitation) error { teamID = i.TeamID; return nil }); err != nil {
+	if err := s.inspectInvitation(ctx, p, secret, func(_ store.TeamReader, i model.TeamInvitation) error { teamID = i.TeamID; return nil }); err != nil {
 		return TeamInvitationAcceptance{}, err
 	}
 	var result TeamInvitationAcceptance

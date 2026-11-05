@@ -19,9 +19,9 @@ func TestTaskStepsChangeStoreUpdatesOneExistingTarget(t *testing.T) {
 	seedStoreStep(t, database, task.ID, "00000000", 0)
 	seedStoreStep(t, database, task.ID, "abcdef01", 1)
 	var before []model.TaskStep
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
-		before, err = snapshot.TaskSteps(ctx, task.ID)
+		before, err = snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -32,8 +32,8 @@ func TestTaskStepsChangeStoreUpdatesOneExistingTarget(t *testing.T) {
 	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error { return tx.UpdateTaskStep(ctx, task.ID, target) }); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		after, err := snapshot.TaskSteps(ctx, task.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		after, err := snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 		if err != nil {
 			return err
 		}

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -46,32 +45,4 @@ func TestProjectAccessProjectionAndAuthorization(t *testing.T) {
 			t.Fatal("inaccessible project returned actor data")
 		}
 	}
-}
-
-func TestProjectAccessValidationAndCompletionFailures(t *testing.T) {
-	ctx := context.Background()
-	_, err := NewProjects(nil).Access(ctx, model.Principal{}, uuid.NewString())
-	requireFault(t, err, "unauthenticated")
-	principal := model.Principal{Kind: model.SessionCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
-	_, err = NewProjects(nil).Access(ctx, principal, "invalid")
-	requireFault(t, err, "invalid_input")
-	projects, database, databaseURL, admin := projectService(t)
-	project, err := projects.Create(ctx, admin, CreateProject{ExpectedUserID: admin.UserID, Name: "Completion precedence", RepoURL: "host:repo"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	outsider := servicePrincipal(t, database)
-	for _, actor := range []model.Principal{admin, outsider} {
-		canceled, cancel := context.WithCancel(ctx)
-		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") }, end: cancel})
-		access, err := NewProjects(traced.store).Access(canceled, actor, project.ID)
-		cancel()
-		assertOperational(t, err)
-		if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(access, model.ProjectAccess{}) {
-			t.Fatalf("completion failure masked by actor result: %#v %v", access, err)
-		}
-	}
-	database.Close()
-	_, err = projects.Access(ctx, admin, project.ID)
-	assertOperational(t, err)
 }

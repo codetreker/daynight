@@ -201,11 +201,17 @@ func testProjectOwnershipCreationAndRequiredReads(t *testing.T, missing string) 
 	} else {
 		mustQueryExec(t, s, `DELETE FROM teams WHERE id=$1`, project.Ownership.TeamID)
 	}
-	for index, read := range []func(*Snapshot) error{
-		func(snapshot *Snapshot) error { _, err := snapshot.Project(ctx, project.ID); return err },
-		func(snapshot *Snapshot) error { _, err := snapshot.Projects(ctx, Page{Limit: 10}); return err },
-		func(snapshot *Snapshot) error {
-			_, err := snapshot.AccessibleProjects(ctx, principal, Page{Limit: 10})
+	for index, read := range []func(SnapshotScope) error{
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.ProjectDAO().Project(ctx, project.ID)
+			return err
+		},
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.ProjectDAO().Projects(ctx, Page{Limit: 10})
+			return err
+		},
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.ProjectDAO().AccessibleProjects(ctx, principal, Page{Limit: 10})
 			return err
 		},
 	} {

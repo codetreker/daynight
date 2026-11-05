@@ -73,28 +73,28 @@ func TestTaskStepsParentAndRowsShareSnapshot(t *testing.T) {
 	other := queryTask(t, database, project.ID, 11, model.TaskDone)
 	seedStoreStep(t, database, task.ID, "00abcdef", 0)
 	seedStoreStep(t, database, other.ID, "00abcdef", 0)
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		header, err := snapshot.TaskHeader(ctx, project.ID, task.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		header, err := snapshot.TaskDAO().TaskHeader(ctx, project.ID, task.ID)
 		if err != nil || header.Version != task.Version || header.DeletedAt != nil {
 			t.Fatalf("header: %+v %v", header, err)
 		}
 		mustQueryExec(t, database, `WITH changed AS (UPDATE tasks SET version=version+1 WHERE id=$1) UPDATE task_steps SET title='New state' WHERE task_id=$1`, task.ID)
-		steps, err := snapshot.TaskSteps(ctx, task.ID)
+		steps, err := snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 		if err != nil || len(steps) != 1 || steps[0].Title != "Coding" || steps[0].CreatedAt.Location() != time.UTC || steps[0].CreatedAt.Nanosecond() != 123456000 {
 			t.Fatalf("mixed snapshot: %+v %v", steps, err)
 		}
-		single, err := snapshot.TaskStep(ctx, task.ID, "00abcdef")
+		single, err := snapshot.TaskDAO().TaskStep(ctx, task.ID, "00abcdef")
 		if err != nil || !reflect.DeepEqual(single, steps[0]) {
 			t.Fatalf("single: %+v %v", single, err)
 		}
-		empty, err := snapshot.TaskSteps(ctx, queryID(999))
+		empty, err := snapshot.TaskDAO().TaskSteps(ctx, queryID(999))
 		if err != nil || empty == nil || len(empty) != 0 {
 			t.Fatalf("empty: %+v %v", empty, err)
 		}
-		if _, err := snapshot.TaskStep(ctx, task.ID, "00000000"); !errors.Is(err, model.ErrNotFound) {
+		if _, err := snapshot.TaskDAO().TaskStep(ctx, task.ID, "00000000"); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing child: %v", err)
 		}
-		if _, err := snapshot.TaskHeader(ctx, queryID(999), task.ID); !errors.Is(err, model.ErrNotFound) {
+		if _, err := snapshot.TaskDAO().TaskHeader(ctx, queryID(999), task.ID); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("cross-project header: %v", err)
 		}
 		return nil
@@ -102,8 +102,8 @@ func TestTaskStepsParentAndRowsShareSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustQueryExec(t, database, `UPDATE tasks SET deleted_at='2026-11-03T11:12:13Z' WHERE id=$1`, task.ID)
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		header, err := snapshot.TaskHeader(ctx, project.ID, task.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		header, err := snapshot.TaskDAO().TaskHeader(ctx, project.ID, task.ID)
 		if err != nil || header.Version != task.Version+1 || header.DeletedAt == nil || header.DeletedAt.Location() != time.UTC {
 			t.Fatalf("updated header: %+v %v", header, err)
 		}
@@ -120,11 +120,11 @@ func TestTaskStepsStorageErrorsPropagate(t *testing.T) {
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	seedStoreStep(t, database, task.ID, "00000000", 0)
 	mustQueryExec(t, database, `UPDATE task_steps SET created_at='infinity' WHERE task_id=$1`, task.ID)
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		if _, err := snapshot.TaskSteps(ctx, task.ID); err == nil {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		if _, err := snapshot.TaskDAO().TaskSteps(ctx, task.ID); err == nil {
 			t.Fatal("scan failure concealed")
 		}
-		if _, err := snapshot.TaskStep(ctx, task.ID, "00000000"); err == nil {
+		if _, err := snapshot.TaskDAO().TaskStep(ctx, task.ID, "00000000"); err == nil {
 			t.Fatal("item scan failure concealed")
 		}
 		return nil
@@ -132,15 +132,15 @@ func TestTaskStepsStorageErrorsPropagate(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustQueryExec(t, database, `DROP TABLE task_steps`)
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.TaskSteps(ctx, task.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 		return err
 	}); err == nil {
 		t.Fatal("query failure concealed")
 	}
 	mustQueryExec(t, database, `ALTER TABLE tasks RENAME COLUMN version TO missing_version`)
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.TaskHeader(ctx, project.ID, task.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.TaskDAO().TaskHeader(ctx, project.ID, task.ID)
 		return err
 	}); err == nil {
 		t.Fatal("parent query failure concealed")
@@ -182,12 +182,12 @@ func TestTaskStepsCommitLostReceiptKeepsUnknownAndCurrentFacts(t *testing.T) {
 	if !errors.As(err, &failure) || failure.Outcome != TransactionUnknown || failure.Phase != "commit" || !failure.CommitAttempted || failure.CleanupFailed || !errors.Is(err, lost) {
 		t.Fatalf("lost receipt classification: %+v %v", failure, err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		header, err := snapshot.TaskHeader(ctx, project.ID, task.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		header, err := snapshot.TaskDAO().TaskHeader(ctx, project.ID, task.ID)
 		if err != nil {
 			return err
 		}
-		rows, err := snapshot.TaskSteps(ctx, task.ID)
+		rows, err := snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 		if err != nil {
 			return err
 		}
