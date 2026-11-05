@@ -16,7 +16,7 @@ const preference = { detail: { id: personal, status: "ready", team: { id: person
 const render = createLocaleRender("en");
 let snapshot: ReturnType<typeof useTeams>["list"];
 const View = () => { const teams = useTeams(); snapshot = teams.list; return <><TeamSelector personalId={personal} selectedId={personal} expanded onExpand={() => {}} onNavigate={() => {}} /><button onClick={teams.refreshList}>Refresh list</button></>; };
-const setup = (fetcher: (url: string) => Response | Promise<Response>) => {
+const setup = (fetcher: (url: string, init?: RequestInit) => Response | Promise<Response>) => {
   vi.stubGlobal("fetch", vi.fn(fetcher));
   const scope = createTaskCacheScope({ userId, onIdentityMismatch: () => { throw new Error("principal mismatch"); } });
   const app = (blocked: boolean) => <TeamsProvider preference={preference} admission={scope} admissionBlocked={blocked}><View /></TeamsProvider>;
@@ -27,10 +27,12 @@ const setup = (fetcher: (url: string) => Response | Promise<Response>) => {
 };
 
 it("retains the loaded prefix and focused links until every revalidation page succeeds", async () => {
-  const first = Promise.withResolvers<Response>(), second = Promise.withResolvers<Response>(); let firstReads = 0, secondReads = 0;
-  const view = setup((url) => {
+  const first = Promise.withResolvers<Response>(), second = Promise.withResolvers<Response>(), tail = Promise.withResolvers<Response>(); let firstReads = 0, secondReads = 0, tailReads = 0;
+  let revalidationSignal: AbortSignal | undefined;
+  const view = setup((url, init) => {
     if (url === "/api/v1/teams?limit=50") return ++firstReads === 1 ? page([team(a, "Alpha")], "next") : first.promise;
-    if (url.endsWith("cursor=next")) return ++secondReads === 1 ? page([team(b, "Beta")], "tail") : second.promise;
+    if (url.endsWith("cursor=next")) { if (++secondReads === 1) return page([team(b, "Beta")], "tail"); revalidationSignal = init?.signal ?? undefined; return second.promise; }
+    if (url.endsWith("cursor=tail")) { tailReads++; return tail.promise; }
     throw new Error(url);
   });
   const alpha = await within(view.selector).findByRole("link", { name: "Alpha" });
@@ -43,9 +45,22 @@ it("retains the loaded prefix and focused links until every revalidation page su
   await act(async () => first.resolve(page([team(a, "Alpha")], "next")));
   await waitFor(() => expect(secondReads).toBe(2));
   expect(snapshot).toBe(before); expect(within(view.selector).getByRole("link", { name: "Alpha" })).toBe(alpha); expect(document.activeElement).toBe(beta);
-  await act(async () => second.resolve(page([team(b, "Beta")], "tail")));
-  await waitFor(() => expect(secondReads).toBe(2));
-  expect(snapshot).toBe(before); expect(snapshot.cursor).toBe("tail"); expect(document.activeElement).toBe(beta);
+  expect(revalidationSignal).toBeDefined();
+  const ready = view.scope.ready.bind(view.scope), reached = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), consumed = Promise.withResolvers<void>();
+  vi.spyOn(view.scope, "ready").mockImplementation(async (signal) => {
+    await ready(signal);
+    if (signal === revalidationSignal) { reached.resolve(); await release.promise; signal.throwIfAborted(); }
+  });
+  const response = page([team(b, "Beta")], "tail"), read = response.text.bind(response);
+  response.text = async () => { const result = await read(); consumed.resolve(); return result; };
+  await act(async () => { second.resolve(response); await consumed.promise; await reached.promise; });
+  expect(snapshot).toBe(before); expect(document.activeElement).toBe(beta);
+  await act(async () => { release.resolve(); await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
+  expect(snapshot).toBe(before); expect(snapshot.items).toBe(before.items); expect(snapshot.cursor).toBe("tail"); expect(document.activeElement).toBe(beta);
+  fireEvent.click(within(view.selector).getByRole("button", { name: "Load more Teams" }));
+  await waitFor(() => expect(tailReads).toBe(1));
+  expect(revalidationSignal!.aborted).toBe(false);
+  await act(async () => tail.resolve(page([], null)));
   view.unmount(); view.scope.dispose();
 });
 

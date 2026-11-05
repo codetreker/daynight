@@ -121,7 +121,10 @@ describe("Team preference during background checks", () => {
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
     expect(fixture.result.current.detail).toBe(snapshot);
     await act(async () => pending.resolve(reply(a)));
-    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: a, status: "ready", team: { name: "Alpha" } }));
+    await waitFor(() => expect(fixture.result.current.detail).not.toBe(snapshot));
+    expect(fixture.result.current.detail).toMatchObject({ id: a, status: "ready", team: { name: "Alpha" } });
+    expect(fixture.result.current.detail.team).not.toBe(snapshot.team);
+    expect(fixture.result.current.detail.team).toEqual(snapshot.team);
   });
 
   it("publishes a changed Team and surfaces a real revalidation error", async () => {
@@ -210,6 +213,37 @@ describe("Team preference during background checks", () => {
     await act(async () => fresh.resolve(reply(a, 404)));
     await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: personal.id, status: "ready" }));
     expect(localStorage.getItem(key)).toBeNull();
+  });
+
+  it("keeps confirmed Team and membership versions independently when a later GET is older", async () => {
+    const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    const pending = Promise.withResolvers<Response>();
+    const fetcher = vi.fn(() => fetcher.mock.calls.length === 1 ? Promise.resolve(reply(a)) : pending.promise);
+    vi.stubGlobal("fetch", fetcher);
+    const fixture = renderHook(() => useTeamPreference(personal, a, scope, false));
+    await waitFor(() => expect(fixture.result.current.detail.status).toBe("ready"));
+    const confirmed = { id: a, kind: "ordinary" as const, name: "Renamed", version: 2n, createdAt: time, updatedAt: time, membership: { teamId: a, userId, role: "admin" as const, version: 2n, createdAt: time, updatedAt: time } };
+    act(() => fixture.result.current.acceptTeam(confirmed));
+    const accepted = fixture.result.current.detail.team;
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    await act(async () => pending.resolve(reply(a)));
+    await waitFor(() => expect(fixture.result.current.detail.team).not.toBe(accepted));
+    await waitFor(() => expect(fixture.result.current.detail.team).toMatchObject({ name: "Renamed", version: 2n, membership: { role: "admin", version: 2n } }));
+  });
+
+  it("keeps a newer read when an older confirmed receipt arrives, while checking again", async () => {
+    const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    const pending = Promise.withResolvers<Response>();
+    const latest = { id: a, kind: "ordinary" as const, name: "Latest", version: 3n, createdAt: time, updatedAt: time, membership: { teamId: a, userId, role: "admin" as const, version: 3n, createdAt: time, updatedAt: time } };
+    const latestReply = () => new Response(stringifyWireJson(latest), { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
+    const fetcher = vi.fn(() => fetcher.mock.calls.length === 1 ? Promise.resolve(latestReply()) : pending.promise);
+    vi.stubGlobal("fetch", fetcher);
+    const fixture = renderHook(() => useTeamPreference(personal, a, scope, false));
+    await waitFor(() => expect(fixture.result.current.detail.team).toMatchObject({ name: "Latest", version: 3n }));
+    act(() => fixture.result.current.acceptTeam({ ...latest, name: "Older", version: 2n, membership: { ...latest.membership, role: "member", version: 2n } }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    expect(fixture.result.current.detail).toMatchObject({ status: "ready", team: { name: "Latest", version: 3n, membership: { role: "admin", version: 3n } } });
+    await act(async () => pending.resolve(latestReply()));
   });
 
   it("restarts an interrupted first read and ignores its late result", async () => {

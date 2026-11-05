@@ -10,6 +10,13 @@ type Detail = { readonly id: string; readonly status: "loading" | "ready" | "err
 type State = { readonly key: string | null; readonly detail: Detail };
 type PendingSave = { readonly team: TeamRef; readonly replaces: string | null };
 type PreferenceOptions = { readonly restoreOnEntry?: boolean; readonly guardUnavailable?: ((teamId: string) => boolean) | undefined };
+const mergeTeam = (previous: Team | null, incoming: Team): Team => {
+  if (previous === null || previous.id !== incoming.id) return incoming;
+  const detail = previous.version > incoming.version ? previous : incoming;
+  const membership = previous.membership.version > incoming.membership.version ? previous.membership : incoming.membership;
+  return { ...detail, membership };
+};
+const forbidden = (error: unknown) => error instanceof ApiError && error.kind === "server" && error.status === 403 && error.code === "forbidden";
 export type TeamPreference = ReturnType<typeof useTeamPreference>;
 const PreferenceContext = createContext<TeamPreference | null>(null);
 
@@ -32,6 +39,8 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
   const [state, setState] = useState<State>(() => ({ key: null, detail: { id: personal.id, status: "ready", team: personal } }));
   const stateRef = useRef(state); stateRef.current = state;
   const current = useRef<TeamRef>(personal);
+  const currentTeam = useRef<Team | null>(null);
+  const confirmedWhileDenied = useRef<string | null>(null);
   const acceptedGeneration = useRef(0);
   const pendingSave = useRef<PendingSave | null>(null);
   const blockedRef = useRef(blocked); blockedRef.current = blocked;
@@ -65,10 +74,14 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
     const key = requestKey;
     const accepted = acceptedGeneration.current;
     const valid = () => !signal.aborted && !admission.isInvalidated && !blockedRef.current && routeRef.current.epoch === epoch && acceptedGeneration.current === accepted;
-    const install = (team: TeamRef) => {
+    const install = (team: TeamRef, exact: Team | null = null) => {
       if (!valid()) return;
-      initialized.current = true; current.current = team;
-      setState({ key, detail: { id: team.id, status: "ready", team } });
+      confirmedWhileDenied.current = null;
+      if (exact !== null) exact = mergeTeam(currentTeam.current, exact);
+      currentTeam.current = exact;
+      const value = exact ?? team;
+      initialized.current = true; current.current = value;
+      setState({ key, detail: { id: value.id, status: "ready", team: value } });
     };
     const fail = (id: string, error: unknown, storageError = false) => {
       if (valid()) setState({ key, detail: { id, status: "error", error, storageError } });
@@ -94,7 +107,8 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
       }
       // Keep the confirmed snapshot while checking the same target, but show
       // loading for an initial read or a different saved selection.
-      if (stateRef.current.key !== key || stateRef.current.detail.status !== "ready" || stateRef.current.detail.id !== id) {
+      const retainDenied = confirmedWhileDenied.current === id && stateRef.current.key === key && stateRef.current.detail.id === id && stateRef.current.detail.status === "error" && forbidden(stateRef.current.detail.error);
+      if (!retainDenied && (stateRef.current.key !== key || stateRef.current.detail.status !== "ready" || stateRef.current.detail.id !== id)) {
         setState({ key, detail: { id, status: "loading" } });
       }
       try {
@@ -110,7 +124,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
           catch (error) { fail(id, error, true); return; }
           if (selected !== id) { retry(); return; }
         }
-        install(team);
+        install(team, team);
         if (!remembered && savedNavigation.current !== navigation) { save(team); savedNavigation.current = navigation; }
       } catch (error) {
         if (!valid()) return;
@@ -142,9 +156,11 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
     // A GET started before this confirmed update cannot publish over it. Retry
     // the exact read so a subsequent real revocation is still observed.
     acceptedGeneration.current++;
-    current.current = team;
+    const merged = mergeTeam(currentTeam.current, team);
+    current.current = merged; currentTeam.current = merged;
+    confirmedWhileDenied.current = stateRef.current.detail.id === team.id && stateRef.current.detail.status === "error" && forbidden(stateRef.current.detail.error) ? team.id : null;
     setState((previous) => previous.detail.id === team.id
-      ? { ...previous, detail: { id: team.id, status: "ready", team } } : previous);
+      ? previous.detail.status === "error" && forbidden(previous.detail.error) ? previous : { ...previous, detail: { id: team.id, status: "ready", team: merged } } : previous);
     retry();
   }, [admission, retry]);
   const forgetUnavailable = useCallback((id: string): "forgotten" | "changed" | "storage_error" => {
@@ -162,10 +178,11 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
     const key = routeRef.current.key;
     if (admission.isInvalidated || current.current.id !== id || key !== null && key !== "default" && key !== id) return;
     current.current = personal;
+    currentTeam.current = null;
     if (pendingSave.current?.team.id === id) pendingSave.current = null;
     save(personal, id);
     if (key === "default") retry();
   }, [admission, personal, save, retry]);
   const detail: Detail = requestKey === null ? { id: current.current.id, status: "ready", team: current.current } : state.key !== requestKey ? { id: requestKey === "default" ? current.current.id : requestKey, status: "loading" } : state.detail;
-  return { detail, retry, saveError, retrySave, acceptTeam, forgetUnavailable, leaveTeam };
+  return { detail, confirmedTeam: currentTeam.current, retry, saveError, retrySave, acceptTeam, forgetUnavailable, leaveTeam };
 };

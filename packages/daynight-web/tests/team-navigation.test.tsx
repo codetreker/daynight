@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthenticatedApp } from "../src/app/AuthenticatedApp";
 import { navigate } from "../src/app/router";
+import { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { stringifyWireJson } from "./helpers/wireJson";
 import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
@@ -76,6 +77,79 @@ describe("Team workspace navigation", () => {
     expect(screen.queryByRole("button", { name: /Create project/ })).toBeNull();
     expect(fetcher.mock.calls.some(([url]) => url.includes("shared=true"))).toBe(true);
   });
+  it.each([`/teams/${a}`, "/projects"])("keeps a paginated Team menu and projects mounted through checks on %s", async (path) => {
+    window.history.replaceState(null, "", path);
+    if (path === "/projects") localStorage.setItem(`daynight.selectedTeam:${userId}`, a);
+    const identity = Promise.withResolvers<Response>(), firstPage = Promise.withResolvers<Response>(), secondPage = Promise.withResolvers<Response>(), teamRead = Promise.withResolvers<Response>();
+    let identities = 0, firstReads = 0, secondReads = 0, teamReads = 0, tailReads = 0;
+    const ready = TaskCacheScope.prototype.ready;
+    let listSignal: AbortSignal | undefined, teamSignal: AbortSignal | undefined;
+    let hold: { signal: AbortSignal; reached: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | null = null;
+    vi.spyOn(TaskCacheScope.prototype, "ready").mockImplementation(async function (this: TaskCacheScope, signal) {
+      await ready.call(this, signal);
+      if (hold !== null && hold.signal === signal) { const gate = hold; gate.reached.resolve(); await gate.release.promise; signal.throwIfAborted(); }
+    });
+    const observed = (body: unknown, consumed: PromiseWithResolvers<void>) => {
+      const response = json(body), read = response.text.bind(response);
+      response.text = async () => { const value = await read(); consumed.resolve(); return value; };
+      return response;
+    };
+    const fetcher = install((url, init) => {
+      if (url === "/api/v1/me") return ++identities === 2 ? identity.promise : json(person);
+      if (url === `/api/v1/teams/${a}`) { if (++teamReads === 2) { teamSignal = init?.signal ?? undefined; return teamRead.promise; } return json(team(a, "Alpha")); }
+      if (url === "/api/v1/teams?limit=50") { if (++firstReads === 2) { listSignal = init?.signal ?? undefined; return firstPage.promise; } return json({ items: [team(a, "Alpha")], nextCursor: "next" }); }
+      if (url === "/api/v1/teams?limit=50&cursor=next") return ++secondReads === 2 ? secondPage.promise : json({ items: [team(b, "Beta")], nextCursor: "tail" });
+      if (url === "/api/v1/teams?limit=50&cursor=tail-refreshed") { tailReads++; return json({ items: [], nextCursor: null }); }
+      if (url.startsWith("/api/v1/projects?")) return json({ items: [project], nextCursor: null });
+      return undefined;
+    });
+    render(<AuthenticatedApp />);
+    const title = await screen.findByRole("heading", { name: "Alpha" }, { timeout: 20000 });
+    const main = screen.getByRole("main");
+    const grid = await within(main).findByRole("list", { name: "Project list" }, { timeout: 20000 });
+    const card = within(grid).getByRole("link", { name: /Raw 项目/ });
+    const selector = document.querySelector<HTMLDetailsElement>("details.team-selector")!;
+    fireEvent.click(selector.querySelector("summary")!);
+    const alpha = await within(selector).findByRole("link", { name: "Alpha" }, { timeout: 20000 });
+    fireEvent.click(within(selector).getByRole("button", { name: "Load more Teams" }));
+    const beta = await within(selector).findByRole("link", { name: "Beta" }, { timeout: 20000 }); beta.focus();
+    const check = () => {
+      expect(selector.open).toBe(true); expect(selector).toBeVisible();
+      expect(within(selector).getByRole("link", { name: "Alpha" })).toBe(alpha);
+      expect(within(selector).getByRole("link", { name: "Beta" })).toBe(beta);
+      expect(alpha).toBeVisible(); expect(beta).toBeVisible(); expect(document.activeElement).toBe(beta);
+      expect(screen.getByRole("heading", { name: "Alpha" })).toBe(title); expect(title).toBeVisible();
+      expect(within(main).getByRole("list", { name: "Project list" })).toBe(grid); expect(grid).toBeVisible();
+      expect(within(grid).getByRole("link", { name: /Raw 项目/ })).toBe(card);
+      expect(screen.queryByText("Loading Teams", { selector: "section" })).toBeNull();
+      expect(within(selector).getByRole("button", { name: "Load more Teams" })).toBeEnabled();
+      expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(a);
+    };
+    check();
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(identities).toBe(2), { timeout: 20000 }); check();
+    await act(async () => identity.resolve(json({ ...person, personalTeam: { ...person.personalTeam } })));
+    await waitFor(() => { expect(firstReads).toBe(2); expect(teamReads).toBe(2); }, { timeout: 20000 }); check();
+    const firstConsumed = Promise.withResolvers<void>();
+    expect(listSignal).toBeDefined(); expect(teamSignal).toBeDefined(); expect(listSignal).not.toBe(teamSignal);
+    hold = { signal: listSignal!, reached: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
+    const firstGate = hold;
+    await act(async () => { firstPage.resolve(observed({ items: [team(a, "Alpha")], nextCursor: "next" }, firstConsumed)); await firstConsumed.promise; await firstGate.reached.promise; });
+    expect(secondReads).toBe(1); check();
+    hold = null; await act(async () => firstGate.release.resolve());
+    await waitFor(() => expect(secondReads).toBe(2), { timeout: 20000 }); check();
+    const secondConsumed = Promise.withResolvers<void>();
+    await act(async () => { secondPage.resolve(observed({ items: [team(b, "Beta")], nextCursor: "tail-refreshed" }, secondConsumed)); await secondConsumed.promise; }); check();
+    const teamConsumed = Promise.withResolvers<void>();
+    hold = { signal: teamSignal!, reached: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
+    const teamGate = hold;
+    await act(async () => { teamRead.resolve(observed(team(a, "Alpha"), teamConsumed)); await teamConsumed.promise; await teamGate.reached.promise; }); check();
+    hold = null; await act(async () => teamGate.release.resolve()); check();
+    fireEvent.click(within(selector).getByRole("button", { name: "Load more Teams" }));
+    await waitFor(() => expect(tailReads).toBe(1), { timeout: 20000 });
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/teams?limit=50&cursor=tail-refreshed")).toHaveLength(1);
+    expect(within(selector).getByRole("link", { name: "Beta" })).toBe(beta);
+  }, 90000);
   it("keeps creation bound to the Team at dialog opening even if the route changes", async () => {
     window.history.replaceState(null, "", `/teams/${a}`);
     let body: Record<string, unknown> | null = null;
@@ -265,7 +339,7 @@ describe("Team workspace navigation", () => {
     render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: /^Edit$/ })); const name = screen.getByLabelText("Team name");
     fireEvent.change(name, { target: { value: "Unsaved draft" } });
     focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(reads).toBe(3));
+    await waitFor(() => expect(reads).toBe(4));
     await act(async () => recheck.resolve(json(team(a, "  Alpha  "))));
     await waitFor(() => expect(screen.getByLabelText("Team name")).toHaveValue("Unsaved draft"));
   });
@@ -286,7 +360,7 @@ describe("Team workspace navigation", () => {
     await waitFor(() => expect(meReads).toBe(2)); expect(teamReads).toBe(2);
     expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog);
     await act(async () => identity.resolve(json({ ...person, personalTeam: { ...person.personalTeam } })));
-    await waitFor(() => expect(teamReads).toBe(3));
+    await waitFor(() => expect(teamReads).toBe(4));
     expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog); expect(dialog).toBeVisible();
     expect(document.activeElement).toBe(name); expect(name.selectionStart).toBe(2); expect(name.selectionEnd).toBe(5);
     expect(name).toHaveValue("Unsaved draft"); expect(name).not.toBeDisabled();
@@ -326,6 +400,63 @@ describe("Team workspace navigation", () => {
     await waitFor(() => expect(submit).toBeDisabled());
     expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
   });
+  it("isolates a guarded roster on a preference 403 and retains the unknown operation", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/members`);
+    const receipt = Promise.withResolvers<Response>(), checks = [Promise.withResolvers<Response>(), Promise.withResolvers<Response>()];
+    const member = (id: string, role: "admin" | "member") => ({ ...team(a, "Alpha").membership, userId: id, role, profile: { name: id === userId ? "Alice" : "Other", email: null, avatarUrl: null } });
+    const other = "00000000-0000-4000-8000-000000000009"; let deletes = 0, reads = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}/members/${userId}` && init?.method === "DELETE") { deletes++; return receipt.promise; }
+      if (url === `/api/v1/teams/${a}` && !init?.method && deletes > 0 && ++reads <= 2) return checks[reads - 1]!.promise;
+      if (url === `/api/v1/teams/${a}`) return json({ ...team(a, "Alpha"), membership: { ...team(a, "Alpha").membership, role: "member" } });
+      if (url === `/api/v1/teams/${a}/members`) return json({ items: [member(userId, "member"), member(other, "admin")] });
+      return undefined;
+    });
+    render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: "Leave Team" }, { timeout: 20000 }));
+    const dialog = screen.getByRole("dialog", { name: "Leave Team" }); fireEvent.click(within(dialog).getByRole("button", { name: "Leave Team" }));
+    await waitFor(() => expect(deletes).toBe(1));
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBe(2), { timeout: 20000 });
+    await act(async () => checks[1]!.resolve(json({ error: { code: "forbidden", message: "denied", requestId: "rq" } }, 403)));
+    const alert = (await screen.findByRole("heading", { name: "Unable to load Teams" })).closest("section")!;
+    expect(dialog.closest("[hidden]")).not.toBeNull();
+    expect(document.querySelector(".team-member-row")).toBeNull();
+    expect(screen.getByText("Submitting", { selector: "[role=status]" })).toBeVisible();
+    await act(async () => receipt.reject(new TypeError("connection lost")));
+    await waitFor(() => expect(screen.getAllByText(/result is unknown/).some((node) => !node.closest("[hidden]"))).toBe(true));
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Leave Team" })).toBe(dialog));
+    await within(dialog).findByText(/result is unknown/); expect(deletes).toBe(1);
+  }, 30000);
+
+  it("registers an invitation guard before a pending preference 404 can publish", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/members`);
+    const preference = Promise.withResolvers<Response>(), receipt = Promise.withResolvers<Response>();
+    const membership = { ...team(a, "Alpha").membership, profile: { name: "Alice", email: null, avatarUrl: null } }; let reads = 0, writes = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}/invitations` && init?.method === "POST") { writes++; return receipt.promise; }
+      if (url === `/api/v1/teams/${a}/invitations`) return json({ items: [] });
+      if (url === `/api/v1/teams/${a}/members`) return json({ items: [membership] });
+      if (url === `/api/v1/teams/${a}` && !init?.method && ++reads === 4) return preference.promise;
+      return undefined;
+    });
+    render(<AuthenticatedApp />); const invite = await screen.findByRole("button", { name: "Invite member" }, { timeout: 20000 });
+    await waitFor(() => expect(invite).toBeEnabled());
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBe(4), { timeout: 20000 });
+    await waitFor(() => expect(invite).toBeEnabled()); fireEvent.click(invite);
+    const dialog = screen.getByRole("dialog");
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Create invitation link" }));
+      preference.resolve(json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404));
+    });
+    await waitFor(() => expect(writes).toBe(1));
+    await screen.findByRole("heading", { name: "Unable to load Teams" });
+    expect(window.location.pathname).toBe(`/teams/${a}/members`);
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    await act(async () => receipt.reject(new TypeError("connection lost")));
+    await within(dialog).findByText(/not confirmed/); expect(writes).toBe(1);
+  }, 30000);
   it("keeps the management dialog and focused draft visible while identity is pending", async () => {
     window.history.replaceState(null, "", `/teams/${a}/settings`);
     const identity = Promise.withResolvers<Response>(); let meReads = 0;
@@ -410,10 +541,36 @@ describe("Team workspace navigation", () => {
       return undefined;
     });
     render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: /^Edit$/ })); const name = screen.getByLabelText("Team name"); fireEvent.change(name, { target: { value: "New name" } }); fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    await waitFor(() => expect(patches).toBe(1)); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus")); await waitFor(() => expect(reads).toBe(3));
+    await waitFor(() => expect(patches).toBe(1)); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus")); await waitFor(() => expect(reads).toBe(4));
     await act(async () => patch.resolve(json({ ...team(a, "New name"), version: 2n }))); await screen.findByText("Saved");
     await act(async () => late.resolve(json(team(a, "  Alpha  ")))); expect(screen.getByText("New name", { selector: ".team-settings-name span" })).toBeInTheDocument();
   });
+  it("keeps newer preference details in settings when an older rename receipt arrives", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`);
+    const receipt = Promise.withResolvers<Response>(), panelRead = Promise.withResolvers<Response>(), fresh = Promise.withResolvers<Response>();
+    let reads = 0, patches = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}` && init?.method === "PATCH") { patches++; return receipt.promise; }
+      if (url === `/api/v1/teams/${a}` && !init?.method) {
+        reads++;
+        if (reads === 3) return panelRead.promise;
+        if (reads === 4) return json({ ...team(a, "Latest"), version: 3n });
+        if (reads >= 5) return fresh.promise;
+      }
+      return undefined;
+    });
+    render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: /^Edit$/ }, { timeout: 20000 }));
+    fireEvent.change(screen.getByLabelText("Team name"), { target: { value: "Older" } }); fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(patches).toBe(1));
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBe(4), { timeout: 20000 });
+    await waitFor(() => expect(document.querySelector("summary.team-switch")).toHaveAttribute("aria-label", "Switch Team: Latest"));
+    await act(async () => receipt.resolve(json({ ...team(a, "Older"), version: 2n })));
+    await waitFor(() => expect(reads).toBeGreaterThanOrEqual(5));
+    expect(screen.getByText("Latest", { selector: ".team-settings-name span" })).toBeVisible();
+    expect(document.querySelector("summary.team-switch")).toHaveAttribute("aria-label", "Switch Team: Latest");
+    await act(async () => { panelRead.resolve(json(team(a, "  Alpha  "))); fresh.resolve(json({ ...team(a, "Latest"), version: 3n })); });
+  }, 30000);
   it("publishes a confirmed rename after a guarded preference 404 while its new read is pending", async () => {
     window.history.replaceState(null, "", `/teams/${a}/settings`);
     const receipt = Promise.withResolvers<Response>(), checks = [Promise.withResolvers<Response>(), Promise.withResolvers<Response>()], fresh = Promise.withResolvers<Response>();
@@ -441,6 +598,44 @@ describe("Team workspace navigation", () => {
     expect(screen.getByText("Saved")).toBeVisible();
     expect(screen.queryByText("Loading Teams", { selector: "[role=status]" })).toBeNull();
     await act(async () => fresh.resolve(json({ ...team(a, "New name"), version: 2n })));
+  }, 30000);
+  it.each(["lost", "success"] as const)("isolates a guarded editor when preference confirms a 403: %s", async (outcome) => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`);
+    const receipt = Promise.withResolvers<Response>(), checks = [Promise.withResolvers<Response>(), Promise.withResolvers<Response>()], fresh = Promise.withResolvers<Response>();
+    let reads = 0, patches = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}` && init?.method === "PATCH") { patches++; return receipt.promise; }
+      if (url === `/api/v1/teams/${a}` && !init?.method && patches > 0) { reads++; if (reads <= 2) return checks[reads - 1]!.promise; if (outcome === "success") return fresh.promise; }
+      return undefined;
+    });
+    render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: /^Edit$/ }, { timeout: 20000 }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Team name" });
+    fireEvent.change(within(dialog).getByLabelText("Team name"), { target: { value: "Draft" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(patches).toBe(1));
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBe(2), { timeout: 20000 });
+    await act(async () => checks[1]!.resolve(json({ error: { code: "forbidden", message: "denied", requestId: "rq" } }, 403)));
+    const alert = (await screen.findByRole("heading", { name: "Unable to load Teams" })).closest("section")!;
+    expect(dialog.closest("[hidden]")).not.toBeNull();
+    expect(within(dialog).getByLabelText("Team name")).not.toBeVisible();
+    expect(screen.getByText("Submitting", { selector: "[role=status]" })).toBeVisible();
+    if (outcome === "lost") {
+      await act(async () => receipt.reject(new TypeError("connection lost")));
+      await waitFor(() => expect(screen.getAllByText(/result is unknown/).some((node) => !node.closest("[hidden]"))).toBe(true));
+      fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+      await waitFor(() => expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog));
+      expect(within(dialog).getByLabelText("Team name")).toHaveValue("Draft");
+      await within(dialog).findByText(/result is unknown/);
+    } else {
+      await act(async () => receipt.resolve(json({ ...team(a, "Draft"), version: 2n })));
+      await waitFor(() => expect(reads).toBeGreaterThanOrEqual(3));
+      expect(screen.getByText("Saved")).toBeVisible();
+      expect(screen.getByRole("heading", { name: "Unable to load Teams" })).toBeVisible();
+      expect(document.querySelector(".team-settings-page")).toBeNull();
+      await act(async () => fresh.resolve(json({ ...team(a, "Draft"), version: 2n })));
+      expect(await screen.findByText("Draft", { selector: ".team-settings-name span" })).toBeVisible();
+    }
   }, 30000);
   it("returns to Personal for a confirmed unavailable Team without a pending operation", async () => {
     window.history.replaceState(null, "", `/teams/${a}/settings`); let reads = 0;
@@ -491,7 +686,7 @@ describe("Team workspace navigation", () => {
     window.history.replaceState(null, "", `/teams/${a}/settings`); const late = Promise.withResolvers<Response>(); let reads = 0;
     install((url, init) => url === `/api/v1/teams/${a}` && !init?.method && ++reads === 3 ? late.promise : undefined);
     render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(reads).toBe(3)); localStorage.setItem(`daynight.selectedTeam:${userId}`, b);
+    await waitFor(() => expect(reads).toBe(4)); localStorage.setItem(`daynight.selectedTeam:${userId}`, b);
     await act(async () => late.resolve(json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404)));
     await screen.findByText("This Team is unavailable or you do not have access."); expect(window.location.pathname).toBe(`/teams/${a}/settings`); expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(b);
   });
@@ -503,8 +698,9 @@ describe("Team workspace navigation", () => {
     install((url, init) => url === `/api/v1/teams/${a}` && !init?.method && ++reads >= 3 ? json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404) : undefined);
     render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }); failStorage = true;
     focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
-    await screen.findByText("Unable to read or clear the saved Team selection. Try again."); expect(window.location.pathname).toBe(`/teams/${a}/settings`);
-    failStorage = false; fireEvent.click(screen.getByRole("button", { name: "Retry" })); await waitFor(() => expect(window.location.pathname).toBe("/projects"));
+    const alert = (await screen.findByRole("heading", { name: "Unable to load Teams" })).closest("section")!;
+    expect(within(alert).getByText("Unable to read or clear the saved Team selection. Try again.")).toBeVisible(); expect(window.location.pathname).toBe(`/teams/${a}/settings`);
+    failStorage = false; fireEvent.click(within(alert).getByRole("button", { name: "Retry" })); await waitFor(() => expect(window.location.pathname).toBe("/projects"));
   });
 
   it("keeps the mobile drawer and its focus trap through a pending same-account check", async () => {

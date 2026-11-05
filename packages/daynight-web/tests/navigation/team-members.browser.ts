@@ -117,7 +117,9 @@ test('a retained invitation result survives returning while the Team read is in 
   await page.getByRole('dialog').getByRole('button', { name: 'Create invitation link' }).click(); await invitationStarted.promise;
   api.holdTeamRead = { started: teamReadStarted.resolve, wait: finishTeamRead.promise };
   try {
-    await traverse(page, `/teams/${teamId}`); await teamReadStarted.promise;
+    const identity = await foreground(page, api); identity.finish();
+    await teamReadStarted.promise;
+    await traverse(page, `/teams/${teamId}`);
     finishInvitation.resolve();
     await traverse(page, `/teams/${teamId}/members`);
     await expect(page.getByRole('dialog', { name: 'Invitation link created' }).getByLabel('One-time invitation link')).toBeVisible({ timeout: 5000 });
