@@ -884,7 +884,12 @@ line breaks and local code/table scrolling without raw HTML or remote image
 loads. Reply previews use a known parent directly; an out-of-window parent loads
 only on demand with at most two bounded list reads and an exact target check.
 Message details use a nested native dialog that owns Escape/Tab and restores
-focus within page, modal and fullscreen task details.
+focus within page, modal and fullscreen task details. Document hiding and ordinary
+identity checks retain the same dialog, reading position, reply and editable draft
+while reads, sending and publication remain gated. Actual scope retirement clears them.
+The controlled-browser regression runs with `pnpm exec playwright test --config
+tests/navigation/discussion-identity-playwright.config.ts` from this package; it
+holds identity and Thread responses while exercising the production interface.
 
 The composer preserves original whitespace and code indentation. Ctrl/Command+
 Enter sends outside IME composition. A valid 201 confirms the remote message and
