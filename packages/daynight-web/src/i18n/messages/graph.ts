@@ -35,6 +35,10 @@ export type GraphMessages = {
   readonly dependencyGroup: string;
   readonly dependencyLabel: (args: { source: string; target: string; external: boolean }) => string;
   readonly title: string;
+  readonly orientation: string;
+  readonly horizontal: string;
+  readonly vertical: string;
+  readonly orientationIssue: Readonly<Record<'read' | 'invalid' | 'write', string>>;
   readonly counts: (args: { main: number; external: number; visible: number; total: number; edges: number; dependencies: number }) => string;
   readonly enterFullscreen: string;
   readonly exitFullscreen: string;

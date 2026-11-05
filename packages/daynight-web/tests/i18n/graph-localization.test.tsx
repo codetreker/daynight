@@ -172,7 +172,7 @@ describe('localized task graph presentation', () => {
     const user = userEvent.setup();
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const onClose = vi.fn();
-    const view = renderWithLocale(<><button type="button">Background</button><TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>, { locale: 'en', taskCache: true });
+    const view = renderWithLocale(<><button type="button">Background</button><TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>, { locale: 'en', taskCache: true });
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     const toggle = screen.getByRole('button', { name: 'View fullscreen' });

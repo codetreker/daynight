@@ -393,11 +393,26 @@ test.describe('Web language journeys', () => {
       for (const width of [1440, 320]) {
         await page.setViewportSize({ width, height: 800 });
         await expectPageWidth(page);
+        const horizontal = page.getByRole('radio', { name: locale === 'en' ? 'Horizontal' : '水平', exact: true });
+        const vertical = page.getByRole('radio', { name: locale === 'en' ? 'Vertical' : '垂直', exact: true });
+        await expect(horizontal).toHaveAttribute('aria-checked', 'true');
+        await horizontal.focus(); await page.keyboard.press('ArrowRight');
+        await expect(vertical).toBeFocused(); await expect(vertical).toHaveAttribute('aria-checked', 'true');
+        for (const control of [horizontal, vertical, page.locator('.graph-fullscreen-toggle'), page.locator('.graph-reset-overview')]) {
+          const bounds = await control.boundingBox();
+          expect(bounds).not.toBeNull();
+          const dialogBounds = await page.locator('.task-chain-dialog').boundingBox();
+          expect(dialogBounds).not.toBeNull();
+          expect(bounds!.x).toBeGreaterThanOrEqual(dialogBounds!.x);
+          expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(dialogBounds!.x + dialogBounds!.width);
+        }
+        await expectPageWidth(page);
         const fullscreenToggle = page.locator('.graph-fullscreen-toggle');
         await expect(fullscreenToggle).toBeVisible();
         const selected = await inspectTask(page, task.id).getAttribute('aria-pressed');
         await fullscreenToggle.click();
         const fullscreen = page.locator('.task-chain-dialog-fullscreen');
+        await expect(vertical).toHaveAttribute('aria-checked', 'true');
         await page.evaluate(() => {
           (window as unknown as { localeStorageFault: { value: string | null } }).localeStorageFault.value = 'write';
         });
@@ -441,6 +456,8 @@ test.describe('Web language journeys', () => {
         await expect(fullscreenToggle).toBeFocused();
         await expect(page.locator('.react-flow__viewport')).toHaveAttribute('style', fitted!);
         await expect(inspectTask(page, task.id)).toHaveAttribute('aria-pressed', selected!);
+        await vertical.focus(); await page.keyboard.press('ArrowLeft');
+        await expect(horizontal).toBeFocused(); await expect(horizontal).toHaveAttribute('aria-checked', 'true');
         await details(page, task.id).click();
         const dialog = page.locator('.task-detail-dialog');
         await expect(dialog.locator('.task-detail-title')).toHaveText(task.title);
