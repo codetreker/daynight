@@ -175,7 +175,9 @@ Web 将 setting intent 按用户、执行与 operationId 保存，展示 pending
 
 菜单的默认高亮与明确候选选择分离，直接 Enter 不消费仅前缀匹配的默认项。临时候选随输入、目录和菜单生命周期变化重置；目录按 revision、错误及命令字段的稳定签名比较，等值快照重建 controls 对象不清除明确选择。显式选择带参数命令产生独立的 commandId 与命令头意图，参数编辑、目录刷新和菜单关闭保留它，修改命令头、清空草稿或切换 Session 才清除。提交使用当前 controls revision 验证同一 ID 与完整名称，不能冻结旧 revision，也不能在移除、替换、不可用或歧义后退回普通消息。原生命令草稿仍沿用 revision 与受理回执绑定；execute_command 的拒绝、失败或 unknown 不调用普通发送路径。运行中目录查询错误通过 refresh_controls 重新读取；只读与失效投影深拷贝后关闭 mutable/available，不能改写持久能力。没有命令目录时，普通消息仍由原有发送权限决定。
 
-Claude 已核实的排队取消使用 input_cancelled，主动中断只有在成功原生 ACK、输入 UUID 匹配且 terminal_reason 为 aborted_streaming/aborted_tools 时使用 turn_interrupted；Codex 根据匹配轮次的 interrupted 状态识别中断。Web 将这两个终止诊断显示为中性状态；其他诊断仍是错误提示，不能仅凭用户点击中断或错误文本掩盖原生故障。
+已核实的排队取消使用 input_cancelled，Claude 实时主动中断只有在成功原生 ACK、输入 UUID 匹配且 terminal_reason 为 aborted_streaming/aborted_tools 时使用 turn_interrupted；Codex 根据匹配轮次的 interrupted 状态识别中断。Web 将这两个终止诊断显示为中性状态；其他诊断仍是错误提示，不能仅凭用户点击中断或错误文本掩盖原生故障。
+
+Claude 原生中断会生成内容恰为 `[Request interrupted by user]` 或 `[Request interrupted by user for tool use]` 的单文本 user 消息。适配层不将它投影为用户发言或输入受理证据；实时路径仍等待上述中断确认，历史路径则直接将顶层合成消息投影为 `turn_interrupted`。实时确认后的标记复用合成消息的原生 UUID，与历史投影使用同一 entryId，避免恢复重复；子 Agent 标记不代表主 turn 中断。SDK 的实时合成标识不覆盖这类消息，历史读取又不保留来源元数据，因此只匹配完整单文本，不裁剪空白、不匹配前后缀或混合内容。用户恰好发送完全相同的独立文本时，原生历史无法与合成消息区分。既有归档文件保持不变。识别取舍见[Claude 中断投影决策](../../.agents/notes/implemented/bug-fix/2026-11-06-claude-interruption-projection.md)。
 
 新 server/Web 能读取没有 controls 的既有 Controller；这些会话不提供新控制目录。旧严格客户端不保证识别新增字段，更新顺序为 server/Web 在先，新 Controller 在后，不强制重启用户现有原生会话。
 
