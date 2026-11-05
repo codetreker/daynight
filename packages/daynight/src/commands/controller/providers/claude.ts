@@ -26,7 +26,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   const capabilities = { send: true, steer: false, cancel: true, respond: true };
   let currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, verified = false, disconnected = false;
   let controls: ClaudeControls | undefined, turnStartedAt: string | null = null;
-  let cancellation: { turnId: string; acknowledged: boolean; result?: unknown } | undefined;
+  let cancellation: { turnId: string; acknowledged: boolean; result?: unknown; entryId?: string } | undefined;
   const steered = new Map<string, { text: string; started: boolean; resolve(value: ProviderReceipt): void; reject(error: Error): void }>();
   const children: ChildProcessWithoutNullStreams[] = [], interactions = new Map<string, PendingInteraction>();
   const accepted = new Map<string, { resolve(): void; reject(error: Error): void }>(); const cancelWaiters = new Set<{ resolve(): void; reject(error: Error): void }>();
@@ -99,6 +99,17 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     if (type === "user" || type === "assistant") {
       const id = type === "assistant" ? string(message.id) || string(m.uuid) : string(m.uuid) || randomUUID();
       const content = typeof message.content === "string" ? [{ type: "text", text: message.content }] : Array.isArray(message.content) ? message.content : [];
+      // Native interrupt markers omit isSynthetic; SDK history also drops origin
+      // metadata. Match only a complete single text block, never user prose that
+      // quotes or discusses the marker. Live completion still needs its receipt.
+      if (type === "user" && content.length === 1 && record(content[0]).type === "text" && ["[Request interrupted by user]", "[Request interrupted by user for tool use]"].includes(string(record(content[0]).text))) {
+        const entryId = nativeEntryId(nativeId, `${id}:0`);
+        if (!m.parent_tool_use_id) {
+          if (history) options.onTimeline({ entryId, revision: "1", kind: "error", code: "turn_interrupted", message: "Interrupted by the user." });
+          else if (cancellation && cancellation.turnId === currentTurnId) cancellation.entryId = entryId;
+        }
+        return;
+      }
       if (type === "user" && typeof m.uuid === "string" && content.some(part => record(part).type === "text") && !content.some(part => record(part).type === "tool_result")) options.onInputObserved?.(m.uuid);
       content.forEach((raw, index) => {
         const part = record(raw);
@@ -123,7 +134,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       if (!m.is_error && !interrupted && currentTurnId) for (const [id, pending] of interactions) if (pending.nativeToolId === null && pending.turnId === currentTurnId) confirmInteraction(id, pending);
       if (currentTurnId) turns.complete(currentTurnId, interrupted ? new Error("Native Claude turn was interrupted by the user.") : m.is_error ? new Error(`Native Claude turn failed: ${readable(m.errors ?? m.subtype)}`) : null);
       if (currentTurnId) { accepted.get(currentTurnId)?.resolve(); accepted.delete(currentTurnId); }
-      if (interrupted) options.onTimeline({ entryId: nativeEntryId(nativeId, string(m.uuid) || randomUUID()), revision: "1", kind: "error", code: "turn_interrupted", message: "Interrupted by the user." });
+      if (interrupted) options.onTimeline({ entryId: cancellation!.entryId ?? nativeEntryId(nativeId, string(m.uuid) || randomUUID()), revision: "1", kind: "error", code: "turn_interrupted", message: "Interrupted by the user." });
       else if (m.is_error) options.onTimeline({ entryId: nativeEntryId(nativeId, string(m.uuid) || randomUUID()), revision: "1", kind: "error", code: "native_result_error", message: limited(readable(m.errors ?? m.result ?? m.subtype)) });
       for (const [id, pending] of interactions) {
         interactions.delete(id); publishInteraction({ ...pending.interaction, state: "expired", revision: "2" }); const ended = new Error("The native turn ended before interaction confirmation."); pending.reject(ended); pending.rejectConfirmation?.(ended);
