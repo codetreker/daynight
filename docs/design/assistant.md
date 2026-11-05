@@ -34,7 +34,7 @@ Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行
 
 ## 默认解析与偏好事务
 
-`service/bot_defaults.go` 统一 defaults 预览与首次创建的解析规则。`Snapshot.BotDefaults` 在读取快照中提供服务端时间、Owner Worker 列表与偏好；`BotTx.BotDefaults` 在原创建事务中读取同样的数据。默认解析的时效判断时间在 Worker 与偏好读取后由数据库取得，避免 ReadCommitted 的新心跳晚于先前时间而被误判为未来；该时间只用于时效判断，不代表跨多次 SQL 的快照边界。列表按 `(created_at,worker_id)` 排序，不套用普通 Worker 列表的 72 小时隐藏或 Task 库存投影，因此过期的显式 Worker 仍能返回具体不可用原因。
+`core/bot` 统一 defaults 预览与首次创建的解析规则，`service/bot` 选择读取快照或创建事务。快照的 `BotReader.BotDefaults` 提供服务端时间、Owner Worker 列表与偏好；写入作用域的 `BotWriteDAO.BotDefaults` 在原创建事务中读取同样的数据。默认解析的时效判断时间在 Worker 与偏好读取后由数据库取得，避免 ReadCommitted 的新心跳晚于先前时间而被误判为未来；该时间只用于时效判断，不代表跨多次 SQL 的快照边界。列表按 `(created_at,worker_id)` 排序，不套用普通 Worker 列表的 72 小时隐藏或 Task 库存投影，因此过期的显式 Worker 仍能返回具体不可用原因。
 
 解析先处理显式 Worker；没有显式 Worker 时尝试成功 Worker 偏好，再按稳定顺序选择可用配置。每个候选先经过 `WorkerAssistantHostState` 的托管版本、在线及观测时效检查，再为该机器选择目录与 Provider。每项使用显式值、该 Worker 偏好、报告默认的顺序。只读取目标 Provider 的 model/args。失败目标保留原因，不在同一 Worker 上另猜一个 Provider。目录按 Worker 平台验证；真实文件系统与启动预检由绑定 Worker 负责。
 

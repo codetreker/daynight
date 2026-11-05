@@ -2,11 +2,11 @@ package sessionrelay
 
 import (
 	"context"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
@@ -65,7 +65,7 @@ func TestOtherServiceDeletionRevokesExistingLiveCacheAndPendingContent(t *testin
 		t.Fatal("test did not retain the old service's live cache")
 	}
 	other := New(f.s.DB)
-	deleted, err := other.DeleteBot(ctx, f.p, out.Bot.ID, service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()})
+	deleted, err := other.DeleteBot(ctx, f.p, out.Bot.ID, store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()})
 	if err != nil || deleted.Deletion == nil {
 		t.Fatalf("other service deletion failed: %+v %v", deleted, err)
 	}
@@ -129,7 +129,7 @@ func TestBotDeletionCompletedElsewhereInvalidatesControllerOnlyCache(t *testing.
 			t.Cleanup(func() { _ = files.Close() })
 			other := New(f.s.DB)
 			other.files = files
-			request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+			request := store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
 			if _, err = other.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {
 				t.Fatal(err)
 			}

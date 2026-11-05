@@ -9,9 +9,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -28,7 +27,7 @@ func (s *Service) deletionBot(ctx context.Context, tx pgx.Tx, p model.Principal,
 	if err := credential(ctx, tx, p, s.now()); err != nil {
 		return model.Bot{}, err
 	}
-	bot, err := store.ReadBotForUpdate(ctx, tx, id)
+	bot, err := store.BotTransaction(tx).Bot(ctx, id)
 	if err != nil {
 		return bot, botMissing(err)
 	}
@@ -42,16 +41,12 @@ func writeBotDeletion(ctx context.Context, tx pgx.Tx, bot model.Bot) (model.Bot,
 	if bot.Version == math.MaxInt64 {
 		return model.Bot{}, fault("version_exhausted", "Bot version cannot advance.")
 	}
-	_, err := tx.Exec(ctx, `UPDATE bots SET deletion=$2,version=version+1,updated_at=statement_timestamp() WHERE id=$1`, bot.ID, encode(bot.Deletion))
-	if err != nil {
-		return model.Bot{}, err
-	}
-	return store.ReadBotForUpdate(ctx, tx, bot.ID)
+	return store.BotTransaction(tx).SaveBotDeletion(ctx, bot.ID, bot.Deletion)
 }
 
 // DeleteBot commits admission revocation independently of physical cleanup.
 // A retry uses the original version/deletion ID, even after stages advance.
-func (s *Service) DeleteBot(ctx context.Context, p model.Principal, id string, input service.DeleteBot) (model.Bot, error) {
+func (s *Service) DeleteBot(ctx context.Context, p model.Principal, id string, input store.DeleteBot) (model.Bot, error) {
 	var out model.Bot
 	if !botID(id) || !botID(input.DeletionID) || input.Version < 1 {
 		return out, fault("invalid_input", "Invalid Bot deletion identity or version.")

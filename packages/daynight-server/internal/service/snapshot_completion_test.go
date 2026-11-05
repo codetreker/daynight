@@ -3,6 +3,7 @@ package service
 import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
+	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 
@@ -91,7 +92,7 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 			return projectservice.NewProjects(db).Get(ctx, principal, project.ID)
 		}},
 		{"bot list success", false, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewBots(db).List(ctx, principal, page)
+			return botservice.New(db).List(ctx, principal, page)
 		}},
 		{"thread success", false, func(ctx context.Context, db *store.Store) (any, error) {
 			return taskservice.NewTaskThreads(db).List(ctx, principal, project.ID, task.ID, taskservice.ThreadListRequest{})

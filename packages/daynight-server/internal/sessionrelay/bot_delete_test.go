@@ -3,17 +3,17 @@ package sessionrelay
 import (
 	"context"
 	"errors"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"io"
 	"io/fs"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
@@ -27,7 +27,7 @@ func TestBotDeletionRequiresOriginalRequestAndWorkerReceipt(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = files.Close() })
 	f.s.files = files
-	request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+	request := store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
 	deleted, err := f.s.DeleteBot(ctx, f.p, out.Bot.ID, request)
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func TestBotDeletionCleansEveryChildAndOrphanWithRetry(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+			request := store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
 			if _, err = f.s.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +195,7 @@ func TestBotDeletionCleansCurrentHistoryAndPreservesExistingUnrelatedBytes(t *te
 			t.Fatal(err)
 		}
 	}
-	request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+	request := store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
 	if _, err := f.s.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestBotDeletionCleansCurrentHistoryAndPreservesExistingUnrelatedBytes(t *te
 func TestBotDeletionReceiptRejectsUnprovenOrStaleExecution(t *testing.T) {
 	f, out, _, _ := connectBot(t)
 	ctx := context.Background()
-	request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+	request := store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
 	if _, err := f.s.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestBotDeletionCleansResidualAssociationsBeyondCurrentSession(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+	request := store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
 	if _, err = f.s.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {
 		t.Fatal(err)
 	}

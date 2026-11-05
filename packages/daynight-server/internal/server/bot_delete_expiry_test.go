@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
@@ -43,9 +45,9 @@ func TestBotDeleteHTTPRejectsExpiryAfterAdmission(t *testing.T) {
 				if _, err = h.Database.Pool.Exec(ctx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now(),now(),'{}','{}')`, principal.UserID, worker); err != nil {
 					t.Fatal(err)
 				}
-				bots := service.NewBots(h.Database)
+				bots := botservice.New(h.Database)
 				configuration := model.BotConfiguration{WorkerID: worker, Cwd: "/workspace", Provider: "codex", Args: []string{}}
-				bot, err := bots.Create(ctx, principal, service.CreateBot{ID: uuid.NewString(), Name: "Assistant", Overrides: model.BotOverrides{WorkerID: &worker}, ResolvedConfiguration: configuration})
+				bot, err := bots.Create(ctx, principal, botcore.CreateBot{ID: uuid.NewString(), Name: "Assistant", Overrides: model.BotOverrides{WorkerID: &worker}, ResolvedConfiguration: configuration})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -61,7 +63,7 @@ func TestBotDeleteHTTPRejectsExpiryAfterAdmission(t *testing.T) {
 				}
 				mux := http.NewServeMux()
 				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-				botsRoutes(mux, bots, relay, h.Auth, logger)
+				bothttp.RegisterRoutes(mux, bots, relay, h.Auth, logger)
 				h.Handler = httpx.RequestLogging(logger, mux)
 				cookies, authorization, table := []*http.Cookie(nil), []string{"Bearer " + pat.Token}, "personal_access_tokens"
 				if kind == model.SessionCredential {

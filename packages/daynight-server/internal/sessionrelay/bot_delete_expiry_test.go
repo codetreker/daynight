@@ -2,11 +2,11 @@ package sessionrelay
 
 import (
 	"context"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/google/uuid"
 )
 
@@ -32,7 +32,7 @@ func TestBotDeleteRejectsCredentialsExpiringDuringLockWait(t *testing.T) {
 					principal = listCredential(t, f, f.p.UserID, kind)
 					table = "sessions"
 				}
-				request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+				request := store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
 				if phase == "replay" {
 					if _, err := f.s.DeleteBot(ctx, principal, out.Bot.ID, request); err != nil {
 						t.Fatal(err)

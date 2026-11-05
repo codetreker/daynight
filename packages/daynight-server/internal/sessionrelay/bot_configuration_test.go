@@ -4,10 +4,11 @@ import "github.com/codetreker/daynight/packages/daynight-server/internal/core/mo
 import (
 	"context"
 	"errors"
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"reflect"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -38,7 +39,7 @@ func TestBotRegistrationRejectsMalformedConfigurationBeforeBinding(t *testing.T)
 	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT count(*) FROM task_sessions WHERE bot_id=$1`, bot.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("invalid configuration created a Session: %d %v", count, err)
 	}
-	current, err := service.NewBots(f.s.DB).Get(ctx, f.p, bot.ID)
+	current, err := botservice.New(f.s.DB).Get(ctx, f.p, bot.ID)
 	if err != nil || current.Version != 1 || current.RoleConfiguration != nil || current.SessionID != nil {
 		t.Fatalf("invalid configuration changed frozen binding: %+v %v", current, err)
 	}
@@ -50,7 +51,7 @@ func TestBotRegistrationPreservesValidModelAndArguments(t *testing.T) {
 	model := "native-model"
 	input.Configuration.Model = &model
 	input.Configuration.Args = []string{"--permission-mode", "default", ""}
-	bot, err := service.NewBots(f.s.DB).Create(ctx, f.p, service.CreateBot{ID: uuid.NewString(), Name: "Configured assistant", ResolvedConfiguration: input.Configuration})
+	bot, err := botservice.New(f.s.DB).Create(ctx, f.p, botcore.CreateBot{ID: uuid.NewString(), Name: "Configured assistant", ResolvedConfiguration: input.Configuration})
 	if err != nil {
 		t.Fatal(err)
 	}

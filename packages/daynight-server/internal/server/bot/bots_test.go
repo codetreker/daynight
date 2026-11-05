@@ -1,4 +1,4 @@
-package server
+package bot_test
 
 import (
 	"bytes"
@@ -15,8 +15,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/google/uuid"
 )
 
@@ -30,19 +30,6 @@ func TestBotsHTTPEmptyList(t *testing.T) {
 	if page.Items == nil || len(page.Items) != 0 || page.NextCursor != nil {
 		t.Fatalf("invalid empty bot page: %s", response.Body)
 	}
-}
-
-func seedHTTPBot(t *testing.T, database *store.Store, handler *resourceTestHandler, workerID string) model.Bot {
-	t.Helper()
-	bot, err := service.NewBots(database).Create(context.Background(), handler.principal, service.CreateBot{
-		ID: uuid.NewString(), Name: "  长期助手  ", ResolvedConfiguration: model.BotConfiguration{
-			WorkerID: workerID, Cwd: "/private/bot-work", Provider: "codex", Args: []string{},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return bot
 }
 
 func TestBotsHTTPReadDeleteIntentAndWorkerInventory(t *testing.T) {
@@ -142,12 +129,12 @@ func TestBotsHTTPStrictInputAndAuthentication(t *testing.T) {
 
 func TestBotResponseRoleAndRedaction(t *testing.T) {
 	bot := model.Bot{ID: uuid.NewString(), Version: 1, RoleConfiguration: &model.BotRoleConfiguration{Instructions: "Role", Revision: "v1", Digest: "digest"}, CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	value := botResponse(bot)
+	value := bothttp.Response(bot)
 	if value.RoleConfiguration.Instructions != "Role" || value.CreatedAt.Location() != time.UTC {
 		t.Fatal("role or timestamp projection changed")
 	}
 	bot.Deletion = &model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: 1}
-	value = botResponse(bot)
+	value = bothttp.Response(bot)
 	if value.BotDefinition != nil {
 		t.Fatal("deleted role remains visible")
 	}

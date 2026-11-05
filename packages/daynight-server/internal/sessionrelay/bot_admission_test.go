@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/google/uuid"
 )
 
@@ -290,7 +290,7 @@ func TestBotReadyReportRequiresCurrentConnectionCredentialAfterGrantReplacement(
 					t.Fatalf("replacement grant accepted synchronization from a revoked connection: startup=%s version=%d", result.StartupResult.State, result.Version)
 				}
 				botFault(t, err, "unauthenticated")
-				current, err := service.NewBots(f.s.DB).Get(ctx, replacement, out.Bot.ID)
+				current, err := botservice.New(f.s.DB).Get(ctx, replacement, out.Bot.ID)
 				if err != nil || current.Version != out.Bot.Version || current.StartupResult.State != out.Bot.StartupResult.State {
 					t.Fatalf("rejected report changed startup: %+v %v", current, err)
 				}

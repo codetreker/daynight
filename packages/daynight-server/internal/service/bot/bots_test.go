@@ -1,6 +1,7 @@
-package service
+package bot
 
 import (
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
@@ -35,11 +36,11 @@ func botService(t *testing.T) (*Bots, *store.Store, model.Principal, string) {
 	if _, err := workerservice.NewWorkers(database).Report(context.Background(), principal, workerID, serviceWorkerReport()); err != nil {
 		t.Fatal(err)
 	}
-	return NewBots(database), database, principal, workerID
+	return New(database), database, principal, workerID
 }
 
-func botInput(workerID string) CreateBot {
-	return CreateBot{ID: uuid.NewString(), Name: "助手", ResolvedConfiguration: model.BotConfiguration{WorkerID: workerID, Cwd: "/ordinary/directory", Provider: "codex", Args: []string{}}}
+func botInput(workerID string) botcore.CreateBot {
+	return botcore.CreateBot{ID: uuid.NewString(), Name: "助手", ResolvedConfiguration: model.BotConfiguration{WorkerID: workerID, Cwd: "/ordinary/directory", Provider: "codex", Args: []string{}}}
 }
 
 func TestBotsCreateOnceWithoutProjectAndPreserveFrozenConfiguration(t *testing.T) {
@@ -81,7 +82,7 @@ func TestBotsDeletionIntentIsVersionedAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := DeleteBot{Version: bot.Version, DeletionID: uuid.NewString()}
+	request := store.DeleteBot{Version: bot.Version, DeletionID: uuid.NewString()}
 	deleted, err := bots.Delete(ctx, principal, bot.ID, request)
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +122,7 @@ func TestBotsRejectForeignOwnersWorkersAndRevokedCredentials(t *testing.T) {
 	requireFault(t, err, "forbidden")
 	_, err = bots.Create(ctx, other, botInput(workerID))
 	requireFault(t, err, "forbidden")
-	_, err = bots.Delete(ctx, other, bot.ID, DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+	_, err = bots.Delete(ctx, other, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
 	requireFault(t, err, "forbidden")
 	_, err = bots.ListWorker(ctx, other, workerID, model.PageRequest{Limit: 10})
 	requireFault(t, err, "forbidden")
@@ -132,7 +133,7 @@ func TestBotsRejectForeignOwnersWorkersAndRevokedCredentials(t *testing.T) {
 	requireFault(t, err, "unauthenticated")
 	_, err = bots.Create(ctx, principal, botInput(workerID))
 	requireFault(t, err, "unauthenticated")
-	_, err = bots.Delete(ctx, principal, bot.ID, DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+	_, err = bots.Delete(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
 	requireFault(t, err, "unauthenticated")
 	_, err = bots.List(ctx, principal, model.PageRequest{Limit: 10})
 	requireFault(t, err, "unauthenticated")
@@ -166,7 +167,7 @@ func TestBotsRejectCredentialsExpiringDuringDefinitionLockWait(t *testing.T) {
 					_, err := bots.Create(ctx, principal, input)
 					result <- err
 				} else {
-					_, err := bots.Delete(ctx, principal, bot.ID, DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+					_, err := bots.Delete(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
 					result <- err
 				}
 			}()
@@ -226,7 +227,7 @@ func TestBotsConcurrentCreationAndDeletionChooseOneIdentity(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, "SELECT count(*) FROM bots").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("duplicate definitions: %d %v", count, err)
 	}
-	deletion := DeleteBot{Version: first.Version, DeletionID: uuid.NewString()}
+	deletion := store.DeleteBot{Version: first.Version, DeletionID: uuid.NewString()}
 	for range 8 {
 		go func() { bot, err := bots.Delete(ctx, principal, input.ID, deletion); results <- outcome{bot, err} }()
 	}
@@ -308,7 +309,7 @@ func TestBotsVersionsBoundSessionAndIndependentTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := DeleteBot{Version: 2, DeletionID: uuid.NewString()}
+	request := store.DeleteBot{Version: 2, DeletionID: uuid.NewString()}
 	_, err = bots.Delete(ctx, principal, bot.ID, request)
 	requireFault(t, err, "version_conflict")
 	if _, err := database.Pool.Exec(ctx, "UPDATE bots SET version=9007199254740993,session_id=$2 WHERE id=$1", bot.ID, uuid.NewString()); err != nil {
@@ -334,7 +335,7 @@ func TestBotsVersionsBoundSessionAndIndependentTasks(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, "UPDATE bots SET version=9223372036854775807 WHERE id=$1", bot.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = bots.Delete(ctx, principal, bot.ID, DeleteBot{Version: math.MaxInt64, DeletionID: uuid.NewString()})
+	_, err = bots.Delete(ctx, principal, bot.ID, store.DeleteBot{Version: math.MaxInt64, DeletionID: uuid.NewString()})
 	requireFault(t, err, "version_exhausted")
 }
 
@@ -354,7 +355,7 @@ func TestBotsPATLifecycleAndCompletedCleanupInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := bots.Delete(ctx, principal, bot.ID, DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+	deleted, err := bots.Delete(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +366,7 @@ func TestBotsPATLifecycleAndCompletedCleanupInventory(t *testing.T) {
 	if err != nil || len(page.Items) != 0 {
 		t.Fatalf("completed responsibility remained scheduled: %+v %v", page, err)
 	}
-	replayed, err := bots.Delete(ctx, principal, bot.ID, DeleteBot{Version: 1, DeletionID: deleted.Deletion.DeletionID})
+	replayed, err := bots.Delete(ctx, principal, bot.ID, store.DeleteBot{Version: 1, DeletionID: deleted.Deletion.DeletionID})
 	if err != nil || replayed.Deletion.WorkerCleanup.State != "completed" {
 		t.Fatalf("replay reset cleanup: %+v %v", replayed, err)
 	}
@@ -383,26 +384,26 @@ func TestBotsValidateDefinitionsAndRequests(t *testing.T) {
 	ctx := context.Background()
 	for _, test := range []struct {
 		name   string
-		change func(*CreateBot)
+		change func(*botcore.CreateBot)
 	}{
-		{"invalid ID", func(v *CreateBot) { v.ID = "invalid" }},
-		{"empty name", func(v *CreateBot) { v.Name = "   " }},
-		{"long name", func(v *CreateBot) { v.Name = strings.Repeat("界", 41) }},
-		{"control name", func(v *CreateBot) { v.Name = "\tName" }},
-		{"invalid Unicode", func(v *CreateBot) { v.Name = string([]byte{0xff}) }},
-		{"override Worker", func(v *CreateBot) { v.Overrides.WorkerID = pointer("invalid") }},
-		{"relative override", func(v *CreateBot) { v.Overrides.Cwd = pointer("relative") }},
-		{"override provider", func(v *CreateBot) { v.Overrides.Provider = pointer("unsupported") }},
-		{"invalid resolved Worker", func(v *CreateBot) { v.ResolvedConfiguration.WorkerID = "invalid" }},
-		{"relative directory", func(v *CreateBot) { v.ResolvedConfiguration.Cwd = "relative" }},
-		{"directory control", func(v *CreateBot) { v.ResolvedConfiguration.Cwd = "/foo\nbar" }},
-		{"invalid provider", func(v *CreateBot) { v.ResolvedConfiguration.Provider = "unsupported" }},
-		{"empty model", func(v *CreateBot) { v.ResolvedConfiguration.Model = pointer("  ") }},
-		{"invalid model", func(v *CreateBot) { v.ResolvedConfiguration.Model = pointer("model\x00") }},
-		{"invalid arg", func(v *CreateBot) { v.ResolvedConfiguration.Args = []string{"--model", "value\x00"} }},
-		{"changed explicit Worker", func(v *CreateBot) { v.Overrides.WorkerID = pointer(uuid.NewString()) }},
-		{"changed explicit directory", func(v *CreateBot) { v.Overrides.Cwd = pointer("/explicit") }},
-		{"changed explicit provider", func(v *CreateBot) { v.Overrides.Provider = pointer("claude") }},
+		{"invalid ID", func(v *botcore.CreateBot) { v.ID = "invalid" }},
+		{"empty name", func(v *botcore.CreateBot) { v.Name = "   " }},
+		{"long name", func(v *botcore.CreateBot) { v.Name = strings.Repeat("界", 41) }},
+		{"control name", func(v *botcore.CreateBot) { v.Name = "\tName" }},
+		{"invalid Unicode", func(v *botcore.CreateBot) { v.Name = string([]byte{0xff}) }},
+		{"override Worker", func(v *botcore.CreateBot) { v.Overrides.WorkerID = pointer("invalid") }},
+		{"relative override", func(v *botcore.CreateBot) { v.Overrides.Cwd = pointer("relative") }},
+		{"override provider", func(v *botcore.CreateBot) { v.Overrides.Provider = pointer("unsupported") }},
+		{"invalid resolved Worker", func(v *botcore.CreateBot) { v.ResolvedConfiguration.WorkerID = "invalid" }},
+		{"relative directory", func(v *botcore.CreateBot) { v.ResolvedConfiguration.Cwd = "relative" }},
+		{"directory control", func(v *botcore.CreateBot) { v.ResolvedConfiguration.Cwd = "/foo\nbar" }},
+		{"invalid provider", func(v *botcore.CreateBot) { v.ResolvedConfiguration.Provider = "unsupported" }},
+		{"empty model", func(v *botcore.CreateBot) { v.ResolvedConfiguration.Model = pointer("  ") }},
+		{"invalid model", func(v *botcore.CreateBot) { v.ResolvedConfiguration.Model = pointer("model\x00") }},
+		{"invalid arg", func(v *botcore.CreateBot) { v.ResolvedConfiguration.Args = []string{"--model", "value\x00"} }},
+		{"changed explicit Worker", func(v *botcore.CreateBot) { v.Overrides.WorkerID = pointer(uuid.NewString()) }},
+		{"changed explicit directory", func(v *botcore.CreateBot) { v.Overrides.Cwd = pointer("/explicit") }},
+		{"changed explicit provider", func(v *botcore.CreateBot) { v.Overrides.Provider = pointer("claude") }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			input := botInput(workerID)
@@ -429,7 +430,7 @@ func TestBotsValidateDefinitionsAndRequests(t *testing.T) {
 		func() error { _, err := bots.Get(ctx, model.Principal{}, id); return err },
 		func() error { _, err := bots.List(ctx, model.Principal{}, model.PageRequest{Limit: 10}); return err },
 		func() error {
-			_, err := bots.Delete(ctx, model.Principal{}, id, DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+			_, err := bots.Delete(ctx, model.Principal{}, id, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
 			return err
 		},
 	} {
@@ -447,15 +448,15 @@ func TestBotsValidateDefinitionsAndRequests(t *testing.T) {
 			return err
 		},
 		func() error {
-			_, err := bots.Delete(ctx, principal, "bad", DeleteBot{Version: 1, DeletionID: id})
+			_, err := bots.Delete(ctx, principal, "bad", store.DeleteBot{Version: 1, DeletionID: id})
 			return err
 		},
 		func() error {
-			_, err := bots.Delete(ctx, principal, id, DeleteBot{Version: 1, DeletionID: "bad"})
+			_, err := bots.Delete(ctx, principal, id, store.DeleteBot{Version: 1, DeletionID: "bad"})
 			return err
 		},
 		func() error {
-			_, err := bots.Delete(ctx, principal, id, DeleteBot{Version: 0, DeletionID: id})
+			_, err := bots.Delete(ctx, principal, id, store.DeleteBot{Version: 0, DeletionID: id})
 			return err
 		},
 	} {
@@ -463,14 +464,14 @@ func TestBotsValidateDefinitionsAndRequests(t *testing.T) {
 	}
 	_, err := bots.Get(ctx, principal, id)
 	requireFault(t, err, "not_found")
-	_, err = bots.Delete(ctx, principal, id, DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+	_, err = bots.Delete(ctx, principal, id, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
 	requireFault(t, err, "not_found")
 	database.Close()
 	for _, operation := range []func() error{
 		func() error { _, err := bots.Get(ctx, principal, id); return err },
 		func() error { _, err := bots.List(ctx, principal, model.PageRequest{Limit: 10}); return err },
 		func() error {
-			_, err := bots.Delete(ctx, principal, id, DeleteBot{Version: 1, DeletionID: uuid.NewString()})
+			_, err := bots.Delete(ctx, principal, id, store.DeleteBot{Version: 1, DeletionID: uuid.NewString()})
 			return err
 		},
 		func() error { _, err := bots.Create(ctx, principal, botInput(workerID)); return err },
@@ -484,13 +485,13 @@ func TestBotsValidateDefinitionsAndRequests(t *testing.T) {
 }
 
 func TestBotOperationErrorsPreserveUncertainAndJoinedFailures(t *testing.T) {
-	refusal := botForbidden()
+	refusal := &model.Fault{Code: "forbidden", Message: "Bot and Worker must belong to the authenticated user."}
 	for _, transaction := range []*store.TransactionError{
 		{Phase: "commit", Cause: refusal, Outcome: store.TransactionUnknown, CommitAttempted: true},
 		{Phase: "cleanup", Cause: refusal, Outcome: store.TransactionUnknown, CleanupFailed: true},
 		{Phase: "operation", Cause: errors.Join(refusal, errors.New("another failure")), Outcome: store.TransactionNotCommitted},
 	} {
-		err := botResultError("create", transaction)
+		err := botcore.ResultError("create", transaction)
 		var failure *model.BotOperationError
 		if !errors.As(err, &failure) || !errors.Is(err, transaction) || err.Error() == "" {
 			t.Fatalf("uncertain error became confirmed refusal: %v", err)

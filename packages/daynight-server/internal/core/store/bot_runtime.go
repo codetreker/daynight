@@ -6,19 +6,13 @@ import (
 	"math"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/jackc/pgx/v5"
 )
-
-// ReadBotForUpdate joins the caller's transaction. Callers must acquire this
-// lock before the bound Session or archive metadata and recheck its ownership.
-func ReadBotForUpdate(ctx context.Context, tx pgx.Tx, id string) (model.Bot, error) {
-	return readBot(ctx, tx, id, " FOR UPDATE")
-}
 
 // BindBotSession freezes the first role and Session reference atomically. The
 // Session must already have been inserted with this Bot's ownership in the same
 // transaction. Exact registration replay is decided by the lifecycle caller.
-func BindBotSession(ctx context.Context, tx pgx.Tx, id string, version int64, sessionID string, role model.BotRoleConfiguration) (model.Bot, error) {
+func (b *botTx) BindBotSession(ctx context.Context, id string, version int64, sessionID string, role model.BotRoleConfiguration) (model.Bot, error) {
+	tx := b.tx
 	data, err := json.Marshal(role)
 	if err != nil {
 		return model.Bot{}, queryError("encode bot role", err)
@@ -36,7 +30,8 @@ func BindBotSession(ctx context.Context, tx pgx.Tx, id string, version int64, se
 // SetBotStartup stores an authenticated lifecycle result. The caller verifies
 // the current fence and live synchronization before readiness, then commits any
 // successful explicit preferences in this same transaction.
-func SetBotStartup(ctx context.Context, tx pgx.Tx, id string, version int64, result model.BotStartupResult) (model.Bot, error) {
+func (b *botTx) SetBotStartup(ctx context.Context, id string, version int64, result model.BotStartupResult) (model.Bot, error) {
+	tx := b.tx
 	data, err := json.Marshal(result)
 	if err != nil {
 		return model.Bot{}, queryError("encode bot startup", err)

@@ -1,6 +1,7 @@
-package server
+package bot
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -9,20 +10,32 @@ import (
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
 
+type definitions interface {
+	CreateResolved(context.Context, model.Principal, botcore.CreateBot) (model.Bot, error)
+	Defaults(context.Context, model.Principal, *string) (botcore.BotDefaults, error)
+	List(context.Context, model.Principal, model.PageRequest) (botcore.BotPage, error)
+	ListWorker(context.Context, model.Principal, string, model.PageRequest) (botcore.BotPage, error)
+	Get(context.Context, model.Principal, string) (model.Bot, error)
+}
+
+type deletion interface {
+	DeleteBot(context.Context, model.Principal, string, store.DeleteBot) (model.Bot, error)
+}
+
 type botsHandler struct {
-	bots   *service.Bots
-	relay  *sessionrelay.Service
+	bots   definitions
+	relay  deletion
 	logger *slog.Logger
 }
 
-func botsRoutes(mux *http.ServeMux, bots *service.Bots, relay *sessionrelay.Service, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux *http.ServeMux, bots definitions, relay deletion, auth *authhttp.Authentication, logger *slog.Logger) {
 	h := &botsHandler{bots: bots, relay: relay, logger: logger}
 	const base = "/api/v1/me/bots"
 	mux.HandleFunc("GET "+base, auth.Require(h.list))
@@ -47,8 +60,8 @@ func (h *botsHandler) detail(w http.ResponseWriter, request *http.Request, princ
 	}
 }
 
-func botCreateInput(fields map[string]json.RawMessage) (service.CreateBot, error) {
-	var input service.CreateBot
+func botCreateInput(fields map[string]json.RawMessage) (botcore.CreateBot, error) {
+	var input botcore.CreateBot
 	var err error
 	input.ID, err = httpx.RequiredString(fields, "id")
 	if err != nil {
@@ -83,7 +96,7 @@ func (h *botsHandler) create(w http.ResponseWriter, request *http.Request, princ
 		var fields map[string]json.RawMessage
 		fields, err = httpx.DecodeObject(w, request, "id", "name", "overrides")
 		if err == nil {
-			var input service.CreateBot
+			var input botcore.CreateBot
 			input, err = botCreateInput(fields)
 			if err == nil {
 				bot, err = h.bots.CreateResolved(request.Context(), principal, input)
@@ -94,13 +107,13 @@ func (h *botsHandler) create(w http.ResponseWriter, request *http.Request, princ
 		httpx.WriteError(w, request, logger, "bot", "create", err)
 		return
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, botResponse(bot))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, Response(bot))
 }
 
 func (h *botsHandler) defaults(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
 	values, err := httpx.QueryValues(request, "workerId")
-	var result service.BotDefaults
+	var result botcore.BotDefaults
 	if err == nil {
 		var workerID *string
 		if value, exists := values["workerId"]; exists {
@@ -115,7 +128,7 @@ func (h *botsHandler) defaults(w http.ResponseWriter, request *http.Request, pri
 	httpx.WriteJSON(w, request, logger, http.StatusOK, botDefaultsResponse(result))
 }
 
-func botDefaultsResponse(value service.BotDefaults) api.BotDefaults {
+func botDefaultsResponse(value botcore.BotDefaults) api.BotDefaults {
 	result := api.BotDefaults{ObservedAt: value.ObservedAt.UTC(), WorkerID: value.WorkerID,
 		Configuration: botConfigurationResponse(value.Configuration), Reason: value.Reason, Workers: make([]api.BotWorkerDefaults, 0, len(value.Workers))}
 	for _, worker := range value.Workers {
@@ -142,7 +155,7 @@ func botConfigurationResponse(value *model.BotConfiguration) *api.BotConfigurati
 func (h *botsHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
 	page, err := httpx.PageRequest(request)
-	var result service.BotPage
+	var result botcore.BotPage
 	if err == nil {
 		if workerID := request.PathValue("workerId"); workerID != "" {
 			result, err = h.bots.ListWorker(request.Context(), principal, workerID, page)
@@ -156,7 +169,7 @@ func (h *botsHandler) list(w http.ResponseWriter, request *http.Request, princip
 	}
 	response := api.BotPage{Items: make([]api.Bot, 0, len(result.Items)), NextCursor: result.NextCursor}
 	for _, bot := range result.Items {
-		response.Items = append(response.Items, botResponse(bot))
+		response.Items = append(response.Items, Response(bot))
 	}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
@@ -179,20 +192,20 @@ func (h *botsHandler) get(w http.ResponseWriter, request *http.Request, principa
 		httpx.WriteError(w, request, logger, "bot", "read", err)
 		return
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, botResponse(bot))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, Response(bot))
 }
 
-func botDeleteInput(fields map[string]json.RawMessage) (service.DeleteBot, error) {
+func botDeleteInput(fields map[string]json.RawMessage) (store.DeleteBot, error) {
 	version, err := httpx.RequiredString(fields, "ifVersion")
 	if err != nil {
-		return service.DeleteBot{}, err
+		return store.DeleteBot{}, err
 	}
 	value, err := strconv.ParseInt(version, 10, 64)
 	if err != nil || value < 1 || strconv.FormatInt(value, 10) != version {
-		return service.DeleteBot{}, httpx.InvalidInput("ifVersion must be a positive int64 decimal string")
+		return store.DeleteBot{}, httpx.InvalidInput("ifVersion must be a positive int64 decimal string")
 	}
 	id, err := httpx.RequiredString(fields, "deletionId")
-	return service.DeleteBot{Version: value, DeletionID: id}, err
+	return store.DeleteBot{Version: value, DeletionID: id}, err
 }
 
 func (h *botsHandler) remove(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -203,7 +216,7 @@ func (h *botsHandler) remove(w http.ResponseWriter, request *http.Request, princ
 		var fields map[string]json.RawMessage
 		fields, err = httpx.DecodeObject(w, request, "ifVersion", "deletionId")
 		if err == nil {
-			var input service.DeleteBot
+			var input store.DeleteBot
 			input, err = botDeleteInput(fields)
 			if err == nil {
 				bot, err = h.relay.DeleteBot(request.Context(), principal, id, input)
@@ -214,10 +227,11 @@ func (h *botsHandler) remove(w http.ResponseWriter, request *http.Request, princ
 		httpx.WriteError(w, request, logger, "bot", "delete", err)
 		return
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, botResponse(bot))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, Response(bot))
 }
 
-func botResponse(bot model.Bot) api.Bot {
+// Response projects a Bot into its public representation, redacting deleted definitions.
+func Response(bot model.Bot) api.Bot {
 	result := api.Bot{ID: bot.ID, WorkerID: bot.WorkerID, Version: bot.Version}
 	if bot.Deletion != nil {
 		deletion := bot.Deletion

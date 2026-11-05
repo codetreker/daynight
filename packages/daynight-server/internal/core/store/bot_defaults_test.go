@@ -41,7 +41,7 @@ func insertPreferenceBot(t *testing.T, database *Store, candidate model.Bot, ove
 	if overrides.Provider != nil {
 		candidate.ResolvedConfiguration.Provider = *overrides.Provider
 	}
-	if err := database.WriteBot(context.Background(), func(tx *BotTx) error {
+	if err := writeBotTest(database, context.Background(), func(tx *botTx) error {
 		return tx.InsertBot(context.Background(), candidate)
 	}); err != nil {
 		t.Fatal(err)
@@ -58,8 +58,8 @@ func markPreferenceBotReady(t *testing.T, database *Store, botID string) {
 
 func commitPreferenceBot(t *testing.T, database *Store, botID string) {
 	t.Helper()
-	if err := database.WriteBot(context.Background(), func(tx *BotTx) error {
-		return CommitBotPreferences(context.Background(), tx.tx, botID)
+	if err := writeBotTest(database, context.Background(), func(tx *botTx) error {
+		return tx.CommitBotPreferences(context.Background(), botID)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestBotDefaultsReadKeepsOwnerScopeAndStableFullWorkerInventory(t *testing.T
 			t.Fatalf("unstable or cross-owner worker: %+v", result.Workers)
 		}
 	}
-	if err := database.WriteBot(context.Background(), func(tx *BotTx) error {
+	if err := writeBotTest(database, context.Background(), func(tx *botTx) error {
 		input, err := tx.BotDefaults(context.Background(), owner.ID)
 		if err == nil && !reflect.DeepEqual(input.Workers, result.Workers) {
 			t.Fatalf("creation and preview use different inputs: %+v", input)
@@ -141,7 +141,7 @@ func TestBotPreferencesRefuseUnsuccessfulOrDeletedBotsAndDoNotRememberDefaults(t
 				markPreferenceBotReady(t, database, bot.ID)
 				mustQueryExec(t, database, `UPDATE bots SET deletion='{}' WHERE id=$1`, bot.ID)
 			}
-			err := database.WriteBot(context.Background(), func(tx *BotTx) error { return CommitBotPreferences(context.Background(), tx.tx, bot.ID) })
+			err := writeBotTest(database, context.Background(), func(tx *botTx) error { return tx.CommitBotPreferences(context.Background(), bot.ID) })
 			if !errors.Is(err, ErrBotPreferencesNotReady) {
 				t.Fatalf("unsafe preference commit %q: %v", state, err)
 			}
@@ -169,10 +169,10 @@ func TestBotPreferencesShareLifecycleTransactionAndRollback(t *testing.T) {
 	if _, err := tx.Exec(ctx, `UPDATE bots SET session_id=$2,startup_result='{"state":"ready","code":null}' WHERE id=$1`, bot.ID, uuid.NewString()); err != nil {
 		t.Fatal(err)
 	}
-	if err := CommitBotPreferences(ctx, tx, bot.ID); err != nil {
+	if err := BotTransaction(tx).CommitBotPreferences(ctx, bot.ID); err != nil {
 		t.Fatal(err)
 	}
-	inside, err := (&BotTx{tx: tx}).BotDefaults(ctx, candidate.OwnerUserID)
+	inside, err := (&botTx{tx: tx}).BotDefaults(ctx, candidate.OwnerUserID)
 	if err != nil || inside.PreferredWorkerID == nil || *inside.WorkerPreferences[candidate.WorkerID].Cwd != "/rolled-back" {
 		t.Fatalf("preferences did not join lifecycle transaction: %+v %v", inside, err)
 	}
@@ -207,8 +207,8 @@ func TestBotPreferencesConcurrentSuccessKeepsNewestExplicitValues(t *testing.T) 
 	for _, id := range []string{older.ID, newer.ID} {
 		workers.Go(func() {
 			<-start
-			failures <- database.WriteBot(context.Background(), func(tx *BotTx) error {
-				return CommitBotPreferences(context.Background(), tx.tx, id)
+			failures <- writeBotTest(database, context.Background(), func(tx *botTx) error {
+				return tx.CommitBotPreferences(context.Background(), id)
 			})
 		})
 	}
@@ -242,7 +242,7 @@ func TestBotPreferencesStorageFailuresDoNotBecomePartialSuccess(t *testing.T) {
 			}
 			mustQueryExec(t, database, `CREATE FUNCTION refuse_preference() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF `+condition+` THEN RAISE EXCEPTION 'preference store unavailable'; END IF; RETURN NEW; END $$`)
 			mustQueryExec(t, database, `CREATE TRIGGER refuse_preference BEFORE INSERT OR UPDATE ON `+table+` FOR EACH ROW EXECUTE FUNCTION refuse_preference()`)
-			err := database.WriteBot(context.Background(), func(tx *BotTx) error { return CommitBotPreferences(context.Background(), tx.tx, bot.ID) })
+			err := writeBotTest(database, context.Background(), func(tx *botTx) error { return tx.CommitBotPreferences(context.Background(), bot.ID) })
 			var transaction *TransactionError
 			if err == nil || !errors.As(err, &transaction) || transaction.Outcome != TransactionNotCommitted {
 				t.Fatalf("failed preference store became success: %v", err)
@@ -255,8 +255,8 @@ func TestBotPreferencesStorageFailuresDoNotBecomePartialSuccess(t *testing.T) {
 	}
 	database := isolatedStore(t)
 	candidate, _ := storedBotCandidate(t, database)
-	if err := database.WriteBot(context.Background(), func(tx *BotTx) error {
-		return CommitBotPreferences(context.Background(), tx.tx, uuid.NewString())
+	if err := writeBotTest(database, context.Background(), func(tx *botTx) error {
+		return tx.CommitBotPreferences(context.Background(), uuid.NewString())
 	}); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing Bot was not rejected: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestBotDefaultsCreationClockIncludesConcurrentHeartbeat(t *testing.T) {
 	}
 	defer pool.Close()
 	traced := &Store{Pool: pool}
-	if err := traced.WriteBot(ctx, func(tx *BotTx) error {
+	if err := writeBotTest(traced, ctx, func(tx *botTx) error {
 		input, err := tx.BotDefaults(ctx, candidate.OwnerUserID)
 		if err != nil {
 			return err
@@ -336,7 +336,7 @@ func TestBotCreationLockSerializesOnlyMatchingIDsUntilTransactionEnd(t *testing.
 	}
 	defer first.Rollback(ctx)
 	id := uuid.NewString()
-	if err := (&BotTx{tx: first}).LockCreation(ctx, id); err != nil {
+	if err := (&botTx{tx: first}).LockCreation(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	second, err := database.Pool.Begin(ctx)
@@ -347,10 +347,10 @@ func TestBotCreationLockSerializesOnlyMatchingIDsUntilTransactionEnd(t *testing.
 	if _, err := second.Exec(ctx, `SET LOCAL lock_timeout='50ms'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&BotTx{tx: second}).LockCreation(ctx, uuid.NewString()); err != nil {
+	if err := (&botTx{tx: second}).LockCreation(ctx, uuid.NewString()); err != nil {
 		t.Fatalf("different request ID was serialized: %v", err)
 	}
-	err = (&BotTx{tx: second}).LockCreation(ctx, id)
+	err = (&botTx{tx: second}).LockCreation(ctx, id)
 	var pgError *pgconn.PgError
 	if !errors.As(err, &pgError) || pgError.Code != "55P03" {
 		t.Fatalf("same request ID did not wait for original transaction: %v", err)
@@ -361,7 +361,7 @@ func TestBotCreationLockSerializesOnlyMatchingIDsUntilTransactionEnd(t *testing.
 	if err := first.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.WriteBot(ctx, func(tx *BotTx) error { return tx.LockCreation(ctx, id) }); err != nil {
+	if err := writeBotTest(database, ctx, func(tx *botTx) error { return tx.LockCreation(ctx, id) }); err != nil {
 		t.Fatalf("creation lock survived transaction end: %v", err)
 	}
 }
