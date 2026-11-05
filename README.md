@@ -471,9 +471,11 @@ delivery. This repository manages concrete work in Daynight; load
 before executing a task. Use
 [`dispatch-small-change`](.agents/skills/dispatch-small-change/SKILL.md) to turn
 a bounded change request into a clear task, choose its required operating
-system, and hand it off to a Worker. See the [repository skills](.agents/skills/)
-for decision notes, scope choices and prose, and
-[Agent Notes](.agents/notes/README.md) for decision history.
+system, and hand it off to a Worker. Use
+[`optimize-unit-tests`](.agents/skills/optimize-unit-tests/SKILL.md) to reduce test
+runtime, resource use and CI completion time while preserving defect detection.
+See the [repository skills](.agents/skills/) for decision notes, scope choices
+and prose, and [Agent Notes](.agents/notes/README.md) for decision history.
 
 ## Documentation conventions
 
