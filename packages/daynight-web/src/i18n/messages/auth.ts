@@ -301,6 +301,10 @@ export type AuthMessages = {
       readonly save: string;
       readonly busy: string;
       readonly unsaved: string;
+      readonly draftConflict: string;
+      readonly currentSaved: string;
+      readonly conflictPending: string;
+      readonly permissionPending: string;
       readonly memberNotice: string;
       readonly loading: string;
       readonly uncertain: string;
