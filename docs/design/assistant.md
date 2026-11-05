@@ -48,7 +48,7 @@ Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行
 
 `sessionrelay.RegisterBot` 验证 PAT、Bot owner、绑定 Worker 和请求结构，按 Bot → Session 顺序取得锁。首次登记要求当前版本与请求相等、角色和 Session 尚未绑定、输入 configuration 与持久配置一致，并要求独立 registration 使用 `initialInput=none` 和相同 Provider。角色全文、revision、digest 随请求提交；服务端校验全文及摘要，但不拥有角色模板。
 
-Session 行保存完整原 Bot 登记请求，包含原 botVersion、registration、configuration 和 roleConfiguration。响应丢失后的精确重放依据该记录核对，返回同一个 Session 和当前 Bot；不能以已经递增的 Bot version 拒绝原请求，也不能仅凭 registrationId 接受不同角色。删除校验先于重放。`store.BindBotSession` 加入原事务，以版本、未删除、空角色及空 Session 为条件执行 CAS；插入 Session、冻结角色和推进 Bot 版本任一失败均一起回滚。
+Session 行保存完整原 Bot 登记请求，包含原 botVersion、registration、configuration 和 roleConfiguration。响应丢失后的精确重放依据该记录核对，返回同一个 Session 和当前 Bot；不能以已经递增的 Bot version 拒绝原请求，也不能仅凭 registrationId 接受不同角色。删除校验先于重放。`store.BindBotSession` 加入原事务，以版本、未删除、空角色及空 Session 为条件执行 CAS；首次绑定写入完成后，`RegisterBot` 使用当前 `s.now()` 再次调用 `credential`，才允许事务提交。凭据共享锁只能阻止撤销，不能阻止等待期间的自然过期。插入 Session、冻结角色、推进 Bot 版本或最终凭据核验任一失败均一起回滚。
 
 Bot grant 在锁住 Bot 和 Session 后检查版本、Worker、独立执行身份、Controller 和 native ID，随后使用现有 grant 内核。普通 Test 入口遇到 Bot 关联直接拒绝。Bot 专用解码器允许独立身份携带 previousGeneration/stopProof；普通 Test 解码器继续禁止这些恢复参数，wire 不新增 claim 或 Worker 身份字段。
 
@@ -60,7 +60,7 @@ Bot grant 在锁住 Bot 和 Session 后检查版本、Worker、独立执行身�
 
 ready 依赖当前 relay 的 live 同步状态、当前连接及有效心跳，不能从 durable Snapshot 推导。报告事务还验证 `ConnectionParent` 对应的实际连接父 PAT；同代新 grant 可以更新 `Parent`，但尚未重新连接的 live 状态仍属于原 `ConnectionParent`，因此只验证报告者与最新 grant 的凭据不足以确认连接授权。durableSnapshot 不保存可被另一个实例误用的实时同步事实，因此没有本地同步证据的实例拒绝 ready。独立无首条输入的 Session 允许 native ID 尚未生成；报告中的 null 只在当前已同步快照同为 null 时成立，之后恢复仍需明确的原 native ID。
 
-报告先校验版本、身份和适用的同步条件；结果与持久值相同则返回原 Bot。结果变化时，`store.SetBotStartup` 以当前版本及未删除状态更新结果并推进版本；ready 随后在同一事务调用 `CommitBotPreferences`。成功结果与偏好不可分别提交，数据库失败必须一起回滚。持久 ready 只记录已确认的启动结果；在线状态继续由 Session Snapshot 和新鲜观测拥有。
+报告先校验版本、身份和适用的同步条件；结果与持久值相同则返回原 Bot。结果变化时，`store.SetBotStartup` 以当前版本及未删除状态更新结果并推进版本；ready 随后在同一事务调用 `CommitBotPreferences`。未绑定 Session 的失败报告在写入完成后、或相同结果返回前，以当前 `s.now()` 调用 `credential` 重验 PAT；等待期间自然过期会拒绝成功响应并回滚写入。绑定后的报告继续使用 `scopePermission` 和适用的连接父 PAT 校验。成功结果与偏好不可分别提交，数据库或最终凭据核验失败必须一起回滚。持久 ready 只记录已确认的启动结果；在线状态继续由 Session Snapshot 和新鲜观测拥有。
 
 ## Session 锁序与持久准入
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -21,7 +22,7 @@ func migrationRecordFixture(t *testing.T) (string, string, model.Task, Attachmen
 	tasks, database, project, databaseURL, principal := taskService(t)
 	task := createTask(t, tasks, principal, project.ID, "Operation records")
 	root := t.TempDir()
-	name := filepath.Join(root, attachmentBucket, task.ID, "file.bin")
+	name := filepath.Join(root, attachmentcore.Bucket, task.ID, "file.bin")
 	if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +81,7 @@ func TestAttachmentMigrationRejectsChangedOperationRecords(t *testing.T) {
 			if !errors.As(err, &failure) || failure.Category != "invalid_manifest" {
 				t.Fatalf("changed operation was not rejected: %v", err)
 			}
-			actual, err := os.ReadFile(filepath.Join(root, attachmentBucket, task.ID, "file.bin"))
+			actual, err := os.ReadFile(filepath.Join(root, attachmentcore.Bucket, task.ID, "file.bin"))
 			if err != nil || !bytes.Equal(actual, []byte{0, 255, 1}) {
 				t.Fatalf("invalid records changed source bytes: %v, %v", actual, err)
 			}
@@ -104,7 +105,7 @@ func TestAttachmentMigrationRecoversPlanBeforeStagePublication(t *testing.T) {
 	if err != nil || result.Phase != "complete" {
 		t.Fatalf("explicit resume did not reconcile the fully persisted plan: %+v %v", result, err)
 	}
-	actual, err := os.ReadFile(filepath.Join(root, attachmentBucket, task.ProjectID, task.ID[:2], task.ID, "file.bin"))
+	actual, err := os.ReadFile(filepath.Join(root, attachmentcore.Bucket, task.ProjectID, task.ID[:2], task.ID, "file.bin"))
 	if err != nil || !bytes.Equal(actual, []byte{0, 255, 1}) {
 		t.Fatalf("recovered plan changed content: %v, %v", actual, err)
 	}
@@ -164,7 +165,7 @@ func TestAttachmentMigrationRejectsUnsafeOperationPaths(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "target symlink":
-				if err := os.Symlink("../"+attachmentBucket, filepath.Join(directory, "target")); err != nil {
+				if err := os.Symlink("../"+attachmentcore.Bucket, filepath.Join(directory, "target")); err != nil {
 					t.Fatal(err)
 				}
 			case "manifest trailing JSON":
@@ -180,7 +181,7 @@ func TestAttachmentMigrationRejectsUnsafeOperationPaths(t *testing.T) {
 			if _, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "apply", plan.OperationID, slog.New(slog.NewJSONHandler(io.Discard, nil))); err == nil {
 				t.Fatal("unsafe operation entry was accepted")
 			}
-			if _, err := os.Stat(filepath.Join(root, attachmentBucket, task.ID, "file.bin")); err != nil {
+			if _, err := os.Stat(filepath.Join(root, attachmentcore.Bucket, task.ID, "file.bin")); err != nil {
 				t.Fatal("unsafe operation entry changed the old content")
 			}
 		})
@@ -250,7 +251,7 @@ func TestAttachmentMigrationRejectsContradictoryPersistedInventories(t *testing.
 			if !errors.As(err, &failure) || failure.Category != test.category {
 				t.Fatalf("contradictory inventory did not fail safely: %v", err)
 			}
-			if actual, err := os.ReadFile(filepath.Join(root, attachmentBucket, task.ID, "file.bin")); err != nil || !bytes.Equal(actual, []byte{0, 255, 1}) {
+			if actual, err := os.ReadFile(filepath.Join(root, attachmentcore.Bucket, task.ID, "file.bin")); err != nil || !bytes.Equal(actual, []byte{0, 255, 1}) {
 				t.Fatalf("invalid inventory changed its source: %v %v", actual, err)
 			}
 			if _, err := os.Stat(filepath.Join(root, attachmentMigrationPrefix+plan.OperationID, "source")); !errors.Is(err, fs.ErrNotExist) {
@@ -273,7 +274,7 @@ func TestAttachmentMigrationRejectsUnsupportedDatabaseShapeWithoutMovingFiles(t 
 				t.Fatal(err)
 			}
 			root := t.TempDir()
-			name := filepath.Join(root, attachmentBucket, "00000000-0000-0000-0000-000000000001", "preserved")
+			name := filepath.Join(root, attachmentcore.Bucket, "00000000-0000-0000-0000-000000000001", "preserved")
 			if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -289,7 +290,7 @@ func TestAttachmentMigrationRejectsUnsupportedDatabaseShapeWithoutMovingFiles(t 
 				t.Fatalf("failed database inventory changed legacy files: %q %v", actual, err)
 			}
 			entries, err := os.ReadDir(root)
-			if err != nil || len(entries) != 1 || entries[0].Name() != attachmentBucket {
+			if err != nil || len(entries) != 1 || entries[0].Name() != attachmentcore.Bucket {
 				t.Fatalf("failed metadata inventory created an operation: %v %v", entries, err)
 			}
 		})
@@ -485,7 +486,7 @@ func TestAttachmentMigrationUnpublishedInitializationFailuresCanBeReplanned(t *t
 					t.Fatalf("failed initialization retained its owned temporary directory: %v", err)
 				}
 			}
-			actual, err := os.ReadFile(filepath.Join(root, attachmentBucket, task.ID, "file.bin"))
+			actual, err := os.ReadFile(filepath.Join(root, attachmentcore.Bucket, task.ID, "file.bin"))
 			if err != nil || !bytes.Equal(actual, []byte{0, 255, 1}) {
 				t.Fatalf("plan initialization changed legacy bytes: %v %v", actual, err)
 			}

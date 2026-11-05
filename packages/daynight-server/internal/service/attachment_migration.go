@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"io"
 	"log/slog"
 	"os"
@@ -296,7 +297,7 @@ func (m *attachmentMigration) snapshot(ctx context.Context) (attachmentMigration
 			rows.Close()
 			return result, m.failure("ownership", "Attachment metadata has no matching project and task owner.", nil)
 		}
-		if err := filestorage.ValidateAddress(attachmentBucket, metadata.Path); err != nil || metadata.SizeBytes < 0 {
+		if err := filestorage.ValidateAddress(attachmentcore.Bucket, metadata.Path); err != nil || metadata.SizeBytes < 0 {
 			rows.Close()
 			return result, m.failure("invalid_metadata", "Attachment metadata contains an invalid relative path or size.", err)
 		}
@@ -342,14 +343,14 @@ func (m *attachmentMigration) plan(ctx context.Context) (AttachmentMigrationSumm
 	m.operation = id.String()
 	manifest := attachmentMigrationManifest{Version: 1, OperationID: m.operation, Identity: snapshot.identity, DatabaseDigest: snapshot.digest,
 		Owners: snapshot.owners, Metadata: snapshot.metadata, Tasks: []attachmentMigrationTask{}}
-	bucket, err := m.inspectDirectory(attachmentBucket)
+	bucket, err := m.inspectDirectory(attachmentcore.Bucket)
 	if err != nil {
 		return AttachmentMigrationSummary{}, err
 	}
 	manifest.BucketExists = bucket
 	directories := map[string]bool{}
 	if bucket {
-		entries, err := m.readDirectory(ctx, attachmentBucket)
+		entries, err := m.readDirectory(ctx, attachmentcore.Bucket)
 		if err != nil {
 			return AttachmentMigrationSummary{}, err
 		}
@@ -364,7 +365,7 @@ func (m *attachmentMigration) plan(ctx context.Context) (AttachmentMigrationSumm
 	for _, owner := range snapshot.owners {
 		task := attachmentMigrationTask{ProjectID: owner.ProjectID, TaskID: owner.TaskID, Exists: directories[owner.TaskID], Entries: []attachmentMigrationEntry{}}
 		if task.Exists {
-			task.Entries, err = m.inventory(ctx, attachmentBucket+"/"+task.TaskID, true)
+			task.Entries, err = m.inventory(ctx, attachmentcore.Bucket+"/"+task.TaskID, true)
 			if err != nil {
 				return AttachmentMigrationSummary{}, err
 			}
@@ -424,7 +425,7 @@ func (m *attachmentMigration) validateManifest(manifest attachmentMigrationManif
 		entries := map[string]attachmentMigrationEntry{}
 		for _, entry := range task.Entries {
 			if entry.Path != "." {
-				if err := filestorage.ValidateAddress(attachmentBucket, entry.Path); err != nil {
+				if err := filestorage.ValidateAddress(attachmentcore.Bucket, entry.Path); err != nil {
 					return m.failure("invalid_manifest", "The migration manifest contains an invalid relative entry.", err)
 				}
 			}

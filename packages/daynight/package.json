@@ -1,6 +1,6 @@
 {
   "name": "@codetreker/daynight",
-  "version": "0.44.0",
+  "version": "0.45.0",
   "description": "A client command toolkit for development workflows",
   "repository": {
     "type": "git",
@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.247",
-    "@github/copilot": "1.0.83",
+    "@github/copilot": "1.0.105",
     "@github/copilot-sdk": "1.0.11",
     "@inquirer/prompts": "8.7.4",
     "better-sqlite3": "13.0.3",

@@ -63,18 +63,12 @@ func (s *Snapshot) Attachments(ctx context.Context, projectID, taskID string, qu
 	return AttachmentPage{Items: items, HasMore: hasMore}, nil
 }
 
-func (s *Snapshot) AttachmentPathConflict(ctx context.Context, projectID, taskID, path string) (bool, error) {
-	ancestors := make([]string, 0)
-	for index, char := range path {
-		if char == '/' {
-			ancestors = append(ancestors, path[:index])
-		}
-	}
+func (s *Snapshot) AttachmentPathConflict(ctx context.Context, projectID, taskID string, query AttachmentConflictQuery) (bool, error) {
 	var conflict bool
 	err := s.tx.QueryRow(ctx, `SELECT EXISTS (SELECT FROM task_attachments
 		WHERE project_id = $1 AND task_id = $2
 		AND (path = ANY($3::text[]) OR starts_with(path, $4)))`,
-		projectID, taskID, ancestors, path+"/").Scan(&conflict)
+		projectID, taskID, query.Ancestors, query.DescendantPrefix).Scan(&conflict)
 	if err != nil {
 		return false, queryError("check attachment path", err)
 	}

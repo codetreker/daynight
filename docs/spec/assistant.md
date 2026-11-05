@@ -109,6 +109,8 @@ Bot JSON 的 version、creationOrder 和 requestedVersion 始终为十进制字�
 
 首次登记校验当前 Bot 版本，并在创建 Session 的同一事务内推进 Bot 版本。相同原登记请求的精确重放返回原 Session 和当前 Bot，即使首次登记已推进版本；不同登记身份、原请求版本、冻结配置或角色均冲突。并发登记不能产生第二个 Session。已删除状态优先拒绝重放，不能复活 Bot。提交结果未知时，保留原请求并查询原 Bot，不以新登记身份重试。
 
+首次登记与尚未绑定 Session 的失败报告在等待 Bot 锁后、事务提交前必须重新核验 PAT 的自然过期；相同失败结果的无变更成功响应也须核验。凭据在等待期间过期时返回 `401 unauthenticated`，Bot 版本、角色、Session 关联、启动结果和偏好均保持原值。
+
 ### Grant 与代际恢复
 
 `grant` 保留独立 `testExecutionId`、Controller 身份、`executionGeneration`、`kind` 和已有 `previousGeneration`/`stopProof` 语义；kind 为 bootstrap 或 reconnect。`nativeSessionId` 必须与当前 Session 精确一致，null 与非空值不同。bootstrap 或续期不能绕过当前 Bot 版本与绑定 Worker 校验。
@@ -150,3 +152,7 @@ Worker 的 completed 声明表示它已验证原生写入停止并清理该 Bot 
 CLI 验证覆盖普通非仓库目录下的六个命令、help 与 JSON、名字创建的 pending、固定请求 ID、未知写入不重试及 show 核对、超安全整数的版本、删除阶段区别、分页及后页失败、401/403/404/409 和诊断认证材料隔离。Worker 查询验证在线与库存状态分别呈现，未知库存不假报零任务，远端查询不获取本地 runtime 锁。受控 HTTP 与命令测试只证明 CLI 契约，不证明真实 Provider、完整托管或历史清理。
 
 真实隔离 PostgreSQL 测试覆盖名字创建、稳定候选、显式离线拒绝、跨机器和 Provider 参数隔离、默认观测时效、反序成功偏好、失败不提交、偏好事务回滚、并发重复 ID、不同指纹、组合 Worker 归属、失效凭据、事务回滚、分页、精确 int64、删除重放和任务不变。Session 测试另覆盖并发与丢失响应登记、首次角色原子冻结、错误 Worker/owner/版本/native/fence、普通 Test 绕过拒绝、代际停证及精确重放、真实同步 ready、父 PAT 撤销、浏览器换身份和持久删除后所有旧入口拒绝。删除测试覆盖 PAT/登录 Session 在 Bot/关联 Session 锁等待期间过期的拒绝与完整状态回滚、有效删除和精确重放、上传和删除的两种锁交错、跨实例旧缓存、全部 SQL 子表、孤立归档、文件及 SQL 失败重试、受限路径和符号链接保护。HTTP 测试覆盖实际 DELETE 路径在 Bot 锁等待期间过期的 PAT/登录 Session、原请求重放、认证、严格请求解析、真实绑定引用、删除阶段、精确回执重放和删除后响应隐藏。完整服务端检查使用 [服务端验证命令](../../packages/daynight-server/README.md)，包含 race 与覆盖率门禁。这些检查不证明真实 Provider、Worker 托管或完整助手交互已交付。
+
+`TestBotRuntimeHTTPChecksCredentialAfterUnchangedBotLockWait` 使用完整迁移的隔离数据库，对首次登记、首次未绑定失败报告和同结果失败报告分别取得 Bot 行锁，并通过当前 schema 的 blocker PID 观测实际请求等待。锁持有者不修改 Bot 版本或其它字段；观测 PAT 按真实时钟自然过期后释放锁，要求 HTTP 返回 `401 unauthenticated`，并比较完整 Bot、关联 Session 和偏好持久值以证明没有提交副作用。对应有效 PAT 用例要求正常成功、一次版本推进或原版本无变更，以及精确重放返回原结果。
+
+relay 包内的 `TestBotUnboundLifecycleRevalidatesCredentialAfterLockWait` 直接调用生产服务入口，使用同样的实际 blocker 和自然过期观测，对三个操作分别验证过期拒绝、有效凭据成功及同结果持久值不变。HTTP 用例证明调用方可见的状态码与响应；包内用例独立验证事务拒绝和回滚。

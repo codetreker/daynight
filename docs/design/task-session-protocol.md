@@ -123,7 +123,7 @@ Claude adapter 在新建和 resume 共用的 `query` options 中，将存在的 
 
 ### Copilot SDK 与私有 runtime
 
-Copilot adapter 固定使用 `@github/copilot-sdk` 1.0.11 与随包安装的 `@github/copilot` 1.0.83。Controller 直接 spawn CLI 对应平台 binary 的 `--headless --no-auto-update`，避免 npm launcher 的同步包装进程遮蔽真实 PID。随机连接 token 通过私有子进程环境传入，SDK 以 `RuntimeConnection.forUri` 连接该进程的 loopback TCP endpoint；这条连接既不共享其他 runtime，也不承载 TUI。真实 child 经 `onSpawn` 登记进程身份，继承 Controller 的 POSIX 进程组或 Windows Job 约束，沿用统一停止证明。
+Copilot adapter 固定使用 `@github/copilot-sdk` 1.0.11 与随包安装的 `@github/copilot` 1.0.105。Controller 直接 spawn CLI 对应平台 binary 的 `--headless --no-auto-update`，避免 npm launcher 的同步包装进程遮蔽真实 PID。随机连接 token 通过私有子进程环境传入，SDK 以 `RuntimeConnection.forUri` 连接该进程的 loopback TCP endpoint；这条连接既不共享其他 runtime，也不承载 TUI。真实 child 经 `onSpawn` 登记进程身份，继承 Controller 的 POSIX 进程组或 Windows Job 约束，沿用统一停止证明。
 
 角色通过 create/resume 共用的 `SessionConfig` 传递：仅当 `ProviderOptions.instructions` 存在时加入 `systemMessage: { mode: "append", content: instructions }`。SDK 的 append 保留 CLI 基础提示，角色不进入 `native.send`。省略角色时不设置该键；字符串校验与冻结由[共享角色契约](../spec/controller-role-instructions.md)拥有，适配器不裁剪或重新渲染文本。新建仍只传显式 model/effort，恢复仍先核对原生身份、目录与占用，再按原 ID 打开，不覆盖既有原生设置。角色配置失败沿既有启动异常路径关闭 owned runtime 并传播错误。取舍见[Copilot 角色追加决策](../../.agents/notes/implemented/architecture/2026-11-04-copilot-role-instructions.md)。
 

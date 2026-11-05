@@ -2311,13 +2311,30 @@ Session URL. Open the task's Session tab for messages, tools, model and permissi
 settings, supported slash commands, native steer, interrupt and current approvals.
 Unsupported native controls remain unavailable.
 
-Copilot Web bundles SDK 1.0.11 and the `@github/copilot` 1.0.83 package, with token-authenticated loopback
+Copilot Web bundles SDK 1.0.11 and the `@github/copilot` 1.0.105 package, with token-authenticated loopback
 transport to its private runtime. `COPILOT_HOME` chooses the native profile;
 `model: null` and `args: []` preserve native defaults. Web arguments accept
 `--effort low|medium|high|xhigh`. Plan approval supports exit-only, interactive
 or reject with optional feedback. Unknown send results are not replayed or
 resolved by matching historical text. Provider-specific runtime evidence is
 required separately from protocol tests.
+
+The pinned macOS arm64 package includes the native MSAL broker addon and its
+runtime library for Entra authentication. Authentication still belongs to the
+native Copilot profile and requires a valid login and organization access.
+Worker capability probes and Web launches use the bundled executable with
+`--no-auto-update`; installing or updating a Copilot executable on `PATH` does
+not change this runtime.
+
+Update Daynight to a release containing the dependency change with `daynight
+update`, or install a package built from the desired revision. An existing
+installation and its running Worker/Controller processes do not switch merely
+because repository dependencies changed. Restart the Worker after its active
+work has reached an appropriate stopping point, retaining its local records and
+native profile so sessions can resume. To verify an installed package, resolve
+its `@github/copilot` platform dependency and run that executable with
+`--no-auto-update --version`; a plain `copilot --version` can report an automatic
+update cache or another installation.
 
 The primary worker database retains its claim and native-session index. Web
 execution state lives separately in `~/.daynight/worker/web-executions.sqlite`
