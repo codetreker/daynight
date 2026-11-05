@@ -62,11 +62,11 @@ After the user confirms the solution, perform the registration checks below befo
 
 ## Register the delivery breakdown
 
-Apply the [task quality check](task-content.md#task-quality) and the delivery brief below to each proposed task, then review the breakdown as a whole before requesting solution confirmation.
+Prepare each proposed delivery task under the brief and boundary rules below, then review the breakdown as a whole before requesting solution confirmation.
 
 ### Delivery task brief
 
-Every proposed and registered Goal delivery task must provide four task-specific parts:
+Each Goal delivery task has one independently assessable outcome. Keep changes necessary for that outcome together and separate independently valuable goals. Every proposed and registered delivery task must provide four task-specific parts:
 
 | Part | Required content |
 | --- | --- |
@@ -74,6 +74,8 @@ Every proposed and registered Goal delivery task must provide four task-specific
 | Scope | The behavior and changes it owns, with relevant exclusions and producer/consumer boundaries. |
 | Implementation approach | How it realizes its assigned part of the solution: the substantive method and, where needed, affected components, contracts, sequencing and integration, so the task can proceed without inventing undecided architecture. |
 | Acceptance | Observable success, failure and boundary checks that demonstrate this task's contribution to the Goal. |
+
+Judge task boundaries by purpose and reviewability. File boundaries, technical layers or routine execution steps alone do not justify separate tasks; foundations, migrations and independent acceptance can be tasks when each has a defined result. Do not impose fixed task, file, line or time limits or a mandatory slicing pattern.
 
 These parts may be inline or supplied through precise readable references, without fixed headings or a separate plan file.
 The description must explain this task's contribution and boundary and directly identify the source sections supplying any remaining brief content; a generic whole-Goal or architecture pointer or a copied document packet is insufficient.
@@ -102,7 +104,7 @@ Read actual sources under the content standard; do not invent attachments or cop
 For example, in `architecture -> A -> B`, B declares only A as a direct dependency and inherits the architecture prerequisite through A, but B's description still directly lists the required architecture sources.
 Source indexes do not create additional execution dependencies.
 
-Read back every delivery task and its required inputs, verifying all four brief parts remain consistent with the confirmed Goal, its scope and the accepted solution. Recheck task quality, whole-breakdown coverage and handovers, architecture indexes, and source readability.
+Read back every delivery task and its required inputs, verifying all four brief parts remain consistent with the confirmed Goal, its scope and the accepted solution. Recheck task boundaries, whole-breakdown coverage and handovers, architecture indexes, and source readability.
 Check dependencies through [post-change verification](task-management.md#verify-dependency-changes).
 Keep the solution task in progress while gaps remain; recover partial registration under [write safety](write-safety.md).
 Registration and solution completion do not start delivery or enable automatic-execution permission.
