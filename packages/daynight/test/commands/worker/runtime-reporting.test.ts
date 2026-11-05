@@ -45,6 +45,17 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 const eventually = (check: () => void | Promise<void>) => vi.waitFor(check, { timeout: 3500, interval: 10 });
+// Retry deadlines advance only at explicit test boundaries; vi.waitFor advances fake timers while polling.
+const eventuallyWithoutAdvancingTime = async (check: () => void): Promise<void> => {
+  const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+  const deadline = performance.now() + 3500;
+  for (;;) {
+    try { check(); return; }
+    catch (error) { if (performance.now() >= deadline) throw error; }
+    await timers.setTimeout(10);
+  }
+};
+const configurationTransitions = () => mocks.emit.mock.calls.filter(([event]) => event.kind === "worker-configuration").map(([event]) => JSON.parse(event.message));
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/runtime-reporting-tests");
   await mkdir(base, { recursive: true });
@@ -351,21 +362,82 @@ describe("worker runtime configuration reporting", () => {
   });
 
   it("reports an unavailable native tuple while independent scalar settings remain applied", async () => {
-    const f = await fixture();
-    target = { ...target, value: { ...target.value, maxConcurrent: 4 } };
+    const f = await fixture(), backend = deferred<() => string>();
+    target = { ...target, value: { ...target.value, maxConcurrent: 4, pollIntervalMs: 250, recoveryLimit: 8 } };
+    mocks.prompt.mockImplementation(() => backend.promise);
     mocks.probe.mockRejectedValue(new Error("private-native-probe-output"));
     const running = start(f);
-    await eventually(() => expect(mocks.probe).toHaveBeenCalled());
-    await eventually(async () => {
-      await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(mocks.prompt).toHaveBeenCalledOnce());
+    await eventually(() => expect(configurationTransitions()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: { kind: "maxConcurrent" }, state: "applied" }),
+      expect.objectContaining({ key: { kind: "pollIntervalMs" }, state: "applied" }),
+      expect.objectContaining({ key: { kind: "recoveryLimit" }, state: "applied" }),
+      expect.objectContaining({ key: { kind: "native" }, state: "error" }),
+      expect.objectContaining({ key: { kind: "projectNative", projectId: uuid(1) }, state: "error" }),
+    ])));
+    const before = report.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => {
+      expect(report.mock.calls.length).toBeGreaterThan(before);
       expect(report.mock.calls.at(-1)![2].observation!.items).toEqual(expect.arrayContaining([
         expect.objectContaining({ key: { kind: "maxConcurrent" }, appliedValue: 4, state: "applied" }),
+        expect.objectContaining({ key: { kind: "pollIntervalMs" }, appliedValue: 250, state: "applied" }),
+        expect.objectContaining({ key: { kind: "recoveryLimit" }, appliedValue: 8, state: "applied" }),
         expect.objectContaining({ key: { kind: "native" }, appliedValue: null, state: "error", error: expect.any(Object), lastFailure: expect.any(Object) }),
+        expect.objectContaining({ key: { kind: "projectNative", projectId: uuid(1) }, appliedValue: null, state: "error", error: expect.any(Object), lastFailure: expect.any(Object) }),
       ]));
     });
-    expect(JSON.stringify(report.mock.calls.at(-1)![2])).not.toContain("private-native-probe-output");
-    expect(mocks.coordinator).toHaveBeenCalledOnce();
+    expect(JSON.stringify(report.mock.calls.map(([, , configuration]) => configuration))).not.toContain("private-native-probe-output");
+    expect(JSON.stringify(configurationTransitions())).not.toContain("private-native-probe-output");
+    expect(mocks.coordinator).not.toHaveBeenCalled();
+    backend.resolve(() => "prompt");
+    await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
     expect(mocks.coordinator.mock.calls[0]![0]).toMatchObject({ globalConfiguration: null, repositories: [], maxConcurrent: 4 });
+    await eventually(() => expect(mocks.coordinator.mock.results[0]!.value.tick).toHaveBeenCalledOnce());
+    f.signal.abort(); await running;
+  });
+
+  it("applies a recovered native tuple on its scheduled retry through the existing coordinator", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const f = await fixture();
+    target = { ...target, value: { ...target.value, maxConcurrent: 4, recoveryLimit: 8, native: { ...target.value.native, model: "recovered-model" } } };
+    mocks.probe.mockRejectedValue(new Error("private-native-probe-output"));
+    const running = start(f);
+    await eventuallyWithoutAdvancingTime(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+    await eventuallyWithoutAdvancingTime(() => expect(configurationTransitions()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: { kind: "native" }, state: "error" }),
+      expect.objectContaining({ key: { kind: "projectNative", projectId: uuid(1) }, state: "error" }),
+    ])));
+    const coordinator = mocks.coordinator.mock.results[0]!.value;
+    expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ globalConfiguration: null, repositories: [], maxConcurrent: 4 }));
+    const failedNative = configurationTransitions().filter(event => (event.key.kind === "native" || event.key.kind === "projectNative") && event.state === "error");
+    const retryAt = Math.min(...failedNative.map(event => Date.parse(event.error.occurredAt) + 5_000));
+    const attempts = mocks.probe.mock.calls.length;
+    mocks.probe.mockResolvedValue("0.164.0");
+    await vi.advanceTimersByTimeAsync(retryAt - Date.now() - 1);
+    expect(mocks.probe).toHaveBeenCalledTimes(attempts);
+    expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ globalConfiguration: null, repositories: [], maxConcurrent: 4 }));
+    await vi.advanceTimersByTimeAsync(1);
+    await eventuallyWithoutAdvancingTime(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      maxConcurrent: 4,
+      globalConfiguration: expect.objectContaining({ agent: "codex", model: "recovered-model", args: [], recoveryLimit: 8 }),
+      repositories: [expect.objectContaining({ configuration: expect.objectContaining({ agent: "codex", model: "recovered-model", args: [], recoveryLimit: 8 }) })],
+    })));
+    expect(mocks.probe).toHaveBeenCalledTimes(attempts + 2);
+    expect(mocks.coordinator).toHaveBeenCalledOnce();
+    expect(mocks.coordinator.mock.results[0]!.value).toBe(coordinator);
+    expect(shutdown).not.toHaveBeenCalled();
+    const reportsBeforeRecovery = report.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventuallyWithoutAdvancingTime(() => {
+      expect(report.mock.calls.length).toBeGreaterThan(reportsBeforeRecovery);
+      expect(report.mock.calls.at(-1)![2].observation!.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ key: { kind: "maxConcurrent" }, appliedValue: 4, state: "applied" }),
+        expect.objectContaining({ key: { kind: "recoveryLimit" }, appliedValue: 8, state: "applied" }),
+        expect.objectContaining({ key: { kind: "native" }, targetRevision: "1", appliedValue: target.value.native, state: "applied", error: null }),
+        expect.objectContaining({ key: { kind: "projectNative", projectId: uuid(1) }, targetRevision: "1", appliedValue: target.value.native, state: "applied", error: null }),
+      ]));
+    });
     f.signal.abort(); await running;
   });
 
