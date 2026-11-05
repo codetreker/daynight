@@ -96,7 +96,7 @@ describe('Worker list presentation', () => {
   it('localizes a ready list without replacing its focused Worker or requesting refresh', () => {
     const view = showList(); const link = screen.getByRole('link', { name: 'View worker-1' }); link.focus(); view.setLocale('zh-CN');
     expect(screen.getByRole('heading', { name: '我的 Worker' })).toBeInTheDocument(); expect(screen.getByRole('link', { name: '查看 worker-1' })).toBe(link); expect(link).toHaveFocus();
-    expect(screen.getByText('1 个进行中的任务')).toBeInTheDocument(); expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByText('1 个进行中的任务')).toBeInTheDocument(); expect(screen.getByText('在线')).toBeInTheDocument(); expect(refresh).not.toHaveBeenCalled();
   });
 
   it.each(['loading', 'error'] as const)('shows initial %s with no invented Worker information', status => {
@@ -203,6 +203,7 @@ describe('Worker detail presentation', () => {
   it('translates software, task status and phase while preserving user content and task focus', () => {
     const view = showDetail(); const task = screen.getByRole('link', { name: 'Build reliable workers' }); task.focus(); view.setLocale('zh-CN');
     expect(screen.getByRole('heading', { name: '软件版本' })).toBeInTheDocument(); expect(screen.getByText('未安装')).toBeInTheDocument(); expect(screen.getByText('验证中')).toBeInTheDocument(); expect(screen.getByText('进行中')).toBeInTheDocument(); expect(task).toHaveFocus(); expect(screen.getByText('Claude Code')).toBeInTheDocument();
+    expect(screen.getByText('在线')).toBeInTheDocument(); expect(refresh).not.toHaveBeenCalled();
   });
 });
 
@@ -212,13 +213,20 @@ it('formats byte magnitudes and relative time only from the supplied server obse
   expect(formatWorkerRelative(new Date(now + 20_000).toISOString(), now, 'en')).toBe('in 20 seconds');
 });
 
-it('gives both badges localized last-confirmed labels and reserves that label without duplicating text', () => {
-  const view = renderWithLocale(<WorkerStatusBadge online={false} stale />, { locale: 'zh-CN' });
-  const offline = screen.getByText('offline · 上次确认'); expect(offline.closest('.worker-status-badge')).toHaveClass('offline');
-  expect(offline.parentElement).toHaveAttribute('data-confirmed-label', 'offline · 上次确认');
-  view.rerender(<WorkerStatusBadge online />);
-  const online = screen.getByText('online'); expect(online.closest('.worker-status-badge')).toHaveClass('online');
-  expect(online.parentElement).toHaveAttribute('data-confirmed-label', 'online · 上次确认'); expect(screen.queryByText('online · 上次确认')).toBeNull();
-  view.setLocale('en');
-  expect(online.parentElement).toHaveAttribute('data-confirmed-label', 'online · last confirmed'); expect(online.closest('.worker-status-badge')).toHaveTextContent(/^online$/);
+it.each([
+  { locale: 'zh-CN', online: true, status: '在线', confirmed: '在线 · 上次确认' },
+  { locale: 'zh-CN', online: false, status: '离线', confirmed: '离线 · 上次确认' },
+  { locale: 'en', online: true, status: 'online', confirmed: 'online · last confirmed' },
+  { locale: 'en', online: false, status: 'offline', confirmed: 'offline · last confirmed' },
+] as const)('renders $locale $status and reserves its last-confirmed label without duplicating text', ({ locale, online, status, confirmed }) => {
+  const view = renderWithLocale(<WorkerStatusBadge online={online} />, { locale });
+  const label = screen.getByText(status), badge = label.closest('.worker-status-badge');
+  expect(badge).toHaveClass(online ? 'online' : 'offline');
+  expect(badge).toHaveTextContent(new RegExp(`^${status}$`));
+  expect(label.parentElement).toHaveAttribute('data-confirmed-label', confirmed);
+  expect(screen.queryByText(confirmed)).toBeNull();
+  view.rerender(<WorkerStatusBadge online={online} stale />);
+  expect(screen.getByText(confirmed)).toBe(label);
+  expect(label.parentElement).toHaveAttribute('data-confirmed-label', confirmed);
+  expect(badge).toHaveTextContent(new RegExp(`^${confirmed}$`));
 });

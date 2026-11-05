@@ -11,7 +11,7 @@ export const workers: WorkersMessages = {
   protocolError: '服务返回的 Worker 信息格式无效。', refreshFailed: 'Worker 信息同步失败。',
   retainedState: '当前数值和徽标显示上次确认的观测。',
   lastSynchronized: '最后同步', lastReported: '最后上报', sampledAt: '资源采样时间', checkedAt: '检测时间',
-  online: 'online', offline: 'offline', confirmedStatus: ({ status }) => `${status} · 上次确认`,
+  online: '在线', offline: '离线', confirmedStatus: ({ status }) => `${status} · 上次确认`,
   count: ({ count }) => `${count} 个 Worker`, onlineCount: ({ count }) => `${count} 个在线`, offlineCount: ({ count }) => `${count} 个离线`,
   viewDetails: '查看详情', open: ({ name }) => `查看 ${name}`, activeTasks: ({ count }) => `${count} 个进行中的任务`,
   snapshotTasks: ({ count }) => `${count} 个任务 · 上次观测快照`, idle: '当前没有进行中的任务',
