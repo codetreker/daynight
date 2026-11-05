@@ -142,8 +142,8 @@ Go UI mux 精确登记基础任务页 GET/HEAD；附件入口继续使用既有�
 ## Markdown 与附件链接
 
 `MarkdownContent` 复用 `react-markdown` 与 `remark-gfm`，拥有 CommonMark/GFM、
-Mermaid 流程图及共享样式，覆盖标题、段落、列表、引用、代码、表格、链接和图片。
-模块级稳定的 `pre` renderer 只将 `mermaid` fenced code block 交给流程图组件，
+Mermaid 图表及共享样式，覆盖标题、段落、列表、引用、代码、表格、链接和图片。
+模块级稳定的 `pre` renderer 只将 `mermaid` fenced code block 交给图表组件，
 其他代码块保留原生 `pre/code` 结构。URL 转换与链接激活继续由调用方提供。原始 HTML
 作为文本，URL 协议沿用已有规则。空描述使用双语目录中的空态消息；用户 Markdown
 字节不随语言切换变化。概览继续拥有纵向阅读滚动，代码和表格只在局部横向滚动，
@@ -189,51 +189,52 @@ session 方法与过程的内容归属由 [Agent skill 设计](daynight-agent-sk
 安装目录通过正常重新安装更新。机制取舍见
 [Markdown 描述决策](../../.agents/notes/implemented/architecture/2026-10-22-task-description-markdown.md)。
 
-## Mermaid 流程图
+## Mermaid 图表
 
-三个 Markdown 阅读入口共用 `MarkdownContent`，图形转换不改变存储格式、描述的
-任务根目录基准或附件的文档目录基准。Mermaid 12.2.0 只在遇到 `mermaid` fenced
-code block 后动态加载。应用接纳 `flowchart` 与 `graph` 流程图，其他图类型以局部
-错误和源码呈现；普通 Markdown 无需等待图形模块。
+`MarkdownContent` 将 `mermaid` fenced block 交给共享图表组件，普通 Markdown
+无需等待 Mermaid 12.2.0 的动态加载。来源仍以任务根或附件文件目录解析，不改变
+存储格式或权限。显式稳定类型表约束[要求](../spec/daynight-task-inspection.md#markdown-图表)中的
+15 类入口和 SDK 识别、解析及绘制 ID；SDK 新增类型不会自动开放。默认流程图使用
+Dagre，显式 `flowchart-elk` 使用 SDK 内置布局，其他类型使用各自布局。
 
-渲染服务将 Mermaid 全局配置初始化、语义预检与单图渲染纳入同一串行队列，防止
-并发图块互相改写主题及安全设置。配置固定使用 `strict`、关闭 HTML labels，
-并显式选择 `dagre`；Mermaid 12 的默认 ELK 不作为隐式布局依赖。来源中的 Mermaid
-配置指令和 frontmatter 被拒绝，图块不能改变应用设置。来源最多 50,000 个 UTF-16
-代码单元，渲染器限制 500 条连线；越限沿用单图错误与源码展示。
+SDK 初始化、类型判定、语义预检和绘制共享一个串行队列，避免全局配置互相覆盖。
+配置固定 `strict`、应用主题和关闭可配置 HTML labels；拒绝来源中的配置指令及
+frontmatter。源码上限为 50,000 个 UTF-16 代码单元。固定版本的 parser DB 提供
+语义预算，每项上限 500：流程图、类图、状态图、ER 和需求图分别计节点及边；
+时序图分别计参与者及消息/注释/控制标记；Gantt 与 Journey 分别计任务和分组，
+Journey 另计参与者且只调用一次有派生副作用的任务 getter；饼图计分区，象限图计
+点；XY 分别计 plot、全部数据点及分类轴 categories；Block 计展开后的块和边；
+Packet 计行和全部字段；Kanban 计列与卡片；Event Modeling 分别计 box、swimlane
+和 relation。异常 DB 结构作为兼容性错误暴露，而非默认为空。
 
-绘制前，`mermaid.mermaidAPI.getDiagramFromText` 使用实际 Mermaid parser 建立
-流程图，随后读取 `FlowDB.getVertices()`。顶点含有图片资源或类型为 `imageSquare`
-时，以明确的图片节点错误和源码拒绝整个图块。Mermaid 图片绘制等待的
-`Image.decode()` 不能通过阅读组件的 abort 中断；在调用 render 前拒绝该路径，
-保证一个图片节点不会占住共享队列并阻塞后续图块。语义检查保留普通形状 metadata、
-标签中的字面量 `@{` 以及 parser 识别的转义 YAML key，不以宽泛文本匹配删减语法。
-该调用使用 Mermaid 导出的 `@internal` API，不进行深层运行时导入；固定版本与
-真实 parser 测试共同约束升级，升级时必须重新确认顶点结构与绘制前拒绝行为。
+Block 的 `space:N` 在 parser 建立层级时展开，因此先通过安全种子获取固定 SDK 的
+lexer，在独立词法会话中检查空间展开总数、跨度和显式列数，避免大数分配；标签
+和注释由同一 lexer 区分。Gantt 的日期编译可能逐日循环，固定发布包通过 pnpm
+补丁在根入口使用的 chunk 中对每次 `getTasks()` 的所有任务和编译 pass 累计
+50,000 次实际日历步进，`clear()` 和读取入口重置预算。超限转为局部复杂度错误并
+保留原始 cause；升级 SDK 时须重新验证补丁路径和真实 parser 合同。
 
-每次绘制使用唯一 ID 和独立临时容器；容器保持可测量，避免预先挂载但隐藏的
-附件页签给出零尺寸。完成或失败后清理临时容器，错误只由所属图块显示。返回的
-SVG 转为图片资源，通过原生 `img` 展示；应用不将生成 SVG 插入阅读 DOM，也不
-调用 Mermaid 的 `bindFunctions`，结果中的脚本和图形点击处理器不参与应用交互。
-Mermaid 仍建立临时绘图 DOM，自定义样式资源及普通 Markdown 外部图片仍可能
-产生网络请求，该机制不提供网络隔离。
+流程图及可表达资源节点的类型在绘制前根据 parser 语义拒绝图片节点。图片绘制
+等待的 `Image.decode()` 不能由阅读组件的 abort 中断；裸 `Promise.race` 也不能
+终止 SDK 工作或释放其共享状态。预检保留普通形状 metadata、标签中的字面量
+`@{` 和已解析的转义 key。图片节点支持需要可中断的隔离上下文及新的构建入口、
+消息协议、CSP 和资源生命周期。
 
-图片节点支持需要可中断的隔离渲染上下文，并重新设计构建入口、消息通信、CSP
-及资源生命周期；当前明确拒绝该能力，保留普通流程图与跨图块可用性保证。裸
-`Promise.race` 超时不会终止 Mermaid 内部工作或释放其共享状态，不能作为中断
-机制。
+每次绘制使用唯一 ID 和可测量的离屏容器，成功或失败均清理，隐藏页签不会造成
+零尺寸。返回 SVG 的根 `viewBox` 必须有有限且为正的宽高，应用以其设置固有尺寸并
+移除根 `max-width` 收缩样式。结果通过 Blob URL 和原生 `img` 展示，不插入阅读
+DOM，也不调用 `bindFunctions`。Event Modeling 的合法 XHTML 标签保留在静态图片中。
+临时绘图 DOM、自定义样式资源和普通 Markdown 外部图片仍可能产生网络请求，该
+机制不提供网络隔离。
 
-图块显示当前语言的加载状态、错误和源码入口。每个异步结果绑定其源内容与挂载
-生命周期；内容变化立即停止呈现旧结果，晚到成功或失败不能改写当前图块。图片
-资源在替换和卸载时释放。模块级 renderer 身份稳定，同文档多图和普通父组件更新
-不会因 renderer 定义变化重建整个阅读树。
-
-图形采用现有浅色 Markdown 配色和可阅读的自然尺寸。图块限制在阅读列宽内，
-通过可聚焦、具备可访问名称的局部区域横向滚动；320px 下图像不撑宽整体页面，
-原有概览和附件正文继续拥有纵向滚动，标题与操作保持可用。节点文字、箭头、
-条件分支和中文标签的最终绘制由真实浏览器验证。机制取舍由
+图块拥有当前语言的状态、源码和图片资源。异步结果绑定来源与挂载生命周期；内容
+变化立即停止呈现旧结果，晚到事件不能改写当前图块，替换和卸载时释放对象 URL。
+模块级 renderer 身份稳定，父组件更新不会重建整个阅读树。可聚焦且具备可访问
+名称的局部滚动区域保留自然尺寸和键盘阅读；320px 下不撑宽整体页面，概览及附件
+正文保留纵向滚动所有权。标签、关系及数据的最终绘制须由真实浏览器验证。原有
 [流程图决策](../../.agents/notes/implemented/feature/2026-10-24-markdown-flowcharts.md)
-拥有。
+及[稳定类型决策](../../.agents/notes/implemented/feature/2026-11-05-stable-mermaid-diagrams.md)
+记录取舍。
 
 ## 验证与交付
 

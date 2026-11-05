@@ -75,6 +75,7 @@ export type InspectionMessages = {
     readonly configuration: string;
     readonly unsupported: string;
     readonly tooLarge: string;
+    readonly complexity: string;
     readonly image: string;
   };
   readonly deletion: {
