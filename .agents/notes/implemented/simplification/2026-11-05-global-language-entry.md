@@ -41,8 +41,7 @@ The shared management and project creation dialogs no longer offer a local langu
 entry. Existing focus isolation, keyboard interaction, page entry and preference
 failure recovery remain owned by their respective surfaces. The current graph overlay still
 contains its existing selector and needs a separate change to satisfy the UI
-principle. Their removal can be performed at each owning surface without
-changing the locale runtime or moving the retained page entries; that surface
-continues to show its present control until changed. The rule does not require
+principle. Removing it does not require changing the locale runtime or moving
+the retained page entries; the graph continues to show its control until changed. The rule does not require
 the page entry to be active while a modal is open or visible when an entire page
 region is hidden in fullscreen.
