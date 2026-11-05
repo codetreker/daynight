@@ -1,8 +1,8 @@
 import { ProjectAccessBoundary, useProjectAccess } from "../projects/ProjectAccess";
 import { useEffect, useRef, useState } from 'react';
-import { createInvitation, listInvitations, listMembers, removeProjectGrant, revokeInvitation, setProjectGrant, type CurrentUser, type ProjectInvitation, type ProjectParticipant } from '../../api/auth';
+import { createInvitation, listInvitations, listMembers, removeProjectGrant, revokeInvitation, setProjectGrant, type CurrentUser, type CreatedProjectInvitation, type ProjectInvitation, type ProjectParticipant } from '../../api/auth';
 import { useI18n } from '../../i18n/LocaleProvider';
-import { ApiError, isAbortError } from '../../api/client';
+import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
 import { ManagementDialog } from './ManagementDialog';
 import { Identity, identityName, ManagementError, SecretDialog } from './feedback';
 import { InvitationList } from './InvitationList';
@@ -28,7 +28,7 @@ type MembersPanelProps = {
 export const MembersPanel = (props: MembersPanelProps) => <ProjectAccessBoundary projectId={props.projectId} initialRead active={props.active ?? true}><MembersContent key={`${props.user.id}:${props.projectId}`} {...props} /></ProjectAccessBoundary>;
 
 const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable, onMembershipChange, active = true, onRoute = true, onGuardChange }: MembersPanelProps) => {
-  const { messages: { auth: { management: { members: m, common } }, common: globalCommon }, format } = useI18n();
+  const { locale, messages: { auth: { management: { members: m, common } }, common: globalCommon }, format } = useI18n();
   const access = useProjectAccess(projectId);
   const [members, setMembers] = useState<readonly ProjectParticipant[] | null>(null);
   const [invitations, setInvitations] = useState<readonly ProjectInvitation[] | null>(null);
@@ -37,8 +37,12 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
   const [unavailable, setUnavailable] = useState(false);
   const [notice, setNotice] = useState<'permissionReloaded' | 'conflictReloaded' | 'permissionChecked' | 'identityChanged' | null>(null);
   const [dialog, setDialog] = useState<MemberDialog | null>(null);
+  const [hasHeldInvitation, setHasHeldInvitation] = useState(false);
+  const heldInvitation = useRef<CreatedProjectInvitation | null>(null);
   const [dialogError, setDialogError] = useState<unknown>(null);
   const [receipt, setReceipt] = useState<{ readonly name: string; readonly role: 'admin' | 'member' | null; readonly lostAccess: boolean } | null>(null);
+  const heldGrant = useRef<{ readonly name: string; readonly role: 'admin' | 'member' | null; readonly lostAccess: boolean } | null>(null);
+  const [hasHeldGrant, setHasHeldGrant] = useState(false);
   const [pending, setPending] = useState(false);
   const [grantIssue, setGrantIssue] = useState<{ readonly error: unknown; readonly observed: boolean } | null>(null);
   const grantIssueRef = useRef(grantIssue); grantIssueRef.current = grantIssue;
@@ -55,8 +59,8 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
   const notifyUnavailable = () => { if (!unavailableNotified.current) { unavailableNotified.current = true; callbacks.current.onUnavailable?.(); } };
   const activeRef = useRef(active); activeRef.current = active;
   const guardCallback = useRef(onGuardChange); guardCallback.current = onGuardChange;
-  useEffect(() => { guardCallback.current?.(pending || grantIssue !== null && !grantIssue.observed || invitationIssue !== null && !invitationIssue.observed); }, [pending, grantIssue, invitationIssue]);
-  useEffect(() => { if (!onRoute && !grantSubmitting.current && !invitationSubmitting.current && !(grantIssueRef.current && !grantIssueRef.current.observed) && !(invitationIssueRef.current && !invitationIssueRef.current.observed)) setDialog((current) => current?.kind === 'secret' ? current : null); }, [onRoute]);
+  useEffect(() => { guardCallback.current?.(pending || hasHeldInvitation || hasHeldGrant || grantIssue !== null && !grantIssue.observed || invitationIssue !== null && !invitationIssue.observed); }, [pending, hasHeldInvitation, hasHeldGrant, grantIssue, invitationIssue]);
+  useEffect(() => { if (!onRoute && !grantSubmitting.current && !invitationSubmitting.current && heldInvitation.current === null && heldGrant.current === null && !(grantIssueRef.current && !grantIssueRef.current.observed) && !(invitationIssueRef.current && !invitationIssueRef.current.observed)) setDialog((current) => current?.kind === 'secret' ? current : null); }, [onRoute]);
   const callbacks = useRef({ onUnavailable, onMembershipChange });
   callbacks.current = { onUnavailable, onMembershipChange };
 
@@ -83,13 +87,21 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
       if (admitted.status === 'ready' && !admitted.refreshing && admitted.access!.effectiveRole === 'admin') {
         try {
           const invitations = await listInvitations(projectId, signal, { userId: access.session.scope.userId, onPrincipalMismatch: access.session.scope.principalMismatch });
-          if (!signal.aborted && request === generation.current && access.session.snapshot().status !== 'unavailable') { setInvitations(invitations); invitationsLoaded = true; }
+          const fresh = await access.session.waitForFreshAccess(signal);
+          if (!signal.aborted && !access.session.scope.isInvalidated && request === generation.current && fresh?.effectiveRole === 'admin') { setInvitations(invitations); invitationsLoaded = true; }
+          else if (!signal.aborted && request === generation.current && fresh !== null) setInvitations(null);
         } catch (failure) {
           if (!(failure instanceof ApiError) || failure.status !== 403) throw failure;
+          await access.session.scope.ready(signal);
+          if (signal.aborted || access.session.scope.isInvalidated || request !== generation.current) return;
           setMembers(null); setInvitations(null);
           await access.session.revalidate();
-          if (signal.aborted || request !== generation.current || access.session.snapshot().status === 'unavailable') return;
-          setMembers(result.items);
+          if (await access.session.waitForFreshAccess(signal) === null || signal.aborted || request !== generation.current) return;
+          const refreshedObservation = access.session.beginObservation();
+          const refreshed = await listMembers(projectId, signal, { userId: access.session.scope.userId, onPrincipalMismatch: access.session.scope.principalMismatch });
+          if (await access.session.waitForFreshAccess(signal) === null || signal.aborted || request !== generation.current) return;
+          if (!access.session.publishSync(refreshedObservation, refreshed.actorAccess)) return load(lifetime, requireInvitations);
+          setMembers(refreshed.items);
           callbacks.current.onMembershipChange?.();
           setNotice('permissionReloaded');
         }
@@ -97,7 +109,8 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
       const current = access.session.snapshot();
       return current.status === 'ready' && !current.refreshing && (current.access!.effectiveRole === 'admin' ? invitationsLoaded : !requireInvitations);
     } catch (failure) {
-      if (!isAbortError(failure) && !signal.aborted && request === generation.current) {
+      if (!isAbortError(failure) && !signal.aborted) { try { await access.session.scope.ready(signal); } catch { return; } }
+      if (!isAbortError(failure) && !signal.aborted && !access.session.scope.isInvalidated && request === generation.current) {
         setError(failure);
         if (failure instanceof ApiError && (failure.status === 403 || failure.status === 404)) {
           setMembers(null); setInvitations(null);
@@ -134,18 +147,69 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
     void load(controller.current.signal);
   }, [active, access.ready, access.access?.effectiveRole, unavailable, members, invitations, loading, error, access.session]);
   const admin = !access.session.scope.isInvalidated && access.access?.effectiveRole === 'admin';
+  useEffect(() => {
+    if (!active || !hasHeldInvitation) return;
+    const lifetime = new AbortController();
+    const signal = AbortSignal.any([lifetime.signal, access.session.scope.signal]);
+    void (async () => {
+      try {
+        await access.session.scope.ready(signal);
+        if (signal.aborted || !activeRef.current || access.session.scope.isInvalidated || heldInvitation.current === null) return;
+        const { link } = heldInvitation.current;
+        heldInvitation.current = null; setHasHeldInvitation(false);
+        setDialog({ kind: 'secret', secret: link }); setPending(false);
+        const componentSignal = controller.current?.signal;
+        if (componentSignal !== undefined) void (async () => {
+          try {
+            await access.session.revalidate();
+            const current = await access.session.waitForFreshAccess(componentSignal);
+            if (!componentSignal.aborted && activeRef.current && current?.effectiveRole === 'admin') void load(componentSignal);
+          } catch { /* The owning scope or component ended before the refresh. */ }
+        })();
+      } catch { /* The owning scope or route ended before admission. */ }
+    })();
+    return () => lifetime.abort();
+  }, [active, hasHeldInvitation, access.session]);
+  const heldRouteChecked = useRef(false);
+  const releaseHeldGrant = (current: ReturnType<typeof access.session.snapshot>['access']) => {
+    if (!activeRef.current || authRequestsPaused() || access.session.scope.isInvalidated) return;
+    if (hasHeldGrant && current !== null && heldGrant.current !== null) {
+      const confirmed = heldGrant.current; heldGrant.current = null; setHasHeldGrant(false);
+      setDialog(null); setReceipt(confirmed); setPending(false); callbacks.current.onMembershipChange?.();
+      if (controller.current !== null) void load(controller.current.signal);
+    } else setPending(false);
+  };
+  useEffect(() => {
+    heldRouteChecked.current = false;
+    if (!active || !hasHeldGrant) return;
+    const lifetime = new AbortController();
+    const signal = AbortSignal.any([lifetime.signal, access.session.scope.signal]);
+    void (async () => {
+      try {
+        await access.session.revalidate();
+        const current = await access.session.waitForFreshAccess(signal);
+        if (signal.aborted || !activeRef.current) return;
+        heldRouteChecked.current = true; releaseHeldGrant(current);
+      } catch { /* The owning scope or route ended before admission. */ }
+    })();
+    return () => { lifetime.abort(); heldRouteChecked.current = false; };
+  }, [active, hasHeldGrant, access.session]);
+  useEffect(() => {
+    if (!active || !heldRouteChecked.current || !access.ready) return;
+    releaseHeldGrant(access.access);
+  }, [active, access.ready, hasHeldGrant]);
   const grantBlocked = grantIssue !== null && !grantIssue.observed;
   const participantIdentity = (member: ProjectParticipant) => ({ ...member.profile, userId: member.userId });
   const open = (next: MemberDialog) => { if ((next.kind === 'role' || next.kind === 'remove') && grantIssueRef.current !== null && !grantIssueRef.current.observed) return; setDialogError(null); setDialog(next); void access.session.revalidate(); };
 
   const submit = async (action: Exclude<MemberDialog, { readonly kind: 'secret' }>) => {
     const admitted = access.session.snapshot();
-    if (!active || access.session.scope.isInvalidated || admitted.status !== 'ready' || admitted.refreshing || admitted.access!.effectiveRole !== 'admin') return;
+    if (!active || authRequestsPaused() || access.session.scope.isInvalidated || admitted.status !== 'ready' || admitted.refreshing || admitted.access!.effectiveRole !== 'admin') return;
     const grantAction = action.kind === 'role' || action.kind === 'remove';
     const invitationAction = !grantAction;
-    if (invitationAction && (invitationSubmitting.current || invitationIssueRef.current !== null && (!invitationIssueRef.current.observed || action.kind === 'revoke' && uncertainRevocations.current.has(action.invitation.id)))) return;
+    if (invitationAction && (heldInvitation.current !== null || invitationSubmitting.current || invitationIssueRef.current !== null && (!invitationIssueRef.current.observed || action.kind === 'revoke' && uncertainRevocations.current.has(action.invitation.id)))) return;
     if (invitationAction) invitationSubmitting.current = true;
-    if (grantAction && (grantSubmitting.current || action.kind === 'remove' && action.member.directGrant === null || grantIssueRef.current !== null && !grantIssueRef.current.observed)) return;
+    if (grantAction && (heldGrant.current !== null || grantSubmitting.current || action.kind === 'remove' && action.member.directGrant === null || grantIssueRef.current !== null && !grantIssueRef.current.observed)) return;
     if (grantAction) { grantSubmitting.current = true; grantIssueRef.current = null; setGrantIssue(null); }
     guardCallback.current?.(true); setPending(true); setDialogError(null); setNotice(null); setReceipt(null);
     const signal = controller.current!.signal;
@@ -155,40 +219,46 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
         const result = action.kind === 'role'
           ? await setProjectGrant(projectId, action.member.userId, { version: action.member.directGrant?.version ?? null, role: action.role, expectedUserId: user.id }, signal, access.session.scope.principalMismatch)
           : await removeProjectGrant(projectId, action.member.userId, { version: action.member.directGrant!.version, expectedUserId: user.id }, signal, access.session.scope.principalMismatch);
+        await access.session.scope.ready(signal);
         if (signal.aborted || access.session.scope.isInvalidated) return;
         ++generation.current; readController.current?.abort();
-        access.session.publishMutation(result.actorAccess);
-        setDialog(null);
-        setReceipt({ name: identityName(participantIdentity(action.member)), role: action.kind === 'role' ? action.role : null, lostAccess: result.actorAccess === null });
+        if (result.actorAccess === null) access.session.scope.suspendProject(projectId);
+        await access.session.revalidateAfterMutation();
+        const current = await access.session.waitForFreshAccess(signal);
+        if (signal.aborted || access.session.scope.isInvalidated) return;
+        const selfLoss = result.actorAccess === null && action.member.userId === user.id;
+        const confirmed = { name: selfLoss ? user.name ?? user.email ?? user.id : identityName(participantIdentity(action.member)), role: action.kind === 'role' ? action.role : null, lostAccess: result.actorAccess === null };
+        if (current === null && !selfLoss) { heldGrant.current = confirmed; setHasHeldGrant(true); return; }
+        setDialog(null); setReceipt(confirmed);
         callbacks.current.onMembershipChange?.();
         if (result.actorAccess === null) {
           setMembers(null); setInvitations(null); setUnavailable(true);
-          access.session.scope.suspendProject(projectId);
-          const current = await access.session.revalidateAfterMutation();
           if (current !== null && !signal.aborted && !access.session.scope.isInvalidated) {
             setUnavailable(false);
             await load(signal);
           }
           return;
         }
-        if (result.actorAccess.effectiveRole !== 'admin') setInvitations(null);
-        await load(signal); return;
+        if (current?.effectiveRole !== 'admin') setInvitations(null);
+        if (current !== null && activeRef.current) await load(signal); return;
       } else if (action.kind === 'invite') {
         const result = await createInvitation(projectId, user.id, signal, access.session.scope.principalMismatch, () => { dispatched = true; });
-        if (signal.aborted) return;
-        const { link, ...metadata } = result;
-        setInvitations((items) => [metadata, ...(items ?? [])]);
-        setDialog({ kind: 'secret', secret: link });
-        if (activeRef.current) await load(signal); return;
+        await access.session.scope.ready(signal);
+        if (signal.aborted || access.session.scope.isInvalidated) return;
+        heldInvitation.current = result; setHasHeldInvitation(true);
+        return;
       } else await revokeInvitation(projectId, action.invitation.id, user.id, signal, access.session.scope.principalMismatch, () => { dispatched = true; });
-      if (signal.aborted) return;
+      await access.session.scope.ready(signal);
+      if (signal.aborted || access.session.scope.isInvalidated) return;
       setDialog(null); if (activeRef.current) await load(signal);
     } catch (failure) {
+      if (failure instanceof ApiError && (failure.code === 'identity_mismatch' || failure.code === 'principal_mismatch')) {
+        setMembers(null); setInvitations(null); setDialog(null); setNotice('identityChanged');
+        return;
+      }
+      if (!signal.aborted && !isAbortError(failure)) { try { await access.session.scope.ready(signal); } catch { return; } }
+      if (access.session.scope.isInvalidated) return;
       if ((!isAbortError(failure) || invitationAction && dispatched) && !signal.aborted) {
-        if (failure instanceof ApiError && (failure.code === 'identity_mismatch' || failure.code === 'principal_mismatch')) {
-          setMembers(null); setInvitations(null); setDialog(null); setNotice('identityChanged');
-          return;
-        }
         if (invitationAction && (!(failure instanceof ApiError) || failure.kind !== 'server' || failure.status === null || failure.status >= 500 || failure.code === 'write_outcome_unknown')) {
           if (action.kind === 'revoke') uncertainRevocations.current.add(action.invitation.id);
           const issue = { error: failure, observed: false, action: action.kind as 'invite' | 'revoke', ...(action.kind === 'revoke' ? { invitationId: action.invitation.id } : {}) };
@@ -207,7 +277,7 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
           await load(signal);
         } else setDialogError(failure);
       }
-    } finally { if (grantAction) grantSubmitting.current = false; if (invitationAction) invitationSubmitting.current = false; if (!signal.aborted) setPending(false); }
+    } finally { if (grantAction) grantSubmitting.current = false; if (invitationAction) invitationSubmitting.current = false; if (!signal.aborted && heldInvitation.current === null && heldGrant.current === null) setPending(false); }
   };
 
   const dialogTitle = dialog?.kind === 'role' ? m.roleTitle({ name: identityName(participantIdentity(dialog.member)) })
@@ -219,6 +289,7 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
     <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{m.title}</h1><p className="subtitle">{m.subtitle({ projectName })}</p></div>{admin && <button className="button primary" type="button" disabled={loading || !access.ready || invitationIssue !== null && !invitationIssue.observed} onClick={() => open({ kind: 'invite' })}>{m.invite}</button>}</div>
     {grantIssue !== null && <div className="notice warning" role="alert"><p>{grantIssue.observed ? m.grantObserved : m.grantUnknown}</p>{grantIssue.error instanceof ApiError && grantIssue.error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{grantIssue.error.requestId}</code></p>}<button className="button" type="button" disabled={loading || pending} onClick={() => { void load(controller.current!.signal).then((observed) => { if (observed && grantIssueRef.current !== null) { const issue = { ...grantIssueRef.current, observed: true }; grantIssueRef.current = issue; setGrantIssue(issue); } }); }}>{m.readCurrentMembers}</button></div>}
     {invitationIssue !== null && <div className="notice warning" role="alert"><p>{invitationIssue.observed ? m.invitationObserved : m.invitationUnknown}</p>{!invitationIssue.observed && (access.status === 'unavailable' || access.status === 'ready' && !admin) && <p>{m.invitationUnreadable}</p>}{invitationIssue.error instanceof ApiError && invitationIssue.error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{invitationIssue.error.requestId}</code></p>}<button className="button" type="button" disabled={loading || pending} onClick={() => { void load(controller.current!.signal, true).then((observed) => { if (observed && invitationIssueRef.current !== null) { const issue = { ...invitationIssueRef.current, observed: true }; invitationIssueRef.current = issue; setInvitationIssue(issue); } }); }}>{m.readCurrentInvitations}</button></div>}
+    {hasHeldGrant && !pending && <div className="notice" role="status">{locale === 'zh-CN' ? '变更已确认；确认当前访问权限后可查看详情。' : 'The change was confirmed; its details are available after access is verified.'}</div>}
     {receipt !== null && <div className="notice" role="status"><p>{receipt.role === null ? m.grantRemoved({ name: receipt.name }) : m.grantSaved({ name: receipt.name, role: receipt.role === 'admin' ? common.roleAdmin : common.roleMember })}</p>{receipt.lostAccess && <><p>{m.accessLost}</p>{access.status !== 'ready' && <button className="button" type="button" onClick={onRemoved}>{m.returnToProjects}</button>}</>}</div>}
     {notice !== null && <div className="notice" role="status">{m.notice[notice]}</div>}
     {(error !== null || access.error !== null && !(receipt?.lostAccess === true && access.error instanceof ApiError && access.error.kind === 'server' && access.error.status === 404 && access.error.code === 'not_found')) && <ManagementError error={error ?? access.error} retry={() => { void load(controller.current!.signal); }} />}
@@ -245,7 +316,7 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
       <div className="role-legend"><div><h3>{common.roleAdmin}</h3><p>{m.adminDescription}</p></div><div><h3>{common.roleMember}</h3><p>{m.memberDescription}</p></div></div>
     </>}
     {dialog?.kind === 'secret' && <SecretDialog kind="invitation" secret={dialog.secret} suspended={!active} onClose={() => setDialog(null)} />}
-    {dialog !== null && dialog.kind !== 'secret' && !unavailable && access.status !== 'unavailable' && <ManagementDialog title={dialogTitle} busy={pending} suspended={!active} onClose={() => setDialog(null)} footer={<><button className="button" type="button" disabled={pending} onClick={() => setDialog(null)}>{common.cancel}</button><button className={`button${dialog.kind === 'remove' || dialog.kind === 'revoke' ? ' danger' : ' primary'}`} type="button" disabled={pending || !access.ready} onClick={() => { void submit(dialog); }}>{pending ? common.submitPending : confirm}</button></>}>
+    {dialog !== null && dialog.kind !== 'secret' && !unavailable && access.status !== 'unavailable' && <ManagementDialog title={dialogTitle} busy={pending} suspended={!active || access.status === 'ready' && !admin} onClose={() => setDialog(null)} footer={<><button className="button" type="button" disabled={pending} onClick={() => setDialog(null)}>{common.cancel}</button><button className={`button${dialog.kind === 'remove' || dialog.kind === 'revoke' ? ' danger' : ' primary'}`} type="button" disabled={pending || !access.ready} onClick={() => { void submit(dialog); }}>{pending ? common.submitPending : confirm}</button></>}>
       {(dialog.kind === 'role' || dialog.kind === 'remove') && <p>{m.grantChange({ before: roleText(dialog.member.directGrant?.role ?? null), after: roleText(dialog.kind === 'role' ? dialog.role : null), effective: dialog.member.inheritedFrom === null && dialog.kind === 'remove' ? m.noAccess : roleText(dialog.member.inheritedFrom?.role === 'admin' || dialog.kind === 'role' && dialog.role === 'admin' ? 'admin' : 'member') })}</p>}
       {dialog.kind === 'remove' && <p>{dialog.member.userId === user.id ? m.selfRemovalBody : m.otherRemovalBody}</p>}
       {dialog.kind === 'invite' && <><p>{m.inviteBody}</p><div className="notice">{m.inviteTerms}</div></>}

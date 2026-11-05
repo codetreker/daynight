@@ -13,17 +13,17 @@ const render = createLocaleRender("en");
 type HarnessProps = {
   readonly collapsed?: boolean;
   readonly routeKey?: string;
-  readonly identityChecking?: boolean;
+  readonly blocked?: boolean;
   readonly initiallyInert?: boolean;
   readonly anotherLock?: boolean;
   readonly onToggle?: () => void;
   readonly onNavigate?: () => void;
 };
-const Harness = ({ collapsed = false, routeKey = "/", identityChecking = false, initiallyInert = false, anotherLock = false, onToggle = () => {}, onNavigate = () => {} }: HarnessProps) => {
+const Harness = ({ collapsed = false, routeKey = "/", blocked = false, initiallyInert = false, anotherLock = false, onToggle = () => {}, onNavigate = () => {} }: HarnessProps) => {
   const workspace = useRef<HTMLDivElement>(null);
   useBodyScrollLock(anotherLock);
   return <ProjectsProvider>
-    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} teamMembersActive={routeKey === "/members"} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId="00000000-0000-4000-8000-000000000701" workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} botsActive={routeKey === "/bots" || routeKey.startsWith("/bots/")} activeProjectId={null} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={onNavigate} />
+    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} teamMembersActive={routeKey === "/members"} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId="00000000-0000-4000-8000-000000000701" workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} botsActive={routeKey === "/bots" || routeKey.startsWith("/bots/")} activeProjectId={null} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
     <div ref={workspace} data-testid="workspace" inert={initiallyInert}><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
   </ProjectsProvider>;
 };
@@ -180,17 +180,17 @@ describe("workspace sidebar", () => {
     expect(document.body.style.overflow).not.toBe("hidden");
   });
 
-  it.each(["route", "identity"] as const)("ends mobile navigation on %s changes without retaining a hidden modal", (change) => {
+  it.each(["route", "blocked"] as const)("ends mobile navigation on %s changes without retaining a hidden modal", (change) => {
     mockSidebarMediaQuery(true);
     const view = render(<Harness />);
     const draft = screen.getByRole("textbox");
     openDrawer();
-    view.rerender(<Harness routeKey={change === "route" ? "/account" : "/"} identityChecking={change === "identity"} />);
+    view.rerender(<Harness routeKey={change === "route" ? "/account" : "/"} blocked={change === "blocked"} />);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByTestId("workspace")).not.toHaveAttribute("inert");
     expect(document.body.style.overflow).not.toBe("hidden");
     expect(screen.getByRole("textbox")).toBe(draft);
-    if (change === "identity") {
+    if (change === "blocked") {
       fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
       expect(screen.queryByRole("dialog")).toBeNull();
     }

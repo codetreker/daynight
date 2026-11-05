@@ -432,9 +432,12 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 顶层曾离开后重新可见且聚焦时，在后台重新核验 /me。正常等待状态与失败后的
 阻塞恢复状态分别管理：正常等待保留工作空间正文、详情和管理弹窗的可见性与交互，
 不添加隐藏样式、inert 或 aria-hidden，不打开身份模态层，因此输入和 frame
-生命周期不会被核验打断。侧栏的窄屏临时覆盖导航在核验开始时关闭并释放自己的焦点约束、
-背景隔离和滚动锁，避免与后续身份恢复对话框竞争；桌面折叠偏好和正文挂载身份保持，
-导航机制由[工作空间导航设计](daynight-web.md#工作空间导航)拥有。同一用户成功沿用 session generation 与组件实例；确认
+生命周期不会被核验打断。工作空间按真实路由、资源和阻塞恢复管理展示生命周期，普通 checking
+不结束设置或成员页面及 Team 创建弹窗的 active，也不使管理弹窗 suspended。窄屏导航在普通
+检查期间保留焦点约束、背景隔离和滚动锁；实际阻塞恢复时关闭并释放自身隔离，避免与恢复
+对话框竞争。展示生命周期与 `admissionBlocked`、`readEnabled`、`TaskCacheScope.ready/signal`
+及 `client.waitForAuthRequests` 的请求和发布准入分离，继续使用原有 generation、principal 和
+失败恢复规则。导航机制由[工作空间导航设计](daynight-web.md#工作空间导航)拥有。同一用户成功沿用 session generation 与组件实例；确认
 身份变化时使共享请求失效并重建身份域，401 则清除会话。未另行确认资源撤权时，核验结果返回前继续展示
 已加载的内容。鉴权层在 layout effect 中注册顶层焦点与可见性生命周期；首次
 鉴权挂载若已隐藏或外部失焦，在子组件 passive 请求 effect 前暂停。后续顶层
@@ -450,6 +453,17 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 [前台身份核验决策](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 记录这一呈现策略及其取舍。同源 iframe 内外切换仍保持顶层 focus，不重复发起
 这类核验。
+
+Team 设置、成员及邀请将已加载数据与写入新鲜度分开：普通身份检查撤销当前写入新鲜度，
+同账号恢复后后台重读，保留已显示资源、打开的确认和草稿；请求与发布都等待 scope 准入。
+成员重读比对待确认对象的身份、角色与版本，变化使确认失效。邀请写入还要求成员权限和邀请
+读取都已就绪。真实读取失败沿用错误和失权处理，首次读取仍显示加载状态。
+Project 设置、成员和转移的在途读取与写入保留原 scope 和资源归属，处理正向结果或普通错误前
+等待 scope.ready 并核对失效状态；重新检查当前 ProjectAccess 后才发布受权限约束的结果。
+已确认设置写入若访问尚未就绪，等待准入后重新读取，不重发写入。转移和成员回执的访问变化
+按当前准入重新核验。已确认的一次性邀请回执绑定原主体，经身份准入后展示并保留至关闭；
+权限降级或失权不撤销该回执，目录和新的管理操作仍受当前权限约束。可信失权仍沿原路径撤回资源。
+
 任务缓存的 TaskCacheProvider 在认证分支内、TaskDetailSessionProvider 外提供用户/会话 scope，覆盖项目、独立任务及附件路径页。身份核验后，项目可先发布通过完整性与生命周期校验的本地摘要并后台同步；详情正文与写操作继续等待本挂载成功的实际用户匹配同步，摘要展示不增加 scope 的在线授权集合。持久读取与正向内容发布和普通 API 一样等待 foreground gate。可信资源 not_found 的负向撤权及匹配 userFence/generation 提示立即处理，不等待暂停结束；其 scope 所有的 CAS 持久清理仍等待 gate。同步、详情 GET 与全部任务写响应先核对 `Daynight-User-ID`；缺失或畸形头作为协议错误保留原缓存，可信不同用户立即同步失效旧 scope 并卸载旧认证内容，再发起 `/me`。项目同步，以及启动时已知任务的详情 GET 或任务写入返回同用户可信 `404 not_found`，先检查捕获 ticket 是否仍属于当前 userFence/cacheGeneration，再同步清正文和项目准入，随后只清理匹配的持久 generation。未知任务地址 404 局部处理，可信 `410 task_deleted` 只清对应任务正文并请求项目同步，不撤回项目访问，旧 E1 响应不得清 E2；清理失败仍拒绝复用，新的在线项目同步成功后才重新显示。退出、换号或 401 同步释放内存与旧请求，再轮换持久 userFence 并清理该用户任务及人员记录；普通同用户核验保留 scope，页面卸载仅关闭连接而保留可重建缓存。详情/写接口的 `TaskResponseAdmission` 明确当前 userId 和 mismatch 回调，正文与资源错误处理都在 principal 核对之后。已确认写响应与正文安装、缓存保存分开，后两者失败不重发远端操作。[缓存架构](daynight-task-sync.md)拥有完整事务、新鲜度和失效规则。
 
 现有图、项目浏览偏好和居中 TaskDetailDialog 继续复用，不增加任务字段编辑。

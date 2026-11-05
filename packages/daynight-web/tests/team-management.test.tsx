@@ -78,6 +78,54 @@ describe("Team management", () => {
     create(); fireEvent.change(screen.getByLabelText(/Team name/), { target: { value: "Name" } }); fireEvent.click(screen.getByRole("button", { name: "Create Team" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("unknown"); expect(mismatch).toHaveBeenCalled(); expect(created).not.toHaveBeenCalled();
   });
+  it("keeps newer membership when a rename receipt arrives after demotion", async () => {
+    const write = Promise.withResolvers<Team>();
+    const initial = team("Old", 1n), demoted = { ...team("Old", 1n, "member"), membership: { ...team("Old", 1n, "member").membership, version: 2n } };
+    vi.mocked(getTeam).mockResolvedValueOnce(initial).mockResolvedValue(demoted);
+    vi.mocked(renameTeam).mockImplementation(async (_id, _old, _name, _signal, _mismatch, dispatch) => { dispatch(); return write.promise; });
+    const panel = (blocked: boolean) => <TeamSettingsPanel teamId={teamId} admission={scope} admissionBlocked={blocked} onIdentityMismatch={mismatch} onUpdated={updated} onDeleted={deleted} />;
+    const view = render(panel(false)); fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Team name" });
+    fireEvent.change(within(dialog).getByLabelText("Team name"), { target: { value: "New" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(renameTeam).toHaveBeenCalledOnce());
+    view.rerender(panel(true)); view.rerender(panel(false));
+    await waitFor(() => expect(getTeam).toHaveBeenCalledTimes(2));
+    await act(async () => write.resolve(team("New", 2n)));
+    await waitFor(() => expect(updated).toHaveBeenCalledOnce());
+    expect(updated).toHaveBeenCalledWith(expect.objectContaining({ name: "New", version: 2n, membership: expect.objectContaining({ role: "member", version: 2n }) }));
+    expect(screen.getByText("Only an admin of an ordinary Team can change its settings.")).toBeInTheDocument();
+    expect(renameTeam).toHaveBeenCalledOnce();
+  });
+  it.each(["unguarded", "guarded"] as const)("isolates settings on a trusted 403 and recovers the %s editor", async (kind) => {
+    const write = Promise.withResolvers<Team>();
+    vi.mocked(renameTeam).mockImplementation(async (_id, _old, _name, _signal, _mismatch, dispatch) => { dispatch(); return write.promise; });
+    vi.mocked(getTeam).mockResolvedValueOnce(team()).mockRejectedValueOnce(new ApiError("server", 403, "forbidden")).mockResolvedValue(team());
+    const panel = (blocked: boolean) => <TeamSettingsPanel teamId={teamId} admission={scope} admissionBlocked={blocked} onIdentityMismatch={mismatch} onUpdated={updated} onDeleted={deleted} />;
+    const view = render(panel(false)); fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Team name" });
+    const name = within(dialog).getByLabelText("Team name"); fireEvent.change(name, { target: { value: "Draft" } });
+    if (kind === "guarded") { fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" })); await waitFor(() => expect(renameTeam).toHaveBeenCalledOnce()); }
+    view.rerender(panel(true)); view.rerender(panel(false));
+    await waitFor(() => expect(dialog.parentElement).toHaveAttribute("hidden"));
+    expect(screen.getAllByText("This Team is unavailable or you do not have access.").some((node) => node.offsetParent !== null || !node.closest('[hidden]'))).toBe(true);
+    expect(document.querySelector(".team-settings-page")).toBeNull();
+    if (kind === "guarded") { await act(async () => write.reject(new ApiError("network"))); await waitFor(() => expect(screen.getAllByText(/result is unknown/).some((node) => !node.closest('[hidden]'))).toBe(true)); }
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(dialog.parentElement).not.toHaveAttribute("hidden"));
+    expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog);
+    expect(within(dialog).getByLabelText("Team name")).toHaveValue("Draft");
+    expect(renameTeam).toHaveBeenCalledTimes(kind === "guarded" ? 1 : 0);
+  });
+  it("retains an open editor and reports an ordinary recheck network failure", async () => {
+    vi.mocked(getTeam).mockResolvedValueOnce(team()).mockRejectedValueOnce(new ApiError("network"));
+    const panel = (blocked: boolean) => <TeamSettingsPanel teamId={teamId} admission={scope} admissionBlocked={blocked} onIdentityMismatch={mismatch} onUpdated={updated} onDeleted={deleted} />;
+    const view = render(panel(false)); fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Team name" });
+    view.rerender(panel(true)); view.rerender(panel(false));
+    await waitFor(() => expect(screen.getAllByText("Unable to read the current state.").length).toBeGreaterThan(0));
+    expect(dialog).toBeVisible(); expect(document.querySelector(".team-settings-page")).toBeVisible();
+  });
   it("keeps delete outcome unknown after an unavailable reread", async () => {
     vi.mocked(deleteTeam).mockImplementation(async (_id, _team, _signal, _mismatch, dispatch) => { dispatch(); throw new ApiError("network"); });
     settings(); await screen.findByRole("button", { name: "Edit" }); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));

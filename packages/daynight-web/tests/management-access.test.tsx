@@ -2,6 +2,7 @@ import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { MembersPanel } from '../src/features/management/MembersPanel';
+import { pauseAuthRequests } from '../src/api/client';
 import { ProjectSettingsPanel } from '../src/features/management/ProjectSettingsPanel';
 import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from '../src/features/projects/ProjectAccess';
 import { useTaskGraph } from '../src/features/projects/useTaskGraph';
@@ -89,12 +90,12 @@ it.each([
       await screen.findByRole('alert');
       await focus(mounted.access());
     }
-    expect(resourceReads).toBe(1);
+    expect(resourceReads).toBe(kind === 'settings' ? 2 : 1);
     if (kind === 'settings') expect(await screen.findByLabelText('Alert threshold')).toHaveValue(60);
     else await screen.findByText(oldEmail);
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     if (kind === 'members' && role === 'admin') await waitFor(() => expect(invitationReads).toBeGreaterThan(0));
-    else expect(resourceReads).toBe(1);
+    else expect(resourceReads).toBe(kind === 'settings' ? 2 : 1);
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
 });
 
@@ -524,5 +525,32 @@ it('keeps the successful receipt and exposes cleanup failure and retry after rem
     } finally { db.close(); }
     expect(screen.getByText('Direct grant for Alice removed.')).toBeVisible();
     expect(writes).toBe(1);
+  } finally { mounted.view.unmount(); mounted.scope.dispose(); }
+});
+
+
+it('does not publish an initial settings resource or allow a save before replacement access is confirmed', async () => {
+  const old = Promise.withResolvers<Response>(), fresh = Promise.withResolvers<Response>();
+  let accessReads = 0, writes = 0;
+  const mounted = mount('settings', (url, init) => {
+    if (url === `${root}/access`) return ++accessReads === 1 ? old.promise : fresh.promise;
+    if (url === root) return json(project);
+    if (url === `${root}/settings` && init?.method === 'PATCH') { writes++; return json(project); }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  try {
+    await waitFor(() => expect(accessReads).toBe(1));
+    const resume = pauseAuthRequests();
+    fireEvent(window, new Event('focus'));
+    await act(async () => old.resolve(json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'))));
+    expect(screen.queryByLabelText('Alert threshold')).toBeNull();
+    resume();
+    await waitFor(() => expect(accessReads).toBe(2));
+    expect(screen.queryByLabelText('Alert threshold')).toBeNull();
+    expect(writes).toBe(0);
+    await act(async () => fresh.resolve(json(directAccessFixture(projectId, TEST_VIEWER_ID, 'member'))));
+    const field = await screen.findByLabelText('Alert threshold');
+    expect(field).toBeDisabled(); expect(screen.queryByRole('button', { name: 'Save settings' })).toBeNull();
+    expect(writes).toBe(0);
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
 });

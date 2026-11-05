@@ -50,10 +50,11 @@ replaces that presentation policy: ordinary checks keep loaded content visible
 and interactive until a changed identity, session loss or verification failure is
 confirmed. New API reads and writes wait for identity confirmation, resuming for
 the same account and cancelling on an account change. Failed checks retain the
-blocking recovery overlay and request wait through recovery. A temporary
-narrow-screen navigation drawer closes when checking starts, releasing only its
-own focus, inertness and scroll lock; desktop appearance and mounted content keep
-their existing lifetime.
+blocking recovery overlay and request wait through recovery. The
+[workspace stability decision](../bug-fix/2026-11-05-stable-workspace-during-identity-checks.md)
+keeps the narrow-screen navigation drawer open during ordinary checking and
+releases its focus, inertness and scroll lock on blocking recovery; desktop
+appearance and mounted content keep their existing lifetime.
 TaskDetailSessionProvider lives in that identity domain
 and retains each project/task status/permission operation across dialog close/reopen;
 identity changes discard its pending and unknown-outcome state. The existing
