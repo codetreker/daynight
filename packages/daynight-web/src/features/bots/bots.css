@@ -1,5 +1,5 @@
-.bots-page { container: bots-workspace / inline-size; display: flex; flex: 1; min-height: 0; min-width: 0; gap: 24px; }
-.bot-list-panel { display: flex; flex: 0 0 280px; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--line); padding-right: 20px; }
+.bots-page { container: bots-workspace / inline-size; display: flex; flex: 1; min-height: 0; min-width: 0; }
+.bot-list-panel { display: flex; flex: 0 0 256px; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--line); padding: 18px 14px; overflow: auto; overscroll-behavior: contain; }
 .bot-list-panel > :not(.bot-list) { flex-shrink: 0; }
 .bot-list-heading, .bot-conversation-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
 .bot-list-heading { justify-content: space-between; }
@@ -14,7 +14,7 @@
 .bot-status { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--muted); }
 .bot-status-failed { color: #a63838; }
 .bot-conversation { container: bot-conversation / inline-size; display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
-.bot-conversation-heading { flex-shrink: 0; min-height: 46px; border-bottom: 1px solid var(--line); padding-bottom: 14px; }
+.bot-conversation-heading { flex-shrink: 0; min-height: 46px; border-bottom: 1px solid var(--line); padding: 14px 18px; margin-bottom: 0; }
 .bot-conversation-heading > .button { flex-shrink: 0; }
 .bot-conversation-title { flex: 1; min-width: 0; }
 .bot-conversation-title .bot-status > span { min-width: 0; overflow-wrap: anywhere; }
@@ -25,9 +25,9 @@
 .bot-conversation-session { display: flex; flex: 1; min-height: 0; min-width: 0; }
 .bot-conversation-session[hidden] { display: none; }
 .bot-empty { color: var(--muted); padding: 20px 4px; }
-/* Keep 420px for the conversation after the 280px list and 24px gap. */
-@container bots-workspace (width < 724px) {
-  .bot-list-panel { flex: 1; border-right: 0; padding-right: 0; }
+/* Keep 420px for the conversation after the 256px list, including its border. */
+@container bots-workspace (width < 676px) {
+  .bot-list-panel { flex: 1; border-right: 0; }
   .bot-selected .bot-list-panel { display: none; }
   .bots-page:not(.bot-selected) .bot-conversation { display: none; }
   .bot-conversation-heading { align-items: flex-start; }
@@ -59,3 +59,9 @@
 .bot-deletion-status dd { margin: 0; }
 .bot-deletion-status .button { margin: 4px 6px 0 0; }
 .bot-selected-deletion { display: block; }
+
+@media (max-height: 500px) {
+  .bot-conversation-heading { flex-shrink: 1; min-height: 44px; max-height: 25%; padding: 6px 12px; overflow: auto; overscroll-behavior: contain; }
+  .bot-conversation-body { min-height: min(calc(100% - 44px), var(--session-composer-space, 0px)); }
+  .bot-conversation[data-session-fullscreen="true"] .bot-conversation-heading { margin-bottom: 0; }
+}
