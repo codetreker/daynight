@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { decodeWorkerCloudJsonSource, parseWorkerCloudDesired, parseWorkerCloudItem, parseWorkerCloudReceipt, parseWorkerCloudRevision, parseWorkerCloudValue } from "../../api/worker-configuration.js";
+import { canonicalId } from "../../api/parse.js";
 import type { WorkerCloudDesired, WorkerCloudFailure, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReceipt, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
 import { replaceFileAtomically } from "../../platform/files.js";
 
@@ -269,7 +270,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
     for (const [key, job] of jobs) {
       const item = cache.items.find(item => keyOf(item.value.key) === key);
-      if (item === undefined || item.value.targetRevision !== job.revision) job.controller.abort(new Error("Worker configuration target changed."));
+      if (item === undefined || item.value.targetRevision !== job.revision || item.value.key.kind === "projectPreparation" && target(cache, item.value.key) === null) job.controller.abort(new Error("Worker configuration target changed."));
     }
     for (const item of cache.items) {
       const key = keyOf(item.value.key);
@@ -331,6 +332,20 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         return next;
       }, true);
       sentFailures.delete(sent);
+    },
+    ensureProjectRemoval: async (projectId: string): Promise<void> => {
+      const id = canonicalId(projectId);
+      if (id === null) throw new TypeError("Project ID must be a UUID.");
+      await commit(current => {
+        if (stopped) throw new Error("Worker configuration manager is stopped.");
+        if (!synchronized || current.desired === null || current.desired.value.projects.some(project => project.projectId === id)) return current;
+        const key: WorkerCloudItemKey = { kind: "projectRemoval", projectId: id };
+        const previous = findItem(current, key);
+        // A cached result does not prove that the new coordinator observed stopped resources.
+        if (previous !== undefined) return previous.value.state === "applied" ? replaceItem(current, { ...previous, value: { ...previous.value, state: "pending", error: null, nextAttemptAt: null } }) : current;
+        const value: WorkerCloudItem = { key, targetRevision: current.desired.revision, appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null };
+        return { ...current, items: [...current.items, { value, attempts: 0, failureId: null, started: false }].sort((a, b) => keyOf(a.value.key).localeCompare(keyOf(b.value.key))) };
+      });
     },
     confirmProjectPrepared: async (projectId: string, revision: string): Promise<void> => {
       if (stopped) throw new Error("Worker configuration manager is stopped.");

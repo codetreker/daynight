@@ -232,6 +232,75 @@ describe("worker runtime configuration reporting", () => {
     f.signal.abort(); await running;
   });
 
+  it("excludes a removed project before stopping it and reports stop failures while heartbeats continue", async () => {
+    const f = await fixture(), stopping = deferred<void>();
+    const stopProject = vi.fn(async () => { await stopping.promise; throw new Error("private stop output"); });
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({
+      tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }),
+      updateConfiguration: update, stopProject, shutdown,
+    }));
+    const running = start(f);
+    await eventually(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ readyProjectIds: [uuid(1)] })));
+    target = { ...target, revision: "2", value: { ...target.value, projects: [] } };
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(stopProject).toHaveBeenCalledOnce());
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ targetProjectIds: [], readyProjectIds: [] }));
+    const before = report.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(report.mock.calls.length).toBeGreaterThan(before));
+    stopping.resolve();
+    await eventually(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(report.mock.calls.at(-1)![2].observation!.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ key: { kind: "projectRemoval", projectId: uuid(1) }, targetRevision: "2", state: "error" }),
+      ]));
+    });
+    expect(JSON.stringify(report.mock.calls.at(-1)![2])).not.toContain("private stop output");
+    f.signal.abort(); await running;
+  });
+
+  it("does not register an unsuccessfully prepared project while another project becomes ready", async () => {
+    const f = await fixture(), secondRemote = "https://git.example/team/healthy.git";
+    target = { ...target, value: { ...target.value, projects: [{ projectId: uuid(1), nativeOverrides: {} }, { projectId: uuid(2), nativeOverrides: {} }] } };
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.project.mockImplementation(async (id: string) => ({ id, repoUrl: id === uuid(1) ? remoteUrl : secondRemote }));
+    prepare.mockImplementation(async (binding: { projectId: string }) => { if (binding.projectId === uuid(1)) throw new Error("clone failed"); });
+    const running = start(f);
+    await eventually(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ readyProjectIds: [uuid(2)] })));
+    const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    expect(options.store.getProject({ projectId: uuid(1) })).toBeNull();
+    expect(options.store.getProject({ projectId: uuid(2) })).not.toBeNull();
+    await eventually(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(report.mock.calls.at(-1)![2].observation!.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ key: { kind: "projectPreparation", projectId: uuid(1) }, state: "error" }),
+        expect.objectContaining({ key: { kind: "projectPreparation", projectId: uuid(2) }, state: "applied" }),
+      ]));
+    });
+    f.signal.abort(); await running;
+  });
+
+  it("reserves overlapping paths during slow preparation without blocking an unrelated project", async () => {
+    const f = await fixture(), slow = deferred<void>();
+    const remotes = [remoteUrl, "https://git.example/team/nested.git", "https://git.example/team/healthy.git"];
+    const locations = [path.join(f.homeDirectory, "repo"), path.join(f.homeDirectory, "repo", "nested"), path.join(f.homeDirectory, "healthy")];
+    await writeFile(f.paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { repositories: remotes.map((remote, index) => ({ projectId: uuid(index + 1), remote, path: locations[index] })) } }));
+    target = { ...target, value: { ...target.value, projects: remotes.map((_, index) => ({ projectId: uuid(index + 1), nativeOverrides: {} })) } };
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.project.mockImplementation(async (id: string) => ({ id, repoUrl: remotes[[uuid(1), uuid(2), uuid(3)].indexOf(id)] }));
+    prepare.mockImplementation(async (binding: { projectId: string }) => { if (binding.projectId === uuid(1)) await slow.promise; });
+    const running = start(f);
+    await eventually(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ readyProjectIds: [uuid(3)] })));
+    expect(prepare.mock.calls.map(([binding]) => binding.projectId)).toEqual(expect.arrayContaining([uuid(1), uuid(3)]));
+    expect(prepare.mock.calls.map(([binding]) => binding.projectId)).not.toContain(uuid(2));
+    const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    expect(options.store.getProject({ projectId: uuid(1) })).toBeNull();
+    expect(options.store.getProject({ projectId: uuid(2) })).toBeNull();
+    slow.resolve();
+    await eventually(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull());
+    f.signal.abort(); await running;
+  });
+
   it("wakes an existing long polling wait when readiness or the applied interval changes", async () => {
     const f = await fixture(), prepared = deferred<void>();
     const longInterval = 2_000_000_000;

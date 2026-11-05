@@ -107,12 +107,12 @@ it("rejects a selected repository nested in a retained project's worktree while 
   expect(store.listProjects()).toEqual([retainedProject]); expect(store.getTask(localTask)).toEqual(localTask);
   expect(webStore.getTask(localTask)).toEqual(frozen); expect(await readFile(ownedFile, "utf8")).toBe("retained unfinished work\n");
   expect(task.status).toBe("in_progress"); expect(readWorkerClaim(task.properties)).toEqual(originalClaim);
-  await vi.waitFor(() => expect(advance).toHaveBeenCalled(), { timeout: 3500, interval: 10 });
+  await vi.waitFor(() => expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ projectId: retainedProjectId, taskId, claimId, worktreeId }), "shutdown", expect.any(Number), expect.any(AbortSignal), true), { timeout: 3500, interval: 10 });
   const before = report.mock.calls.length;
   await vi.advanceTimersByTimeAsync(30_000); await vi.waitFor(() => expect(report.mock.calls.length).toBeGreaterThan(before));
   expect(settled).toBe(false); expect(await readFile(paths.configFile, "utf8")).toBe(source);
   cancellation.abort(); await execution;
-  for (const [record] of advance.mock.calls) expect(record).toMatchObject({ projectId: retainedProjectId, taskId, claimId, configuration: frozen.configuration });
+  expect(advance).not.toHaveBeenCalled();
   expect(launch).not.toHaveBeenCalled(); expect(remote.candidates).not.toHaveBeenCalled(); expect(remote.claim).not.toHaveBeenCalled();
   expect(store.getTask(localTask)).toEqual(localTask); expect(webStore.getTask(localTask)).toEqual(frozen);
   expect(await readFile(ownedFile, "utf8")).toBe("retained unfinished work\n");
