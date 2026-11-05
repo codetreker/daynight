@@ -4,7 +4,7 @@ import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types
 import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
 import { createTerminalSessionApi, parseSessionHistory, type SessionHistoryItem, type TerminalSessionApi } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
-import { beginSessionHistoryPagination, beginSessionHistoryRefresh, clearSessionHistory, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory, completeSessionHistoryPagination } from './session-history-cache';
+import { beginSessionHistoryPagination, beginSessionHistoryRefresh, clearSessionHistory, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryOwnership, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory, completeSessionHistoryPagination } from './session-history-cache';
 import { TaskAgentSession } from './TaskAgentSession';
 import { TerminalSessionView } from './TerminalSessionView';
 import { TerminalRecordingView } from './TerminalRecordingView';
@@ -165,7 +165,7 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
     });
     void (async () => {
       let token: string | null = null;
-      let unreservedSnapshot: Awaited<ReturnType<typeof readSessionHistoryPaginationState>> = null;
+      let unreservedSnapshot: Awaited<ReturnType<typeof readSessionHistoryOwnership>> | null = null;
       let hasUnreservedSnapshot = false;
       let pagination: Awaited<ReturnType<typeof readSessionHistoryPaginationState>> = null;
       const requestedFirst = stateRef.current.first;
@@ -241,12 +241,13 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
           try {
             const observedSettlement = settlementSequence;
             await scope.sessionHistoryTransaction(ticket, signal, async () => undefined);
-            unreservedSnapshot = await readSessionHistoryPaginationState(scope, ticket, taskId, signal);
+            unreservedSnapshot = await readSessionHistoryOwnership(scope, ticket, taskId, signal);
             hasUnreservedSnapshot = true; admitted = true; guard.current.generation = ticket.cacheGeneration;
-            if (unreservedSnapshot?.refreshing) {
+            if (unreservedSnapshot.kind === 'task_absent') { update(old => ({ ...old, page: null, first: null, loading: false, checking: false, error: new ApiError('server', 404), denied: true })); return; }
+            if (unreservedSnapshot.kind === 'present' && unreservedSnapshot.refreshing) {
               update(old => ({ ...old, checking: false, loading: true, error: null }));
               await new Promise<void>(resolve => {
-                const timer = setTimeout(done, Math.max(0, (unreservedSnapshot?.leaseExpiresAt ?? Date.now()) - Date.now()));
+                const timer = setTimeout(done, Math.max(0, (unreservedSnapshot?.kind === 'present' ? unreservedSnapshot.leaseExpiresAt ?? Date.now() : Date.now()) - Date.now()));
                 function done() { clearTimeout(timer); signal.removeEventListener('abort', done); wake = null; resolve(); }
                 wake = done; signal.addEventListener('abort', done, { once: true });
                 if (signal.aborted || settlementSequence !== observedSettlement) done();
@@ -281,10 +282,12 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
             const observed = ticket ?? scope.getObservedHistoryTicket(projectId) ?? await scope.beginSync(projectId, signal);
             await scope.sessionHistoryTransaction(observed, signal, async () => undefined);
             if (hasUnreservedSnapshot) {
-              const latest = await readSessionHistoryPaginationState(scope, observed, taskId, signal);
-              if (latest?.refreshing || (latest?.token ?? null) !== (unreservedSnapshot?.token ?? null) ||
-                (latest?.paginationToken ?? null) !== (unreservedSnapshot?.paginationToken ?? null) ||
-                (latest?.leaseExpiresAt ?? null) !== (unreservedSnapshot?.leaseExpiresAt ?? null)) {
+              const latest = await readSessionHistoryOwnership(scope, observed, taskId, signal);
+              const previous = unreservedSnapshot?.kind === 'present' ? unreservedSnapshot : null;
+              const current = latest.kind === 'present' ? latest : null;
+              if (latest.kind !== unreservedSnapshot?.kind || current?.refreshing || (current?.token ?? null) !== (previous?.token ?? null) ||
+                (current?.paginationToken ?? null) !== (previous?.paginationToken ?? null) ||
+                (current?.leaseExpiresAt ?? null) !== (previous?.leaseExpiresAt ?? null)) {
                 update(old => ({ ...old, loading: false })); setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); return;
               }
             }
@@ -362,9 +365,10 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
         }
         if (denied && ticket && (!unreserved || hasUnreservedSnapshot)) {
           try {
-            const expectedToken = unreserved ? unreservedSnapshot?.token ?? null : request.cursor === null ? token : pagination?.token ?? null;
-            const expectedPagination = unreserved ? unreservedSnapshot?.paginationToken ?? null : request.cursor === null ? undefined : pagination?.paginationToken ?? undefined;
-            if (!await clearSessionHistory(scope, ticket, taskId, expectedToken, signal, expectedPagination, unreserved ? unreservedSnapshot?.leaseExpiresAt ?? null : undefined)) {
+            const previous = unreservedSnapshot?.kind === 'present' ? unreservedSnapshot : null;
+            const expectedToken = unreserved ? previous?.token ?? null : request.cursor === null ? token : pagination?.token ?? null;
+            const expectedPagination = unreserved ? previous?.paginationToken ?? null : request.cursor === null ? undefined : pagination?.paginationToken ?? undefined;
+            if (!await clearSessionHistory(scope, ticket, taskId, expectedToken, signal, expectedPagination, unreserved ? previous?.leaseExpiresAt ?? null : undefined)) {
               if (pagination) {
                 const latest = await readSessionHistoryPaginationState(scope, ticket, taskId, signal);
                 if (latest && !latest.refreshing && latest.token === pagination.token && latest.paginationToken !== pagination.paginationToken) {

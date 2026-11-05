@@ -599,13 +599,13 @@ it('does not revoke a newer completed continuation when an unreserved request la
     } });
     return work(wrapped, manifest, summaries);
   })) as typeof secondScope.sessionHistoryTransaction);
-  const snapshots = vi.spyOn(historyCache, 'readSessionHistoryPaginationState');
+  const snapshots = vi.spyOn(historyCache, 'readSessionHistoryOwnership');
   view.rerender(<>{surface(first, 'newer')}{surface(secondScope, 'unreserved')}</>);
   await waitFor(() => expect(apiA.history).toHaveBeenCalledTimes(1));
   expect(injected).toBe(true);
   const reads = snapshots.mock.results.filter((_, index) => snapshots.mock.calls[index]?.[0] === secondScope);
   const values = await Promise.all(reads.map(result => result.value));
-  expect(values.some(value => value?.token === before?.token && value?.paginationToken === before?.paginationToken)).toBe(true);
+  expect(values.some(value => value.kind === 'present' && value.token === before?.token && value.paginationToken === before?.paginationToken)).toBe(true);
   await act(async () => finishNew({ items: [second], nextCursor: null }));
   expect(await within(screen.getByTestId('newer')).findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
   fault.mockRestore();
@@ -728,12 +728,12 @@ it('keeps already displayed content when beginSync fails but the observed cache 
   await screen.findByRole('button', { name: /2026-11-03.*Herdr/ });
   await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
   expect(scope.getObservedHistoryTicket(projectId)).not.toBeNull();
-  const snapshots = vi.spyOn(historyCache, 'readSessionHistoryPaginationState');
+  const snapshots = vi.spyOn(historyCache, 'readSessionHistoryOwnership');
   const failure = vi.spyOn(scope, 'beginSync').mockRejectedValue(new Error('Injected beginSync storage failure'));
   api.history.mockResolvedValueOnce({ items: [second], nextCursor: null });
   view.rerender(content(false)); view.rerender(content(true));
   expect(await screen.findByRole('alert')).toBeVisible();
-  expect((await Promise.all(snapshots.mock.results.map(result => result.value))).some(value => value?.token)).toBe(true);
+  expect((await Promise.all(snapshots.mock.results.map(result => result.value))).some(value => value.kind === 'present' && value.token)).toBe(true);
   expect(screen.getByRole('button', { name: /2026-11-03.*Herdr/ })).toBeVisible();
   expect(screen.queryByRole('button', { name: /2026-11-02.*Herdr/ })).toBeNull();
   failure.mockRestore();
@@ -804,4 +804,43 @@ it('restarts from the first page when LRU eviction removes a loaded continuation
   expect(await screen.findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
   expect(await pagination.mock.results[0]!.value).toBeNull();
   expect(api.history.mock.calls.map(([cursor]) => cursor)).toEqual([null, null]);
+});
+
+it('does not loop on repeated 403 while the history cache remains write-failed and recovers after retry', async () => {
+  channelSetup(); TestChannel.suspended = true; const first = await seed(); const secondScope = await anotherScope();
+  const apiA = fixture();
+  const apiB = { ...apiA, history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [second], nextCursor: null as string | null })) };
+  apiB.history.mockRejectedValueOnce(new ApiError('server', 403)).mockRejectedValueOnce(new ApiError('server', 403));
+  vi.mocked(createTerminalSessionApi).mockReturnValueOnce(apiA as never).mockReturnValueOnce(apiB as never);
+  const view = render(<>{surface(first, 'first')}</>);
+  await within(screen.getByTestId('first')).findByRole('button', { name: /Herdr/ });
+  await waitFor(() => expect(within(screen.getByTestId('first')).getByRole('button', { name: 'Refresh' })).toBeEnabled());
+  const transaction = secondScope.sessionHistoryTransaction.bind(secondScope); let failures = 0;
+  const fault = vi.spyOn(secondScope, 'sessionHistoryTransaction').mockImplementation((async (ticket, signal, work) => transaction(ticket, signal, async (store, manifest, summaries) => {
+    const wrapped = new Proxy(store, { get(target, key) {
+      if (key !== 'put') { const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value; }
+      return () => { failures++; throw new DOMException('Injected persistent quota failure', 'QuotaExceededError'); };
+    } });
+    return work(wrapped, manifest, summaries);
+  })) as typeof secondScope.sessionHistoryTransaction);
+  TestChannel.suspended = false;
+  view.rerender(<>{surface(first, 'first')}{surface(secondScope, 'second')}</>);
+  expect(await within(screen.getByTestId('second')).findByRole('alert')).toHaveTextContent('You no longer have permission');
+  expect(await within(screen.getByTestId('first')).findByRole('alert')).toHaveTextContent('You no longer have permission');
+  expect(failures).toBeGreaterThan(0);
+  const observed = secondScope.getObservedHistoryTicket(projectId);
+  expect(observed).not.toBeNull();
+  expect(await historyCache.readSessionHistoryOwnership(secondScope, observed!, taskId, sig())).toMatchObject({ kind: 'present', uncertain: true });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  expect(apiB.history).toHaveBeenCalledTimes(1);
+  const retry = within(screen.getByTestId('second')).getByRole('button', { name: 'Refresh' });
+  await waitFor(() => expect(retry).toBeEnabled()); fireEvent.click(retry);
+  await waitFor(() => expect(apiB.history).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(within(screen.getByTestId('second')).getByRole('button', { name: 'Refresh' })).toBeEnabled());
+  await new Promise(resolve => setTimeout(resolve, 100));
+  expect(apiB.history).toHaveBeenCalledTimes(2);
+  expect(within(screen.getByTestId('second')).getByRole('alert')).toHaveTextContent('You no longer have permission');
+  fault.mockRestore(); fireEvent.click(within(screen.getByTestId('second')).getByRole('button', { name: 'Refresh' }));
+  expect(await within(screen.getByTestId('second')).findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
+  expect(apiB.history).toHaveBeenCalledTimes(3);
 });

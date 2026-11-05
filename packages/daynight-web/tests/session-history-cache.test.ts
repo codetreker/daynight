@@ -2,7 +2,7 @@ import { openDB, type IDBPDatabase } from 'idb';
 import { afterEach, expect, it, vi } from 'vitest';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
-import { beginSessionHistoryPagination, beginSessionHistoryRefresh, clearSessionHistory, getSessionHistoryToken, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory, completeSessionHistoryPagination, SESSION_HISTORY_CACHE_LIMITS } from '../src/features/task-agent-session/session-history-cache';
+import { beginSessionHistoryPagination, beginSessionHistoryRefresh, clearSessionHistory, getSessionHistoryToken, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryOwnership, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory, completeSessionHistoryPagination, SESSION_HISTORY_CACHE_LIMITS } from '../src/features/task-agent-session/session-history-cache';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { taskSyncFromGraph, TEST_VIEWER_ID } from './helpers/taskSync';
 
@@ -26,6 +26,41 @@ const mustLease = (value: Awaited<ReturnType<typeof beginSessionHistoryRefresh>>
   if (value === null || value.kind !== 'lease') throw new Error('Expected a lease.');
   return value;
 };
+
+it('distinguishes withheld content, absent rows and unavailable storage when reading ownership', async () => {
+  const scope = await seed(); const ticket = await scope.beginSync(projectId, signal());
+  expect(await readSessionHistoryOwnership(scope, ticket, taskId(1), signal())).toEqual({ kind: 'absent', uncertain: false });
+  expect(await readSessionHistoryOwnership(scope, ticket, taskId(2), signal())).toEqual({ kind: 'task_absent', uncertain: false });
+  const lease = mustLease(await beginSessionHistoryRefresh(scope, ticket, taskId(1), signal()));
+  expect(await readSessionHistoryOwnership(scope, ticket, taskId(1), signal())).toEqual({ kind: 'present', token: lease.token,
+    paginationToken: null, leaseExpiresAt: lease.expiresAt, refreshing: true, cleared: false, uncertain: false });
+  await saveSessionHistory(scope, ticket, taskId(1), incomplete, lease.token, signal());
+  const pagination = (await beginSessionHistoryPagination(scope, ticket, taskId(1), signal()))!.paginationToken!;
+  expect(await scope.reportHistoryUncertain(ticket, taskId(1), lease.token, signal(), false, pagination, null)).toBe(true);
+  expect(await readCachedSessionHistory(scope, ticket, taskId(1), signal())).toBeNull();
+  expect(await readSessionHistoryPaginationState(scope, ticket, taskId(1), signal())).toBeNull();
+  expect(await readSessionHistoryOwnership(scope, ticket, taskId(1), signal())).toEqual({ kind: 'present', token: lease.token,
+    paginationToken: pagination, leaseExpiresAt: null, refreshing: false, cleared: false, uncertain: true });
+  const { IDBObjectStore } = await import('fake-indexeddb'); const original = IDBObjectStore.prototype.get;
+  const fault = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === 'sessionHistory') throw new DOMException('Denied', 'SecurityError');
+    return original.apply(this, args);
+  });
+  await expect(readSessionHistoryOwnership(scope, ticket, taskId(1), signal())).rejects.toMatchObject({ category: 'storage' });
+  fault.mockRestore();
+  expect(await clearSessionHistory(scope, ticket, taskId(1), lease.token, signal(), pagination, null)).toBe(true);
+  expect(await readSessionHistoryOwnership(scope, ticket, taskId(1), signal())).toMatchObject({ kind: 'present', cleared: true, uncertain: true });
+});
+
+it('rejects malformed ownership metadata without publishing or deleting the stored row', async () => {
+  const scope = await seed(); const ticket = await scope.beginSync(projectId, signal());
+  await beginSessionHistoryRefresh(scope, ticket, taskId(1), signal());
+  const db = await inspect(); const key: [string, string, string] = [TEST_VIEWER_ID, projectId, taskId(1)];
+  const row = (await db.get('sessionHistory', key))!;
+  await db.put('sessionHistory', { ...row, requestToken: 'invalid' });
+  await expect(readSessionHistoryOwnership(scope, ticket, taskId(1), signal())).rejects.toMatchObject({ category: 'corrupt' });
+  expect(await db.get('sessionHistory', key)).toMatchObject({ requestToken: 'invalid' });
+});
 afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); databases.splice(0).forEach(db => db.close()); });
 
 it('retains confirmed and incomplete empty pages across scopes and rejects superseded responses', async () => {
