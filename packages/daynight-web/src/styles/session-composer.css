@@ -63,4 +63,5 @@
   .session-controls-toolbar .session-control-trigger:first-child { max-width: 90px; }
 }
 
-.session-composer-input { display: flex; flex-direction: column; flex: 0 0 auto; min-height: 0; min-width: 0; }
+/* Extra content yields space to the input minimum and native action controls. */
+.session-composer-attachments { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; }

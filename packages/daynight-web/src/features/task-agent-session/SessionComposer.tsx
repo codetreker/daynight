@@ -110,18 +110,14 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
       const pixels = (value: string) => Number.parseFloat(value) || 0;
       const error = surface.querySelector<HTMLElement>('.session-error');
       const errorStyle = error ? getComputedStyle(error) : null;
-      const inputSlot = surface.querySelector<HTMLElement>('.session-composer-input');
-      const attachmentHeight = inputSlot ? Math.max(0, inputSlot.scrollHeight - input.offsetHeight) : 0;
-      const minimum = attachmentHeight + pixels(field.minHeight) + footer.offsetHeight + pixels(actions.marginTop) + pixels(style.paddingTop) + pixels(style.paddingBottom) + pixels(style.borderTopWidth) + pixels(style.borderBottomWidth) + (error ? error.offsetHeight + pixels(errorStyle!.marginTop) : 0);
+      const minimum = pixels(field.minHeight) + footer.offsetHeight + pixels(actions.marginTop) + pixels(style.paddingTop) + pixels(style.paddingBottom) + pixels(style.borderTopWidth) + pixels(style.borderBottomWidth) + (error ? error.offsetHeight + pixels(errorStyle!.marginTop) : 0);
       surface.style.minHeight = `${minimum}px`;
     };
     reserveInput();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reserveInput);
     observer?.observe(surface); observer?.observe(footer);
-    const inputSlot = surface.querySelector<HTMLElement>('.session-composer-input');
-    if (inputSlot) observer?.observe(inputSlot);
     return () => observer?.disconnect();
-  }, [active, error, presentation?.renderInput]);
+  }, [active, error]);
   const snapshot = state.snapshot;
   const controls = snapshot?.controls;
   const intent = commandIntent.current?.sessionId === snapshot?.sessionId && commandIntent.current?.name === parseCommand(text)?.[1] ? commandIntent.current : null;
@@ -358,7 +354,8 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     </div> : null}
     {notice ? <p className="session-notice" role="status">{notice}</p> : null}
     <div className="session-composer-surface">
-    {presentation?.renderInput ? <div className="session-composer-input">{presentation.renderInput({ input, text, inputRef, setText, snapshot, active, connected, authPaused })}</div> : input}
+    {input}
+    {presentation?.renderAttachments ? <div className="session-composer-attachments">{presentation.renderAttachments({ text, inputRef, setText, snapshot, active, connected, authPaused })}</div> : null}
     <div className="session-composer-footer">
       {presentation?.renderFooter ? presentation.renderFooter({ settings, activity, submit }) : <>{settings}{activity}{submit}</>}
     </div>

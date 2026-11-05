@@ -32,13 +32,11 @@ export type SessionEmptySlot = {
   readonly setDraftAndFocus: (text: string) => void;
 };
 
-export type SessionComposerInputSlot = {
+export type SessionComposerAttachmentSlot = {
   readonly snapshot: SessionSnapshot | null;
   readonly active: boolean;
   readonly connected: boolean;
   readonly authPaused: boolean;
-  /** Preserve this textarea, its ref, handlers and accessibility attributes. */
-  readonly input: ReactNode;
   readonly text: string;
   readonly inputRef: RefObject<HTMLTextAreaElement | null>;
   readonly setText: (text: string) => void;
@@ -53,7 +51,8 @@ export type SessionComposerFooterSlot = {
 
 /** Keep the chosen DOM structure stable for a mounted Composer. Do not omit controls. */
 export type SessionComposerPresentation = {
-  readonly renderInput?: (slot: SessionComposerInputSlot) => ReactNode;
+  /** Add normal-flow, height-bounded content without wrapping the shared textarea. */
+  readonly renderAttachments?: (slot: SessionComposerAttachmentSlot) => ReactNode;
   readonly renderFooter?: (slot: SessionComposerFooterSlot) => ReactNode;
 };
 
