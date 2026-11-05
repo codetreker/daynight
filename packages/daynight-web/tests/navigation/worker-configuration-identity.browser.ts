@@ -29,14 +29,18 @@ const install = async (page: Page) => {
   });
   return state;
 };
-const foreground = async (page: Page, state: Awaited<ReturnType<typeof install>>) => {
-  const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
-  const other = await page.context().newPage(); await other.goto('/projects');
-  const secondary = await page.context().newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach();
-  await other.bringToFront(); await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+// Headless Chromium does not consistently transfer focus between tabs. Simulate
+// visibility events while retaining the browser's real active element and layout.
+const revalidate = async (page: Page, state: Awaited<ReturnType<typeof install>>) => {
   const identity = gate(); state.me = identity.value;
-  await page.bringToFront(); await identity.started;
-  return { identity, other };
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState;
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await identity.started;
+  return identity;
 };
 
 for (const scenario of [{ width: 1280, height: 900, locale: 'en', choose: 'Choose projects', done: 'Done' }, { width: 390, height: 844, locale: 'zh-CN', choose: '选择项目', done: '完成' }]) {
@@ -65,11 +69,14 @@ for (const scenario of [{ width: 1280, height: 900, locale: 'en', choose: 'Choos
       await expect(dialog.locator('.configuration-project-loading')).toHaveCount(0);
     };
     const config = gate(), projects = gate(); state.config = config.value; state.projects = projects.value;
-    const check = await foreground(page, state);
+    const identity = await revalidate(page, state);
     await assertStable(); expect(state.writes).toEqual([]);
-    check.identity.finish(); await Promise.all([config.started, projects.started]);
+    identity.finish(); await Promise.all([config.started, projects.started]);
     await assertStable(); expect(state.writes).toEqual([]);
+    const configResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/me/workers/${target}/configuration` && response.request().method() === 'GET');
+    const projectsResponse = page.waitForResponse(response => { const url = new URL(response.url()); return url.pathname === '/api/v1/projects' && url.searchParams.get('limit') === '100'; });
     config.finish(); projects.finish();
+    expect((await configResponse).status()).toBe(200); expect((await projectsResponse).status()).toBe(200);
     await expect.poll(() => state.configReads).toBeGreaterThan(1);
     await expect.poll(() => state.projectReads).toBeGreaterThan(1);
     await assertStable();
@@ -78,6 +85,5 @@ for (const scenario of [{ width: 1280, height: 900, locale: 'en', choose: 'Choos
     await expect(page.locator('.project-config-item').getByText('Alpha project')).toBeVisible();
     await expect(args).toHaveValue('[invalid JSON');
     expect(state.writes).toEqual([]);
-    await check.other.close();
   });
 }
