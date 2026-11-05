@@ -222,6 +222,8 @@ it.each([false, true])('transfers unfinished cold reading to the replacement arc
   if (hidden) f.show(false);
   await f.archive();
   if (hidden) { expect(f.pane.retained.bookmark).toEqual(f.bookmark); f.show(true); }
+  expect(screen.getByRole('status')).toHaveTextContent('Completed · Read-only history');
+  expect(f.view.container.querySelector('.task-agent-session > .session-empty')).toBeNull();
   expect(f.pane.reading.current?.getRestoreStatus()).toBe('restored');
   expect(f.pane.reading.current?.captureBookmark()).toMatchObject({ following: false, anchor: { key: 'early', top: 15 } });
   expect(f.view.container.querySelector('.session-timeline')!.scrollTop).toBe(385);

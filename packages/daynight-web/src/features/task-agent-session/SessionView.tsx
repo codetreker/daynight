@@ -71,7 +71,7 @@ export function SessionView({ client, userId, active, current, reading, fullscre
       <small>{m.startupObserved}: <time dateTime={report.observedAt}>{new Date(report.observedAt).toLocaleString()}</time></small>
     </details> : null}
     {view.error && view.errorCode !== 'controller_offline' ? <p className="session-error" role="alert">{view.error}</p> : null}
-    {readOnly ? <p className="session-empty" role="status">{archiveLabel}</p> : null}
+    {readOnly && view.archiveState !== 'ready' ? <p className="session-empty" role="status">{archiveLabel}</p> : null}
     {!readOnly || view.archiveState === 'ready' ? (slots?.renderEmpty ? <div className="session-timeline-shell session-presentation-timeline">{timeline}{empty != null && empty !== false ? <div className="session-presentation-empty">{empty}</div> : null}</div> : timeline) : null}
     {!readOnly && operations.length > 0 ? <div className="session-receipts" aria-live="polite">{operations.map((operation) => <div key={operation.operationId} className={`session-receipt ${operation.state}`}><span>{m[operation.state]}</span>{operation.error ? <span>{operation.error.message}</span> : null}{['unknown', 'accepted', 'offered', 'dispatching'].includes(operation.state) ? <button className="inline-link" disabled={view.authPaused || view.checking.has(operation.operationId)} onClick={() => { setCheckError(null); void client.checkOperation(operation.operationId).catch((error: unknown) => setCheckError(error instanceof Error ? error.message : m.failure)); }}>{view.checking.has(operation.operationId) ? m.checking : m.check}</button> : null}</div>)}</div> : null}
     {checkError ? <p className="session-error" role="alert">{checkError}</p> : null}

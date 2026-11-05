@@ -1,3 +1,4 @@
+import { expectTaskStatusLayout } from './task-status-layout';
 import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
 import { stringifyApiJson } from "../../src/api/json";
 import type { Locator, Page, Response, TestInfo } from '@playwright/test';
@@ -35,6 +36,7 @@ const picture = async (page: Page, info: TestInfo, name: string): Promise<void> 
   await info.attach('scenario-screenshot', { path, contentType: 'image/png' });
 };
 const expectRowGeometry = async (page: Page): Promise<void> => {
+  await expectTaskStatusLayout(detail(page));
   await expect.poll(() => detail(page).evaluate((surface) => {
     const row = surface.querySelector<HTMLElement>('.task-detail-status-row')!;
     const pair = row.querySelector<HTMLElement>('.task-detail-status-assignee')!;
@@ -62,6 +64,7 @@ const expectMenuGeometry = async (page: Page): Promise<void> => {
 const layouts = [
   { locale: 'zh-CN', width: 1366 }, { locale: 'en', width: 1366 },
   { locale: 'zh-CN', width: 390 }, { locale: 'en', width: 390 },
+  { locale: 'zh-CN', width: 375 }, { locale: 'en', width: 375 },
   { locale: 'zh-CN', width: 320 }, { locale: 'en', width: 320 },
 ] as const;
 
