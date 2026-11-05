@@ -198,6 +198,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
   const logs: string[] = [];
   const requests: { method: string; path: string; taskId?: string }[] = [];
   const reports: { workerId: string; input: WorkerReport & { readonly configuration: WorkerCloudReport } }[] = [];
+  let requestedWorkerId: string | null = null;
   let configurationWorkerId: string | null = null;
   let cloudDesired: WorkerCloudDesired | null = null;
   let cloudObservation: (WorkerCloudObservation & { readonly reportedAt: string }) | null = null;
@@ -224,6 +225,8 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       if (request.headers.authorization !== "Bearer worker-fixture-token") { send(response, { error: { code: "unauthorized", message: "Fixture authentication mismatch", requestId: "worker-auth-fixture" } }, 401); return; }
       requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, ...(task === undefined ? {} : { taskId: task.id }) });
       if (parts.length === 7 && parts[3] === "me" && parts[4] === "workers" && parts[6] === "configuration" && request.method === "GET") {
+        if (requestedWorkerId !== null && requestedWorkerId !== parts[5]) throw new Error("Fixture configuration read belongs to a different Worker.");
+        requestedWorkerId = parts[5]!;
         response.setHeader("Daynight-User-ID", uuid(100));
         if (configurationWorkerId !== parts[5]) {
           send(response, { error: { code: "not_found", message: "Worker not found.", requestId: "worker-configuration-fixture" } }, 404); return;
@@ -231,12 +234,16 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         response.setHeader("Daynight-Worker-Configuration", "1");
         send(response, { desired: cloudDesired, observationRevision: cloudObservationRevision, observation: cloudObservation }); return;
       }
+      if (requestedWorkerId !== null && request.method === "GET" && request.url === `/api/v1/me/workers/${requestedWorkerId}/bots?limit=100`) {
+        send(response, { items: [], nextCursor: null }); return;
+      }
       if (parts.length === 7 && parts[3] === "me" && parts[4] === "workers" && parts[6] === "report" && request.method === "POST") {
         if (request.headers["daynight-worker-configuration"] !== "1") throw new Error("Installed Worker must use the configuration report capability.");
         const input = JSON.parse(Buffer.concat(chunks).toString("utf8")) as WorkerReport & { readonly configuration: WorkerCloudReport };
         const configuration = parseWorkerCloudReport(input.configuration);
         reports.push({ workerId: parts[5]!, input });
         const observedAt = new Date().toISOString();
+        if (requestedWorkerId !== parts[5]) throw new Error("Fixture report belongs to a different Worker than its configuration read.");
         if (configurationWorkerId !== null && configurationWorkerId !== parts[5]) throw new Error("Fixture configuration belongs to a different Worker.");
         configurationWorkerId = parts[5]!;
         if (cloudDesired === null && configuration.bootstrap !== null) {
@@ -561,6 +568,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     expect(firstConfigurationRead).toBeGreaterThanOrEqual(0);
     expect(firstProjectRead).toBeGreaterThan(firstConfigurationRead);
     expect(new Set(reports.map((report) => report.workerId))).toEqual(new Set([originalClaims.get(first.id)!.workerId]));
+    const botInventoryRequests = requests.filter(request => new URL(request.path, "http://localhost").pathname.endsWith("/bots"));
+    expect(botInventoryRequests.length).toBeGreaterThan(0);
+    expect(botInventoryRequests.every(request => request.method === "GET" && request.path === `/api/v1/me/workers/${originalClaims.get(first.id)!.workerId}/bots?limit=100`)).toBe(true);
     const awaitHome = await realpath(home);
     expect(reports.every(({ input }) => input.workingDirectory === awaitHome && input.versions.daynight === installed!.receipt.packageVersion)).toBe(true);
     expect(JSON.stringify(reports)).not.toContain("worker-fixture-token");

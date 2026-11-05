@@ -16,6 +16,39 @@ persist an ordinary/external classification and task/graph reads expose the
 required external subset. Public create and versioned PATCH accept explicit
 classification while preserving all-edge execution and project authorization.
 
+## Assistants
+
+The runtime composes Bot management with the same Store, file storage and
+Session relay used by existing sessions. `/api/v1/me/bots` exposes authenticated,
+account-owned definitions and defaults without requiring a Project. Worker Bot
+registration, grants, startup reports and deletion receipts use the bound
+Worker's normal PAT; Controller relay credentials do not authorize those writes.
+The [assistant contract](../../docs/spec/assistant.md) defines exact endpoints,
+version strings, idempotency, observed availability and failure responses.
+
+A name-only create resolves a fresh compatible Worker report and freezes its
+configuration. Older Workers without `assistantHost` remain unsupported, even
+when online. A pending definition does not prove native startup; the relay checks
+actual synchronization before committing successful preferences. Bot sessions
+retain independent Session protocol identities and are excluded from ordinary
+Test lists. Existing Task and standalone Test paths remain separate.
+
+Deletion commits a persistent access barrier before cleanup. Completed requires
+both the bound Worker's verified stop/private-file receipt and successful server
+history cleanup. The server removes Bot-associated Session rows, content and its
+restricted archive namespace, preserving minimal deletion responsibility. It does
+not delete independently created tasks, ordinary working directories or
+Provider-owned native history. There is no deleted-assistant archive entry.
+The [design](../../docs/design/assistant.md) owns lock ordering, identity checks
+and reconciliation after uncertain writes.
+
+Hosting depends on the foreground Worker remaining online; this service does not
+install an OS daemon, migrate conversations automatically or provide Webhook/MCP
+adapters. CLI/Server and production-page browser acceptance are distinct from
+live Provider acceptance.
+
+## Contracts
+
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and
 the [design](../../docs/design/daynight-server.md) owns architecture and concurrency.
 The TypeScript review command retains its separate configuration, storage and

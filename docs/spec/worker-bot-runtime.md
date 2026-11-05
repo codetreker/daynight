@@ -50,6 +50,6 @@ Bot 清单发现间隔为 `min(pollIntervalMs, 5000)` 毫秒，授权维护独�
 
 执行层提供可调用的 `ManagedAssistantRuntime`、持久恢复句柄和汇总停止接口。调用方须等待停止结果后才关闭 stores、释放 Worker 锁；停止失败不能包装成成功退出。Task 原有 claim、容量、归档及 worktree 收尾规则保持独立。
 
-正式 `runWorker` Bot 调度、产品入口与 `assistantHost` 广告尚未启用。本层提供恢复、停止和私有资料删除能力，不代表完整助手产品已可用。
+正式 `runWorker` 组合 Bot 调度、恢复、停止和私有资料删除，并发布当前托管能力。产品入口消费该能力；广告只证明预检观测，不代表后续原生执行必定成功。
 
 验证应覆盖未知 spawn、不可达 IPC 但进程仍活、完整停证及缺失 native ID、至少四次正常重启不耗预算、异常计数与耗尽阻止跨重启保留、grant 响应丢失、未知操作不重发、停止与启动交错、单 Bot 失败隔离及旧 Task 退出路径。删除验证还须覆盖 IPC 已回执但进程未停、删除与 spawn 出生证明交错、注册结果未知、部分清理失败和跨重启重试、回执响应丢失、原 launch 临时文件范围、正式 ticket 归属、路径替换与符号链接拒绝，以及 cwd、native home、独立 Task 和 worktree 逐项保留。受控 Provider 与网络测试不能替代整个产品的真实三 Provider、浏览器或生产验收。

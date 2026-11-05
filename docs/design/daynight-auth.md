@@ -446,7 +446,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 /me 和退出请求绕过等待，失败及恢复重试持续保留等待。最新的有效返回总是
 立即中止旧核验、推进核验请求 generation 并发起新核验，较早响应不能覆盖最新
 结果。核验失败保留组件状态并显示阻塞错误层；
-重试及失败后的前台返回保持遮蔽，成功后才恢复原页面或切换身份。
+重试及失败后的前台返回保持遮蔽，成功后才恢复原页面或切换身份。阻塞层使用原生模态隔离，Escape 不能关闭；它继承当前应用语言，但不提供自己的语言选择器或偏好反馈。原焦点元素仍连接时，恢复后尝试将焦点返回原位置。
 [前台身份核验决策](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 记录这一呈现策略及其取舍。同源 iframe 内外切换仍保持顶层 focus，不重复发起
 这类核验。
@@ -455,7 +455,8 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 现有图、项目浏览偏好和居中 TaskDetailDialog 继续复用，不增加任务字段编辑。
 `messages.auth` 的英语与简体中文契约覆盖所有新界面、标题、校验、无障碍名称、
 错误和异步通知；通知存语义，渲染时取当前语言，日期/计数使用原生格式化器。
-登录、工作空间、邀请及管理模态均提供共用 LanguageSelector。切换不以 locale
+登录、工作空间和邀请等页面提供共用 LanguageSelector；共享 ManagementDialog 和 CreateProjectDialog
+不提供自己的语言入口或偏好提示，内容继承应用当前语言。切换不以 locale
 重建组件或进入请求依赖，保持输入、一次性秘密、成员版本、当前身份和 pending
 操作。[语言设计](daynight-web-i18n.md)拥有公共机制，鉴权组件遵守相同状态规则。
 
