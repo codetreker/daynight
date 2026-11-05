@@ -23,7 +23,7 @@ func validateArchiveObjectPath(project, owner, session, digest, actual string) e
 		return err
 	}
 	if actual != expected {
-		return fault("source_corrupt", "Session archive object path does not match the current layout; run offline Session archive layout migration.")
+		return fault("source_corrupt", "Session archive object path does not match the completed startup layout.")
 	}
 	return nil
 }

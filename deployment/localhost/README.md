@@ -259,7 +259,9 @@ docker compose down --volumes
 ```
 
 The database and file-storage directory form one backup pair, including Session
-archive metadata, receipts and bodies. Retain the affected
+archive metadata, receipts, bodies and the root `.session-archive-layout.json`
+completion marker. Archive and restore the whole root so the marker remains
+paired with the corresponding database and tree. Retain the affected
 projects' current epoch values from authenticated task-sync snapshots for restore
 validation. Stop all server instances and direct database or file writers before
 capturing both; keep writes stopped until both artifacts are complete. This makes
@@ -472,91 +474,77 @@ Task Web/Herdr archive bodies use
 `session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
 Independent Test/Bot bodies use
 `session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
-The original `session-archives/<sessionId>/<sha256>.json` directories require
-explicit maintenance. Ordinary service startup and requests do not relocate or
-read a legacy object; mismatched ready metadata reports `source_corrupt`. Bot
-cleanup also rejects an unmigrated direct Session directory, including one with
-only unregistered objects.
+The server automatically converts the original
+`session-archives/<sessionId>/<sha256>.json` directories during normal startup,
+after SQL schema initialization and before listening or readiness. Use the
+normal restart or rebuild/start workflow to run conversion. Attachment layout
+maintenance remains its own explicit procedure.
 
-Stop every server instance and all direct database/file writers. Keep them
-stopped until conversion and verification finish. Retain an independently tagged
-old image and a matching pre-migration database/storage backup. The normal backup
-procedure reopens the server, so use the sequence below for this upgrade. The
-`attachments.tar` artifact contains the whole storage volume, including archive
-bodies. Maintenance uses the new image's normal UID/GID `10001:10001` and only
-the configured database/root settings; it does not need UniAuth.
+Before the first conversion, stop every old-version server and all direct
+database/file writers, retain the prior image, and capture the matching pair using
+[normal backup](#persistence-and-backup). Keep old versions and direct writers
+stopped while the new server starts. Concurrent new-version starts serialize the
+conversion under a PostgreSQL advisory lock; none serves HTTP before completion.
+The storage archive contains the entire root, including Session bodies and
+`.session-archive-layout.json` when it exists.
 
-From `deployment/localhost/`, retain the old image and backup pair, build the new
-image, and run the offline conversion:
+Startup checks that marker under the lock before scanning directories. Its only
+supported JSON value is `{"version":1}` in a regular nonsymlink file of at most
+128 bytes. A valid marker, after a repeated root-directory synchronization
+barrier, skips inventories and content scans. Fresh installations publish the
+same marker after verification. Invalid, truncated, duplicate/extra-field,
+unsupported-version or unsafe marker files cause startup failure with a visible
+diagnostic; they are not silently replaced.
 
-```bash
-(
-  set -eu
-  ARCHIVE_MIGRATION_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-  ARCHIVE_MIGRATION_DIR="../../.tmp/daynight-session-archive-layout-$ARCHIVE_MIGRATION_STAMP"
-  mkdir -p "$ARCHIVE_MIGRATION_DIR"
-  ARCHIVE_OLD_IMAGE="$(docker inspect --format '{{.Image}}' "$(docker compose ps --all -q server)")"
-  ARCHIVE_OLD_TAG="daynight-session-archive-layout-before:$ARCHIVE_MIGRATION_STAMP"
-  docker image tag "$ARCHIVE_OLD_IMAGE" "$ARCHIVE_OLD_TAG"
-  printf '%s\n' "$ARCHIVE_OLD_TAG" > "$ARCHIVE_MIGRATION_DIR/old-server-image"
-  docker compose stop server
-  docker compose exec -T postgres pg_dump --no-owner --no-acl \
-    -U daynight -d daynight > "$ARCHIVE_MIGRATION_DIR/postgres.sql"
-  docker compose run --rm --no-deps -T --entrypoint tar server \
-    -C /var/lib/daynight/storage -cpf - . > "$ARCHIVE_MIGRATION_DIR/attachments.tar"
-  docker compose build server
-  docker compose run --rm --no-deps -T server \
-    migrate-session-archive-layout > "$ARCHIVE_MIGRATION_DIR/result.json"
-  cat "$ARCHIVE_MIGRATION_DIR/result.json"
-  printf 'Migration artifacts: %s\n' "$ARCHIVE_MIGRATION_DIR"
-)
-```
+Without the marker, startup validates known ownership, exact old/new locations,
+registered lengths/digests, archive schema/identity and directory safety, then
+moves whole known Session directories by same-filesystem rename. Unregistered
+objects and empty directories remain with their Session. Unknown owners, missing
+or corrupt registered files, symlinks, special files and source/target conflicts
+fail without guessing or merging. Each moved directory is synchronized before
+its `object_path` commits. Only after all directories and metadata complete is
+the marker written, synchronized, renamed and synchronized in the root.
 
-A successful command exits 0 and emits a compact JSON summary with
-`phase="complete"`, `sessionCount`, `movedCount`, `fileCount` and `totalBytes`.
-The command checks all known ownership and legacy/new locations, registered
-lengths/digests and directory safety before moving whole Session directories.
-Unregistered objects and empty directories belonging to known Sessions move with
-the directory; unknown ownership, missing or corrupt registered files, symlinks,
-special files and source/target conflicts fail without guessing or merging.
-The PostgreSQL advisory lock serializes maintenance calls but cannot fence normal
-application writers.
+The first conversion can take longer than `DAYNIGHT_STARTUP_TIMEOUT`: it follows
+the startup caller's cancellation context because its duration depends on bytes
+and storage throughput. Database/schema and listener startup each retain their
+own bounded phase. Inspect `docker compose ps --all` and
+`docker compose logs server` for progress and failure. In this deployment, a
+readiness wait timeout or unhealthy probe can fail the startup CLI while leaving
+the converter container running. Let that instance continue while inspecting its
+progress; it can become healthy after conversion without a restart. The
+`session archive layout ready` log reports conversion counts, or
+`already_applied=true` with zero counts when the trusted marker skips it.
+Readiness becomes available only afterward.
 
-Each moved namespace is synchronized before its new `object_path` commits. A
-failure or terminated command can leave verified files in their new location
-while the database still records the old path. Keep writers stopped and repeat
-`migrate-session-archive-layout` using the same database and root. The command
-verifies the known destination and finishes that metadata update. A repeated
-completed conversion verifies the current layout and moves no directories; an
-output failure likewise requires this readback because it does not prove that
-conversion failed. Retain stderr diagnostics and the backup pair. Conflicting or
-unexplained states remain failures; do not manually overwrite either tree.
+A canceled or failed conversion leaves the service unready and preserves its
+known partial state. Correct the reported storage or metadata problem, then use
+the normal startup workflow again with the same database/root pair. The next
+startup validates files already moved while SQL still has the old path and
+finishes that update. Marker rename followed by a failed root barrier can leave
+visible marker bytes; the next startup repeats that barrier before trusting them.
+Temporary crash residue is not a completion marker. Do not overwrite conflicting
+trees or fabricate the marker to bypass a failure.
 
-After a successful conversion, repeat the command once while writers remain
-stopped, then start the new image:
-
-```bash
-docker compose run --rm --no-deps -T server migrate-session-archive-layout
-docker compose up --no-build --detach --wait --wait-timeout 120
-```
-
-Before business writers resume, read existing Web Task, independent Test/Bot and
-Herdr ready archives and compare their original bytes, SHA-256, lengths and
-terminal receipts. Public Session URLs and access permissions stay the same.
-Conversion changes only physical object locations, preserving schema and task
-cache epochs. The [shared Session design](../../docs/design/task-session-protocol.md#服务端归档布局与迁移)
+After startup succeeds, read existing Web Task, independent Test/Bot and Herdr
+ready archives and compare their original bytes, SHA-256, lengths and terminal
+receipts. Public Session URLs and permissions remain the same. The conversion
+changes only physical object locations and its version marker, preserving SQL
+schema and task cache epochs. The [shared Session design](../../docs/design/task-session-protocol.md#服务端归档布局与迁移)
 owns validation and failure semantics; the
-[server guide](../../packages/daynight-server/README.md#session-archive-layout-maintenance)
-owns command output.
+[server guide](../../packages/daynight-server/README.md#session-archive-layout-startup)
+owns startup timing and logs.
 
-For rollback, keep writers stopped and restore the matching pre-migration SQL and
-whole storage archive with the retained prior image through the
-[fresh-volume restore](#persistence-and-backup) procedure. Historical content
-restoration still requires affected task_cache_epoch rotation under that image's
-schema before its server reopens. Once new writes resume, restoring the old pair
-would discard them and requires a separate preservation decision. Maintenance
-provides bounded layout conversion, not a general filesystem/database repair or
-backup service.
+Backup and restore the completion marker together with the whole storage root
+and corresponding database. A database-only or directory-only restore may leave
+an old object path or a completion marker for a different captured tree. For
+rollback before writers resume, use the retained prior image and matching
+pre-upgrade SQL/files through the [fresh-volume restore](#persistence-and-backup)
+procedure. Historical restoration still requires affected task_cache_epoch
+rotation under that image's schema. Once new writes resume, restoring the old
+pair would discard them and requires a separate preservation decision. Startup
+migration performs bounded layout conversion, not general filesystem/database
+repair or a backup service.
 
 ## Exposure
 

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -176,6 +177,33 @@ func TestSafeFailureDiagnostics(t *testing.T) {
 		LogFailure(slog.New(slog.NewJSONHandler(&output, nil)), context.Background(), "server", "startup", item.err)
 		if !strings.Contains(output.String(), item.diagnostic) || strings.Contains(output.String(), "password-secret") {
 			t.Fatalf("unsafe or opaque diagnostic: %s", &output)
+		}
+	}
+}
+
+func TestStartupArchiveLayoutFailureLogsSafePhaseAndCategory(t *testing.T) {
+	for _, item := range []struct {
+		phase, category, expectedPhase, expectedCategory string
+	}{
+		{"metadata", "database", "metadata", "database"},
+		{"marker", "invalid_marker", "marker", "invalid_marker"},
+		{"private-phase-secret", "private-category-secret", "unknown", "unknown"},
+	} {
+		var output bytes.Buffer
+		failure := &runtimeError{phase: "archive_layout", cause: &sessionrelay.ArchiveLayoutMigrationError{
+			Phase: item.phase, Category: item.category, Diagnostic: "private-diagnostic-secret", SessionID: "private-session-secret",
+			Cause: &pgconn.PgError{Code: "42501", Message: "private-SQL-password-secret"},
+		}}
+		LogFailure(slog.New(slog.NewJSONHandler(&output, nil)), context.Background(), "server", "startup", failure)
+		var entry map[string]any
+		if err := json.Unmarshal(output.Bytes(), &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry["migration_phase"] != item.expectedPhase || entry["migration_category"] != item.expectedCategory || entry["phase"] != "startup" || entry["cause"] != "database" || entry["error_code"] != "session_archive_layout_failed" {
+			t.Fatalf("startup migration lost safe error context: %s", &output)
+		}
+		if strings.Contains(output.String(), "private-") || strings.Contains(output.String(), "password") || strings.Contains(output.String(), "SQL") {
+			t.Fatalf("startup migration exposed private error data: %s", &output)
 		}
 	}
 }

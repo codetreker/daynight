@@ -116,7 +116,7 @@ func seedArchiveLayout(t *testing.T, f fixture, scope string, version int, ready
 
 func migrateArchiveLayout(t *testing.T, f fixture, root string) (ArchiveLayoutMigrationSummary, error) {
 	t.Helper()
-	return MigrateSessionArchiveLayout(context.Background(), f.s.DB.Pool.Config().ConnConfig.ConnString(), root, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return EnsureSessionArchiveLayout(context.Background(), f.s.DB.Pool.Config().ConnConfig.ConnString(), root, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func TestArchiveLayoutMigrationPreservesTaskTestTerminalAndOrphanBytes(t *testing.T) {
@@ -164,8 +164,8 @@ func TestArchiveLayoutMigrationPreservesTaskTestTerminalAndOrphanBytes(t *testin
 		}
 	}
 	again, err := migrateArchiveLayout(t, f, root)
-	if err != nil || again.MovedCount != 0 || again.SessionCount != 4 || again.FileCount != summary.FileCount || again.TotalBytes != summary.TotalBytes {
-		t.Fatal("completed migration did not verify idempotently", again, err)
+	if err != nil || !again.AlreadyApplied || again.Phase != "complete" || again.MovedCount != 0 || again.SessionCount != 0 || again.FileCount != 0 || again.TotalBytes != 0 {
+		t.Fatal("completed startup repeated its inventory", again, err)
 	}
 }
 
@@ -178,6 +178,9 @@ func TestArchiveLayoutMigrationResumesFileBeforeMetadataCommit(t *testing.T) {
 	}
 	if _, err := migrateArchiveLayout(t, f, root); err == nil {
 		t.Fatal("failed metadata commit reported success")
+	}
+	if _, err := os.Lstat(filepath.Join(root, SessionArchiveLayoutMarker)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("failed migration published a completion marker", err)
 	}
 	var object string
 	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT object_path FROM session_archives WHERE session_id=$1`, seed.id).Scan(&object); err != nil || object != seed.id+"/"+seed.digest+".json" {
@@ -251,6 +254,9 @@ func TestArchiveLayoutMigrationPreflightRejectsUnsafeAndInconsistentStorage(t *t
 			if _, err := migrateArchiveLayout(t, f, root); err == nil {
 				t.Fatal("unsafe or inconsistent namespace migrated")
 			}
+			if _, err := os.Lstat(filepath.Join(root, SessionArchiveLayoutMarker)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatal("failed preflight published a completion marker", err)
+			}
 			var object string
 			if err := f.s.DB.Pool.QueryRow(context.Background(), `SELECT object_path FROM session_archives WHERE session_id=$1`, seed.id).Scan(&object); err != nil {
 				t.Fatal(err)
@@ -265,7 +271,7 @@ func TestArchiveLayoutMigrationPreflightRejectsUnsafeAndInconsistentStorage(t *t
 func TestArchiveLayoutMigrationConfigurationEmptyStorageAndCanceledSnapshot(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	for _, database := range []string{"", "postgres://user:secret@bad%host/db", "postgres://user:secret@127.0.0.1:1/db?connect_timeout=1"} {
-		if _, err := MigrateSessionArchiveLayout(context.Background(), database, t.TempDir(), logger); err == nil {
+		if _, err := EnsureSessionArchiveLayout(context.Background(), database, t.TempDir(), logger); err == nil {
 			t.Fatal("invalid database migration configuration accepted")
 		}
 	}
@@ -273,12 +279,15 @@ func TestArchiveLayoutMigrationConfigurationEmptyStorageAndCanceledSnapshot(t *t
 	if summary, err := migrateArchiveLayout(t, f, root); err != nil || summary.SessionCount != 0 || summary.Phase != "complete" {
 		t.Fatal("empty archive migration", summary, err)
 	}
-	if _, err := MigrateSessionArchiveLayout(context.Background(), f.s.DB.Pool.Config().ConnConfig.ConnString(), filepath.Join(root, "missing"), logger); err == nil {
+	if data, err := os.ReadFile(filepath.Join(root, SessionArchiveLayoutMarker)); err != nil || !bytes.Equal(data, []byte("{\"version\":1}\n")) {
+		t.Fatal("empty startup did not persist completion", string(data), err)
+	}
+	if _, err := EnsureSessionArchiveLayout(context.Background(), f.s.DB.Pool.Config().ConnConfig.ConnString(), filepath.Join(root, "missing"), logger); err == nil {
 		t.Fatal("missing storage root accepted")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := MigrateSessionArchiveLayout(ctx, f.s.DB.Pool.Config().ConnConfig.ConnString(), root, logger); err == nil || !errors.Is(err, context.Canceled) {
+	if _, err := EnsureSessionArchiveLayout(ctx, f.s.DB.Pool.Config().ConnConfig.ConnString(), root, logger); err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatal("cancellation lost", err)
 	}
 }
@@ -299,7 +308,7 @@ func TestArchiveLayoutMigrationRejectsMetadataAndFileChangesAfterInventory(t *te
 				t.Fatal(err)
 			}
 			defer storage.Close()
-			m := &archiveLayoutMigration{database: connection, root: storage, phase: "inventory"}
+			m := &archiveLayoutMigration{database: connection, root: storage, phase: "inventory", fileSync: (*os.File).Sync}
 			records, err := m.snapshot(ctx)
 			if err != nil {
 				t.Fatal(err)

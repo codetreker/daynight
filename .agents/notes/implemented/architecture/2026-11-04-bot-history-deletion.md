@@ -38,7 +38,8 @@ namespace from the original owner and Session, removes its whole user/shard/Sess
 directory, explicitly removes all SQL children and the Session, and reduces the
 Bot to deletion responsibility. The
 [archive layout decision](2026-11-05-session-archive-layout.md) owns these grouped
-addresses and explicit legacy conversion. Cleanup rejects an unmigrated direct
+addresses and automatic startup conversion with a durable completion marker.
+Cleanup rejects an unmigrated direct
 Session directory, including one containing only unregistered objects, and
 preserves other Sessions under the same owner or shard. Filesystem failures and SQL
 rollback never restore admission. A retry tolerates already removed files and

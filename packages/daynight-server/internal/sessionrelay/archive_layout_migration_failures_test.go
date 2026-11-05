@@ -82,7 +82,7 @@ func archiveLayoutPrepared(t *testing.T) (fixture, string, archiveLayoutSeed, *a
 			t.Error(err)
 		}
 	})
-	m := &archiveLayoutMigration{database: connection, root: storage, phase: "inventory"}
+	m := &archiveLayoutMigration{database: connection, root: storage, phase: "inventory", fileSync: (*os.File).Sync}
 	records, err := m.snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +197,7 @@ func TestArchiveLayoutMigrationCanceledAndClosedResourceErrorsRemainVisible(t *t
 	if err := m.syncDirectory("."); err == nil {
 		t.Fatal("closed root synchronized")
 	}
-	if _, err := MigrateSessionArchiveLayout(context.Background(), f.s.DB.Pool.Config().ConnConfig.ConnString(), "", nil); err == nil {
+	if _, err := EnsureSessionArchiveLayout(context.Background(), f.s.DB.Pool.Config().ConnConfig.ConnString(), "", nil); err == nil {
 		t.Fatal("missing storage configuration accepted")
 	}
 }

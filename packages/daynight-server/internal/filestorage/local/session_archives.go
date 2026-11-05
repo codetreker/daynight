@@ -51,7 +51,7 @@ func (s *Storage) DeleteSessionArchives(ctx context.Context, namespace sessionar
 		infos = append(infos, info)
 		if i == 0 {
 			if _, err := directory.Lstat(namespace.SessionID()); err == nil {
-				return fmt.Errorf("%w: Session archive layout migration is required before cleanup", filestorage.ErrInvalidAddress)
+				return fmt.Errorf("%w: Session archive layout has not completed startup migration", filestorage.ErrInvalidAddress)
 			} else if !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}

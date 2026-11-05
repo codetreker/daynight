@@ -15,11 +15,12 @@ import (
 const archiveLayoutMigrationLock int64 = 0x444e5341524348
 
 type ArchiveLayoutMigrationSummary struct {
-	Phase        string `json:"phase"`
-	SessionCount int    `json:"sessionCount"`
-	MovedCount   int    `json:"movedCount"`
-	FileCount    int    `json:"fileCount"`
-	TotalBytes   int64  `json:"totalBytes"`
+	Phase          string `json:"phase"`
+	AlreadyApplied bool   `json:"alreadyApplied"`
+	SessionCount   int    `json:"sessionCount"`
+	MovedCount     int    `json:"movedCount"`
+	FileCount      int    `json:"fileCount"`
+	TotalBytes     int64  `json:"totalBytes"`
 }
 
 type ArchiveLayoutMigrationError struct {
@@ -47,16 +48,19 @@ type archiveLayoutMigration struct {
 	database *pgx.Conn
 	root     *os.Root
 	logger   *slog.Logger
+	fileSync func(*os.File) error
 	phase    string
 	session  string
 }
 
-// MigrateSessionArchiveLayout requires all database and storage writers to remain
-// stopped, with a matching database/storage backup. The advisory lock serializes
-// maintenance calls only. Retrying verifies file-ahead-of-database moves before
+// EnsureSessionArchiveLayout completes the storage upgrade before a server accepts
+// requests. Prior-version database and storage writers must remain stopped. A
+// shared advisory lock serializes upgrading startups; a durable root marker skips
+// subsequent inventories. Restarting verifies file-ahead-of-database moves before
 // updating their original metadata; it never merges or overwrites directories.
-func MigrateSessionArchiveLayout(ctx context.Context, databaseURL, storageRoot string, logger *slog.Logger) (summary ArchiveLayoutMigrationSummary, result error) {
-	m := &archiveLayoutMigration{logger: logger, phase: "configuration"}
+// The storage root and its completion marker must stay paired with the same database.
+func EnsureSessionArchiveLayout(ctx context.Context, databaseURL, storageRoot string, logger *slog.Logger) (summary ArchiveLayoutMigrationSummary, result error) {
+	m := &archiveLayoutMigration{logger: logger, phase: "configuration", fileSync: (*os.File).Sync}
 	if strings.TrimSpace(databaseURL) == "" || strings.TrimSpace(storageRoot) == "" {
 		return summary, m.failure("configuration", "DAYNIGHT_DATABASE_URL and DAYNIGHT_STORAGE_ROOT are required.", nil)
 	}
@@ -70,13 +74,21 @@ func MigrateSessionArchiveLayout(ctx context.Context, databaseURL, storageRoot s
 	}
 	defer func() { result = errors.Join(result, m.database.Close(context.Background())) }()
 	if _, err = m.database.Exec(ctx, "SELECT pg_advisory_lock($1)", archiveLayoutMigrationLock); err != nil {
-		return summary, m.failure("database", "Archive migration maintenance lock could not be acquired.", err)
+		return summary, m.failure("database", "Archive migration startup lock could not be acquired.", err)
 	}
 	m.root, err = os.OpenRoot(storageRoot)
 	if err != nil {
 		return summary, m.failure("filesystem", "Archive migration storage root could not be opened.", err)
 	}
 	defer func() { result = errors.Join(result, m.root.Close()) }()
+	m.phase = "marker"
+	applied, err := m.readCompletionMarker(ctx)
+	if err != nil {
+		return summary, err
+	}
+	if applied {
+		return ArchiveLayoutMigrationSummary{Phase: "complete", AlreadyApplied: true}, nil
+	}
 	m.phase = "inventory"
 	records, err := m.snapshot(ctx)
 	if err != nil {
@@ -106,6 +118,10 @@ func MigrateSessionArchiveLayout(ctx context.Context, databaseURL, storageRoot s
 			}
 		}
 		m.logger.InfoContext(ctx, "session archive layout migration", "component", "session_archive_layout_migration", "phase", "verified", "sessionId", r.id, "moved", moved)
+	}
+	m.phase, m.session = "marker", ""
+	if err = m.publishCompletionMarker(ctx); err != nil {
+		return summary, err
 	}
 	summary.Phase = "complete"
 	return summary, nil
@@ -248,11 +264,11 @@ func (m *archiveLayoutMigration) apply(ctx context.Context, r *archiveLayoutReco
 	if r.object != nil && *r.object == r.oldPath {
 		m.phase = "metadata"
 		if _, err = tx.Exec(ctx, `UPDATE session_archives SET object_path=$2 WHERE session_id=$1`, r.id, r.newPath); err != nil {
-			return moved, m.failure("database", "Moved archive manifest could not be updated; rerun migration with writers stopped.", err)
+			return moved, m.failure("database", "Moved archive manifest could not be updated; restarting retries the storage upgrade.", err)
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return moved, m.failure("database", "Archive migration metadata commit was not confirmed; rerun migration with writers stopped.", err)
+		return moved, m.failure("database", "Archive migration metadata commit was not confirmed; restarting retries the storage upgrade.", err)
 	}
 	return moved, nil
 }

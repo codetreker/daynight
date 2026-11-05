@@ -129,7 +129,7 @@ ready 要求 code 为 null；failed 要求非空、良构 Unicode 错误码。re
 
 绑定 Worker 通过 `POST /api/v1/me/workers/{workerId}/bots/{botId}/deletion-complete` 提交 `{deletionId,stop,result}`。请求必须包含全部字段且无额外字段，使用 owner 的有效 PAT 和绑定 Worker ID。`result` 为 `{state:"completed",code:null}` 或 `{state:"failed",code:<非空错误码>}`。未绑定 Session 的 completed 回执使用 `stop:null`；已绑定的 completed 回执必须携带现有独立会话 `TestStop`：`protocol`、`sessionId`、`testExecutionId`、`executionGeneration`、`controllerId`、`controllerInstanceId` 和 `stopProof`。停证必须匹配删除时原执行，不能用未来时间或旧代替代；`never_started` 仅在未消费 grant、未连接、没有 source/native 身份时接受。failed 回执可以用 null stop，不触发服务端清理。相同 failed state/code 的重放返回原版本与更新时间；错误码变化或推进到 completed 才记录新的结果。
 
-Worker 的 completed 声明表示它已验证原生写入停止并清理该 Bot 私有资料；服务端校验身份与停证格式，不独立测量远端进程。有效 completed 回执先持久化，再清理服务端 SQL 子表、Session 行、live cache 和该 Session 的全部归档命名空间，包括没有 SQL metadata 的孤立对象。Bot 归档按原 owner 和 Session UUID 前两位分组，清理保留同 owner、同分片的其它 Session；旧目录未迁移时不能报告服务端清理完成。已完成 Worker 回执只接受语义完全相同的重放，不能改用新的停证；相同回执可重试未完成的服务端阶段。
+Worker 的 completed 声明表示它已验证原生写入停止并清理该 Bot 私有资料；服务端校验身份与停证格式，不独立测量远端进程。有效 completed 回执先持久化，再清理服务端 SQL 子表、Session 行、live cache 和该 Session 的全部归档命名空间，包括没有 SQL metadata 的孤立对象。Bot 归档按原 owner 和 Session UUID 前两位分组，服务启动在监听前完成旧布局转换并保存持久标志；清理保留同 owner、同分片的其它 Session，若仍发现旧目录则不能报告服务端清理完成。已完成 Worker 回执只接受语义完全相同的重放，不能改用新的停证；相同回执可重试未完成的服务端阶段。
 
 文件或 SQL 清理失败保留删除屏障、原 deletionId 和已完成的 Worker 责任，`serverCleanup` 返回 failed 及 `server_cleanup_failed`。修复后重试原 DELETE 或原 completed 回执，不新建 Bot 或删除请求。两个阶段均为 completed 才表示 Daynight 服务端与绑定 Worker 可管理资源清理完成。Worker 离线或尚无回执时保持 pending，失败回执保持 failed；HTTP 成功不代表两个阶段都完成。查询和响应始终仅返回最小删除责任，无只读历史入口。
 

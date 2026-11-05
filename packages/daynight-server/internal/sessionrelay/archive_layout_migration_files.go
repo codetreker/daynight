@@ -333,7 +333,7 @@ func (m *archiveLayoutMigration) syncDirectory(name string) error {
 	if err != nil {
 		return m.failure("filesystem", "Archive migration directory could not be opened for synchronization.", err)
 	}
-	if err = errors.Join(file.Sync(), file.Close()); err != nil {
+	if err = errors.Join(m.fileSync(file), file.Close()); err != nil {
 		return m.failure("filesystem", "Archive migration directory could not be synchronized.", err)
 	}
 	return nil
