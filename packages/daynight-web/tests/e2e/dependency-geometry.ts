@@ -150,7 +150,7 @@ const penetrates = (s: Segment, r: Rect): boolean => {
 const transform = (p: Point, m: number[]): Point => ({ x: m[0]! * p.x + m[2]! * p.y + m[4]!, y: m[1]! * p.x + m[3]! * p.y + m[5]! });
 
 
-export const inspectDependencySnapshot = (snapshot: DependencySnapshot, expected: GeometryExpectation, compilerInputs?: readonly DeclaredCurveInput[]): string[] => {
+export const inspectDependencySnapshot = (snapshot: DependencySnapshot, expected: GeometryExpectation, compilerInputs?: readonly DeclaredCurveInput[], direction: 'horizontal' | 'vertical' = 'horizontal'): string[] => {
   const failures: string[] = [];
   const fail = (id: string, reason: string) => { failures.push(`${id}: ${reason}`); };
   if (!snapshot.viewport || !snapshot.passive) fail('layer', 'incorrect viewport or interaction semantics');
@@ -163,21 +163,32 @@ export const inspectDependencySnapshot = (snapshot: DependencySnapshot, expected
   const inputs = new Map(compilerInputs?.map((input) => [input.id, input.points]));
   if (compilerInputs !== undefined && (inputs.size !== compilerInputs.length || inputs.size !== expected.edges.length || expected.edges.some((edge) => !inputs.has(edge.id)))) fail('curve inputs', 'incomplete declared edge coverage');
   const sortedNodes = [...nodes.values()].sort((a, b) => a.left - b.left);
+  if (direction === 'vertical') for (let i = 0; i < sortedNodes.length; i++) {
+    const first = sortedNodes[i]!;
+    for (let j = i + 1; j < sortedNodes.length; j++) {
+      const second = sortedNodes[j]!;
+      if (second.left >= first.right - epsilon) break;
+      if (second.top < first.bottom - epsilon && second.bottom > first.top + epsilon) fail('nodes', `${first.id} overlaps ${second.id}`);
+    }
+  }
   for (const expectation of expected.edges) {
     const edge = edges.get(expectation.id); const source = nodes.get(expectation.source); const target = nodes.get(expectation.target);
     if (edge === undefined || source === undefined || target === undefined) continue;
     try {
       const route = parseCurve(edge.d); const first = route[0]!.from; const last = route.at(-1)!.to;
       if (edge.source !== expectation.source || edge.target !== expectation.target) fail(edge.id, 'wrong dependency topology');
-      if (distance(first, { x: source.right, y: (source.top + source.bottom) / 2 }) > epsilon
-        || distance(last, { x: target.left, y: (target.top + target.bottom) / 2 }) > epsilon) fail(edge.id, 'wrong fixed left-to-right ports');
+      const sourcePort = direction === 'horizontal' ? { x: source.right, y: (source.top + source.bottom) / 2 } : { x: (source.left + source.right) / 2, y: source.bottom };
+      const targetPort = direction === 'horizontal' ? { x: target.left, y: (target.top + target.bottom) / 2 } : { x: (target.left + target.right) / 2, y: target.top };
+      if (distance(first, sourcePort) > epsilon || distance(last, targetPort) > epsilon) fail(edge.id, direction === 'horizontal' ? 'wrong fixed left-to-right ports' : 'wrong fixed top-to-bottom ports');
       const initial = tangent(route[0]!, 0); const final = tangent(route.at(-1)!, 1);
-      if (initial.x <= 0 || final.x <= 0 || Math.abs(initial.y) > epsilon || Math.abs(final.y) > epsilon) fail(edge.id, 'endpoint direction is not horizontal left-to-right');
+      if (direction === 'horizontal' ? initial.x <= 0 || final.x <= 0 || Math.abs(initial.y) > epsilon || Math.abs(final.y) > epsilon
+        : initial.y <= 0 || final.y <= 0 || Math.abs(initial.x) > epsilon || Math.abs(final.x) > epsilon) fail(edge.id, `endpoint direction is not ${direction === 'horizontal' ? 'horizontal left-to-right' : 'vertical top-to-bottom'}`);
       const cubics = route.filter((segment) => segment.kind === 'C');
       for (const segment of cubics) {
-        const midpoint = segment.from.x + (segment.to.x - segment.from.x) / 2;
-        if (segment.to.x <= segment.from.x || Math.abs(segment.control!.x - midpoint) > epsilon || Math.abs(segment.control2!.x - midpoint) > epsilon
-          || Math.abs(segment.control!.y - segment.from.y) > epsilon || Math.abs(segment.control2!.y - segment.to.y) > epsilon) fail(edge.id, 'cubic leaves its horizontal-tangent rank-gap passage');
+        const forward = direction === 'horizontal' ? 'x' : 'y'; const cross = direction === 'horizontal' ? 'y' : 'x';
+        const midpoint = segment.from[forward] + (segment.to[forward] - segment.from[forward]) / 2;
+        if (segment.to[forward] <= segment.from[forward] || Math.abs(segment.control![forward] - midpoint) > epsilon || Math.abs(segment.control2![forward] - midpoint) > epsilon
+          || Math.abs(segment.control![cross] - segment.from[cross]) > epsilon || Math.abs(segment.control2![cross] - segment.to[cross]) > epsilon) fail(edge.id, `cubic leaves its ${direction}-tangent rank-gap passage`);
       }
       const controls = route.filter((segment) => segment.kind === 'Q');
       for (const segment of controls) {
@@ -189,8 +200,9 @@ export const inspectDependencySnapshot = (snapshot: DependencySnapshot, expected
         if (distance(first, passages[0]!) > epsilon || distance(last, passages.at(-1)!) > epsilon) fail(edge.id, 'lost declared input endpoints');
         const bends = passages.slice(1).flatMap((to, index) => {
           const from = passages[index]!;
-          if (to.x <= from.x) { fail(edge.id, 'invalid declared compiler input passage'); return []; }
-          return to.y === from.y ? [] : [{ from, to }];
+          const forward = direction === 'horizontal' ? 'x' : 'y'; const cross = direction === 'horizontal' ? 'y' : 'x';
+          if (to[forward] <= from[forward]) { fail(edge.id, 'invalid declared compiler input passage'); return []; }
+          return to[cross] === from[cross] ? [] : [{ from, to }];
         });
         if (bends.length !== cubics.length || bends.some((bend, index) => distance(bend.from, cubics[index]!.from) > epsilon || distance(bend.to, cubics[index]!.to) > epsilon)) fail(edge.id, 'curve differs from declared compiler input passages');
       } else if (points !== undefined) {
@@ -351,13 +363,13 @@ export const captureDependencySnapshot = (page: Page): Promise<DependencySnapsho
 
 export const summarizeGeometryFailures = (failures: readonly string[]): { total: number; examples: string[] } => ({ total: failures.length, examples: failures.slice(0, 12) });
 let failureSequence = 0;
-export const checkDependencyGeometry = async (page: Page, expected: GeometryExpectation, info: TestInfo, compilerInputs?: readonly DeclaredCurveInput[]): Promise<{ total: number; examples: string[] }> => {
+export const checkDependencyGeometry = async (page: Page, expected: GeometryExpectation, info: TestInfo, compilerInputs?: readonly DeclaredCurveInput[], direction: 'horizontal' | 'vertical' = 'horizontal'): Promise<{ total: number; examples: string[] }> => {
   const snapshot = await captureDependencySnapshot(page);
-  const failures = inspectDependencySnapshot(snapshot, expected, compilerInputs);
+  const failures = inspectDependencySnapshot(snapshot, expected, compilerInputs, direction);
   if (failures.length > 0) {
     const name = `dependency-geometry-failure-${++failureSequence}`;
     const path = info.outputPath(`${name}.json`);
-    await writeFile(path, `${JSON.stringify({ total: failures.length, failures, snapshot, expected, compilerInputs })}\n`);
+    await writeFile(path, `${JSON.stringify({ total: failures.length, failures, snapshot, expected, compilerInputs, direction })}\n`);
     await info.attach(name, { path, contentType: 'application/json' });
   }
   return summarizeGeometryFailures(failures);

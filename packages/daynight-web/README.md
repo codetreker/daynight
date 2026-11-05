@@ -1,11 +1,11 @@
 # daynight-web
 
 The React/TypeScript Web app provides a public product introduction and a private
-workspace. The workspace implements Team creation and settings, project browsing, account-owned Worker
-observations and cloud configuration, cursor pagination, request cancellation,
-runtime API decoding, native browser routing and a pure dependency graph model
-with horizontal layout. Project task views use an IndexedDB summary cache and the
-authenticated task-sync endpoint.
+workspace. The workspace implements Team creation and settings, project browsing,
+account-owned Worker observations and cloud configuration, cursor pagination,
+request cancellation, runtime API decoding, native browser routing and a pure
+dependency graph model with horizontal and vertical layouts. Project task views
+use an IndexedDB summary cache and the authenticated task-sync endpoint.
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
@@ -1206,7 +1206,7 @@ members stays visible. External prerequisite context does not contribute to
 chain progress or status. The former shared-membership badge is removed: a task
 can recur as context while its actual component membership remains unique.
 
-Each category retains its own completed visibility. Both share the current
+Both categories share assignee and status filters and the current
 task-list page position; category switching does not restore an older offset. Chain
 ordering uses its representative's exact `(created_at,id)` service order,
 reversed for newest first without lossy JavaScript timestamp conversion. The
@@ -1330,8 +1330,12 @@ without changing task state. The [Session status design](../../docs/design/task-
 owns precedence, visibility, refresh limits and stable annotation geometry.
 
 The explicit View dependencies / 查看依赖关系 action opens one centered
-horizontal-graph dialog at a time without changing any disclosure state.
-Desktop geometry is `80vw × 80dvh`; at widths of 740px or less the dialog fills
+dependency-graph dialog at a time without changing any disclosure state.
+The toolbar selects horizontal or vertical direction and remembers it locally per
+project and representative task, defaulting to horizontal. Read, invalid-value
+and write failures are visible while direction changes remain usable. Switching
+preserves visible tasks and inspection, and reframes the current graph. Desktop
+geometry is `80vw × 80dvh`; at widths of 740px or less the dialog fills
 the viewport except for 12px gutters. The title shows the chain name, status
 and progress. Closing with the explicit button, backdrop or Escape restores the
 original graph button or an available Goal disclosure, filter or list control
@@ -1382,8 +1386,9 @@ persist. Locale translates controls without adding business reads. The
 separates topology state from presentation lifetime.
 
 Per-project browser preferences retain the selected outer section and inner task
-category, one shared task-list page offset and each category's completed-item choice. Graph
-dialog opening, witness, Goal disclosure, fullscreen, details and graph viewport are temporary;
+category and one shared task-list page offset. Graph direction is saved per project
+and representative task. Filters, graph dialog opening, witness, Goal disclosure,
+fullscreen, details and graph viewport are temporary;
 the former `daynight:project-view:${projectId}` expansion record is not read or
 written. The outer section uses the independent
 `daynight:project-section:${projectId}` record with the JSON string `"overview"`
@@ -2274,7 +2279,7 @@ visible-task selection and the highlighted sequence; each metric uses the worse
 state with independent network timing, and no close-to-zoom reset/fit/wait.
 Independent API/P/S topology derives compact/expandable heights from hidden direct
 neighbors inside P; unrelated outside-P successors cannot create a footer.
-Actual DOM fixed ports, cubic horizontal tangency, card avoidance,
+Actual DOM fixed ports, cubic tangency in the selected direction, card avoidance,
 body/marker coverage and independently integrated curved dash phase cover every visible edge.
 Stable owner transforms are graph-relative real root/owner CTMs; raw screen,
 page-scroll and canvas diagnostics stay separate from reset equality.
@@ -2573,7 +2578,7 @@ chain membership; `externalIds` identifies additional ancestors. Complete projec
 S and all real edges with both endpoints in S; external classification still
 depends on source membership in P−M. It derives distinct root progress and aggregate chain status from main
 tasks in the same traversal, and marks shared tasks. The Dagre
-adapter returns finite left-to-right node positions and routed edge points for
+adapter returns finite left-to-right or top-to-bottom node positions and routed edge points for
 220px-wide visible cards with 96px compact or 136px expandable heights. The
 read-only React Flow canvas consumes these results without changing domain
 objects. React Flow owns task nodes with those exact dimensions, native ResizeObserver measurement,
@@ -2582,13 +2587,10 @@ ViewportPortal renders every planned M/L/C path, with stable edge identity,
 arrowheads, external-context dashes and accessibility semantics. It shares the viewport's
 transform, so selection/pan/zoom reuse geometry without per-edge reactive state.
 Canonical routes retain native arrow markers and the full planned geometry.
-Different-height passages use cubic Bézier curves entirely within empty column
-gaps, with both controls on the gap midpoint at the respective endpoint heights.
-Horizontal tangents join these curves to free rows through intermediate columns,
-which retain sixteen units of clearance from cards. The
+Passages use cubic Bézier curves entirely within empty rank gaps, with controls on the gap midpoint at the respective endpoint cross-axis coordinates. Tangents follow the selected direction and join free passages through intermediate ranks, which retain sixteen units of clearance from cards. The
 [Bézier routing decision](../../.agents/notes/implemented/architecture/2026-10-25-bezier-task-dependency-routing.md)
 owns the shape and avoidance mechanism. Dashed body paint uses `routes.ts` to
-derive locally horizontal rotated lines and exact cubic subcurves, with the
+derive locally rotated lines and exact cubic subcurves, with the
 original 5/4 pattern and continuous positive arc-length phase. Every paint piece
 has at most 8,192 graph units of arc length; internal cuts fall at global dash-gap
 midpoints to bound GPU work without removing route geometry. Cumulative phase

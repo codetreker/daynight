@@ -87,10 +87,30 @@ describe('task dependency canvas', () => {
     expect(within(external).queryByText('被阻塞')).toBeNull();
   });
 
+  it('changes direction with keyboard, retains inspection, and restores a saved choice after reopening', async () => {
+    const user = userEvent.setup();
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    await ready(view.container);
+    const horizontal = screen.getByRole('radio', { name: '水平' });
+    const vertical = screen.getByRole('radio', { name: '垂直' });
+    expect(horizontal).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(nodeButton('合流实现…'));
+    const canvas = view.container.querySelector('.react-flow');
+    horizontal.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(vertical).toHaveFocus();
+    expect(vertical).toHaveAttribute('aria-checked', 'true');
+    expect(nodeShell('合流实现…')).toHaveClass('task-node-selected');
+    expect(view.container.querySelector('.react-flow')).toBe(canvas);
+    view.unmount();
+    render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    expect(screen.getByRole('radio', { name: '垂直' })).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('switches the same modal canvas to fullscreen and back without changing its viewport or layout', async () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -135,7 +155,7 @@ describe('task dependency canvas', () => {
   it('contains keyboard focus in the modal and handles only local Escape one layer at a time', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<><button type="button">图外按钮</button><TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>);
+    const view = render(<><button type="button">图外按钮</button><TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     expect(view.container.querySelector('.task-chain-close')).toHaveFocus();
@@ -161,7 +181,7 @@ describe('task dependency canvas', () => {
   it.each(['.task-chain-heading h2', '.graph-toolbar-summary', '.task-graph-canvas'])('closes with Escape after clicking noninteractive content at %s', async (target) => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     await user.click(view.container.querySelector<HTMLElement>(target)!);
@@ -174,7 +194,7 @@ describe('task dependency canvas', () => {
   it('leaves fullscreen before closing after clicking blank canvas content', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     const canvas = view.container.querySelector('.task-graph-canvas');
@@ -196,7 +216,7 @@ describe('task dependency canvas', () => {
 
   it.each([false, true])('keeps Tab navigation inside the modal after clicking its canvas (shift: %s)', async (shift) => {
     const user = userEvent.setup();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     await user.click(view.container.querySelector<HTMLElement>('.task-graph-canvas')!);
@@ -212,7 +232,7 @@ describe('task dependency canvas', () => {
     document.body.append(portal);
     const Wrapper = () => {
       const [opened, setOpened] = useState(false);
-      return <><button type="button" data-testid="outer-background" onClick={() => setOpened(true)}>项目导航</button><section><div data-testid="preexisting-inert" inert={true} />{opened && <TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={() => setOpened(false)} onRestoreFocus={noop} />}<button type="button" data-testid="inner-background">任务链</button></section></>;
+      return <><button type="button" data-testid="outer-background" onClick={() => setOpened(true)}>项目导航</button><section><div data-testid="preexisting-inert" inert={true} />{opened && <TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={() => setOpened(false)} onRestoreFocus={noop} />}<button type="button" data-testid="inner-background">任务链</button></section></>;
     };
     const view = render(<Wrapper />);
     const background = [screen.getByTestId('outer-background'), screen.getByTestId('inner-background')];
@@ -245,7 +265,7 @@ describe('task dependency canvas', () => {
     const onClose = vi.fn();
     const originalRestore = vi.fn();
     const latestRestore = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={originalRestore} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={originalRestore} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     fireEvent.click(dialog);
@@ -263,7 +283,7 @@ describe('task dependency canvas', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     fireEvent.click(view.container.querySelector('.task-chain-close')!);
     expect(onClose).toHaveBeenCalledTimes(2);
-    view.rerender(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={latestRestore} />);
+    view.rerender(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={latestRestore} />);
     view.unmount();
     expect(originalRestore).not.toHaveBeenCalled();
     expect(latestRestore).toHaveBeenCalledOnce();
@@ -271,7 +291,7 @@ describe('task dependency canvas', () => {
 
   it('wraps both keyboard boundaries and recovers focus entering from outside the modal', async () => {
     const user = userEvent.setup();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     const first = within(dialog).getByRole('button', { name: '关闭依赖图' });
@@ -754,6 +774,28 @@ describe('progressive task visibility', () => {
     expect(layout).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps expanded tasks and inspection when the direction changes', async () => {
+    const Example = () => {
+      const [direction, setDirection] = useState<'horizontal' | 'vertical'>('horizontal');
+      return <TaskGraph index={progressiveIndex} rootId={rootId} onOpenTask={noop} direction={direction} onDirectionChange={setDirection} />;
+    };
+    const view = render(<Example />);
+    const { taskBody, expansion } = controls(view.container);
+    await rendered(view.container, 50, 49);
+    fireEvent.click(expansion('合流任务 · 40 个外部前置', 'prerequisites'));
+    await rendered(view.container, 70, 69);
+    fireEvent.click(taskBody('合流任务 · 40 个外部前置'));
+    const ids = visibleIds(view.container);
+    const canvas = view.container.querySelector('.react-flow');
+    fireEvent.click(screen.getByRole('radio', { name: '垂直' }));
+    expect(screen.getByRole('radio', { name: '垂直' })).toHaveAttribute('aria-checked', 'true');
+    expect(visibleIds(view.container)).toEqual(ids);
+    expect(taskBody('合流任务 · 40 个外部前置')).toHaveAttribute('aria-pressed', 'true');
+    expect(view.container.querySelector('.react-flow')).toBe(canvas);
+    fireEvent.click(screen.getByRole('radio', { name: '水平' }));
+    expect(visibleIds(view.container)).toEqual(ids);
+  });
+
   it('expands direct neighbors with exact task, induced-edge and remaining counts, retains keyboard anchor focus, and resets deterministically', async ({ signal }) => {
     const user = userEvent.setup();
     const open = vi.fn();
@@ -896,6 +938,37 @@ describe('progressive task visibility', () => {
 });
 
 describe('initial task viewport policy', () => {
+  it('frames the first vertical rank using its centers even with mixed card heights', () => {
+    const geometry: layoutModule.CanvasLayout = {
+      direction: 'vertical',
+      nodes: [
+        { id: 'root', kind: 'main', width: 220, height: 96, position: { x: 300, y: 52 } },
+        { id: 'peer', kind: 'external', width: 220, height: 136, position: { x: 32, y: 32 } },
+        { id: 'tail', kind: 'main', width: 220, height: 96, position: { x: 300, y: 5000 } },
+      ], edges: [], width: 552, height: 5128,
+    };
+    const actual = getInitialTaskViewport(geometry, 'root', 800, 445);
+    expect(actual.zoom).toBe(0.8);
+    expect((300 + 110) * actual.zoom + actual.x).toBeCloseTo(400);
+    expect(32 * actual.zoom + actual.y).toBe(32);
+    const folded = getInitialTaskViewport(geometry, 'root', 800, 445, true);
+    expect(52 * folded.zoom + folded.y).toBe(32);
+    expect((300 + 110) * folded.zoom + folded.x).toBeCloseTo(400);
+  });
+
+  it('frames upstream vertical context before a later root', () => {
+    const geometry: layoutModule.CanvasLayout = {
+      direction: 'vertical',
+      nodes: [
+        { id: 'root', kind: 'main', width: 220, height: 96, position: { x: 800, y: 5000 } },
+        { id: 'external', kind: 'external', width: 220, height: 96, position: { x: 32, y: 32 } },
+      ], edges: [], width: 1052, height: 5128,
+    };
+    const actual = getInitialTaskViewport(geometry, 'root', 320, 445);
+    expect(32 * actual.zoom + actual.x).toBe(32);
+    expect(32 * actual.zoom + actual.y).toBe(32);
+  });
+
   it('fits and centers the actual mixed-height card bounds', () => {
     const geometry: layoutModule.CanvasLayout = {
       nodes: [

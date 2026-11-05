@@ -420,6 +420,19 @@ test.describe('Web language journeys', () => {
         if (graphElement === null || viewportElement === null) throw new Error('Graph elements are absent.');
         await inspectTask(page, task.id).click();
         await expect(inspectTask(page, task.id)).toHaveAttribute('aria-pressed', 'true');
+        const horizontal = graphDialog.getByRole('radio', { name: locale === 'en' ? 'Horizontal' : '水平', exact: true });
+        const vertical = graphDialog.getByRole('radio', { name: locale === 'en' ? 'Vertical' : '垂直', exact: true });
+        await expect(horizontal).toHaveAttribute('aria-checked', 'true');
+        await horizontal.focus(); await page.keyboard.press('ArrowRight');
+        await expect(vertical).toBeFocused(); await expect(vertical).toHaveAttribute('aria-checked', 'true');
+        await expect(inspectTask(page, task.id)).toHaveAttribute('aria-pressed', 'true');
+        for (const control of [horizontal, vertical, fullscreenToggle, graphDialog.locator('.graph-reset-overview')]) {
+          const bounds = await control.boundingBox();
+          const dialogBounds = await graphDialog.boundingBox();
+          expect(bounds).not.toBeNull(); expect(dialogBounds).not.toBeNull();
+          expect(bounds!.x).toBeGreaterThanOrEqual(dialogBounds!.x);
+          expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(dialogBounds!.x + dialogBounds!.width);
+        }
         const transform = await viewport.getAttribute('style');
         const checkGraphLayout = async (): Promise<void> => {
           await expect(graphDialog.locator('.locale-preference')).toHaveCount(0);
@@ -441,6 +454,7 @@ test.describe('Web language journeys', () => {
         await fullscreenToggle.click();
         const fullscreen = page.locator('.task-chain-dialog-fullscreen');
         await expect(fullscreen).toHaveCount(1);
+        await expect(vertical).toHaveAttribute('aria-checked', 'true');
         await expect(fullscreenToggle).toBeFocused();
         expect(await graphElement.evaluate((element) => element === document.querySelector('.task-chain-dialog'))).toBe(true);
         expect(await viewportElement.evaluate((element) => element === document.querySelector('.react-flow__viewport'))).toBe(true);
@@ -468,6 +482,9 @@ test.describe('Web language journeys', () => {
         await expect(viewport).toHaveAttribute('style', fitted!);
         await expect(inspectTask(page, task.id)).toHaveAttribute('aria-pressed', 'true');
         await checkGraphLayout();
+        await vertical.focus(); await page.keyboard.press('ArrowLeft');
+        await expect(horizontal).toBeFocused(); await expect(horizontal).toHaveAttribute('aria-checked', 'true');
+        await expect(inspectTask(page, task.id)).toHaveAttribute('aria-pressed', 'true');
         await details(page, task.id).click();
         const dialog = page.locator('.task-detail-dialog');
         await expect(dialog.locator('.task-detail-title')).toHaveText(task.title);

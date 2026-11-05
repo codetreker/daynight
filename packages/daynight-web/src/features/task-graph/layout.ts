@@ -15,6 +15,8 @@ export type CanvasPoint = {
   readonly y: number;
 };
 
+export type GraphDirection = 'horizontal' | 'vertical';
+
 export type CanvasNode = {
   readonly id: string;
   readonly position: CanvasPoint;
@@ -36,6 +38,7 @@ export type CanvasLayout = {
   readonly edges: readonly CanvasEdge[];
   readonly width: number;
   readonly height: number;
+  readonly direction?: GraphDirection;
 };
 
 const compare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
@@ -47,12 +50,12 @@ const finite = (value: number | undefined): number => {
 
 export const layoutGraph = (projection: ChainProjection, nodeHeights: ReadonlyMap<string, number> = new Map(
   [...projection.mainIds, ...projection.externalIds].map((id) => [id, TASK_NODE_COMPACT_HEIGHT]),
-)): CanvasLayout => {
+), direction: GraphDirection = 'horizontal'): CanvasLayout => {
   const ids = [...projection.mainIds, ...projection.externalIds].sort(compare);
-  if (ids.length === 0) return { nodes: [], edges: [], width: 0, height: 0 };
+  if (ids.length === 0) return { nodes: [], edges: [], width: 0, height: 0, direction };
 
   const graph = new Graph<GraphLabel, NodeLabel, EdgeLabel>({ directed: true });
-  graph.setGraph({ rankdir: 'LR', ranker: 'longest-path', nodesep: 32, ranksep: 64, marginx: 32, marginy: 32 });
+  graph.setGraph({ rankdir: direction === 'horizontal' ? 'LR' : 'TB', ranker: 'longest-path', nodesep: 32, ranksep: 64, marginx: 32, marginy: 32 });
   for (const id of ids) graph.setNode(id, { width: TASK_NODE_WIDTH, height: finite(nodeHeights.get(id)) });
   const sortedEdges = [...projection.edges].sort((left, right) =>
     compare(left.source, right.source) || compare(left.target, right.target));
@@ -89,5 +92,5 @@ export const layoutGraph = (projection: ChainProjection, nodeHeights: ReadonlyMa
   return { nodes, edges: planDependencyRoutes(nodes.map((node) => ({
     id: node.id, left: node.position.x, top: node.position.y,
     right: node.position.x + node.width, bottom: node.position.y + node.height,
-  })), edges), width, height };
+  })), edges, direction), width, height, direction };
 };
