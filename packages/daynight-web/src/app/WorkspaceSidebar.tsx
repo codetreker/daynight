@@ -7,6 +7,7 @@ import { useBodyScrollLock } from "./useBodyScrollLock";
 import "../styles/sidebar.css";
 import { TeamSelector } from "../features/teams/TeamSelector";
 import { useTeamMessages } from "../features/teams/messages";
+import { useBotMessages } from "../features/bots/messages";
 import { useTestSessionListMessages } from "../features/task-agent-session/test-session-list-messages";
 
 // Keep the media query identical to sidebar.css so layout and modal ownership change together.
@@ -23,6 +24,7 @@ type WorkspaceSidebarProps = {
   readonly personalId: string;
   readonly selectedTeamId: string;
   readonly workersActive?: boolean;
+  readonly botsActive?: boolean;
   readonly activeProjectId: string | null;
   readonly testSessionsActive?: boolean;
   readonly identityChecking: boolean;
@@ -31,11 +33,12 @@ type WorkspaceSidebarProps = {
   readonly onCreateTeam?: () => void;
 };
 
-export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, sharedActive, teamSettingsActive = false, teamMembersActive = false, personalId, selectedTeamId, workersActive = false, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate, onCreateTeam }: WorkspaceSidebarProps) => {
+export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, sharedActive, teamSettingsActive = false, teamMembersActive = false, personalId, selectedTeamId, workersActive = false, botsActive = false, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate, onCreateTeam }: WorkspaceSidebarProps) => {
   const { messages: { auth: { shell: m }, workspace: { app, projects: p } } } = useI18n();
   const projects = useProjectList();
   const teamMessages = useTeamMessages();
   const testMessages = useTestSessionListMessages();
+  const botMessages = useBotMessages();
   const [media] = useState(() => window.matchMedia(SIDEBAR_NARROW_QUERY));
   const [narrow, setNarrow] = useState(media.matches);
   const [drawer, setDrawer] = useState<{ readonly route: string } | null>(null);
@@ -140,6 +143,7 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
           <a className="nav-button" href={`/teams/${selectedTeamId}/settings`} onClick={follow} aria-label={teamMessages.settings} title={teamMessages.settings} aria-current={teamSettingsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">⚙</span><span className="nav-text">{teamMessages.settings}</span></a>
           <a className="nav-button" href="/shared-projects" onClick={follow} aria-label={teamMessages.shared} title={teamMessages.shared} aria-current={sharedActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">◇</span><span className="nav-text">{teamMessages.shared}</span></a>
           <a className="nav-button" href="/workers" onClick={follow} aria-label={m.workers} title={m.workers} aria-current={workersActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4M7 8h10M7 12h6" /></svg></span><span className="nav-text">{m.workers}</span></a>
+          <a className="nav-button" href="/bots" onClick={follow} aria-label={botMessages.title} title={botMessages.title} aria-current={botsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="7" width="16" height="13" rx="3" /><path d="M12 3v4M8 12h.01M16 12h.01M9 16h6" /></svg></span><span className="nav-text">{botMessages.title}</span></a>
           <a className="nav-button" href="/test-sessions" onClick={follow} aria-label={testMessages.title} title={testMessages.title} aria-current={testSessionsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▷</span><span className="nav-text">{testMessages.title}</span></a>
         </nav>
       </div>

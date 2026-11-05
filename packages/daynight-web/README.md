@@ -40,6 +40,27 @@ owns the frontend lifecycle choices; the
 [activation decision](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 owns production composition and credential-private acceptance.
 
+## Assistants
+
+The authenticated sidebar opens `/bots`; `/bots/{id}` selects a conversation in
+the same management page. Name-only creation uses server-resolved defaults and
+folds optional Worker, ordinary-directory and Agent choices into advanced
+settings. Unsupported, offline or stale Workers retain their actual reasons.
+
+`BotsPage` uses the shared Session View and a bounded cache for stable switching,
+independent drafts and reading positions. The current name opens details without
+rebuilding the conversation; narrow layouts and full screen share the existing
+focus rules. Closing a view does not stop its Worker-owned Agent. List deletion
+uses authoritative cleanup stages and invalidates only the target's known
+conversation state; an old Test URL cannot bypass deletion.
+
+The [management requirements](../../docs/spec/bot-management-web.md) and
+[Session design](../../docs/design/bot-session-view.md) own behavior and identity
+boundaries. Production-page acceptance uses real management HTTP and the shared
+relay; controlled transport evidence does not prove live Provider execution.
+Existing standalone Test sessions remain separate. Webhook/MCP configuration is
+not available.
+
 ## Public product entry
 
 The public `/` page explains the shared work layer for developers, teams and their
@@ -1800,7 +1821,7 @@ independent native/container services, databases, private credentials and cleanu
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
 --shard=i/2`: fully-parallel controls case-level partitioning, while each database
 still executes one browser worker serially. The current canonical inventory is
-38 scenarios, divided into two disjoint sets of 19. Default file-level partitioning
+39 scenarios, divided into disjoint sets of 20 and 19. Default file-level partitioning
 does not provide this case-level balance.
 
 Before preparing services, the runner collects the complete canonical functional
@@ -2192,8 +2213,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (76 ordinary cases; local stress adds five native cases
-for 43 native / 38 container, 81 total), current manual/periodic refresh,
+The selected inventory (78 ordinary cases; local stress adds five native cases
+for 44 native / 39 container, 83 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle

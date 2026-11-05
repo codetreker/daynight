@@ -106,3 +106,21 @@ describe("assistant host observations", () => {
     finally { operation.dispose(); }
   });
 });
+
+it("uses the current cloud native defaults on each observation without inheriting another provider's settings", async () => {
+  let current = configuration;
+  const collector = createAssistantHostCollector({ workingDirectory: root, configuration: () => current,
+    environment: {}, resolveExecutable: provider => provider, runCommand: output });
+  const operation = createOperation();
+  try {
+    expect((await collector.collect(operation)).assistantHost.defaultProvider).toBe("copilot");
+    current = { agent: "codex", agentControlMode: "web", model: "new-model", args: [], recoveryLimit: 7 };
+    const sample = (await collector.collect(operation)).assistantHost;
+    expect(sample.defaultProvider).toBe("codex");
+    expect(sample.providers).toEqual([
+      { provider: "codex", available: true, reason: null, model: "new-model", args: [] },
+      { provider: "claude", available: true, reason: null, model: null, args: [] },
+      { provider: "copilot", available: true, reason: null, model: null, args: [] },
+    ]);
+  } finally { operation.dispose(); }
+});
