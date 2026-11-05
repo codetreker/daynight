@@ -1,6 +1,8 @@
 package service
 
 import (
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+
 	"context"
 	"errors"
 	"reflect"
@@ -8,21 +10,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
-func serviceWorkerReport() core.WorkerReport {
+func serviceWorkerReport() model.WorkerReport {
 	now := time.Now().UTC()
-	return core.WorkerReport{Telemetry: core.WorkerTelemetry{
-		Machine: core.WorkerMachine{ID: uuid.NewString(), Name: "Snapshot worker"}, Platform: core.PlatformLinux,
+	return model.WorkerReport{Telemetry: model.WorkerTelemetry{
+		Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "Snapshot worker"}, Platform: model.PlatformLinux,
 		WorkingDirectory: "/workspace", SampledAt: now,
-		OS:       core.WorkerProbe[core.WorkerOS]{State: "ok", CheckedAt: now, Value: pointer(core.WorkerOS{Type: "Linux", Release: "6.8", Version: "Linux kernel", Arch: "x64"})},
-		CPU:      core.WorkerProbe[core.WorkerCPU]{State: "ok", CheckedAt: now, Value: pointer(core.WorkerCPU{Model: "Test CPU", LogicalProcessors: 4, UsagePercent: 25})},
-		Memory:   core.WorkerProbe[core.WorkerMemory]{State: "ok", CheckedAt: now, Value: pointer(core.WorkerMemory{UsedBytes: 1024, TotalBytes: 4096})},
-		Disk:     core.WorkerProbe[core.WorkerDisk]{State: "ok", CheckedAt: now, Value: pointer(core.WorkerDisk{AvailableBytes: 2048, TotalBytes: 8192})},
-		Versions: core.WorkerVersions{Daynight: "1.0.0", Herdr: core.WorkerProbe[string]{State: "not_running", CheckedAt: now}, Codex: core.WorkerProbe[string]{State: "not_installed", CheckedAt: now}, Copilot: core.WorkerProbe[string]{State: "not_installed", CheckedAt: now}},
+		OS:       model.WorkerProbe[model.WorkerOS]{State: "ok", CheckedAt: now, Value: pointer(model.WorkerOS{Type: "Linux", Release: "6.8", Version: "Linux kernel", Arch: "x64"})},
+		CPU:      model.WorkerProbe[model.WorkerCPU]{State: "ok", CheckedAt: now, Value: pointer(model.WorkerCPU{Model: "Test CPU", LogicalProcessors: 4, UsagePercent: 25})},
+		Memory:   model.WorkerProbe[model.WorkerMemory]{State: "ok", CheckedAt: now, Value: pointer(model.WorkerMemory{UsedBytes: 1024, TotalBytes: 4096})},
+		Disk:     model.WorkerProbe[model.WorkerDisk]{State: "ok", CheckedAt: now, Value: pointer(model.WorkerDisk{AvailableBytes: 2048, TotalBytes: 8192})},
+		Versions: model.WorkerVersions{Daynight: "1.0.0", Herdr: model.WorkerProbe[string]{State: "not_running", CheckedAt: now}, Codex: model.WorkerProbe[string]{State: "not_installed", CheckedAt: now}, Copilot: model.WorkerProbe[string]{State: "not_installed", CheckedAt: now}},
 	}}
 }
 
@@ -38,7 +40,7 @@ func TestWorkerSnapshotsPreserveUnknownEmptyAndStaleObservations(t *testing.T) {
 			t.Fatalf("initial report: %+v, %v", result, err)
 		}
 		detail, err := workers.Get(ctx, principal, id)
-		if err != nil || detail.Worker.TaskSnapshot.State != core.WorkerTasksUnavailable || detail.Worker.TaskSnapshot.ObservedAt != nil || len(detail.Worker.TaskSnapshot.Items) != 0 {
+		if err != nil || detail.Worker.TaskSnapshot.State != model.WorkerTasksUnavailable || detail.Worker.TaskSnapshot.ObservedAt != nil || len(detail.Worker.TaskSnapshot.Items) != 0 {
 			t.Fatalf("unknown inventory became idle: %+v, %v", detail, err)
 		}
 	}
@@ -46,28 +48,28 @@ func TestWorkerSnapshotsPreserveUnknownEmptyAndStaleObservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report.TaskInventory = &core.WorkerTaskInventory{ObservedAt: time.Now().UTC(), Claims: []core.WorkerTaskReference{}}
+	report.TaskInventory = &model.WorkerTaskInventory{ObservedAt: time.Now().UTC(), Claims: []model.WorkerTaskReference{}}
 	if _, err := workers.Report(ctx, principal, id, report); err != nil {
 		t.Fatal(err)
 	}
 	idle, err := workers.Get(ctx, principal, id)
-	if err != nil || idle.Worker.TaskSnapshot.State != core.WorkerTasksObserved || idle.Worker.TaskSnapshot.ObservedAt == nil || !idle.Worker.CreatedAt.Equal(before.Worker.CreatedAt) {
+	if err != nil || idle.Worker.TaskSnapshot.State != model.WorkerTasksObserved || idle.Worker.TaskSnapshot.ObservedAt == nil || !idle.Worker.CreatedAt.Equal(before.Worker.CreatedAt) {
 		t.Fatalf("known empty inventory: %+v, %v", idle, err)
 	}
 	report.TaskInventory = nil
 	report.Telemetry.Machine.Name = "Reconnected worker"
-	report.Telemetry.Memory = core.WorkerProbe[core.WorkerMemory]{State: "error", CheckedAt: time.Now().UTC(), Code: pointer("io_error")}
+	report.Telemetry.Memory = model.WorkerProbe[model.WorkerMemory]{State: "error", CheckedAt: time.Now().UTC(), Code: pointer("io_error")}
 	if _, err := workers.Report(ctx, principal, id, report); err != nil {
 		t.Fatal(err)
 	}
 	stale, err := workers.Get(ctx, principal, id)
-	if err != nil || stale.Worker.TaskSnapshot.State != core.WorkerTasksStale || !reflect.DeepEqual(stale.Worker.TaskSnapshot.ObservedAt, idle.Worker.TaskSnapshot.ObservedAt) || stale.Worker.Telemetry.Machine.Name != report.Telemetry.Machine.Name || stale.Worker.Telemetry.Memory.State != "error" {
+	if err != nil || stale.Worker.TaskSnapshot.State != model.WorkerTasksStale || !reflect.DeepEqual(stale.Worker.TaskSnapshot.ObservedAt, idle.Worker.TaskSnapshot.ObservedAt) || stale.Worker.Telemetry.Machine.Name != report.Telemetry.Machine.Name || stale.Worker.Telemetry.Memory.State != "error" {
 		t.Fatalf("reconnect lost truthful task or field state: %+v, %v", stale, err)
 	}
 	other := servicePrincipal(t, database)
 	_, err = workers.Get(ctx, other, id)
 	requireFault(t, err, "not_found")
-	page, err := workers.List(ctx, other, PageRequest{Limit: 50})
+	page, err := workers.List(ctx, other, model.PageRequest{Limit: 50})
 	if err != nil || len(page.Items) != 0 || page.NextCursor != nil {
 		t.Fatalf("worker leaked to another account: %+v, %v", page, err)
 	}
@@ -78,13 +80,13 @@ func TestWorkerSnapshotsNormalizeClaimsAndFilterCurrentPermissions(t *testing.T)
 	ctx := context.Background()
 	owner := workerMember(t, database, project.ID)
 	descriptor := workerDescriptor()
-	descriptor.Agent, descriptor.AgentControlMode = core.AgentClaude, core.AgentControlModeWeb
+	descriptor.Agent, descriptor.AgentControlMode = model.AgentClaude, model.AgentControlModeWeb
 	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
-	task = updateTask(t, tasks, admin, task, UpdateTask{Properties: propertyPatch(core.PullRequestProperty{URL: "opaque\x00", Title: "Unrelated PR"})})
+	task = updateTask(t, tasks, admin, task, taskcore.UpdateTask{Properties: propertyPatch(model.PullRequestProperty{URL: "opaque\x00", Title: "Unrelated PR"})})
 	before := task
 	workers := NewWorkers(database)
 	report := serviceWorkerReport()
-	report.TaskInventory = &core.WorkerTaskInventory{ObservedAt: time.Now().UTC(), Claims: []core.WorkerTaskReference{{ProjectID: strings.ToUpper(project.ID), TaskID: task.ID, ClaimID: descriptor.ClaimID}, {ProjectID: project.ID, TaskID: uuid.NewString(), ClaimID: uuid.NewString()}}}
+	report.TaskInventory = &model.WorkerTaskInventory{ObservedAt: time.Now().UTC(), Claims: []model.WorkerTaskReference{{ProjectID: strings.ToUpper(project.ID), TaskID: task.ID, ClaimID: descriptor.ClaimID}, {ProjectID: project.ID, TaskID: uuid.NewString(), ClaimID: uuid.NewString()}}}
 	if _, err := workers.Report(ctx, owner, descriptor.WorkerID, report); err != nil {
 		t.Fatal(err)
 	}
@@ -93,18 +95,18 @@ func TestWorkerSnapshotsNormalizeClaimsAndFilterCurrentPermissions(t *testing.T)
 		t.Fatalf("normalized task inventory: %+v, %v", detail, err)
 	}
 	observed := detail.Worker.TaskSnapshot.Items[0]
-	if observed.TaskID != task.ID || observed.Agent != core.AgentClaude || observed.Title != task.Title || observed.Phase != core.WorkerPreparing || observed.Status != core.TaskInProgress {
+	if observed.TaskID != task.ID || observed.Agent != model.AgentClaude || observed.Title != task.Title || observed.Phase != model.WorkerPreparing || observed.Status != model.TaskInProgress {
 		t.Fatalf("snapshot did not use authoritative task fields: %+v", observed)
 	}
 	after, err := tasks.Get(ctx, admin, project.ID, task.ID)
 	if err != nil || !reflect.DeepEqual(before, after) {
 		t.Fatalf("report mutated task ownership/version: %+v, %v", after, err)
 	}
-	if _, err := tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: after.Version, Status: core.TaskDone, ClaimID: &descriptor.ClaimID}); err != nil {
+	if _, err := tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: after.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID}); err != nil {
 		t.Fatal(err)
 	}
 	detail, err = workers.Get(ctx, owner, descriptor.WorkerID)
-	if err != nil || len(detail.Worker.TaskSnapshot.Items) != 1 || detail.Worker.TaskSnapshot.Items[0].Status != core.TaskInProgress {
+	if err != nil || len(detail.Worker.TaskSnapshot.Items) != 1 || detail.Worker.TaskSnapshot.Items[0].Status != model.TaskInProgress {
 		t.Fatalf("completion erased or rewrote historical observation: %+v, %v", detail, err)
 	}
 	if _, err := database.Pool.Exec(ctx, "DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2", project.ID, owner.UserID); err != nil {
@@ -114,7 +116,7 @@ func TestWorkerSnapshotsNormalizeClaimsAndFilterCurrentPermissions(t *testing.T)
 	if err != nil || len(detail.Worker.TaskSnapshot.Items) != 0 {
 		t.Fatalf("revoked membership leaked old titles: %+v, %v", detail, err)
 	}
-	page, err := workers.List(ctx, owner, PageRequest{Limit: 50})
+	page, err := workers.List(ctx, owner, model.PageRequest{Limit: 50})
 	if err != nil || len(page.Items) != 1 || len(page.Items[0].TaskSnapshot.Items) != 0 {
 		t.Fatalf("list and detail permission filters disagree: %+v, %v", page, err)
 	}
@@ -133,7 +135,7 @@ func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	request := PageRequest{Limit: 1}
+	request := model.PageRequest{Limit: 1}
 	seen := make(map[string]bool)
 	for range ids {
 		page, err := workers.List(ctx, principal, request)
@@ -147,7 +149,7 @@ func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
 			}
 		}
 		if page.NextCursor != nil {
-			_, err := workers.List(ctx, servicePrincipal(t, database), PageRequest{Limit: 1, Cursor: page.NextCursor})
+			_, err := workers.List(ctx, servicePrincipal(t, database), model.PageRequest{Limit: 1, Cursor: page.NextCursor})
 			requireFault(t, err, "invalid_input")
 		}
 		request.Cursor = page.NextCursor
@@ -177,17 +179,17 @@ func TestWorkerSnapshotServiceRefusalsAndStorageFailures(t *testing.T) {
 	workers := NewWorkers(database)
 	ctx := context.Background()
 	id := uuid.NewString()
-	_, err := workers.Report(ctx, core.Principal{}, id, serviceWorkerReport())
+	_, err := workers.Report(ctx, model.Principal{}, id, serviceWorkerReport())
 	requireFault(t, err, "unauthenticated")
-	_, err = workers.List(ctx, core.Principal{}, PageRequest{Limit: 1})
+	_, err = workers.List(ctx, model.Principal{}, model.PageRequest{Limit: 1})
 	requireFault(t, err, "unauthenticated")
-	_, err = workers.Get(ctx, core.Principal{}, id)
+	_, err = workers.Get(ctx, model.Principal{}, id)
 	requireFault(t, err, "unauthenticated")
 	_, err = workers.Report(ctx, principal, "invalid", serviceWorkerReport())
 	requireFault(t, err, "invalid_input")
-	_, err = workers.Report(ctx, principal, id, core.WorkerReport{})
+	_, err = workers.Report(ctx, principal, id, model.WorkerReport{})
 	requireFault(t, err, "invalid_input")
-	_, err = workers.List(ctx, principal, PageRequest{Limit: 0})
+	_, err = workers.List(ctx, principal, model.PageRequest{Limit: 0})
 	requireFault(t, err, "invalid_input")
 	_, err = workers.Get(ctx, principal, "invalid")
 	requireFault(t, err, "invalid_input")
@@ -196,7 +198,7 @@ func TestWorkerSnapshotServiceRefusalsAndStorageFailures(t *testing.T) {
 	database.Close()
 	for _, invoke := range []func() error{
 		func() error { _, err := workers.Report(ctx, principal, id, serviceWorkerReport()); return err },
-		func() error { _, err := workers.List(ctx, principal, PageRequest{Limit: 1}); return err },
+		func() error { _, err := workers.List(ctx, principal, model.PageRequest{Limit: 1}); return err },
 		func() error { _, err := workers.Get(ctx, principal, id); return err },
 	} {
 		var stored *store.Error

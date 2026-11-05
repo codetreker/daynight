@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 )
 
 func TestTestSessionListAuthenticationAndQuery(t *testing.T) {
@@ -40,13 +42,13 @@ func TestTestSessionListAuthenticationAndQuery(t *testing.T) {
 }
 
 func TestTestSessionListCallbackPathIsReserved(t *testing.T) {
-	config := AuthConfig{PublicOrigin: "https://daynight.example.com"}
+	config := configpkg.AuthSettings{PublicOrigin: "https://daynight.example.com"}
 	for _, path := range []string{"/test-sessions", "/test-sessions/one", "/api/v1/test-sessions", "/api/v1/test-sessions/one"} {
-		if _, _, err := validateAuthSettings(config, config.PublicOrigin+path); err == nil {
+		if _, _, err := configpkg.ValidateAuthSettings(config, config.PublicOrigin+path); err == nil {
 			t.Fatal("callback overlaps session route", path)
 		}
 	}
-	if _, _, err := validateAuthSettings(config, config.PublicOrigin+"/test-sessions-callback"); err != nil {
+	if _, _, err := configpkg.ValidateAuthSettings(config, config.PublicOrigin+"/test-sessions-callback"); err != nil {
 		t.Fatal("independent callback refused", err)
 	}
 }

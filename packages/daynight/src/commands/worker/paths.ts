@@ -6,6 +6,7 @@ import type { PathApi } from "../../platform/filesystem.js";
 export type WorkerPaths = ConfigurationPaths & {
   workerDirectory: string;
   databaseFile: string;
+  configurationFile: string;
   lockFile: string;
   herdrDirectory: string;
   logsDirectory: string;
@@ -22,6 +23,7 @@ export const resolveWorkerPaths = (
     ...configurationPaths,
     workerDirectory,
     databaseFile: pathApi.join(workerDirectory, "state.sqlite"),
+    configurationFile: pathApi.join(workerDirectory, "configuration.json"),
     lockFile: pathApi.join(workerDirectory, "instance.lock"),
     herdrDirectory: pathApi.join(workerDirectory, "h"),
     logsDirectory: pathApi.join(workerDirectory, "logs"),

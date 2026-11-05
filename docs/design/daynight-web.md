@@ -1,6 +1,6 @@
 # Web 工作空间设计
 
-生产 Web 由公开入口、认证工作空间、项目任务看板、任务详情和账号级 Worker 观测组成，使用同一 Go 内嵌资源管线。本文拥有它们的页面组合、请求生命周期与交付机制；[需求](../spec/daynight-web.md)拥有可见结果。运行结果按对应源码保留在 PR、CI 或实际验收材料中。本地回执与设计预览不能代替实际产品组合验收；[早期看板决策](../../.agents/notes/archived/architecture/2026-10-20-task-dashboard-mvp-design.md)保留原始设计背景。
+生产 Web 由公开入口、认证工作空间、项目任务看板、任务详情和账号级 Worker 运行观测与配置编辑组成，使用同一 Go 内嵌资源管线。本文拥有它们的页面组合、请求生命周期与交付机制；[需求](../spec/daynight-web.md)拥有可见结果。运行结果按对应源码保留在 PR、CI 或实际验收材料中。本地回执与设计预览不能代替实际产品组合验收；[早期看板决策](../../.agents/notes/archived/architecture/2026-10-20-task-dashboard-mvp-design.md)保留原始设计背景。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、CLI 和任务详情中的
 只读 PR 区域已实现。[需求](../spec/daynight-task-properties.md)拥有行为。
@@ -32,7 +32,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 ## 目标与现有基础
 
-浏览器提供“项目列表 → 项目统计 → 独立任务列表或根任务链 → 任务详情”和“我的 Worker → Worker 运行详情”两条读取路径。数据继续归属 `daynight-server`，不接入 客户端的 review 命令，不新增父子任务。任务仅有 todo、in_progress、done，创建默认 todo，详情提供
+浏览器提供“项目列表 → 项目统计 → 独立任务列表或根任务链 → 任务详情”和“我的 Worker → Worker 运行概况或配置”两条浏览路径。数据继续归属 `daynight-server`，不接入 客户端的 review 命令，不新增父子任务。任务仅有 todo、in_progress、done，创建默认 todo，详情提供
 版本化状态菜单；许可和平台使用各自确认入口，图和一般元数据继续保持读取。
 
 已有基础与集成位置：
@@ -40,7 +40,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 | 事实 | 证据与影响 |
 |---|---|
 | Go 服务已有项目与任务 JSON API | `packages/daynight-server/api/projects.go` 的 `ProjectPage` 返回项目及 `nextCursor`；`api/tasks.go` 的 `Task` 包含 `dependsOn`、`externalDependsOn`、`blockedBy`、`ready`、`allowAgents`、`requiredPlatform`。 |
-| 页面与 API 同源 | `internal/server` 在同一 mux 注册精确页面、静态资源及 API 路由；`internal/webui` 内嵌真实构建产物，未知 API 保留 JSON 404。 |
+| 页面与 API 同源 | `internal/server/webui` 在同一 mux 注册精确页面和静态资源路由，`internal/server` 注册 API 路由；`internal/service/webui` 内嵌真实构建产物，未知 API 保留 JSON 404。 |
 | 已有一致读取机制 | `packages/daynight-server/internal/core/store/snapshot.go` 的 `ReadSnapshot` 使用只读 `REPEATABLE READ`。 |
 | 分页之间没有共同快照 | [服务端分页约定](../spec/daynight-server.md)明确这一边界；不能用多次 task list 拼成准确的项目全图。 |
 | web 与 CLI 工作区独立 | 私有 React/TypeScript/Vite 包使用显式 `web:*` 命令；根 build/typecheck/test 继续只覆盖 CLI，web 使用按[CI 路由](../../README.md#ci-selection)选择的独立 job。 |
@@ -67,13 +67,17 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 `AuthenticatedApp` 的 Workspace 保持路由、认证屏障与正文所有权，`WorkspaceSidebar`
 负责导航呈现。侧栏分为可滚动的 `.sidebar-main` 和不收缩的 `.sidebar-bottom`：
-前者持有品牌、“我的项目”及缩进项目列表、与之平级的“我的 Worker”主入口，后者持有同一个 `/account` 链接、工作区说明及切换按钮。
+前者持有品牌、Team 选择、Team 范围的缩进项目列表、“与我共享”和“我的 Worker”入口，后者持有工作区说明及切换按钮。
 项目子项消费与项目列表页面相同的分页目录，直接复用导航 `follow` 的路由和修饰键处理。
 普通列表和链接提供层级语义；完整名称作为链接名称及 title，视觉文字允许省略。
-项目、成员及设置路由将 projectId 传给侧栏选中对应子项，项目父入口只在 `/projects` 选中；`/workers` 及 Worker 详情共同激活 Worker 入口。Worker 资源 ID 同时进入 Workspace 正文焦点 effect 与侧栏 routeKey，详情组件另以 workerId 作为 key，A/B 切换不会沿用旧抽屉或资源请求。
+项目、成员及设置路由将 projectId 传给侧栏选中对应子项；Team 和共享列表按各自路由选中；`/workers` 及 Worker 详情共同激活 Worker 入口。Worker 资源 ID 同时进入 Workspace 正文焦点 effect 与侧栏 routeKey，详情组件另以 workerId 作为 key，A/B 切换不会沿用旧抽屉或资源请求。
 桌面折叠和手机竖条以 `display: none` 排除项目子项交互，展开桌面或手机覆盖导航时显示。
-sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部入口。
+sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部切换按钮。
 链接的 `aria-current` 提供当前路由或项目选中态；主入口的图标、可访问名称及悬停提示在竖条中仍然可用。
+
+顶栏头像和姓名触发账户菜单，菜单中的“账户设置”沿用 `/account` 路由。触发器暴露本地化
+名称及展开状态，菜单支持键盘访问；触发器再次点击、外部点击、Escape 和页面切换关闭菜单，
+Escape 后焦点回到触发器。菜单限制在视口内，适应窄屏、长姓名和默认头像。
 
 `useSidebarPreference` 独立管理桌面 `collapsed`。origin-local
 `daynight.web.sidebar.collapsed` 只接受 JSON boolean，缺失时为 false 且不写入。
@@ -86,19 +90,19 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 分离，手机开关不写桌面记录。覆盖导航位于 Workspace 认证屏障内，提供具名模态语义、
 实际可见控件的 Tab 约束、背景 inert 和共享 `useBodyScrollLock` 引用计数锁。
 清理恢复原 inert 与滚动状态，不释放图全屏或详情持有的锁。Escape/遮罩关闭恢复展开
-按钮焦点；路由导航交给既有正文聚焦。路由、桌面断点、身份核验开始、身份阻塞或卸载
-均关闭临时层。正常身份核验仍保留正文可见与交互；单独传递核验状态以关闭导航，不扩大
-原有 `blocked` 语义，不覆盖原生身份恢复对话框。
+按钮焦点；路由导航交给既有正文聚焦。路由、桌面断点、身份失效、身份阻塞或卸载
+均关闭临时层。普通身份核验不关闭导航或结束展示生命周期，保持焦点约束与滚动锁；实际
+阻塞恢复时释放临时层，避免与原生身份恢复对话框竞争。请求和发布仍受认证准入约束。
 
 侧栏状态不参与用户、项目、缓存或详情的 React key。宽度变化仅改变布局，图沿用已有
 尺寸观察，不重新初始化视口或增加读取、缓存及轮询器。跨标签实时同步与服务端同步可独立
 扩展，当前记录只表示一个本地外观值。[侧栏偏好决策](../../.agents/notes/implemented/feature/2026-10-25-sidebar-preference.md)
-拥有状态、错误与身份边界的取舍；[账户导航决策](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
-保留底部入口布局的原始理由。
+拥有状态、错误与身份边界的取舍；[账户菜单决策](../../.agents/notes/implemented/feature/2026-11-04-topbar-account-menu.md)
+拥有当前入口及其替代底部入口的理由。
 
 ### 我的 Worker 列表与详情
 
-`WorkersPage` 和 `WorkerDetailPage` 在既有按 `user.id:generation` 重挂载的认证工作空间内呈现 `/workers` 与 `/workers/{workerId}`。它们直接挂载在 `WorkspaceRoutes`，项目目录只为侧栏供给数据，成功与否不控制 Worker 页面准入。路由沿用规范 UUID 解析、登录 returnPath、原生 history、标题与面包屑；Worker 任务链接通过现有 taskDetailUrl 打开当前完整任务。
+`WorkersPage` 和 `WorkerDetailPage` 在既有按 `user.id:generation` 重挂载的认证工作空间内呈现 `/workers` 与 `/workers/{workerId}`。它们直接挂载在 `WorkspaceRoutes`，项目目录只为侧栏供给数据，成功与否不控制 Worker 页面准入。详情将运行观测与配置作为独立资源组合，即使近期观测不存在，仍保留 Worker ID 与配置入口。路由沿用规范 UUID 解析、登录 returnPath、原生 history、标题与面包屑；Worker 任务链接通过现有 taskDetailUrl 打开当前完整任务。
 
 `api/workers.ts` 拥有 Worker 摘要、详情和 Probe 的严格读取器，以及列表和详情 GET。请求复用现有同源、no-store、取消、401 和 requestId 机制；在 JSON 解码或 404 处理前对每个非 401 响应执行 principal 校验。读取器区分 unknown/observed/stale 清单，验证显式 null、任务计数和数组一致、重复引用、Worker 请求身份、联合分支、时间与数值范围。客户端采样时间不与数据库时间强制排序。版本为实际非空文本，不在展示层加入 semver 或最低版本拒绝。
 
@@ -106,7 +110,9 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 列表加载器逐页读取到 nextCursor 为 null，暂存所有摘要并拒绝循环游标或重复 Worker ID。只有整轮成功才一次发布，任何页失败都保留上次完整集合。快照的 items 始终保留服务端 (created_at, worker_id) 升序的跨页原始次序；created_at 是当前账号该 Worker 首次有效报告的持久化时间，后续报告不会更新。发布使用最后一页的 observedAt 与该响应接收时的 performance.now 建立统一锚点。WorkersPage 从原始快照筛选近期 Worker，再由 sortWorkers 复制数组并稳定地将 online 分组置前，组内不再比较 lastReportedAt 或 workerId。每次新快照或本地 ticker 重绘都从原始创建次序出发，因此尚未完成下次网络刷新时的 online 边界变化也能在新组内正确就位；已按 online 排列的数组不能作为后续分组的创建次序来源。摘要无需新增 createdAt，只有 machine、platform、上报时间及任务观测/计数，不执行逐 Worker 详情 fan-out，也不推断 OS release。
 
-每个可见页面共享一个 5 秒单飞刷新和一个 1 秒 ticker。纯 observation helper 使用 `observedAt + performance.now() - receivedMonotonic`，以 `< 120000ms` 判 online、`<= 72h` 判近期。页面隐藏、readEnabled 关闭或读取失败时，保留最后已发布时间并标记 stale，停止从旧锚点推进新结论。恢复可见或同账号核验后先发起新读取；成功才替换锚点并恢复 ticker。该生命周期与任务执行耗时不同：睡眠前的 Worker 锚点不能在重新可见时直接快进为当前在线结论。`WorkerReadNotice` 仅在保留快照且已有读取错误时显示警告和重试入口；没有错误的陈旧状态沿用徽标、任务快照说明与来源时间，正常检查不插入提示区域，原内容及焦点保持稳定。重试开始不清除已有错误，成功发布才移除失败提示。可信当前身份 404 清空详情，协议错误、网络错误及其他失败保留旧快照和“上次确认状态”。
+每个可见页面的运行观测通道共享一个 5 秒单飞刷新和一个 1 秒 ticker。纯 observation helper 使用 `observedAt + performance.now() - receivedMonotonic`，以 `< 120000ms` 判 online、`<= 72h` 判近期。页面隐藏、readEnabled 关闭或读取失败时，保留最后已发布时间并标记 stale，停止从旧锚点推进新结论。恢复可见或同账号核验后先发起新读取；成功才替换锚点并恢复 ticker。该生命周期与任务执行耗时不同：睡眠前的 Worker 锚点不能在重新可见时直接快进为当前在线结论。`WorkerReadNotice` 仅在保留快照且已有读取错误时显示警告和重试入口；没有错误的陈旧状态沿用徽标、任务快照说明与来源时间，正常检查不插入提示区域，原内容及焦点保持稳定。重试开始不清除已有错误，成功发布才移除失败提示。可信当前身份 404 清空运行观测，协议错误、网络错误及其他失败保留旧快照和“上次确认状态”；这些结果不替代独立配置资源的读取结果。
+
+列表卡片的上报时间使用 `WorkerTimestamp` 的绝对时间模式，复用 `format.dateTime` 的语言、浏览器时区和秒精度；标签与时间作为不可拆分的一组，卡片底部的详情入口可独立换行。ticker 仍用于在线状态与可见性，不改变同一上报时间的显示。
 
 详情的资源卡和环境/版本区域只格式化实际 telemetry：OS type/release/version/arch、CPU model/logicalProcessors/usagePercent、内存 bytes、启动工作目录文件系统容量及软件 Probe。总量 0 可展示但不计算除零 meter；没有真实设备字段时不生成设备名。软件 not_installed、Herdr not_running 和 error 分别呈现，checkedAt、sampledAt 和 lastReportedAt 保留来源时间含义。任务数组及计数只消费服务器当前权限过滤后的历史观测，不以项目或任务缓存补齐；stale 清单、offline Worker 和 unavailable 清单各有明确说明。
 
@@ -114,12 +120,44 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 [Web 观测决策](../../.agents/notes/implemented/architecture/2026-10-29-web-worker-observations.md)保存页级读取、单调时钟及陈旧冻结的取舍；[静默检查决策](../../.agents/notes/implemented/bug-fix/2026-10-30-quiet-worker-rechecks.md)记录正常过渡与实际失败的提示区分；[快照设计](daynight-worker-snapshots.md)和[客户端采集设计](daynight-worker-reporting.md)分别拥有服务端归一化与采集口径。
 
-### 项目列表 `/projects`
+### Worker 云端配置编辑
 
-- 页首显示“项目”和刷新按钮。
+`WorkerDetailPage` 在运行概况与配置之间切换，原运行概况继续使用单调时钟及近期窗口。配置首次打开时挂载独立 `WorkerConfigurationPanel`，切回概况后保留组件与草稿，但暂停配置自动读取。配置返回值没有 observedAt，不能放入 `useWorkerObservation` 或生成伪服务端时钟。Worker ID 始终来自路由；概况超窗、404 或首次失败不成为配置请求的前置条件。
+
+`api/worker-configuration.ts` 复用同源客户端、no-store、取消、401、requestId 和 principal 准入，独立严格解析目标、观测与错误。每个响应在解析和资源错误处理前先核对当前账号。目标与观测版本保留规范十进制字符串，不经 Number 转换。数据含义及合法范围由[配置协议](../spec/daynight-worker-configuration.md)拥有，API 层不增加 supported 或 Task 字段。
+
+`configuration/model.ts` 拥有表单投影、校验、逐字段覆盖和结果派生；`useWorkerConfiguration` 拥有当前资源、编辑基线、原始草稿、提交快照及读取/保存状态。有效配置值与输入原文分别保存，使非法整数或 JSON 仍能完整显示。Agent/model/args 按同一 native 元组构造提交，项目覆盖仅输出显式拥有的字段；换 Agent 后的适用默认值是展示推导，不能把继承意图展开写回服务端。
+
+配置通道在页面可见、配置面板活动、readEnabled 且账号 scope ready 时每 5 秒单飞读取。隐藏、离开页签或身份核验暂停读取；展示生命周期独立于临时准入，保持已挂载编辑器与弹窗及本地交互。scope 和 workerId 拥有资源与写入生命周期，generation 和取消信号约束读取发布；临时读取暂停不取消已派发的写入，结果在 scope ready 后发布。资源退休仍使旧请求失效。恢复后读取最新目标及观测。数据和草稿仅保留在页面内存，不进入 TaskCacheScope 的项目集合、IndexedDB 或全局注册表；TaskCacheScope 只提供认证生命周期及准入。
+
+后台读取发布最新资源与应用结果，保留编辑基线和原始草稿。字段提示独立比较该字段的合法解析值与当前保存目标；项目比较显式覆盖，保留继承与清除的区别。无效输入显示未保存，其他字段无效不会影响其提示；格式差异不改变原始草稿或应用观测。表单整体仍以原始编辑基线判断改动。表单控件保持稳定身份，既有焦点、选区和项目展开不随应用报告重建。首次有效资源建立草稿；用户显式取消修改或载入新目标才替换它。目标 revision 独立于 observationRevision，因此频繁应用报告不制造编辑冲突。
+
+保存捕获完整合法目标及基线 revision，只提交一次 PUT。已派发的提交与其快照保持绑定，后续输入另属当前草稿；旧提交完成不能覆盖新输入。409 读取最新资源并保留原草稿，提供查看与明确载入新值的路径，不自动换版本重发。明确失败保留输入；无法确认结果时保留未知状态，禁用可能重复的提交并通过 GET 核对。当前值匹配提交只说明资源现状，反馈不能声称原请求成功。核对失败保留可重试的读取入口，不能重放旧写入。
+
+项目选择遍历完整可访问目录后供选择。明确的已加载状态区分首次读取与后台复核，有效空集同样属于已加载；后台读取完成前保留完整候选集，不插入 loading 行，真实失败仍按权限和错误规则处理。搜索与未应用选择属于弹窗本地状态，只在 Done 时应用。已选但不在当前目录的条目保持 ID 及原覆盖，不从历史缓存恢复名称或仓库信息。最终提交移除已有项目时，以一个确认窗口说明排除与停止的影响；取消、遮罩或 Escape 不发出 PUT。窗口沿用现有焦点约束、背景隔离和关闭恢复，不把任务认领或业务操作加入配置保存。
+
+应用结果按 key、实际值与每项 targetRevision 派生。实际值与当前目标相同的独立标量或全局 native 可保留成功；目标值已变时仍展示旧实际值，并标记等待。项目准备/native 尚无当前目标观测，或最近 projectRemoval.targetRevision 不早于对应项目结果时，不能用旧成功宣告重新就绪。projectRemoval 自身始终保留实际状态和原版本，不被较新目标遮蔽。准备、native 与停止结果可独立成功或失败；已移出目标的 projectRemoval 继续显示在结果区域。observation.reportedAt 是应用结果接纳时间；offline 或缺少近期运行观测不使它变成当前执行证明。error、lastFailure 和 nextAttemptAt 分别显示当前失败、最近尚需报告的失败及重试期限，诊断只使用协议闭合字段的本地化文本。
+
+[配置编辑决策](../../.agents/notes/implemented/architecture/2026-11-04-web-worker-configuration-editor.md)保存资源、草稿和未知写入的职责分离及真实替代方案。生产组件和控制浏览器检查验证页面交互；真实配置下发、仓库准备及两种后端停止仍由实际 Worker 组合验收证明。
+
+### Team 管理与共享项目列表
+
+- `ProjectsPage` 的标题和副标题组成信息区，随后是创建和刷新操作；Shared 页面保持只有刷新。项目列表专属 `.project-list-heading` 允许换行，信息区使用 `flex: 1 1 240px`，操作组通过自动左外边距保持靠右。320、390 CSS px 下信息区占据内容宽度，操作组整体落到下一行；空间充足时左右并排，随实际内容宽度和侧栏宽度自适应。长名称在信息区内换行，既有字号、按钮、数据状态、请求和焦点顺序不变。取舍与几何验证边界见[标题换行决策](../../.agents/notes/implemented/bug-fix/2026-11-05-project-list-heading-wrap.md)。
+- `/projects` 是默认 Team 入口；`/teams/{teamId}` 读取指定 Team，`/shared-projects` 使用共享范围。没有记忆时默认使用 `/me.personalTeam`，明确项目与任务链接保持原地址。
+- Team 偏好按当前站点与账号独立保存：`localStorage` 的 `daynight.selectedTeam:<userId>` 只含已确认的 Team UUID，不保存名称、角色或成员资料。认证 scope 内首次显示工作空间时，无论入口是项目、Worker、账户还是共享页面，都恢复记忆并以精确 `GET /teams/{id}` 验证；明确 Team 路由优先使用 URL 中的 ID。一次成功安装选择后，普通导航继续使用当前内存选择；`/projects` 默认入口保留重新读取记忆的语义。独立 Task、附件、邀请与授权入口延后恢复，直到显示工作空间。只有可信 404 清除对应记忆并回 Personal，分页 Team 目录的缺项不代表失权。网络、5xx 或存储读取失败保留记忆并在工作空间提供重试；取消结果不能安装。写入失败保留当前内存选择，提示未保存并提供重试。共享范围不写 Team ID，CLI 默认配置独立。
+- 普通 Team 范围的项目目录等待偏好 ready，避免恢复期间读取初始 Personal 范围；共享目录及明确资源的主体读取独立。侧栏的 Team 项目、成员和设置链接在选择未就绪时不可导航到初始 Personal ID。`WorkspaceSidebar` 使用认证用户的 Personal Team ID 与可见性身份比较，确认 Personal 时不渲染成员和设置入口；普通 Team 不受名称影响，仍使用所选 ID 生成链接。此条件复用于桌面和窄屏导航，不改变直接地址的页面与权限。恢复与失败不改写明确 Project、Task 或附件地址，也不阻塞其主体。可见性取舍见[个人 Team 导航决策](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)。
+- Team 偏好与读取依附认证身份生命周期；身份切换、取消及后续选择阻止旧请求安装结果或覆盖另一账号的键。同一 `routeKey` 的已确认目标在后台精确 GET 期间保持 ready；首次读取或目标改变仍等待加载。同一次导航的已验证身份可用于侧栏入口的可见性，但实际链接仍须等待所选 Team ready。恢复默认选择的读取在发布前重新核对存储及待保存选择，不能覆盖另一标签页的新选择。确认回执与读取按 Team 和 membership 的独立版本仲裁；可信拒绝隔离私有内容，待定、未知及已确认结果仍保留。明确 Project 与 Task 链接不通过默认 Team 重写。[浏览器 Team 偏好决策](../../.agents/notes/implemented/feature/2026-11-04-browser-team-preference.md)记录恢复和失效处理的取舍。
+- Team 目录的后台复核按当前已加载页数从第一页沿新游标连续读取，完整前缀成功后一次发布；相同条目与游标保留原引用。分页读取与复核由 generation 和认证 scope 仲裁，后发分页不会被旧复核覆盖。中断的首载或分页在准入恢复后继续，真实失败保留已有条目并提供重试；显式刷新和变更后的刷新仍读取目录。
+- Team 选择器打开创建窗口，`/teams/{teamId}/settings` 按身份读取完整 Team 和真实版本，以静态文本展示名称和 ID；普通 admin 可通过名称旁按钮打开改名浮层并可删除，成员及 Personal 只读。名称行使用可换行的 flex 布局，使同排名称与按钮垂直居中；名称保留空白并可在长词内换行，按钮保持完整尺寸。浮层的名称输入使用多行控件，未编辑的原始名称不被控件换行规范化改写。删除确认展示重新读取的名称，比较控件规范化后的手输内容，请求仍携带原始名称和精确版本。
+- 创建直接提交表单，改名和删除复用 `ManagementDialog` 的焦点与取消行为。mutation 在派发后无法确认结果时保留 unknown 和只读核对入口；确认的版本冲突触发重新读取，不能以旧版本重发。成功回执受身份和资源校验，创建进入新 Team，改名更新共享名称，删除进入 Personal 并经现有偏好机制保存。同账号重验保留设置草稿、确认和已派发操作；普通身份核验期间保留弹窗展示，恢复后由设置页重新读取 Team。待定或未知操作期间的 404 只说明当前不可见，不能抢先导航或丢弃结果；无操作时确认失权仍由偏好所有者安全清理记忆。
+
+- 项目设置同时保留执行提醒表单和归属区段。`ProjectOwnership` 使用已确认的 `ProjectAccess.canTransfer` 展示入口，打开确认前重验权限；目标来自已加入 Team 的分页列表、UUID 或同 origin 的 Team 页面链接。普通复核保留对话框、目录页与选择；确认等待在途复核并核对操作身份及归属版本。预览返回目标名称、精确版本和转移后的预期角色，确认提交观察到的 ownership、目标版本与当前用户。冲突要求重新预览并确认；派发后未确认的结果保持 unknown，重读只展示当前事实，不重发或把 404 解释为成功。
+- 成功回执直接安装 access 或撤回对应 `TaskCacheScope` generation，清除项目私有视图与打开的任务。失权后按 source Team ID 点读：成功进入原 Team，确定 404 才进入 Personal，网络失败保留成功结果并提供导航重试。结果显示归属认证 Workspace，跨导航保留；权限仍在时留在项目并刷新 access。[转移决策](../../.agents/notes/implemented/feature/2026-11-05-web-project-transfer.md)记录原因和代价。
+- `/teams/{teamId}/members` 按身份读取 Team 和完整成员目录，不使用 Project participant 代替 Team 目录。目录保留 nullable profile 和真实成员版本，以用户 ID 作为资料缺失时的展示回退。角色与移除确认复用 `ManagementDialog` 和 Team mutation 状态；派发后的未知结果保留只读核对，冲突或权限拒绝刷新后要求重新确认。成员操作按登录身份和 Team 保持到跨路由的回执或未知结果；待定与未知操作阻止偏好读取的 404 抢先丢弃结果，核对只展示当前事实。成功回执独立于刷新结果显示，并刷新本人角色与 Team 列表；仍在成员页时自退回执导航 Personal，离页后的迟到回执只回退仍指向该 Team 的内存选择，不改变新路由。`useTeamPreference.leaveTeam` 丢弃已退出 Team 的待保存值，复用保存与重试机制将已退出 Team ID 作为替换条件；每次尝试均读取当前存储，仅当仍保存为该 ID 时写入 Personal，其他 Team 或缺失值保持原样。读取或写入失败保留这个条件，沿用保存错误与人工重试入口，后来的本地选择接替待保存值。生产 hook 测试覆盖正常回退、另一标签页选择、缺失记忆、未保存选择及存储故障恢复；完整 `AuthenticatedApp` 测试以延迟自退回执验证 Shared 和 Task 路由及下次默认入口恢复。独立 Project grant 保持不变。Personal 和最后 admin 的控件不可用，服务端仍负责并发权限与最后 admin 检查。
+- Team 成员列表以共享 grid 列轨道和行 subgrid 对齐身份、角色及操作；最后 admin 说明占独立行，避免其高度改变控件与操作的对齐。窄屏把身份移到上一行，说明可换行。角色控件保留原生 select 交互，使用固定尺寸与独立绘制的箭头控制留白；Project 授权的控件样式独立保留。取舍见[成员角色对齐决策](../../.agents/notes/implemented/bug-fix/2026-11-05-team-member-role-alignment.md)。
 - 卡片显示项目名称、仓库地址、创建日期和“查看任务”。长名称、地址允许换行，仓库地址按普通文本展示。
-- Workspace 的认证身份内只挂载一个项目目录 Provider；侧栏与项目卡片共享目录、刷新及“加载更多”，切换项目保留已加载页。
-- 复用 `GET /api/v1/projects?limit=50&cursor=...`，服务端先按有效项目权限过滤，再以“加载更多”遍历，按 ID 去重并保留服务端顺序。创建成功及移除自身成员后刷新共享目录。
+- Workspace 的认证身份内只挂载一个项目目录 Provider；侧栏与项目卡片共享目录、刷新及“加载更多”，切换项目保留已加载页；共享范围活动时不将其条目呈现为 Team 子项。
+- 复用 `GET /api/v1/projects` 的 `teamId` 或 `shared=true` 范围和游标，服务端先过滤再分页，按 ID 去重并保留服务端顺序。切换范围清空旧游标和显示，取消旧请求并拒绝晚到结果。创建对话框捕获打开时的 Team ID；成功及移除自身成员后刷新共享目录。
 - 加载下一页失败时保留已加载卡片，错误和重试定位在列表末尾；首次加载失败使用整页错误。
 - 刷新重置分页，从新列表开始。列表没有跨页一致性承诺，不显示未经完整读取的项目总数。
 
@@ -137,7 +175,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 选择任务列表：
 概览       │ 任务列表
 任务列表   │ [独立任务 2] [任务链 7]
-           │ [ ] 显示所有           最新创建在前 · 2 / 2 条任务链
+           │ 负责人：全部  状态：全部状态       2 / 2 条任务链
            │ ▾ Goal A         进行中       3 / 8 已完成 [查看依赖关系]
            │   子任务 · 7                        [查看 Goal 详情]
            │   任务 A1                                  已完成
@@ -156,27 +194,27 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 - `ProjectView` 持有唯一项目快照、`useTaskGraph` 同步、详情选择、项目订阅与浏览偏好。公共标题、刷新、错误和详情不属于任何可隐藏内容区。概览展示同一快照的六项统计和整体进度；任务列表使用同一完整索引和分类。停留概览仍需要当前统计，因此 15 秒同步按页面可见性运行，不按外层选择创建第二套请求或缓存。
 - `ProjectSectionTabs` 拥有外层导航的呈现与键盘方向，`ProjectOverview` 呈现统计与进度列表，`ProjectTaskWorkspace` 组合既有内层列表与任务时钟。两个面板复用 `.project-section-heading`；概览的标题与说明以 flex 单行、基线对齐，间隔 12px，任务列表只保留标题。标题不收缩且无下边距，概览说明允许收缩并在溢出时显示省略号，完整文案保留在文本节点及原生 `title` 提示中。标题/说明的桌面字号为 16px/12px，740px 及以下为 15px/11px，字重、颜色和标题区下方间距沿用各自规则。独立任务与任务链的工具栏直接衔接列表或空态，不渲染说明段落及其占位。共用项目标题区以 `.project-title-line` 将项目名与唯一的仓库地址按文字基线排列，横向间隔 14px，空间不足时整项换行；子项允许收缩并在长文本内部换行，项目名不保留下边距，仓库地址沿用原有次要文字样式。桌面导航列宽 150px、间距 28px，1000px 及以下为 130px/20px；740px 及以下改为上方横排。统计默认三列，1500px 起六列，740px 及以下两列。
-- `ProjectView` 先反转完整精确服务顺序，再按完整普通分量的汇总状态稳定排序，分类后生成一份近期投影，概览与任务列表共同消费。`overview-progress.ts` 读取普通分量的完整 `progress`，保留所有未完成组以及近期完成组，代表任务提供标题和导航 witness。独立任务以近期已知完成数作分子，与全部未完成数相加作分母，只要筛选集合非空就生成汇总行；全部完成为 `done`，部分完成或存在进行中任务为 `in_progress`，其余为 `todo`。`OverviewProgressCount.status` 携带进度状态，`ProjectOverview` 将任务链及独立汇总行按相同优先级稳定排序后再切页，同状态保留链序且汇总行在该组末尾。独立汇总仅有近期完成项时仍显示 100%。近期完成 Goal 同样显示 100%；六项项目统计仍读取完整 summary。统计口径由[需求](../spec/daynight-web.md#项目整体进度)拥有，当前范围与分页决策见[近期任务浏览](../../.agents/notes/implemented/feature/2026-10-27-recent-task-pages.md)，最初聚合与定位理由保留在[进度决策](../../.agents/notes/implemented/feature/2026-10-26-project-overview-progress.md)。
+- `ProjectView` 先反转完整精确服务顺序，再按完整普通分量的汇总状态稳定排序，分类后为概览生成近期投影，任务列表另从完整索引筛选。`overview-progress.ts` 读取普通分量的完整 `progress`，保留所有未完成组以及近期完成组，代表任务提供标题和导航 witness。独立任务以近期已知完成数作分子，与全部未完成数相加作分母，只要筛选集合非空就生成汇总行；全部完成为 `done`，部分完成或存在进行中任务为 `in_progress`，其余为 `todo`。`OverviewProgressCount.status` 携带进度状态，`ProjectOverview` 将任务链及独立汇总行按相同优先级稳定排序后再切页，同状态保留链序且汇总行在该组末尾。独立汇总仅有近期完成项时仍显示 100%。近期完成 Goal 同样显示 100%；六项项目统计仍读取完整 summary。统计口径由[需求](../spec/daynight-web.md#项目整体进度)拥有，当前范围与分页决策见[近期任务浏览](../../.agents/notes/implemented/feature/2026-10-27-recent-task-pages.md)，最初聚合与定位理由保留在[进度决策](../../.agents/notes/implemented/feature/2026-10-26-project-overview-progress.md)。
 - `task-status-rows.css` 通过 `data-task-status` 提供灰、蓝、绿底色及同色系悬停变量。`ProjectOverview` 直接使用既有 `OverviewProgressCount.status`，独立行、子任务和图卡片传自身状态，链标题使用分量状态。列表行由 `task-status-surface` 消费背景、边框及可读辅助文字；标题内展开按钮透明以覆盖完整标题行，展开容器保持中性。`TaskNode` 直接引入共享样式并由 `graph.css` 消费背景变量，保留图自身的状态边框、文字、虚线及检查轮廓；选中、前置检查和无关节点不写背景色。独立行及图卡片的卡住提醒共享橙色背景及悬停变量，各自保留告警边框和文字。详情不消费该属性，概览定位仅设置紫色轮廓和阴影。行为由[条目背景需求](../spec/daynight-web.md#任务条目状态背景)拥有，列表聚合取舍见[状态背景决策](../../.agents/notes/implemented/feature/2026-10-28-task-status-backgrounds.md)，图卡片复用及检查表达见[图卡片背景决策](../../.agents/notes/implemented/feature/2026-11-04-graph-status-backgrounds.md)。
 - `task-visibility.ts` 保留服务端 UTC 时间戳的纳秒精度，将当前时刻映射到浏览器本地日历，直接以本地年、月、日及午夜时分构造今天往前 6 天的起点和下一个午夜，不保留当前小时后再改日期；否则目标日期的晚间夏令时缺口可能先把该小时规范化到相邻日期，后续归零小时也无法恢复正确日期。日期偏移按本地日历计算，不减固定毫秒数。独立任务比较自身 `completedAt`；已完成 Goal 遍历完整普通成员，取最晚已知完成时间作为可验证的近期证据，不使用代表任务或外部前置时间。任一已知成员近期完成即可证明整组近期完成，全部未知或没有近期证据时默认隐藏。`useOverviewProgress` 在项目 owner 中运行一次，当前时刻在仅本地摘要期间使用本机墙钟，成功同步后以 snapshot 的服务端 `observedAt` 和 `receivedMonotonic` 为锚，利用 `performance.now()` 推进。它为下一个本地午夜或更早的已知未来完成时刻安排一次 timeout，页面隐藏时清理计时、恢复可见时重算；切换概览和任务列表继续使用同一时间 owner。过期不需要新 snapshot 或网络成功，图索引保持复用。执行耗时订阅仍由任务区时钟拥有。
 - `ProjectView` 保存一次性的概览导航目标，类型为任务链 witness task ID 或独立任务类别。入口复用两级选择和离开前位置保存；布局 effect 在任务滚动 hook 的恢复之后，使用最新 `componentByTask` 在完整筛选序列中解析目标和页码。目标不在当前页时，先切页并保留请求，等待该页挂载后才滚动、聚焦、高亮并记录新位置；独立汇总进入独立任务第一页并定位面板。显式定位因此覆盖同次激活的旧偏移恢复。定位不写 `openChainWitness`，不打开图；仅当目标确实消失或不符合筛选时才消费请求、聚焦类别入口并显示本地化提示。高亮在超时或卸载时清理，后续同步不重复定位，不新增 URL、持久化格式或数据请求。
 - `useProjectSection(projectId)` 复用 `useProjectViewPreferences.ts` 的 `useNamedPreference`，同步读取独立的 `daynight:project-section:${projectId}` 记录，严格接受 JSON 字符串 `"overview" | "tasks"`；没有记录时默认概览，刷新或返回项目的首次渲染即使用该项目保存的选择，不写 URL 或 history。`ProjectSection` 类型与内层 `TaskView` 同属偏好模块，项目 identity 改变时读取对应项目记录。读取或格式失败使用概览并显示外层专用偏好提示；写入失败保留本次内存选择并报告未保存。持久化选择由[外层视图恢复决策](../../.agents/notes/implemented/bug-fix/2026-10-25-project-section-restoration.md)拥有。
 - 桌面左侧竖向导航，窄屏改为内容上方横排；`tablist` 的 `aria-orientation`、方向键、稳定的 tab/panel ID 和实际方向一致。空项目、首屏加载、失败及保留旧快照的刷新错误继续由同一项目 owner 管理，外层导航不依赖任务总数。
 - 任务区首次选择后才挂载，后续以 `hidden` / `inert` 隐藏而不卸载，保留列表与独立偏好；外层离开任务列表或内层离开任务链时关闭图浮层并清除临时定位任务，返回后不自动打开。详情对话框位于两个内容面板之外，切换不会建立新的详情会话。内层“独立任务 / 任务链”容器保留稳定关联 ID，只有活动类别挂载列表内容。该层次区分由[项目分区决策](../../.agents/notes/implemented/feature/2026-10-25-project-overview-task-sections.md)拥有。
-- 内层默认任务链，之后恢复该项目的选择；两个内层页签数字均表示完整快照中的未完成任务数，包含待处理和进行中。独立任务只计普通度数为零的单成员，任务链只计多成员普通分量。遍历完整索引中的唯一 task，按普通分量归类后仅计入状态非 `done` 的任务，每个成员恰好属于一个分量。数字不依赖外层/内层选择、打开的图浮层或完成筛选，全部完成显示 0；两者之和等于项目 `todo + inProgress`。列表工具栏继续以独立任务或普通分量条目显示可见/全部数量。新快照同时更新分类和数字，刷新失败保留上次成功值；机制与取舍见[页签计数决策](../../.agents/notes/implemented/feature/2026-10-22-unfinished-task-tab-counts.md)。
+- 内层默认任务链，之后恢复该项目的选择；两个内层页签数字均表示完整快照中的未完成任务数，包含待处理和进行中。独立任务只计普通度数为零的单成员，任务链只计多成员普通分量。遍历完整索引中的唯一 task，按普通分量归类后仅计入状态非 `done` 的任务，每个成员恰好属于一个分量。数字不依赖外层/内层选择、打开的图浮层或列表筛选，全部完成显示 0；两者之和等于项目 `todo + inProgress`。列表工具栏继续以独立任务或普通分量条目显示可见/全部数量。新快照同时更新分类和数字，刷新失败保留上次成功值；机制与取舍见[页签计数决策](../../.agents/notes/implemented/feature/2026-10-22-unfinished-task-tab-counts.md)。
 
-- 任务链是普通依赖的弱连通分量，一个分量只产生一个条目；普通多起点合流不重复成员。没有普通前置及后续的单成员进入独立任务，即使外部前置使其阻塞。代表是服务端精确顺序中最早的普通入度零成员，供应标题和排序。状态及完成筛选不改变拓扑，完整快照先计算分量与进度再过滤条目。机制与取舍见[外部依赖决策](../../.agents/notes/implemented/architecture/2026-10-23-external-dependency-design.md)。
-- 独立任务使用紧凑原生整行按钮，显示标题、自身状态、自动执行许可、平台要求、ID、创建时间及已知执行耗时/提醒；耗时容器紧随创建时间，嵌入可换行 flex 信息行，点击直接打开详情，不挂载单节点画布。任务链以代表任务作为顶层 Goal 条目，保留原标题、整链状态与进度；链头不渲染 Goal 标签或任务数/未完成数摘要。`ChainRow` 从 `component.memberIds` 读取当前状态，累计 `in_progress`，在标题后的可换行布局显示本地化数量；成员集包含代表任务且排除仅作外部上下文的任务，零值仍显示。该数量与整链状态各自保留原本语义。两个列表默认消费共享近期投影；各自工具栏左侧为无完成数量后缀的原生“显示所有”复选框，右侧显示最新创建在前及符合筛选的完整条目数/全部条目数。勾选时恢复相应类别全历史序列，取消后返回近期序列，子任务成员不随筛选截断。统计、完整索引、图投影与上下文保持完整；筛选和翻页不发请求，定时同步仍按页面可见性运行。
-- 两个内层类别分别保留“显示所有”选择，共用一个项目任务列表偏移。`useTaskListScroll(projectId, active)` 以 `daynight:task-list-scroll:${projectId}` 保存非负有限数值；类别不属于 hook 的输入，因此内层切换不触发恢复或重新注册监听。内容缩短时由浏览器限制当前位置，后续保存记录实际偏移。任务滚动 hook 仅在快照可用且外层任务列表活动时拥有 window scroll/pagehide；离开前保存，在布局阶段释放监听，重新进入任务区且面板可见后恢复。首次进入、刷新或返回项目读取同一共享偏移；显式分页和概览导航随后覆盖恢复位置。概览使用本次项目挂载期间的独立内存位置，首次为零。共享 `usePagination(total, pageSize)` 为筛选后的完整序列计算有效页码和范围，两个任务类别使用 `taskPageSize=15`，概览显式使用 20，在条目减少时钳位；组件按该范围截取展示序列，筛选改变时重置该列表第一页。三个列表的页码均由持续挂载的项目 owner 保存，概览将 Goal 与独立汇总合并并按状态稳定排序后，作为同一完整行序列切片，三者互不覆盖。`ListPagination` 只呈现本地化范围、总数和上一页/下一页控件，只有一页时不渲染；Goal 子任务不增加父列表条数。页码仅属于本次访问，不增加持久化记录。偏好失败保留本次内存操作并显示提示。子任务展开、图打开、详情、全屏和图视口仍不持久化；原 `daynight:project-view:${projectId}` 不再读写。机制见[浏览偏好决策](../../.agents/notes/archived/feature/2026-10-21-task-browsing-preferences.md)、[图浮层决策](../../.agents/notes/implemented/feature/2026-10-26-task-chain-graph-dialog.md)、[近期分页决策](../../.agents/notes/implemented/feature/2026-10-27-recent-task-pages.md)及[共享滚动决策](../../.agents/notes/implemented/bug-fix/2026-11-03-shared-task-list-scroll.md)。
-- `ProjectView` 的图临时定位任务初始为 null，只有“查看依赖关系”按钮打开图，Goal 主体展开操作不写该状态。通过 `componentByTask` 解析其当前普通分量和可见代表，有效定位任务不随代表变化而覆盖；任务被移除、成为单成员、被筛选排除或不再处于当前页时，关闭图并清除定位。没有可见链时不选择其他条目，重新显示或返回视图等待新的显式打开。真正空项目、类别为空与近期筛选为空有不同状态；仍有历史完成项的筛选空态提供“显示所有”，先聚焦持续存在的复选框再更新列表。
-- 完整图索引保留服务端 `(createdAt,id)` 升序。展示序列从完整代表顺序生成倒序副本，再用 `task-order.ts` 的 `compareTaskStatus` 按 `in_progress` → `todo` → `done` 稳定排序，之后分类、近期筛选和分页。独立任务的单成员分量状态等于自身状态，Goal 状态读取完整 `component.progress.status`；同状态保留创建时间与相同时间 ID 的精确倒序，状态刷新会重新排列；更新时间不影响同状态位置。前端不通过 JavaScript 毫秒时间重新排序，避免丢失数据库时间精度。状态排序与原始顺序隔离的理由见[状态排序决策](../../.agents/notes/implemented/bug-fix/2026-10-28-project-status-order.md)，原展示取舍见[任务链展示决策](../../.agents/notes/archived/feature/2026-10-21-task-chain-presentation.md)。
+- 任务链是普通依赖的弱连通分量，一个分量只产生一个条目；普通多起点合流不重复成员。没有普通前置及后续的单成员进入独立任务，即使外部前置使其阻塞。代表是服务端精确顺序中最早的普通入度零成员，供应标题和排序。状态及负责人筛选不改变拓扑，完整快照先计算分量与进度再过滤条目。机制与取舍见[外部依赖决策](../../.agents/notes/implemented/architecture/2026-10-23-external-dependency-design.md)。
+- 独立任务使用紧凑原生整行按钮，显示标题、自身状态、自动执行许可、平台要求、ID、创建时间及已知执行耗时/提醒；耗时容器紧随创建时间，嵌入可换行 flex 信息行，点击直接打开详情，不挂载单节点画布。任务链以代表任务作为顶层 Goal 条目，保留原标题、整链状态与进度；链头不渲染 Goal 标签或任务数/未完成数摘要。`ChainRow` 从 `component.memberIds` 读取当前状态，累计 `in_progress`，在标题后的可换行布局显示本地化数量；成员集包含代表任务且排除仅作外部上下文的任务，零值仍显示。该数量与整链状态各自保留原本语义。两个列表共享负责人和状态条件，从完整索引逐任务联合匹配后筛选顶层条目；默认全部状态包含全历史。任一普通分量成员同时匹配两项即保留真实代表及完整子任务列表，链外前置不参与匹配。工具栏显示符合筛选的完整条目数/全部条目数。统计、完整索引、图投影与上下文保持完整；筛选和翻页不发请求，定时同步仍按页面可见性运行。
+- 两个内层类别共享负责人和状态条件及一个项目任务列表偏移。状态默认为全部状态，筛选条件在本次项目访问中保留，不写浏览器存储。`useTaskListScroll(projectId, active)` 以 `daynight:task-list-scroll:${projectId}` 保存非负有限数值；类别不属于 hook 的输入，因此内层切换不触发恢复或重新注册监听。内容缩短时由浏览器限制当前位置，后续保存记录实际偏移。任务滚动 hook 仅在快照可用且外层任务列表活动时拥有 window scroll/pagehide；离开前保存，在布局阶段释放监听，重新进入任务区且面板可见后恢复。首次进入、刷新或返回项目读取同一共享偏移；显式分页和概览导航随后覆盖恢复位置。概览使用本次项目挂载期间的独立内存位置，首次为零。共享 `usePagination(total, pageSize)` 为筛选后的完整序列计算有效页码和范围，两个任务类别使用 `taskPageSize=15`，概览显式使用 20，在条目减少时钳位；组件按该范围截取展示序列，负责人或状态改变时重置两个任务列表到第一页。三个列表的页码均由持续挂载的项目 owner 保存，概览将 Goal 与独立汇总合并并按状态稳定排序后，作为同一完整行序列切片，三者互不覆盖。`ListPagination` 只呈现本地化范围、总数和上一页/下一页控件，只有一页时不渲染；Goal 子任务不增加父列表条数。页码仅属于本次访问，不增加持久化记录。偏好失败保留本次内存操作并显示提示。子任务展开、图打开、详情、全屏和图视口仍不持久化；原 `daynight:project-view:${projectId}` 不再读写。机制见[浏览偏好决策](../../.agents/notes/archived/feature/2026-10-21-task-browsing-preferences.md)、[图浮层决策](../../.agents/notes/implemented/feature/2026-10-26-task-chain-graph-dialog.md)、[近期分页决策](../../.agents/notes/implemented/feature/2026-10-27-recent-task-pages.md)及[共享滚动决策](../../.agents/notes/implemented/bug-fix/2026-11-03-shared-task-list-scroll.md)。
+- `ProjectView` 的图临时定位任务初始为 null，只有“查看依赖关系”按钮打开图，Goal 主体展开操作不写该状态。通过 `componentByTask` 解析其当前普通分量和可见代表，有效定位任务不随代表变化而覆盖；任务被移除、成为单成员、被筛选排除或不再处于当前页时，关闭图并清除定位。没有可见链时不选择其他条目，重新显示或返回视图等待新的显式打开。真正空项目、类别为空与筛选无匹配有不同状态；入口消失时焦点恢复到仍可用的控件或列表区域。
+- 完整图索引保留服务端 `(createdAt,id)` 升序。展示序列从完整代表顺序生成倒序副本，再用 `task-order.ts` 的 `compareTaskStatus` 按 `in_progress` → `todo` → `done` 稳定排序，之后分类、筛选和分页。独立任务的单成员分量状态等于自身状态，Goal 状态读取完整 `component.progress.status`；同状态保留创建时间与相同时间 ID 的精确倒序，状态刷新会重新排列；更新时间不影响同状态位置。前端不通过 JavaScript 毫秒时间重新排序，避免丢失数据库时间精度。状态排序与原始顺序隔离的理由见[状态排序决策](../../.agents/notes/implemented/bug-fix/2026-10-28-project-status-order.md)，原展示取舍见[任务链展示决策](../../.agents/notes/archived/feature/2026-10-21-task-chain-presentation.md)。
 - 紧凑条目保留自然换行、原生操作及可见焦点。Goal 主体与“查看依赖关系”是同一标题行内的兄弟按钮；主体保留 `task-root-<id>`，供概览定位，并用 `aria-expanded` / `aria-controls` 关联子任务区。依赖图按钮使用 `task-chain-graph-<id>` 和 `aria-haspopup="dialog"`，名称包含对应任务标题。桌面标题保持 13px、窄屏 12px，进度区按断点收窄；`.goal-row` 提供 inline-size 容器，容器宽度不超过 600px 时标题与计数占据展开图标后的完整首行，进度和状态另起一行，图入口换行；该规则读取实际可用行宽，避免展开侧栏和项目导航挤压桌面视口中的英文计数。独立任务保留同一紧凑视觉与直接详情交互，不显示链进度。
-- 每个 `ChainRow` 以行内 state 拥有独立展开选择，初始收起，可同时展开多条 Goal。该行持续挂载时，详情和图开关、同代表刷新保留选择；外层概览隐藏保留任务子树，内层类别切换、完成筛选移除或代表改变导致行卸载时重置，不新增 localStorage 记录。成员列表直接取 `component.memberIds`，从 `index.nodes` 顺序去除代表任务后，按 `in_progress` → `todo` → `done` 的状态优先级排序；`done` 组复用 `timestampNanoseconds` 比较 `completedAt`，按纳秒精度倒序，未知完成时间置于该组末尾，时间相同或均未知时稳定保留快照顺序。其他状态组内保留快照顺序；顶层 Goal 采用汇总状态优先、同状态精确创建时间倒序。列表不按后继遍历或图可见集合 S 截断，因此包含其他起点与合流成员且排除链外上下文。成员读取不附加状态过滤条件，`done`、`in_progress`、`todo` 子任务全部保留，Goal 完成筛选不传递给子任务列表。memoized `GoalTaskRow` 以紧凑原生按钮逐行显示标题、任务自身状态与适用的就绪/阻塞提示，调用项目共用的 `onOpenTask`；每行局部订阅项目共享时钟，在独立标题文本后复用语义耗时，短标题后紧随显示，长内容自然换行。耗时对按钮名称计算隐藏，并选择仅含耗时的 tooltip，保留提醒的原有消费者；子任务区标题另提供代表任务自身的详情入口，整链进度继续包含该任务。机制与取舍见[Goal 列表决策](../../.agents/notes/implemented/feature/2026-10-26-goal-task-lists.md)及[已完成子任务排序决策](../../.agents/notes/implemented/feature/2026-10-30-completed-subtask-order.md)。
+- 每个 `ChainRow` 以行内 state 拥有独立展开选择，初始收起，可同时展开多条 Goal。该行持续挂载时，详情和图开关、同代表刷新保留选择；外层概览隐藏保留任务子树，内层类别切换、筛选移除或代表改变导致行卸载时重置，不新增 localStorage 记录。成员列表直接取 `component.memberIds`，从 `index.nodes` 顺序去除代表任务后，按 `in_progress` → `todo` → `done` 的状态优先级排序；`done` 组复用 `timestampNanoseconds` 比较 `completedAt`，按纳秒精度倒序，未知完成时间置于该组末尾，时间相同或均未知时稳定保留快照顺序。其他状态组内保留快照顺序；顶层 Goal 采用汇总状态优先、同状态精确创建时间倒序。列表不按后继遍历或图可见集合 S 截断，因此包含其他起点与合流成员且排除链外上下文。成员读取不附加负责人或状态过滤条件，`done`、`in_progress`、`todo` 子任务全部保留。memoized `GoalTaskRow` 以紧凑原生按钮逐行显示标题、任务自身状态与适用的就绪/阻塞提示，调用项目共用的 `onOpenTask`；每行局部订阅项目共享时钟，在独立标题文本后复用语义耗时，短标题后紧随显示，长内容自然换行。耗时对按钮名称计算隐藏，并选择仅含耗时的 tooltip，保留提醒的原有消费者。子任务元信息复用 `TaskAgentPermissionBadge`，并显示 claim 中记录的机器名称或无记录状态；长机器名称自然换行。`projectSummaries` 以严格 `readWorkerClaim` 从完整摘要派生只读 claim 状态与机器映射，与图索引一起通过受账号、项目和请求代际保护的项目缓存快照发布；非法 claim 沿同步或缓存错误路径处理。`GraphTask` 不含属性，行不增加详情请求，也不从 Session、负责人或平台推断机器。子任务区标题另提供代表任务自身的详情入口，整链进度继续包含该任务。机制与取舍见[Goal 列表决策](../../.agents/notes/implemented/feature/2026-10-26-goal-task-lists.md)及[已完成子任务排序决策](../../.agents/notes/implemented/feature/2026-10-30-completed-subtask-order.md)。
 - 图节点使用固定尺寸和两行标题；省略内容在详情对话框中完整展示。
 - 图工具栏提供水平/垂直方向选择并显示选中态；缺省水平，前置在左、后续在右，垂直时前置在上、后续在下。方向按项目和代表任务独立保存在当前浏览器。主动切换仅重新挂载 `InitialViewport`，保持 React Flow、S、展开结果和检查选择，并按首屏规则为新布局重新定位可读视口；不变数据的后台核验保持方向、几何和视口。
 - 图内提供缩放、平移、适应画布，触屏和窄屏可滚动。初始缩放范围为 0.8–1；若此缩放无法容纳当前可见图，沿当前方向在最上游层边缘留 32px；代表任务位于该层时在交叉轴居中，否则交叉轴以最靠边的上游节点留 32px。折叠图锚定代表任务。显式适应画布允许缩小至 0.2，保留平移查看。初始化仅执行一次，详情选择与平移不重新居中或计算布局；显式展开和reset可改变可见布局，reset重新定位概览。
 - `ChainList` 的独立依赖图按钮触发打开操作，与行内子任务披露状态分别管理；具名 `TaskChainDialog` 位于列表行之外，保留在应用根节点和当前任务链类别内。默认居中尺寸为 `80vw × 80dvh`；740px 及以下宽高各为视口减 24px，四边 12px 安全间距。标题展示链名、状态和完成进度，关闭按钮始终可用。画布以 flex 占据标题、工具栏和图例之外的空间。背景遮罩保留列表的当前展开状态和几何，关闭、遮罩或 Escape 释放浮层并以 `preventScroll` 恢复原依赖图按钮；原入口消失时使用当前可见 Goal 展开控件、筛选控件或列表区域。
-- 图浮层统一拥有普通/全屏模式、祖先兄弟 inert 恢复、可见控件 Tab 循环与一份引用计数 body 滚动锁。工具栏“全屏查看”及“退出全屏”只改变同一浮层的尺寸，不更换 TaskGraph、React Flow、布局、S、检查或视口；返回默认尺寸聚焦全屏按钮。图工具栏左侧汇总完整/可见数量，左右分组按可用宽度换行，窄屏计数与操作分行，操作保持完整可见，隐藏上游为零不占空间；缩放/适应控件位于左下角，语言偏好错误与重试仍可访问。关闭图浮层才释放画布，下次显式打开重新初始化。
+- 图浮层统一拥有普通/全屏模式、祖先兄弟 inert 恢复、可见控件 Tab 循环与一份引用计数 body 滚动锁。工具栏“全屏查看”及“退出全屏”只改变同一浮层的尺寸，不更换 TaskGraph、React Flow、布局、S、检查或视口；返回默认尺寸聚焦全屏按钮。图工具栏左侧汇总完整/可见数量，左右分组按可用宽度换行，窄屏计数与操作分行，操作保持完整可见，隐藏上游为零不占空间；缩放/适应控件位于左下角；普通和全屏图浮层没有局部语言选择器或语言偏好反馈。关闭图浮层才释放画布，下次显式打开重新初始化。
 - 详情继续 portal 到 body 并覆盖图浮层，沿用详情对应用根节点的隔离。图容器以 `tabIndex={-1}` 承接标题、图例和画布空白等非交互区域的点击焦点，避免焦点落回 body 后丢失局部键盘事件；容器自身不进入 Tab 顺序，从容器按 Tab 进入首个可见控件，Shift+Tab 进入末个。图的键盘处理保持局部，详情事件不经过图；Escape 每次只处理子菜单/确认、详情全屏、详情弹窗、图全屏或图浮层中的最顶层。详情关闭优先回到原子任务行、Goal 详情入口、独立任务行或图内按钮；入口已移除时先使用仍可见的图浮层关闭按钮，再使用当前任务区或项目回退。图与详情共用引用计数滚动锁，任一卸载顺序都在最后一个持有者释放后恢复原值。机制取舍见[图浮层决策](../../.agents/notes/implemented/feature/2026-10-26-task-chain-graph-dialog.md)，它保留[全屏查看决策](../../.agents/notes/implemented/feature/2026-10-22-task-graph-fullscreen.md)的同画布与分层理由。
 - 保留 React Flow attribution；禁用节点拖动、连线、重连、删除，保留焦点与选择。
 - 页面展示最近一次成功快照的本机接收时间，不把 project.updatedAt 当作任务图更新时间。
@@ -284,7 +322,7 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 挂载行、详情和具体人员筛选登记需求，按清单筛选有资格且内容缺失或版本变化的 ID，每批最多 100 项；空集合不请求，nullable 姓名和头像仍是完整资料。选择器直接使用完整清单，普通打开复用匹配内容和在途工作，Retry 恢复缺失或失败项。限定读取共享在途工作，需求变化保留同历史有效结果；保存资料 GET 实际 version，不用旧清单版本覆盖，也不因交错观察立即循环读取。scope 的 readProfiles/writeProfiles 与发布均检查身份、userFence 和当前 cacheGeneration。缓存事件与读取捕获先采用当前 generation/userFence；新历史的 assigneeVersions 为 null 时也立即撤回旧人员显示、资格、访问标记和 ready 目录，已请求目录回到 loading，未请求目录为 idle。普通 epoch 更替只保留同 userFence 原始内容，等待新在线清单匹配后恢复显示；注销/换号/身份失效及项目撤权清除所属资料。可信同用户项目 404 先按捕获 ticket 处理 scope 撤权，菜单关闭或需求变化不能丢失负向准入，旧历史不能撤回新历史。资料不写入 Task 版本或任务记录；读取与存储失败保留可恢复错误且不改 Task.assignedTo。完整内容版本和缓存机制由[负责人设计](daynight-task-assignment.md)拥有。
 
-`TaskAssigneeFilter` 拥有 all/me/unassigned/user 显示条件。`ProjectPage` 在完整 index 上计算匹配 ID，与近期范围相交后分页；`StandaloneList` 只呈现匹配行，`ChainList` 保留匹配成员所在真实代表，显示匹配子任务及数量。链进度、上下文、ready、统计与图继续使用完整 component/index，task-sync 不携带此筛选；显式概览定位可回到 all。新增交互保留必要错误、访问状态和恢复入口。字段、人员与筛选的完整机制由[负责人设计](daynight-task-assignment.md)拥有。
+`TaskAssigneeFilter` 拥有 all/me/unassigned/user 显示条件，状态控件提供 all/todo/in_progress/done。`ProjectPage` 在完整 index 上按同一任务同时满足负责人和状态计算匹配 ID，再筛选及分页；`StandaloneList` 只呈现匹配行，`ChainList` 保留匹配普通成员所在真实代表并显示全部普通子任务。链进度、上下文、ready、统计与图继续使用完整 component/index，task-sync 不携带此筛选；显式概览定位调整遮挡目标的条件。新增交互保留必要错误、访问状态和恢复入口。字段、人员与筛选的完整机制由[负责人设计](daynight-task-assignment.md)拥有。
 
 ### 任务详情提示
 
@@ -322,7 +360,7 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 撤回可用性独立使用当前 `ProjectAccess` 的 effectiveRole、viewer 与 claim userId；仅在 access ready 且不处于刷新时提供本人或管理员操作。资料成功不授予权限，资料失败不撤销已验证权限。权限错误继续由既有 ProjectAccess 消费者表达，服务端保留最终成员及权限校验。
 
-包含归属的 `task-detail-heading` 保留 flex 收缩、零最小高度和自身 `overflow:auto`，最大高度为 `min(50%, max(32px, calc(100% - 120px)))`，相对详情 body 保留页签和阅读空间，同时给极短视口留下可操作的头部滚动窗口。头部可聚焦并支持键盘/滚轮滚动，用户名称、账号与机器名称保留完整文字，聚焦内部操作会带入可见区域。高度不超过 500px 的带归属详情隐藏静态说明 footer；普通视图复用短全屏的紧凑页签、附件内边距和预览标题布局；带归属独立页的辅助返回/语言栏使用较紧的内边距与间距，在 320px 宽度下保留中英文完整返回链接和语言选择器的同排布局，避免导航换行挤没正文。普通/全屏、弹窗/独立页使用相同的归属高度约束，完整信息与操作在头部局部滚动，概览和附件正文保留各自的阅读空间。
+包含归属的 `task-detail-heading` 保留 flex 收缩、零最小高度和自身 `overflow:auto`，最大高度为 `min(50%, max(32px, calc(100% - 120px)))`，相对详情 body 保留页签和阅读空间，同时给极短视口留下可操作的头部滚动窗口。头部可聚焦并支持键盘/滚轮滚动，用户名称、账号与机器名称保留完整文字，聚焦内部操作会带入可见区域。撤回按钮在该局部滚动区域内清除全局按钮的顶部滚动留白，使其在 32px 高度的窗口中聚焦后仍完整可见；不改变其它页面按钮的滚动留白。高度不超过 500px 的带归属详情隐藏静态说明 footer；普通视图复用短全屏的紧凑页签、附件内边距和预览标题布局；带归属独立页的辅助返回/语言栏使用较紧的内边距与间距，在 320px 宽度下保留中英文完整返回链接和语言选择器的同排布局，避免导航换行挤没正文。普通/全屏、弹窗/独立页使用相同的归属高度约束，完整信息与操作在头部局部滚动，概览和附件正文保留各自的阅读空间。
 
 Active/released 归属的原 owner 或项目管理员可以选择“强制撤回”。确认复用 TaskConfirmation，冻结完整 task/claim 和精确 version；说明返回 todo、清空归属与执行时间并设置 allowAgents=false，也明确远端 agent 无法保证立即停止，worker 下次成功同步后开始收尾。取消和 Escape 不提交；已知后台变化关闭失效确认。Completed 或缺失 worker 不提供撤回。操作成功后状态、许可和归属共同更新，不做乐观清空。
 
@@ -548,7 +586,7 @@ React Flow 12.12.0保留220px宽、96px或136px高的可见卡片、原生测量
 切换本身不执行复制。页面、命令块与顶栏在公开阅读布局的可用宽度内自然换行或局部滚动，
 320px/390px 下没有整页横向溢出。
 
-`server.uiRoutes` 以现有 handler 注册 `/setup`，与其他页面共享 GET/HEAD、
+`server/webui.UI.RegisterRoutes` 注册 `/setup`，与其他页面共享 GET/HEAD、
 `no-store`、方法拒绝和请求记录。`validateAuthSettings` 同时保留 `/setup` 根和后代
 命名空间，配置及启动验证先于路由注册，避免 callback 冲突导致 ServeMux panic。
 已有冲突配置须更换 callback 并同步 UniAuth 登记值；页面无需增加 API 或数据库字段。
@@ -573,11 +611,13 @@ packages/daynight-web/
 
 packages/daynight-server/
   api/task_graph.go                 HTTP 图 DTO
-  internal/core/task_graph.go       无传输依赖的读取模型
+  internal/core/model/task_graph.go 无传输依赖的读取模型
   internal/core/store/task_graph.go PostgreSQL 快照查询
-  internal/service/task_graph.go    图读取编排、上限与统计
-  internal/server/task_graph.go     图 HTTP handler 与 DTO 转换
-  internal/webui/                   内嵌 FS、HTML 与资源 handler
+  internal/service/task/task_graph.go 图读取编排
+  internal/core/task/projection/   图限制与统计规则
+  internal/server/task/task_graph.go  图 HTTP handler 与 DTO 转换
+  internal/service/webui/           内嵌 FS 和资源读取
+  internal/server/webui/            页面与资源 HTTP 路由和响应
 ```
 
 | 模块 | 拥有的内容 | 依赖方向 |
@@ -586,7 +626,8 @@ packages/daynight-server/
 | api/client、api/parse、api/workers | 相对 `/api` 请求、AbortSignal、JSON/附件与 Worker DTO 校验、principal 准入、文件传输、HEAD 与 typed error | 不引用组件和图布局 |
 | i18n | 两种目录、格式化、当前语言、独立保存与偏好错误、共用选择器 | 生产根及独立入口显式挂载；领域组件订阅展示，不调用业务 API 或图布局 |
 | projects hooks | 列表游标、完整派生图快照、加载/刷新状态、按项目隔离的视图偏好 | 摘要同步调用 api 和 task-cache；偏好只访问浏览器存储 |
-| workers hooks/observation | 页面内完整 Worker 集合或详情、整轮分页刷新、陈旧状态和一个服务端锚定时钟 | 调用 typed Worker API；只复用 scope 认证生命周期，不写项目缓存 |
+| workers hooks/observation | 页面内完整 Worker 集合或运行观测、整轮分页刷新、陈旧状态和一个服务端锚定时钟 | 调用 typed 观测 API；只复用 scope 认证生命周期，不写项目缓存 |
+| workers/configuration | 独立配置资源、编辑基线、原始草稿、提交快照及逐项应用结果 | 调用 typed 配置 API；不借用观测时钟，不写 Task/claim 或项目缓存 |
 | task-cache | schema、用户/项目 fence、当前持久集合合并、摘要版本与提交后发布 | 网络与解码在事务外；纯投影复用 model，不拥有页面交互 |
 | task-graph/model | 全边验证、普通分量、派生代表、成员进度与全前置闭包 | 仅依赖 DTO 类型与标准集合 |
 | task-graph/visibility | 概览BFS、直接邻居批次、实际S协调和完整诱导投影 | 依赖完整model数据，不调用API |
@@ -602,7 +643,8 @@ packages/daynight-server/
 | Go server | HTTP 解析、响应、路由与方法语义 | 调用 service 或 webui |
 | Go service | 具体 store 的读取事务、领域拒绝、图摘要 | 调用 core/store，返回 core 模型 |
 | core/store | 同一快照内的具体 SQL 查询与扫描 | 使用 pgx，不依赖 HTTP、React 或 API DTO |
-| webui | 内嵌资源及正确的 Content-Type、缓存策略 | 不访问 service/store，不另包日志中间件 |
+| service/webui | 内嵌资源及文件读取 | 不访问业务 store |
+| server/webui | 页面与资源路由、Content-Type 和缓存策略 | 读取资源，不另包日志中间件 |
 
 ```mermaid
 flowchart LR
@@ -627,13 +669,13 @@ flowchart LR
 
 ### 前端数据和状态所有权
 
-认证身份下的 TaskCacheScope 拥有项目持久摘要及可发布投影，项目页面维护图加载与当前资源；Worker hooks 只持有页面内存观测并复用 scope 的认证生命周期，不进入项目缓存或建立全局注册表。不引入 Redux 或查询框架。专用 TaskDetailSession 保存项目/任务键对应的详情与任务写操作，纯图模型只计算派生内容。CurrentAccountProvider 将已有 session.user 与认证准入状态传给认证任务界面，不读取另一份账号或人员目录。/me 的完整表示由浏览器 private,no-cache HTTP 缓存按身份绑定的强 ETag 重验，页面与前台核验仍实际认证，不另建 /me IndexedDB。TaskCacheProvider 包裹全部认证路由，内部依次放置 TaskAssigneesProvider 和详情 Provider；独立任务和附件路径页共享该 scope。Discussion 的当前账号展示来自外层账号上下文，历史作者仍来自消息快照，负责人资料不成为 Thread 的读取依赖。
+认证身份下的 TaskCacheScope 拥有项目持久摘要及可发布投影，项目页面维护图加载与当前资源；Worker hooks 只持有页面内存观测或配置编辑状态，并复用 scope 的认证生命周期，不进入项目缓存或建立全局注册表。不引入 Redux 或查询框架。专用 TaskDetailSession 保存项目/任务键对应的详情与任务写操作，纯图模型只计算派生内容。CurrentAccountProvider 将已有 session.user 与认证准入状态传给认证任务界面，不读取另一份账号或人员目录。/me 的完整表示由浏览器 private,no-cache HTTP 缓存按身份绑定的强 ETag 重验，页面与前台核验仍实际认证，不另建 /me IndexedDB。TaskCacheProvider 包裹全部认证路由，内部依次放置 TaskAssigneesProvider 和详情 Provider；独立任务和附件路径页共享该 scope。Discussion 的当前账号展示来自外层账号上下文，历史作者仍来自消息快照，负责人资料不成为 Thread 的读取依赖。
 
 - Workspace 按认证身份保持正文和导航边界；`useSidebarPreference` 只拥有 origin-local 桌面折叠值和保存错误，手机覆盖导航为独立临时状态。二者不参与项目、缓存、详情或图的 key，也不触发业务读取。
-- 项目目录 Provider 在 Workspace 的认证身份边界拥有当前已加载页、nextCursor 和下一页错误；`useProjects` 在 Provider 内管理请求，`useProjectList` 向侧栏及项目列表提供同一份状态和操作。首次请求、加载更多和刷新有各自状态；刷新使旧游标及旧请求失效，卸载取消请求，身份变化重建目录。项目切换与侧栏折叠不重建目录或增加轮询。
+- 项目目录 Provider 在 Workspace 的认证身份边界拥有当前已加载页、nextCursor 和下一页错误；`useProjects` 在 Provider 内管理请求，`useProjectList` 向侧栏及项目列表提供同一份状态和操作。首次请求、加载更多和刷新有各自状态；范围切换或刷新使旧游标及旧请求失效，卸载取消请求，身份变化重建目录。项目切换与侧栏折叠不重建目录或增加轮询。
 - `useTaskGraph(projectId)` 拥有完整派生 TaskGraph、接收时间、独立数据库样本、成功 receipt revision、请求序号、refresh 与可见页面轮询。身份核验后先发布经生命周期与完整性验证的本地摘要，后台同步；本地 snapshot 的 revision=0，成功接收与服务端时钟字段为空，不增加在线授权。没有有效缓存时保持加载态，同步普通失败保留已显示摘要，可信撤权清除内容。严格解析 task-sync 后立即捕获 receivedMonotonic，早于 IDB 应用和索引计算；每次成功同步成对更新 observedAt/receivedMonotonic，receivedAt 仅作本机最近刷新标签。TaskCacheScope 在一个事务内按业务版本合并当前完整持久集合，再提交摘要与最大 updatedAt；相等/旧版行不写入。仅时钟变化复用 graph/index，仅设置变化替换 graph.project 并复用 tasks、summary 与 index，任务变化整体替换相关资源。设置版本保持 bigint。稳定 graph.observedAt 可保留旧样本，当前时钟始终使用独立 snapshot 样本；磁盘或其他标签页不能提供它。
 - `TaskExecutionClockProvider` 按项目拥有稳定 context/store，将最新服务端时间、单调接收时间和已保存阈值在 layout effect 一起发布。useTaskExecution 仅让已知起点的运行任务订阅一个可见页一秒 ticker；完成任务只订阅设置说明，未知任务无活动订阅。隐藏时暂停，恢复可见立即发布单调差值；正常轮询独立刷新锚点，最后运行订阅与 provider 卸载清理 timer/listener。计时局部更新不进入 GraphIndex、投影、布局或边路由；既有身份 guard 继续约束 API，没有新增失焦监听或网络轮询。
-- `ProjectPage` 管理任务选择、当前页签、单成员及多成员普通分量的倒序展示序列、共享近期投影、两类“显示所有”及共享负责人筛选和分页、共享任务列表浏览位置。`ChainList` 消费当前页的代表序列，并以完整筛选条目数显示工具栏数量；完整 `GraphIndex` 保存全部成员、关系上下文与项目统计。概览导航的 task witness 经 `componentByTask` 解析到最新代表，再在完整筛选序列中确定目标页。图入口的 witness 不因代表变化覆盖仍有效的任务定位值，当前页入口不可见时关闭图。详情始终绑定 task ID，分类、筛选和翻页不关闭仍存在的详情。
+- `ProjectPage` 管理任务选择、当前页签、单成员及多成员普通分量的倒序展示序列、概览近期投影、共享负责人及状态筛选和分页、共享任务列表浏览位置。`ChainList` 消费当前页的代表序列，并以完整筛选条目数显示工具栏数量；完整 `GraphIndex` 保存全部成员、关系上下文与项目统计。概览导航的 task witness 经 `componentByTask` 解析到最新代表，再在完整筛选序列中确定目标页。图入口的 witness 不因代表变化覆盖仍有效的任务定位值，当前页入口不可见时关闭图。详情始终绑定 task ID，分类、筛选和翻页不关闭仍存在的详情。
 - `useTaskDetail(projectId, taskId)` 消费 TaskDetailSession 中该键的详情与状态操作状态，
   在本挂载成功同步后以匹配持久正文加速打开，再 live GET。摘要业务版本、项目 generation 和恢复需要驱动读取，正常重复 receipt 不 GET；相同版本的前置变化只物化派生字段。相同活动资源且同 cacheGeneration 保留正文与附件，活动 GET 不被自动触发中断，必要后续读取合并；显式重试仍有优先权。revision 与
   loadedRevision 记录请求和成功 GET 起始上下文；requiresFreshRead 根据任务描述符、
@@ -647,24 +689,22 @@ flowchart LR
 - Discussion controller按user/project/task持有有界页面内存，复用scope认证生命周期而不写TaskCache；[Thread Web设计](task-thread-web.md)拥有连续游标、发送确认与引用读取。
 - `useAttachments(projectId, taskId)` 独立拥有按页加载的文件、选择、写操作与预览；所有结果绑定 project/task，预览还绑定 path。列表校验重复游标和目录冲突，续页失败保留已读取文件并明确标记不完整；刷新取消旧列表请求。所选路径或 `updatedAt` 改变时取消并重新读取内容，同路径覆盖后增加预览 revision。
 - 图与详情的已加载数据分别绑定 projectId 与 `(projectId,taskId)`。渲染时只显示 key 相符的数据；key 变化立即显示新资源的加载状态，不能等 effect 清理后再去掉旧内容。同资源刷新才保留旧快照，取消/序号检查不能代替这一显示身份约束。对话框的焦点外壳保持独立，关系跳转不把焦点临时恢复到旧节点。
-- Worker API 的列表和详情读取由 `api/workers.ts` 拥有，principal 准入、整轮集合及陈旧时钟遵守“我的 Worker 列表与详情”；它不调用 task-sync。
+- Worker 运行观测的列表和详情读取由 `api/workers.ts` 拥有，principal 准入、整轮集合及陈旧时钟遵守“我的 Worker 列表与详情”。`api/worker-configuration.ts` 独立拥有配置 GET/PUT，草稿与未知写入核对遵守“Worker 云端配置编辑”；两个通道都不调用 task-sync。
 - API client 的项目入口为 `listProjects(query, signal)`、`getTaskSync(projectId, query, expectedUserId, signal, onPrincipalMismatch)`、`getTask(projectId, taskId, signal)` 与 versioned `setTaskStatus`、`setTaskAgentPermission`、`setTaskRequiredPlatform`。错误类型区分已取消、网络/解析失败和服务端错误码；错误页面只展示脱敏文案及 requestId。同步响应的 project.id、详情响应的 projectId/id 必须与规范化后的请求资源匹配，否则按协议错误拒绝显示。
 - 页面导航使用 `pushState`，浏览器返回使用 `popstate`；在组件装卸边界取消请求。未知路径、无法解码的路径或无效 projectId 有明确错误页面，不发起拼接后的非法请求。
 
 项目视图偏好均由 `useProjectViewPreferences.ts` 中的专用 hooks 读取和保存，使用下列
-localStorage JSON 记录。“显示所有”复用原完成显示开关的布尔记录，`false` 表示近期范围，`true` 表示全历史。分页页码和图浮层打开状态不属于持久偏好，原展开记录不再读写。任务列表使用新的共享偏移键，不读取、转换或更新旧 `daynight:task-view-scroll:${projectId}` 记录；缺少新记录时从零开始。其余选择格式保持既有语义，不需要任务或数据库迁移。
+localStorage JSON 记录。负责人及状态筛选、分页页码和图浮层打开状态不属于持久偏好，原展开及“显示所有”记录不再读写。任务列表使用新的共享偏移键，不读取、转换或更新旧 `daynight:task-view-scroll:${projectId}` 记录；缺少新记录时从零开始。其余选择格式保持既有语义，不需要任务或数据库迁移。
 
 | 键 | JSON 值与默认行为 |
 |---|---|
 | `daynight:graph-direction:${JSON.stringify([projectId, rootId])}` | `"horizontal"` 或 `"vertical"`；按项目和代表任务隔离，缺省 `"horizontal"`。 |
-| `daynight:completed-chains:${projectId}` | boolean；缺省 `false`。 |
 | `daynight:task-view:${projectId}` | `"chains"` 或 `"standalone"`；缺省 `"chains"`。 |
-| `daynight:completed-standalone-tasks:${projectId}` | boolean；缺省 `false`。 |
 | `daynight:task-list-scroll:${projectId}` | number；非负有限的页面纵向滚动坐标，由两个类别共享，缺省为 0。 |
 
 滚动 hook 仅在快照可用且外层任务列表活动时监听 `scroll` 和 `pagehide`，离开任务区前
 保存当前坐标，在布局阶段释放监听，并在重新进入任务区、内容可见后的 layout effect 恢复共享坐标。内层类别切换不调用恢复。
-浏览器按实际文档高度限制可恢复的位置，依赖变化、近期过期、筛选和分页可能缩短页面；分页 owner 先保证有效页，再由浏览器限制可恢复的位置。读取、校验及
+浏览器按实际文档高度限制可恢复的位置，依赖变化、筛选和分页可能缩短页面；分页 owner 先保证有效页，再由浏览器限制可恢复的位置。读取、校验及
 写入错误分别报告，当前内存状态仍可操作。`useGraphDirection(projectId, rootId)` 在打开对应图时同步读取；读取或非法值回退水平，写入失败保留本次方向，成功写入清除写入错误，初始读取或格式错误在本次打开期间保留。
 
 图画布位于固定尺寸的图浮层内，背景页面滚动位置由模态滚动锁保留。
@@ -680,7 +720,7 @@ Go 服务在同一 origin 提供 JSON API、页面和真实内嵌资源。
 |---|---|
 | `GET /{$}` | 精确根路径，返回 index 并显示公开推广页；`GET /` 不能替代精确匹配 |
 | `GET /login` | 返回同一个 index，由现有认证生命周期显示独立登录页 |
-| `GET /projects` | 返回同一个 index，认证后显示项目列表 |
+| `GET /projects`、`GET /teams/{teamId}`、`GET /shared-projects` | 返回同一个 index，认证后显示对应范围的项目列表 |
 | `GET /workers`、`GET /workers/{workerId}` | 返回同一个 index，认证后显示账号级 Worker 列表或详情 |
 | `GET /projects/{projectId}` | 返回同一个 index，资源存在性由图 API 决定 |
 | `GET /setup` | 返回同一个 index，由公开静态入口显示日常使用指南，不发起任何 API 请求 |
@@ -692,11 +732,11 @@ Go 服务在同一 origin 提供 JSON API、页面和真实内嵌资源。
 GET 沿用 Go 的 HEAD 语义；已知 UI、asset 和图路径不支持的方法返回 405 与 Allow。
 已知页面形状的 ID 由前端解析，错误 ID 仍交付 index 后显示未找到页面。附件页面
 路径先经过既有原始附件路径守卫，非法分隔符、空段、点段和上越在 ServeMux
-规范化之前拒绝，不扩大任意页面回退范围。`internal/webui` 暴露具体 HTML/asset handler，server 拥有路由注册，不用外层 URL dispatcher 绕过原 mux。HTML、图、Worker 观测和最新详情响应采用 `Cache-Control: no-store`，内容哈希资源采用长期 immutable 缓存；不注册 Service Worker。
+规范化之前拒绝，不扩大任意页面回退范围。`internal/server/webui` 注册具体 HTML/asset handler，读取 `internal/service/webui` 资源，不用外层 URL dispatcher 绕过原 mux。HTML、图、Worker 观测、Worker 配置和最新详情响应采用 `Cache-Control: no-store`，内容哈希资源采用长期 immutable 缓存；不注册 Service Worker。
 
 ### 本地构建与开发
 
-生产构建采用 web typecheck → Vite build → 完整产物发布到 Go 的 `internal/webui/dist/` → Go build。生成目录忽略 Git；不提交占位页面。发布产物前验证 index 及引用资源存在，以临时目录准备完整新产物后替换旧产物；构建失败必须阻止 Go 构建，不能继续使用旧页面。
+生产构建采用 web typecheck → Vite build → 完整产物发布到 Go 的 `internal/service/webui/dist/` → Go build。生成目录忽略 Git；不提交占位页面。发布产物前验证 index 及引用资源存在，以临时目录准备完整新产物后替换旧产物；构建失败必须阻止 Go 构建，不能继续使用旧页面。
 
 ```text
 # 仓库根目录：本地依赖安装
@@ -750,7 +790,7 @@ deployment/
     README.md                   本机/CI 使用与隔离契约
 ```
 
-两份 Compose 分别拥有环境配置，dev-ci 直接复用 `deployment/localhost/Dockerfile` 和 `nginx.conf`。不把日常 Compose 文件作为 override 基底，避免继承固定项目名、8787 端口及持久卷后再逐一覆盖。生产构建只维护一份；测试比较两份有效 Compose 配置的关键拓扑、固定镜像与服务命令，允许差异限于项目身份、端口、测试数据和资源生命周期。
+两份 Compose 分别拥有环境配置，dev-ci 直接复用 `deployment/localhost/Dockerfile` 和 `nginx.conf`。不把日常 Compose 文件作为 override 基底，避免继承固定项目名、8787 端口及持久卷后再逐一覆盖。生产构建只维护一份；测试比较两份有效 Compose 配置的关键拓扑、固定镜像与服务命令，允许差异限于项目身份、端口、测试数据、资源生命周期和启动健康探测周期。dev-ci 在既有启动宽限内每 250ms 执行真实探针，正常两秒周期、probe、重试、超时、依赖及 `--wait` 保持各自语义；最低 Compose 版本为 2.20.2。日常栈沿用原有探测周期。取舍见[启动探测决策](../../.agents/notes/implemented/testing/2026-11-04-dev-ci-startup-probes.md)。
 
 | 项目 | localhost | dev-ci |
 |---|---|---|
@@ -866,7 +906,7 @@ TaskNode 保留主体检查与 Details/展开独立控件，底部 42px 预留�
 
 `AuthenticatedApp` 注册 `/projects/:id/settings`，与成员路由共用项目管理导航、面包屑和本地化标题；Go 同源页面入口提供 GET/HEAD 深链接及既有方法拒绝。
 `ProjectSettingsPanel` 按 user/project 键隔离，`useProjectSettings` 读取完整 Project，
-共享内存 access 提供当前本人角色；只有完成当前权限核验的 admin 可编辑。
+共享内存 access 提供已确认的本人角色；后台复核保留 admin 的编辑界面，但写入等待新鲜权限。
 权限刷新沿身份/项目生命周期发布，保留独立设置草稿；成员资料不再承担本人准入。
 草稿、已保存资源、角色、pending、uncertain 与语义反馈独立；语言切换不重新发请求或丢失输入。
 `api/project-settings.ts` 的 GET 使用权威 Project，PATCH 使用完整 bigint version 编码并返回完整 Project；输入使用正 int32 分钟校验。
@@ -878,7 +918,7 @@ TaskNode 保留主体检查与 Details/展开独立控件，底部 42px 预留�
 路由/项目/身份切换取消旧请求并忽略晚到结果，但不把 abort 当作远端回滚；重新进入时必须完成初始权威读取。
 共享 request 边界保持前台身份核验隔离，同用户后台确认不卸载表单，换号 generation 使旧结果失效。
 
-共享 access 与设置/成员资源的加载分别归各自所有者。确认撤权必须使现有资源请求的
+共享 access 与设置/成员资源的加载分别归各自所有者。普通权限复核不启动覆盖设置草稿的资源读取；成员和邀请在后台读取完整结果期间保持已展示内容。写操作先锁定原操作，再等待现有 access、身份准入与相关成员资源读取，并重新核对角色、归属、资源版本及原操作身份。阻塞恢复后的写入还等待页面重新激活及新的权限核验；离开路由取消尚未派发的确认，不取消已派发操作的归属。确认撤权必须使现有资源请求的
 generation 或读取寿命失效，响应发布时再次核对当前准入；渲染也排除 unavailable，
 防止旧成功响应恢复私有名册。该读取失效不把已接受的写入当作回滚或释放 unknown。
 资源读取已成功而并发 access 暂时失败时，保留可恢复资源或资源自己的失败状态；后续
@@ -889,7 +929,7 @@ access 恢复必须呈现已保存资源或触发明确重读。资源仍缺失�
 已确认的设置写入会废弃更早的读取代际；恢复读取不得用旧设置版本覆盖较新的权威值、
 草稿或已确认成功反馈。邀请创建确认后保留一次性链接，并重新读取完整成员和邀请列表；
 该读取先废弃更早的读取代际，防止创建前的列表覆盖已确认邀请，也不把局部追加当成完整目录。
-此读取失效不取消已发送写入，也不把未知结果视为未提交。
+此读取失效不取消已发送写入，也不把未知结果视为未提交。Project 与 Team 邀请管理在当前身份域内保留已发送操作及其结果，离开页面只暂停展示和读取；返回后可查看确认结果或核对未知结果，不能因重新挂载而重放。
 
 Project、分页 Project 与图内 Project 的 settings.version 和 ownership.version 通过
 `project-json.ts` envelope 无损解码；root Project、items[]、graph.project 与 task-sync.project
@@ -900,12 +940,19 @@ Project、分页 Project 与图内 Project 的 settings.version 和 ownership.ve
 不要求浏览器提供 reviver source context。超过 `2^53` 的资源版本保持 bigint，写入时编码为
 JSON 数字；缺失或错误 settings/ownership 不补默认值。
 
-成员管理按真实 direct grant 的 role/version 编辑，不因其为最后一条 direct admin 而禁用。
-只有继承访问的 participant 没有可修改或删除的 grant。members 的 items 与 actorAccess
-由同一快照返回；MembersPanel 通过既有 access owner 的请求观察次序和身份/project 屏障
-发布本人来源，不用独立请求的旧角色与新名册混合展示。claim-owner 资料读取继续只承担展示。
-自删成功后复用当前 access owner 重验，只有权威 unavailable 才离开项目；继承权限仍存在时
-保留页面。网络、协议或服务错误保留读取重试，不推定已失权或重发原写入。
+成员表分别展示 effective role、owner Team 继承角色和真实 direct grant。有效 admin 可为
+仅继承的 participant 新增 grant，或按真实 role/version 替换、移除现有 grant；不能按任意
+用户 ID 加人，也不为最后一条 direct admin 设置保护。members 的 items 与 actorAccess
+由同一快照返回；MembersPanel 通过既有 access owner 的观察次序和身份/project 屏障发布
+本人来源，不用旧角色与新名册混合展示。claim-owner 资料读取继续只承担展示。
+
+管理操作使用 grants 回执：确认后废弃更早的读取并发布 actorAccess，展示操作对象和
+结果；null 表示已确认失权，立即隐藏旧内容并保留结果；回执后发起新的权限读取，以当前
+缓存代次处理确认撤权，也可恢复后来重新获得的准入。读取或清理失败显示错误与重试，
+不依赖该读取判断提交。继承仍有效时保留页面并读取当前名册。冲突重新读取后须再次审阅；身份不符撤销
+旧身份内容。网络、协议或未知提交错误不自动重放，明确读取当前事实后才能审阅新操作，
+该读取不能恢复原回执。外部 Project admin 仅使用项目范围的名册和授权接口，不读取
+owner Team 目录或设置。
 
 ## 完整项目图的本地投影
 
@@ -1015,8 +1062,12 @@ Worker 请求沿用 requestId 和当前账号/资源身份。页面取消请求�
 
 ## 验证与 CI
 
-自动刷新采用两类时间控制：`refresh-staleness` 使用真实服务变化验证周期更新与
-恢复；附件和双语隔离场景控制浏览器定时器，精确断言操作自身的读写次数。容量
+自动刷新按验证目标控制时间：使用受控浏览器时钟的场景精确推进周期，验证真实服务变化、
+恢复及操作自身的读写次数；自然等待轮询的功能场景在页面初始化前注入较短的具名周期。
+共享轮询模块保留生产 task-sync 十五秒、Session 摘要五秒默认值，单元验证同时覆盖默认
+与注入后的调度。请求期限、新鲜度、业务耗时和真实阈值跨越保持独立，不能按数值统一缩放。
+生产资产不因测试目标而重新构建。[轮询决策](../../.agents/notes/implemented/testing/2026-11-04-web-functional-polling.md)
+拥有注入范围与取舍。容量
 场景保留浏览器原生 15 秒 task-sync 定时器与性能时钟，按初始读取或定时回调标记每次 task-sync 请求，
 验证图浮层关闭和重新打开本身不触发图读取。请求归因与性能计时分别观测，周期请求
 继续计入实际浏览器工作。滚动恢复根据实际 `scrollTop` 连续 100ms 稳定判定，
@@ -1049,13 +1100,13 @@ provider 响应证明 gateway/SDK 协议，不等同于真实上游账号登录�
 三十二场景功能集合。显式本地压力模式另加五个原生容量/超限场景。`refresh-staleness` 验证自动读取后图、统计和当前详情
 的一致更新，以及保留浏览、焦点和附件状态的故障恢复；定时器、可见性、请求串行与
 资源切换另由 hook/组件测试验证。浏览器顺序和清理屏障由[CI 构建归属](#ci-构建归属)定义。日常 localhost 栈
-不参与测试。`project-view-tabs` 覆盖两类分类及依赖迁移、独立任务直接详情、独立完成筛选、
+不参与测试。`project-view-tabs` 覆盖两类分类及依赖迁移、独立任务直接详情、状态和负责人联合筛选、
 页签/滚动的跨刷新与项目隔离，以及图浮层的默认关闭、显式打开和离开视图后关闭。功能数据和容量数据均通过真实写 API 建立；图场景及 `project-view-tabs` 的浏览器
 继续只发起 GET/HEAD，但 `refresh-staleness` 仅允许一次已登记 fixture task/file PUT，挂起真实上传响应并跨自动读取检查输入、预览、面板几何及唯一写入。`task-attachments` 与 `language-state-preservation` 仅允许精确 fixture task 内的文件
 PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` 和 `task-status-transitions`
 单独允许已登记 project/task 的 PUT status 和精确请求次数；六个鉴权场景仅放行各自
 登记的精确管理请求；`project-settings` 另只放行四次登记设置 PATCH，覆盖成功、409、真实提交后丢失响应及降权 403，重读失败后只重试读取。该场景还检查真实大版本、项目隔离、成员只读及双语 320px/390px 控件与导航边界及文字不截断。`task-agent-permission` 只允许登记任务的许可 PATCH 和精确请求次数，覆盖普通成员双向确认、取消/Escape、锁定、冲突、已提交响应丢失与读取核对、详情关闭/切换后的请求归属、严格布尔/精确版本及双语窄屏几何；未知写入只核对，不重放。`task-platform` 仅允许登记任务的精确平台 PATCH，覆盖状态行选择后确认、当前值无操作、各取消路径零写入和下拉框焦点恢复、确认后设置/清除、状态/许可共享锁、冲突与真实丢响应后的 GET 核对、跨任务归属、人工开始后锁定、字段传播及双语 320px/390px 窄屏。
-`task-assignment` 仅放行登记任务和精确次数的负责人 PATCH，验证设置/清空、同值零写入、冲突、真实提交丢响应与 GET-only 恢复，以及完整材料保持。`task-assignment-layout` 覆盖双语 1366px/390px/320px、长姓名与 null 姓名、头像失败、菜单焦点与滚动/全屏、失权人员显示、只读浏览，以及隐藏兄弟任务时仍保持完整链进度和依赖事实。
+`task-assignment` 仅放行登记任务和精确次数的负责人 PATCH，验证设置/清空、同值零写入、冲突、真实提交丢响应与 GET-only 恢复，以及完整材料保持。`task-assignment-layout` 覆盖双语 1366px/390px/320px、长姓名与 null 姓名、头像失败、菜单焦点与滚动/全屏、失权人员显示、只读浏览，以及联合筛选时仍显示完整链成员并保持进度和依赖事实。
 `task-pause` 覆盖项目概览、独立任务与任务链、图和公共详情头部的暂停发现，完整项目/分量数量口径、精确版本解除与完整材料保持、提交防重、版本冲突及真实提交丢响应后的 GET-only 核对，以及中英文窄屏。浏览器只允许已登记任务的解除暂停 PATCH 与精确次数，未知结果不重放。
 
 平台确认的浏览器辅助函数先等待下拉框可用，再聚焦并确认焦点，随后才选择选项；缓存详情可见不表示实时读取已允许编辑。取消后的原值、焦点恢复和零写入断言保持独立验证，不在取消后强制聚焦，也不放宽超时或重试规则。附件组件测试将删除确认框的 DOM 移除与被动清理中的焦点恢复分开，在附件重载仍挂起时等待预览区域实际获得焦点，随后放行重载并继续验证焦点保持。[可观测验收就绪决策](../../.agents/notes/archived/testing/2026-10-20-observable-acceptance-readiness.md)记录这项前置条件。
@@ -1190,7 +1241,7 @@ CI 无论验收成功、失败或取消都执行恢复与归档；恢复成功�
 
 ### 验证矩阵
 
-Worker 定向验证使用严格 DTO、完整游标读取和真实组件，覆盖未知/空/旧任务观测、资源/版本失败、零容量、跨页失败原子保留、取消/晚到响应、当前 principal 的 404 与 mismatch、同账号核验及换号、119/120 秒、72 小时、错误 wall clock、隐藏恢复/错误冻结、任务真实链接和 390px/桌面焦点。真实 Server、CLI、Web 的组合验收核对多 Worker、停机/恢复、权限撤销与实际采集，不能由 mock、parser 或截图单独证明。
+Worker 定向验证使用严格 DTO、完整游标读取和真实组件，覆盖未知/空/旧任务观测、资源/版本失败、零容量、跨页失败原子保留、取消/晚到响应、当前 principal 的 404 与 mismatch、同账号核验及换号、119/120 秒、72 小时、错误 wall clock、隐藏恢复/错误冻结、任务真实链接和 390px/桌面焦点。配置 API/状态/组件验证另外覆盖独立于概况 404 的配置读取、每字段覆盖投影、原始无效输入保留、草稿基线与观测独立、保存和轮询竞态、409/未知响应核对、身份退休、项目重新加入时的旧准备结果和已移除项目结果。实际浏览器检查桌面/窄屏、键盘对话框及后台刷新中的焦点和选区。真实 Server、CLI、Web 的组合验收核对多 Worker、停机/恢复、权限撤销与实际采集，不能由 mock、parser 或截图单独证明。
 
 1. Go：真实 PostgreSQL 测试任务链图与统计一致性、孤立任务、分叉汇合、一层外部前置与反向外部引用排除、原始依赖保留、目标缺失/删除、返回集合规模边界、长文本预览、并发写期间的一致快照、取消与数据库失败；增加静态资源、深链接、API 优先级、缺失资源与方法测试。
 2. web：Vitest + Testing Library，重点测本地自然日边界、午夜无快照推进、时区与夏令时、Goal 最后成员及未知时间证据、20/21/40/41 条分页、汇总行和 Goal 子任务计数、跨页定位、独立页码恢复/筛选重置/缩页钳位、完整图独立分类、页签未完成任务数与默认/恢复、普通多起点合为唯一分量、筛选计数稳定、全部完成归零及刷新后的状态/分类计数、独立任务直接详情、分类迁移、独立筛选与浏览位置、普通起点/代表识别、闭包、菱形去重、显式外部边与链外前置、统计口径、请求取消/晚到、失败重试和居中详情焦点。项目列表必须覆盖续页游标、末页隐藏加载按钮、去重及下一页失败重试，证明所有项目可访问。断言可见行为，不依赖框架内部坐标。

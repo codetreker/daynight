@@ -26,12 +26,12 @@ const fixture = () => {
 const processIdentity = (role: MacProcessIdentity["role"], pid: number): MacProcessIdentity => ({ role, pid, birthToken: `1700000000:${pid}`, bootId: "boot-one", auditToken: [501, 501, 20, 501, 20, pid, 100000, pid + 100], ppid: 1, pgid: pid, sid: pid });
 const prepared = (directory: string): HerdrLocalRun => ({
   run: { executionGeneration: "1", owner, binding: { instanceId: "daemon-one", sessionId: "w", workspaceId: "workspace-one", paneId: "pane-one", terminalId: "terminal-one", nativeSessionId: null }, startedAt: start, stoppedAt: null, stopProof: null, segmentIds: [] },
-  phase: "prepared", instanceDirectory: directory, daemon: null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null,
+  phase: "prepared", nativeLaunch: "not_submitted", instanceDirectory: directory, daemon: null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null,
 });
 const active = (f: ReturnType<typeof fixture>): HerdrLifecycleRecord => {
   let record = f.store.update(f.record, draft => { draft.runs.push(prepared(f.directory)); });
-  record = f.store.update(record, draft => { const run = draft.runs[0]!; run.phase = "launch_requested"; run.daemon = processIdentity("daemon", 101); });
-  return f.store.update(record, draft => { const run = draft.runs[0]!; run.phase = "active"; run.processes = [processIdentity("shell", 102), processIdentity("agent", 103)]; run.admission = uuid(7); });
+  record = f.store.update(record, draft => { const run = draft.runs[0]!; run.phase = "launch_requested"; run.nativeLaunch = "requested"; run.daemon = processIdentity("daemon", 101); });
+  return f.store.update(record, draft => { const run = draft.runs[0]!; run.phase = "active"; run.nativeLaunch = "observed"; run.processes = [processIdentity("shell", 102), processIdentity("agent", 103)]; run.admission = uuid(7); });
 };
 const stopped = (f: ReturnType<typeof fixture>, record: HerdrLifecycleRecord) => {
   record = f.store.update(record, draft => { const run = draft.runs[0]!; run.phase = "stop_intent"; run.stopOperationId = uuid(8); run.stopReason = "shutdown"; run.admission = null; });
@@ -161,8 +161,8 @@ describe("persistent Herdr lifecycle responsibility", () => {
 
   it("rejects mixed-boot launch evidence and rolls back callback failures", () => {
     const f = fixture(); let record = f.store.update(f.record, draft => { draft.runs.push(prepared(f.directory)); });
-    record = f.store.update(record, draft => { draft.runs[0]!.phase = "launch_requested"; draft.runs[0]!.daemon = processIdentity("daemon", 101); });
-    expect(() => f.store.update(record, draft => { draft.runs[0]!.phase = "active"; draft.runs[0]!.processes = [processIdentity("shell", 102), { ...processIdentity("agent", 103), bootId: "other-boot" }]; })).toThrow();
+    record = f.store.update(record, draft => { draft.runs[0]!.phase = "launch_requested"; draft.runs[0]!.nativeLaunch = "requested"; draft.runs[0]!.daemon = processIdentity("daemon", 101); });
+    expect(() => f.store.update(record, draft => { draft.runs[0]!.phase = "active"; draft.runs[0]!.nativeLaunch = "observed"; draft.runs[0]!.processes = [processIdentity("shell", 102), { ...processIdentity("agent", 103), bootId: "other-boot" }]; })).toThrow();
     expect(() => f.store.update(record, draft => { draft.initialPrompt = "lost"; throw new Error("probe failed"); })).toThrow("probe failed");
     expect(f.store.get(identity)).toEqual(record);
   });
@@ -235,9 +235,9 @@ describe("persistent Herdr lifecycle responsibility", () => {
 
   it("refuses corrupted persisted evidence and future schemas without resetting responsibility", () => {
     const f = fixture(); active(f); close(f.store);
-    const db = new Database(f.file); db.pragma("user_version = 2"); db.close();
+    const db = new Database(f.file); db.pragma("user_version = 4"); db.close();
     expect(() => open(f.file)).toThrow();
-    const inspect = new Database(f.file); expect(inspect.prepare("SELECT count(*) AS n FROM executions").get()).toEqual({ n: 1 }); inspect.pragma("user_version = 1"); inspect.prepare("UPDATE executions SET data = ?").run('{"broken":true}'); inspect.close();
+    const inspect = new Database(f.file); expect(inspect.prepare("SELECT count(*) AS n FROM executions").get()).toEqual({ n: 1 }); inspect.pragma("user_version = 3"); inspect.prepare("UPDATE executions SET data = ?").run('{"broken":true}'); inspect.close();
     expect(() => open(f.file).list()).toThrow();
   });
 
@@ -247,4 +247,135 @@ describe("persistent Herdr lifecycle responsibility", () => {
     expect(() => open(f.file)).toThrow();
     const inspect = new Database(f.file); expect(inspect.prepare("SELECT count(*) AS n FROM executions").get()).toEqual({ n: 1 }); inspect.close();
   });
+});
+
+
+it("enriches the original native identity on a closed capture segment without changing its observation boundary", () => {
+  const f = fixture(); let record = active(f);
+  record = f.store.update(record, draft => {
+    draft.runs[0]!.run.segmentIds.push(uuid(20));
+    draft.segments.push({ segmentId: uuid(20), segmentOrdinal: "1", executionGeneration: "1", binding: { ...draft.runs[0]!.run.binding }, startedAt: start, endedAt: finish, durationMs: "60000", gap: null });
+  });
+  const enriched = f.store.update(record, draft => { draft.runs[0]!.run.binding.nativeSessionId = uuid(99); draft.segments[0]!.binding.nativeSessionId = uuid(99); });
+  expect(enriched.segments[0]!.endedAt).toBe(finish);
+  expect(() => f.store.update(enriched, draft => { draft.segments[0]!.durationMs = "61000"; })).toThrow();
+});
+
+it("upgrades original lifecycle rows and freezes never-started retirements without inventing run evidence", () => {
+  const f = fixture(), original = f.record; close(f.store);
+  const old = new Database(f.file); old.exec("DROP TABLE never_started_retirements"); old.pragma("user_version = 1"); old.close();
+  const upgraded = open(f.file);
+  expect(upgraded.get(identity)).toEqual(original); expect(upgraded.listRetired()).toEqual([]);
+  upgraded.retireNeverStarted(original); expect(upgraded.get(identity)).toEqual(original);
+  expect(upgraded.listRetired()).toEqual([original]);
+  expect(() => upgraded.update(original, draft => { draft.preparation = { instanceId: "later", instanceDirectory: f.directory, phase: "prepared", daemon: null }; })).toThrow(/retired/);
+  expect(() => upgraded.create({ owner, claimId: identity.claimId, cwd: f.directory })).toThrow(/retired/);
+  close(upgraded); const restarted = open(f.file); expect(restarted.retired(identity)).toEqual(original);
+  const corrupt = new Database(f.file); corrupt.prepare("UPDATE never_started_retirements SET version = version + 1").run(); corrupt.close();
+  expect(() => restarted.listRetired()).toThrow(/inconsistent/);
+});
+it("does not retire stale or started lifecycle evidence", () => {
+  const f = fixture(), stale = f.record;
+  f.store.update(stale, draft => { draft.preparation = { instanceId: "original", instanceDirectory: f.directory, phase: "launch_requested", daemon: null }; });
+  expect(() => f.store.retireNeverStarted(stale)).toThrow(/changed/);
+  expect(() => f.store.retireNeverStarted(f.store.get(identity)!)).toThrow(/changed/);
+  expect(f.store.listRetired()).toEqual([]);
+});
+
+
+describe("durable native launch provenance", () => {
+  it("migrates an original prepared run but preserves closing launch uncertainty", () => {
+    const f = fixture();
+    const run = prepared(f.directory); run.daemon = processIdentity("daemon", 101); run.processes = [processIdentity("shell", 102)];
+    const record = f.store.update(f.record, draft => { draft.runs.push(run); });
+    close(f.store);
+    const old = new Database(f.file);
+    const legacy = JSON.parse(JSON.stringify(record)); delete legacy.runs[0].nativeLaunch;
+    old.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); old.pragma("user_version = 2"); old.close();
+    const upgraded = open(f.file); const original = upgraded.get(identity)!;
+    expect(original.runs[0]).toMatchObject({ phase: "prepared", nativeLaunch: "not_submitted" });
+    expect(original.runs[0]!.processes).toEqual(record.runs[0]!.processes);
+    close(upgraded);
+    const unknown = new Database(f.file);
+    legacy.runs[0].phase = "stop_unknown";
+    unknown.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); unknown.pragma("user_version = 2"); unknown.close();
+    const reopened = open(f.file);
+    expect(reopened.get(identity)!.runs[0]).toMatchObject({ phase: "stop_unknown", nativeLaunch: "unknown" });
+    expect(() => reopened.update(reopened.get(identity)!, draft => { draft.runs[0]!.nativeLaunch = "not_submitted"; })).toThrow();
+  });
+
+  it("does not infer never-submitted launch from incomplete legacy prepared evidence", () => {
+    const f = fixture();
+    const record = f.store.update(f.record, draft => { draft.runs.push(prepared(f.directory)); }); close(f.store);
+    const old = new Database(f.file), legacy = JSON.parse(JSON.stringify(record)); delete legacy.runs[0].nativeLaunch;
+    old.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); old.pragma("user_version = 2"); old.close();
+    const reopened = open(f.file);
+    expect(reopened.get(identity)!.runs[0]!.nativeLaunch).toBe("unknown");
+  });
+
+  it("does not allow requested launch evidence to become never submitted", () => {
+    const f = fixture();
+    let record = f.store.update(f.record, draft => { draft.runs.push(prepared(f.directory)); });
+    record = f.store.update(record, draft => { draft.runs[0]!.phase = "launch_requested"; draft.runs[0]!.nativeLaunch = "requested"; });
+    record = f.store.update(record, draft => { draft.runs[0]!.phase = "stop_unknown"; });
+    expect(() => f.store.update(record, draft => { draft.runs[0]!.nativeLaunch = "not_submitted"; })).toThrow();
+    close(f.store); const restarted = open(f.file);
+    expect(restarted.get(identity)!.runs[0]!.nativeLaunch).toBe("requested");
+  });
+});
+
+
+it("migrates legacy stopped and pending ledger identities without rewriting their wire evidence", () => {
+  const f = fixture(); let record = active(f);
+  record = f.store.update(record, draft => {
+    draft.connectionEpoch = "1";
+    draft.ledgerRequest = { connectionEpoch: "1", message: { protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: draft.sessionId, claimId: draft.claimId, executionGeneration: "1", agentControlMode: "herdr", contentKind: "terminal_recording", type: "generation_ledger", payload: { runs: draft.runs.map(run => run.run), finalizationId: null } } };
+  });
+  record = stopped(f, record); close(f.store);
+  const old = new Database(f.file), legacy = JSON.parse(JSON.stringify(record)); delete legacy.runs[0].nativeLaunch;
+  old.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); old.pragma("user_version = 2"); old.close();
+  const migrated = open(f.file).get(identity)!;
+  expect(migrated.runs[0]!.nativeLaunch).toBe("observed");
+  expect(migrated.runs[0]!.run).toEqual(record.runs[0]!.run);
+  expect(migrated.ledgerRequest).toEqual(record.ledgerRequest);
+  expect(migrated.version).toBe(record.version);
+});
+
+it("rejects a legacy migration with unknown fields without changing its original row or format", () => {
+  const f = fixture(); const record = active(f); close(f.store);
+  const old = new Database(f.file), legacy = JSON.parse(JSON.stringify(record)); delete legacy.runs[0].nativeLaunch;
+  legacy.runs[0].unrecognizedLaunchEvidence = true;
+  const data = JSON.stringify(legacy);
+  old.prepare("UPDATE executions SET data = ?").run(data); old.pragma("user_version = 2"); old.close();
+  expect(() => open(f.file)).toThrow();
+  const unchanged = new Database(f.file);
+  expect(unchanged.pragma("user_version", { simple: true })).toBe(2);
+  expect(unchanged.prepare("SELECT data FROM executions").get()).toEqual({ data }); unchanged.close();
+});
+
+
+it("rolls back migration rather than exceeding the bounded lifecycle row format", () => {
+  const f = fixture(); const original = stopped(f, active(f)); close(f.store);
+  const legacy = JSON.parse(JSON.stringify(original));
+  const template = legacy.runs[0]; delete template.nativeLaunch;
+  legacy.runs = Array.from({ length: 600 }, (_, index) => {
+    const run = structuredClone(template); run.run.executionGeneration = String(index + 1);
+    run.stopOperationId = uuid(1000 + index); run.run.stopProof.recordId = run.stopOperationId;
+    run.run.stopProof.executionGeneration = run.run.executionGeneration;
+    run.error = "x"; return run;
+  });
+  legacy.initialPrompt = "x";
+  const limit = 8 * 1024 * 1024, desired = limit - 8;
+  const perRun = Math.floor((desired - Buffer.byteLength(JSON.stringify(legacy))) / legacy.runs.length);
+  for (const run of legacy.runs) run.error += "x".repeat(perRun);
+  legacy.initialPrompt += "x".repeat(desired - Buffer.byteLength(JSON.stringify(legacy)));
+  const data = JSON.stringify(legacy); expect(Buffer.byteLength(data)).toBe(desired);
+  const old = new Database(f.file); old.prepare("UPDATE executions SET data = ?").run(data); old.pragma("user_version = 2"); old.close();
+  let failure: unknown;
+  try { open(f.file); } catch (error) { failure = error; }
+  expect(failure).toMatchObject({ kind: "migration-failed", outcome: "rolled-back" });
+  expect(((failure as Error).cause as Error).cause).toHaveProperty("message", "Migrated lifecycle metadata exceeds its size limit.");
+  const unchanged = new Database(f.file);
+  expect(unchanged.pragma("user_version", { simple: true })).toBe(2);
+  expect(unchanged.prepare("SELECT data FROM executions").get()).toEqual({ data }); unchanged.close();
 });

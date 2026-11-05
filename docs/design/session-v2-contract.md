@@ -5,7 +5,7 @@
 [行为要求](../spec/session-v2.md)规定生产者和消费者必须维持的保证。本设计定义
 可交换的字节、对象和验证入口。TS 的
 [`session/v2/`](../../packages/daynight/src/session/v2/) 是 browser-safe 源码；
-Go 的 [`sessionprotocol/v2/`](../../packages/daynight-server/internal/sessionprotocol/v2/)
+Go 的 [`core/session/protocol/v2/`](../../packages/daynight-server/internal/core/session/protocol/v2/)
 为独立包。v1 模块保留原类型和解析规则，不通过放宽旧 parser 接收新内容。
 
 TS `values.ts` 拥有版本、限额、原始 JSON 解码、基本值和规范序列化；`types.ts`
@@ -70,13 +70,34 @@ Herdr 的实际 terminal ID 是 `term_…` 字符串；不可将其当 UUID。
 `birthToken` 和 `bootId`。`StopProof` 包含 UUID `recordId`、Seq
 `executionGeneration`、`binding`、NativeText `bootId`、Time `stoppedAt`、
 `method=instances_exited|boot_changed`、`terminalStopped=true`、`processes`。
-进程至少覆盖一个 shell 和一个 agent，原实例三元组不得重复。
+普通证明的进程至少覆盖一个 shell 和一个 agent，原实例三元组不得重复；其 JSON
+不包含 `nativeLaunch` 或 `daemon` 键。
+
+准备证明保留上述共同字段，并且必须包含 `nativeLaunch="not_submitted"` 与
+`daemon:{pid,birthToken,bootId}`。`processes` 恰有一个 `role=shell` 的原进程，
+daemon 与 shell 使用同一 boot、不同 PID；字段类型与普通进程身份相同。两种证明
+分别校验精确键集合，缺少 agent 不会隐式选择准备分支。准备证明依赖 Worker 的
+持久启动事实及原资源停止观察，服务端不能独立观察执行机器上的原生进程。
 
 `Run`：`executionGeneration`、`owner`、`binding`、Time `startedAt`、
 Time 或 `null` 的 `stoppedAt`、StopProof 或 `null` 的 `stopProof`、UUID 数组
 `segmentIds`。停止时间与证明同时为 null 或同时存在；证明的代次、绑定和时间
 必须匹配该运行。账本代次从 1 连续递增，外层代次等于最后一代；除最后一代外
 全部已停止。各代 owner 相同、段 ID 全局唯一，已知 nativeSessionId 不可改写。
+准备证明要求本代 `segmentIds=[]`，proof 与 run 的 nativeSessionId 完全一致；
+可保留前代已知值，不能在停止时补入新值。服务端在 ledger、recording evidence
+的两个写入方向及最终冻结前，均拒绝准备证明与本代非零 selected/registered count
+或 ObservedContent 共存。前代内容不影响本代判断；captureError 不得清空来制造
+合法 unavailable。准备证明不能消费 generation grant 或自动恢复授权。
+
+零帧准备运行按实际无错误证据取得 `unavailable/ended_before_first_sample` 回执。
+若前代已有帧，固定归档保留原帧与段，准备代进入 `unavailableRuns`，代次边界仍有
+显式 restart gap。不得制造空 ready 归档或将丢失的源改称合法零帧。
+
+新分支沿用 v2 envelope/schemaVersion/projectionVersion，要求服务端与 Web reader
+先具备解码能力，再启用 Worker 生成。旧 Worker 的普通证明仍可读写；旧 reader
+拒绝新增分支时保留原证据与收尾责任，不转换 proof 或固定归档。缓存旧 Web 需要
+刷新到支持版本；此扩展不承诺旧页面无刷新读取新证明。
 
 ## 完整帧
 
@@ -103,6 +124,9 @@ FrameFile.data 的原始 UTF-8 字节也必须不超过 256 KiB，包括其空�
 | `registration` | `registrationId:UUID`、`mode:register|reconnect`、Owner `owner`、Binding `binding`、`connectionEpoch:Seq|null`、`capabilities:{observe,control,archive}`（三个 boolean） |
 | `registration_ack` | `registrationId:UUID`、`connectionEpoch:Seq` |
 | `snapshot` | `connectionEpoch:Seq`、`segmentId:UUID`、`segmentOrdinal:Seq`、Binding `binding`、Frame `frame`、`recorded:boolean` |
+| `automation_recovery_prepare` | `recoveryId:UUID`、`connectionEpoch:Seq`、`controlEpoch:Seq`、`closingControlEpoch:Seq`、`stopOperationId:UUID`、`binding:Binding`、`initialAssignment="transport_completed"` |
+| `automation_recovery` | `recoveryId:UUID`、`connectionEpoch:Seq`、`controlEpoch:Seq`、`previousGeneration:Seq`、`stopOperationId:UUID`、`binding:Binding` |
+| `automation_recovery_state` | `recoveryId:UUID`、`prepareDigest:Hash`、`sourceGeneration:Seq`、`sourceConnectionEpoch:Seq`、`sourceControlEpoch:Seq`、`closingControlEpoch:Seq`、`stopOperationId:UUID`、`nativeSessionId:NativeText`、`consumed:RecoveryConsumption|null` |
 | `control_state` | `connectionEpoch:Seq`、`controlEpoch:Seq`、`state`、`lease:Lease|null`、`initialAssignment`、`availableActions`、`unavailableReason:ErrorCode|null` |
 | `control_request` | `operationId:UUID`、`connectionEpoch/controlEpoch:Seq`、`action`、`browserClientId:UUID`、`leaseId:UUID|null`、`draftHandled:boolean`、`initialUnknownDisposition:null|delivered_continue` |
 | `control_dispatch` | `actorUserId:UUID`、`requestDigest:Hash`、`request:ControlRequest` |
@@ -118,11 +142,24 @@ FrameFile.data 的原始 UTF-8 字节也必须不超过 256 KiB，包括其空�
 | `native_snapshot` | 完整且未修改的 v1 SessionSnapshot；外层必须 `web/native_timeline`，内外 fence 一致 |
 
 register 的 epoch 必须 null，reconnect 必须非空；control 能力要求 observe。
+RecoveryConsumption 包含 `executionGeneration:Seq`、`connectionEpoch:Seq`、
+`controlEpoch:Seq`、`requestDigest:Hash`。prepare 的 closingControlEpoch 大于
+controlEpoch；两种请求的 binding.nativeSessionId 必须非空。消费请求的外层代次
+恰好为 previousGeneration 加一；回执未消费时外层代次等于 sourceGeneration，
+已消费时等于 consumed.executionGeneration，且后者为 sourceGeneration 加一。
+消费连接和控制代次分别大于 sourceConnectionEpoch 和 closingControlEpoch。
+prepareDigest/requestDigest 对相应完整请求的规范 JSON UTF-8 计算 SHA-256。
+这些是结构约束；单次授权、停止证明、当前控制与旧服务失败关闭规则由
+[shutdown 恢复要求](../spec/session-v2.md#干净-shutdown-的自动输入恢复)约束。
+
 control_state 的 `state=automation|manual|suspended|closing|closed`；manual
 当且仅当 lease 非空，且 lease/control epoch 相同。paste/keys 只能在 manual
 可用；closing/closed 没有可用动作。`initialAssignment` 为
 `pending|dispatching|transport_completed|unknown|unconfirmed`；unknown/unconfirmed
-不能 automation，dispatching 不能 manual。
+不能 automation，dispatching 不能 manual。原受校验 Worker 在持久确认零写入后可发布
+`dispatching → pending`；服务端依赖 Worker 的输入 receipt 保证，不独立推断 native
+写入结果。`unknown`、`unconfirmed` 和 `transport_completed` 均不能退回 `pending`。
+owner、claim、generation、connection/control epoch 和 automation 交还限制继续适用。
 
 动作集合是 `acquire_control|renew_control|release_control|resume_automation|paste|keys`，
 control_request 只接受前四项。acquire 使用 null lease 与 false/null 确认字段；

@@ -13,12 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -48,7 +47,7 @@ func New(db *store.Store, files ...filestorage.Storage) *Service {
 	}
 	return s
 }
-func fault(code, message string) error { return &service.Fault{Code: code, Message: message} }
+func fault(code, message string) error { return &model.Fault{Code: code, Message: message} }
 func conflict() error {
 	return fault("session_conflict", "Session identity or state no longer matches.")
 }
@@ -59,6 +58,7 @@ func next(s string) string   { return decimal(number(s) + 1) }
 func encode(v any) []byte    { b, _ := json.Marshal(v); return b }
 
 type record struct {
+	BotID                                               *string
 	Live                                                *liveSession
 	ServerInstance                                      *string
 	FirstInputBlocked                                   bool
@@ -78,10 +78,19 @@ type record struct {
 }
 
 func load(ctx context.Context, tx pgx.Tx, id string) (*record, error) {
+	bot, err := lockSessionBot(ctx, tx, id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || bot != nil && bot.Deletion != nil {
+			if rt, ok := tx.(*relayTx); ok {
+				rt.service.discardBotSession(id)
+			}
+		}
+		return nil, err
+	}
 	r := &record{}
 	var raw []byte
 	var parent, kind, connectionParent *string
-	err := tx.QueryRow(ctx, `SELECT server_instance::text,snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 AND backend='web' FOR UPDATE`, id).Scan(&r.ServerInstance, &raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.FirstInputBlocked)
+	err = tx.QueryRow(ctx, `SELECT bot_id::text,server_instance::text,snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 AND backend='web' FOR UPDATE`, id).Scan(&r.BotID, &r.ServerInstance, &raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.FirstInputBlocked)
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +104,9 @@ func load(ctx context.Context, tx pgx.Tx, id string) (*record, error) {
 		r.GrantKind = *kind
 	}
 	err = json.Unmarshal(raw, &r.Snapshot)
+	if err == nil && !validSessionBot(bot, r) {
+		return nil, conflict()
+	}
 	if err == nil {
 		r.Snapshot = durableSnapshot(r.Snapshot)
 		err = attachLive(tx, r)
@@ -113,13 +125,13 @@ func save(ctx context.Context, tx pgx.Tx, r *record) error {
 	_, err := tx.Exec(ctx, `UPDATE task_sessions SET snapshot=$2,source_epoch=$3,source_epochs=$4,last_source_seq=$5,last_operation_seq=$6 WHERE id=$1`, r.Snapshot.SessionID, encode(durableSnapshot(r.Snapshot)), r.SourceEpoch, r.SourceEpochs, r.SourceSeq, r.OperationSeq)
 	return err
 }
-func credential(ctx context.Context, tx pgx.Tx, p core.Principal, now time.Time) error {
+func credential(ctx context.Context, tx pgx.Tx, p model.Principal, now time.Time) error {
 	table := "sessions"
 	predicate := "expires_at>$3"
-	if p.Kind == core.PATCredential {
+	if p.Kind == model.PATCredential {
 		table = "personal_access_tokens"
 		predicate = "(expires_at IS NULL OR expires_at>$3)"
-	} else if p.Kind != core.SessionCredential {
+	} else if p.Kind != model.SessionCredential {
 		return denied()
 	}
 	var id string
@@ -131,7 +143,7 @@ func credential(ctx context.Context, tx pgx.Tx, p core.Principal, now time.Time)
 	}
 	return nil
 }
-func member(ctx context.Context, tx pgx.Tx, p core.Principal, project string, now time.Time) (bool, error) {
+func member(ctx context.Context, tx pgx.Tx, p model.Principal, project string, now time.Time) (bool, error) {
 	if err := credential(ctx, tx, p, now); err != nil {
 		return false, err
 	}
@@ -139,12 +151,13 @@ func member(ctx context.Context, tx pgx.Tx, p core.Principal, project string, no
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, denied()
 	}
-	return access.Role == core.ProjectAdmin, err
+	return access.Role == model.ProjectAdmin, err
 }
 
 type task struct {
-	Worker *core.WorkerClaim
-	Status string
+	Worker        *model.WorkerClaim
+	Status        string
+	StartupReport *sp.StartupReport
 }
 
 func lockTask(ctx context.Context, tx pgx.Tx, project, id string) (task, error) {
@@ -160,13 +173,13 @@ func taskWorker(ctx context.Context, tx pgx.Tx, id string, t task) (task, error)
 		return task{}, err
 	}
 	defer rows.Close()
-	properties := core.TaskProperties{}
+	properties := model.TaskProperties{}
 	for rows.Next() {
 		var name, value string
 		if err := rows.Scan(&name, &value); err != nil {
 			return task{}, err
 		}
-		properties[name], err = taskproperties.NormalizeValue(name, json.RawMessage(value), false)
+		properties[name], err = taskproperties.NormalizeValue(name, json.RawMessage(value))
 		if err != nil {
 			return task{}, err
 		}
@@ -175,6 +188,10 @@ func taskWorker(ctx context.Context, tx pgx.Tx, id string, t task) (task, error)
 		return task{}, err
 	}
 	t.Worker, err = taskproperties.Worker(properties)
+	if err != nil {
+		return t, err
+	}
+	t.StartupReport, err = taskproperties.SessionStartup(properties)
 	return t, err
 }
 func current(t task, r *record) bool {
@@ -182,12 +199,12 @@ func current(t task, r *record) bool {
 		return true
 	}
 	w := t.Worker
-	return w != nil && w.ClaimID == r.Snapshot.ClaimID && w.AgentControlMode == core.AgentControlModeWeb
+	return w != nil && w.ClaimID == r.Snapshot.ClaimID && w.AgentControlMode == model.AgentControlModeWeb
 }
 func active(t task, r *record) bool {
-	return r.Snapshot.Lifecycle == "active" && (r.Snapshot.TestExecutionID != "" || current(t, r) && t.Status == "in_progress" && t.Worker.State == core.WorkerActive)
+	return r.Snapshot.Lifecycle == "active" && (r.Snapshot.TestExecutionID != "" || current(t, r) && t.Status == "in_progress" && t.Worker.State == model.WorkerActive)
 }
-func (s *Service) browser(ctx context.Context, p core.Principal, project, taskID, id string, fn func(pgx.Tx, *record, task, bool) error) error {
+func (s *Service) browser(ctx context.Context, p model.Principal, project, taskID, id string, fn func(pgx.Tx, *record, task, bool) error) error {
 	return s.transact(ctx, func(tx pgx.Tx) error {
 		if project == "" && taskID == "" {
 			r, err := load(ctx, tx, id)
@@ -282,9 +299,9 @@ func permissions(r *record, write bool, now time.Time) sp.Snapshot {
 	v.Operations.CanRespond = v.Capabilities.Respond
 	return v
 }
-func (s *Service) Register(ctx context.Context, p core.Principal, project, taskID string, input sp.Registration) (sp.Snapshot, error) {
+func (s *Service) Register(ctx context.Context, p model.Principal, project, taskID string, input sp.Registration) (sp.Snapshot, error) {
 	var result sp.Snapshot
-	if p.Kind != core.PATCredential {
+	if p.Kind != model.PATCredential {
 		return result, denied()
 	}
 	err := s.transact(ctx, func(tx pgx.Tx) error {
@@ -300,7 +317,7 @@ func (s *Service) Register(ctx context.Context, p core.Principal, project, taskI
 			return err
 		}
 		w := t.Worker
-		if w == nil || t.Status != "in_progress" || w.State != core.WorkerActive || w.AgentControlMode != core.AgentControlModeWeb || w.UserID != p.UserID || w.ClaimID != input.ClaimID || w.WorkerID != input.WorkerID || w.WorktreeID != input.WorktreeID || string(w.Agent) != input.Provider {
+		if w == nil || t.Status != "in_progress" || w.State != model.WorkerActive || w.AgentControlMode != model.AgentControlModeWeb || w.UserID != p.UserID || w.ClaimID != input.ClaimID || w.WorkerID != input.WorkerID || w.WorktreeID != input.WorktreeID || string(w.Agent) != input.Provider {
 			return conflict()
 		}
 		var existing string
@@ -338,59 +355,73 @@ type GrantResult struct {
 	ControllerInstanceID string    `json:"controllerInstanceId"`
 }
 
-func (s *Service) Grant(ctx context.Context, p core.Principal, project, taskID, id string, g sp.Grant) (GrantResult, error) {
+func (s *Service) Grant(ctx context.Context, p model.Principal, project, taskID, id string, g sp.Grant) (GrantResult, error) {
 	var out GrantResult
-	if p.Kind != core.PATCredential {
+	if p.Kind != model.PATCredential {
 		return out, denied()
 	}
 	err := s.browser(ctx, p, project, taskID, id, func(tx pgx.Tx, r *record, t task, _ bool) error {
-		v := &r.Snapshot
-		if !active(t, r) || r.Owner != p.UserID || g.ClaimID != v.ClaimID || g.TestExecutionID != v.TestExecutionID || g.ControllerID != v.Identity.ControllerID {
+		if r.BotID != nil {
+			return denied()
+		}
+		if r.Snapshot.TestExecutionID != "" && (g.PreviousGeneration != nil || g.StopProof != nil) {
 			return conflict()
 		}
-		if g.PreviousGeneration != nil && g.ExecutionGeneration == v.ExecutionGeneration {
-			if g.StopProof == nil || number(*g.PreviousGeneration)+1 != number(v.ExecutionGeneration) || g.ControllerInstanceID != v.Identity.ControllerInstanceID || !jsonEqual(r.StopProof, encode(g.StopProof)) {
-				return conflict()
-			}
-		} else if g.PreviousGeneration != nil {
-			if g.StopProof == nil || *g.PreviousGeneration != v.ExecutionGeneration || number(g.ExecutionGeneration) != number(v.ExecutionGeneration)+1 || g.StopProof.PreviousControllerInstanceID != v.Identity.ControllerInstanceID || g.ControllerInstanceID == v.Identity.ControllerInstanceID {
-				return conflict()
-			}
-			stopped, err := time.Parse(time.RFC3339Nano, g.StopProof.StoppedAt)
-			if err != nil || stopped.After(s.now().Add(time.Second)) {
-				return conflict()
-			}
-			v.Controls = nil
-			v.TurnStartedAt = nil
-			v.ExecutionGeneration = g.ExecutionGeneration
-			v.Identity.ControllerInstanceID = g.ControllerInstanceID
-			v.ConnectionState = "disconnected"
-			v.Synchronized = false
-			if _, err = tx.Exec(ctx, `UPDATE task_sessions SET stop_proof=$2,connection_expires_at=NULL WHERE id=$1`, id, encode(g.StopProof)); err != nil {
-				return err
-			}
-			if err = s.emit(ctx, tx, r, "snapshot", *v, nil); err != nil {
-				return err
-			}
-		} else if g.ExecutionGeneration != v.ExecutionGeneration || g.ControllerInstanceID != v.Identity.ControllerInstanceID || g.StopProof != nil {
-			return conflict()
-		}
-		if g.Kind == "bootstrap" && v.ConnectionEpoch != "0" && g.PreviousGeneration == nil {
-			return conflict()
-		}
-		ttl := 15 * time.Minute
-		if g.Kind == "bootstrap" {
-			ttl = 120 * time.Second
-		}
-		out = GrantResult{TestExecutionID: v.TestExecutionID, Token: "dncontroller_" + rand.Text(), ExpiresAt: s.now().Add(ttl).UTC(), SessionID: id, ClaimID: v.ClaimID, ExecutionGeneration: v.ExecutionGeneration, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID}
-		h := sha256.Sum256([]byte(out.Token))
-		_, err := tx.Exec(ctx, `UPDATE task_sessions SET grant_hash=$2,grant_expires_at=$3,grant_kind=$4,grant_consumed=false,parent_credential_id=$5 WHERE id=$1`, id, h[:], out.ExpiresAt, g.Kind, p.CredentialID)
-		if err != nil {
-			return err
-		}
-		return save(ctx, tx, r)
+		var err error
+		out, err = s.grantRecord(ctx, tx, p, r, t, g)
+		return err
 	})
 	return out, err
+}
+
+func (s *Service) grantRecord(ctx context.Context, tx pgx.Tx, p model.Principal, r *record, t task, g sp.Grant) (GrantResult, error) {
+	var out GrantResult
+	id := r.Snapshot.SessionID
+	v := &r.Snapshot
+	if !active(t, r) || r.Owner != p.UserID || g.ClaimID != v.ClaimID || g.TestExecutionID != v.TestExecutionID || g.ControllerID != v.Identity.ControllerID {
+		return out, conflict()
+	}
+	if g.PreviousGeneration != nil && g.ExecutionGeneration == v.ExecutionGeneration {
+		if g.StopProof == nil || number(*g.PreviousGeneration)+1 != number(v.ExecutionGeneration) || g.ControllerInstanceID != v.Identity.ControllerInstanceID || !jsonEqual(r.StopProof, encode(g.StopProof)) {
+			return out, conflict()
+		}
+	} else if g.PreviousGeneration != nil {
+		if g.StopProof == nil || *g.PreviousGeneration != v.ExecutionGeneration || number(g.ExecutionGeneration) != number(v.ExecutionGeneration)+1 || g.StopProof.PreviousControllerInstanceID != v.Identity.ControllerInstanceID || g.ControllerInstanceID == v.Identity.ControllerInstanceID {
+			return out, conflict()
+		}
+		stopped, err := time.Parse(time.RFC3339Nano, g.StopProof.StoppedAt)
+		if err != nil || stopped.After(s.now().Add(time.Second)) {
+			return out, conflict()
+		}
+		v.Controls = nil
+		v.TurnStartedAt = nil
+		v.ExecutionGeneration = g.ExecutionGeneration
+		v.Identity.ControllerInstanceID = g.ControllerInstanceID
+		v.ConnectionState = "disconnected"
+		v.Synchronized = false
+		if _, err = tx.Exec(ctx, `UPDATE task_sessions SET stop_proof=$2,connection_expires_at=NULL WHERE id=$1`, id, encode(g.StopProof)); err != nil {
+			return out, err
+		}
+		if err = s.emit(ctx, tx, r, "snapshot", *v, nil); err != nil {
+			return out, err
+		}
+	} else if g.ExecutionGeneration != v.ExecutionGeneration || g.ControllerInstanceID != v.Identity.ControllerInstanceID || g.StopProof != nil {
+		return out, conflict()
+	}
+	if g.Kind == "bootstrap" && v.ConnectionEpoch != "0" && g.PreviousGeneration == nil {
+		return out, conflict()
+	}
+	ttl := 15 * time.Minute
+	if g.Kind == "bootstrap" {
+		ttl = 120 * time.Second
+	}
+	out = GrantResult{TestExecutionID: v.TestExecutionID, Token: "dncontroller_" + rand.Text(), ExpiresAt: s.now().Add(ttl).UTC(), SessionID: id, ClaimID: v.ClaimID, ExecutionGeneration: v.ExecutionGeneration, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID}
+	h := sha256.Sum256([]byte(out.Token))
+	_, err := tx.Exec(ctx, `UPDATE task_sessions SET grant_hash=$2,grant_expires_at=$3,grant_kind=$4,grant_consumed=false,parent_credential_id=$5 WHERE id=$1`, id, h[:], out.ExpiresAt, g.Kind, p.CredentialID)
+	if err != nil {
+		return out, err
+	}
+	return out, save(ctx, tx, r)
 }
 
 // AuthenticateController checks grant and parent authority before allocating a channel.
@@ -418,7 +449,7 @@ func (s *Service) controllerGrant(ctx context.Context, tx pgx.Tx, hash []byte) (
 	if err != nil {
 		return nil, err
 	}
-	if _, err = s.scopePermission(ctx, tx, core.Principal{Kind: core.PATCredential, UserID: r.Owner, CredentialID: r.Parent}, r); err != nil {
+	if _, err = s.scopePermission(ctx, tx, model.Principal{Kind: model.PATCredential, UserID: r.Owner, CredentialID: r.Parent}, r); err != nil {
 		return nil, err
 	}
 	if !bytes.Equal(hash, r.GrantHash) || r.GrantExpiry == nil || !s.now().Before(*r.GrantExpiry) || r.Consumed && r.GrantKind == "bootstrap" || !active(t, r) {
@@ -479,6 +510,10 @@ func (s *Service) controller(ctx context.Context, f sp.ControllerFence, fn func(
 	return s.transact(ctx, func(tx pgx.Tx) error {
 		var project, taskID string
 		if err := tx.QueryRow(ctx, `SELECT COALESCE(project_id::text,''),COALESCE(task_id::text,'') FROM task_sessions WHERE id=$1`, f.SessionID).Scan(&project, &taskID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// This lookup precedes load, including the final socket disconnect.
+				s.discardBotSession(f.SessionID)
+			}
 			return err
 		}
 		t, err := scopeTask(ctx, tx, project, taskID)
@@ -489,7 +524,7 @@ func (s *Service) controller(ctx context.Context, f sp.ControllerFence, fn func(
 		if err != nil {
 			return err
 		}
-		if _, err = s.scopePermission(ctx, tx, core.Principal{Kind: core.PATCredential, UserID: r.Owner, CredentialID: r.ConnectionParent}, r); err != nil {
+		if _, err = s.scopePermission(ctx, tx, model.Principal{Kind: model.PATCredential, UserID: r.Owner, CredentialID: r.ConnectionParent}, r); err != nil {
 			return err
 		}
 		if r.ServerInstance == nil || *r.ServerInstance != s.instance || r.Live == nil || r.Snapshot.ControllerFence != f || r.ConnectionExpiry == nil || !s.now().Before(*r.ConnectionExpiry) || r.Snapshot.Lifecycle == "archived" || r.DrainUntil != nil && !s.now().Before(*r.DrainUntil) {

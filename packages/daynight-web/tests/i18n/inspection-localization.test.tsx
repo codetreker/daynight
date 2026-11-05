@@ -41,7 +41,7 @@ const openAttachments = (api: AttachmentApi) => renderWithLocale(<>
   <LanguageSelector />
   <TaskAttachments projectId={projectId} taskId={taskId} api={api} />
 </>, { locale: 'zh-CN' });
-const switchTo = (locale: 'en' | 'zh-CN') => fireEvent.change((document.querySelector('dialog[open]') === null ? screen : within(document.querySelector('dialog[open]')!)).getByRole('combobox', { name: '语言 / Language' }), { target: { value: locale } });
+const switchTo = (locale: 'en' | 'zh-CN') => fireEvent.change(document.querySelector('.locale-control select')!, { target: { value: locale } });
 
 describe('inspection language changes', () => {
   it('keeps the PR collection, page, selector focus and raw fields while translating pagination', async () => {
@@ -135,27 +135,29 @@ describe('inspection language changes', () => {
       await second.promise;
       data.setItems([]);
     });
-    openAttachments({ ...data.api, remove });
+    const view = openAttachments({ ...data.api, remove });
     fireEvent.click(await screen.findByText('site', { selector: 'summary' }));
     fireEvent.click(await screen.findByRole('button', { name: /index.html/, pressed: false }));
     const frame = await screen.findByTitle('HTML 预览：site/index.html');
     await userEvent.setup().click(screen.getByRole('button', { name: '更多操作：site/index.html' }));
     await userEvent.setup().click(screen.getByRole('menuitem', { name: '删除' }));
     await userEvent.setup().click(screen.getByRole('button', { name: '删除附件' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).queryByRole('combobox', { name: '语言 / Language' })).toBeNull();
     const signal = remove.mock.calls[0]![3];
-    switchTo('en');
+    view.setLocale('en');
     expect(screen.getByRole('button', { name: 'Deleting…' })).toBeDisabled();
     expect(screen.getByTitle('HTML preview: site/index.html')).toBe(frame);
     expect(remove).toHaveBeenCalledExactlyOnceWith(projectId, taskId, 'site/index.html', signal);
     expect(signal.aborted).toBe(false);
     await act(async () => first.reject(new ApiError('server', 500, 'internal_error', 'delete-request-raw')));
     expect(screen.getByRole('alert')).toHaveTextContent('The attachment operation failed.');
-    switchTo('zh-CN');
+    view.setLocale('zh-CN');
     expect(screen.getByRole('alert')).toHaveTextContent('附件操作失败，请检查后重试。');
     expect(screen.getByRole('alert')).toHaveTextContent('delete-request-raw');
     expect(screen.getByTitle('HTML 预览：site/index.html')).toBe(frame);
     await userEvent.setup().click(screen.getByRole('button', { name: '删除附件' }));
-    switchTo('en');
+    view.setLocale('en');
     await act(async () => second.resolve());
     await screen.findByText('No attachments. Upload a file to browse it here.');
     expect(screen.queryByRole('alert')).toBeNull();
@@ -163,6 +165,26 @@ describe('inspection language changes', () => {
     expect(remove).toHaveBeenCalledTimes(2);
     expect(data.api.list).toHaveBeenCalledTimes(2);
     expect(data.api.checkPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps preference failure feedback at the page entry, including while deletion is pending', async () => {
+    const data = fixture();
+    const pending = deferred<void>();
+    const remove = vi.fn<AttachmentApi['remove']>().mockReturnValue(pending.promise);
+    renderWithLocale(<><LanguageSelector /><TaskAttachments projectId={projectId} taskId={taskId} api={{ ...data.api, remove }} /></>,
+      { locale: 'zh-CN', issue: { kind: 'write', cause: new Error('storage') } });
+    expect(document.querySelector('.locale-notice')).toHaveTextContent('语言无法保存到浏览器');
+    fireEvent.click(await screen.findByText('site', { selector: 'summary' }));
+    await userEvent.setup().click(screen.getByRole('button', { name: '更多操作：site/index.html' }));
+    await userEvent.setup().click(screen.getByRole('menuitem', { name: '删除' }));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.querySelector('.locale-notice')).toBeNull();
+    expect(within(dialog).queryByRole('combobox', { name: '语言 / Language' })).toBeNull();
+    await userEvent.setup().click(within(dialog).getByRole('button', { name: '删除附件' }));
+    expect(dialog.querySelector('.locale-notice')).toBeNull();
+    expect(within(dialog).getByRole('button', { name: '正在删除…' })).toBeDisabled();
+    expect(remove).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve());
   });
 
   it('retranslates preview errors while retaining their request IDs and raw content boundaries', () => {
@@ -189,7 +211,7 @@ describe('inspection language changes', () => {
     } }), { status: 404, headers: viewerHeaders(world.scope.userId, { 'Content-Type': 'application/json' }) }));
     vi.stubGlobal('fetch', fetch);
     const view = renderWithLocale(<TaskDetailDialog projectId={projectId} taskId={taskId}
-      snapshot={{ observedAt: graph.observedAt, graph, index: world.scope.getAuthorizedProject(projectId)!.index, pausedTaskIds: world.scope.getAuthorizedProject(projectId)!.pausedTaskIds, receivedMonotonic: performance.now(), receivedAt: Date.now(), revision: 1 }}
+      snapshot={{ observedAt: graph.observedAt, graph, index: world.scope.getAuthorizedProject(projectId)!.index, workerMachines: new Map(), pausedTaskIds: world.scope.getAuthorizedProject(projectId)!.pausedTaskIds, receivedMonotonic: performance.now(), receivedAt: Date.now(), revision: 1 }}
       onSelectTask={vi.fn()} onClose={vi.fn()} onRestoreFocus={vi.fn()} onRefreshGraph={vi.fn()} />, { locale: 'zh-CN', taskCache: { scope: world.scope } });
     try {
       expect(await screen.findByRole('alert')).toHaveTextContent('这个任务已无法读取，请刷新任务图。');

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
 func makeRelayOwnerInheritedOnly(t *testing.T, f fixture) string {

@@ -5,9 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"strings"
@@ -59,6 +58,28 @@ func TestTerminalControlReleaseCannotResumeAutomationAndRenewCannotReplaceLease(
 	state.Lease.LeaseID = "replacement"
 	if terminalControlTransition(request, "actor", state, now) == nil {
 		t.Fatal("renewal replaced original lease")
+	}
+}
+
+func TestTerminalInitialDispositionAcknowledgementKeepsAutomationSuspended(t *testing.T) {
+	now := time.Date(2026, 11, 3, 13, 0, 0, 0, time.UTC)
+	disposition := "delivered_continue"
+	request := v2.ControlRequest{Action: "resolve_initial_assignment", ConnectionEpoch: "1", ControlEpoch: "4", InitialUnknownDisposition: &disposition}
+	state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "5", State: "suspended", InitialAssignment: "transport_completed"}
+	if err := terminalControlTransition(request, "actor", state, now); err != nil {
+		t.Fatal(err)
+	}
+	if !terminalInitialProgress("unknown", "transport_completed", &request) || !terminalInitialProgress("unconfirmed", "transport_completed", &request) {
+		t.Fatal("explicit disposition did not resolve initial progress")
+	}
+	state.State = "automation"
+	if terminalControlTransition(request, "actor", state, now) == nil {
+		t.Fatal("initial disposition resumed automation")
+	}
+	request.Action = "resume_automation"
+	request.DraftHandled = true
+	if terminalInitialProgress("unknown", "transport_completed", &request) {
+		t.Fatal("automation handback also resolved initial delivery")
 	}
 }
 
@@ -704,7 +725,7 @@ func TestTerminalForeignHealthyRelayCannotRevokeControlOrPendingOperation(t *tes
 				if before != after {
 					t.Fatal("foreign relay mutated healthy original control state")
 				}
-				var refusal *service.Fault
+				var refusal *model.Fault
 				if !errors.As(err, &refusal) || refusal.Code != "relay_instance_unavailable" {
 					t.Fatalf("missing explicit relay routing refusal: %v", err)
 				}
@@ -736,7 +757,7 @@ func TestTerminalForeignRelaySuspendsOnlyAfterHeartbeatLossOrClaimEnd(t *testing
 			epoch := "1"
 			registration.ConnectionEpoch = &epoch
 			_, err := other.RegisterTerminal(context.Background(), f.p, f.project, f.task, f.msg("registration", registration))
-			var refusal *service.Fault
+			var refusal *model.Fault
 			if !errors.As(err, &refusal) || refusal.Code != "input_busy" {
 				t.Fatalf("healthy foreign registration bypassed existing owner: %v", err)
 			}
@@ -1077,6 +1098,67 @@ func TestTerminalLeaseRenewReleaseAndExplicitAutomationHandoff(t *testing.T) {
 	}
 }
 
+func TestTerminalUnknownInitialDispositionAndAutomationHandoffAreSeparate(t *testing.T) {
+	for _, initial := range []string{"unknown", "unconfirmed"} {
+		t.Run(initial, func(t *testing.T) {
+			f := terminalControlSetup(t)
+			ctx := context.Background()
+			err := f.s.terminalAccess(ctx, f.p, f.project, f.task, f.message.SessionID, false, func(tx pgx.Tx, r *terminalRecord, _ task, _ bool) error {
+				r.ControlEpoch = "2"
+				// An older Worker may advertise resume for unresolved delivery. The
+				// service still rejects that decision until separate disposition.
+				r.Control = &v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "suspended", InitialAssignment: initial, AvailableActions: []string{"acquire_control", "resolve_initial_assignment", "resume_automation"}}
+				return saveTerminal(ctx, tx, r)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resume := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "2", Action: "resume_automation", BrowserClientID: f.browser, DraftHandled: true}
+			if _, err = f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", resume)); err == nil {
+				t.Fatal("automation resumed before the initial delivery decision")
+			}
+			disposition := "delivered_continue"
+			resolve := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "2", Action: "resolve_initial_assignment", BrowserClientID: f.browser, InitialUnknownDisposition: &disposition}
+			queued := f.submit(t, f.msg("control_request", resolve))
+			if queued.Payload.(v2.OperationResult).State != "queued" || f.control(t).InitialAssignment != initial {
+				t.Fatal("request acceptance replaced unconfirmed Worker state")
+			}
+			offers := f.poll(t, "1")
+			if len(offers) != 1 || offers[0].Type != "control_dispatch" {
+				t.Fatal(offers)
+			}
+			dispatch := offers[0].Payload.(v2.ControlDispatch)
+			state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "3", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
+			ack := v2.ControlAck{RequestDigest: dispatch.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(resolve.OperationID, "transport_completed", "")}
+			if _, err = f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, f.message.SessionID, "1", f.msg("control_ack", ack)); err == nil {
+				t.Fatal("disposition acknowledgement enabled automation")
+			}
+			ack.ControlState.State = "suspended"
+			ack.ControlState.AvailableActions = []string{"acquire_control", "resume_automation"}
+			f.worker(t, "1", f.msg("control_ack", ack))
+			if got := f.control(t); got.State != "suspended" || got.InitialAssignment != "transport_completed" || got.Lease != nil {
+				t.Fatal(got)
+			}
+			if got := f.submit(t, f.msg("control_request", resolve)).Payload.(v2.OperationResult); got.State != "transport_completed" || len(f.poll(t, "1")) != 0 {
+				t.Fatal("duplicate disposition created another dispatch")
+			}
+			resume.OperationID = uuid.NewString()
+			resume.ControlEpoch = "3"
+			f.submit(t, f.msg("control_request", resume))
+			offers = f.poll(t, "1")
+			if len(offers) != 1 || offers[0].Type != "control_dispatch" {
+				t.Fatal(offers)
+			}
+			dispatch = offers[0].Payload.(v2.ControlDispatch)
+			state.ControlEpoch = "4"
+			f.worker(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: dispatch.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(resume.OperationID, "transport_completed", "")}))
+			if f.control(t).State != "automation" {
+				t.Fatal("separate automation handoff was not accepted")
+			}
+		})
+	}
+}
+
 func TestTerminalExpiredLeaseAndWrongBrowserCannotInput(t *testing.T) {
 	f := terminalControlSetup(t)
 	lease := f.acquire(t)
@@ -1102,9 +1184,9 @@ func TestTerminalExpiredLeaseAndWrongBrowserCannotInput(t *testing.T) {
 	}
 }
 
-func terminalOtherActor(t *testing.T, f *terminalControlFixture) core.Principal {
+func terminalOtherActor(t *testing.T, f *terminalControlFixture) model.Principal {
 	t.Helper()
-	p := core.Principal{Kind: core.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	p := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 	hash := sha256.Sum256([]byte(p.CredentialID))
 	statements := []struct {
 		sql  string
@@ -1227,10 +1309,10 @@ func TestTerminalInitialDeliveryStateCannotRegressOrResolveWithoutDisposition(t 
 			t.Fatalf("%s became automatically sendable", prior)
 		}
 	}
-	if !terminalInitialProgress("pending", "dispatching", nil) || !terminalInitialProgress("dispatching", "unknown", nil) {
+	if !terminalInitialProgress("pending", "dispatching", nil) || !terminalInitialProgress("dispatching", "unknown", nil) || !terminalInitialProgress("dispatching", "pending", nil) {
 		t.Fatal("valid initial delivery progression rejected")
 	}
-	request := v2.ControlRequest{Action: "resume_automation", DraftHandled: true}
+	request := v2.ControlRequest{Action: "resolve_initial_assignment"}
 	if terminalInitialProgress("unknown", "transport_completed", &request) {
 		t.Fatal("missing unknown disposition resolved delivery")
 	}

@@ -15,7 +15,14 @@ creating partial task resources.
 
 ## Decision
 
-The interactive worker setup command reports local prerequisites, selects one
+The local setup and repository commands edit the initial candidate before a
+cloud target is established. The later [cloud application decision](2026-11-04-worker-cloud-runtime-configuration.md)
+replaces startup-only local authority for managed values after enrollment;
+local writers then require cloud editing and cannot infer enrollment from a
+missing cache. Local paths, independent clone roots and YAML preservation retain
+the ownership described here.
+
+Before enrollment, interactive setup reports local prerequisites, selects one
 native agent and offers existing accessible Projects with current selections
 checked. Candidate configuration preserves existing transports and paths, retains
 compatible native settings and clears incompatible global or per-Project values
@@ -35,8 +42,8 @@ registrations retain their exact transport URL, path and native-agent overrides;
 remote-only association adds only projectId. An equivalent HTTPS Project address
 does not replace an existing SSH transport: unfinished local records retain
 their literal repository binding. Remove changes configuration only, retaining
-clones, claims, worktrees and native history. The running process continues to
-use startup settings.
+clones, claims, worktrees and native history. These local candidate changes do
+not replace an existing cloud target.
 
 Worker owns worker.repositoryRoot, a validated raw string defaulting to
 ~/daynights. It is independent of review's clone-root setting. Registration
@@ -48,32 +55,35 @@ host/path layout; transport, user, port and nonordinary paths use separate
 collapse those identities. Review retains its own configuration parser, YAML
 writes and lifecycle.
 
-The [foreground runtime](2026-10-27-foreground-worker-runtime.md) owns omission
-defaults and resource execution. Its public command passes an explicit
-preparation callback into the runtime. An empty selection is resolved before
-new task resources are created; configured Projects are registered locally
-before the first complete claim inventory, including with an empty database.
-The [simplification decision](../simplification/2026-10-27-worker-claim-records.md)
+The [foreground runtime](2026-10-27-foreground-worker-runtime.md) retains
+resource execution. Current startup captures local connection/path/mode values,
+authenticates and reads the cloud target before preparation. An empty target
+selection remains a valid reporting Worker. Prepared selected bindings supply
+execution; retained Project mappings continue serving ownership and resource
+inspection independently of selection. Managed values come from the cloud
+application manager rather than a second YAML read. The [Bot inventory decision](2026-11-04-worker-bot-inventory.md)
+replaced the original run-time selection callback: run accepts an empty selection,
+while setup and repo commands retain explicit selection. Original task inventory
+and terminal cleanup schedules remain managed without selected repositories.
+
+The earlier local-startup preparation boundary was chosen after the
+[simplification decision](../simplification/2026-10-27-worker-claim-records.md)
 removed the original promise that cleanup jobs continue while a restarted
 process waits for Project selection. The [cleanup retry decision](../bug-fix/2026-11-04-worker-cleanup-retry.md)
-preserves the original terminal deadline and retry policy, but starts no cleanup
-side effects during Project selection. The
-[resource-state decision](2026-11-04-worker-resource-state.md) removes notification
-progress storage while preserving this preparation boundary. Current-process cleanup jobs
-remain separate from normal reconciliation.
-
-After preparation, service credentials and worker settings are validated from
-one captured configuration source. The service context must still match, and
-maxConcurrent uses that snapshot's prepared settings. An atomic file replacement
-after capture cannot supply different worker parameters under the original
-service context. Restarted native processes use current applicable agent settings.
+then preserved original terminal deadlines and retry policy; the
+[resource-state decision](2026-11-04-worker-resource-state.md) removed notification
+progress storage. These decisions retain their execution and cleanup owners;
+configuration exchange does not authorize unknown resources or replace task
+recovery. Service identity remains captured consistently, while effective
+managed settings are published by their own serialized owner.
 
 A selection snapshot covers raw worker.repositoryRoot presence and value,
 worker.repositories and service credentials. Setup adds raw global native-field
 presence and values to that decoded baseline. Deep comparison handles cyclic
 unknown aliases while retaining presence checks. Network and prompts hold no
-configuration lock. The atomic writer rereads current YAML, refuses related
-changes and preserves unrelated edits and comments. Worker and review clone-root
+configuration lock. The final cloud ownership check runs immediately before
+taking the local lock; the writer then rereads current YAML, refuses related
+identity/service and selection changes and preserves unrelated edits and comments. Worker and review clone-root
 edits remain independent. Candidate repositories receive the same type, identity
 and physical path validation as runtime configuration.
 
@@ -174,13 +184,15 @@ inventory and failed writes cannot produce a partial selection or new task
 execution. A selected Project must remain accessible for registration management.
 
 The runtime does not rebind an initialized coordinator to changed credentials.
-Restarted reconciliation first resolves its selected and saved Project scope. Independent roots and
-preserved existing paths keep configuration edits from relocating original work.
-Invalid known configuration remains visible under the runtime's strict omission
-semantics. The later [unknown-field policy](../bug-fix/2026-10-27-ignore-unknown-configuration-fields.md)
+Restarted reconciliation checks the cloud target before normal scheduling.
+Independent roots and preserved existing paths keep configuration edits from
+relocating original work. Local-owned fields and a new first-import candidate
+retain strict omission semantics; stale managed YAML does not override an
+existing target. The later [unknown-field policy](../bug-fix/2026-10-27-ignore-unknown-configuration-fields.md)
 ignores unknown fields during projection and preserves them during edits.
 
-Shared aliases may require separating worker data before changing acquisition
-scope. The refusal preserves original bytes and unaffected aliases. Configuration
-changes still take effect only at the next startup; they do not stop active
-assignments or erase resources retained for recovery.
+Shared aliases may require separating local candidate data before changing its
+scope. The refusal preserves original bytes and unaffected aliases. Local path,
+connection and mode changes retain their startup boundary. Managed runtime
+values are hot-applied through the cloud configuration manager without replacing
+running native arguments or erasing resources retained for recovery.

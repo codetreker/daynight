@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 )
 
@@ -22,16 +22,16 @@ func TestTaskStepMutationsPreserveActiveSessionPublicationAndControl(t *testing.
 	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT to_jsonb(s)::text FROM task_sessions s WHERE id=$1`, snapshot.SessionID).Scan(&sessionBefore); err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.NewTaskSteps(f.s.DB).Add(ctx, f.p, f.project, f.task, service.AddTaskStep{Version: version, ID: "abcdef01", Title: "Work continues"})
+	result, err := taskservice.NewTaskSteps(f.s.DB).Add(ctx, f.p, f.project, f.task, taskservice.AddTaskStep{Version: version, ID: "abcdef01", Title: "Work continues"})
 	if err != nil || result.Resource.Version != version+1 {
 		t.Fatalf("Step add: %+v %v", result.Resource, err)
 	}
 	title := "Changed while execution continues"
-	result, err = service.NewTaskSteps(f.s.DB).Update(ctx, f.p, f.project, f.task, "ABCDEF01", service.UpdateTaskStep{Version: version + 1, Title: &title})
+	result, err = taskservice.NewTaskSteps(f.s.DB).Update(ctx, f.p, f.project, f.task, "ABCDEF01", taskservice.UpdateTaskStep{Version: version + 1, Title: &title})
 	if err != nil || result.Resource.Version != version+2 || !result.Changed {
 		t.Fatalf("Step content update: %+v %v", result.Resource, err)
 	}
-	result, err = service.NewTaskSteps(f.s.DB).SetStatus(ctx, f.p, f.project, f.task, "ABCDEF01", service.SetTaskStepStatus{Version: version + 2, Status: core.TaskStepInProgress})
+	result, err = taskservice.NewTaskSteps(f.s.DB).SetStatus(ctx, f.p, f.project, f.task, "ABCDEF01", taskservice.SetTaskStepStatus{Version: version + 2, Status: model.TaskStepInProgress})
 	if err != nil || result.Resource.Version != version+3 || !result.Changed {
 		t.Fatalf("Step status update: %+v %v", result.Resource, err)
 	}

@@ -3,9 +3,8 @@ package sessionrelay
 import (
 	"context"
 	"errors"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
-	"github.com/google/uuid"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/jackc/pgx/v5"
 	"time"
 )
@@ -17,7 +16,7 @@ func scopeTask(ctx context.Context, tx pgx.Tx, project, id string) (task, error)
 	}
 	return lockTask(ctx, tx, project, id)
 }
-func (s *Service) scopePermission(ctx context.Context, tx pgx.Tx, p core.Principal, r *record) (bool, error) {
+func (s *Service) scopePermission(ctx context.Context, tx pgx.Tx, p model.Principal, r *record) (bool, error) {
 	if r.Snapshot.TestExecutionID == "" {
 		return member(ctx, tx, p, r.Snapshot.Identity.ProjectID, s.now())
 	}
@@ -29,15 +28,15 @@ func (s *Service) scopePermission(ctx context.Context, tx pgx.Tx, p core.Princip
 	}
 	// The browser's own login does not outlive the controller's revoked parent PAT.
 	if r.Parent != "" {
-		if err := credential(ctx, tx, core.Principal{Kind: core.PATCredential, UserID: r.Owner, CredentialID: r.Parent}, s.now()); err != nil {
+		if err := credential(ctx, tx, model.Principal{Kind: model.PATCredential, UserID: r.Owner, CredentialID: r.Parent}, s.now()); err != nil {
 			return false, err
 		}
 	}
 	return true, nil
 }
-func (s *Service) RegisterTest(ctx context.Context, p core.Principal, input sp.TestRegistration) (sp.Snapshot, error) {
+func (s *Service) RegisterTest(ctx context.Context, p model.Principal, input sp.TestRegistration) (sp.Snapshot, error) {
 	var out sp.Snapshot
-	if p.Kind != core.PATCredential {
+	if p.Kind != model.PATCredential {
 		return out, denied()
 	}
 	err := s.transact(ctx, func(tx pgx.Tx) error {
@@ -49,13 +48,17 @@ func (s *Service) RegisterTest(ctx context.Context, p core.Principal, input sp.T
 			return err
 		}
 		var id string
-		err := tx.QueryRow(ctx, `SELECT id::text FROM task_sessions WHERE scope='test' AND owner_user_id=$1 AND (registration_id=$2 OR test_execution_id=$3)`, p.UserID, input.RegistrationID, input.TestExecutionID).Scan(&id)
+		var botID *string
+		err := tx.QueryRow(ctx, `SELECT id::text,bot_id::text FROM task_sessions WHERE scope='test' AND owner_user_id=$1 AND (registration_id=$2 OR test_execution_id=$3)`, p.UserID, input.RegistrationID, input.TestExecutionID).Scan(&id, &botID)
 		if err == nil {
+			if botID != nil {
+				return denied()
+			}
 			r, e := load(ctx, tx, id)
 			if e != nil {
 				return e
 			}
-			if !jsonEqual(r.Registration, encode(input)) {
+			if r.BotID != nil || !jsonEqual(r.Registration, encode(input)) {
 				return conflict()
 			}
 			if _, e = s.scopePermission(ctx, tx, p, r); e != nil {
@@ -67,17 +70,13 @@ func (s *Service) RegisterTest(ctx context.Context, p core.Principal, input sp.T
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		initial := "not_submitted"
-		if input.InitialInput == "none" {
-			initial = "not_required"
-		}
-		out = sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), TestExecutionID: input.TestExecutionID, ExecutionGeneration: "1"}, ConnectionEpoch: "0"}, Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, Identity: sp.Identity{OwnerUserID: p.UserID, ControllerID: input.ControllerID, ControllerInstanceID: input.ControllerInstanceID, AgentControlMode: "web", Provider: input.Provider}, SessionRevision: "1", HistoryEpoch: uuid.NewString(), LastEventSeq: "0", LastTimelineSeq: "0", InitialInputState: initial, Lifecycle: "active", ConnectionState: "disconnected", Activity: "initializing"}
+		out = initialTestSnapshot(p, input)
 		_, err = tx.Exec(ctx, `INSERT INTO task_sessions(id,scope,test_execution_id,owner_user_id,registration_id,registration,snapshot,parent_credential_id) VALUES($1,'test',$2,$3,$4,$5,$6,$7)`, out.SessionID, input.TestExecutionID, p.UserID, input.RegistrationID, encode(input), encode(durableSnapshot(out)), p.CredentialID)
 		return err
 	})
 	return out, err
 }
-func (s *Service) TestSnapshot(ctx context.Context, p core.Principal, id string) (sp.Snapshot, error) {
+func (s *Service) TestSnapshot(ctx context.Context, p model.Principal, id string) (sp.Snapshot, error) {
 	var out sp.Snapshot
 	err := s.browser(ctx, p, "", "", id, func(_ pgx.Tx, r *record, t task, write bool) error {
 		out = permissions(r, write && active(t, r), s.now())
@@ -85,12 +84,15 @@ func (s *Service) TestSnapshot(ctx context.Context, p core.Principal, id string)
 	})
 	return out, err
 }
-func (s *Service) StopTest(ctx context.Context, p core.Principal, id string, input sp.TestStop) (sp.Snapshot, error) {
+func (s *Service) StopTest(ctx context.Context, p model.Principal, id string, input sp.TestStop) (sp.Snapshot, error) {
 	var out sp.Snapshot
-	if p.Kind != core.PATCredential {
+	if p.Kind != model.PATCredential {
 		return out, denied()
 	}
 	err := s.browser(ctx, p, "", "", id, func(tx pgx.Tx, r *record, _ task, _ bool) error {
+		if r.BotID != nil {
+			return denied()
+		}
 		v := &r.Snapshot
 		if input.Fence != v.Fence || input.ControllerID != v.Identity.ControllerID || input.ControllerInstanceID != v.Identity.ControllerInstanceID || input.StopProof.PreviousControllerInstanceID != v.Identity.ControllerInstanceID {
 			return conflict()

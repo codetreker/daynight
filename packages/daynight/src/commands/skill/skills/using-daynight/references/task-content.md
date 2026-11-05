@@ -14,7 +14,7 @@ An accepted conclusion in discussion must be incorporated into its effective con
 
 | Store in the task | Store in the session or relevant platform |
 | --- | --- |
-| Objectives, requirements, scope, delivery constraints, required inputs, acceptance criteria | Execution steps, tool choices, agent assignments, operational authorization |
+| Objectives, requirements, scope, required implementation approaches, delivery constraints, required inputs, acceptance criteria | Session work schedules, tool choices, agent assignments, operational authorization |
 | Current requirements or architecture, accepted conclusions and essential rationale, substantive open questions | Discussion rounds and confirmation process in Thread; debugging history, CI/review progress and execution context in Session |
 | Deliverables, immutable revisions, acceptance conclusions, key observations and limitations | Worktree, HEAD, claim, blocker, waiting, and recovery context |
 
@@ -32,7 +32,7 @@ requirements and formal deliverables; a Step may reference them. Steps persist
 across Sessions and can be empty; do not infer them from Task descriptions,
 Session todos or execution logs.
 
-Session owns execution plans, commands, tool activity, logs and operational
+Session owns its work organization, command schedules, tool activity, logs and operational
 authorization. Do not copy the Session timeline into Steps or treat a Step as
 permission to execute, deliver, communicate externally or merge. Project rules
 own how Steps are divided and maintained; see [task execution](task-execution.md#maintain-steps).
@@ -52,7 +52,7 @@ The description and readable references together provide the following informati
 The description must identify this task's specific work and where to find its sources.
 When attachment delivery is not specified, complete inline content needs no primary attachment; references or a mix of inline content and references are also valid.
 Do not duplicate complete documents.
-The [Goal protocol](goal.md#complete-requirements-spec) requires a complete `spec.md` attachment for the requirements stage even when its description is complete.
+The [Goal protocol](goal.md#complete-requirements-spec) requires a complete `spec.md` attachment for the requirements stage even when its description is complete. Every Goal delivery task additionally requires the [task-specific delivery brief](goal.md#delivery-task-brief); the general content categories do not waive its implementation approach.
 The [complete delivery standard](autopilot-managed-task.md#complete-delivery-standard) governs managed tasks' attachment and separate review-file requirements; the general inline-content rule cannot waive them.
 Generic questions, unexplained links, unreadable sources, or "see the previous discussion" are insufficient.
 
@@ -96,7 +96,7 @@ Citing sources does not create execution dependencies; see [task management](tas
 
 Before creation, handoff, or execution, check definitions, source readability and applicability, result ownership, and stage requirements.
 Unknown requirements, interface decisions, design choices, and acceptance thresholds are specific gaps, not details to invent.
-If completing a task requires an architecture or execution plan, it is a required input and cannot be omitted on the grounds that "session plans do not belong in tasks"; actual session steps still follow the content boundary.
+A required architecture or implementation approach, including the Goal delivery brief, is task content and cannot be omitted on the grounds that "session plans do not belong in tasks"; actual session work schedules still follow the content boundary.
 Handle input gaps in managed tasks through the [user interaction workflow](autopilot-managed-task.md#request-user-interaction).
 
 Organize confirmed information only within the authorized scope; substantive scope or behavior changes require user confirmation.

@@ -12,7 +12,7 @@ sharing a global execution limit across repositories.
 
 ## Decision
 
-The foreground worker now uses current service/Git/Herdr facts and process-local jobs under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). The following records the original durable execution controller, including the uncertainty guarantees that motivated its checkpoints. Those persistent mechanisms are historical, not requirements on the current claim index.
+The foreground worker uses current service/Git/Herdr facts and process-local jobs under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). The later [cloud configuration application decision](2026-11-04-worker-cloud-runtime-configuration.md) owns cloud-first startup, managed-value hot loading and the separate JSON commit owner; it does not change task recovery. The following records the original durable execution controller, including the uncertainty guarantees that motivated its checkpoints. Those persistent mechanisms and startup-only configuration descriptions are historical, not requirements on the current claim index.
 
 ### Original implementation and rationale
 
@@ -209,7 +209,11 @@ resetting it. Original process/PTY, conversation and frozen settings remain;
 there is no second native start. Submitted/unknown input or unproven missing-ID
 history remains fenced, and committed control/cleanup/shutdown takes priority
 over business startup input. This adds neither a reporting protocol nor a new
-controller; the adapter's current-surface guard never grants native consent.
+controller. The [structured input decision](../simplification/2026-11-04-worker-structured-input-readiness.md)
+replaces the adapter's automatic positive visible-composer guard with explicit known
+menu and disabled-input exclusions. Unknown normal layouts do not wait; original
+input provenance and native startup controls retain their separate
+responsibilities.
 
 Cleanup retains its first deadline and input provenance. A lightweight discovery
 loop inside the foreground process discovers this worker's persisted intents

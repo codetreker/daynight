@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 )
 
@@ -62,21 +64,23 @@ func selectedSessionProtocol(r *http.Request) (string, error) {
 	}
 	return socketProtocol, nil
 }
-func terminalFault(code, message string) error { return &service.Fault{Code: code, Message: message} }
+func terminalFault(code, message string) error { return &model.Fault{Code: code, Message: message} }
 func (h *sessionRoutes) registerTerminalRoutes(mux *http.ServeMux) {
 	for path, method := range map[string]string{
 		sessionBase: "GET", sessionBase + "/{sessionId}/state": "GET",
-		sessionBase + "/{sessionId}/worker-messages":                 "POST",
-		sessionBase + "/{sessionId}/worker-channel":                  "GET",
-		sessionBase + "/{sessionId}/archive/receipt":                 "GET",
-		sessionBase + "/{sessionId}/recording-evidence/{evidenceId}": "GET",
+		sessionBase + "/{sessionId}/worker-messages":                  "POST",
+		sessionBase + "/{sessionId}/worker-channel":                   "GET",
+		sessionBase + "/{sessionId}/archive/receipt":                  "GET",
+		sessionBase + "/{sessionId}/archive/state":                    "GET",
+		sessionBase + "/{sessionId}/recording-evidence/{evidenceId}":  "GET",
+		sessionBase + "/{sessionId}/automation-recovery/{recoveryId}": "GET",
 	} {
-		mux.HandleFunc(method+" "+path, h.auth.Require(h.parameters(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
+		mux.HandleFunc(method+" "+path, h.auth.Require(h.parameters(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 			h.failure(w, r, terminalFault("unsupported_protocol", "This endpoint requires daynight.session.v2."))
 		})))
 		if path != sessionBase {
-			fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
-				methodNotAllowed(h.logger, method)(w, r)
+			fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
+				httpx.MethodNotAllowed(h.logger, method)(w, r)
 			})
 			mux.HandleFunc(path, fallback)
 			if path != sessionBase+"/{sessionId}/state" {
@@ -88,21 +92,21 @@ func (h *sessionRoutes) registerTerminalRoutes(mux *http.ServeMux) {
 func terminalEpoch(r *http.Request) (string, error) {
 	values := r.Header.Values("Daynight-Connection-Epoch")
 	if len(values) != 1 {
-		return "", invalidInput("A terminal connection epoch is required.")
+		return "", httpx.InvalidInput("A terminal connection epoch is required.")
 	}
 	n, err := strconv.ParseInt(values[0], 10, 64)
 	if err != nil || n < 1 || strconv.FormatInt(n, 10) != values[0] {
-		return "", invalidInput("Invalid terminal connection epoch.")
+		return "", httpx.InvalidInput("Invalid terminal connection epoch.")
 	}
 	return values[0], nil
 }
 func terminalBody(w http.ResponseWriter, r *http.Request) (v2.Message, error) {
-	if _, err := queryValues(r); err != nil {
+	if _, err := httpx.QueryValues(r); err != nil {
 		return v2.Message{}, err
 	}
 	media, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" || params["charset"] != "" && !strings.EqualFold(params["charset"], "utf-8") {
-		return v2.Message{}, invalidInput("Content-Type must be application/json with UTF-8 encoding.")
+		return v2.Message{}, httpx.InvalidInput("Content-Type must be application/json with UTF-8 encoding.")
 	}
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4*1024*1024))
 	if err != nil {
@@ -117,9 +121,9 @@ func terminalBody(w http.ResponseWriter, r *http.Request) (v2.Message, error) {
 	}
 	return m, nil
 }
-func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if r.Method == http.MethodHead {
-		methodNotAllowed(h.logger, "GET")(w, r)
+		httpx.MethodNotAllowed(h.logger, "GET")(w, r)
 		return
 	}
 	if r.PathValue("projectId") == "" {
@@ -140,7 +144,7 @@ func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p 
 	case r.Method == http.MethodGet:
 		switch {
 		case strings.HasSuffix(path, "/sessions"):
-			values, e := queryValues(r, "cursor", "limit")
+			values, e := httpx.QueryValues(r, "cursor", "limit")
 			if e != nil {
 				err = e
 				break
@@ -149,28 +153,32 @@ func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p 
 			if values.Get("limit") != "" {
 				limit, err = strconv.Atoi(values.Get("limit"))
 				if err != nil {
-					err = invalidInput("Invalid history limit.")
+					err = httpx.InvalidInput("Invalid history limit.")
 					break
 				}
 			}
 			result, err = h.service.TerminalHistory(r.Context(), p, project, task, values.Get("cursor"), limit)
 		case strings.HasSuffix(path, "/current"):
-			if _, err = queryValues(r); err == nil {
+			if _, err = httpx.QueryValues(r); err == nil {
 				result, err = h.service.CurrentTerminal(r.Context(), p, project, task)
 			}
 		case r.PathValue("operationId") != "":
-			if _, err = queryValues(r); err == nil {
+			if _, err = httpx.QueryValues(r); err == nil {
 				result, err = h.service.TerminalOperation(r.Context(), p, project, task, id, r.PathValue("operationId"))
 			}
+		case r.PathValue("recoveryId") != "":
+			if _, err = httpx.QueryValues(r); err == nil {
+				result, err = h.service.TerminalAutomationRecovery(r.Context(), p, project, task, id, r.PathValue("recoveryId"))
+			}
 		case r.PathValue("evidenceId") != "":
-			values, e := queryValues(r, "generation")
+			values, e := httpx.QueryValues(r, "generation")
 			if e != nil {
 				err = e
 				break
 			}
 			result, err = h.service.TerminalRecordingEvidence(r.Context(), p, project, task, id, values.Get("generation"), r.PathValue("evidenceId"))
 		case strings.HasSuffix(path, "/archive/content"):
-			if _, err = queryValues(r); err != nil {
+			if _, err = httpx.QueryValues(r); err != nil {
 				break
 			}
 			content, contentErr := h.service.TerminalArchiveContent(r.Context(), p, project, task, id)
@@ -182,19 +190,23 @@ func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			if _, writeErr := w.Write(content); writeErr != nil {
-				LogFailure(h.logger, r.Context(), "session", "response", writeErr)
+				httpx.LogFailure(h.logger, r.Context(), "session", "response", writeErr)
 			}
 			return
 		case strings.HasSuffix(path, "/archive/receipt"):
-			if _, err = queryValues(r); err == nil {
+			if _, err = httpx.QueryValues(r); err == nil {
 				result, err = h.service.TerminalReceipt(r.Context(), p, project, task, id)
 			}
+		case strings.HasSuffix(path, "/archive/state"):
+			if _, err = httpx.QueryValues(r); err == nil {
+				result, err = h.service.TerminalArchiveState(r.Context(), p, project, task, id)
+			}
 		case strings.HasSuffix(path, "/archive"):
-			if _, err = queryValues(r); err == nil {
+			if _, err = httpx.QueryValues(r); err == nil {
 				result, err = h.service.TerminalArchiveStatus(r.Context(), p, project, task, id)
 			}
 		case r.Pattern == "GET "+sessionBase+"/{sessionId}/state":
-			if _, err = queryValues(r); err == nil {
+			if _, err = httpx.QueryValues(r); err == nil {
 				result, err = h.service.TerminalState(r.Context(), p, project, task, id)
 			}
 		default:
@@ -218,10 +230,10 @@ func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p 
 		case strings.HasSuffix(path, "/commands"):
 			browserID := r.Header.Get("Daynight-Browser-Client")
 			if len(r.Header.Values("Daynight-Browser-Client")) != 1 {
-				err = invalidInput("A browser client identity is required.")
+				err = httpx.InvalidInput("A browser client identity is required.")
 				break
 			}
-			if _, err = service.CanonicalID(browserID); err != nil {
+			if _, err = model.CanonicalID(browserID); err != nil {
 				break
 			}
 			result, err = h.service.SubmitTerminal(r.Context(), p, project, task, id, browserID, m)
@@ -245,8 +257,10 @@ func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p 
 	}
 	h.result(w, r, status, result, err)
 }
-func (h *sessionRoutes) terminalWorkerMessage(ctx context.Context, p core.Principal, project, task, id, epoch string, m v2.Message) (v2.Message, error) {
+func (h *sessionRoutes) terminalWorkerMessage(ctx context.Context, p model.Principal, project, task, id, epoch string, m v2.Message) (v2.Message, error) {
 	switch m.Type {
+	case "automation_recovery_prepare", "automation_recovery":
+		return h.service.UpdateTerminalRecovery(ctx, p, project, task, id, epoch, m)
 	case "generation_ledger":
 		return h.service.UpdateTerminalLedger(ctx, p, project, task, id, epoch, m)
 	case "finalization":
@@ -277,12 +291,12 @@ func readTerminal(ctx context.Context, c *websocket.Conn) (v2.Message, error) {
 	}
 	return v2.DecodeMessage(raw)
 }
-func (h *sessionRoutes) terminalWorkerChannel(w http.ResponseWriter, r *http.Request, p core.Principal) {
-	if p.Kind != core.PATCredential {
+func (h *sessionRoutes) terminalWorkerChannel(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	if p.Kind != model.PATCredential {
 		h.failure(w, r, terminalFault("permission_denied", "Worker channels require the original owner's credential."))
 		return
 	}
-	if _, err := queryValues(r); err != nil {
+	if _, err := httpx.QueryValues(r); err != nil {
 		h.failure(w, r, err)
 		return
 	}
@@ -378,8 +392,8 @@ func (h *sessionRoutes) terminalWorkerChannel(w http.ResponseWriter, r *http.Req
 		}
 	}
 }
-func (h *sessionRoutes) terminalBrowserChannel(w http.ResponseWriter, r *http.Request, p core.Principal) {
-	if _, err := queryValues(r, "browserClientId"); err != nil {
+func (h *sessionRoutes) terminalBrowserChannel(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	if _, err := httpx.QueryValues(r, "browserClientId"); err != nil {
 		h.failure(w, r, err)
 		return
 	}
@@ -387,12 +401,12 @@ func (h *sessionRoutes) terminalBrowserChannel(w http.ResponseWriter, r *http.Re
 		h.failure(w, r, err)
 		return
 	}
-	if err := h.origin(r, p.Kind == core.SessionCredential); err != nil {
+	if err := h.origin(r, p.Kind == model.SessionCredential); err != nil {
 		h.failure(w, r, err)
 		return
 	}
 	browserID := r.URL.Query().Get("browserClientId")
-	if _, err := service.CanonicalID(browserID); err != nil {
+	if _, err := model.CanonicalID(browserID); err != nil {
 		h.failure(w, r, err)
 		return
 	}

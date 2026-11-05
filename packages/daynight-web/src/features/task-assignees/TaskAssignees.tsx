@@ -93,7 +93,7 @@ export class TaskAssignees {
     const state = this.projects.get(event.projectId);
     if (state === undefined) return;
     if (event.accessRevoked === true) {
-      if (event.revokedGeneration !== state.generation && state.generation !== null) return;
+      if (!event.scopeSuspended && event.revokedGeneration !== state.generation && state.generation !== null) return;
       this.clear(state); state.error = event.error ?? null; this.emit(state);
       return;
     }
@@ -128,7 +128,7 @@ export class TaskAssignees {
   }
   private adoptHistory(state: ProjectPeopleState, current: CachedProject): SyncTicket | null {
     const { userFence, cacheGeneration, epoch, maxUpdatedAt, projectId } = current.manifest;
-    const ticket = { userId: this.scope.userId, projectId, userFence, cacheGeneration, epoch, maxUpdatedAt };
+    const ticket = { userId: this.scope.userId, projectId, userFence, cacheGeneration, epoch, maxUpdatedAt, scopeRevision: this.scope.getProjectRevision(projectId) };
     if (state.userFence !== ticket.userFence) this.clear(state);
     if (state.generation !== ticket.cacheGeneration) { state.resolvedAgainst.clear(); state.unresolvedVersions.clear(); }
     state.generation = ticket.cacheGeneration; state.userFence = ticket.userFence;
@@ -160,7 +160,7 @@ export class TaskAssignees {
   }
   private matches(state: ProjectPeopleState, ticket: SyncTicket): boolean {
     const current = this.scope.getAuthorizedProject(ticket.projectId)?.manifest;
-    return state.generation === ticket.cacheGeneration && state.userFence === ticket.userFence &&
+    return ticket.scopeRevision === this.scope.getProjectRevision(ticket.projectId) && state.generation === ticket.cacheGeneration && state.userFence === ticket.userFence &&
       current?.cacheGeneration === ticket.cacheGeneration && current.userFence === ticket.userFence;
   }
   private async request(ticket: SyncTicket, userIds: readonly string[], signal: AbortSignal): Promise<ProjectPeople> {

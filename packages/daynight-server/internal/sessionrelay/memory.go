@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -49,6 +49,27 @@ type relayTx struct {
 	cells     map[string]*liveCell
 	live      map[string]*liveSession
 	committed []func()
+}
+
+// Call only after a committed deletion, or after observing its durable barrier.
+// Removing the cell prevents a pending transaction from republishing it: commits
+// update their captured cell, never reinsert it into the Service's live map.
+func (s *Service) discardBotSession(id string) {
+	s.liveMutex.Lock()
+	delete(s.live, id)
+	s.liveMutex.Unlock()
+	s.content.mu.Lock()
+	defer s.content.mu.Unlock()
+	for requestID, pending := range s.content.pending {
+		if pending.fence.SessionID != id {
+			continue
+		}
+		delete(s.content.pending, requestID)
+		select {
+		case pending.reply <- contentReply{err: fault("resource_conflict", "Bot session content is no longer available.")}:
+		default:
+		}
+	}
 }
 
 func cloneLive(v *liveSession) *liveSession {

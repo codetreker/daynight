@@ -5,15 +5,15 @@ import (
 	"encoding/json"
 	"slices"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 )
 
-func loadTaskProperties(ctx context.Context, tx pgx.Tx, taskIDs []string) (map[string]core.TaskProperties, error) {
-	result := make(map[string]core.TaskProperties, len(taskIDs))
+func loadTaskProperties(ctx context.Context, tx pgx.Tx, taskIDs []string) (map[string]model.TaskProperties, error) {
+	result := make(map[string]model.TaskProperties, len(taskIDs))
 	for _, id := range taskIDs {
-		result[id] = core.TaskProperties{}
+		result[id] = model.TaskProperties{}
 	}
 	if len(taskIDs) == 0 {
 		return result, nil
@@ -28,7 +28,7 @@ func loadTaskProperties(ctx context.Context, tx pgx.Tx, taskIDs []string) (map[s
 		if err := rows.Scan(&id, &name, &raw); err != nil {
 			return nil, queryError("read task properties", err)
 		}
-		value, err := taskproperties.NormalizeValue(name, json.RawMessage(raw), false)
+		value, err := taskproperties.NormalizeValue(name, json.RawMessage(raw))
 		if err != nil {
 			return nil, queryError("decode task property", err)
 		}
@@ -40,7 +40,7 @@ func loadTaskProperties(ctx context.Context, tx pgx.Tx, taskIDs []string) (map[s
 	return result, nil
 }
 
-func attachTaskProperties(ctx context.Context, tx pgx.Tx, tasks []core.Task) error {
+func attachTaskProperties(ctx context.Context, tx pgx.Tx, tasks []model.Task) error {
 	ids := make([]string, len(tasks))
 	for i := range tasks {
 		ids[i] = tasks[i].ID
@@ -55,7 +55,7 @@ func attachTaskProperties(ctx context.Context, tx pgx.Tx, tasks []core.Task) err
 	return nil
 }
 
-func writeTaskProperties(ctx context.Context, tx pgx.Tx, taskID string, properties core.TaskProperties) error {
+func writeTaskProperties(ctx context.Context, tx pgx.Tx, taskID string, properties model.TaskProperties) error {
 	names := make([]string, 0, len(properties))
 	for name := range properties {
 		names = append(names, name)

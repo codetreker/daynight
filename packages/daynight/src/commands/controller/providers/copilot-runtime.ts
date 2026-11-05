@@ -3,9 +3,10 @@ import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
 import type { ProviderOptions } from "./types.js";
+import { NativeRpcTimeoutError } from "./native-rpc.js";
 
 export const copilotDeadline = <T>(promise: Promise<T>, label: string, ms = 30_000): Promise<T> => new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`${label} timed out; its result is unknown.`)), ms);
+  const timer = setTimeout(() => reject(new NativeRpcTimeoutError(label)), ms);
   promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
 });
 
@@ -53,16 +54,21 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
     if (closing) throw new Error("Copilot runtime closed during connection.");
     return client;
   });
-  const close = (): Promise<void> => closePromise ??= (async () => {
+  const close = (force = false): Promise<void> => closePromise ??= (async () => {
     closing = true;
     const errors: unknown[] = [];
     if (client) {
-      // forUri treats the runtime as external, so the owner sends this public
-      // shutdown request before disposing the SDK connection.
-      try { await copilotDeadline(client.rpc.runtime.shutdown(), "Copilot runtime shutdown", 1500); } catch (error) { errors.push(error); }
-      try { const result = await copilotDeadline(client.stop(), "Copilot SDK shutdown", 3000); if (result.length) errors.push(...result); }
-      catch (error) { errors.push(error); }
-      if (errors.length) try { await copilotDeadline(client.forceStop(), "Copilot SDK transport shutdown", 1000); } catch (error) { errors.push(error); }
+      if (force) {
+        // Failed startup cannot establish a writable transport. Dispose it without RPCs.
+        try { await copilotDeadline(client.forceStop(), "Copilot SDK transport shutdown", 1000); } catch (error) { errors.push(error); }
+      } else {
+        // forUri treats the runtime as external, so the owner sends this public
+        // shutdown request before disposing the SDK connection.
+        try { await copilotDeadline(client.rpc.runtime.shutdown(), "Copilot runtime shutdown", 1500); } catch (error) { errors.push(error); }
+        try { const result = await copilotDeadline(client.stop(), "Copilot SDK shutdown", 3000); if (result.length) errors.push(...result); }
+        catch (error) { errors.push(error); }
+        if (errors.length) try { await copilotDeadline(client.forceStop(), "Copilot SDK transport shutdown", 1000); } catch (error) { errors.push(error); }
+      }
     }
     if (!stopped && child.pid && child.exitCode === null && child.signalCode === null) {
       try { child.kill("SIGTERM"); await copilotDeadline(exited, "Copilot process termination", 2000); }
@@ -70,7 +76,7 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
         child.kill("SIGKILL"); await copilotDeadline(exited, "Copilot process kill", 2000);
       }
     }
-    if (errors.length) options.onDiagnostic?.("Copilot SDK graceful shutdown failed; the owned runtime was terminated.");
+    if (errors.length) options.onDiagnostic?.("Copilot SDK cleanup failed; the owned runtime was terminated.");
   })();
   return { child, ready, close };
 };

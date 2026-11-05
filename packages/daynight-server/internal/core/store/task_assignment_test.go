@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -22,7 +22,7 @@ func TestTaskAssignmentMigrationPreservesExistingFacts(t *testing.T) {
 	database := &Store{Pool: pool}
 	project := queryProject(t, database, 1)
 	stamp := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
-	for index, status := range []core.TaskStatus{core.TaskTodo, core.TaskInProgress, core.TaskDone, core.TaskDone} {
+	for index, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone, model.TaskDone} {
 		var deleted any
 		if index == 3 {
 			deleted = stamp.Add(2 * time.Hour)

@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,23 +14,27 @@ import (
 	"testing"
 	"time"
 
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
+	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
 	h := membershipTestHarness(t)
 	_, token := h.invitation(t)
-	decodeResponse[api.ProjectMember](t, h.call(http.MethodPost, "/api/v1/invitations/accept", invitationBody(token), h.member), http.StatusOK)
-	if _, err := h.database.Pool.Exec(context.Background(), `UPDATE project_grants SET version=9007199254740993 WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.adminID); err != nil {
+	decodeResponse[api.ProjectInvitationAcceptance](t, h.call(http.MethodPost, "/api/v1/invitations/accept", invitationAcceptBody(token, h.memberID), h.member), http.StatusOK)
+	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE project_grants SET version=9007199254740993 WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.adminID); err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	h.auth.RegisterRoutes(mux)
-	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
-	projectRoutes(mux, service.NewProjects(h.database), h.auth, logger)
-	taskSyncRoutes(mux, service.NewTaskSync(h.database, 10*time.Second), h.auth, logger, 10*time.Second)
-	h.handler = RequestLogging(logger, mux)
+	h.Auth.RegisterRoutes(mux)
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
+	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
+	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(h.Database, 10*time.Second), h.Auth, logger, 10*time.Second)
+	h.Handler = httpx.RequestLogging(logger, mux)
 	path := "/api/v1/projects/" + strings.ToUpper(h.project.ID) + "/access"
 	for _, test := range []struct {
 		cookie *http.Cookie
@@ -86,7 +92,7 @@ func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
 			t.Fatalf("method boundary: %#v", response.Header())
 		}
 	}
-	server := httptest.NewServer(h.handler)
+	server := httptest.NewServer(h.Handler)
 	defer server.Close()
 	request, err := http.NewRequest(http.MethodHead, server.URL+path, nil)
 	if err != nil {
@@ -102,11 +108,11 @@ func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
 	if readErr != nil || len(body) != 0 || response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("Daynight-User-ID") != h.adminID {
 		t.Fatalf("HEAD actor access: %#v %s %v", response, body, readErr)
 	}
-	if _, err := h.database.Pool.Exec(context.Background(), "DROP TABLE project_grants"); err != nil {
+	if _, err := h.Database.Pool.Exec(context.Background(), "DROP TABLE project_grants"); err != nil {
 		t.Fatal(err)
 	}
 	assertProjectError(t, h.call(http.MethodGet, path, "", h.admin), http.StatusInternalServerError, "internal_error")
-	if strings.Contains(h.logs.String(), "private-body-secret") || strings.Contains(h.logs.String(), "unknown=secret") {
+	if strings.Contains(h.Logs.String(), "private-body-secret") || strings.Contains(h.Logs.String(), "unknown=secret") {
 		t.Fatal("access diagnostics exposed request contents")
 	}
 }
@@ -114,15 +120,15 @@ func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
 func TestOwnershipProjectionExactVersionsAcrossCurrentReaders(t *testing.T) {
 	h := membershipTestHarness(t)
 	mux := http.NewServeMux()
-	h.auth.RegisterRoutes(mux)
-	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
-	projectRoutes(mux, service.NewProjects(h.database), h.auth, logger)
-	taskRoutes(mux, service.NewTasks(h.database), h.auth, logger)
-	taskSyncRoutes(mux, service.NewTaskSync(h.database, time.Second), h.auth, logger, time.Second)
-	NewMembershipRoutes(service.NewMemberships(h.database), h.auth, logger).RegisterRoutes(mux)
-	h.handler = RequestLogging(logger, mux)
+	h.Auth.RegisterRoutes(mux)
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
+	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
+	taskhttp.TaskRoutes(mux, taskservice.NewTasks(h.Database), h.Auth, logger)
+	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(h.Database, time.Second), h.Auth, logger, time.Second)
+	projecthttp.NewMembershipRoutes(projectservice.NewMemberships(h.Database), h.Auth, logger).RegisterRoutes(mux)
+	h.Handler = httpx.RequestLogging(logger, mux)
 	ctx := context.Background()
-	if _, err := h.database.Pool.Exec(ctx, `UPDATE project_ownership SET version=9007199254740993 WHERE project_id=$1`, h.project.ID); err != nil {
+	if _, err := h.Database.Pool.Exec(ctx, `UPDATE project_ownership SET version=9007199254740993 WHERE project_id=$1`, h.project.ID); err != nil {
 		t.Fatal(err)
 	}
 	me := decodeResponse[api.User](t, h.call("GET", "/api/v1/me", "", h.admin), 200)
@@ -153,7 +159,7 @@ func TestOwnershipProjectionExactVersionsAcrossCurrentReaders(t *testing.T) {
 			t.Fatalf("actor facts entered intrinsic Project: %s %v", data, err)
 		}
 	}
-	if _, err := h.database.Pool.Exec(ctx, `DELETE FROM teams WHERE id=$1`, me.PersonalTeam.ID); err != nil {
+	if _, err := h.Database.Pool.Exec(ctx, `DELETE FROM teams WHERE id=$1`, me.PersonalTeam.ID); err != nil {
 		t.Fatal(err)
 	}
 	assertProjectError(t, h.call("GET", "/api/v1/me", "", h.admin), 500, "internal_error")

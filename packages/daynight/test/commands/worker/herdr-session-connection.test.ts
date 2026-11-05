@@ -59,7 +59,7 @@ const fixture = async () => {
   const owner = { projectId: uuid(1), taskId: uuid(2), workerId: uuid(3), worktreeId: uuid(4), ownerUserId: uuid(5), serverOrigin: origin, provider: "codex" as const };
   const identity = { projectId: owner.projectId, taskId: owner.taskId, claimId: uuid(6) };
   let record = store.create({ owner, claimId: identity.claimId, cwd: directory });
-  const run: HerdrLocalRun = { run: { executionGeneration: "1", owner, binding: { instanceId: "daemon-one", sessionId: "w", workspaceId: "workspace-one", paneId: "pane-one", terminalId: "terminal-one", nativeSessionId: uuid(10) }, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", instanceDirectory: directory, daemon: null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null };
+  const run: HerdrLocalRun = { run: { executionGeneration: "1", owner, binding: { instanceId: "daemon-one", sessionId: "w", workspaceId: "workspace-one", paneId: "pane-one", terminalId: "terminal-one", nativeSessionId: uuid(10) }, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", nativeLaunch: "not_submitted", instanceDirectory: directory, daemon: null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null };
   record = store.update(record, draft => { draft.runs.push(run); });
   return { store, identity, record, api: createHerdrSessionApi(origin, "test-worker"), registrations, ledgers, epochs, reads,
     get state() { return observed; }, set state(value: HerdrSessionState | null) { observed = structuredClone(value); },
@@ -67,7 +67,9 @@ const fixture = async () => {
   };
 };
 const stop = (f: Awaited<ReturnType<typeof fixture>>) => {
-  let record = f.store.update(f.store.get(f.identity)!, draft => { draft.runs[0]!.daemon = processIdentity("daemon", 100); draft.runs[0]!.processes = [processIdentity("shell", 101), processIdentity("agent", 102)]; draft.runs[0]!.phase = "stop_intent"; draft.runs[0]!.stopOperationId = uuid(20); draft.runs[0]!.stopReason = "terminal"; });
+  let record = f.store.update(f.store.get(f.identity)!, draft => { draft.runs[0]!.phase = "launch_requested"; draft.runs[0]!.nativeLaunch = "requested"; });
+  record = f.store.update(record, draft => { const run = draft.runs[0]!; run.phase = "active"; run.nativeLaunch = "observed"; run.daemon = processIdentity("daemon", 100); run.processes = [processIdentity("shell", 101), processIdentity("agent", 102)]; });
+  record = f.store.update(record, draft => { draft.runs[0]!.daemon = processIdentity("daemon", 100); draft.runs[0]!.processes = [processIdentity("shell", 101), processIdentity("agent", 102)]; draft.runs[0]!.phase = "stop_intent"; draft.runs[0]!.stopOperationId = uuid(20); draft.runs[0]!.stopReason = "terminal"; });
   record = f.store.update(record, draft => { draft.runs[0]!.phase = "stopped_confirmed"; const run = draft.runs[0]!.run; run.stoppedAt = "2026-11-04T00:01:00.000Z"; run.stopProof = { recordId: uuid(20), executionGeneration: "1", binding: run.binding, bootId: "boot-one", stoppedAt: run.stoppedAt, method: "instances_exited", terminalStopped: true, processes: draft.runs[0]!.processes.map(({ role, pid, birthToken, bootId }) => ({ role: role as "shell" | "agent", pid, birthToken, bootId })) }; });
   return record;
 };
@@ -198,4 +200,15 @@ describe("persistent Herdr Session connection", () => {
     await expect(publishHerdrLedger(f.store, f.identity, f.api)).rejects.toThrow(); expect(f.ledgers).toHaveLength(0);
     f.state = stateFor(stopped, "2"); await expect(publishHerdrLedger(f.store, f.identity, f.api)).rejects.toThrow(); expect(f.ledgers).toHaveLength(0);
   });
+});
+
+it("persists combined recording capability intent and reconciles its original connection", async () => {
+  const f = await fixture();
+  const capabilities = { observe: true, control: true, archive: true };
+  await connectHerdrSession(f.store, f.identity, f.api, undefined, capabilities);
+  expect(f.registrations[0]!.payload.capabilities).toEqual(capabilities);
+  f.state = { ...f.state!, capabilities };
+  await connectHerdrSession(f.store, f.identity, f.api, undefined, capabilities);
+  expect(f.registrations[1]!.payload.capabilities).toEqual(capabilities);
+  expect(f.store.get(f.identity)!.connectionEpoch).toBe("2");
 });

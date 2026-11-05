@@ -4,44 +4,44 @@ import (
 	"context"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
-func readTaskHeader(ctx context.Context, tx pgx.Tx, projectID, taskID, lock string) (core.TaskHeader, error) {
-	var header core.TaskHeader
+func readTaskHeader(ctx context.Context, tx pgx.Tx, projectID, taskID, lock string) (model.TaskHeader, error) {
+	var header model.TaskHeader
 	err := tx.QueryRow(ctx, `SELECT project_id::text,id::text,version,deleted_at FROM tasks WHERE project_id=$1 AND id=$2`+lock, projectID, taskID).
 		Scan(&header.ProjectID, &header.ID, &header.Version, &header.DeletedAt)
 	if err != nil {
-		return core.TaskHeader{}, queryError("read task header", err)
+		return model.TaskHeader{}, queryError("read task header", err)
 	}
 	header.DeletedAt = utcTime(header.DeletedAt)
 	return header, nil
 }
 
-func (s *Snapshot) TaskHeader(ctx context.Context, projectID, taskID string) (core.TaskHeader, error) {
+func (s *Snapshot) TaskHeader(ctx context.Context, projectID, taskID string) (model.TaskHeader, error) {
 	return readTaskHeader(ctx, s.tx, projectID, taskID, "")
 }
 
 const taskStepProjection = `id,position,title,description,status,created_at,updated_at`
 
-func scanTaskStep(row pgx.Row) (core.TaskStep, error) {
-	var step core.TaskStep
+func scanTaskStep(row pgx.Row) (model.TaskStep, error) {
+	var step model.TaskStep
 	err := row.Scan(&step.ID, &step.Position, &step.Title, &step.Description, &step.Status, &step.CreatedAt, &step.UpdatedAt)
 	if err != nil {
-		return core.TaskStep{}, err
+		return model.TaskStep{}, err
 	}
 	step.CreatedAt, step.UpdatedAt = step.CreatedAt.UTC(), step.UpdatedAt.UTC()
 	return step, nil
 }
 
-func readTaskSteps(ctx context.Context, tx pgx.Tx, taskID string) ([]core.TaskStep, error) {
+func readTaskSteps(ctx context.Context, tx pgx.Tx, taskID string) ([]model.TaskStep, error) {
 	rows, err := tx.Query(ctx, `SELECT `+taskStepProjection+` FROM task_steps WHERE task_id=$1 ORDER BY position`, taskID)
 	if err != nil {
 		return nil, queryError("read task steps", err)
 	}
 	defer rows.Close()
-	steps := make([]core.TaskStep, 0)
+	steps := make([]model.TaskStep, 0)
 	for rows.Next() {
 		if err := ctx.Err(); err != nil {
 			return nil, queryError("read task steps", err)
@@ -58,29 +58,29 @@ func readTaskSteps(ctx context.Context, tx pgx.Tx, taskID string) ([]core.TaskSt
 	return steps, nil
 }
 
-func (s *Snapshot) TaskStep(ctx context.Context, taskID, stepID string) (core.TaskStep, error) {
+func (s *Snapshot) TaskStep(ctx context.Context, taskID, stepID string) (model.TaskStep, error) {
 	step, err := scanTaskStep(s.tx.QueryRow(ctx, `SELECT `+taskStepProjection+` FROM task_steps WHERE task_id=$1 AND id=$2`, taskID, stepID))
 	if err != nil {
-		return core.TaskStep{}, queryError("read task step", err)
+		return model.TaskStep{}, queryError("read task step", err)
 	}
 	return step, nil
 }
 
-func (s *Snapshot) TaskSteps(ctx context.Context, taskID string) ([]core.TaskStep, error) {
+func (s *Snapshot) TaskSteps(ctx context.Context, taskID string) ([]model.TaskStep, error) {
 	return readTaskSteps(ctx, s.tx, taskID)
 }
 
-func (tx *ProjectTx) TaskHeader(ctx context.Context, taskID string) (core.TaskHeader, error) {
+func (tx *ProjectTx) TaskHeader(ctx context.Context, taskID string) (model.TaskHeader, error) {
 	return readTaskHeader(ctx, tx.tx, tx.projectID, taskID, " FOR UPDATE")
 }
 
-func (tx *ProjectTx) TaskSteps(ctx context.Context, taskID string) ([]core.TaskStep, error) {
+func (tx *ProjectTx) TaskSteps(ctx context.Context, taskID string) ([]model.TaskStep, error) {
 	return readTaskSteps(ctx, tx.tx, taskID)
 }
 
 // InsertTaskStep shifts positions without changing existing content timestamps.
 // The deferred position constraint validates the final dense collection at COMMIT.
-func (tx *ProjectTx) InsertTaskStep(ctx context.Context, taskID string, step core.TaskStep) error {
+func (tx *ProjectTx) InsertTaskStep(ctx context.Context, taskID string, step model.TaskStep) error {
 	if _, err := tx.tx.Exec(ctx, `UPDATE task_steps SET position=position+1 WHERE task_id=$1 AND position >= $2`, taskID, step.Position); err != nil {
 		return queryError("shift task step positions", err)
 	}
@@ -98,18 +98,18 @@ func (tx *ProjectTx) TouchTask(ctx context.Context, taskID string, observed time
 		return queryError("touch task", err)
 	}
 	if result.RowsAffected() != 1 {
-		return queryError("touch task", core.ErrNotFound)
+		return queryError("touch task", model.ErrNotFound)
 	}
 	return nil
 }
 
-func (tx *ProjectTx) UpdateTaskStep(ctx context.Context, taskID string, step core.TaskStep) error {
+func (tx *ProjectTx) UpdateTaskStep(ctx context.Context, taskID string, step model.TaskStep) error {
 	result, err := tx.tx.Exec(ctx, `UPDATE task_steps SET title=$3,description=$4,status=$5,updated_at=$6 WHERE task_id=$1 AND id=$2`, taskID, step.ID, step.Title, step.Description, step.Status, step.UpdatedAt)
 	if err != nil {
 		return queryError("update task step", err)
 	}
 	if result.RowsAffected() != 1 {
-		return queryError("update task step", core.ErrNotFound)
+		return queryError("update task step", model.ErrNotFound)
 	}
 	return nil
 }
@@ -126,7 +126,7 @@ func (tx *ProjectTx) MoveTaskStep(ctx context.Context, taskID, targetID string, 
 		return queryError("move task step positions", err)
 	}
 	if result.RowsAffected() != max(from, to)-min(from, to)+1 {
-		return queryError("move task step positions", core.ErrNotFound)
+		return queryError("move task step positions", model.ErrNotFound)
 	}
 	return nil
 }
@@ -139,14 +139,14 @@ func (tx *ProjectTx) DeleteTaskStep(ctx context.Context, taskID, targetID string
 		return queryError("delete task step", err)
 	}
 	if deleted.RowsAffected() != 1 {
-		return queryError("delete task step", core.ErrNotFound)
+		return queryError("delete task step", model.ErrNotFound)
 	}
 	compacted, err := tx.tx.Exec(ctx, `UPDATE task_steps SET position=position-1 WHERE task_id=$1 AND position>$2`, taskID, position)
 	if err != nil {
 		return queryError("compact task step positions", err)
 	}
 	if compacted.RowsAffected() != tailCount {
-		return queryError("compact task step positions", core.ErrNotFound)
+		return queryError("compact task step positions", model.ErrNotFound)
 	}
 	return nil
 }

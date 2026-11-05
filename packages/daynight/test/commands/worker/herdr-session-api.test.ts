@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
+import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import { createHerdrSessionApi } from "../../../src/commands/worker/herdr/session-api.js";
 import type { SessionV2Message, SessionV2Run } from "../../../src/session/v2/types.js";
 
@@ -122,12 +125,38 @@ describe("Herdr Session v2 client", () => {
     raw = "x".repeat(2048); await expect(api.register(registration(origin))).rejects.toThrow(/limit|large|size/i);
   });
 
-  it("bounds unresponsive requests and rejects redirects without forwarding credentials", async () => {
-    let redirect = false, calls = 0;
-    const origin = await listen((_req, res) => { calls++; if (redirect) { res.statusCode = 307; res.setHeader("location", "/elsewhere"); res.end(); } });
-    const api = createHerdrSessionApi(origin, "token", { timeoutMs: 30 });
-    await expect(api.register(registration(origin))).rejects.toThrow(); expect(calls).toBe(1);
-    redirect = true; await expect(api.register(registration(origin))).rejects.toThrow(); expect(calls).toBe(2);
+  it("aborts an unresponsive registration at its deadline without replaying it", async () => {
+    vi.useFakeTimers();
+    const requests: RequestInit[] = [];
+    const pendingFetch: typeof fetch = async (_url, init) => new Promise((_resolve, reject) => {
+      requests.push(init!);
+      init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+    });
+    // We control the deadline after dispatch; a wall-clock deadline cannot guarantee server arrival.
+    let settled = false;
+    const origin = "https://daynight.example";
+    const result = createHerdrSessionApi(origin, "token", { fetch: pendingFetch, timeoutMs: 30 }).register(registration(origin)).then(
+      () => { settled = true; return undefined; },
+      (error: unknown) => { settled = true; return error; },
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.method).toBe("POST");
+    expect(JSON.parse(requests[0]!.body as string)).toEqual(registration(origin));
+    await vi.advanceTimersByTimeAsync(29);
+    expect(settled).toBe(false); expect(requests[0]!.signal!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toBe(requests[0]!.signal!.reason);
+    expect(requests[0]!.signal!.reason).toMatchObject({ message: "The Herdr Session request deadline elapsed; its result must be reconciled." });
+    expect(requests).toHaveLength(1); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects redirects without sending the Worker credential to the destination", async () => {
+    const destinationRequests: (string | undefined)[] = [], originRequests: (string | undefined)[] = [];
+    const destination = await listen((req, res) => { destinationRequests.push(req.headers.authorization); req.resume(); res.end(); });
+    const origin = await listen((req, res) => { originRequests.push(req.headers.authorization); req.resume(); res.statusCode = 307; res.setHeader("location", `${destination}/elsewhere`); res.end(); });
+    await expect(createHerdrSessionApi(origin, "worker-redirect-token").register(registration(origin))).rejects.toThrow();
+    expect(originRequests).toEqual(["Bearer worker-redirect-token"]);
+    expect(destinationRequests).toEqual([]);
   });
 
   it("preserves HTTP status for readback decisions without reporting response bodies", async () => {
@@ -135,4 +164,92 @@ describe("Herdr Session v2 client", () => {
     const message = registration(origin);
     await expect(createHerdrSessionApi(origin, "token").state({ owner: message.payload.owner, claimId: message.claimId, sessionId: message.sessionId })).rejects.toMatchObject({ status: 404 });
   });
+});
+
+const prepareRecovery = (message: Registration) => ({ ...message, type: "automation_recovery_prepare" as const, payload: { recoveryId: uuid(30), connectionEpoch: "1", controlEpoch: "1", closingControlEpoch: "2", stopOperationId: uuid(31), binding: { ...message.payload.binding, nativeSessionId: uuid(32) }, initialAssignment: "transport_completed" as const } });
+const recoveryState = (message: ReturnType<typeof prepareRecovery>) => ({ ...message, type: "automation_recovery_state" as const, payload: { recoveryId: message.payload.recoveryId, prepareDigest: createHash("sha256").update(canonicalSessionJson(message)).digest("hex"), sourceGeneration: "1", sourceConnectionEpoch: "1", sourceControlEpoch: "1", closingControlEpoch: "2", stopOperationId: uuid(31), nativeSessionId: uuid(32), consumed: null } });
+const recoveryIdentity = (message: Registration) => ({ owner: message.payload.owner, sessionId: message.sessionId, claimId: message.claimId });
+
+describe("original automation recovery decisions", () => {
+  it("posts one exact prepare intent on the original epoch and verifies its digest", async () => {
+    const received: { url: string | undefined; epoch: string | string[] | undefined; body: unknown }[] = [];
+    let corrupt = false;
+    const origin = await listen((req, res) => { const chunks: Buffer[] = []; req.on("data", c => chunks.push(Buffer.from(c))); req.on("end", () => { const body = JSON.parse(Buffer.concat(chunks).toString()) as ReturnType<typeof prepareRecovery>; received.push({ url: req.url, epoch: req.headers["daynight-connection-epoch"], body }); const reply = recoveryState(body); if (corrupt) reply.payload.prepareDigest = "f".repeat(64); send(res, reply); }); });
+    const base = registration(origin), intent = prepareRecovery(base), api = createHerdrSessionApi(origin, "token");
+    expect(await api.prepareRecovery(recoveryIdentity(base), intent)).toEqual(recoveryState(intent));
+    expect(received).toEqual([{ url: `/api/v1/projects/${uuid(4)}/tasks/${uuid(5)}/sessions/${uuid(1)}/worker-messages`, epoch: "1", body: intent }]);
+    corrupt = true; await expect(api.prepareRecovery(recoveryIdentity(base), intent)).rejects.toThrow();
+  });
+  it("reads an original consumed receipt without treating it as current automation authority", async () => {
+    let response: unknown, lastPath: string | undefined;
+    const origin = await listen((req, res) => { lastPath = req.url; send(res, response); });
+    const base = registration(origin), api = createHerdrSessionApi(origin, "token");
+    response = { ...recoveryState(prepareRecovery(base)), executionGeneration: "2", payload: { ...recoveryState(prepareRecovery(base)).payload, consumed: { executionGeneration: "2", connectionEpoch: "4", controlEpoch: "8", requestDigest: "a".repeat(64) } } };
+    expect(await api.readRecovery(recoveryIdentity(base), uuid(30))).toEqual(response);
+    expect(lastPath).toBe(`/api/v1/projects/${uuid(4)}/tasks/${uuid(5)}/sessions/${uuid(1)}/automation-recovery/${uuid(30)}`);
+    const valid = response;
+    response = { ...response as object, claimId: uuid(99) }; await expect(api.readRecovery(recoveryIdentity(base), uuid(30))).rejects.toThrow();
+    response = { ...valid as object, payload: { ...(valid as ReturnType<typeof recoveryState>).payload, recoveryId: uuid(99) } }; await expect(api.readRecovery(recoveryIdentity(base), uuid(30))).rejects.toThrow();
+  });
+  it("binds consume acknowledgement to the new generation, epoch, and exact request", async () => {
+    let reply: unknown;
+    const origin = await listen((_req, res) => send(res, reply)), base = registration(origin), prepared = prepareRecovery(base);
+    const message = { ...base, executionGeneration: "2", type: "automation_recovery" as const, payload: { recoveryId: uuid(30), connectionEpoch: "3", controlEpoch: "5", previousGeneration: "1", stopOperationId: uuid(31), binding: { ...prepared.payload.binding, instanceId: "second-daemon", terminalId: "second-terminal" } } };
+    const consumed = { executionGeneration: "2", connectionEpoch: "3", controlEpoch: "5", requestDigest: createHash("sha256").update(canonicalSessionJson(message)).digest("hex") };
+    reply = { ...recoveryState(prepared), executionGeneration: "2", payload: { ...recoveryState(prepared).payload, consumed } };
+    const api = createHerdrSessionApi(origin, "token"); expect(await api.recoverAutomation(recoveryIdentity(base), message)).toEqual(reply);
+    reply = { ...reply as object, payload: { ...recoveryState(prepared).payload, consumed: { ...consumed, connectionEpoch: "2" } } };
+    await expect(api.recoverAutomation(recoveryIdentity(base), message)).rejects.toThrow();
+  });
+  it("never replays prepare after a lost HTTP response", async () => {
+    let requests = 0;
+    const origin = await listen(req => { requests++; req.resume(); req.on("end", () => req.socket.destroy()); });
+    const base = registration(origin), api = createHerdrSessionApi(origin, "token");
+    await expect(api.prepareRecovery(recoveryIdentity(base), prepareRecovery(base))).rejects.toThrow();
+    expect(requests).toBe(1);
+  });
+});
+
+it("publishes an original control snapshot only with an exact acknowledgement", async () => {
+  let changed = false;
+  const origin = await listen((req, res) => { const chunks: Buffer[] = []; req.on("data", chunk => chunks.push(Buffer.from(chunk))); req.on("end", () => { const body = JSON.parse(Buffer.concat(chunks).toString()); if (changed) body.payload.controlEpoch = "9"; send(res, body); }); });
+  const base = registration(origin), api = createHerdrSessionApi(origin, "token");
+  const message = { ...base, type: "control_state" as const, payload: { connectionEpoch: "1", controlEpoch: "1", state: "automation" as const, lease: null, initialAssignment: "transport_completed" as const, availableActions: ["acquire_control" as const], unavailableReason: null } };
+  expect(await api.publishControl(recoveryIdentity(base), message)).toEqual(message);
+  changed = true; await expect(api.publishControl(recoveryIdentity(base), message)).rejects.toThrow();
+});
+
+it("does not replay an unconfirmed consume or infer a missing permit", async () => {
+  let calls = 0, missing = false;
+  const origin = await listen((req, res) => { calls++; if (missing) { res.statusCode = 404; res.end(); } else { req.resume(); req.on("end", () => req.socket.destroy()); } });
+  const base = registration(origin), prepared = prepareRecovery(base), api = createHerdrSessionApi(origin, "token");
+  const message = { ...base, executionGeneration: "2", type: "automation_recovery" as const, payload: { recoveryId: uuid(30), connectionEpoch: "3", controlEpoch: "5", previousGeneration: "1", stopOperationId: uuid(31), binding: { ...prepared.payload.binding, instanceId: "second", terminalId: "second" } } };
+  await expect(api.recoverAutomation(recoveryIdentity(base), message)).rejects.toThrow(); expect(calls).toBe(1);
+  missing = true; await expect(api.readRecovery(recoveryIdentity(base), uuid(30))).rejects.toMatchObject({ status: 404 }); expect(calls).toBe(2);
+});
+
+
+it("registers the implemented combined terminal capabilities without altering their intent", async () => {
+  const origin = await listen((req, res) => {
+    const chunks: Buffer[] = []; req.on("data", chunk => chunks.push(Buffer.from(chunk)));
+    req.on("end", () => { const body = JSON.parse(Buffer.concat(chunks).toString()) as Registration; send(res, ack(body)); });
+  });
+  const message = registration(origin); message.payload.capabilities = { observe: true, control: true, archive: true };
+  await expect(createHerdrSessionApi(origin, "token").register(message)).resolves.toEqual(ack(message));
+});
+
+
+it("reads archive state through the original-owner endpoint after task deletion", async () => {
+  const paths: string[] = [];
+  let original!: Registration;
+  const origin = await listen((req, res) => {
+    paths.push(req.url!);
+    if (!req.url?.endsWith("/archive/state")) { res.statusCode = 410; res.end("deleted"); return; }
+    send(res, state(original));
+  });
+  original = registration(origin);
+  const expected = { owner: original.payload.owner, sessionId: original.sessionId, claimId: original.claimId, executionGeneration: "1" };
+  await expect(createHerdrArchiveApi(origin, "original-token").state(expected)).resolves.toMatchObject({ sessionId: original.sessionId });
+  expect(paths).toEqual([`/api/v1/projects/${uuid(4)}/tasks/${uuid(5)}/sessions/${uuid(1)}/archive/state`]);
+  await expect(createHerdrSessionApi(origin, "original-token").state(expected)).rejects.toMatchObject({ status: 410 });
 });

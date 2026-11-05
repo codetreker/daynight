@@ -9,32 +9,35 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
 
 var workerReportTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]([01]\d|2[0-3]):[0-5]\d)$`)
 
-var workerReportFields = []string{"machine", "platform", "workingDirectory", "sampledAt", "os", "cpu", "memory", "disk", "versions", "taskInventory"}
+var workerRequiredReportFields = []string{"machine", "platform", "workingDirectory", "sampledAt", "os", "cpu", "memory", "disk", "versions", "taskInventory"}
 
-func workerReportInput(fields map[string]json.RawMessage) (core.WorkerReport, error) {
-	var input core.WorkerReport
-	for _, key := range workerReportFields {
+var workerReportFields = append(append([]string{}, workerRequiredReportFields...), "assistantHost")
+
+func workerReportInput(fields map[string]json.RawMessage) (model.WorkerReport, error) {
+	var input model.WorkerReport
+	for _, key := range workerRequiredReportFields {
 		if _, present := fields[key]; !present {
-			return input, invalidInput(key + " is required")
+			return input, httpx.InvalidInput(key + " is required")
 		}
 	}
 	var err error
-	input.Telemetry.Machine, err = workerMachineInput(fields["machine"])
+	input.Telemetry.Machine, err = httpx.WorkerMachineInput(fields["machine"])
 	if err != nil {
 		return input, err
 	}
-	platform, err := requiredString(fields, "platform")
+	platform, err := httpx.RequiredString(fields, "platform")
 	if err != nil {
 		return input, err
 	}
-	input.Telemetry.Platform = core.TaskPlatform(platform)
-	input.Telemetry.WorkingDirectory, err = requiredString(fields, "workingDirectory")
+	input.Telemetry.Platform = model.TaskPlatform(platform)
+	input.Telemetry.WorkingDirectory, err = httpx.RequiredString(fields, "workingDirectory")
 	if err != nil {
 		return input, err
 	}
@@ -62,7 +65,7 @@ func workerReportInput(fields map[string]json.RawMessage) (core.WorkerReport, er
 	if err != nil {
 		return input, err
 	}
-	input.Telemetry.Versions.Daynight, err = requiredString(versions, "daynight")
+	input.Telemetry.Versions.Daynight, err = httpx.RequiredString(versions, "daynight")
 	if err != nil {
 		return input, err
 	}
@@ -78,6 +81,12 @@ func workerReportInput(fields map[string]json.RawMessage) (core.WorkerReport, er
 	if err != nil {
 		return input, err
 	}
+	if raw, present := fields["assistantHost"]; present {
+		input.Telemetry.AssistantHost, err = workerAssistantHostInput(raw)
+		if err != nil {
+			return input, err
+		}
+	}
 	input.TaskInventory, err = workerInventoryInput(fields["taskInventory"])
 	return input, err
 }
@@ -85,38 +94,38 @@ func workerReportInput(fields map[string]json.RawMessage) (core.WorkerReport, er
 func workerObject(raw json.RawMessage, path string, keys ...string) (map[string]json.RawMessage, error) {
 	fields, err := jsonobject.Decode(raw, path, keys...)
 	if err != nil {
-		return nil, invalidInput(err.Error())
+		return nil, httpx.InvalidInput(err.Error())
 	}
 	for _, key := range keys {
 		if _, exists := fields[key]; !exists {
-			return nil, invalidInput(path + "." + key + " is required")
+			return nil, httpx.InvalidInput(path + "." + key + " is required")
 		}
 	}
 	return fields, nil
 }
 
 func workerTimeInput(fields map[string]json.RawMessage, key string) (time.Time, error) {
-	value, err := requiredString(fields, key)
+	value, err := httpx.RequiredString(fields, key)
 	if err != nil {
 		return time.Time{}, err
 	}
 	if !workerReportTimestamp.MatchString(value) {
-		return time.Time{}, invalidInput(key + " must be an RFC3339 timestamp")
+		return time.Time{}, httpx.InvalidInput(key + " must be an RFC3339 timestamp")
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, strings.ToUpper(value))
 	if err != nil {
-		return time.Time{}, invalidInput(key + " must be an RFC3339 timestamp")
+		return time.Time{}, httpx.InvalidInput(key + " must be an RFC3339 timestamp")
 	}
 	return parsed.UTC(), nil
 }
 
-func workerProbeInput[T any](raw json.RawMessage, path, special string, valueInput func(json.RawMessage) (T, error)) (core.WorkerProbe[T], error) {
-	var probe core.WorkerProbe[T]
+func workerProbeInput[T any](raw json.RawMessage, path, special string, valueInput func(json.RawMessage) (T, error)) (model.WorkerProbe[T], error) {
+	var probe model.WorkerProbe[T]
 	fields, err := jsonobject.Decode(raw, path, "state", "checkedAt", "value", "code")
 	if err != nil {
-		return probe, invalidInput(err.Error())
+		return probe, httpx.InvalidInput(err.Error())
 	}
-	probe.State, err = requiredString(fields, "state")
+	probe.State, err = httpx.RequiredString(fields, "state")
 	if err != nil {
 		return probe, err
 	}
@@ -128,7 +137,7 @@ func workerProbeInput[T any](raw json.RawMessage, path, special string, valueInp
 		allowed = append(allowed, "code")
 	default:
 		if special == "" || probe.State != special {
-			return probe, invalidInput(path + " has an invalid probe state")
+			return probe, httpx.InvalidInput(path + " has an invalid probe state")
 		}
 	}
 	fields, err = workerObject(raw, path, allowed...)
@@ -147,7 +156,7 @@ func workerProbeInput[T any](raw json.RawMessage, path, special string, valueInp
 		probe.Value = &value
 	}
 	if probe.State == "error" {
-		code, err := requiredString(fields, "code")
+		code, err := httpx.RequiredString(fields, "code")
 		if err != nil {
 			return probe, err
 		}
@@ -157,17 +166,17 @@ func workerProbeInput[T any](raw json.RawMessage, path, special string, valueInp
 }
 
 func workerVersionInput(raw json.RawMessage) (string, error) {
-	return requiredString(map[string]json.RawMessage{"version": raw}, "version")
+	return httpx.RequiredString(map[string]json.RawMessage{"version": raw}, "version")
 }
 
-func workerOSInput(raw json.RawMessage) (core.WorkerOS, error) {
+func workerOSInput(raw json.RawMessage) (model.WorkerOS, error) {
 	fields, err := workerObject(raw, "os.value", "type", "release", "version", "arch")
 	if err != nil {
-		return core.WorkerOS{}, err
+		return model.WorkerOS{}, err
 	}
-	var value core.WorkerOS
+	var value model.WorkerOS
 	for key, field := range map[string]*string{"type": &value.Type, "release": &value.Release, "version": &value.Version, "arch": &value.Arch} {
-		*field, err = requiredString(fields, key)
+		*field, err = httpx.RequiredString(fields, key)
 		if err != nil {
 			return value, err
 		}
@@ -175,13 +184,13 @@ func workerOSInput(raw json.RawMessage) (core.WorkerOS, error) {
 	return value, nil
 }
 
-func workerCPUInput(raw json.RawMessage) (core.WorkerCPU, error) {
+func workerCPUInput(raw json.RawMessage) (model.WorkerCPU, error) {
 	fields, err := workerObject(raw, "cpu.value", "model", "logicalProcessors", "usagePercent")
 	if err != nil {
-		return core.WorkerCPU{}, err
+		return model.WorkerCPU{}, err
 	}
-	var value core.WorkerCPU
-	value.Model, err = requiredString(fields, "model")
+	var value model.WorkerCPU
+	value.Model, err = httpx.RequiredString(fields, "model")
 	if err != nil {
 		return value, err
 	}
@@ -190,35 +199,35 @@ func workerCPUInput(raw json.RawMessage) (core.WorkerCPU, error) {
 		return value, err
 	}
 	if bytes.Equal(bytes.TrimSpace(fields["usagePercent"]), []byte("null")) || json.Unmarshal(fields["usagePercent"], &value.UsagePercent) != nil || math.IsNaN(value.UsagePercent) || math.IsInf(value.UsagePercent, 0) {
-		return value, invalidInput("usagePercent must be a finite number")
+		return value, httpx.InvalidInput("usagePercent must be a finite number")
 	}
 	return value, nil
 }
 
-func workerMemoryInput(raw json.RawMessage) (core.WorkerMemory, error) {
+func workerMemoryInput(raw json.RawMessage) (model.WorkerMemory, error) {
 	fields, err := workerObject(raw, "memory.value", "usedBytes", "totalBytes")
 	if err != nil {
-		return core.WorkerMemory{}, err
+		return model.WorkerMemory{}, err
 	}
 	used, err := workerIntegerInput(fields["usedBytes"])
 	if err != nil {
-		return core.WorkerMemory{}, err
+		return model.WorkerMemory{}, err
 	}
 	total, err := workerIntegerInput(fields["totalBytes"])
-	return core.WorkerMemory{UsedBytes: used, TotalBytes: total}, err
+	return model.WorkerMemory{UsedBytes: used, TotalBytes: total}, err
 }
 
-func workerDiskInput(raw json.RawMessage) (core.WorkerDisk, error) {
+func workerDiskInput(raw json.RawMessage) (model.WorkerDisk, error) {
 	fields, err := workerObject(raw, "disk.value", "availableBytes", "totalBytes")
 	if err != nil {
-		return core.WorkerDisk{}, err
+		return model.WorkerDisk{}, err
 	}
 	available, err := workerIntegerInput(fields["availableBytes"])
 	if err != nil {
-		return core.WorkerDisk{}, err
+		return model.WorkerDisk{}, err
 	}
 	total, err := workerIntegerInput(fields["totalBytes"])
-	return core.WorkerDisk{AvailableBytes: available, TotalBytes: total}, err
+	return model.WorkerDisk{AvailableBytes: available, TotalBytes: total}, err
 }
 
 func workerIntegerInput(raw json.RawMessage) (int64, error) {
@@ -226,11 +235,11 @@ func workerIntegerInput(raw json.RawMessage) (int64, error) {
 	decoder.UseNumber()
 	var parsed any
 	if decoder.Decode(&parsed) != nil {
-		return 0, invalidInput("resource counts must be nonnegative safe integers")
+		return 0, httpx.InvalidInput("resource counts must be nonnegative safe integers")
 	}
 	number, ok := parsed.(json.Number)
 	if !ok {
-		return 0, invalidInput("resource counts must be nonnegative safe integers")
+		return 0, httpx.InvalidInput("resource counts must be nonnegative safe integers")
 	}
 	text := number.String()
 	negative := strings.HasPrefix(text, "-")
@@ -242,36 +251,36 @@ func workerIntegerInput(raw json.RawMessage) (int64, error) {
 		return 0, nil
 	}
 	if negative {
-		return 0, invalidInput("resource counts must be nonnegative safe integers")
+		return 0, httpx.InvalidInput("resource counts must be nonnegative safe integers")
 	}
 	power := 0
 	if hasExponent {
 		value, err := strconv.Atoi(exponent)
 		if err != nil || value > len(fraction)+16 || value < -len(digits) {
-			return 0, invalidInput("resource counts must be nonnegative safe integers")
+			return 0, httpx.InvalidInput("resource counts must be nonnegative safe integers")
 		}
 		power = value
 	}
 	power -= len(fraction)
 	if power < 0 {
 		if power < -len(digits) || len(digits)-len(strings.TrimRight(digits, "0")) < -power {
-			return 0, invalidInput("resource counts must be nonnegative safe integers")
+			return 0, httpx.InvalidInput("resource counts must be nonnegative safe integers")
 		}
 		digits = digits[:len(digits)+power]
 	} else {
 		if len(digits)+power > 16 {
-			return 0, invalidInput("resource counts must be nonnegative safe integers")
+			return 0, httpx.InvalidInput("resource counts must be nonnegative safe integers")
 		}
 		digits += strings.Repeat("0", power)
 	}
 	value, err := strconv.ParseInt(digits, 10, 64)
 	if err != nil || value > 1<<53-1 {
-		return 0, invalidInput("resource counts must be nonnegative safe integers")
+		return 0, httpx.InvalidInput("resource counts must be nonnegative safe integers")
 	}
 	return value, nil
 }
 
-func workerInventoryInput(raw json.RawMessage) (*core.WorkerTaskInventory, error) {
+func workerInventoryInput(raw json.RawMessage) (*model.WorkerTaskInventory, error) {
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, nil
 	}
@@ -284,21 +293,21 @@ func workerInventoryInput(raw json.RawMessage) (*core.WorkerTaskInventory, error
 		return nil, err
 	}
 	if bytes.Equal(bytes.TrimSpace(fields["claims"]), []byte("null")) {
-		return nil, invalidInput("claims must be an array")
+		return nil, httpx.InvalidInput("claims must be an array")
 	}
 	var claims []json.RawMessage
 	if json.Unmarshal(fields["claims"], &claims) != nil {
-		return nil, invalidInput("claims must be an array")
+		return nil, httpx.InvalidInput("claims must be an array")
 	}
-	inventory := &core.WorkerTaskInventory{ObservedAt: observedAt, Claims: make([]core.WorkerTaskReference, 0, len(claims))}
+	inventory := &model.WorkerTaskInventory{ObservedAt: observedAt, Claims: make([]model.WorkerTaskReference, 0, len(claims))}
 	for _, raw := range claims {
 		values, err := workerObject(raw, "taskInventory.claims", "projectId", "taskId", "claimId")
 		if err != nil {
 			return nil, err
 		}
-		var reference core.WorkerTaskReference
+		var reference model.WorkerTaskReference
 		for key, field := range map[string]*string{"projectId": &reference.ProjectID, "taskId": &reference.TaskID, "claimId": &reference.ClaimID} {
-			*field, err = requiredString(values, key)
+			*field, err = httpx.RequiredString(values, key)
 			if err != nil {
 				return nil, err
 			}

@@ -14,7 +14,7 @@ switch can still leave an unattended task waiting to read its assigned skills.
 
 ## Decision
 
-Copilot Web uses SDK 1.0.11 with the pinned `@github/copilot` 1.0.83 package. The Controller starts the
+Copilot Web uses SDK 1.0.11 with the pinned `@github/copilot` 1.0.105 package. The Controller starts the
 platform executable directly in headless mode, records the actual child through
 `onSpawn`, and connects using `RuntimeConnection.forUri` over loopback TCP with a
 random private connection token. The child remains within the Controller's
@@ -95,6 +95,11 @@ confirm policy readback; the supported native configure operation supplies the
 required Worker initialization without expanding the browser control matrix.
 
 ## Consequences
+
+The pinned CLI version follows the [Entra package decision](../bug-fix/2026-11-05-copilot-entra-package.md).
+The original 1.0.83 pin kept the SDK integration reproducible, but its inspected
+macOS arm64 package omitted the broker addon required by Entra authentication.
+
 
 Copilot reuses task ownership, relay fencing, durable operations, timeline,
 composer and typed interaction controls. Provider support must be advertised by

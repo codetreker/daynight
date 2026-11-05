@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func settingsPath(projectID string) string {
@@ -117,7 +118,7 @@ func TestProjectSettingsHTTPStrictInputsAndMethods(t *testing.T) {
 		`{"version":1,"executionWarningMinutes":60,"updatedAt":"2026-01-01T00:00:00Z"}`,
 		`{"version":1,"executionWarningMinutes":60,"unknown":"private-settings-body-secret"}`,
 		"{\"version\":1,\"executionWarningMinutes\":60,\"unknown\":\"" + string([]byte{0xff}) + "\"}",
-		`{"version":1,"executionWarningMinutes":60,"unknown":"` + strings.Repeat("x", maxJSONBody) + `"}`,
+		`{"version":1,"executionWarningMinutes":60,"unknown":"` + strings.Repeat("x", httpx.MaxJSONBody) + `"}`,
 	} {
 		t.Run(body[:min(len(body), 80)], func(t *testing.T) {
 			response := projectRequest(handler, http.MethodPatch, path, body)
@@ -165,16 +166,16 @@ func TestProjectSettingsHTTPAuthenticationAndProjectRoles(t *testing.T) {
 	memberUser := integration.login(t, member, "bob")
 	integration.login(t, outsider, "nullable")
 	origin := map[string]string{"Origin": integration.server.URL}
-	_, data := identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Project settings authorization","repoUrl":"https://example.com/settings"}`, origin, http.StatusCreated)
+	_, data := identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Project settings authorization", RepoURL: "https://example.com/settings", ExpectedUserID: adminUser.ID}), origin, http.StatusCreated)
 	project := identityDecode[api.Project](t, data)
-	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", `{}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", invitationActorBody(adminUser.ID), origin, http.StatusCreated)
 	invitation := identityDecode[api.CreatedProjectInvitation](t, data)
 	link, err := url.Parse(invitation.Link)
 	if err != nil || link.Fragment == "" {
 		t.Fatal("project invitation omitted its acceptance token")
 	}
-	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, http.StatusOK)
-	if joined := identityDecode[api.ProjectMember](t, data); joined.UserID != memberUser.ID || joined.Role != "member" {
+	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationAcceptBody(link.Fragment, memberUser.ID), origin, http.StatusOK)
+	if joined := identityDecode[api.ProjectInvitationAcceptance](t, data); joined.DirectGrant.UserID != memberUser.ID || joined.DirectGrant.Role != "member" {
 		t.Fatalf("ordinary project member fixture: %+v", joined)
 	}
 	request := func(browser *http.Client, method, path, body string, headers map[string]string, status int, code string) []byte {

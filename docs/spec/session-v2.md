@@ -48,9 +48,18 @@ Session fence 是 `sessionId`、`claimId`、`executionGeneration`。服务端与
 只开新段。排序依据段序号和帧序号，墙钟只用于显示与范围校验。
 
 运行账本保留每代的 owner、原生绑定、段归属和停止证明，不能只覆盖当前 snapshot。
-停止证明必须引用原始 boot identity、PID 和 birth token，并覆盖受管 terminal、
+普通停止证明必须引用原始 boot identity、PID 和 birth token，并覆盖受管 terminal、
 承载 shell 与 native agent；当前 pane 消失或 close 返回不构成证明。
+已登记但尚未提交 native launch 的准备运行使用独立的准备资源停止证明：必须持久保存
+本代未提交启动的事实，并证明原 daemon 与唯一 shell 的资源范围已经停止。该分支不能
+包含本代 agent、segment 或已选择、已登记、已观察到的录制内容；采集错误仍须保留。
+启动结果未知、原始身份缺失或不一致时继续保持 stop_unknown，不得根据当前进程缺席
+追认未启动。准备证明不授予新代运行或自动输入权限；unknown 输入仍不得重放。
 契约仅验证证明结构与归属，适配器负责提供可信原生观察。
+
+准备证明是 v2 的显式扩展，旧普通证明字节语义及 v1 保持不变。生成此证明的 Worker
+需要支持该变体的服务端与 Web reader；旧严格 reader 的拒绝不能通过删字段或转换固定
+归档绕过。服务端拒绝时保留原 ledger、归档和 worktree 收尾责任，旧缓存页面需要刷新。
 
 ## 完整画面与样式
 
@@ -80,6 +89,8 @@ complete，也不能伪造一个不存在的采集段。
 再次校验 binding 与当前准入条件，然后发送并 Detach。目标消失不能按名称回退。
 attach 本身可能重应用尺寸或恢复 pending agent，不能承诺无副作用。
 
+终端已有画面在页面隐藏、身份后台检查和恢复连接等待期间保持可读，草稿、同一控制身份的确认及滚动位置不因等待重置，也不插入临时加载或过期行。隐藏或检查期间停止 channel、自动回执查询和 lease 续约，立即禁止输入；恢复读取成功后仍须等待与当前 fence 和控制代次匹配的新鲜 channel 状态才能重新准入。真实断线、权限失败和其他错误继续可见；控制身份或目标实际变化时旧确认失效。未知操作保留原结果，不自动重放。
+
 所有 Daynight 输入由 Worker 的同一个持久仲裁器管理，包括初始 assignment、
 continuation、网页输入和 cleanup prompt。`manual` 期间禁止自动输入；普通释放、
 断线、撤权和 lease 过期后进入 `suspended`，不能根据 idle 自动恢复。
@@ -98,18 +109,52 @@ lease 为 30 秒，10 秒续约，授予和续约必须收到关联原请求的 
 `transport_completed` 只证明传输流程完成。重启把遗留 `dispatching` 收敛为
 `unknown`；幂等记录保留到最终封存并撤销所有写权限。
 
-首次 assignment 为独立稳定操作，只有 `pending` 能自动发送。首次派发与人工
+首次 assignment 为独立稳定操作，只有 `pending` 能自动发送。
+已确认零写入的拒绝必须保留原 receipt，并允许
+Worker 将首次进度从 `dispatching` 发布回 `pending` 后重新准入；
+`unknown`、`unconfirmed` 和 `transport_completed` 不得因此变为可重发状态。首次派发与人工
 接管互斥；`unknown` 或旧运行的 `unconfirmed` 不得自动补发任务说明。
-恢复自动执行需要用户确认已处理终端草稿；未知首次输入还需要显式
-`delivered_continue` 决定。Worker 重新核对 readiness、原 fence、最新 epoch 和
-进行中批次；该决定不构成 provider ACK。网页单写者不能排除本地 Herdr TUI/API
-并发输入。
+未知首次输入通过独立 `resolve_initial_assignment` 动作显式提交
+`delivered_continue` 决定；仅允许无 lease 的 suspended 状态，`draftHandled=false`。
+Worker 持久记录处置、提升控制代次并保持 suspended，不修改原 unknown 操作结果。
+恢复自动执行必须另行提交 `resume_automation`，确认 `draftHandled=true` 且
+`initialUnknownDisposition=null`，不得夹带首次输入处置。两种动作的 `leaseId` 均为 null；
+未处置的 unknown/unconfirmed 禁止恢复。Worker 重新核对 readiness、原 fence、最新 epoch 和
+进行中批次；处置不构成 provider ACK。旧 Worker 未公布独立处置能力时禁用该动作，
+不能用同时恢复自动执行的旧请求替代。网页单写者不能排除本地 Herdr TUI/API 并发输入。
 
 控制派发必须保留服务端认证的 actor、原请求摘要和 fence。Worker 持久仲裁后
 返回关联 operationId 的结果与状态；未关联状态、尚未派发完成的结果或旧代次
 ACK 不能授予 lease。`renew_control` 只续期当前 holder/browser 的同一 lease 和
 controlEpoch；过期后不能复活。补充消息需要明确能力匹配，旧 v2 producer 不能
 因协议名称相同而被当作具备这些行为。
+
+## 干净 shutdown 的自动输入恢复
+
+普通断线或重连不能恢复自动输入。计划 shutdown 可以在旧连接仍在线时申请单次
+服务端许可：Worker 必须已经持久关闭本地输入，确认无草稿、未知输入或在途批次，
+并将原自动状态的初始完成结果发布给服务端。服务端同时核验原 owner、active claim、
+allowAgents、非 paused、旧 fence、无 lease/未决操作和未停止运行；确认许可的同一
+事务将旧控制冻结为 closing。停止证明本身不产生自动输入权限。
+
+Worker 使用 `automation_recovery_prepare` 请求许可、`automation_recovery` 消费许可，
+服务端返回 `automation_recovery_state`。原始请求和回执字段由
+[契约设计](../design/session-v2-contract.md#消息外层与-payload)拥有。
+
+消息通过现有 `POST /api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}/worker-messages`
+发送，使用 v2 请求头和当前 Daynight-Connection-Epoch。摘要为完整请求的规范 JSON
+SHA-256。发送前持久原请求；请求响应丢失后，通过
+`GET /api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}/automation-recovery/{recoveryId}`
+读取原记录，不自动重发。GET 沿用 owner 读取授权，未登记返回 not_found；它只读取
+历史记录，不签发新许可。registration、control_state 和原 state 的字段保持不变；
+不支持新消息或 GET 的旧服务必须使恢复失败关闭，不能降级到普通状态发布。
+
+消费要求旧 stopProof.recordId 与 stopOperationId 一致、同一原生会话、精确相邻
+新代次和当前在线 Worker。许可最多消费一次；同请求只能读取原结果，异正文同 ID
+拒绝。旧消费回执不能授权后来的 connection/control epoch，Worker 必须再读当前
+服务状态确认仍 automation。manual、unknown、终态 cleanup 和缺许可都不能借
+下一代运行解除暂停。原许可及消费记录保留至 Session 最终撤权，受 MaxRuns 限额
+约束；容量满则拒绝新许可，不能淘汰旧身份后重用。
 
 ## 封存、归档与回执
 
@@ -130,7 +175,11 @@ controlEpoch；过期后不能复活。补充消息需要明确能力匹配，�
 零帧。`partial`、`unknown` 与无内容状态均不能放宽身份、权限或 hash 校验。
 停止证据不足保持 `stop_unknown`，不能封最终文件、删除 worktree 或恢复替代运行。
 
-归档使用 `session-archives` 与原 Session 权限，不是可覆盖的普通附件。
+归档使用 `session-archives` 与原 Session 权限，不是可覆盖的普通附件。新 Task 归档
+按原项目和 Session UUID 前两位分组，与 Web Task 归档使用同一目录规则。既有
+文件和元数据保持原状，读取继续使用登记位置；正文、校验值、回执、公开 URL
+和上传重试沿用原语义。
+[共享 Session 需求](task-sessions.md#内容归属与结束后历史)拥有目录布局要求。
 正文 hash 对实际上传 UTF-8 字节计算，重试上传同一字节。帧 hash 对所保存的原始
 帧 JSON 字节计算。`dispositionDigest` 对规范化终态记录计算，与正文 hash 不可
 互换。ready 回执绑定正文 hash、长度、完整性；unavailable 回执绑定不可变原因

@@ -1,5 +1,6 @@
 package sessionrelay
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
 	"errors"
@@ -7,7 +8,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -69,7 +69,7 @@ func TestProjectAdmissionRequiresCanonicalProjectAndUser(t *testing.T) {
 			_, err := f.s.Current(ctx, f.p, f.project, f.task)
 			if table == "users" {
 				var query *store.Error
-				var refusal *service.Fault
+				var refusal *model.Fault
 				if !errors.As(err, &query) || errors.As(err, &refusal) {
 					t.Fatal("missing canonical access profile was hidden as a refusal", err)
 				}
@@ -89,7 +89,7 @@ func TestProjectAdmissionPreservesQueryFailure(t *testing.T) {
 	_, err := f.s.Current(ctx, f.p, f.project, f.task)
 	var query *store.Error
 	var database *pgconn.PgError
-	var refusal *service.Fault
+	var refusal *model.Fault
 	if !errors.As(err, &query) || !errors.As(err, &database) || database.Code != "42P01" || errors.As(err, &refusal) {
 		t.Fatal("admission query failure lost its cause or became a refusal", err)
 	}
@@ -97,7 +97,7 @@ func TestProjectAdmissionPreservesQueryFailure(t *testing.T) {
 
 func assertAdmissionDenied(t *testing.T, err error) {
 	t.Helper()
-	var refusal *service.Fault
+	var refusal *model.Fault
 	if !errors.As(err, &refusal) || refusal.Code != "forbidden" {
 		t.Fatal("expected forbidden admission", err)
 	}

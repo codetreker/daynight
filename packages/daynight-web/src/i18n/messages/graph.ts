@@ -6,6 +6,9 @@ export type GraphMessages = {
   readonly inProgressCount: (args: { count: number }) => string;
   readonly progress: (args: { done: number; total: number }) => string;
   readonly chainTitle: string;
+  readonly noMachineRecord: string;
+  readonly claimMachine: (args: { name: string }) => string;
+  readonly recordedMachine: (args: { name: string }) => string;
   readonly childTasks: (args: { count: number }) => string;
   readonly goalDetails: string;
   readonly goalDetailsLabel: (args: { title: string }) => string;
@@ -14,12 +17,8 @@ export type GraphMessages = {
   readonly closeDialog: string;
   readonly chainSummary: (args: { shown: number; total: number }) => string;
   readonly chainSummaryLabel: (args: { shown: number; total: number }) => string;
-  readonly chainNote: string;
   readonly emptyTitle: string;
   readonly emptyDescription: string;
-  readonly completedTitle: string;
-  readonly completedDescription: (args: { count: number }) => string;
-  readonly showAll: string;
   readonly blocked: string;
   readonly external: string;
   readonly nodeLabel: (args: { title: string; status: string; blocked: boolean; external: boolean }) => string;

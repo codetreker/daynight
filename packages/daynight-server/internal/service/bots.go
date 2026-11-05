@@ -6,13 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -24,8 +24,8 @@ func NewBots(database *store.Store) *Bots { return &Bots{store: database} }
 // been resolved by the caller; creation does not select a Worker or defaults.
 type CreateBot struct {
 	ID, Name              string
-	Overrides             core.BotOverrides
-	ResolvedConfiguration core.BotConfiguration
+	Overrides             model.BotOverrides
+	ResolvedConfiguration model.BotConfiguration
 }
 
 type DeleteBot struct {
@@ -34,24 +34,26 @@ type DeleteBot struct {
 }
 
 type BotPage struct {
-	Items      []core.Bot
+	Items      []model.Bot
 	NextCursor *string
 }
 
 func botForbidden() error {
-	return &Fault{Code: "forbidden", Message: "Bot and Worker must belong to the authenticated user."}
+	return &model.Fault{Code: "forbidden", Message: "Bot and Worker must belong to the authenticated user."}
 }
 
-func botConflict(message string) error { return &Fault{Code: "resource_conflict", Message: message} }
+func botConflict(message string) error {
+	return &model.Fault{Code: "resource_conflict", Message: message}
+}
 
 func botCredentialError(err error) error {
-	if errors.Is(err, core.ErrNotFound) {
-		return unauthenticated(err)
+	if errors.Is(err, model.ErrNotFound) {
+		return model.Unauthenticated(err)
 	}
 	return err
 }
 
-func botOwner(bot core.Bot, principal core.Principal) error {
+func botOwner(bot model.Bot, principal model.Principal) error {
 	if bot.OwnerUserID != principal.UserID {
 		return botForbidden()
 	}
@@ -59,14 +61,14 @@ func botOwner(bot core.Bot, principal core.Principal) error {
 }
 
 func botWorkerError(err error) error {
-	if errors.Is(err, core.ErrNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		return botForbidden()
 	}
 	return err
 }
 
 func normalizeBotRequest(input CreateBot) (CreateBot, string, error) {
-	id, err := CanonicalID(input.ID)
+	id, err := model.CanonicalID(input.ID)
 	if err != nil {
 		return input, "", err
 	}
@@ -79,7 +81,7 @@ func normalizeBotRequest(input CreateBot) (CreateBot, string, error) {
 		return input, "", invalidInput("Bot name must contain 1 to 40 characters.")
 	}
 	if input.Overrides.WorkerID != nil {
-		id, err := CanonicalID(*input.Overrides.WorkerID)
+		id, err := model.CanonicalID(*input.Overrides.WorkerID)
 		if err != nil {
 			return input, "", err
 		}
@@ -88,12 +90,12 @@ func normalizeBotRequest(input CreateBot) (CreateBot, string, error) {
 	if input.Overrides.Cwd != nil && !botAbsolutePath(*input.Overrides.Cwd) {
 		return input, "", invalidInput("Bot directory must be an absolute path without control characters.")
 	}
-	if input.Overrides.Provider != nil && !core.WorkerAgent(*input.Overrides.Provider).Valid() {
+	if input.Overrides.Provider != nil && !model.WorkerAgent(*input.Overrides.Provider).Valid() {
 		return input, "", invalidInput("Bot provider must be codex, claude, or copilot.")
 	}
 	data, err := json.Marshal(struct {
-		Name      string            `json:"name"`
-		Overrides core.BotOverrides `json:"overrides"`
+		Name      string             `json:"name"`
+		Overrides model.BotOverrides `json:"overrides"`
 	}{input.Name, input.Overrides})
 	if err != nil {
 		return input, "", err
@@ -119,9 +121,9 @@ func botAbsolutePath(value string) bool {
 	return false
 }
 
-func normalizeBotConfiguration(input CreateBot) (core.BotConfiguration, error) {
+func normalizeBotConfiguration(input CreateBot) (model.BotConfiguration, error) {
 	configuration := input.ResolvedConfiguration
-	id, err := CanonicalID(configuration.WorkerID)
+	id, err := model.CanonicalID(configuration.WorkerID)
 	if err != nil {
 		return configuration, err
 	}
@@ -129,7 +131,7 @@ func normalizeBotConfiguration(input CreateBot) (core.BotConfiguration, error) {
 	if !botAbsolutePath(configuration.Cwd) {
 		return configuration, invalidInput("Resolved Bot directory must be an absolute path without control characters.")
 	}
-	if !core.WorkerAgent(configuration.Provider).Valid() {
+	if !model.WorkerAgent(configuration.Provider).Valid() {
 		return configuration, invalidInput("Resolved Bot provider must be codex, claude, or copilot.")
 	}
 	if configuration.Model != nil && (!utf8.ValidString(*configuration.Model) || strings.TrimSpace(*configuration.Model) == "" || strings.ContainsRune(*configuration.Model, 0)) {
@@ -153,21 +155,34 @@ func normalizeBotConfiguration(input CreateBot) (core.BotConfiguration, error) {
 
 // Create returns the original frozen definition for an identical normalized
 // request. Retries never replace its settings with newly resolved defaults.
-func (s *Bots) Create(ctx context.Context, principal core.Principal, input CreateBot) (core.Bot, error) {
-	if err := requirePrincipal(principal); err != nil {
-		return core.Bot{}, err
+func (s *Bots) Create(ctx context.Context, principal model.Principal, input CreateBot) (model.Bot, error) {
+	return s.create(ctx, principal, input, false)
+}
+
+func (s *Bots) create(ctx context.Context, principal model.Principal, input CreateBot, resolve bool) (model.Bot, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
+		return model.Bot{}, err
 	}
 	input, fingerprint, err := normalizeBotRequest(input)
 	if err != nil {
-		return core.Bot{}, err
+		return model.Bot{}, err
 	}
-	var result core.Bot
+	var result model.Bot
 	err = s.store.WriteBot(ctx, func(tx *store.BotTx) error {
 		if err := botCredentialError(tx.Credential(ctx, principal)); err != nil {
 			return err
 		}
+		if err := tx.LockCreation(ctx, input.ID); err != nil {
+			return err
+		}
 		current, err := tx.Bot(ctx, input.ID)
-		if errors.Is(err, core.ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
+			if resolve {
+				input.ResolvedConfiguration, err = resolveBotCreation(ctx, tx, principal, input)
+				if err != nil {
+					return err
+				}
+			}
 			configuration, err := normalizeBotConfiguration(input)
 			if err != nil {
 				return err
@@ -175,7 +190,7 @@ func (s *Bots) Create(ctx context.Context, principal core.Principal, input Creat
 			if err := botWorkerError(tx.Worker(ctx, principal.UserID, configuration.WorkerID)); err != nil {
 				return err
 			}
-			if err := tx.InsertBot(ctx, core.Bot{ID: input.ID, OwnerUserID: principal.UserID, WorkerID: configuration.WorkerID,
+			if err := tx.InsertBot(ctx, model.Bot{ID: input.ID, OwnerUserID: principal.UserID, WorkerID: configuration.WorkerID,
 				Name: input.Name, RequestFingerprint: fingerprint, RequestedOverrides: input.Overrides, ResolvedConfiguration: configuration}); err != nil {
 				return err
 			}
@@ -196,28 +211,28 @@ func (s *Bots) Create(ctx context.Context, principal core.Principal, input Creat
 		return botCredentialError(tx.Credential(ctx, principal))
 	})
 	if err != nil {
-		return core.Bot{}, botResultError("create", err)
+		return model.Bot{}, botResultError("create", err)
 	}
 	return result, nil
 }
 
-func (s *Bots) Get(ctx context.Context, principal core.Principal, id string) (core.Bot, error) {
-	if err := requirePrincipal(principal); err != nil {
-		return core.Bot{}, err
+func (s *Bots) Get(ctx context.Context, principal model.Principal, id string) (model.Bot, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
+		return model.Bot{}, err
 	}
-	id, err := CanonicalID(id)
+	id, err := model.CanonicalID(id)
 	if err != nil {
-		return core.Bot{}, err
+		return model.Bot{}, err
 	}
-	var result core.Bot
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := snapshot.Credential(ctx, principal); err != nil {
+	var result model.Bot
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 			return botCredentialError(err)
 		}
 		var err error
-		result, err = snapshot.Bot(ctx, id)
-		if errors.Is(err, core.ErrNotFound) {
-			return &Fault{Code: "not_found", Message: "Bot was not found.", Cause: err}
+		result, err = snapshot.BotDAO().Bot(ctx, id)
+		if errors.Is(err, model.ErrNotFound) {
+			return &model.Fault{Code: "not_found", Message: "Bot was not found.", Cause: err}
 		}
 		if err != nil {
 			return err
@@ -225,44 +240,44 @@ func (s *Bots) Get(ctx context.Context, principal core.Principal, id string) (co
 		return botOwner(result, principal)
 	})
 	if err != nil {
-		return core.Bot{}, botResultError("get", err)
+		return model.Bot{}, botResultError("get", err)
 	}
 	return result, nil
 }
 
-func (s *Bots) List(ctx context.Context, principal core.Principal, request PageRequest) (BotPage, error) {
+func (s *Bots) List(ctx context.Context, principal model.Principal, request model.PageRequest) (BotPage, error) {
 	return s.list(ctx, principal, nil, request)
 }
 
-func (s *Bots) ListWorker(ctx context.Context, principal core.Principal, workerID string, request PageRequest) (BotPage, error) {
-	id, err := CanonicalID(workerID)
+func (s *Bots) ListWorker(ctx context.Context, principal model.Principal, workerID string, request model.PageRequest) (BotPage, error) {
+	id, err := model.CanonicalID(workerID)
 	if err != nil {
 		return BotPage{}, err
 	}
 	return s.list(ctx, principal, &id, request)
 }
 
-func (s *Bots) list(ctx context.Context, principal core.Principal, workerID *string, request PageRequest) (BotPage, error) {
-	if err := requirePrincipal(principal); err != nil {
+func (s *Bots) list(ctx context.Context, principal model.Principal, workerID *string, request model.PageRequest) (BotPage, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return BotPage{}, err
 	}
-	scope := listScope{Kind: "bots", WorkerUserID: &principal.UserID, WorkerID: workerID}
-	page, err := listPage(request, scope)
+	scope := query.ListScope{Kind: "bots", WorkerUserID: &principal.UserID, WorkerID: workerID}
+	page, err := query.ListPage(request, scope)
 	if err != nil {
 		return BotPage{}, err
 	}
 	var records store.BotPage
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := snapshot.Credential(ctx, principal); err != nil {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 			return botCredentialError(err)
 		}
 		if workerID != nil {
-			if err := botWorkerError(snapshot.BotWorker(ctx, principal.UserID, *workerID)); err != nil {
+			if err := botWorkerError(snapshot.BotDAO().BotWorker(ctx, principal.UserID, *workerID)); err != nil {
 				return err
 			}
 		}
 		var err error
-		records, err = snapshot.Bots(ctx, principal.UserID, workerID, page)
+		records, err = snapshot.BotDAO().Bots(ctx, principal.UserID, workerID, page)
 		return err
 	})
 	if err != nil {
@@ -271,7 +286,7 @@ func (s *Bots) list(ctx context.Context, principal core.Principal, workerID *str
 	result := BotPage{Items: records.Items}
 	if records.HasMore {
 		last := records.Items[len(records.Items)-1]
-		cursor, err := encodeListCursor(scope, last.CreatedAt, last.ID)
+		cursor, err := query.EncodeListCursor(scope, last.CreatedAt, last.ID)
 		if err != nil {
 			return BotPage{}, err
 		}
@@ -282,29 +297,29 @@ func (s *Bots) list(ctx context.Context, principal core.Principal, workerID *str
 
 // Delete records an intent without claiming cleanup completion. Bound Sessions
 // require their deletion barrier and are refused by this definition-only path.
-func (s *Bots) Delete(ctx context.Context, principal core.Principal, id string, input DeleteBot) (core.Bot, error) {
-	if err := requirePrincipal(principal); err != nil {
-		return core.Bot{}, err
+func (s *Bots) Delete(ctx context.Context, principal model.Principal, id string, input DeleteBot) (model.Bot, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
+		return model.Bot{}, err
 	}
-	id, err := CanonicalID(id)
+	id, err := model.CanonicalID(id)
 	if err != nil {
-		return core.Bot{}, err
+		return model.Bot{}, err
 	}
-	input.DeletionID, err = CanonicalID(input.DeletionID)
+	input.DeletionID, err = model.CanonicalID(input.DeletionID)
 	if err != nil {
-		return core.Bot{}, err
+		return model.Bot{}, err
 	}
 	if input.Version < 1 {
-		return core.Bot{}, invalidInput("Bot version must be positive.")
+		return model.Bot{}, invalidInput("Bot version must be positive.")
 	}
-	var result core.Bot
+	var result model.Bot
 	err = s.store.WriteBot(ctx, func(tx *store.BotTx) error {
 		if err := botCredentialError(tx.Credential(ctx, principal)); err != nil {
 			return err
 		}
 		current, err := tx.Bot(ctx, id)
-		if errors.Is(err, core.ErrNotFound) {
-			return &Fault{Code: "not_found", Message: "Bot was not found.", Cause: err}
+		if errors.Is(err, model.ErrNotFound) {
+			return &model.Fault{Code: "not_found", Message: "Bot was not found.", Cause: err}
 		}
 		if err != nil {
 			return err
@@ -320,43 +335,33 @@ func (s *Bots) Delete(ctx context.Context, principal core.Principal, id string, 
 			return botCredentialError(tx.Credential(ctx, principal))
 		}
 		if current.Version != input.Version {
-			return &Fault{Code: "version_conflict", Message: "Bot version has changed."}
+			return &model.Fault{Code: "version_conflict", Message: "Bot version has changed."}
 		}
 		if current.SessionID != nil {
 			return botConflict("A bound Bot requires the Session deletion barrier.")
 		}
 		if current.Version == math.MaxInt64 {
-			return &Fault{Code: "version_exhausted", Message: "Bot version cannot advance."}
+			return &model.Fault{Code: "version_exhausted", Message: "Bot version cannot advance."}
 		}
-		result, err = tx.DeleteBot(ctx, id, input.Version, core.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version,
-			WorkerCleanup: core.BotCleanupResult{State: "pending"}, ServerCleanup: core.BotCleanupResult{State: "pending"}})
+		result, err = tx.DeleteBot(ctx, id, input.Version, model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version,
+			WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}})
 		if err != nil {
 			return err
 		}
 		return botCredentialError(tx.Credential(ctx, principal))
 	})
 	if err != nil {
-		return core.Bot{}, botResultError("delete", err)
+		return model.Bot{}, botResultError("delete", err)
 	}
 	return result, nil
 }
 
-// BotOperationError preserves storage and transaction failures without turning
-// an embedded business refusal into a confirmed rejection after failed cleanup.
-type BotOperationError struct {
-	Operation string
-	Cause     error
-}
-
-func (e *BotOperationError) Error() string { return fmt.Sprintf("%s bot: %v", e.Operation, e.Cause) }
-func (e *BotOperationError) Unwrap() error { return e.Cause }
-
 func botResultError(operation string, err error) error {
 	var transaction *store.TransactionError
 	if errors.As(err, &transaction) && transaction.Phase == "operation" && !transaction.CleanupFailed && transaction.Outcome == store.TransactionNotCommitted {
-		if fault, ok := transaction.Cause.(*Fault); ok {
+		if fault, ok := transaction.Cause.(*model.Fault); ok {
 			return fault
 		}
 	}
-	return &BotOperationError{Operation: operation, Cause: err}
+	return &model.BotOperationError{Operation: operation, Cause: err}
 }

@@ -1,0 +1,59 @@
+package task
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+)
+
+func extendedWorkerProtocol(request *http.Request) bool {
+	return request.Header.Get("Daynight-Worker-Protocol") == "2"
+}
+
+func legacyWorkerCompatible(worker *model.WorkerClaim) bool {
+	return taskcore.LegacyWorkerCompatible(worker)
+}
+
+func workerProtocolRequired() error {
+	return &model.Fault{Code: "invalid_transition", Message: "This agent or control mode requires a compatible Daynight client. This request did not change the execution."}
+}
+
+func workerProtocolContext(request *http.Request) context.Context {
+	if extendedWorkerProtocol(request) {
+		return request.Context()
+	}
+	return taskcore.WithLegacyWorkerProtocol(request.Context())
+}
+
+// Legacy workers identify discovery with these filters. Ordinary lists preserve
+// every task, and inventory must report incompatible claims rather than hide them.
+func (h *taskHandler) listWorkerCompatibleTasks(request *http.Request, principal model.Principal, projectID string, input service.TaskListRequest) (service.TaskPage, error) {
+	legacyCandidates := !extendedWorkerProtocol(request) && input.WorkerID == nil && input.Ready != nil && *input.Ready && input.AllowAgents != nil && *input.AllowAgents && input.CompatiblePlatform != nil
+	for {
+		page, err := h.tasks.List(request.Context(), principal, projectID, input)
+		if err != nil || !legacyCandidates {
+			return page, err
+		}
+		items := make([]model.Task, 0, len(page.Items))
+		for _, task := range page.Items {
+			worker, err := taskproperties.Worker(task.Properties)
+			if err != nil {
+				return service.TaskPage{}, err
+			}
+			if legacyWorkerCompatible(worker) {
+				items = append(items, task)
+			}
+		}
+		page.Items = items
+		if len(page.Items) > 0 || page.NextCursor == nil {
+			return page, nil
+		}
+		// Cursors track the original ordered scan, including entries the old worker
+		// cannot execute. Never return an empty page with a continuation cursor.
+		input.Cursor = page.NextCursor
+	}
+}

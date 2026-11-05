@@ -10,21 +10,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
-func workerSnapshotFixture(userID, workerID string, stamp time.Time) core.WorkerSnapshot {
-	return core.WorkerSnapshot{
+func workerSnapshotFixture(userID, workerID string, stamp time.Time) model.WorkerSnapshot {
+	return model.WorkerSnapshot{
 		UserID: userID, WorkerID: workerID, CreatedAt: stamp, LastReportedAt: stamp,
-		Telemetry:    core.WorkerTelemetry{Machine: core.WorkerMachine{ID: queryID(999), Name: "Worker"}, Platform: core.PlatformLinux, WorkingDirectory: "/workspace", SampledAt: stamp},
-		TaskSnapshot: core.WorkerTaskObservation{State: core.WorkerTasksUnavailable, Items: []core.WorkerObservedTask{}},
+		Telemetry:    model.WorkerTelemetry{Machine: model.WorkerMachine{ID: queryID(999), Name: "Worker"}, Platform: model.PlatformLinux, WorkingDirectory: "/workspace", SampledAt: stamp},
+		TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}},
 	}
 }
 
-func putWorkerSnapshot(t *testing.T, database *Store, worker core.WorkerSnapshot) core.WorkerSnapshot {
+func putWorkerSnapshot(t *testing.T, database *Store, worker model.WorkerSnapshot) model.WorkerSnapshot {
 	t.Helper()
-	var result core.WorkerSnapshot
+	var result model.WorkerSnapshot
 	err := database.WriteWorker(context.Background(), func(tx *WorkerTx) error {
 		var err error
 		result, err = tx.UpsertWorker(context.Background(), worker)
@@ -36,12 +36,12 @@ func putWorkerSnapshot(t *testing.T, database *Store, worker core.WorkerSnapshot
 	return result
 }
 
-func readWorkerSnapshot(t *testing.T, database *Store, userID, workerID string, observedAt time.Time) core.WorkerSnapshot {
+func readWorkerSnapshot(t *testing.T, database *Store, userID, workerID string, observedAt time.Time) model.WorkerSnapshot {
 	t.Helper()
-	var result core.WorkerSnapshot
-	err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+	var result model.WorkerSnapshot
+	err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 		var err error
-		result, err = snapshot.Worker(context.Background(), userID, workerID, observedAt)
+		result, err = snapshot.WorkerDAO().Worker(context.Background(), userID, workerID, observedAt)
 		return err
 	})
 	if err != nil {
@@ -50,16 +50,16 @@ func readWorkerSnapshot(t *testing.T, database *Store, userID, workerID string, 
 	return result
 }
 
-func setSnapshotTaskClaim(t *testing.T, database *Store, projectID string, taskNumber int, owner, workerID string) core.WorkerTaskReference {
+func setSnapshotTaskClaim(t *testing.T, database *Store, projectID string, taskNumber int, owner, workerID string) model.WorkerTaskReference {
 	t.Helper()
-	task := queryTask(t, database, projectID, taskNumber, core.TaskInProgress)
-	claim := &core.WorkerClaim{ClaimID: queryID(taskNumber + 100), State: core.WorkerActive, UserID: owner, WorkerID: workerID,
-		Machine: core.WorkerMachine{ID: queryID(999), Name: "Worker"}, Platform: core.PlatformLinux, Agent: core.AgentClaude,
-		AgentControlMode: core.AgentControlModeWeb, WorktreeID: queryID(taskNumber + 200), Phase: core.WorkerExecuting, ClaimedAt: task.CreatedAt}
+	task := queryTask(t, database, projectID, taskNumber, model.TaskInProgress)
+	claim := &model.WorkerClaim{ClaimID: queryID(taskNumber + 100), State: model.WorkerActive, UserID: owner, WorkerID: workerID,
+		Machine: model.WorkerMachine{ID: queryID(999), Name: "Worker"}, Platform: model.PlatformLinux, Agent: model.AgentClaude,
+		AgentControlMode: model.AgentControlModeWeb, WorktreeID: queryID(taskNumber + 200), Phase: model.WorkerExecuting, ClaimedAt: task.CreatedAt}
 	properties := fixtureTaskProperties(t, claim)
 	putTaskPropertyFixture(t, database, task.ID, "worker", properties["worker"])
 	putTaskPropertyFixture(t, database, task.ID, "pullRequests", []byte(`[{"url":"\u0000","title":"\ud800"}]`))
-	return core.WorkerTaskReference{ProjectID: projectID, TaskID: task.ID, ClaimID: claim.ClaimID}
+	return model.WorkerTaskReference{ProjectID: projectID, TaskID: task.ID, ClaimID: claim.ClaimID}
 }
 
 func TestWorkerSnapshotUpsertUnknownStaleAndOlderObservation(t *testing.T) {
@@ -67,23 +67,23 @@ func TestWorkerSnapshotUpsertUnknownStaleAndOlderObservation(t *testing.T) {
 	stamp := time.Date(2026, 10, 29, 1, 0, 0, 0, time.UTC)
 	worker := workerSnapshotFixture(queryID(1), queryID(2), stamp)
 	first := putWorkerSnapshot(t, database, worker)
-	if first.TaskSnapshot.State != core.WorkerTasksUnavailable || first.TaskSnapshot.ObservedAt != nil || first.TaskSnapshot.Items == nil {
+	if first.TaskSnapshot.State != model.WorkerTasksUnavailable || first.TaskSnapshot.ObservedAt != nil || first.TaskSnapshot.Items == nil {
 		t.Fatalf("initial unknown inventory changed: %#v", first)
 	}
 	worker.CreatedAt = stamp.Add(time.Hour)
 	worker.LastReportedAt = stamp.Add(time.Second)
 	unknown := putWorkerSnapshot(t, database, worker)
-	if unknown.TaskSnapshot.State != core.WorkerTasksUnavailable || !unknown.CreatedAt.Equal(stamp) {
+	if unknown.TaskSnapshot.State != model.WorkerTasksUnavailable || !unknown.CreatedAt.Equal(stamp) {
 		t.Fatalf("repeated unknown inventory or immutable creation changed: %#v", unknown)
 	}
 	worker.LastReportedAt = stamp.Add(2 * time.Second)
-	worker.TaskSnapshot = core.WorkerTaskObservation{State: core.WorkerTasksObserved, ObservedAt: &worker.LastReportedAt, InventoryObservedAt: &stamp,
-		Items: []core.WorkerObservedTask{{ProjectID: queryID(10), TaskID: queryID(11), ClaimID: queryID(12), Title: "Original task", ProjectName: "Project", Status: core.TaskInProgress, Phase: core.WorkerExecuting, Agent: core.AgentClaude}}}
+	worker.TaskSnapshot = model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &worker.LastReportedAt, InventoryObservedAt: &stamp,
+		Items: []model.WorkerObservedTask{{ProjectID: queryID(10), TaskID: queryID(11), ClaimID: queryID(12), Title: "Original task", ProjectName: "Project", Status: model.TaskInProgress, Phase: model.WorkerExecuting, Agent: model.AgentClaude}}}
 	observed := putWorkerSnapshot(t, database, worker)
 	worker.LastReportedAt = stamp.Add(3 * time.Second)
-	worker.TaskSnapshot = core.WorkerTaskObservation{State: core.WorkerTasksUnavailable, Items: []core.WorkerObservedTask{}}
+	worker.TaskSnapshot = model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}
 	stale := putWorkerSnapshot(t, database, worker)
-	if stale.TaskSnapshot.State != core.WorkerTasksStale || !reflect.DeepEqual(stale.TaskSnapshot.Items, observed.TaskSnapshot.Items) || !stale.TaskSnapshot.ObservedAt.Equal(*observed.TaskSnapshot.ObservedAt) {
+	if stale.TaskSnapshot.State != model.WorkerTasksStale || !reflect.DeepEqual(stale.TaskSnapshot.Items, observed.TaskSnapshot.Items) || !stale.TaskSnapshot.ObservedAt.Equal(*observed.TaskSnapshot.ObservedAt) {
 		t.Fatalf("null inventory did not retain the last real task observation: %#v", stale)
 	}
 	worker.LastReportedAt = stamp.Add(time.Second)
@@ -93,9 +93,9 @@ func TestWorkerSnapshotUpsertUnknownStaleAndOlderObservation(t *testing.T) {
 		t.Fatalf("older report overwrote the latest full snapshot: %#v", older)
 	}
 	worker.LastReportedAt = stamp.Add(4 * time.Second)
-	worker.TaskSnapshot = core.WorkerTaskObservation{State: core.WorkerTasksObserved, ObservedAt: &worker.LastReportedAt, InventoryObservedAt: &stamp, Items: []core.WorkerObservedTask{}}
+	worker.TaskSnapshot = model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &worker.LastReportedAt, InventoryObservedAt: &stamp, Items: []model.WorkerObservedTask{}}
 	empty := putWorkerSnapshot(t, database, worker)
-	if empty.TaskSnapshot.State != core.WorkerTasksObserved || len(empty.TaskSnapshot.Items) != 0 || empty.TaskSnapshot.Items == nil {
+	if empty.TaskSnapshot.State != model.WorkerTasksObserved || len(empty.TaskSnapshot.Items) != 0 || empty.TaskSnapshot.Items == nil {
 		t.Fatalf("real empty inventory was not a complete observation: %#v", empty)
 	}
 }
@@ -119,30 +119,30 @@ func TestWorkerSnapshotNormalizesTaskReferencesWithoutChangingTasks(t *testing.T
 	noMembership := setSnapshotTaskClaim(t, database, otherProject.ID, 26, userID, workerID)
 	wrongProject := setSnapshotTaskClaim(t, database, project.ID, 27, userID, workerID)
 	wrongProject.ProjectID = otherProject.ID
-	missingClaim := queryTask(t, database, project.ID, 28, core.TaskInProgress)
-	missing := core.WorkerTaskReference{ProjectID: project.ID, TaskID: queryID(900), ClaimID: queryID(901)}
+	missingClaim := queryTask(t, database, project.ID, 28, model.TaskInProgress)
+	missing := model.WorkerTaskReference{ProjectID: project.ID, TaskID: queryID(900), ClaimID: queryID(901)}
 	before := currentTaskFactsFixture(t, database)
-	var items []core.WorkerObservedTask
+	var items []model.WorkerObservedTask
 	err := database.WriteWorker(ctx, func(tx *WorkerTx) error {
 		clock, err := tx.ObservedAt(ctx)
 		if err != nil || clock.IsZero() || clock.Location() != time.UTC {
 			t.Errorf("invalid database observation: %v, %v", clock, err)
 			return err
 		}
-		items, err = tx.ReportTaskSnapshots(ctx, userID, workerID, core.WorkerTaskInventory{ObservedAt: clock, Claims: []core.WorkerTaskReference{
+		items, err = tx.ReportTaskSnapshots(ctx, userID, workerID, model.WorkerTaskInventory{ObservedAt: clock, Claims: []model.WorkerTaskReference{
 			otherUser, valid, otherWorker, wrongClaim, completed, deleted, noMembership, wrongProject, missing,
 			{ProjectID: project.ID, TaskID: missingClaim.ID, ClaimID: queryID(902)},
 		}})
 		return err
 	})
-	if err != nil || len(items) != 1 || items[0].TaskID != valid.TaskID || items[0].Phase != core.WorkerExecuting || items[0].Agent != core.AgentClaude || items[0].Status != core.TaskInProgress {
+	if err != nil || len(items) != 1 || items[0].TaskID != valid.TaskID || items[0].Phase != model.WorkerExecuting || items[0].Agent != model.AgentClaude || items[0].Status != model.TaskInProgress {
 		t.Fatalf("task references were not authoritatively normalized: %#v, %v", items, err)
 	}
 	if !reflect.DeepEqual(currentTaskFactsFixture(t, database), before) {
 		t.Fatal("observation normalization changed execution or opaque PR bytes")
 	}
 	err = database.WriteWorker(ctx, func(tx *WorkerTx) error {
-		items, err = tx.ReportTaskSnapshots(ctx, userID, workerID, core.WorkerTaskInventory{Claims: []core.WorkerTaskReference{}})
+		items, err = tx.ReportTaskSnapshots(ctx, userID, workerID, model.WorkerTaskInventory{Claims: []model.WorkerTaskReference{}})
 		return err
 	})
 	if err != nil || items == nil || len(items) != 0 {
@@ -163,10 +163,10 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	private := setSnapshotTaskClaim(t, database, revoked.ID, 22, userID, workerID)
 	stamp := time.Date(2026, 10, 29, 1, 0, 0, 0, time.UTC)
 	worker := workerSnapshotFixture(userID, workerID, stamp)
-	worker.TaskSnapshot = core.WorkerTaskObservation{State: core.WorkerTasksObserved, ObservedAt: &stamp, InventoryObservedAt: &stamp, Items: []core.WorkerObservedTask{}}
+	worker.TaskSnapshot = model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &stamp, InventoryObservedAt: &stamp, Items: []model.WorkerObservedTask{}}
 	err := database.WriteWorker(ctx, func(tx *WorkerTx) error {
 		var err error
-		worker.TaskSnapshot.Items, err = tx.ReportTaskSnapshots(ctx, userID, workerID, core.WorkerTaskInventory{Claims: []core.WorkerTaskReference{active, removed, private}})
+		worker.TaskSnapshot.Items, err = tx.ReportTaskSnapshots(ctx, userID, workerID, model.WorkerTaskInventory{Claims: []model.WorkerTaskReference{active, removed, private}})
 		if err != nil {
 			return err
 		}
@@ -185,13 +185,13 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	mustQueryExec(t, database, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, removed.TaskID)
 	mustQueryExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, revoked.ID, userID)
 	read := readWorkerSnapshot(t, database, userID, workerID, stamp.Add(time.Hour))
-	if len(read.TaskSnapshot.Items) != 1 || read.TaskSnapshot.Items[0].TaskID != active.TaskID || read.TaskSnapshot.Items[0].Status != core.TaskInProgress || read.TaskSnapshot.Items[0].Title != "Task" || read.TaskSnapshot.Items[0].Phase != core.WorkerExecuting {
+	if len(read.TaskSnapshot.Items) != 1 || read.TaskSnapshot.Items[0].TaskID != active.TaskID || read.TaskSnapshot.Items[0].Status != model.TaskInProgress || read.TaskSnapshot.Items[0].Title != "Task" || read.TaskSnapshot.Items[0].Phase != model.WorkerExecuting {
 		t.Fatalf("current permission filtering changed saved state or leaked rows: %#v", read.TaskSnapshot)
 	}
 	var page WorkerPage
-	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
-		page, err = snapshot.Workers(ctx, userID, stamp.Add(time.Hour), Page{Limit: 50})
+		page, err = snapshot.WorkerDAO().Workers(ctx, userID, stamp.Add(time.Hour), Page{Limit: 50})
 		return err
 	})
 	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], read) {
@@ -199,7 +199,7 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	}
 	before := currentTaskFactsFixture(t, database)
 	err = database.WriteWorker(ctx, func(tx *WorkerTx) error {
-		items, err := tx.ReportTaskSnapshots(ctx, userID, workerID, core.WorkerTaskInventory{Claims: []core.WorkerTaskReference{private}})
+		items, err := tx.ReportTaskSnapshots(ctx, userID, workerID, model.WorkerTaskInventory{Claims: []model.WorkerTaskReference{private}})
 		if err == nil && len(items) != 0 {
 			t.Errorf("report retained a revoked project's task: %#v", items)
 		}
@@ -213,10 +213,10 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 	if len(restored.TaskSnapshot.Items) != 2 || !reflect.DeepEqual(restored.TaskSnapshot.Items[1], worker.TaskSnapshot.Items[2]) {
 		t.Fatalf("regrant did not restore the historical observation: %#v", restored.TaskSnapshot)
 	}
-	var saved core.WorkerSnapshot
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	var saved model.WorkerSnapshot
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
-		saved, err = scanWorkerSnapshot(snapshot.tx.QueryRow(ctx, `SELECT `+workerSnapshotProjection+` FROM workers WHERE user_id=$1 AND worker_id=$2`, userID, workerID))
+		saved, err = scanWorkerSnapshot(snapshot.(*Snapshot).tx.QueryRow(ctx, `SELECT `+workerSnapshotProjection+` FROM workers WHERE user_id=$1 AND worker_id=$2`, userID, workerID))
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -246,9 +246,9 @@ func TestWorkerSnapshotRecentWindowAccountIsolationAndStablePagination(t *testin
 	var position *Position
 	for index, expectedID := range []string{queryID(2), queryID(3), queryID(4)} {
 		var page WorkerPage
-		err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
-			page, err = snapshot.Workers(ctx, userID, stamp, Page{Limit: 1, After: position})
+			page, err = snapshot.WorkerDAO().Workers(ctx, userID, stamp, Page{Limit: 1, After: position})
 			return err
 		})
 		if err != nil || len(page.Items) != 1 || page.Items[0].WorkerID != expectedID || page.HasMore != (index < 2) {
@@ -260,11 +260,11 @@ func TestWorkerSnapshotRecentWindowAccountIsolationAndStablePagination(t *testin
 		putWorkerSnapshot(t, database, last)
 	}
 	for _, test := range []struct{ user, worker string }{{userID, queryID(5)}, {queryID(101), queryID(2)}, {userID, queryID(900)}} {
-		err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-			_, err := snapshot.Worker(ctx, test.user, test.worker, stamp)
+		err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			_, err := snapshot.WorkerDAO().Worker(ctx, test.user, test.worker, stamp)
 			return err
 		})
-		if !errors.Is(err, core.ErrNotFound) {
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("unknown/inaccessible/expired worker exposed: %v", err)
 		}
 	}
@@ -302,7 +302,7 @@ func TestWorkerSnapshotConcurrentOlderObservationReadsCommittedWinner(t *testing
 		t.Fatal(ctx.Err())
 	}
 	second := make(chan error, 1)
-	var result core.WorkerSnapshot
+	var result model.WorkerSnapshot
 	go func() {
 		second <- database.WriteWorker(ctx, func(tx *WorkerTx) error {
 			var err error
@@ -342,7 +342,7 @@ func TestWorkerSnapshotErrorsRollbackAndPreserveCauses(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM workers`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("failed worker transaction committed: %d %v", count, err)
 	}
-	worker.Telemetry.CPU.Value = &core.WorkerCPU{UsagePercent: math.NaN()}
+	worker.Telemetry.CPU.Value = &model.WorkerCPU{UsagePercent: math.NaN()}
 	err = database.WriteWorker(ctx, func(tx *WorkerTx) error { _, err := tx.UpsertWorker(ctx, worker); return err })
 	if err == nil || !strings.Contains(err.Error(), "worker") || errors.Unwrap(err) == nil {
 		t.Fatalf("invalid telemetry encoding was hidden: %v", err)
@@ -357,7 +357,7 @@ func TestWorkerSnapshotErrorsRollbackAndPreserveCauses(t *testing.T) {
 	reference := setSnapshotTaskClaim(t, database, project.ID, 20, worker.UserID, worker.WorkerID)
 	putTaskPropertyFixture(t, database, reference.TaskID, "worker", []byte(`not JSON`))
 	err = database.WriteWorker(ctx, func(tx *WorkerTx) error {
-		_, err := tx.ReportTaskSnapshots(ctx, worker.UserID, worker.WorkerID, core.WorkerTaskInventory{Claims: []core.WorkerTaskReference{reference}})
+		_, err := tx.ReportTaskSnapshots(ctx, worker.UserID, worker.WorkerID, model.WorkerTaskInventory{Claims: []model.WorkerTaskReference{reference}})
 		return err
 	})
 	if err == nil || errors.Unwrap(err) == nil {
@@ -380,19 +380,19 @@ func TestWorkerSnapshotReadCancellationAndCorruptStorageStayVisible(t *testing.T
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled database clock hid its cause: %v", err)
 	}
-	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.Workers(canceled, worker.UserID, stamp, Page{Limit: 10})
+	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.WorkerDAO().Workers(canceled, worker.UserID, stamp, Page{Limit: 10})
 		return err
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled worker list hid its cause: %v", err)
 	}
 	mustQueryExec(t, database, `UPDATE workers SET telemetry='{"cpu":"invalid"}' WHERE user_id=$1 AND worker_id=$2`, worker.UserID, worker.WorkerID)
-	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.Workers(ctx, worker.UserID, stamp, Page{Limit: 10})
+	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.WorkerDAO().Workers(ctx, worker.UserID, stamp, Page{Limit: 10})
 		return err
 	})
-	if err == nil || errors.Is(err, core.ErrNotFound) {
+	if err == nil || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("corrupt worker metadata was hidden as an empty list: %v", err)
 	}
 }
@@ -405,9 +405,9 @@ func TestWorkerSnapshotMigrationPreservesExistingTaskData(t *testing.T) {
 	}
 	database := &Store{Pool: pool}
 	project := queryProject(t, database, 10)
-	claim := &core.WorkerClaim{ClaimID: queryID(120), State: core.WorkerActive, UserID: queryID(1), WorkerID: queryID(2),
-		Machine: core.WorkerMachine{ID: queryID(999), Name: "Worker"}, Platform: core.PlatformLinux, Agent: core.AgentClaude,
-		AgentControlMode: core.AgentControlModeWeb, WorktreeID: queryID(220), Phase: core.WorkerExecuting, ClaimedAt: time.Now().UTC()}
+	claim := &model.WorkerClaim{ClaimID: queryID(120), State: model.WorkerActive, UserID: queryID(1), WorkerID: queryID(2),
+		Machine: model.WorkerMachine{ID: queryID(999), Name: "Worker"}, Platform: model.PlatformLinux, Agent: model.AgentClaude,
+		AgentControlMode: model.AgentControlModeWeb, WorktreeID: queryID(220), Phase: model.WorkerExecuting, ClaimedAt: time.Now().UTC()}
 	properties := fixtureTaskProperties(t, claim)
 	properties["pullRequests"] = json.RawMessage(`[{"url":"\u0000","title":"\ud800"}]`)
 	raw, err := json.Marshal(properties)

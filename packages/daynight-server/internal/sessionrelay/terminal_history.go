@@ -7,8 +7,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -35,7 +35,7 @@ func (s *Service) terminalState(ctx context.Context, tx pgx.Tx, r *terminalRecor
 	}
 	return map[string]any{"status": "registered", "protocol": v2.Protocol, "schemaVersion": 2, "projectionVersion": 1, "sessionId": r.Envelope.SessionID, "claimId": r.Envelope.ClaimID, "executionGeneration": r.Envelope.ExecutionGeneration, "agentControlMode": "herdr", "contentKind": "terminal_recording", "owner": r.Owner, "binding": r.Binding, "connectionEpoch": r.ConnectionEpoch, "connected": s.terminalOnline(r) && terminalActive(t, r), "capabilities": r.Registration.Capabilities, "control": control, "snapshot": snapshot, "ledger": v2.GenerationLedger{Runs: r.Runs, FinalizationID: r.FinalizationID}, "archive": status, "recording": recording}, nil
 }
-func (s *Service) TerminalState(ctx context.Context, p core.Principal, project, taskID, id string) (map[string]any, error) {
+func (s *Service) TerminalState(ctx context.Context, p model.Principal, project, taskID, id string) (map[string]any, error) {
 	var out map[string]any
 	err := s.terminalAccess(ctx, p, project, taskID, id, false, func(tx pgx.Tx, r *terminalRecord, t task, write bool) error {
 		var err error
@@ -44,7 +44,23 @@ func (s *Service) TerminalState(ctx context.Context, p core.Principal, project, 
 	})
 	return out, err
 }
-func (s *Service) CurrentTerminal(ctx context.Context, p core.Principal, project, taskID string) (map[string]any, error) {
+
+// TerminalArchiveState retains the original Worker's finalization readback after
+// task deletion. It never grants browser access or advertises control actions.
+func (s *Service) TerminalArchiveState(ctx context.Context, p model.Principal, project, taskID, id string) (map[string]any, error) {
+	var out map[string]any
+	err := s.terminalAccess(ctx, p, project, taskID, id, true, func(tx pgx.Tx, r *terminalRecord, t task, _ bool) error {
+		if err := terminalOwner(p, r); err != nil {
+			return err
+		}
+		var err error
+		out, err = s.terminalState(ctx, tx, r, t, false)
+		return err
+	})
+	return out, err
+}
+
+func (s *Service) CurrentTerminal(ctx context.Context, p model.Principal, project, taskID string) (map[string]any, error) {
 	var out map[string]any
 	err := s.transact(ctx, func(tx pgx.Tx) error {
 		t, err := lockTask(ctx, tx, project, taskID)
@@ -55,7 +71,7 @@ func (s *Service) CurrentTerminal(ctx context.Context, p core.Principal, project
 		if err != nil {
 			return err
 		}
-		if t.Worker == nil || t.Worker.AgentControlMode != core.AgentControlModeHerdr {
+		if t.Worker == nil || t.Worker.AgentControlMode != model.AgentControlModeHerdr {
 			out = map[string]any{"status": "not_applicable", "protocol": v2.Protocol}
 			return nil
 		}
@@ -80,7 +96,7 @@ func (s *Service) CurrentTerminal(ctx context.Context, p core.Principal, project
 
 type terminalHistoryCursor struct{ Project, Task, Created, ID string }
 
-func (s *Service) TerminalHistory(ctx context.Context, p core.Principal, project, taskID, token string, limit int) (map[string]any, error) {
+func (s *Service) TerminalHistory(ctx context.Context, p model.Principal, project, taskID, token string, limit int) (map[string]any, error) {
 	if limit < 1 || limit > 200 || len(token) > 1024 {
 		return nil, fault("invalid_payload", "Invalid Session history page.")
 	}
@@ -174,7 +190,7 @@ func (s *Service) TerminalHistory(ctx context.Context, p core.Principal, project
 
 // TerminalRecordingEvidence reconciles a known submitted body without replacing
 // the current evidence checkpoint or exposing the Worker's journal contents.
-func (s *Service) TerminalRecordingEvidence(ctx context.Context, p core.Principal, project, taskID, id, generation, evidenceID string) (map[string]any, error) {
+func (s *Service) TerminalRecordingEvidence(ctx context.Context, p model.Principal, project, taskID, id, generation, evidenceID string) (map[string]any, error) {
 	n := number(generation)
 	parsed, err := uuid.Parse(evidenceID)
 	if n < 1 || decimal(n) != generation || err != nil || parsed.String() != evidenceID {

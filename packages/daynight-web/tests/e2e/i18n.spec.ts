@@ -1,4 +1,5 @@
 import { openChain } from './chain-dialog';
+import { expectLanguageLayout } from './language-layout';
 import { selectTaskList } from './project-view';
 import { randomUUID } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
@@ -59,7 +60,7 @@ test.describe('Web language journeys', () => {
     const project = await createProject(request, { name: `原始项目 Raw project ${randomUUID()}` });
     const task = await createTask(request, project.id, { title: '原始任务 Raw task', description: '原始描述 Raw description' });
     await page.goto('/projects');
-    await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     await expect(page).toHaveTitle('My projects · Daynight');
     await expect(language(page.locator('.topbar'))).toHaveValue('en');
@@ -92,7 +93,7 @@ test.describe('Web language journeys', () => {
     await expect(dialog.locator('.task-description')).toHaveText(task.description);
     await page.keyboard.press('Escape');
     await page.getByRole('link', { name: '← 项目', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
     await expect(page).toHaveTitle('我的项目 · Daynight');
     await expect(language(page.locator('.topbar'))).toHaveValue('zh-CN');
     await screenshot(page, info, 'language-startup-preferences');
@@ -122,7 +123,6 @@ test.describe('Web language journeys', () => {
     });
     // Keep locale request-isolation assertions independent of the task polling timer.
     const clockTime = new Date('2030-01-01T00:00:00Z');
-    await page.clock.install({ time: clockTime });
     await page.clock.pauseAt(clockTime);
     await page.goto(`/projects/${project.id}`);
     await selectTaskList(page);
@@ -163,26 +163,23 @@ test.describe('Web language journeys', () => {
     if (viewportElement === null || taskElement === null) throw new Error('Graph elements are absent.');
     const transform = await viewport.getAttribute('style');
     const paths = await page.locator('.task-dependency-edge path.react-flow__edge-path').evaluateAll((elements) => elements.map((element) => element.getAttribute('d')));
-    const beforeSwitch = [...reads];
-    await language(page.locator('.task-chain-dialog')).selectOption('zh-CN');
-    await expect(inspectTask(page, task.id).locator('.graph-status')).toHaveText('待处理');
-    expect(await visibleState()).toEqual(expandedState);
-    await expect(expansion).toHaveAccessibleName('展开后续 11 个任务、11 条依赖');
-    await expect(page.locator('.graph-reset-overview')).toHaveText('收起到概览');
-    await expect(viewport).toHaveAttribute('style', transform!);
-    expect(await taskElement.evaluate((element, id) => element === document.querySelector(`.react-flow__node[data-id="${id}"] button.task-node-body`), task.id)).toBe(true);
-    expect(await page.locator('.task-dependency-edge path.react-flow__edge-path').evaluateAll((elements) => elements.map((element) => element.getAttribute('d')))).toEqual(paths);
-    expect(reads).toEqual(beforeSwitch);
-    await page.getByRole('button', { name: '全屏查看', exact: true }).click();
+    const beforeFullscreen = [...reads];
+    const graphDialog = page.locator('.task-chain-dialog');
+    await expect(graphDialog.locator('.locale-preference')).toHaveCount(0);
+    await expect(graphDialog.locator('.locale-notice')).toHaveCount(0);
+    await page.getByRole('button', { name: 'View fullscreen', exact: true }).click();
     const fullscreen = page.locator('.task-chain-dialog-fullscreen');
-    await language(fullscreen).selectOption('en');
     await expect(fullscreen).toHaveAccessibleName(task.title);
+    await expect(fullscreen.locator('.locale-preference')).toHaveCount(0);
+    await expect(fullscreen.locator('.locale-notice')).toHaveCount(0);
     expect(await visibleState()).toEqual(expandedState);
     await expect(expansion).toHaveAccessibleName('Expand 11 successor tasks and 11 dependencies');
     await expect(page.locator('.graph-reset-overview')).toHaveText('Reset overview');
     await expect(viewport).toHaveAttribute('style', transform!);
+    expect(await taskElement.evaluate((element, id) => element === document.querySelector(`.react-flow__node[data-id="${id}"] button.task-node-body`), task.id)).toBe(true);
     expect(await viewportElement.evaluate((element) => element === document.querySelector('.react-flow__viewport'))).toBe(true);
-    expect(reads).toEqual(beforeSwitch);
+    expect(await page.locator('.task-dependency-edge path.react-flow__edge-path').evaluateAll((elements) => elements.map((element) => element.getAttribute('d')))).toEqual(paths);
+    expect(reads).toEqual(beforeFullscreen);
     await details(page, task.id).click();
     const dialog = page.locator('.task-detail-dialog');
     await expect(dialog.locator('.task-detail-title')).toHaveText(task.title);
@@ -191,15 +188,6 @@ test.describe('Web language journeys', () => {
     await pagination.selectOption('1');
     await expect(dialog.locator('.task-detail-pr-title')).toHaveText(['原始 PR 101']);
     const attachments = dialog.locator('.task-attachments');
-    const changeDetailLanguage = async (locale: 'en' | 'zh-CN'): Promise<void> => {
-      await (await attachmentFileActions(attachments, htmlPath)).click();
-      await page.getByRole('menuitem', { name: /^(Delete|删除)$/, exact: true }).click();
-      const confirmation = dialog.locator('.attachment-delete-dialog');
-      await expect(confirmation).toContainText(htmlPath);
-      await language(confirmation).selectOption(locale);
-      await confirmation.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true }).click();
-      await expect(confirmation).toBeHidden();
-    };
     await expect(dialog.locator('.task-detail-header').getByRole('combobox')).toHaveCount(0);
     await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
     await (await attachmentFileButton(attachments, htmlPath)).click();
@@ -216,7 +204,7 @@ test.describe('Web language journeys', () => {
     const inputElement = await fileInput.elementHandle();
     if (frameElement === null || inputElement === null) throw new Error('Attachment elements are absent.');
     // A permission read after preview focus can await cache admission after HTTP completion.
-    // Settle readiness around the controlled focus observation before measuring locale-only requests.
+    // Settle readiness around the controlled focus observation before measuring tab-switch requests.
     const projectSettingsLink = page.locator(`.project-title-actions a[href="/projects/${project.id}/settings"]`);
     await expect(projectSettingsLink).toHaveCount(1);
     const accessUrl = new URL(`/api/v1/projects/${project.id}/access`, baseURL).href;
@@ -226,20 +214,23 @@ test.describe('Web language journeys', () => {
     expect(accessResponse.status()).toBe(200);
     expect(await accessResponse.finished()).toBeNull();
     await expect(projectSettingsLink).toHaveCount(1);
-    const beforeModalSwitch = [...reads];
-    await changeDetailLanguage('zh-CN');
-    await dialog.getByRole('tab', { name: '概览', exact: true }).click();
-    await expect(dialog.getByRole('combobox', { name: '关联 PR 页码', exact: true })).toHaveValue('1');
+    await expect(attachments.locator('.managed-session-records')).toHaveCount(0);
+    const beforeTabSwitch = [...reads];
+    await dialog.getByRole('tab', { name: 'Overview', exact: true }).click();
+    await expect(dialog.getByRole('combobox', { name: 'Linked PR page', exact: true })).toHaveValue('1');
     await expect(dialog.locator('.task-detail-pr-title')).toHaveText(['原始 PR 101']);
-    await dialog.getByRole('tab', { name: '附件', exact: true }).click();
-    await expect(frame).toHaveAttribute('title', `HTML 预览：${htmlPath}`);
+    const historyUrl = new URL(`/api/v1/projects/${project.id}/tasks/${task.id}/sessions?limit=50`, baseURL).href;
+    const historyResponse = page.waitForResponse(response => response.url() === historyUrl && response.request().method() === 'GET');
+    await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
+    expect((await historyResponse).status()).toBe(200);
+    await expect(frame).toHaveAttribute('title', `HTML preview: ${htmlPath}`);
     await expect(frame).toHaveAttribute('src', attachmentPreviewUrl(project.id, task.id, htmlPath));
     expect(await frameElement.evaluate((element) => element === document.querySelector('.task-attachments iframe'))).toBe(true);
     await expect(frame.contentFrame().locator('#counter')).toHaveText('1');
     expect(await inputElement.evaluate((element) => element === document.querySelector('.task-attachments input[type=file]'))).toBe(true);
     expect(await fileInput.evaluate((element) => (element as HTMLInputElement).files?.[0]?.name)).toBe('original.txt');
     await expect(pathInput).toHaveValue(uploadPath);
-    expect(reads).toEqual(beforeModalSwitch);
+    expect(reads).toEqual([...beforeTabSwitch, `GET ${historyUrl}`]);
 
     let hold: { readonly method: 'PUT' | 'DELETE'; readonly started: ReturnType<typeof deferred>; readonly release: ReturnType<typeof deferred> } | null = null;
     await page.route(uploadUrl, async (route) => {
@@ -250,29 +241,28 @@ test.describe('Web language journeys', () => {
       }
       await route.continue();
     });
-    const write = async (method: 'PUT' | 'DELETE', locale: 'en' | 'zh-CN', expectedStatus: number): Promise<void> => {
-      if (method === 'PUT') await changeDetailLanguage(locale);
+    const write = async (method: 'PUT' | 'DELETE', expectedStatus: number): Promise<void> => {
       const current = { method, started: deferred(), release: deferred() };
       hold = current;
       const response = page.waitForResponse((response) => response.url() === uploadUrl && response.request().method() === method);
       const confirmation = dialog.locator('.attachment-delete-dialog');
       if (method === 'PUT') await attachments.locator('button[type=submit]').click();
       else {
-        const english = await page.locator('html').getAttribute('lang') === 'en';
         await (await attachmentFileActions(attachments, uploadPath)).click();
-        await page.getByRole('menuitem', { name: english ? 'Delete' : '删除', exact: true }).click();
+        await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
         await expect(confirmation).toContainText(uploadPath);
-        await confirmation.getByRole('button', { name: english ? 'Delete attachment' : '删除附件', exact: true }).click();
+        await confirmation.getByRole('button', { name: 'Delete attachment', exact: true }).click();
       }
       try {
         await within(current.started.promise, `pending ${method}`);
         const pendingReads = [...reads];
         const selectedPath = await attachments.locator('.attachment-preview h5').textContent();
         if (method === 'DELETE') {
-          await language(confirmation).selectOption(locale);
-          await expect(confirmation).toHaveAccessibleName(locale === 'en' ? 'Delete attachment?' : '删除附件？');
+          await expect(language(confirmation)).toHaveCount(0);
+          await expect(confirmation.locator('.locale-notice')).toHaveCount(0);
+          await expect(confirmation).toHaveAccessibleName('Delete attachment?');
           await expect(confirmation).toContainText(uploadPath);
-          await expect(confirmation.getByRole('button', { name: locale === 'en' ? 'Deleting…' : '正在删除…', exact: true })).toBeDisabled();
+          await expect(confirmation.getByRole('button', { name: 'Deleting…', exact: true })).toBeDisabled();
         }
         await expect(attachments.locator('button[type=submit]')).toBeDisabled();
         await expect(pathInput).toBeDisabled();
@@ -285,20 +275,20 @@ test.describe('Web language journeys', () => {
       } finally { current.release.resolve(); }
       expect((await response).status()).toBe(expectedStatus);
       hold = null;
-      await expect(attachments.locator('button[type=submit]')).toHaveText(locale === 'en' ? 'Upload file' : '上传文件');
+      await expect(attachments.locator('button[type=submit]')).toHaveText('Upload file');
       if (method === 'PUT') {
         await expect(pathInput).toHaveValue('');
         expect(await fileInput.evaluate((element) => (element as HTMLInputElement).files?.length)).toBe(0);
       }
     };
-    await write('PUT', 'en', 201);
+    await write('PUT', 201);
     await expect(attachments.getByRole('heading', { name: uploadPath, exact: true })).toBeVisible();
     await expect(attachments.locator('pre')).toHaveText('First 原始 bytes\n');
     await fileInput.setInputFiles({ name: 'replacement.txt', mimeType: 'text/plain', buffer: Buffer.from('Replacement 原始 bytes\n') });
     await pathInput.fill(uploadPath);
-    await write('PUT', 'zh-CN', 200);
+    await write('PUT', 200);
     await expect(attachments.locator('pre')).toHaveText('Replacement 原始 bytes\n');
-    await write('DELETE', 'en', 204);
+    await write('DELETE', 204);
     await expect(attachments.locator('.attachment-preview')).toHaveCount(0);
     const listed = await request.get(`/api/v1/projects/${project.id}/tasks/${task.id}/attachments`);
     expect(listed.status()).toBe(200);
@@ -360,7 +350,7 @@ test.describe('Web language journeys', () => {
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.locale'))).toBe('en');
 
     const project = await createProject(request, { name: `Narrow 原始项目 ${randomUUID()}` });
-    const task = await createTask(request, project.id, { title: 'Narrow 原始任务', description: '原始描述 Raw description\n'.repeat(100) });
+    const task = await createTask(request, project.id, { title: `Narrow 原始任务 ${'很长的任务标题 Long title '.repeat(12)}`, description: '原始描述 Raw description\n'.repeat(100) });
     await createTask(request, project.id, { title: '后续 Raw successor', dependsOn: [task.id] });
     const seed = await request.put(attachmentDownloadUrl(project.id, task.id, '原始.txt'), { headers: { 'content-type': 'text/plain' }, data: '原始附件 Raw attachment\n' });
     expect(seed.status()).toBe(201);
@@ -387,47 +377,86 @@ test.describe('Web language journeys', () => {
     await page.getByRole('button', { name: '重试刷新', exact: true }).click();
     await expect(page.locator('.snapshot-error')).toHaveCount(0);
     await page.clock.resume();
-    await openChain(page, task.id);
+    const workspaceLanguage = language(page.locator('.topbar'));
+    await workspaceLanguage.selectOption('en');
+    await workspaceLanguage.focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(workspaceLanguage).toHaveValue('zh-CN');
+    await expect(workspaceLanguage).toBeFocused();
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.locale'))).toBe('zh-CN');
+    await page.keyboard.press('ArrowUp');
+    await expect(workspaceLanguage).toHaveValue('en');
+    await expect(workspaceLanguage).toBeFocused();
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.locale'))).toBe('en');
     for (const locale of ['en', 'zh-CN'] as const) {
-      await language(page.locator('.task-chain-dialog')).selectOption(locale);
+      await language(page.locator('.topbar')).selectOption(locale);
       for (const width of [1440, 320]) {
         await page.setViewportSize({ width, height: 800 });
+        await expectLanguageLayout(language(page.locator('.topbar')));
         await expectPageWidth(page);
-        const horizontal = page.getByRole('radio', { name: locale === 'en' ? 'Horizontal' : '水平', exact: true });
-        const vertical = page.getByRole('radio', { name: locale === 'en' ? 'Vertical' : '垂直', exact: true });
-        await expect(horizontal).toHaveAttribute('aria-checked', 'true');
-        await horizontal.focus(); await page.keyboard.press('ArrowRight');
-        await expect(vertical).toBeFocused(); await expect(vertical).toHaveAttribute('aria-checked', 'true');
-        for (const control of [horizontal, vertical, page.locator('.graph-fullscreen-toggle'), page.locator('.graph-reset-overview')]) {
-          const bounds = await control.boundingBox();
-          expect(bounds).not.toBeNull();
-          const dialogBounds = await page.locator('.task-chain-dialog').boundingBox();
-          expect(dialogBounds).not.toBeNull();
-          expect(bounds!.x).toBeGreaterThanOrEqual(dialogBounds!.x);
-          expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(dialogBounds!.x + dialogBounds!.width);
-        }
-        await expectPageWidth(page);
-        const fullscreenToggle = page.locator('.graph-fullscreen-toggle');
-        await expect(fullscreenToggle).toBeVisible();
-        const selected = await inspectTask(page, task.id).getAttribute('aria-pressed');
-        await fullscreenToggle.click();
-        const fullscreen = page.locator('.task-chain-dialog-fullscreen');
-        await expect(vertical).toHaveAttribute('aria-checked', 'true');
+        await screenshot(page, info, `language-selector-workspace-${locale}-${width}`);
+      }
+    }
+    for (const locale of ['en', 'zh-CN'] as const) {
+      for (const width of [1440, 320]) {
+        await page.setViewportSize({ width, height: 800 });
         await page.evaluate(() => {
           (window as unknown as { localeStorageFault: { value: string | null } }).localeStorageFault.value = 'write';
         });
-        await language(fullscreen).selectOption(locale);
-        const notice = fullscreen.locator('.locale-notice');
-        await expect(notice).toContainText(locale === 'en' ? 'The language could not be saved.' : '语言无法保存到浏览器');
-        const controls = fullscreen.locator('.react-flow__controls');
-        const noticeBounds = await notice.boundingBox();
-        const controlsBounds = await controls.boundingBox();
-        if (noticeBounds === null || controlsBounds === null) throw new Error('Fullscreen language notice or viewport controls are absent.');
-        expect(noticeBounds.x + noticeBounds.width <= controlsBounds.x
-          || controlsBounds.x + controlsBounds.width <= noticeBounds.x
-          || noticeBounds.y + noticeBounds.height <= controlsBounds.y
-          || controlsBounds.y + controlsBounds.height <= noticeBounds.y).toBe(true);
-        const viewport = fullscreen.locator('.react-flow__viewport');
+        await language(page.locator('.topbar')).selectOption(locale);
+        const pageNotice = page.locator('.topbar .locale-notice');
+        await expect(pageNotice).toContainText(locale === 'en' ? 'The language could not be saved.' : '语言无法保存到浏览器');
+        await openChain(page, task.id);
+        const graphDialog = page.locator('.task-chain-dialog');
+        const fullscreenToggle = graphDialog.locator('.graph-fullscreen-toggle');
+        const viewport = graphDialog.locator('.react-flow__viewport');
+        const graphElement = await graphDialog.elementHandle();
+        const viewportElement = await viewport.elementHandle();
+        if (graphElement === null || viewportElement === null) throw new Error('Graph elements are absent.');
+        await inspectTask(page, task.id).click();
+        await expect(inspectTask(page, task.id)).toHaveAttribute('aria-pressed', 'true');
+        const horizontal = graphDialog.getByRole('radio', { name: locale === 'en' ? 'Horizontal' : '水平', exact: true });
+        const vertical = graphDialog.getByRole('radio', { name: locale === 'en' ? 'Vertical' : '垂直', exact: true });
+        await expect(horizontal).toHaveAttribute('aria-checked', 'true');
+        await horizontal.focus(); await page.keyboard.press('ArrowRight');
+        await expect(vertical).toBeFocused(); await expect(vertical).toHaveAttribute('aria-checked', 'true');
+        await expect(inspectTask(page, task.id)).toHaveAttribute('aria-pressed', 'true');
+        for (const control of [horizontal, vertical, fullscreenToggle, graphDialog.locator('.graph-reset-overview')]) {
+          const bounds = await control.boundingBox();
+          const dialogBounds = await graphDialog.boundingBox();
+          expect(bounds).not.toBeNull(); expect(dialogBounds).not.toBeNull();
+          expect(bounds!.x).toBeGreaterThanOrEqual(dialogBounds!.x);
+          expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(dialogBounds!.x + dialogBounds!.width);
+        }
+        const transform = await viewport.getAttribute('style');
+        const checkGraphLayout = async (): Promise<void> => {
+          await expect(graphDialog.locator('.locale-preference')).toHaveCount(0);
+          await expect(graphDialog.locator('.locale-notice')).toHaveCount(0);
+          await expect(graphDialog.locator('.task-chain-heading h2')).toBeInViewport({ ratio: 1 });
+          await expect(graphDialog.locator('.task-chain-close')).toBeInViewport({ ratio: 1 });
+          await expect(fullscreenToggle).toBeInViewport({ ratio: 1 });
+          expect(await graphDialog.locator('.task-chain-header').evaluate((header) => {
+            const heading = header.querySelector<HTMLElement>('.task-chain-heading')!.getBoundingClientRect();
+            const close = header.querySelector<HTMLElement>('.task-chain-close')!.getBoundingClientRect();
+            const bounds = header.getBoundingClientRect();
+            return heading.width > 0 && heading.right <= close.left && close.right <= bounds.right
+              && Math.abs(heading.top - close.top) < heading.height && bounds.right - close.right <= 24;
+          })).toBe(true);
+          expect(await graphDialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+          await expectPageWidth(page);
+        };
+        await checkGraphLayout();
+        await fullscreenToggle.click();
+        const fullscreen = page.locator('.task-chain-dialog-fullscreen');
+        await expect(fullscreen).toHaveCount(1);
+        await expect(vertical).toHaveAttribute('aria-checked', 'true');
+        await expect(fullscreenToggle).toBeFocused();
+        expect(await graphElement.evaluate((element) => element === document.querySelector('.task-chain-dialog'))).toBe(true);
+        expect(await viewportElement.evaluate((element) => element === document.querySelector('.react-flow__viewport'))).toBe(true);
+        await expect(viewport).toHaveAttribute('style', transform!);
+        await expect(inspectTask(page, task.id)).toHaveAttribute('aria-pressed', 'true');
+        await checkGraphLayout();
+        await screenshot(page, info, `language-graph-${locale}-${width}`);
         const zoom = () => viewport.evaluate((element) => new DOMMatrixReadOnly(getComputedStyle(element).transform).a);
         const initialZoom = await zoom();
         await fullscreen.getByRole('button', { name: locale === 'en' ? 'Zoom in' : '放大', exact: true }).click();
@@ -441,23 +470,16 @@ test.describe('Web language journeys', () => {
         await fullscreen.getByRole('button', { name: locale === 'en' ? 'Fit to canvas' : '适应画布', exact: true }).click();
         await expect(viewport).not.toHaveAttribute('style', beforeFit!);
         const fitted = await viewport.getAttribute('style');
-        await expect(notice).toBeVisible();
-        const retrySave = notice.getByRole('button', { name: locale === 'en' ? 'Retry saving language' : '重试保存语言', exact: true });
-        await retrySave.click();
-        await expect(notice).toBeVisible();
-        await clearFault();
-        await retrySave.click();
-        await expect(notice).toHaveCount(0);
-        expect(await page.evaluate(() => localStorage.getItem('daynight.web.locale'))).toBe(locale);
         await fullscreenToggle.focus();
-        await expect(fullscreenToggle).toBeFocused();
         await page.keyboard.press('Escape');
         await expect(fullscreen).toHaveCount(0);
         await expect(fullscreenToggle).toBeFocused();
-        await expect(page.locator('.react-flow__viewport')).toHaveAttribute('style', fitted!);
-        await expect(inspectTask(page, task.id)).toHaveAttribute('aria-pressed', selected!);
+        await expect(viewport).toHaveAttribute('style', fitted!);
+        await expect(inspectTask(page, task.id)).toHaveAttribute('aria-pressed', 'true');
+        await checkGraphLayout();
         await vertical.focus(); await page.keyboard.press('ArrowLeft');
         await expect(horizontal).toBeFocused(); await expect(horizontal).toHaveAttribute('aria-checked', 'true');
+        await expect(inspectTask(page, task.id)).toHaveAttribute('aria-pressed', 'true');
         await details(page, task.id).click();
         const dialog = page.locator('.task-detail-dialog');
         await expect(dialog.locator('.task-detail-title')).toHaveText(task.title);
@@ -473,6 +495,16 @@ test.describe('Web language journeys', () => {
         await page.keyboard.press('Escape');
         await expect(dialog).toHaveCount(0);
         await expect(details(page, task.id)).toBeFocused();
+        await page.keyboard.press('Escape');
+        await expect(graphDialog).toHaveCount(0);
+        await expect(page.locator(`#task-chain-graph-${task.id}`)).toBeFocused();
+        await expect(pageNotice).toBeVisible();
+        await clearFault();
+        await pageNotice.getByRole('button', { name: locale === 'en' ? 'Retry saving language' : '重试保存语言', exact: true }).click();
+        await expect(pageNotice).toHaveCount(0);
+        expect(await page.evaluate(() => localStorage.getItem('daynight.web.locale'))).toBe(locale);
+        await graphElement.dispose();
+        await viewportElement.dispose();
       }
     }
   });

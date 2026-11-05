@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -15,26 +17,27 @@ type Workers struct{ store *store.Store }
 func NewWorkers(database *store.Store) *Workers { return &Workers{store: database} }
 
 type WorkerReportResult struct {
+	Configuration  *model.WorkerConfigurationReceipt
 	ObservedAt     time.Time
 	LastReportedAt time.Time
 }
 
 type WorkerPage struct {
 	ObservedAt time.Time
-	Items      []core.WorkerSnapshot
+	Items      []model.WorkerSnapshot
 	NextCursor *string
 }
 
 type WorkerDetailResult struct {
 	ObservedAt time.Time
-	Worker     core.WorkerSnapshot
+	Worker     model.WorkerSnapshot
 }
 
-func (s *Workers) Report(ctx context.Context, principal core.Principal, workerID string, input core.WorkerReport) (WorkerReportResult, error) {
-	if err := requirePrincipal(principal); err != nil {
+func (s *Workers) Report(ctx context.Context, principal model.Principal, workerID string, input model.WorkerReport) (WorkerReportResult, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return WorkerReportResult{}, err
 	}
-	workerID, err := CanonicalID(workerID)
+	workerID, err := model.CanonicalID(workerID)
 	if err != nil {
 		return WorkerReportResult{}, err
 	}
@@ -42,54 +45,70 @@ func (s *Workers) Report(ctx context.Context, principal core.Principal, workerID
 	if err != nil {
 		return WorkerReportResult{}, err
 	}
+	if input.Configuration != nil {
+		raw, marshalErr := json.Marshal(input.Configuration)
+		if marshalErr != nil {
+			return WorkerReportResult{}, invalidInput("Worker configuration exchange is invalid.")
+		}
+		input.Configuration, err = ParseWorkerConfigurationExchange(raw)
+		if err != nil {
+			return WorkerReportResult{}, err
+		}
+	}
 	var result WorkerReportResult
 	err = s.store.WriteWorker(ctx, func(tx *store.WorkerTx) error {
 		observedAt, err := tx.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
-		observation := core.WorkerTaskObservation{State: core.WorkerTasksUnavailable, Items: []core.WorkerObservedTask{}}
+		observation := model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}
 		if input.TaskInventory != nil {
 			items, err := tx.ReportTaskSnapshots(ctx, principal.UserID, workerID, *input.TaskInventory)
 			if err != nil {
 				return err
 			}
-			observation = core.WorkerTaskObservation{State: core.WorkerTasksObserved, ObservedAt: &observedAt,
+			observation = model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &observedAt,
 				InventoryObservedAt: &input.TaskInventory.ObservedAt, Items: items}
 		}
-		stored, err := tx.UpsertWorker(ctx, core.WorkerSnapshot{UserID: principal.UserID, WorkerID: workerID,
+		stored, err := tx.UpsertWorker(ctx, model.WorkerSnapshot{UserID: principal.UserID, WorkerID: workerID,
 			CreatedAt: observedAt, LastReportedAt: observedAt, Telemetry: input.Telemetry, TaskSnapshot: observation})
 		if err != nil {
 			return err
+		}
+		if input.Configuration != nil {
+			result.Configuration, err = exchangeWorkerConfiguration(ctx, tx, principal, workerID, *input.Configuration)
+			if err != nil {
+				return err
+			}
 		}
 		result.LastReportedAt = stored.LastReportedAt
 		result.ObservedAt, err = tx.ObservedAt(ctx)
 		return err
 	})
 	if err != nil {
-		return WorkerReportResult{}, fmt.Errorf("report worker: %w", err)
+		return WorkerReportResult{}, workerConfigurationError("report worker", err)
 	}
 	return result, nil
 }
 
-func (s *Workers) List(ctx context.Context, principal core.Principal, request PageRequest) (WorkerPage, error) {
-	if err := requirePrincipal(principal); err != nil {
+func (s *Workers) List(ctx context.Context, principal model.Principal, request model.PageRequest) (WorkerPage, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return WorkerPage{}, err
 	}
-	scope := listScope{Kind: "workers", WorkerUserID: &principal.UserID}
-	page, err := listPage(request, scope)
+	scope := query.ListScope{Kind: "workers", WorkerUserID: &principal.UserID}
+	page, err := query.ListPage(request, scope)
 	if err != nil {
 		return WorkerPage{}, err
 	}
 	var result WorkerPage
 	var records store.WorkerPage
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
-		records, err = snapshot.Workers(ctx, principal.UserID, result.ObservedAt, page)
+		records, err = snapshot.WorkerDAO().Workers(ctx, principal.UserID, result.ObservedAt, page)
 		return err
 	})
 	if err != nil {
@@ -98,7 +117,7 @@ func (s *Workers) List(ctx context.Context, principal core.Principal, request Pa
 	result.Items = records.Items
 	if records.HasMore {
 		last := records.Items[len(records.Items)-1]
-		cursor, err := encodeListCursor(scope, last.CreatedAt, last.WorkerID)
+		cursor, err := query.EncodeListCursor(scope, last.CreatedAt, last.WorkerID)
 		if err != nil {
 			return WorkerPage{}, fmt.Errorf("encode worker cursor: %w", err)
 		}
@@ -107,25 +126,25 @@ func (s *Workers) List(ctx context.Context, principal core.Principal, request Pa
 	return result, nil
 }
 
-func (s *Workers) Get(ctx context.Context, principal core.Principal, workerID string) (WorkerDetailResult, error) {
-	if err := requirePrincipal(principal); err != nil {
+func (s *Workers) Get(ctx context.Context, principal model.Principal, workerID string) (WorkerDetailResult, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return WorkerDetailResult{}, err
 	}
-	workerID, err := CanonicalID(workerID)
+	workerID, err := model.CanonicalID(workerID)
 	if err != nil {
 		return WorkerDetailResult{}, err
 	}
 	var result WorkerDetailResult
-	var refusal *Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	var refusal *model.Fault
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
-		result.Worker, err = snapshot.Worker(ctx, principal.UserID, workerID, result.ObservedAt)
-		if errors.Is(err, core.ErrNotFound) {
-			refusal = &Fault{Code: "not_found", Message: "Worker was not found.", Cause: err}
+		result.Worker, err = snapshot.WorkerDAO().Worker(ctx, principal.UserID, workerID, result.ObservedAt)
+		if errors.Is(err, model.ErrNotFound) {
+			refusal = &model.Fault{Code: "not_found", Message: "Worker was not found.", Cause: err}
 			return nil
 		}
 		return err

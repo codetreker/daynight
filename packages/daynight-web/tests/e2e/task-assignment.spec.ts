@@ -4,6 +4,7 @@ import { parseTaskDetail } from '../../src/api/parse';
 import { authenticatedAPI, bearerContext, fulfillAuthenticatedResponse } from './authentication';
 import { createTask, expect, test, updateTask, type Task } from './fixtures';
 import { selectTaskList } from './project-view';
+import { mockPollingIntervals, shortPollingInterval } from './polling';
 
 test.use({ preparationFamily: 'task-controls' });
 
@@ -28,10 +29,10 @@ test('task-assignment', scenario, async ({ page, api, playwright, allowBrowserWr
     const project = controlProject;
     const aliceProfile = await (await api.get('/api/v1/me')).json() as { id: string; name: string };
     const bobProfile = await (await bob.get('/api/v1/me')).json() as { id: string; name: string };
-    const invitationResponse = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: {} });
+    const invitationResponse = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: { expectedUserId: aliceProfile.id } });
     expect(invitationResponse.status()).toBe(201);
     const invitation = await invitationResponse.json() as { link: string };
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitation.link).hash.slice(1) } })).status()).toBe(200);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitation.link).hash.slice(1), expectedUserId: bobProfile.id } })).status()).toBe(200);
     let task = await createTask(api, project.id, { title: 'Assignment preserves the complete task', description: 'The transaction changes ownership and disables automatic execution.' });
     const permission = await api.patch(taskPath(project.id, task.id), { data: { version: task.version, allowAgents: true } });
     expect(permission.status()).toBe(200); task = await permission.json() as Task;
@@ -72,6 +73,7 @@ test('task-assignment', scenario, async ({ page, api, playwright, allowBrowserWr
       await fulfillAuthenticatedResponse(route, response);
     });
     try {
+      await mockPollingIntervals(page, { taskSync: shortPollingInterval });
       await page.goto(`/projects/${project.id}`); await selectTaskList(page);
       await page.getByRole('tab', { name: /^(独立任务|Standalone tasks)$/, exact: true }).click();
       await page.locator(`#standalone-task-${task.id}`).click();

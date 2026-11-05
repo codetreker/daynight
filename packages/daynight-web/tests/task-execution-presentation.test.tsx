@@ -28,7 +28,7 @@ const graph: TaskGraphData = {
 const index = buildGraphIndex(graph);
 const snapshot = (elapsedMilliseconds: number, warningMinutes = 60): GraphSnapshot => ({
   graph: { ...graph, project: { ...graph.project, settings: { version: 1n, executionWarningMinutes: warningMinutes } } },
-  index, pausedTaskIds: new Set<string>(), observedAt: new Date(Date.parse(start) + elapsedMilliseconds).toISOString(), receivedAt: 0, receivedMonotonic: 0, revision: 1,
+  index, workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: new Date(Date.parse(start) + elapsedMilliseconds).toISOString(), receivedAt: 0, receivedMonotonic: 0, revision: 1,
 });
 const noop = () => {};
 const canvas = (value: GraphSnapshot) => <TaskExecutionClockProvider projectId="project" snapshot={value}>
@@ -103,7 +103,7 @@ describe("task execution presentation", () => {
     const rowIndex = buildGraphIndex(rowGraph);
     const ids = rows.map(({ id }) => id);
     const view = renderWithLocale(<TaskExecutionClockProvider projectId="project" snapshot={{ ...snapshot(30_000), graph: rowGraph, index: rowIndex }}>
-      <StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={rowIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} showAll onShowAllChange={noop} />
+      <StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={rowIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} />
     </TaskExecutionClockProvider>, { locale, taskCache: true });
     const running = document.getElementById("standalone-task-running")!;
     const completed = document.getElementById("standalone-task-completed")!;
@@ -145,7 +145,7 @@ describe("task execution presentation", () => {
     const manualIndex = buildGraphIndex(manualGraph);
     const content = (elapsed: number) => <TaskExecutionClockProvider projectId="project" snapshot={{ ...snapshot(elapsed), graph: manualGraph, index: manualIndex }}>
       <TaskGraph index={manualIndex} rootId="A" onOpenTask={noop} />
-      <StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={manualIndex} taskIds={["C"]} allTaskIds={["C"]} onSelectTask={noop} showAll onShowAllChange={noop} />
+      <StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={manualIndex} taskIds={["C"]} allTaskIds={["C"]} onSelectTask={noop} />
     </TaskExecutionClockProvider>;
     const view = renderWithLocale(content(3_601_000), { locale, taskCache: true });
     await waitFor(() => expect(view.container.querySelector(".task-node-in_progress")).not.toBeNull());
@@ -170,7 +170,7 @@ describe("task execution presentation", () => {
     const unknownIndex = buildGraphIndex({ ...graph, tasks: [task("unknown-running", { status: "in_progress" }), task("unknown-done", { completedAt: start })],
       summary: { ...graph.summary, total: 2, inProgress: 1, done: 1 } });
     const ids = ["unknown-running", "unknown-done"];
-    const view = renderWithLocale(<StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={unknownIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} showAll onShowAllChange={noop} />, { locale, taskCache: true });
+    const view = renderWithLocale(<StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={unknownIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} />, { locale, taskCache: true });
     expect(view.container.querySelector(".task-duration, .task-stuck-label")).toBeNull();
   });
 });

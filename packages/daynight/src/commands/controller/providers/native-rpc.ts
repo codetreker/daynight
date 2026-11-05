@@ -8,6 +8,10 @@ export const string = (value: unknown): string => typeof value === "string" ? va
 export class NativeRpcError extends Error {
   constructor(readonly code: number, message: string) { super(message); }
 }
+export class NativeRpcTimeoutError extends Error {
+  override readonly name = "NativeRpcTimeoutError";
+  constructor(readonly method: string) { super(`Native ${method} response timed out; result is unknown.`); }
+}
 export class NativeRpc {
   private readonly lines: Interface;
   private sequence = 0;
@@ -34,7 +38,7 @@ export class NativeRpc {
     if (this.closed) return Promise.reject(new Error("Native process is closed."));
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Native ${method} response timed out; result is unknown.`)); }, this.timeout);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new NativeRpcTimeoutError(method)); }, this.timeout);
       this.pending.set(id, { resolve, reject, timer });
       try { this.write({ id, method, params }); } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
     });

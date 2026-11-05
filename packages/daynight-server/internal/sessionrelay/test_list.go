@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -45,7 +45,7 @@ func testListCursor(value string, owner string, online bool) (testListPosition, 
 	return p, nil
 }
 
-func (s *Service) ListTest(ctx context.Context, p core.Principal, token string, limit int, online bool) (TestListPage, error) {
+func (s *Service) ListTest(ctx context.Context, p model.Principal, token string, limit int, online bool) (TestListPage, error) {
 	page := TestListPage{Items: []TestListItem{}}
 	if limit < 1 || limit > 100 {
 		return page, fault("invalid_input", "Test session list limit must be between 1 and 100.")
@@ -68,7 +68,7 @@ func (s *Service) ListTest(ctx context.Context, p core.Principal, token string, 
 		query := `SELECT ts.snapshot,ts.created_at,recent.updated_at,ts.last_seen,ts.draining_until
  FROM task_sessions ts
  CROSS JOIN LATERAL (SELECT GREATEST(ts.created_at,COALESCE(ts.last_seen,ts.created_at)) AS updated_at) recent
- WHERE ts.scope='test' AND ts.owner_user_id=$1
+ WHERE ts.scope='test' AND ts.bot_id IS NULL AND ts.owner_user_id=$1
  AND (ts.parent_credential_id IS NULL OR EXISTS (SELECT 1 FROM personal_access_tokens pat WHERE pat.id=ts.parent_credential_id AND pat.user_id=$1 AND (pat.expires_at IS NULL OR pat.expires_at>$2) FOR SHARE))
  AND (NOT $4::boolean OR (
  ts.snapshot->>'lifecycle'='active' AND ts.last_seen >= $5::timestamptz AND ts.connection_expires_at>$2

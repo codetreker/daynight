@@ -39,8 +39,8 @@ const indexOf = (items = seeds): GraphIndex => {
   return buildGraphIndex(graph);
 };
 const noop = () => {};
-const list = (index: GraphIndex, onOpenTask = noop) => <ChainList projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
-  openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
+const list = (index: GraphIndex, onOpenTask = noop) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+  openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />;
 const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
 
@@ -54,10 +54,10 @@ describe('Goal task lists', () => {
     expect(disclosure()).toHaveAttribute('aria-controls', children().id);
     const rows = within(children()).getAllByRole('button', { name: /已完成|进行中|待处理/ });
     expect(rows.map((row) => row.querySelector('.root-title')!.textContent)).toEqual(['Implementation', 'Acceptance', 'Other root']);
-    expect(rows.map((row) => row.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
+    expect(rows.map((row) => row.closest('.goal-task-row')!.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
     expect(rows.map((row) => row.getAttribute('data-task-status'))).toEqual(['in_progress', 'todo', 'done']);
     expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'in_progress');
-    expect(rows[1]).toHaveTextContent('被阻塞');
+    expect(rows[1]!.closest('.goal-task-row')).toHaveTextContent('被阻塞');
     expect(within(children()).queryByText('External')).toBeNull();
     expect(within(children()).queryByText('Standalone')).toBeNull();
     expect(disclosure().querySelector('.root-progress-label')).toHaveTextContent('2/4 已完成');
@@ -77,7 +77,7 @@ describe('Goal task lists', () => {
     expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^1 进行中$/);
     view.rerender(list(indexOf(remaining.map((item) => item.id === 'Goal' ? { ...item, status: 'done' as const } : item))));
     expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^0 进行中$/);
-    expect(disclosure().querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(disclosure().parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
     view.setLocale('en');
     expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^0 in progress$/);
   });
@@ -150,9 +150,9 @@ describe('Goal task lists', () => {
     const index = indexOf();
     const Wrapper = () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
-      return <ChainList projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
         openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)}
-        onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
+        onOpenTask={onOpenTask} />;
     };
     render(<Wrapper />);
     const graph = screen.getByRole('button', { name: 'Goal，查看依赖关系' });

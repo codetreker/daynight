@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphTask, TaskDetail, TaskGraph } from "../src/api/types";
 import { ApiError, setTaskStatus, getTask, getTaskSync } from "../src/api/client";
 import { useTaskGraph } from "../src/features/projects/useTaskGraph";
+import { pollingIntervalsKey } from "../src/app/polling";
 import { useTaskDetail } from "../src/features/task-detail/useTaskDetail";
 import { TaskDetailSessionBoundary } from "../src/features/task-detail/TaskDetailSession";
 import { isTaskStale, taskDescriptor, taskReviewKey } from "../src/features/task-detail/freshness";
@@ -63,6 +64,24 @@ beforeEach(() => {
 beforeEach(() => { graphRequest.mockReset(); detailRequest.mockReset(); vi.mocked(setTaskStatus).mockReset(); });
 
 describe("task graph snapshots", () => {
+  it("uses the mocked polling period while retaining the ordinary automatic sync path", async () => {
+    Reflect.set(globalThis, Symbol.for(pollingIntervalsKey), { taskSync: 100 });
+    try {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+      graphRequest.mockResolvedValue(graph());
+      const { result } = renderHook(() => useTaskGraph(projectId));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      const first = result.current.snapshot!;
+      await act(async () => { await vi.advanceTimersByTimeAsync(99); });
+      expect(graphRequest).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      await waitFor(() => expect(result.current.snapshot!.revision).toBeGreaterThan(first.revision));
+      expect(graphRequest).toHaveBeenCalledTimes(2);
+      expect(result.current.snapshot!.graph).toBe(first.graph);
+      expect(result.current.snapshot!.index).toBe(first.index);
+    } finally { Reflect.deleteProperty(globalThis, Symbol.for(pollingIntervalsKey)); }
+  });
+
   it("publishes marker-only changes as task data while clock-only samples preserve the new graph and index", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     const initial: TaskGraph = { ...graph(), tasks: [
@@ -754,4 +773,36 @@ describe("detail freshness", () => {
     const title = "😀".repeat(161);
     expect(isTaskStale({ ...node, titlePreview: "😀".repeat(160), titleTruncated: true }, { ...detail, title })).toBe(false);
   });
+});
+
+it('publishes the matching claim through sync, removes it on later updates, and fences old project responses', async () => {
+  const claim = (name: string, state: 'active' | 'released' | 'completed') => ({ claimId: '00000000-0000-4000-8000-000000000101', state, userId: '00000000-0000-4000-8000-000000000102', workerId: '00000000-0000-4000-8000-000000000103', machine: { id: '00000000-0000-4000-8000-000000000104', name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: '00000000-0000-4000-8000-000000000105', phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
+  let properties: TaskDetail['properties'] = {};
+  const fixture = createGraphSyncFixture({ propertiesForTask: (_task, project) => project === projectId ? properties : {} });
+  vi.mocked(getTaskSync).mockImplementation(async (id, query) => fixture.toSync(graph(id), query));
+  const { result, rerender } = renderHook(({ id }) => useTaskGraph(id), { initialProps: { id: projectId } });
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.size).toBe(0));
+  expect(getTaskSync).toHaveBeenCalledTimes(1); expect(detailRequest).not.toHaveBeenCalled();
+  properties = { worker: claim('first machine', 'active') };
+  act(() => result.current.refresh());
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.get(taskId)?.machine.name).toBe('first machine'));
+  properties = { worker: claim('finished machine', 'completed') };
+  act(() => result.current.refresh());
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.get(taskId)).toMatchObject({ state: 'completed', machine: { name: 'finished machine' } }));
+  properties = {};
+  act(() => result.current.refresh());
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.has(taskId)).toBe(false));
+  expect(getTaskSync).toHaveBeenCalledTimes(4); expect(detailRequest).not.toHaveBeenCalled();
+  const old = deferred<ReturnType<typeof fixture.toSync>>();
+  vi.mocked(getTaskSync).mockReturnValueOnce(old.promise);
+  act(() => result.current.refresh());
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(5));
+  rerender({ id: otherProject });
+  await waitFor(() => expect(result.current.snapshot?.graph.project.id).toBe(otherProject));
+  expect(result.current.snapshot?.workerMachines.size).toBe(0);
+  properties = { worker: claim('late private machine', 'active') };
+  await act(async () => { old.resolve(fixture.toSync(graph(), {})); });
+  expect(result.current.snapshot?.graph.project.id).toBe(otherProject);
+  expect(result.current.snapshot?.workerMachines.size).toBe(0);
+  expect(detailRequest).not.toHaveBeenCalled();
 });

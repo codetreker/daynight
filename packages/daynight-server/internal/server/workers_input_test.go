@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/google/uuid"
 )
 
@@ -21,7 +21,7 @@ func workerSnapshotReportBody() map[string]any {
 }
 
 func TestWorkerReportStrictInputObjects(t *testing.T) {
-	for _, key := range workerReportFields {
+	for _, key := range workerRequiredReportFields {
 		body := workerSnapshotReportBody()
 		delete(body, key)
 		fields, err := jsonobject.Decode([]byte(jsonBody(t, body)), "report", workerReportFields...)

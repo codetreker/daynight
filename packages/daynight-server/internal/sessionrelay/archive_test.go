@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
 
@@ -131,7 +131,7 @@ func TestArchiveStorageFailureAndIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := v.SessionID + "/" + *status.SHA256 + ".json"
+	path := "projects/" + f.project + "/" + v.SessionID[:2] + "/" + v.SessionID + "/" + *status.SHA256 + ".json"
 	if _, err = storage.Put(ctx, archiveBucket, path, strings.NewReader("corrupt")); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestArchiveUploadFencingAndOwner(t *testing.T) {
 	if _, err = f.s.PutArchive(ctx, wrong, f.project, f.task, v.SessionID, data); err == nil {
 		t.Fatal("wrong owner")
 	}
-	if err = archiveWriter(core.Principal{Kind: core.SessionCredential, UserID: f.p.UserID}, &record{Owner: f.p.UserID}, v.Fence, "", ""); err == nil {
+	if err = archiveWriter(model.Principal{Kind: model.SessionCredential, UserID: f.p.UserID}, &record{Owner: f.p.UserID}, v.Fence, "", ""); err == nil {
 		t.Fatal("browser uploader")
 	}
 }
@@ -204,6 +204,14 @@ func TestStandaloneArchiveAfterStop(t *testing.T) {
 	if _, err = f.s.PutArchive(ctx, f.p, "", "", v.SessionID, data); err != nil {
 		t.Fatal(err)
 	}
+	var physicalPath string
+	if err = f.s.DB.Pool.QueryRow(ctx, `SELECT object_path FROM session_archives WHERE session_id=$1`, v.SessionID).Scan(&physicalPath); err != nil {
+		t.Fatal(err)
+	}
+	expected := "users/" + f.p.UserID + "/" + v.SessionID[:2] + "/" + v.SessionID + "/"
+	if !strings.HasPrefix(physicalPath, expected) {
+		t.Fatalf("standalone archive is outside its user's shard: %s", physicalPath)
+	}
 	if _, err = f.s.ArchiveContent(ctx, f.p, "", "", v.SessionID); err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +227,7 @@ func TestArchiveMemberCanReadButCannotPublish(t *testing.T) {
 	f, v, data := archiveFixture(t)
 	ctx := context.Background()
 	archiveTerminal(t, f)
-	member := core.Principal{Kind: core.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	member := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 	for _, statement := range []struct {
 		sql  string
 		args []any

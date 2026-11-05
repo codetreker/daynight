@@ -2,11 +2,12 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -17,12 +18,12 @@ type ProjectTx struct {
 
 type TaskWrite struct {
 	AssignedTo        *string
-	RequiredPlatform  *core.TaskPlatform
+	RequiredPlatform  *model.TaskPlatform
 	AllowAgents       bool
 	Title             string
 	Description       string
-	Properties        core.TaskProperties
-	Status            core.TaskStatus
+	Properties        model.TaskProperties
+	Status            model.TaskStatus
 	DependsOn         []string
 	ExternalDependsOn []string
 }
@@ -32,10 +33,10 @@ type DependencyReplacement struct {
 	DependsOn []string
 }
 
-func (s *Store) WriteProject(ctx context.Context, projectID string, operation func(*ProjectTx) error) error {
+func (s *Store) WriteProject(ctx context.Context, projectID string, operation func(ProjectWriteScope) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return queryError("begin project write", err)
+		return Completion{Outcome: TransactionNotCommitted}, queryError("begin project write", err)
 	}
 	err = transact(ctx, tx, func(tx pgx.Tx) error {
 		var id string
@@ -44,21 +45,22 @@ func (s *Store) WriteProject(ctx context.Context, projectID string, operation fu
 		}
 		return operation(&ProjectTx{tx: tx, projectID: projectID})
 	})
-	if err != nil {
-		return queryError("project write", err)
-	}
-	return nil
+	return teamCompletion("project write", err)
 }
 
-func (tx *ProjectTx) Task(ctx context.Context, id string) (core.Task, error) {
+func (tx *ProjectTx) ProjectDAO() ProjectWriteDAO   { return tx }
+func (tx *ProjectTx) TaskDAO() TaskWriteDAO         { return tx }
+func (tx *ProjectTx) SessionDAO() ProjectSessionDAO { return tx }
+
+func (tx *ProjectTx) Task(ctx context.Context, id string) (model.Task, error) {
 	return readTaskWithLock(ctx, tx.tx, tx.projectID, id, " FOR UPDATE OF t")
 }
 
-func (tx *ProjectTx) TasksByID(ctx context.Context, ids []string) ([]core.Task, error) {
+func (tx *ProjectTx) TasksByID(ctx context.Context, ids []string) ([]model.Task, error) {
 	return tx.tasks(ctx, `t.id = ANY($2::uuid[])`, ids, "read prerequisites")
 }
 
-func (tx *ProjectTx) tasks(ctx context.Context, condition string, value any, phase string) ([]core.Task, error) {
+func (tx *ProjectTx) tasks(ctx context.Context, condition string, value any, phase string) ([]model.Task, error) {
 	rows, err := tx.tx.Query(ctx, `SELECT `+taskProjection+` FROM tasks t
 		WHERE t.project_id = $1 AND t.deleted_at IS NULL AND `+condition+` ORDER BY t.id`, tx.projectID, value)
 	if err != nil {
@@ -108,30 +110,30 @@ func (tx *ProjectTx) Reachable(ctx context.Context, from, to string, replacement
 	return reachable, nil
 }
 
-func (tx *ProjectTx) CreateTask(ctx context.Context, id string, values TaskWrite) (core.Task, error) {
-	properties, err := taskproperties.Normalize(values.Properties, false)
+func (tx *ProjectTx) CreateTask(ctx context.Context, id string, values TaskWrite) (model.Task, error) {
+	properties, err := taskproperties.Normalize(values.Properties)
 	if err != nil {
-		return core.Task{}, queryError("validate task properties", err)
+		return model.Task{}, queryError("validate task properties", err)
 	}
 	values.Properties = properties
 	_, err = tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, allow_agents, required_platform, assigned_to)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, tx.projectID, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
 	if err != nil {
-		return core.Task{}, queryError("create task", err)
+		return model.Task{}, queryError("create task", err)
 	}
 	if err := writeTaskProperties(ctx, tx.tx, id, values.Properties); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	if err := tx.insertDependencies(ctx, id, values.DependsOn, values.ExternalDependsOn); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	return tx.Task(ctx, id)
 }
 
-func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite) (core.Task, error) {
-	properties, err := taskproperties.Normalize(values.Properties, false)
+func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite) (model.Task, error) {
+	properties, err := taskproperties.Normalize(values.Properties)
 	if err != nil {
-		return core.Task{}, queryError("validate task properties", err)
+		return model.Task{}, queryError("validate task properties", err)
 	}
 	values.Properties = properties
 	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET title = $3, description = $4, status = $5, allow_agents = $6, required_platform = $7, assigned_to = $8,
@@ -147,30 +149,19 @@ func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite
 		version = version + 1, updated_at = statement_timestamp() WHERE project_id = $1 AND id = $2`,
 		tx.projectID, id, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
 	if err != nil {
-		return core.Task{}, queryError("update task", err)
+		return model.Task{}, queryError("update task", err)
 	}
 	if result.RowsAffected() == 0 {
-		return core.Task{}, queryError("update task", core.ErrNotFound)
+		return model.Task{}, queryError("update task", model.ErrNotFound)
 	}
 	if err := writeTaskProperties(ctx, tx.tx, id, values.Properties); err != nil {
-		return core.Task{}, err
-	}
-	worker, err := taskproperties.Worker(values.Properties)
-	if err != nil {
-		return core.Task{}, queryError("decode updated worker", err)
-	}
-	var activeClaim *string
-	if values.Status == core.TaskInProgress && worker != nil && worker.State == core.WorkerActive && worker.AgentControlMode == core.AgentControlModeWeb {
-		activeClaim = &worker.ClaimID
-	}
-	if err := tx.freezeTaskSessions(ctx, id, activeClaim); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	if _, err := tx.tx.Exec(ctx, `DELETE FROM task_dependencies WHERE project_id = $1 AND task_id = $2`, tx.projectID, id); err != nil {
-		return core.Task{}, queryError("replace dependencies", err)
+		return model.Task{}, queryError("replace dependencies", err)
 	}
 	if err := tx.insertDependencies(ctx, id, values.DependsOn, values.ExternalDependsOn); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	return tx.Task(ctx, id)
 }
@@ -226,33 +217,42 @@ func (tx *ProjectTx) DeleteTask(ctx context.Context, id string, removeDepends bo
 		return queryError("delete task", err)
 	}
 	if result.RowsAffected() == 0 {
-		return queryError("delete task", core.ErrNotFound)
+		return queryError("delete task", model.ErrNotFound)
 	}
-	if err := tx.freezeTaskSessions(ctx, id, nil); err != nil {
-		return err
-	}
+	return nil
+}
+
+func (tx *ProjectTx) InvalidateTaskCache(ctx context.Context) error {
 	if _, err := tx.tx.Exec(ctx, `UPDATE projects SET task_cache_epoch = gen_random_uuid() WHERE id = $1`, tx.projectID); err != nil {
 		return queryError("invalidate deleted task cache", err)
 	}
 	return nil
 }
 
-// Claim transitions and relay freezing share the task transaction. Stream
-// writes lock the task before the session, so no command can cross this fence.
-func (tx *ProjectTx) freezeTaskSessions(ctx context.Context, taskID string, activeClaim *string) error {
-	_, err := tx.tx.Exec(ctx, `UPDATE task_sessions SET draining_until=statement_timestamp()+interval '60 seconds',
- draining_timeline_seq=(snapshot->>'lastTimelineSeq')::bigint,
- snapshot=(snapshot - 'cleanupInteractionIds' - 'controls' - 'turnStartedAt' - 'currentTurnId') || jsonb_build_object('lifecycle','draining','synchronized',false,'connectionState','disconnected','activity','unknown')
- WHERE project_id=$1 AND task_id=$2 AND snapshot->>'lifecycle'='active'
- AND ($3::uuid IS NULL OR claim_id<>$3::uuid)`, tx.projectID, taskID, activeClaim)
+// Claim transitions and session writes share the Task transaction. Stream
+// writes lock the Task before the Session, so no command can cross this fence.
+func (tx *ProjectTx) DrainTaskSessions(ctx context.Context, taskID string, plan TaskSessionDrain) error {
+	patch, err := json.Marshal(plan.SnapshotValues)
+	if err != nil {
+		return queryError("encode task session snapshot", err)
+	}
+	_, err = tx.tx.Exec(ctx, `UPDATE task_sessions SET draining_until=statement_timestamp()+$4::bigint*interval '1 second',
+ draining_timeline_seq=(snapshot->>$5::text)::bigint,
+ snapshot=(snapshot - $6::text[]) || $7::jsonb
+ WHERE project_id=$1 AND task_id=$2 AND snapshot->>$8::text=$9::text
+ AND ($3::uuid IS NULL OR claim_id<>$3::uuid)`, tx.projectID, taskID, plan.ActiveClaim, plan.GraceSeconds,
+		plan.TimelineField, plan.RemoveFields, string(patch), plan.LifecycleField, plan.SourceLifecycle)
 	if err != nil {
 		return queryError("freeze task sessions", err)
 	}
-	// The controller owns display history. Claim transitions only fence the
-	// durable control ledger; browsers observe the lifecycle through the relay.
-	_, err = tx.tx.Exec(ctx, `UPDATE session_operations SET receipt=(receipt - 'error') || jsonb_build_object('state','rejected')
- WHERE receipt->>'state'='accepted' AND session_id IN
- (SELECT id FROM task_sessions WHERE project_id=$1 AND task_id=$2 AND snapshot->>'lifecycle'='draining')`, tx.projectID, taskID)
+	return nil
+}
+
+func (tx *ProjectTx) TransitionTaskSessionReceipts(ctx context.Context, taskID string, plan TaskSessionReceiptTransition) error {
+	_, err := tx.tx.Exec(ctx, `UPDATE session_operations SET receipt=(receipt - $3::text[]) || jsonb_build_object($4::text,$5::text)
+ WHERE receipt->>$4::text=$6::text AND session_id IN
+ (SELECT id FROM task_sessions WHERE project_id=$1 AND task_id=$2 AND snapshot->>$7::text=$8::text)`,
+		tx.projectID, taskID, plan.RemoveFields, plan.StateField, plan.NextState, plan.PreviousState, plan.LifecycleField, plan.Lifecycle)
 	if err != nil {
 		return queryError("reject undispatched session operations", err)
 	}

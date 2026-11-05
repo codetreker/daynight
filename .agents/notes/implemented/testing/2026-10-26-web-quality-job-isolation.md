@@ -121,5 +121,6 @@ capacity ownership and cleanup without obsolete quality placeholders.
 Isolation does not establish the CPU/I/O cause of an earlier timeout or guarantee
 a faster hosted run. Actual completion and elapsed-time observations remain
 bound to the tested source, workload and runner. The existing deadlines remain
-failure bounds, and unchanged failures are retried only after a transient cause
-is established.
+failure bounds. The [bounded CI retry decision](../process/2026-11-05-bounded-ci-retries.md)
+replaces the original requirement to prove a transient cause before rerunning an
+unchanged failure; isolation itself does not establish that cause.
