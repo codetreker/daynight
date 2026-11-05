@@ -1,13 +1,12 @@
-package service
+package bot
 
 import (
 	"context"
 	"fmt"
-	"time"
-
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
+	"time"
 )
 
 // BotDefaults is an observation, not a reservation or a startup guarantee.
@@ -29,43 +28,7 @@ type BotWorkerDefaults struct {
 	Providers     []model.WorkerAssistantProvider
 }
 
-// Defaults reads current owner-scoped choices without recording a preference.
-func (s *Bots) Defaults(ctx context.Context, principal model.Principal, workerID *string) (BotDefaults, error) {
-	if err := model.RequirePrincipal(principal); err != nil {
-		return BotDefaults{}, err
-	}
-	if workerID != nil {
-		id, err := model.CanonicalID(*workerID)
-		if err != nil {
-			return BotDefaults{}, err
-		}
-		workerID = &id
-	}
-	var result BotDefaults
-	err := s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
-			return botCredentialError(err)
-		}
-		input, err := snapshot.BotDAO().BotDefaults(ctx, principal.UserID)
-		if err != nil {
-			return err
-		}
-		result, err = resolveBotDefaults(input, model.BotOverrides{WorkerID: workerID})
-		return err
-	})
-	if err != nil {
-		return BotDefaults{}, botResultError("defaults", err)
-	}
-	return result, nil
-}
-
-// CreateResolved resolves only the original missing identity. Identical retries
-// return the persisted definition even when its Worker is no longer available.
-func (s *Bots) CreateResolved(ctx context.Context, principal model.Principal, input CreateBot) (model.Bot, error) {
-	return s.create(ctx, principal, input, true)
-}
-
-func resolveBotDefaults(input model.BotDefaultsInput, overrides model.BotOverrides) (BotDefaults, error) {
+func ResolveBotDefaults(input model.BotDefaultsInput, overrides model.BotOverrides) (BotDefaults, error) {
 	result := BotDefaults{ObservedAt: input.ObservedAt, Workers: make([]BotWorkerDefaults, 0, len(input.Workers))}
 	for _, worker := range input.Workers {
 		result.Workers = append(result.Workers, resolveBotWorker(worker, input.ObservedAt, input.WorkerPreferences[worker.WorkerID], overrides))
@@ -153,12 +116,12 @@ func resolveBotWorker(worker model.WorkerSnapshot, now time.Time, preference mod
 	return result
 }
 
-func resolveBotCreation(ctx context.Context, tx *store.BotTx, principal model.Principal, input CreateBot) (model.BotConfiguration, error) {
+func resolveBotCreation(ctx context.Context, tx store.BotWriteDAO, principal model.Principal, input CreateBot) (model.BotConfiguration, error) {
 	defaults, err := tx.BotDefaults(ctx, principal.UserID)
 	if err != nil {
 		return model.BotConfiguration{}, err
 	}
-	resolved, err := resolveBotDefaults(defaults, input.Overrides)
+	resolved, err := ResolveBotDefaults(defaults, input.Overrides)
 	if err != nil {
 		return model.BotConfiguration{}, err
 	}
@@ -166,4 +129,16 @@ func resolveBotCreation(ctx context.Context, tx *store.BotTx, principal model.Pr
 		return model.BotConfiguration{}, botConflict(fmt.Sprintf("Bot configuration is unavailable: %s. Read current defaults before submitting a new request.", *resolved.Reason))
 	}
 	return *resolved.Configuration, nil
+}
+
+// Defaults reads current owner-scoped choices without recording a preference.
+func Defaults(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, workerID *string) (BotDefaults, error) {
+	if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
+		return BotDefaults{}, botCredentialError(err)
+	}
+	input, err := snapshot.BotDAO().BotDefaults(ctx, principal.UserID)
+	if err != nil {
+		return BotDefaults{}, err
+	}
+	return ResolveBotDefaults(input, model.BotOverrides{WorkerID: workerID})
 }

@@ -2,16 +2,14 @@ package sessionrelay
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"math"
 	"strings"
 	"unicode/utf8"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -47,17 +45,6 @@ func botID(value string) bool {
 func botText(value string) bool {
 	return utf8.ValidString(value) && strings.TrimSpace(value) != "" && !strings.ContainsRune(value, 0)
 }
-func validBotConfiguration(value model.BotConfiguration) bool {
-	if !botID(value.WorkerID) || !botText(value.Cwd) || !model.WorkerAgent(value.Provider).Valid() || (value.Model != nil && !botText(*value.Model)) {
-		return false
-	}
-	for _, arg := range value.Args {
-		if !utf8.ValidString(arg) || strings.ContainsRune(arg, 0) {
-			return false
-		}
-	}
-	return true
-}
 func botVersion(bot model.Bot, version int64) error {
 	if version != bot.Version {
 		return fault("version_conflict", "Bot version has changed.")
@@ -77,7 +64,7 @@ func (s *Service) runtimeBot(ctx context.Context, tx pgx.Tx, p model.Principal, 
 	if err := credential(ctx, tx, p, s.now()); err != nil {
 		return model.Bot{}, err
 	}
-	bot, err := store.ReadBotForUpdate(ctx, tx, botID)
+	bot, err := store.BotTransaction(tx).Bot(ctx, botID)
 	if err != nil {
 		return bot, botMissing(err)
 	}
@@ -100,7 +87,7 @@ func lockSessionBot(ctx context.Context, tx pgx.Tx, id string) (*model.Bot, erro
 	if botID == nil {
 		return nil, nil
 	}
-	bot, err := store.ReadBotForUpdate(ctx, tx, *botID)
+	bot, err := store.BotTransaction(tx).Bot(ctx, *botID)
 	if err != nil {
 		return nil, botMissing(err)
 	}
@@ -122,8 +109,7 @@ func validSessionBot(bot *model.Bot, r *record) bool {
 func (s *Service) RegisterBot(ctx context.Context, p model.Principal, workerID, id string, input BotRegistration) (BotRegistrationResult, error) {
 	var out BotRegistrationResult
 	role := input.RoleConfiguration
-	sum := sha256.Sum256([]byte(role.Instructions))
-	if !botID(workerID) || !botID(id) || input.BotVersion < 1 || !validBotConfiguration(input.Configuration) || !botText(role.Instructions) || len(role.Instructions) > 65536 || !botText(role.Revision) || role.Digest != hex.EncodeToString(sum[:]) {
+	if !botID(workerID) || !botID(id) || input.BotVersion < 1 || !botcore.ValidBindingInput(input.Configuration, role) {
 		return out, fault("invalid_input", "Invalid Bot registration or frozen role.")
 	}
 	if _, err := sp.DecodeTestRegistration(encode(input.Registration)); err != nil || input.Registration.InitialInput != "none" {
@@ -134,7 +120,7 @@ func (s *Service) RegisterBot(ctx context.Context, p model.Principal, workerID, 
 		if err != nil {
 			return err
 		}
-		if !jsonEqual(encode(bot.ResolvedConfiguration), encode(input.Configuration)) || input.Registration.Provider != bot.ResolvedConfiguration.Provider {
+		if !botcore.BindingConfigurationMatches(bot, input.Configuration, input.Registration.Provider) {
 			return conflict()
 		}
 		if bot.SessionID != nil {
@@ -142,7 +128,7 @@ func (s *Service) RegisterBot(ctx context.Context, p model.Principal, workerID, 
 			if err != nil {
 				return err
 			}
-			if !jsonEqual(r.Registration, encode(input)) || bot.RoleConfiguration == nil || *bot.RoleConfiguration != role {
+			if !jsonEqual(r.Registration, encode(input)) || !botcore.BindingRoleMatches(bot, role) {
 				return conflict()
 			}
 			if _, err = s.scopePermission(ctx, tx, p, r); err != nil {
@@ -151,14 +137,8 @@ func (s *Service) RegisterBot(ctx context.Context, p model.Principal, workerID, 
 			out = BotRegistrationResult{Bot: bot, Session: permissions(r, true, s.now())}
 			return nil
 		}
-		if err = botVersion(bot, input.BotVersion); err != nil {
+		if err = botcore.PrepareBinding(bot, input.BotVersion); err != nil {
 			return err
-		}
-		if bot.Version == math.MaxInt64 {
-			return fault("version_exhausted", "Bot version cannot advance.")
-		}
-		if bot.RoleConfiguration != nil {
-			return conflict()
 		}
 		v := initialTestSnapshot(p, input.Registration)
 		// The unique registration/execution indexes also fence collisions with
@@ -170,7 +150,7 @@ func (s *Service) RegisterBot(ctx context.Context, p model.Principal, workerID, 
 		if tag.RowsAffected() != 1 {
 			return conflict()
 		}
-		bot, err = store.BindBotSession(ctx, tx, id, bot.Version, v.SessionID, role)
+		bot, err = store.BotTransaction(tx).BindBotSession(ctx, id, bot.Version, v.SessionID, role)
 		if err != nil {
 			return err
 		}
@@ -238,7 +218,7 @@ func (s *Service) GrantBot(ctx context.Context, p model.Principal, workerID, id 
 
 func (s *Service) ReportBot(ctx context.Context, p model.Principal, workerID, id string, input BotReport) (model.Bot, error) {
 	var out model.Bot
-	if !botID(workerID) || !botID(id) || input.BotVersion < 1 || (input.Result.State != "ready" && input.Result.State != "failed") || (input.Result.State == "ready" && input.Result.Code != nil) || (input.Result.State == "failed" && (input.Result.Code == nil || !botText(*input.Result.Code))) {
+	if !botID(workerID) || !botID(id) || input.BotVersion < 1 || !botcore.ValidStartupResult(input.Result) {
 		return out, fault("invalid_input", "Invalid Bot startup report.")
 	}
 	if input.NativeSessionID != nil && !botText(*input.NativeSessionID) {
@@ -282,7 +262,11 @@ func (s *Service) ReportBot(ctx context.Context, p model.Principal, workerID, id
 				}
 			}
 		}
-		if jsonEqual(encode(input.Result), encode(bot.StartupResult)) {
+		writeStartup, err := botcore.PrepareStartup(bot, input.Result)
+		if err != nil {
+			return err
+		}
+		if !writeStartup {
 			if bot.SessionID == nil {
 				if err = credential(ctx, tx, p, s.now()); err != nil {
 					return err
@@ -291,15 +275,12 @@ func (s *Service) ReportBot(ctx context.Context, p model.Principal, workerID, id
 			out = bot
 			return nil
 		}
-		if bot.Version == math.MaxInt64 {
-			return fault("version_exhausted", "Bot version cannot advance.")
-		}
-		out, err = store.SetBotStartup(ctx, tx, id, bot.Version, input.Result)
+		out, err = store.BotTransaction(tx).SetBotStartup(ctx, id, bot.Version, input.Result)
 		if err != nil {
 			return err
 		}
 		if input.Result.State == "ready" {
-			return store.CommitBotPreferences(ctx, tx, id)
+			return store.BotTransaction(tx).CommitBotPreferences(ctx, id)
 		}
 		if bot.SessionID == nil {
 			return credential(ctx, tx, p, s.now())

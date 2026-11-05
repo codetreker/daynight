@@ -4,17 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
@@ -76,7 +76,7 @@ func TestBotDeletionWaitsForAdmittedArchiveAndRemovesItsNamespace(t *testing.T) 
 	other := New(f.s.DB, files)
 	deletion := make(chan error, 1)
 	go func() {
-		_, err := other.DeleteBot(ctx, f.p, out.Bot.ID, service.DeleteBot{Version: out.Bot.Version, DeletionID: receipt.DeletionID})
+		_, err := other.DeleteBot(ctx, f.p, out.Bot.ID, store.DeleteBot{Version: out.Bot.Version, DeletionID: receipt.DeletionID})
 		deletion <- err
 	}()
 	waitErr := waitBotArchiveLock(ctx, f)
@@ -126,7 +126,7 @@ func TestBotDeletionPrecedesArchiveAndCleanupCannotBeFollowedByLateUpload(t *tes
 	defer cancel()
 	gate := &blockingBotCleanupStorage{Storage: f.s.files, entered: make(chan struct{}), release: make(chan struct{})}
 	other := New(f.s.DB, gate)
-	request := service.DeleteBot{Version: out.Bot.Version, DeletionID: receipt.DeletionID}
+	request := store.DeleteBot{Version: out.Bot.Version, DeletionID: receipt.DeletionID}
 	if _, err := other.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {
 		t.Fatal(err)
 	}

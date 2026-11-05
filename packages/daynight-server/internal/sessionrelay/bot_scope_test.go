@@ -4,13 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/google/uuid"
 )
 
@@ -23,7 +24,7 @@ func botFixture(t *testing.T) (fixture, model.Bot, BotRegistration) {
 	}
 	configuration := model.BotConfiguration{WorkerID: f.r.WorkerID, Cwd: "/ordinary/directory", Provider: "codex", Args: []string{}}
 	worker := f.r.WorkerID
-	bot, err := service.NewBots(f.s.DB).Create(ctx, f.p, service.CreateBot{ID: uuid.NewString(), Name: "Assistant", Overrides: model.BotOverrides{WorkerID: &worker}, ResolvedConfiguration: configuration})
+	bot, err := botservice.New(f.s.DB).Create(ctx, f.p, botcore.CreateBot{ID: uuid.NewString(), Name: "Assistant", Overrides: model.BotOverrides{WorkerID: &worker}, ResolvedConfiguration: configuration})
 	if err != nil {
 		t.Fatal(err)
 	}

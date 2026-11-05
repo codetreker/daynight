@@ -1,7 +1,8 @@
-package service
+package bot
 
 import (
 	"context"
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"reflect"
 	"testing"
@@ -37,7 +38,7 @@ func TestBotResolvedNameOnlyFreezesAndReconcilesOriginalID(t *testing.T) {
 	bots, db, principal, worker := botService(t)
 	ctx := context.Background()
 	reportBotHost(t, db, principal, worker, "/ordinary/not-on-server")
-	input := CreateBot{ID: uuid.NewString(), Name: " Name only "}
+	input := botcore.CreateBot{ID: uuid.NewString(), Name: " Name only "}
 	created, err := bots.CreateResolved(ctx, principal, input)
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +84,7 @@ func TestBotDefaultsSkipOfflineAutomaticallyButPreserveExplicitWorker(t *testing
 	if err != nil || defaults.WorkerID == nil || *defaults.WorkerID != first || defaults.Configuration != nil || defaults.Reason == nil || *defaults.Reason != "offline" {
 		t.Fatalf("explicit: %+v %v", defaults, err)
 	}
-	_, err = bots.CreateResolved(ctx, principal, CreateBot{ID: uuid.NewString(), Name: "offline", Overrides: model.BotOverrides{WorkerID: &first}})
+	_, err = bots.CreateResolved(ctx, principal, botcore.CreateBot{ID: uuid.NewString(), Name: "offline", Overrides: model.BotOverrides{WorkerID: &first}})
 	requireFault(t, err, "resource_conflict")
 }
 
@@ -102,20 +103,20 @@ func TestBotDefaultsWorkerAndProviderSettingsNeverCross(t *testing.T) {
 	}, PreferredWorkerID: &second, WorkerPreferences: map[string]model.BotWorkerPreference{
 		first: {Cwd: workerValidationValue("/first-preference"), Provider: workerValidationValue("codex")},
 	}}
-	result, err := resolveBotDefaults(input, model.BotOverrides{})
+	result, err := botcore.ResolveBotDefaults(input, model.BotOverrides{})
 	if err != nil || result.Configuration.Cwd != "/other" || result.Configuration.Provider != "copilot" {
 		t.Fatalf("cross-worker defaults: %+v %v", result, err)
 	}
-	result, err = resolveBotDefaults(input, model.BotOverrides{WorkerID: &first})
+	result, err = botcore.ResolveBotDefaults(input, model.BotOverrides{WorkerID: &first})
 	if err != nil || result.Configuration.Cwd != "/first-preference" || result.Configuration.Provider != "codex" || result.Configuration.Model != nil || len(result.Configuration.Args) != 0 {
 		t.Fatalf("cross-provider defaults: %+v %v", result, err)
 	}
-	result, err = resolveBotDefaults(input, model.BotOverrides{WorkerID: &second, Provider: workerValidationValue("codex"), Cwd: workerValidationValue("/explicit")})
+	result, err = botcore.ResolveBotDefaults(input, model.BotOverrides{WorkerID: &second, Provider: workerValidationValue("codex"), Cwd: workerValidationValue("/explicit")})
 	if err != nil || result.Configuration.Cwd != "/explicit" || result.Configuration.Model != nil || !reflect.DeepEqual(result.Configuration.Args, []string{"--other"}) {
 		t.Fatalf("overrides: %+v %v", result, err)
 	}
 	unknown := uuid.NewString()
-	_, err = resolveBotDefaults(input, model.BotOverrides{WorkerID: &unknown})
+	_, err = botcore.ResolveBotDefaults(input, model.BotOverrides{WorkerID: &unknown})
 	requireFault(t, err, "forbidden")
 }
 
@@ -149,12 +150,12 @@ func TestBotDefaultsUnavailableReasonsAndNoInventedProviderFallback(t *testing.T
 			worker := model.WorkerSnapshot{WorkerID: uuid.NewString(), LastReportedAt: now, Telemetry: model.WorkerTelemetry{Platform: model.PlatformLinux, AssistantHost: host}}
 			overrides := model.BotOverrides{WorkerID: &worker.WorkerID}
 			tc.change(&worker, &overrides)
-			result, err := resolveBotDefaults(model.BotDefaultsInput{ObservedAt: now, Workers: []model.WorkerSnapshot{worker}}, overrides)
+			result, err := botcore.ResolveBotDefaults(model.BotDefaultsInput{ObservedAt: now, Workers: []model.WorkerSnapshot{worker}}, overrides)
 			if err != nil || result.Configuration != nil || result.Reason == nil || *result.Reason != tc.reason {
 				t.Fatalf("got %+v %v", result, err)
 			}
 			overrides.WorkerID = nil
-			result, err = resolveBotDefaults(model.BotDefaultsInput{ObservedAt: now, Workers: []model.WorkerSnapshot{worker}}, overrides)
+			result, err = botcore.ResolveBotDefaults(model.BotDefaultsInput{ObservedAt: now, Workers: []model.WorkerSnapshot{worker}}, overrides)
 			if err != nil || result.WorkerID != nil || *result.Reason != "no_available_worker" {
 				t.Fatalf("automatic got %+v %v", result, err)
 			}
@@ -170,7 +171,7 @@ func TestBotDefaultsPendingAndFailedNeverChangeSuccessfulPreferences(t *testing.
 	reportBotHost(t, db, principal, other, "/other")
 	create := func(cwd string) model.Bot {
 		t.Helper()
-		bot, err := bots.CreateResolved(ctx, principal, CreateBot{ID: uuid.NewString(), Name: cwd, Overrides: model.BotOverrides{WorkerID: &other, Cwd: &cwd, Provider: workerValidationValue("codex")}})
+		bot, err := bots.CreateResolved(ctx, principal, botcore.CreateBot{ID: uuid.NewString(), Name: cwd, Overrides: model.BotOverrides{WorkerID: &other, Cwd: &cwd, Provider: workerValidationValue("codex")}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -194,7 +195,7 @@ func TestBotDefaultsPendingAndFailedNeverChangeSuccessfulPreferences(t *testing.
 		if _, err := tx.Exec(ctx, `UPDATE bots SET session_id=$2,startup_result='{"state":"ready","code":null}' WHERE id=$1`, bot.ID, uuid.NewString()); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.CommitBotPreferences(ctx, tx, bot.ID); err != nil {
+		if err := store.BotTransaction(tx).CommitBotPreferences(ctx, bot.ID); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -233,7 +234,7 @@ func TestBotDefaultAdmissionAndDatabaseFailures(t *testing.T) {
 	stranger := uuid.NewString()
 	_, err = bots.Defaults(ctx, principal, &stranger)
 	requireFault(t, err, "forbidden")
-	_, err = bots.CreateResolved(ctx, principal, CreateBot{ID: uuid.NewString(), Name: "foreign", Overrides: model.BotOverrides{WorkerID: &stranger}})
+	_, err = bots.CreateResolved(ctx, principal, botcore.CreateBot{ID: uuid.NewString(), Name: "foreign", Overrides: model.BotOverrides{WorkerID: &stranger}})
 	requireFault(t, err, "forbidden")
 	if _, err := db.Pool.Exec(ctx, "DELETE FROM sessions WHERE id=$1", principal.CredentialID); err != nil {
 		t.Fatal(err)
@@ -244,7 +245,7 @@ func TestBotDefaultAdmissionAndDatabaseFailures(t *testing.T) {
 	if _, err := bots.Defaults(ctx, principal, nil); err == nil {
 		t.Fatal("database failure became defaults")
 	}
-	if _, err := bots.CreateResolved(ctx, principal, CreateBot{ID: uuid.NewString(), Name: "database failure"}); err == nil {
+	if _, err := bots.CreateResolved(ctx, principal, botcore.CreateBot{ID: uuid.NewString(), Name: "database failure"}); err == nil {
 		t.Fatal("database failure became success")
 	}
 }
@@ -254,7 +255,7 @@ func TestBotResolvedConcurrentRetryObservesWinnerBeforeCheckingAvailability(t *t
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	reportBotHost(t, db, principal, worker, "/frozen")
-	input, fingerprint, err := normalizeBotRequest(CreateBot{ID: uuid.NewString(), Name: "same identity"})
+	input, fingerprint, err := botcore.NormalizeBotRequest(botcore.CreateBot{ID: uuid.NewString(), Name: "same identity"})
 	if err != nil {
 		t.Fatal(err)
 	}

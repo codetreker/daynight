@@ -3,12 +3,14 @@ package server
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
+	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
+	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
@@ -26,7 +28,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	teamhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/team"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
@@ -57,7 +58,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(dependencies.Store, config.TaskSyncOverlap), auth, logger, config.TaskSyncOverlap)
 	attachmenthttp.RegisterRoutes(mux, attachmentservice.NewAttachments(dependencies.Store, dependencies.Files), auth, logger)
 	relay := newSessionRoutes(sessionrelay.New(dependencies.Store, dependencies.Files), auth, logger)
-	botsRoutes(mux, service.NewBots(dependencies.Store), relay.service, auth, logger)
+	bothttp.RegisterRoutes(mux, botservice.New(dependencies.Store), relay.service, auth, logger)
 	relay.register(mux)
 	healthRoutes(mux, dependencies.Store, logger)
 	web := webhttp.New(webresources.New())

@@ -2,10 +2,10 @@ package sessionrelay
 
 import (
 	"context"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/google/uuid"
 )
 
@@ -20,7 +20,7 @@ func TestBotDeletionCleanupFailureRetainsReceiptAndCanRetry(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = files.Close() })
 			f.s.files = files
-			request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+			request := store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
 			if _, err = f.s.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {
 				t.Fatal(err)
 			}
@@ -78,7 +78,7 @@ func TestBotDeletionCleanupRechecksAuthorityAndPriorCompletion(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = files.Close() })
 	f.s.files = files
-	request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+	request := store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
 	// The cleanup transaction must recheck the intent and authority even when
 	// its caller has already checked them in a preceding transaction.
 	_, err = f.s.cleanBotDeletion(ctx, f.p, out.Bot.ID, request.DeletionID)
@@ -123,7 +123,7 @@ func TestBotDeletionCleanupRefusesInconsistentResidualOwnership(t *testing.T) {
 	if _, err = f.s.DB.Pool.Exec(ctx, `INSERT INTO task_sessions(id,scope,test_execution_id,owner_user_id,registration_id,registration,snapshot,parent_credential_id,bot_id) SELECT $2,scope,$3,$5,$4,registration,snapshot,parent_credential_id,bot_id FROM task_sessions WHERE id=$1`, out.Session.SessionID, residual, uuid.NewString(), uuid.NewString(), other.UserID); err != nil {
 		t.Fatal(err)
 	}
-	request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+	request := store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
 	if _, err = f.s.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {
 		t.Fatal(err)
 	}

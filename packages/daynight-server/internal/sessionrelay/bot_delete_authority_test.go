@@ -3,12 +3,12 @@ package sessionrelay
 import (
 	"context"
 	"errors"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"math"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -29,7 +29,7 @@ func TestBotDeletionRejectsUnauthorizedActorsWithoutChangingResponsibility(t *te
 			t.Run(phase+"/"+actor, func(t *testing.T) {
 				f, bot, _ := botFixture(t)
 				ctx := context.Background()
-				request := service.DeleteBot{Version: bot.Version, DeletionID: uuid.NewString()}
+				request := store.DeleteBot{Version: bot.Version, DeletionID: uuid.NewString()}
 				if phase == "receipt" {
 					if _, err := f.s.DeleteBot(ctx, f.p, bot.ID, request); err != nil {
 						t.Fatal(err)
@@ -69,7 +69,7 @@ func TestBotDeletionUnknownIdentityAndStaleVersionLeaveOriginalBotUnchanged(t *t
 	f, bot, _ := botFixture(t)
 	ctx := context.Background()
 	before := deletionAuthorityState(t, f, bot.ID)
-	request := service.DeleteBot{Version: bot.Version, DeletionID: uuid.NewString()}
+	request := store.DeleteBot{Version: bot.Version, DeletionID: uuid.NewString()}
 	_, err := f.s.DeleteBot(ctx, f.p, uuid.NewString(), request)
 	botFault(t, err, "not_found")
 	_, err = f.s.CompleteBotDeletion(ctx, f.p, bot.WorkerID, uuid.NewString(), BotDeletionReceipt{DeletionID: request.DeletionID, Result: model.BotCleanupResult{State: "completed"}})
@@ -93,7 +93,7 @@ func TestBotDeletionVersionExhaustionRollsBackAdmissionRevocation(t *testing.T) 
 		t.Fatal(err)
 	}
 	before := deletionAuthorityState(t, f, out.Bot.ID)
-	_, err := f.s.DeleteBot(ctx, f.p, out.Bot.ID, service.DeleteBot{Version: math.MaxInt64, DeletionID: uuid.NewString()})
+	_, err := f.s.DeleteBot(ctx, f.p, out.Bot.ID, store.DeleteBot{Version: math.MaxInt64, DeletionID: uuid.NewString()})
 	botFault(t, err, "version_exhausted")
 	if after := deletionAuthorityState(t, f, out.Bot.ID); after != before {
 		t.Fatalf("exhaustion persisted a deletion intent: %s -> %s", before, after)
@@ -118,7 +118,7 @@ func TestBotDeletionDatabaseWriteFailurePreservesRetryableStage(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = files.Close() })
 			f.s.files = files
-			request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+			request := store.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
 			receipt := botCleanupReceipt(out, request.DeletionID)
 			if phase == "receipt" {
 				if _, err = f.s.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {

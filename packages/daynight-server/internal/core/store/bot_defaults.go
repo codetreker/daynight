@@ -14,14 +14,14 @@ func (s *Snapshot) BotDefaults(ctx context.Context, ownerID string) (model.BotDe
 	return readBotDefaultsInput(ctx, s.tx, ownerID)
 }
 
-func (b *BotTx) BotDefaults(ctx context.Context, ownerID string) (model.BotDefaultsInput, error) {
+func (b *botTx) BotDefaults(ctx context.Context, ownerID string) (model.BotDefaultsInput, error) {
 	return readBotDefaultsInput(ctx, b.tx, ownerID)
 }
 
 // LockCreation serializes lookup and default resolution for one canonical Bot
 // ID, including before its row exists. Hash collisions only serialize unrelated
 // requests; the durable Bot ID and fingerprint still determine identity.
-func (b *BotTx) LockCreation(ctx context.Context, id string) error {
+func (b *botTx) LockCreation(ctx context.Context, id string) error {
 	if _, err := b.tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('bot-create:' || $1, 0))`, id); err != nil {
 		return queryError("lock bot creation", err)
 	}
@@ -83,7 +83,8 @@ func readBotDefaultsInput(ctx context.Context, tx pgx.Tx, ownerID string) (model
 // native-session proof and this helper is not a public report endpoint.
 // Only stored explicit choices participate; each field has its own creation-order
 // watermark so a later provider-only choice cannot discard an earlier cwd choice.
-func CommitBotPreferences(ctx context.Context, tx pgx.Tx, botID string) error {
+func (b *botTx) CommitBotPreferences(ctx context.Context, botID string) error {
+	tx := b.tx
 	bot, err := readBot(ctx, tx, botID, " FOR UPDATE")
 	if err != nil {
 		return err
