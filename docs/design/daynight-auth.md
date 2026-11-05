@@ -633,6 +633,12 @@ reconfigure --bootstrap 允许先恢复配对 SQL/附件，私有 UniAuth 目录
 Playwright action/network trace 在固定版本会保留凭据 header 与响应体，因此普通
 trace 和 capacity override 均关闭；PNG 只在秘密关闭或遮蔽后捕获。自定义 CDP
 性能 trace、全部断言、原始报告校验、截图 oracle、请求/容量/时间预算保持。
+`auth-login-session` 为等待操作命名，并在成功和失败时保存 `auth-login-operations`
+附件；字段仅包含操作名、状态、耗时和可选的错误类型，不保存 URL、OAuth 参数、凭据或响应体。
+身份 route 与 provider 的每个清理操作独立限时五秒，`Fetch.disable` 失败后仍尝试
+CDP detach。原始错误、清理错误与附件保存错误共同保留，唯一错误原样抛出，多项失败用
+`AggregateError` 保留原对象及首个错误原因链。[登录诊断决策](../../.agents/notes/implemented/testing/2026-11-05-auth-login-failure-diagnostics.md)
+拥有这些诊断和错误传播规则；历史产物或操作栈缺失时，后续成功不能证明原超时的触发原因。
 [启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 保存包版本、源码位置、隐私证据与诊断能力取舍。各适用 gate 和真实上游人工登录
 仍须提供源码绑定结果；受控组件或协议成功不冒充第三方人工登录。
