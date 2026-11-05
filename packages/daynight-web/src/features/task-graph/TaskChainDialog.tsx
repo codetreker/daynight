@@ -3,7 +3,6 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { tabbable } from 'tabbable';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
 import { useI18n } from '../../i18n/LocaleProvider';
-import { LanguageSelector } from '../../i18n/LanguageSelector';
 import type { GraphIndex } from './model';
 import { TaskGraph } from './TaskGraph';
 import '../../styles/graph.css';
@@ -97,7 +96,7 @@ export const TaskChainDialog = ({ index, rootId, onOpenTask, onClose, onRestoreF
           <h2 id={titleId}>{task.titlePreview}{task.titleTruncated ? '…' : ''}</h2>
           <p className="task-chain-meta"><span>{m.rootSummary({ total: progress.total, remaining: progress.total - progress.done })}</span><span>{m.progress({ done: progress.done, total: progress.total })}</span><TaskPauseCount count={pausedCount} /><span className={`graph-status graph-status-${progress.status}`}>{common.status[progress.status]}</span></p>
         </div>
-        <div className="task-chain-actions"><LanguageSelector /><button className="task-chain-close" type="button" ref={close} aria-label={m.closeDialog} title={m.closeDialog} onClick={onClose}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></div>
+        <button className="task-chain-close" type="button" ref={close} aria-label={m.closeDialog} title={m.closeDialog} onClick={onClose}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </header>
       <TaskGraph index={index} rootId={rootId} onOpenTask={onOpenTask} fullscreen={fullscreenControl} />
     </section>
