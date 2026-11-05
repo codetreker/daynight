@@ -208,7 +208,8 @@ test('project-list', scenario('project-list'), async ({ page, api: request, allo
       const more = selector.getByRole('menuitem', { name: '加载更多 Team', exact: true });
       await expect(more).toBeVisible();
       await more.click();
-      await expect(selector.getByRole('status')).toHaveCount(0);
+      const continuation = selector.locator('.menu-more button');
+      await expect.poll(async () => await teamLink.isVisible() || await continuation.count() === 0 || await continuation.isEnabled()).toBe(true);
     }
     await expect(teamLink).toBeVisible();
     expect(await teamLink.locator('.menu-name').textContent()).toBe(teamName);
