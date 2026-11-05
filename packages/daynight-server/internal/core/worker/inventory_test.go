@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -43,6 +44,20 @@ func TestMatchTaskSnapshotsUsesActiveOwnedClaimsInInventoryOrder(t *testing.T) {
 		if err != nil || len(got) != 0 {
 			t.Fatalf("mismatched claim exposed: %+v %v", got, err)
 		}
+	}
+}
+
+func TestMatchTaskSnapshotsHandlesMissingAndCorruptSources(t *testing.T) {
+	ref := model.WorkerTaskReference{TaskID: "task", ProjectID: "project", ClaimID: "claim"}
+	inventory := model.WorkerTaskInventory{Claims: []model.WorkerTaskReference{ref}}
+	items, err := MatchTaskSnapshots(nil, inventory, "user", "worker")
+	if err != nil || items == nil || len(items) != 0 {
+		t.Fatalf("missing source was not omitted: %+v %v", items, err)
+	}
+	source := store.WorkerTaskSource{Task: model.Task{ID: ref.TaskID, ProjectID: ref.ProjectID, Status: model.TaskInProgress,
+		Properties: model.TaskProperties{"worker": json.RawMessage(`{"bad":true}`)}}}
+	if _, err := MatchTaskSnapshots([]store.WorkerTaskSource{source}, inventory, "user", "worker"); err == nil {
+		t.Fatal("corrupt stored claim was silently ignored")
 	}
 }
 
