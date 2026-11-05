@@ -502,8 +502,9 @@ context 允许收缩，路径和元数据沿用受控省略并保留完整 DOM/t
 `tabIndex=0`，使键盘滚动区域与焦点枚举一致。原生 modal 隔离底层交互，确认层复用 `dialogFocusables` 枚举可用控件，显式循环边界 Tab/Shift+Tab，
 包括提交中焦点位于对话框自身的情形；当前层停止键盘事件冒泡，保留外层详情的键盘所有权。
 未提交状态可用 Escape、取消及遮罩关闭并恢复操作入口；提交中保持目标和确认框，
-禁用重复确认及冲突写入。错误在确认层明确展示，保留重试与取消入口。语言选择
-位于可操作的确认层，重译不会重新提交。页签激活状态显式传给附件组件，用于关闭
+禁用重复确认及冲突写入。错误在确认层明确展示，保留重试与取消入口。确认层
+订阅当前语言，不渲染语言选择器及其偏好反馈；语言变化只重译内容，不重新提交。
+页面保留自身语言入口与偏好反馈。页签激活状态显式传给附件组件，用于关闭
 隐藏面板中未提交的菜单和确认；task/project 变化释放原组件。
 [删除确认决策](../../.agents/notes/implemented/feature/2026-10-23-attachment-delete-confirmation.md)
 记录层级与交互取舍。
@@ -767,8 +768,9 @@ Web 新增 `task-attachments` 功能场景，在原生和实际生产容器上�
 许可和计时场景仍保有独立的写入边界。
 
 附件场景与
-`language-state-preservation` 仅允许精确 fixture task/file 的 PUT/DELETE，后者验证切换期间
-待完成操作只执行一次；`refresh-staleness` 仅允许一次已登记 fixture task/file PUT，将真实上传响应挂起并跨自动读取验证状态与几何保留。描述阅读、其他图场景、任务视图及其他语言场景继续 GET/HEAD。
+`language-state-preservation` 仅允许精确 fixture task/file 的 PUT/DELETE，后者分别验证
+语言切换时的浏览状态保持及挂起写入的状态和次数；组件测试以受控语言变化验证在途
+操作的状态和唯一请求。`refresh-staleness` 仅允许一次已登记 fixture task/file PUT，将真实上传响应挂起并跨自动读取验证状态与几何保留。描述阅读、其他图场景、任务视图及其他语言场景继续 GET/HEAD。
 完整 Chromium channel `chromium` 对 PDF 的证明来自 iframe 实际
 compositor 像素中的 fixture 专用色块。判断器将匹配像素按连通区域分组，独立计算
 各个实心色块的像素数、边界和密度，并在延伸到 frame 右半区的页面候选中检查
