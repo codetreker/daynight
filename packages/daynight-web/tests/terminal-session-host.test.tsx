@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { ManagedSessionRecords, TaskSessionHost } from '../src/features/task-agent-session/TaskSessionHost';
@@ -17,6 +17,71 @@ function fixture() {
   vi.mocked(createTerminalSessionApi).mockReturnValue(api as never); return api;
 }
 describe('unified Session and managed records', () => {
+  it('hides only a confirmed empty inventory and retains loading, failure and retry', async () => {
+    const api = fixture();
+    let finish!: (value: { items: never[]; nextCursor: null }) => void;
+    api.history.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }) as never);
+    render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
+    expect(screen.getByRole('region', { name: 'Session recordings' })).toBeInTheDocument();
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    await act(async () => finish({ items: [], nextCursor: null }));
+    expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull();
+  });
+  it('keeps failures recoverable and hides after a successful retry', async () => {
+    const api = fixture();
+    api.history.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ items: [], nextCursor: null } as never);
+    render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
+    expect(await screen.findByRole('alert')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull());
+    expect(api.history).toHaveBeenCalledTimes(2);
+  });
+  it('rechecks a confirmed empty inventory when the retained tab is reopened', async () => {
+    const api = fixture();
+    api.history.mockResolvedValueOnce({ items: [], nextCursor: null } as never).mockResolvedValueOnce({ items: [record], nextCursor: null });
+    const content = (active: boolean) => <ManagedSessionRecords projectId={projectId} taskId={taskId} active={active}>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>;
+    const view = render(content(true));
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull());
+    view.rerender(content(false));
+    view.rerender(content(true));
+    expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+    expect(api.history).toHaveBeenCalledTimes(2);
+  });
+  it('restarts from the first page when reopening an exhausted empty inventory', async () => {
+    const api = fixture();
+    api.history.mockResolvedValueOnce({ items: [], nextCursor: 'next' } as never)
+      .mockResolvedValueOnce({ items: [], nextCursor: null } as never)
+      .mockResolvedValueOnce({ items: [record], nextCursor: null });
+    const content = (active: boolean) => <ManagedSessionRecords projectId={projectId} taskId={taskId} active={active}>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>;
+    const view = render(content(true));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load earlier records' }));
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull());
+    view.rerender(content(false));
+    view.rerender(content(true));
+    expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+    expect(api.history).toHaveBeenLastCalledWith(null, expect.any(AbortSignal));
+  });
+  it('keeps an empty page with a continuation reachable', async () => {
+    const api = fixture();
+    api.history.mockResolvedValueOnce({ items: [], nextCursor: 'next' } as never).mockResolvedValueOnce({ items: [record], nextCursor: null });
+    render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Load earlier records' }));
+    expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+    expect(api.history).toHaveBeenLastCalledWith('next', expect.any(AbortSignal));
+  });
+  it.each(['pending', 'failed', 'unavailable'] as const)('offers %s records and preserves their selected preview after an empty refresh', async state => {
+    const api = fixture();
+    const item = { ...record, archive: { ...record.archive, state } };
+    api.history.mockResolvedValueOnce({ items: [item], nextCursor: null } as never).mockResolvedValueOnce({ items: [], nextCursor: null } as never);
+    api.archive.mockResolvedValue({ status: { payload: { state } }, archive: null } as never);
+    render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
+    fireEvent.click(await screen.findByRole('button', { name: /Herdr/ }));
+    await waitFor(() => expect(api.archive).toHaveBeenCalledWith(item, expect.any(AbortSignal)));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Refresh' })[0]!);
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull());
+    expect(screen.getByRole('button', { name: 'Close recording' })).toBeVisible();
+    expect(screen.getByText('Read-only')).toBeVisible();
+  });
   it('keeps native current rendering and opens history by original identity without controls', async () => {
     const api = fixture();
     const view = render(<TaskSessionHost projectId={projectId} taskId={taskId} claimId={claimId} mode="web" active current />);
