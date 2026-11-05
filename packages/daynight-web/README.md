@@ -128,7 +128,7 @@ returns to the public homepage only after confirmed success. Failed logout stays
 visible and retryable. Both
 complete catalogs provide its `messages.auth` domain, including accessible names,
 validation, notices and already displayed errors. Login, workspace, invitation and device authorization
-pages expose the shared language selector. Shared management dialogs inherit the
+pages expose the shared language selector. Shared management and project creation dialogs inherit the
 current language without their own selector or preference notice; native formatters
 render dates and counts. Language changes retain form inputs, dialog and
 one-time secrets, identity and pending requests without restarting operations.
