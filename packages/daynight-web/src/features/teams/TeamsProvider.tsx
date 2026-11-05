@@ -89,7 +89,7 @@ const useTeamsState = (preference: TeamPreference, admission: TaskCacheScope, ad
       }
     };
   }, [load, admissionBlocked]);
-  return { list, detail: preference.detail, forgetUnavailable: preference.forgetUnavailable, leaveTeam: preference.leaveTeam, refreshList: () => { void load({ kind: "refresh", cursor: null }); }, revalidateList: () => { void load({ kind: "revalidate", cursor: null }); }, loadMore: () => { if (list.cursor !== null && (listRequest.current === null || listRequest.current.operation.kind === "revalidate")) void load({ kind: "more", cursor: list.cursor }, listRequest.current?.operation.kind === "revalidate"); }, refreshDetail: preference.retry, acceptTeam: preference.acceptTeam };
+  return { list, detail: preference.detail, visibilityTeamId: preference.visibilityTeamId, forgetUnavailable: preference.forgetUnavailable, leaveTeam: preference.leaveTeam, refreshList: () => { void load({ kind: "refresh", cursor: null }); }, revalidateList: () => { void load({ kind: "revalidate", cursor: null }); }, loadMore: () => { if (list.cursor !== null && (listRequest.current === null || listRequest.current.operation.kind === "revalidate")) void load({ kind: "more", cursor: list.cursor }, listRequest.current?.operation.kind === "revalidate"); }, refreshDetail: preference.retry, acceptTeam: preference.acceptTeam };
 };
 export const TeamsProvider = ({ preference, admission, admissionBlocked, children }: { readonly preference: TeamPreference; readonly admission: TaskCacheScope; readonly admissionBlocked: boolean; readonly children: ReactNode }) => {
   const state = useTeamsState(preference, admission, admissionBlocked);

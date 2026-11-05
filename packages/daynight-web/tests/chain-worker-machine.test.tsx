@@ -18,8 +18,8 @@ const child = (n: number, changes: Partial<TaskSummary> = {}) => task(n, { depen
 const snapshot = (tasks: TaskSummary[]): GraphSnapshot => ({ ...projectSummaries(project, tasks, time), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
 const noop = () => {};
 const workspace = (value: GraphSnapshot, onOpenTask = noop) => <ProjectTaskWorkspace projectId={project.id} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
-  chains={{ projectId: project.id, representativeIds: [root.id], allRepresentativeIds: [root.id], openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask, showAll: true, onShowAllChange: noop }}
-  standalone={{ projectId: project.id, taskIds: [], allTaskIds: [], onSelectTask: noop, showAll: true, onShowAllChange: noop }} />;
+  chains={{ projectId: project.id, representativeIds: [root.id], allRepresentativeIds: [root.id], openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask }}
+  standalone={{ projectId: project.id, taskIds: [], allTaskIds: [], onSelectTask: noop }} />;
 const row = (n: number) => document.getElementById(`chain-task-${root.id}-${id(n)}`)!;
 
 describe('chain worker machine presentation', () => {

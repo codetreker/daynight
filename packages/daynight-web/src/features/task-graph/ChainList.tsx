@@ -19,7 +19,6 @@ import '../../styles/task-status-rows.css';
 
 type ChainListProps = {
   readonly projectId: string;
-  readonly matchingTaskIds?: ReadonlySet<string>;
   readonly index: GraphIndex;
   readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">>;
   readonly representativeIds: readonly string[];
@@ -30,11 +29,9 @@ type ChainListProps = {
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
   readonly pagination?: PaginationState;
-  readonly showAll: boolean;
-  readonly onShowAllChange: (show: boolean) => void;
 };
 
-type ChainRowProps = Pick<ChainListProps, 'projectId' | 'matchingTaskIds' | 'index' | 'workerMachines' | 'onOpenChain' | 'onOpenTask' | 'onOpenSession'> & {
+type ChainRowProps = Pick<ChainListProps, 'projectId' | 'index' | 'workerMachines' | 'onOpenChain' | 'onOpenTask' | 'onOpenSession'> & {
   readonly rootId: string;
   readonly open: boolean;
 };
@@ -69,8 +66,8 @@ const GoalTaskRow = memo(({ projectId, task, rootId, workerMachine, onOpenTask, 
   </li>;
 });
 
-const ChainRow = memo(({ projectId, matchingTaskIds, index, workerMachines, rootId, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps) => {
-  const { messages, messages: { graph: m } } = useI18n();
+const ChainRow = memo(({ projectId, index, workerMachines, rootId, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps) => {
+  const { messages: { graph: m } } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const task = index.nodes.get(rootId)!;
   const component = index.components.get(rootId)!;
@@ -83,7 +80,7 @@ const ChainRow = memo(({ projectId, matchingTaskIds, index, workerMachines, root
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   const members = useMemo(() => {
     const memberIds = index.components.get(rootId)!.memberIds;
-    return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id) && (matchingTaskIds === undefined || matchingTaskIds.has(node.id)))
+    return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id))
       .toSorted((left, right) => {
         const status = compareTaskStatus(left.status, right.status);
         if (status !== 0 || left.status !== 'done') return status;
@@ -93,7 +90,7 @@ const ChainRow = memo(({ projectId, matchingTaskIds, index, workerMachines, root
         const rightTime = timestampNanoseconds(right.completedAt);
         return leftTime > rightTime ? -1 : leftTime < rightTime ? 1 : 0;
       });
-  }, [index, rootId, matchingTaskIds]);
+  }, [index, rootId]);
   return <li ref={observeVisibility} className="root-row goal-row" data-chain-id={rootId} data-task-status={progress.status}>
     <div className="goal-header task-status-surface" data-task-status={progress.status}>
       <button className="root-toggle goal-toggle" type="button" id={`task-root-${rootId}`} aria-expanded={expanded}
@@ -114,7 +111,7 @@ const ChainRow = memo(({ projectId, matchingTaskIds, index, workerMachines, root
       </button>
     </div>
     <div id={`goal-children-${rootId}`} hidden={!expanded} className="goal-children">
-      <div className="goal-children-heading"><span>{matchingTaskIds === undefined ? m.childTasks({ count: members.length }) : messages.assignment.matchingChildren({ count: members.length })}</span>
+      <div className="goal-children-heading"><span>{m.childTasks({ count: members.length })}</span>
         <button className="goal-detail-link" type="button" aria-haspopup="dialog" aria-label={m.goalDetailsLabel({ title })} onClick={(event) => onOpenTask(rootId, event.currentTarget)}>{m.goalDetails}</button>
       </div>
       <ul className="goal-task-list">{members.map((member) => <GoalTaskRow key={member.id} projectId={projectId} task={member} rootId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
@@ -128,9 +125,8 @@ const focusAvailable = (element: HTMLElement | null | undefined) => {
   return true;
 };
 
-export const ChainList = ({ projectId, matchingTaskIds, index, workerMachines, representativeIds, allRepresentativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onOpenSession, showAll, onShowAllChange, pagination }: ChainListProps) => {
+export const ChainList = ({ projectId, index, workerMachines, representativeIds, allRepresentativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onOpenSession, pagination }: ChainListProps) => {
   const { messages: { graph: m, assignment } } = useI18n();
-  const checkbox = useRef<HTMLInputElement>(null);
   const container = useRef<HTMLElement>(null);
   const focusedControl = useRef<HTMLElement | null>(null);
   const focusedChain = useRef<string | null>(null);
@@ -148,7 +144,7 @@ export const ChainList = ({ projectId, matchingTaskIds, index, workerMachines, r
     const representative = witness === null ? undefined : index.componentByTask.get(witness);
     const target = representative !== undefined && representativeIds.includes(representative) ? representative : representativeIds[0];
     if (target !== undefined && focusAvailable(container.current?.querySelector<HTMLElement>(`#task-root-${target}`))) return;
-    if (focusAvailable(checkbox.current) || focusAvailable(container.current)) return;
+    if (focusAvailable(container.current)) return;
     const panel = container.current?.closest<HTMLElement>('[role="tabpanel"]');
     const tabId = panel?.getAttribute('aria-labelledby');
     if (tabId !== undefined && tabId !== null) focusAvailable(document.getElementById(tabId));
@@ -160,7 +156,6 @@ export const ChainList = ({ projectId, matchingTaskIds, index, workerMachines, r
     if (openChainId !== null || focusedControl.current === null || focusedControl.current.isConnected || document.activeElement !== document.body) return;
     restoreListFocus(focusedChain.current);
   }, [index, openChainId, representativeIds, restoreListFocus]);
-  const completedCount = useMemo(() => allRepresentativeIds.filter((id) => index.components.get(id)!.progress.status === 'done').length, [index, allRepresentativeIds]);
   return <section id="project-chain-list" aria-label={m.chainList} ref={container} tabIndex={-1} onFocusCapture={(event) => {
     if (event.currentTarget.contains(event.target)) {
       focusedControl.current = event.target;
@@ -169,13 +164,11 @@ export const ChainList = ({ projectId, matchingTaskIds, index, workerMachines, r
     }
   }}>
     <div className="task-view-toolbar">
-      {allRepresentativeIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showAll} onChange={(event) => { onShowAllChange(event.currentTarget.checked); }} />{m.showAll}</label>}
       <span className="task-view-summary" aria-label={m.chainSummaryLabel({ shown: pagination === undefined ? representativeIds.length : pagination.total, total: allRepresentativeIds.length })}>{m.chainSummary({ shown: pagination === undefined ? representativeIds.length : pagination.total, total: allRepresentativeIds.length })}</span>
     </div>
     {allRepresentativeIds.length === 0 ? <div className="state-box"><h3>{m.emptyTitle}</h3><p>{m.emptyDescription}</p></div>
-      : representativeIds.length === 0 && matchingTaskIds !== undefined ? <div className="state-box"><h3>{assignment.noMatches}</h3></div>
-      : representativeIds.length === 0 ? <div className="state-box completed-chains-empty"><h3>{m.completedTitle}</h3><p>{m.completedDescription({ count: completedCount })}</p><button className="button" type="button" onClick={() => { checkbox.current!.focus(); onShowAllChange(true); }}>{m.showAll}</button></div>
-        : <ul className="root-list">{representativeIds.map((rootId) => <ChainRow key={rootId} projectId={projectId} {...(matchingTaskIds === undefined ? {} : { matchingTaskIds })} index={index} workerMachines={workerMachines} rootId={rootId} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
+      : representativeIds.length === 0 ? <div className="state-box"><h3>{assignment.noMatches}</h3></div>
+        : <ul className="root-list">{representativeIds.map((rootId) => <ChainRow key={rootId} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     {pagination !== undefined && <ListPagination label={m.chainList} {...pagination} />}
     {openChainId !== null && <TaskChainDialog index={index} rootId={openChainId} onOpenTask={onOpenTask} onClose={onCloseChain} onRestoreFocus={restoreFocus} />}
   </section>;

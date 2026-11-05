@@ -17,13 +17,22 @@ cancel and close actions do not submit. The existing identity, version, conflict
 and unknown-write protections remain owned by
 [Team management](2026-11-04-web-team-management.md).
 
+The name row centers its flex items vertically and allows wrapping. The name
+preserves whitespace and can break long words; the action retains its size.
+The Team management browser suite checks the resulting geometry and interactions
+in the browser CI shard.
+
 ## Alternatives
 
 **Keep the inline form.** It avoids opening a dialog but presents the saved name
 as an active input even when the user only wants to inspect the Team.
 
+**Align the name and action at the top.** Their different heights leave the
+action's center visibly below a single-line name.
+
 ## Consequences
 
 Editing is explicit and uses the existing dialog's focus and keyboard behavior.
 The operation state outlives dialog visibility, so closing and reopening it does
-not permit an unconfirmed write to be repeated.
+not permit an unconfirmed write to be repeated. Long names can occupy multiple
+lines while the action remains accessible on narrow screens.

@@ -50,6 +50,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
   const epoch = routeRef.current.epoch;
   const navigation = routeRef.current.navigation;
   const savedNavigation = useRef<number | null>(null);
+  const verifiedNavigation = useRef<number | null>(null);
   const [saveError, setSaveError] = useState(false);
   const [revision, setRevision] = useState(0);
   const retry = useCallback(() => setRevision((value) => value + 1), []);
@@ -80,7 +81,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
       if (exact !== null) exact = mergeTeam(currentTeam.current, exact);
       currentTeam.current = exact;
       const value = exact ?? team;
-      initialized.current = true; current.current = value;
+      initialized.current = true; current.current = value; verifiedNavigation.current = navigation;
       setState({ key, detail: { id: value.id, status: "ready", team: value } });
     };
     const fail = (id: string, error: unknown, storageError = false) => {
@@ -184,5 +185,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
     if (key === "default") retry();
   }, [admission, personal, save, retry]);
   const detail: Detail = requestKey === null ? { id: current.current.id, status: "ready", team: current.current } : state.key !== requestKey ? { id: requestKey === "default" ? current.current.id : requestKey, status: "loading" } : state.detail;
-  return { detail, confirmedTeam: currentTeam.current, retry, saveError, retrySave, acceptTeam, forgetUnavailable, leaveTeam };
+  // Preserve the known sidebar shape during a same-navigation read without admitting its links.
+  const visibilityTeamId = detail.status === "ready" ? detail.id : detail.status === "loading" && verifiedNavigation.current === navigation ? current.current.id : null;
+  return { detail, visibilityTeamId, confirmedTeam: currentTeam.current, retry, saveError, retrySave, acceptTeam, forgetUnavailable, leaveTeam };
 };
