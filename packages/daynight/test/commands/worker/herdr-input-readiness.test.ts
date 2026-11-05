@@ -168,6 +168,28 @@ it("keeps actual DIM evidence distinct from RGB/indexed channel values", async (
   } finally { f.operation.dispose(); }
 });
 
+it.each([
+  "⏵⏵ bypass permissions on (shift+tab to cycle)",
+  "⏵⏵ bypass permissions on (shift+tab to cycle) · PR #547 · ← for agents",
+])("recognizes an empty Claude field with its permission footer: %s", async footer => {
+  const f = fixture(); f.observation.kind = "claude";
+  try {
+    f.text(`────────\n❯\n────────\n \x1b[2m${footer}\x1b[0m`);
+    await expect(f.inspect("resume")).resolves.toMatchObject({ composer: "empty" });
+    for (const field of ["❯ actual draft", "❯\nactual multiline draft", "❯ Try \"explain this repository\""]) {
+      f.text(`────────\n${field}\n────────\n ${footer}`);
+      await expect(f.inspect("resume")).rejects.toMatchObject({ code: "automation_suspended" });
+    }
+    expect(f.calls).not.toContain("terminal.attach");
+  } finally { f.operation.dispose(); }
+});
+
+it.each(["bypass permissions on (shift+tab to cycle)", "⏵⏵ bypass permissions on (unknown mode)", "⏵⏵ bypass permissions on (shift+tab to cycle) arbitrary text"])("does not infer an empty Claude field from an unknown permission footer: %s", async footer => {
+  const f = fixture(); f.observation.kind = "claude"; f.text(`────────\n❯\n────────\n ${footer}`);
+  try { await expect(f.inspect("resume")).rejects.toMatchObject({ code: "automation_suspended" }); }
+  finally { f.operation.dispose(); }
+});
+
 it.each(["────────\n❯ Try \"explain this repository\"\n────────\n ? for shortcuts", "────────\n❯\nactual multiline draft\n────────\n ? for shortcuts"])("does not label ambiguous Claude placeholder or multiline draft empty: %j", async screen => {
   const f = fixture(); f.observation.kind = "claude"; f.text(screen);
   try { await expect(f.inspect("resume")).rejects.toMatchObject({ code: "automation_suspended" }); }

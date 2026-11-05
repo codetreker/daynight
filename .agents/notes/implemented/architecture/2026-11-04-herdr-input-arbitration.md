@@ -32,6 +32,10 @@ preserved. Codex requires the renderer-DIM placeholder and current field
 geometry, not just its words; literal or multiline drafts and ambiguous styles
 do not become empty. RGB/indexed color arguments are not DIM evidence. Claude
 requires a genuinely blank bordered field and rejects ambiguous Try text.
+Its known permission footer is recognized alongside shortcut hints, including
+the native PR and agent-navigation suffixes. The permission label identifies a
+layout, grants no permission and cannot replace the empty bordered field; unknown
+labels, arbitrary suffixes and nonempty drafts remain unproved.
 Optional model, cwd and status-bar content are not requirements. Unknown fields
 and drafts cannot become empty. Copilot retains unavailable evidence and its
 explicit handback responsibility. The
