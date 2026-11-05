@@ -836,6 +836,11 @@ The task Session host keeps the native Web timeline and dispatches Herdr executi
 to a read-only terminal preview with explicit control acquisition. Hidden terminal
 views close their viewer channel and release the browser lease; Worker recording
 continues independently. Controls become available only after Worker confirmation.
+During visibility or identity checks, the last confirmed screen, draft and
+same-control confirmation remain in place while input, receipt polling and lease
+renewal pause. A recovery read alone does not permit input: a fresh channel
+observation matching the current fence and control epoch is also required.
+Actual disconnections and errors remain visible.
 Unknown initial submission disposition and resuming automatic input require
 separate decisions. Unknown manual input is never automatically resent.
 
