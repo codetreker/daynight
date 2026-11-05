@@ -1,4 +1,4 @@
-package server
+package worker
 
 import (
 	"log/slog"
@@ -9,8 +9,9 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 )
 
 type workersHandler struct {
@@ -18,7 +19,7 @@ type workersHandler struct {
 	logger  *slog.Logger
 }
 
-func workersRoutes(mux *http.ServeMux, workers *service.Workers, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux *http.ServeMux, workers *service.Workers, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := &workersHandler{workers: workers, logger: logger}
 	base := "/api/v1/me/workers"
 	mux.HandleFunc("GET "+base+"/{workerId}/configuration", auth.Require(handler.configuration))
@@ -71,7 +72,7 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 	if configurationAware {
-		input.Configuration, err = service.ParseWorkerConfigurationExchange(fields["configuration"])
+		input.Configuration, err = workercore.ParseWorkerConfigurationExchange(fields["configuration"])
 		if err != nil {
 			httpx.WriteError(w, request, logger, "worker_report", "validate", err)
 			return
@@ -136,15 +137,11 @@ func (h *workersHandler) get(w http.ResponseWriter, request *http.Request, princ
 }
 
 func workerSummaryResponse(worker model.WorkerSnapshot) api.WorkerSummary {
-	var count *int
-	if worker.TaskSnapshot.State != model.WorkerTasksUnavailable {
-		value := len(worker.TaskSnapshot.Items)
-		count = &value
-	}
+	projection := workercore.ProjectSnapshot(worker)
 	return api.WorkerSummary{WorkerID: worker.WorkerID,
 		Machine: api.WorkerMachine{ID: worker.Telemetry.Machine.ID, Name: worker.Telemetry.Machine.Name}, Platform: string(worker.Telemetry.Platform),
 		LastReportedAt: worker.LastReportedAt.UTC(), TaskObservationState: string(worker.TaskSnapshot.State),
-		TaskObservedAt: workerOptionalTime(worker.TaskSnapshot.ObservedAt), ActiveTaskCount: count}
+		TaskObservedAt: workerOptionalTime(worker.TaskSnapshot.ObservedAt), ActiveTaskCount: projection.ActiveTaskCount}
 }
 
 func workerDetailResponse(worker model.WorkerSnapshot) api.WorkerDetail {

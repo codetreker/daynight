@@ -4,6 +4,7 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 
 	"context"
 	"errors"
@@ -84,7 +85,7 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 			return attachmentservice.NewAttachments(db, nil).List(ctx, principal, project.ID, missing, page)
 		}},
 		{"worker missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewWorkers(db).Get(ctx, principal, missing)
+			return workerservice.NewWorkers(db).Get(ctx, principal, missing)
 		}},
 		{"project success", false, func(ctx context.Context, db *store.Store) (any, error) {
 			return projectservice.NewProjects(db).Get(ctx, principal, project.ID)

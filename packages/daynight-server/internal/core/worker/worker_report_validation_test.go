@@ -1,4 +1,4 @@
-package service
+package worker
 
 import (
 	"errors"
@@ -31,7 +31,7 @@ func TestWorkerReportValidationCanonicalCopyAndExplicitInventory(t *testing.T) {
 	input.Telemetry.Machine.ID = strings.ToUpper(input.Telemetry.Machine.ID)
 	input.TaskInventory.Claims = []model.WorkerTaskReference{{ProjectID: strings.ToUpper(uuid.NewString()), TaskID: strings.ToUpper(uuid.NewString()), ClaimID: strings.ToUpper(uuid.NewString())}}
 	original := input.TaskInventory.Claims[0]
-	result, err := validateWorkerReport(input)
+	result, err := ValidateReport(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,13 +39,13 @@ func TestWorkerReportValidationCanonicalCopyAndExplicitInventory(t *testing.T) {
 		t.Fatal("validation did not return an independent canonical reference set")
 	}
 	input.TaskInventory = nil
-	if result, err := validateWorkerReport(input); err != nil || result.TaskInventory != nil {
+	if result, err := ValidateReport(input); err != nil || result.TaskInventory != nil {
 		t.Fatal("unknown inventory was changed or rejected", err)
 	}
 	input = validWorkerReportForValidation()
 	input.Telemetry.Versions.Herdr = model.WorkerProbe[string]{State: "not_running", CheckedAt: input.Telemetry.SampledAt}
 	input.Telemetry.OS = model.WorkerProbe[model.WorkerOS]{State: "error", CheckedAt: input.Telemetry.SampledAt, Code: workerValidationValue("io_error")}
-	if _, err := validateWorkerReport(input); err != nil {
+	if _, err := ValidateReport(input); err != nil {
 		t.Fatal("truthful collection states were rejected", err)
 	}
 }
@@ -101,7 +101,7 @@ func TestWorkerReportValidationRejectsInvalidDomainValues(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			input := validWorkerReportForValidation()
 			mutate(&input)
-			_, err := validateWorkerReport(input)
+			_, err := ValidateReport(input)
 			if err == nil {
 				t.Fatal("invalid report accepted")
 			}

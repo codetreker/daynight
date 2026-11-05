@@ -3,6 +3,7 @@ package service
 import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 
 	"context"
 	"errors"
@@ -31,7 +32,7 @@ func botService(t *testing.T) (*Bots, *store.Store, model.Principal, string) {
 	t.Cleanup(database.Close)
 	principal := servicePrincipal(t, database)
 	workerID := uuid.NewString()
-	if _, err := NewWorkers(database).Report(context.Background(), principal, workerID, serviceWorkerReport()); err != nil {
+	if _, err := workerservice.NewWorkers(database).Report(context.Background(), principal, workerID, serviceWorkerReport()); err != nil {
 		t.Fatal(err)
 	}
 	return NewBots(database), database, principal, workerID
@@ -249,7 +250,7 @@ func TestBotsPaginationAndCompositeWorkerIdentity(t *testing.T) {
 	bots, database, principal, workerID := botService(t)
 	ctx := context.Background()
 	other := servicePrincipal(t, database)
-	if _, err := NewWorkers(database).Report(ctx, other, workerID, serviceWorkerReport()); err != nil {
+	if _, err := workerservice.NewWorkers(database).Report(ctx, other, workerID, serviceWorkerReport()); err != nil {
 		t.Fatal(err)
 	}
 	foreign, err := bots.Create(ctx, other, botInput(workerID))

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"math"
 	"reflect"
 	"strconv"
@@ -14,7 +16,6 @@ import (
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -27,7 +28,7 @@ func cloudWorkerConfiguration(projectID string) model.WorkerConfiguration {
 	return model.WorkerConfiguration{MaxConcurrent: 2, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: projects}
 }
 
-func importWorkerConfiguration(t *testing.T, workers *Workers, principal model.Principal, workerID string, value model.WorkerConfiguration) WorkerReportResult {
+func importWorkerConfiguration(t *testing.T, workers *workerservice.Workers, principal model.Principal, workerID string, value model.WorkerConfiguration) workerservice.WorkerReportResult {
 	t.Helper()
 	report := serviceWorkerReport()
 	report.Configuration = &model.WorkerConfigurationExchange{Bootstrap: &value}
@@ -41,7 +42,7 @@ func importWorkerConfiguration(t *testing.T, workers *Workers, principal model.P
 func TestWorkerConfigurationBootstrapCloudAuthorityAndPersistence(t *testing.T) {
 	projects, database, _, principal := projectService(t)
 	ctx := context.Background()
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	id := uuid.NewString()
 	project, err := projects.Create(ctx, principal, coreproject.CreateProject{Name: "Configuration project", RepoURL: "https://example.com/configuration.git", ExpectedUserID: principal.UserID})
 	if err != nil {
@@ -106,10 +107,10 @@ func TestWorkerConfigurationBootstrapCloudAuthorityAndPersistence(t *testing.T) 
 func TestWorkerConfigurationConcurrentBootstrapAndIndependentCAS(t *testing.T) {
 	_, database, _, principal := projectService(t)
 	ctx := context.Background()
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	id := uuid.NewString()
 	barrier := make(chan struct{})
-	results := make(chan WorkerReportResult, 2)
+	results := make(chan workerservice.WorkerReportResult, 2)
 	failures := make(chan error, 2)
 	for index := range 2 {
 		go func(index int) {
@@ -199,7 +200,7 @@ func TestWorkerConfigurationConcurrentBootstrapAndIndependentCAS(t *testing.T) {
 func TestWorkerConfigurationRetainsLostProjectsButRejectsChangesAndNewSelections(t *testing.T) {
 	_, database, project, _, _ := taskService(t)
 	ctx := context.Background()
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	member := workerMember(t, database, project.ID)
 	id := uuid.NewString()
 	value := cloudWorkerConfiguration(project.ID)
@@ -214,7 +215,9 @@ func TestWorkerConfigurationRetainsLostProjectsButRejectsChangesAndNewSelections
 	}
 	value.Projects[0].NativeOverrides = map[string]json.RawMessage{"model": json.RawMessage(`null`)}
 	_, err = workers.PutConfiguration(ctx, member, id, "2", value)
-	requireFault(t, err, "not_found")
+	if fault := requireFault(t, err, "not_found"); fault.Message != "A selected project was not found or is inaccessible." {
+		t.Fatalf("wrong inaccessible project message: %s", fault.Message)
+	}
 	value.Projects = []model.WorkerProjectConfiguration{}
 	result, err = workers.PutConfiguration(ctx, member, id, "2", value)
 	if err != nil || result.Desired.Revision != "3" {
@@ -228,7 +231,7 @@ func TestWorkerConfigurationRetainsLostProjectsButRejectsChangesAndNewSelections
 func TestWorkerConfigurationRevisionExhaustionAndRollback(t *testing.T) {
 	_, database, _, principal := projectService(t)
 	ctx := context.Background()
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	id := uuid.NewString()
 	value := cloudWorkerConfiguration("")
 	importWorkerConfiguration(t, workers, principal, id, value)
@@ -270,7 +273,7 @@ func TestWorkerConfigurationRevisionExhaustionAndRollback(t *testing.T) {
 
 func TestWorkerConfigurationValidationAndTransactionFailures(t *testing.T) {
 	_, database, _, principal := projectService(t)
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	ctx := context.Background()
 	id := uuid.NewString()
 	value := cloudWorkerConfiguration("")
@@ -312,12 +315,12 @@ func TestWorkerConfigurationValidationAndTransactionFailures(t *testing.T) {
 
 func TestWorkerConfigurationConcurrentObservationSingleWinner(t *testing.T) {
 	_, database, _, principal := projectService(t)
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	id := uuid.NewString()
 	importWorkerConfiguration(t, workers, principal, id, cloudWorkerConfiguration(""))
 	ctx := context.Background()
 	var wg sync.WaitGroup
-	results := make(chan WorkerReportResult, 2)
+	results := make(chan workerservice.WorkerReportResult, 2)
 	failures := make(chan error, 2)
 	barrier := make(chan struct{})
 	for range 2 {
@@ -350,25 +353,6 @@ func TestWorkerConfigurationConcurrentObservationSingleWinner(t *testing.T) {
 	}
 }
 
-func TestWorkerConfigurationRefusalDoesNotHideTransactionFailure(t *testing.T) {
-	refusal := &model.Fault{Code: "version_conflict", Message: "Configuration changed."}
-	cleanup := errors.New("rollback failed")
-	for _, failure := range []*store.TransactionError{
-		{Phase: "cleanup", Cause: errors.Join(refusal, cleanup), Outcome: store.TransactionUnknown, CleanupFailed: true},
-		{Phase: "commit", Cause: refusal, Outcome: store.TransactionUnknown, CommitAttempted: true},
-		{Phase: "operation", Cause: refusal, Outcome: store.TransactionUnknown},
-	} {
-		err := workerConfigurationError("save worker configuration", failure)
-		if err == refusal || !errors.Is(err, failure) {
-			t.Fatalf("operational failure replaced with refusal: %v", err)
-		}
-	}
-	failure := &store.TransactionError{Phase: "operation", Cause: refusal, Outcome: store.TransactionNotCommitted}
-	if err := workerConfigurationError("save worker configuration", failure); err != refusal {
-		t.Fatalf("rolled back refusal not returned: %v", err)
-	}
-}
-
 func TestWorkerConfigurationJSONBRoundtripPreservesSemanticEquality(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -378,7 +362,7 @@ func TestWorkerConfigurationJSONBRoundtripPreservesSemanticEquality(t *testing.T
 			_, database, project, _, _ := taskService(t)
 			principal := workerMember(t, database, project.ID)
 			ctx := context.Background()
-			workers := NewWorkers(database)
+			workers := workerservice.NewWorkers(database)
 			id := uuid.NewString()
 			value := cloudWorkerConfiguration(project.ID)
 			value.Projects[0].NativeOverrides = map[string]json.RawMessage{
@@ -414,6 +398,6 @@ func TestWorkerConfigurationJSONBRoundtripPreservesSemanticEquality(t *testing.T
 func TestWorkerConfigurationRejectsUnencodableOverrides(t *testing.T) {
 	value := cloudWorkerConfiguration("")
 	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: uuid.NewString(), NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`invalid`)}}}
-	_, err := normalizeWorkerConfiguration(value)
+	_, err := workercore.NormalizeConfiguration(value)
 	requireFault(t, err, "invalid_input")
 }

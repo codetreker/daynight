@@ -1,4 +1,4 @@
-package server
+package worker
 
 import (
 	"encoding/json"
@@ -114,4 +114,13 @@ func TestWorkerReportTimestampSyntax(t *testing.T) {
 			t.Errorf("invalid timestamp accepted: %s", value)
 		}
 	}
+}
+
+func jsonBody(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

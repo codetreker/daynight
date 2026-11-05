@@ -2,6 +2,7 @@ package service
 
 import (
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 
 	"context"
 	"encoding/base64"
@@ -93,7 +94,7 @@ func TestTaskAssignedToCursorScopeAndOtherCursorVersions(t *testing.T) {
 	if projectFields["version"] != float64(2) || projectFields["kind"] != "scoped-projects" {
 		t.Fatalf("project cursor version or kind mismatch: %#v", projectFields)
 	}
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	for range 2 {
 		if _, err := workers.Report(ctx, admin, uuid.NewString(), serviceWorkerReport()); err != nil {
 			t.Fatal(err)

@@ -4,7 +4,7 @@
 
 ## 职责与结构
 
-配置作为现有账号级 Worker 的独立子资源。HTTP 负责认证、能力选择和严格 JSON，service 负责规范配置、当前项目准入与版本决策，store 在 Worker 行上保存目标及应用观测。配置分支不读取或锁定任务数据，不调用认领或恢复操作。
+配置作为现有账号级 Worker 的独立子资源。HTTP 负责认证、能力选择和严格 JSON，core/worker 负责规范配置、当前项目准入与版本决策，service/worker 组织事务，store 在 Worker 行上保存目标及应用观测。配置分支不读取或锁定任务数据，不调用认领或恢复操作。
 
 ~~~mermaid
 flowchart LR

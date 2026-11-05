@@ -44,7 +44,7 @@ func (s *Snapshot) WorkerConfiguration(ctx context.Context, userID, workerID str
 	return value, nil
 }
 
-func (w *WorkerTx) WorkerConfiguration(ctx context.Context, userID, workerID string) (model.WorkerConfigurationResource, error) {
+func (w *workerTx) WorkerConfiguration(ctx context.Context, userID, workerID string) (model.WorkerConfigurationResource, error) {
 	value, err := scanWorkerConfiguration(w.tx.QueryRow(ctx, `SELECT `+workerConfigurationProjection+` FROM workers WHERE user_id=$1 AND worker_id=$2 FOR UPDATE`, userID, workerID))
 	if err != nil {
 		return model.WorkerConfigurationResource{}, queryError("lock worker configuration", err)
@@ -52,12 +52,12 @@ func (w *WorkerTx) WorkerConfiguration(ctx context.Context, userID, workerID str
 	return value, nil
 }
 
-func (w *WorkerTx) ConfigurationProjectAccess(ctx context.Context, userID, projectID string) error {
+func (w *workerTx) ConfigurationProjectAccess(ctx context.Context, userID, projectID string) error {
 	_, err := ReadProjectAccess(ctx, w.tx, userID, projectID)
 	return err
 }
 
-func (w *WorkerTx) SetWorkerConfiguration(ctx context.Context, userID, workerID string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
+func (w *workerTx) SetWorkerConfiguration(ctx context.Context, userID, workerID string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return model.WorkerDesiredConfiguration{}, queryError("encode worker configuration", err)
@@ -71,7 +71,7 @@ func (w *WorkerTx) SetWorkerConfiguration(ctx context.Context, userID, workerID 
 	return desired, nil
 }
 
-func (w *WorkerTx) SetWorkerConfigurationObservation(ctx context.Context, userID, workerID string, revision int64, value model.WorkerConfigurationObservation) error {
+func (w *workerTx) SetWorkerConfigurationObservation(ctx context.Context, userID, workerID string, revision int64, value model.WorkerConfigurationObservation) error {
 	reportedAt, err := w.ObservedAt(ctx)
 	if err != nil {
 		return err
