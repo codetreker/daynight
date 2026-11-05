@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import type { BotDefinition, BotDefaults } from '../../src/api/bots';
 import { createProject, createTask, expect, test } from './fixtures';
 import { openBotController, reportBotWorker } from './bot-controller';
+import { expectBotHeading } from './bot-heading';
 
 test.use({ locale: 'en-US' });
 
@@ -34,7 +35,7 @@ test('assistant navigation composes creation, shared conversations and authorita
     const navigation = page.locator('#workspace-sidebar').getByRole('link', { name: 'Assistants', exact: true });
     await expect(navigation).toBeVisible(); await navigation.click();
     await expect(page).toHaveURL(`${baseURL}/bots`); await expect(navigation).toHaveAttribute('aria-current', 'page');
-    for (const name of [`Acceptance A ${randomUUID().slice(0, 8)}`, `Acceptance B ${randomUUID().slice(0, 8)}`]) {
+    for (const name of ['UI audit mobile 20261105', `Acceptance B ${randomUUID().slice(0, 8)}`]) {
       await page.getByRole('button', { name: 'Create assistant', exact: true }).click();
       const dialog = page.getByRole('dialog', { name: 'Create assistant', exact: true });
       await expect(dialog.locator('details')).not.toHaveAttribute('open', '');
@@ -70,6 +71,31 @@ test('assistant navigation composes creation, shared conversations and authorita
     const restored = await timeline.locator(`[data-entry-key="${anchor.key}"]`).evaluate(node => node.getBoundingClientRect().top - node.closest('.session-timeline')!.getBoundingClientRect().top);
     expect(Math.abs(restored - anchor.offset)).toBeLessThanOrEqual(3);
 
+    const headings: unknown[] = [];
+    for (const width of [320, 390, 768, 1024, 1280]) {
+      await page.setViewportSize({ width, height: 1000 });
+      for (const locale of ['en', 'zh-CN']) {
+        await page.locator('.topbar').getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
+        const opener = page.getByRole('button', { name: a.name, exact: true });
+        await expect(opener).toHaveAttribute('aria-expanded', 'false');
+        const bounds = await expectBotHeading(page);
+        headings.push({ width, locale, bounds });
+        await expect(page.locator('.bot-conversation-heading .bot-status')).toContainText(locale === 'en' ? 'Started' : '已启动');
+        await expect(page.locator('.bot-conversation-heading .bot-status')).toContainText('Assistant acceptance host');
+        await opener.focus(); await page.keyboard.press('Enter');
+        await expect(opener).toHaveAttribute('aria-expanded', 'true');
+        const details = page.getByRole(width <= 1000 ? 'dialog' : 'complementary', { name: locale === 'en' ? 'Assistant details' : '助手详情', exact: true });
+        await expect(details).toContainText('/assistant-acceptance');
+        await expect(details.getByRole('button', { name: locale === 'en' ? 'Close assistant details' : '关闭助手详情', exact: true })).toBeFocused();
+        await page.keyboard.press('Escape'); await expect(details).not.toBeVisible(); await expect(opener).toBeFocused();
+        await expect(pane().getByRole('textbox')).toHaveValue('Draft A retained');
+        expect(await pane().getByRole('textbox').evaluate((node, original) => node === original, original)).toBe(true);
+        expect(await page.locator('.bot-session-host').evaluate((node, original) => node === original, shell)).toBe(true);
+        expect(controllers[0]!.commands).toEqual([]); expect(controllers[1]!.commands).toEqual([]);
+      }
+    }
+    await page.locator('.topbar').getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
+    await page.setViewportSize({ width: 1440, height: 1000 });
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       const opener = page.getByRole('button', { name: a.name, exact: true });
@@ -85,6 +111,7 @@ test('assistant navigation composes creation, shared conversations and authorita
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       const path = info.outputPath(`assistant-${viewport.width}.png`); await page.screenshot({ path }); await info.attach(`assistant-${viewport.width}`, { path, contentType: 'image/png' });
     }
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await choose(b); await expect(message()).toHaveValue('Draft B retained');
     allowBrowserWrites([{ method: 'POST', url: new URL(`/api/v1/test-sessions/${controllers[1]!.sessionId}/commands`, baseURL).href, count: 1 }]);
     await message().fill('Send only to assistant B'); await pane().getByRole('button', { name: 'Send', exact: true }).click();
@@ -114,7 +141,7 @@ test('assistant navigation composes creation, shared conversations and authorita
     expect((await page.goto(`/bots/${b.id}`))?.status(), 'Assistant detail URL serves the production application').toBe(200);
     await expect(message()).toBeEnabled(); await expect(pane().locator('.session-entry')).toHaveCount(30);
     const evidence = info.outputPath('assistant-composition.json');
-    await writeFile(evidence, JSON.stringify({ boundary: 'Production App, HTTP management, PostgreSQL and WebSocket relay with a controlled writer; no native Provider or Worker process.', workerId, legacyWorkerId, bots: controllers.map(controller => ({ botId: controller.botId, sessionId: controller.sessionId, commands: controller.commands.length })), independentTask: task.id, originalNodesRetained: true, deletionBarrier: barrier.status(), deletedHistoryDenied: denied.status() }, null, 2));
+    await writeFile(evidence, JSON.stringify({ boundary: 'Production App, HTTP management, PostgreSQL and WebSocket relay with a controlled writer; no native Provider or Worker process.', workerId, legacyWorkerId, bots: controllers.map(controller => ({ botId: controller.botId, sessionId: controller.sessionId, commands: controller.commands.length })), independentTask: task.id, headings, originalNodesRetained: true, deletionBarrier: barrier.status(), deletedHistoryDenied: denied.status() }, null, 2));
     await info.attach('assistant-composition', { path: evidence, contentType: 'application/json' });
   } finally {
     const cleanup = await Promise.allSettled(controllers.map(controller => controller.remove()));

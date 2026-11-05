@@ -40,6 +40,8 @@ WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身�
 
 ## 详情与全屏边界
 
+`.bot-conversation` 建立具名 inline-size 查询容器，标题在其可用宽度不超过 420px 时改为纵向布局：关闭链接在前，名称和状态区占满后一行。查询对话列而非窗口，使桌面分栏内的窄标题和全屏后的宽标题采用各自实际空间。标题信息区和名称文字允许收缩与任意位置断行，展开标记保持自身宽度；状态子项同样可收缩和断行。保留 19px 标题字体和自然内容高度，避免用截断丢失名称、主机或错误原因。该 CSS 布局不增加宽度状态、不写入业务数据，也不参与 Session 或详情模式的选择。取舍见[窄标题布局决策](../../.agents/notes/implemented/bug-fix/2026-11-05-bot-narrow-heading.md)。
+
 `BotsPage` 拥有局部 `detailsOpen` 状态和名称按钮 ref；它们不参与 Session cache、pane key 或 client 的依赖。面板是会话内容的兄弟节点，`BotDetailsPanel` 接收当前详情读取所得的 Bot、相同 workerId 的 defaults 观测及 stale 标记，不另行读取或保存选中 Bot。切换时 `useBotRead` 的资源 key 隔离会立即清空旧值；面板可以保持挂载并显示加载，随后与标题及绑定一起接纳新目标。权威删除、拒绝访问、无选中项或 scope 失效撤下面板；临时读取准入暂停保留展开状态和已确认内容。创建及删除确认的展示同样由用户操作、真实资源状态与 scope 生命周期拥有，提交仍检查准入。
 
 名称、Worker、cwd 和 Agent 来自已解析的 Bot 定义。`BotStatus` 复用列表与标题的启动结果及观测解释，详情状态不以 Worker 名称替代可用性说明；冻结启动配置不受后来 defaults 变化影响。读取失败与不可用保持原有状态，不将持久 ready 转换为当前 Session 同步事实。
