@@ -2,6 +2,4 @@
   max-width: none;
   margin: 0;
   padding: 0;
-  /* The Bot heading sits outside the shared composer's measured ancestors. */
-  min-height: min(100%, calc(var(--session-composer-space, 0px) + 44px));
 }

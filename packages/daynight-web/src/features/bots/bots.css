@@ -62,6 +62,5 @@
 
 @media (max-height: 500px) {
   .bot-conversation-heading { flex-shrink: 1; min-height: 44px; max-height: 25%; padding: 6px 12px; overflow: auto; overscroll-behavior: contain; }
-  .bot-conversation-body { min-height: min(calc(100% - 44px), var(--session-composer-space, 0px)); }
   .bot-conversation[data-session-fullscreen="true"] .bot-conversation-heading { margin-bottom: 0; }
 }
