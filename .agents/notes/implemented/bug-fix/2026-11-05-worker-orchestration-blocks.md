@@ -22,7 +22,12 @@ Resuming orchestration requires the complete original worktree binding, private
 launch identity, authenticated live observation, native identity and process
 instance proofs. It clears only the matching block and advances the startup
 report revision atomically. It does not prepare or launch a Controller, change
-generation, submit initial input, replay input or reset native recovery count.
+generation, replay submitted input or reset native recovery count. An unfinished
+first launch may bind its native identity from the authenticated original
+Controller and submit the original operation only when both durable and live
+observations prove it has not been submitted. Unknown delivery stays fenced.
+An allocated retry completes on the same healthy generation; its retained
+authorization flag does not authorize or require another replacement.
 A proven stopped original generation can hand back to the existing native
 recovery path, preserving its pause, budget and authorization checks. Clearing
 an orchestration block does not grant a replacement writer.
@@ -33,7 +38,10 @@ Legacy correction is restricted to the known branch-check misclassification.
 The old report, zero native count below the frozen limit, matching historical
 Worker errors and current original-generation health must agree. Historical
 logs establish the classification source only; they cannot authorize process
-replacement or substitute for current ownership. Missing or ambiguous evidence
+replacement or substitute for current ownership. Their bounded correlation
+window includes the old producer's capability and summary request deadlines:
+its final diagnostic is emitted after those requests, not when the report is
+persisted. Missing or ambiguous evidence
 keeps the pause visible.
 
 The existing startup report describes native startup and recovery, while the

@@ -8,7 +8,7 @@ import { requestController } from "../../controller/local-client.js";
 import { readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../controller/process-proof.js";
 import { WorktreePreconditionError } from "../worktrees.js";
-import { healthyOriginalGeneration, legacyBranchLatch, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
+import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { workerOperation, type WorkerGitManager } from "../execution.js";
 import { workerCleanupPrompt } from "../prompts.js";
 import { WorkerCleanupError, type WorkerCleanupStage } from "../cleanup-error.js";
@@ -91,15 +91,23 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       || ticket.cwd !== task.resources.worktree!.worktreePath || ticket.initialOperationId !== execution.initialOperationId || ticket.initialPrompt !== execution.initialPrompt
       || JSON.stringify(ticket.configuration) !== JSON.stringify(task.configuration)) throw new Error("Orchestration verification found conflicting original launch ownership.");
     const saved = readControllerSnapshot(journal(task));
-    if (saved === null || !matchesGeneration(task, saved) || saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession?.sessionId
+    const firstNativeObservation = blocker.source !== "legacy_worktree" && execution.executionGeneration === "1" && task.recovery.count === 0
+      && !task.recovery.retryAuthorized && !execution.restartAfterShutdown && task.resources.nativeSession === null;
+    if (saved === null || !matchesGeneration(task, saved) || (!firstNativeObservation && (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession?.sessionId))
       || saved.controllerProcess === null || JSON.stringify(saved.controllerProcess) !== JSON.stringify(execution.controllerProcess)) throw new Error("Orchestration verification requires original generation and process evidence.");
     let observed: ControllerSnapshot | null = null;
     try { observed = (await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 })).snapshot; }
     catch (error) { signal.throwIfAborted(); if (correctLegacyLatch) throw error; }
     if (observed !== null && !matchesGeneration(task, observed)) throw new Error("Orchestration verification found a conflicting controller generation.");
-    if (observed !== null && (observed.nativeSessionId !== task.resources.nativeSession?.sessionId
-      || ((observed.lifecycle === "ready" || observed.lifecycle === "working") && !healthyOriginalGeneration(task, observed)))) throw new Error("Orchestration verification found conflicting original native evidence.");
-    if (task.recovery.retryAuthorized || execution.restartAfterShutdown || observed === null || !healthyOriginalGeneration(task, observed)) {
+    const initialContinuation = blocker.source !== "legacy_worktree" && observed !== null && continuingInitialGeneration(task, observed);
+    const liveObservation = observed !== null && (healthyOriginalGeneration(task, observed) || initialContinuation);
+    if (initialContinuation && observed !== null && ((saved.nativeSessionId !== null && observed.nativeSessionId !== saved.nativeSessionId)
+      || !preservesNativeProcessPrefix(saved.nativeProcesses, observed.nativeProcesses)
+      || (saved.initialInputState !== "not_submitted" && observed.initialInputState === "not_submitted"))) throw new Error("The first native observation conflicts with the original controller journal.");
+    if (observed !== null && ((!firstNativeObservation && observed.nativeSessionId !== task.resources.nativeSession?.sessionId)
+      || ((observed.lifecycle === "ready" || observed.lifecycle === "working") && !liveObservation))) throw new Error("Orchestration verification found conflicting original native evidence.");
+    const unusedRetry = task.recovery.retryAuthorized && task.recovery.pauseReason !== null;
+    if (unusedRetry || execution.restartAfterShutdown || observed === null || !liveObservation) {
       const stopped = await confirmControllerProcessesStopped(saved.controllerProcess, saved.nativeProcesses);
       if (correctLegacyLatch || !stopped) {
         if (observed !== null && ["paused", "failed", "stopped", "stopping"].includes(observed.lifecycle)) options.store.pauseRecovery(task, observed.error ?? "The native controller is paused or stopped.", options.now(), "recovery_blocked");
@@ -115,7 +123,14 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     signal.throwIfAborted();
     task = await verifyWorktree(task, signal);
     task = options.store.clearOrchestration(task, blocker, observed, options.now(), legacyReport);
-    return { task: remember(task, observed), live: true };
+    task = remember(task, observed);
+    if (task.recovery.retryAuthorized) task = options.store.completeRecoveryRetry(task, observed, options.now());
+    if (initialContinuation && observed.initialInputState === "not_submitted") {
+      await options.launcher.refreshGrant(task, ticket, signal);
+      const response = await request(ticket, { kind: "submit_initial", operationId: execution.initialOperationId }, { signal, timeoutMs: 30000 });
+      task = remember(task, response.snapshot);
+    }
+    return { task, live: true };
   };
   return {
     observeStartupReport,

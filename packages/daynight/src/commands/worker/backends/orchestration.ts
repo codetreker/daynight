@@ -34,6 +34,26 @@ export const healthyOriginalGeneration = (task: LocalTask, snapshot: ControllerS
     && JSON.stringify(snapshot.controllerProcess) === JSON.stringify(execution.controllerProcess)
     && snapshot.nativeProcesses.length > 0 && JSON.stringify(snapshot.nativeProcesses) === JSON.stringify(execution.nativeProcesses);
 };
+/** Controller startup appends captured processes; every previously captured identity must remain unchanged. */
+export const preservesNativeProcessPrefix = (previous: ControllerSnapshot["nativeProcesses"], observed: ControllerSnapshot["nativeProcesses"]): boolean =>
+  previous.length <= observed.length && previous.every((proof, index) => JSON.stringify(proof) === JSON.stringify(observed[index]));
+
+/** An authenticated first-generation observation can establish its first native identity without creating another conversation. */
+export const continuingInitialGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean => {
+  const execution = task.webExecution;
+  return execution !== null && execution.executionGeneration === "1" && task.recovery.count === 0 && task.recovery.pauseReason === null
+    && !task.recovery.retryAuthorized && !execution.restartAfterShutdown && execution.initialInputState !== "failed"
+    && snapshot.executionId === execution.executionId && snapshot.claimId === task.claimId && snapshot.testExecutionId === undefined
+    && snapshot.sessionId === execution.sessionId && snapshot.executionGeneration === "1" && snapshot.controllerInstanceId === execution.controllerInstanceId
+    && (task.resources.nativeSession === null || snapshot.nativeSessionId === task.resources.nativeSession.sessionId)
+    && (snapshot.lifecycle === "ready" || snapshot.lifecycle === "working") && snapshot.startup?.state === "ready"
+    && !snapshot.nativeStopped && snapshot.stoppedAt === null && snapshot.error === null
+    && ["not_submitted", "dispatching", "provider_accepted", "unknown", "confirmed"].includes(snapshot.initialInputState)
+    && (snapshot.initialInputState !== "not_submitted" || execution.initialInputState === "not_submitted")
+    && snapshot.controllerProcess !== null && execution.controllerProcess !== null
+    && JSON.stringify(snapshot.controllerProcess) === JSON.stringify(execution.controllerProcess)
+    && snapshot.nativeProcesses.length > 0 && preservesNativeProcessPrefix(execution.nativeProcesses, snapshot.nativeProcesses);
+};
 export const stoppedOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean => {
   const execution = task.webExecution;
   return execution !== null && snapshot.executionId === execution.executionId && snapshot.claimId === task.claimId && snapshot.testExecutionId === undefined
@@ -54,6 +74,12 @@ export const legacyBranchLatch = (task: LocalTask): boolean => {
     && report.startup.state === "ready" && report.recovery.state === "blocked" && report.recovery.reasonCode === "recovery_limit"
     && task.resources.nativeSession !== null;
 };
+
+// The old producer timestamps execution-error after persisting the report and awaiting
+// capability discovery (10s) and claim summary (30s). Allow another 5s for local scheduling.
+// Keep this compatibility bound tied to that producer, independent of future API limits:
+// https://github.com/codetreker/daynight/blob/47c5152b5c1c3947977482c07bed34b5a068b78f/packages/daynight/src/commands/worker/coordinator.ts#L395-L440
+const LEGACY_DIAGNOSTIC_REPORT_DELAY_MS = 45_000;
 
 /** Old records lack a typed source. Their bounded, claim-specific diagnostic sequence supplies that missing evidence. */
 export const verifyLegacyBranchProvenance = async (home: string, task: LocalTask, signal: AbortSignal): Promise<void> => {
@@ -79,7 +105,7 @@ export const verifyLegacyBranchProvenance = async (home: string, task: LocalTask
         try { entry = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
         if (entry === null || entry.workerId !== task.workerId || entry.projectId !== task.projectId || entry.taskId !== task.taskId || entry.claimId !== task.claimId || entry.kind !== "execution-error") continue;
         const time = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
-        if (!Number.isFinite(time) || time < reportTime - 600_000 || time > reportTime + 5_000) continue;
+        if (!Number.isFinite(time) || time < reportTime - 600_000 || time > reportTime + LEGACY_DIAGNOSTIC_REPORT_DELAY_MS) continue;
         const error = entry.error as { name?: unknown; message?: unknown } | null;
         events.push({ time, branch: entry.sessionId === task.resources.nativeSession!.sessionId && error?.name === "Error" && error.message === LEGACY_BRANCH_ERROR });
       }

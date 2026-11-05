@@ -7,7 +7,7 @@ import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, RecoveryState } from "./web-types.js";
 import { webRecordInteger as integer, webRecordChoice as oneOf, webRecordText as text, webRecordId as id, parseWebWorktreeV1 as parseWorktree, parseWebExecutionV1 as parseWebExecution, parseWebCleanupV1 as parseCleanup, webClaimKey as key, parseWebTaskV1 as validate } from "./web-record.js";
 import { webExecutionStoreFormat } from "./web-store-format.js";
-import { healthyOriginalGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
+import { continuingInitialGeneration, healthyOriginalGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
 
 const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 // The Worker owns Web execution state here; claim scheduling stays in the minimal index.
@@ -75,7 +75,8 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
       const stoppedRecovery = observed !== null && stoppedOriginalGeneration(task, observed)
         && (task.recovery.retryAuthorized || (expected.source !== "legacy_worktree" && task.recovery.pauseReason === null));
       const correctLegacyLatch = expected.source === "legacy_worktree" && !stoppedRecovery;
-      if (execution?.launchSubmission !== undefined && execution.launchSubmission !== "not-submitted" && !stoppedRecovery && (observed === null || !healthyOriginalGeneration(task, observed))) throw new Error("Orchestration recovery requires the healthy original generation or an authorized proven stop.");
+      const initialContinuation = expected.source !== "legacy_worktree" && observed !== null && continuingInitialGeneration(task, observed);
+      if (execution?.launchSubmission !== undefined && execution.launchSubmission !== "not-submitted" && !stoppedRecovery && !initialContinuation && (observed === null || !healthyOriginalGeneration(task, observed))) throw new Error("Orchestration recovery requires the healthy original generation or an authorized proven stop.");
       if (correctLegacyLatch && (!legacyBranchLatch(task) || legacyReport === undefined || !same(legacyReport, execution?.startupReport))) throw new Error("A native recovery block cannot be cleared without the original legacy report revision.");
       const recovery = correctLegacyLatch ? { count: task.recovery.count, pauseReason: null, retryAuthorized: false } : task.recovery;
       const previous = execution?.startupReport;
