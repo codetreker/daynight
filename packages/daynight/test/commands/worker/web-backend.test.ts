@@ -42,6 +42,110 @@ const cleanupSource = async (f: Awaited<ReturnType<typeof fixture>>, input: Loca
   const request = vi.fn<typeof requestController>().mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
   return { task, ticket, snapshot, saved, stopped, request };
 };
+const orchestrationFixture = async () => {
+  const f = await fixture("codex", 3);
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  task = f.store.bindNativeSession(task, { source: "controller", sessionId: randomUUID() }, 3);
+  const source = await cleanupSource(f, task);
+  const nativeProcess = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "native-original", commandHash: "b".repeat(64) };
+  const snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null, startup: { state: "ready", reasonCode: "ready" }, nativeProcesses: [nativeProcess] };
+  task = f.store.updateWebExecution(source.task, { initialInputState: "confirmed", activity: "working", nativeProcesses: [nativeProcess] }, 6);
+  source.saved.mockReturnValue(snapshot); source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
+  vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("running");
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50_000, request: source.request });
+  const report = f.store.observeStartup(task, snapshot.startup!, 10_000)!;
+  return { ...f, task, source, snapshot, launcher, backend, report };
+};
+
+it("revalidates a worktree obstruction without native recovery, launch, or initial input replay", async () => {
+  const f = await orchestrationFixture();
+  const { WorktreePreconditionError } = await import("../../../src/commands/worker/worktrees.js");
+  vi.mocked(f.git.verifyWorktree).mockRejectedValue(new WorktreePreconditionError("branch_mismatch", "The task worktree no longer uses its original task branch."));
+  for (let i = 0; i < 4; i++) await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toThrow("original task branch");
+  expect(f.store.getTask(f.task)?.recovery).toEqual({ count: 0, pauseReason: null, retryAuthorized: false });
+  expect(f.store.getOrchestrationBlocker(f.task)).toMatchObject({ source: "worktree", code: "branch_mismatch" });
+  vi.mocked(f.git.verifyWorktree).mockResolvedValue(f.task.resources.worktree!);
+  const recovered = await f.backend.advance(f.task, new AbortController().signal);
+  expect(f.store.getOrchestrationBlocker(f.task)).toBeNull();
+  expect(recovered.webExecution).toMatchObject({ executionGeneration: "1", controllerInstanceId: f.task.webExecution!.controllerInstanceId });
+  expect(recovered.webExecution!.startupReport!.revision).toBe("2");
+  expect(recovered.recovery.count).toBe(0);
+  expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
+  expect(f.source.request.mock.calls.map(call => call[1].kind)).toEqual(["observe"]);
+});
+
+it.each((["paused", "failed", "stopped", "stopping"] as const).flatMap(lifecycle => [false, true].map(blocked => [lifecycle, blocked] as const)))("preserves real native %s protection below the recovery budget (worktree blocked=%s)", async (lifecycleState, blocked) => {
+  const f = await orchestrationFixture();
+  if (blocked) f.store.blockOrchestration(f.task, { source: "worktree", code: "branch_mismatch", message: "Branch differs." }, 8);
+  f.source.stopped.mockResolvedValue(false);
+  f.launcher.prepare.mockResolvedValue(f.source.ticket);
+  f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, lifecycle: lifecycleState, error: "Original native lifecycle failed." } });
+  await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toThrow();
+  expect(f.store.getTask(f.task)?.recovery).toMatchObject({ count: 0, pauseReason: "Original native lifecycle failed.", retryAuthorized: false });
+  expect(f.backend.observeStartupReport(f.task)?.recovery).toEqual({ state: "blocked", reasonCode: "recovery_blocked" });
+  expect(f.store.getOrchestrationBlocker(f.task) !== null).toBe(blocked);
+});
+
+it.each(["native", "generation", "controller", "process", "stopped", "initial"])("retains an orchestration block when the original %s evidence conflicts", async conflict => {
+  const f = await orchestrationFixture();
+  f.store.blockOrchestration(f.task, { source: "worktree", code: "branch_mismatch", message: "branch mismatch" }, 20_000);
+  const snapshot = { ...f.snapshot };
+  if (conflict === "native") snapshot.nativeSessionId = randomUUID();
+  if (conflict === "generation") snapshot.executionGeneration = "2";
+  if (conflict === "controller") snapshot.controllerInstanceId = randomUUID();
+  if (conflict === "stopped") snapshot.nativeStopped = true;
+  if (conflict === "initial") snapshot.initialInputState = "not_submitted";
+  if (conflict === "process") vi.mocked(processProof.inspectProcessProof).mockResolvedValue("replaced");
+  f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
+  await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toThrow();
+  expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
+  expect(f.store.getTask(f.task)?.recovery.count).toBe(0);
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it.each([true, false])("corrects only a legacy branch latch with matching diagnostic provenance (logs=%s)", async logs => {
+  const f = await orchestrationFixture();
+  f.store.pauseRecovery(f.task, "The task worktree no longer uses its original task branch.", 20_000, "recovery_limit");
+  const report = f.store.observeStartup(f.task, { state: "ready", reasonCode: "ready" }, 20_000)!;
+  if (logs) {
+    const dir = path.join(f.home, ".daynight", "worker", "logs"); await mkdir(dir, { recursive: true });
+    const entries = [1_000, 6_000, 12_000, 20_100].map(timestamp => ({ timestamp: new Date(timestamp).toISOString(), workerId: f.task.workerId, projectId: f.task.projectId, taskId: f.task.taskId, claimId: f.task.claimId, sessionId: f.task.resources.nativeSession!.sessionId, kind: "execution-error", error: { name: "Error", message: "The task worktree no longer uses its original task branch." } }));
+    await writeFile(path.join(dir, "worker-1970-01-01.jsonl"), entries.map(e => JSON.stringify(e)).join("\n") + "\n");
+  }
+  if (logs) {
+    const result = await f.backend.advance(f.task, new AbortController().signal);
+    expect(result.recovery).toEqual({ count: 0, pauseReason: null, retryAuthorized: false });
+    expect(BigInt(result.webExecution!.startupReport!.revision)).toBeGreaterThan(BigInt(report.revision));
+  } else {
+    await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toThrow(/provenance/);
+    expect(f.store.getTask(f.task)?.recovery.reasonCode).toBe("recovery_limit");
+  }
+  expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it.each(["worker", "claim", "native", "short", "time", "reason", "revision"] as const)("retains legacy recovery protection for conflicting %s provenance", async conflict => {
+  const f = await orchestrationFixture();
+  f.store.pauseRecovery(f.task, "The task worktree no longer uses its original task branch.", 20_000, "recovery_limit");
+  f.store.observeStartup(f.task, { state: "ready", reasonCode: "ready" }, 20_000);
+  const dir = path.join(f.home, ".daynight", "worker", "logs"); await mkdir(dir, { recursive: true });
+  const entries = [1_000, 6_000, 12_000, 20_100].map(timestamp => ({ timestamp: new Date(timestamp).toISOString(), workerId: f.task.workerId, projectId: f.task.projectId, taskId: f.task.taskId, claimId: f.task.claimId, sessionId: f.task.resources.nativeSession!.sessionId, kind: "execution-error", error: { name: "Error", message: "The task worktree no longer uses its original task branch." } }));
+  if (conflict === "worker") entries[3]!.workerId = randomUUID();
+  if (conflict === "claim") entries[3]!.claimId = randomUUID();
+  if (conflict === "native") entries[3]!.sessionId = randomUUID();
+  if (conflict === "short") entries.shift();
+  if (conflict === "time") entries[3]!.timestamp = new Date(30_000).toISOString();
+  if (conflict === "reason") entries[3]!.error.message = "Original controller stopped.";
+  if (conflict === "revision") f.source.request.mockImplementation(async () => {
+    f.store.observeStartup(f.task, { state: "unknown", reasonCode: "native_transport_unknown" }, 20_200);
+    f.store.observeStartup(f.task, { state: "ready", reasonCode: "ready" }, 20_300);
+    return { requestId: randomUUID(), ok: true, snapshot: f.snapshot };
+  });
+  await writeFile(path.join(dir, "worker-1970-01-01.jsonl"), entries.map(e => JSON.stringify(e)).join("\n") + "\n");
+  await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toThrow(/provenance|revision/);
+  expect(f.store.getTask(f.task)?.recovery).toMatchObject({ count: 0, reasonCode: "recovery_limit", retryAuthorized: false });
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+});
 it.each([false,true])("submits once and reobserves unknown first input, including a lazy native identity (lazy=%s)",async(lazyIdentity)=>{
  const f=await fixture();let snapshot:ControllerSnapshot;let launches=0;let submissions=0;
  const launcher={
@@ -453,12 +557,11 @@ it.each(["failed", "paused", "stopped", "stopping"] as const)("persists a failed
   expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
 });
 
-it.each(["worktree", "prepare"] as const)("retries the same unsubmitted generation after %s preparation fails and the Worker store reopens", async failure => {
+it("retries the same unsubmitted generation after launch preparation fails and the Worker store reopens", async () => {
   const f = await recoveryFixture();
   f.store.beginRecovery(f.task, 8);
   const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
-  if (failure === "worktree") vi.mocked(f.git.verifyWorktree).mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
-  else f.launcher.prepare.mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
+  f.launcher.prepare.mockRejectedValueOnce(new Error("Preparation temporarily unavailable."));
   await expect(f.backend.advance(authorized, new AbortController().signal)).rejects.toThrow("Preparation temporarily unavailable");
   const allocated = f.store.getTask(f.task)!;
   expect(allocated.webExecution).toMatchObject({ executionGeneration: "2", launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [] });
@@ -475,6 +578,89 @@ it.each(["worktree", "prepare"] as const)("retries the same unsubmitted generati
   expect(resumed.resources.nativeSession).toEqual(allocated.resources.nativeSession);
   expect(f.launcher.launch).toHaveBeenCalledOnce();
   expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+});
+
+it("keeps an allocated native retry through a transient worktree failure and store reopen without consuming another attempt", async () => {
+  const f = await recoveryFixture();
+  f.store.beginRecovery(f.task, 8);
+  vi.mocked(f.git.verifyWorktree).mockRejectedValueOnce(new Error("Worktree temporarily unavailable."));
+  await expect(f.backend.advance(f.store.authorizeRecoveryRetry(f.task, 9), new AbortController().signal)).rejects.toThrow("Worktree temporarily");
+  const allocated = f.store.getTask(f.task)!;
+  expect(allocated.recovery).toEqual({ count: 3, pauseReason: null, retryAuthorized: true });
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: reopened, git: f.git, launcher: f.launcher, platform: "macos", buildPrompt: vi.fn(), emit: () => {}, now: () => 30, request: f.request });
+  const result = await backend.advance(allocated, new AbortController().signal);
+  expect(result.recovery).toEqual({ count: 3, pauseReason: null, retryAuthorized: false });
+  expect(result.webExecution?.executionGeneration).toBe("2");
+  expect(reopened.getOrchestrationBlocker(allocated)).toBeNull();
+  expect(f.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+});
+
+it.each((["worktree", "coordinator", "legacy_worktree"] as const).flatMap(source => (["automatic", "retry", "shutdown"] as const).map(mode => [source, mode] as const)))("hands a resolved %s block to authorized native %s recovery after complete process stop", async (source, mode) => {
+  const f = await recoveryFixture(mode === "automatic" ? 3 : 2);
+  f.store.blockOrchestration(f.task, { source, code: "branch_mismatch", message: "branch mismatch" }, 8);
+  if (source === "legacy_worktree") f.store.pauseRecovery(f.task, "Native failure after legacy diagnosis.", 8, "recovery_blocked");
+  if (mode === "retry") f.store.authorizeRecoveryRetry(f.task, 9);
+  if (mode === "shutdown") {
+    f.store.beginCleanup(f.task, { kind: "shutdown", deadline: 100 }, 9);
+    f.store.clearShutdown(f.task, 10);
+    f.saved.mockReturnValue({ ...f.snapshot, error: null });
+  }
+  f.request.mockImplementation(async ticket => {
+    if (ticket.executionGeneration === "1") throw new Error("Original stopped controller is unreachable");
+    return { requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "ready", activity: "idle", nativeStopped: false, stoppedAt: null, error: null } };
+  });
+  const result = await f.backend.advance(f.store.getTask(f.task)!, new AbortController().signal);
+  if (source === "legacy_worktree" && mode !== "retry") {
+    expect(result.recovery).toMatchObject({ count: 2, pauseReason: "Native failure after legacy diagnosis.", retryAuthorized: false });
+    expect(result.webExecution?.executionGeneration).toBe("1");
+    expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
+    expect(f.launcher.launch).not.toHaveBeenCalled();
+    return;
+  }
+  expect(result.webExecution?.executionGeneration).toBe("2");
+  expect(result.recovery.count).toBe(mode === "shutdown" ? 2 : 3);
+  expect(f.store.getOrchestrationBlocker(f.task)).toBeNull();
+  expect(f.request.mock.calls.every(([, action]) => action.kind === "observe")).toBe(true);
+});
+
+it.each((["worktree", "coordinator", "legacy_worktree"] as const).flatMap(source => (["working", "paused"] as const).flatMap(lifecycleState => (["retry", "shutdown"] as const).map(mode => [source, lifecycleState, mode] as const))))("retains %s ownership while the native writer is %s during %s", async (source, lifecycleState, mode) => {
+  const f = await orchestrationFixture();
+  f.store.blockOrchestration(f.task, { source, code: "branch_mismatch", message: "Branch differs." }, 8);
+  if (source === "legacy_worktree") f.store.pauseRecovery(f.task, "Native failure after legacy diagnosis.", 9, "recovery_blocked");
+  if (mode === "retry") f.store.authorizeRecoveryRetry(f.task, 10);
+  else { f.store.beginCleanup(f.task, { kind: "shutdown", deadline: 100 }, 10); f.store.clearShutdown(f.task, 11); }
+  f.source.stopped.mockResolvedValue(false);
+  f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot: { ...f.snapshot, lifecycle: lifecycleState } });
+  if (source === "legacy_worktree" && mode === "shutdown") await f.backend.advance(f.task, new AbortController().signal);
+  else await expect(f.backend.advance(f.task, new AbortController().signal)).rejects.toThrow();
+  expect(f.store.getTask(f.task)?.webExecution?.executionGeneration).toBe("1");
+  expect(f.store.getTask(f.task)?.recovery.count).toBe(0);
+  expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
+  expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
+  expect(f.source.request.mock.calls.every(([, action]) => action.kind === "observe")).toBe(true);
+});
+
+it("reports real exhaustion after a worktree obstruction is resolved and the last native generation is proven stopped", async () => {
+  const f = await recoveryFixture();
+  f.store.blockOrchestration(f.task, { source: "worktree", code: "branch_mismatch", message: "branch mismatch" }, 8);
+  f.request.mockRejectedValue(new Error("The original writer stopped."));
+  const result = await f.backend.advance(f.task, new AbortController().signal);
+  expect(result.recovery).toMatchObject({ count: 2, reasonCode: "recovery_limit", retryAuthorized: false });
+  expect(result.webExecution?.executionGeneration).toBe("1");
+  expect(f.store.getOrchestrationBlocker(f.task)).toBeNull();
+  expect(f.launcher.prepare).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it("uses fresh confirmed initial delivery when a worktree block retained an older unknown observation", async () => {
+  const f = await orchestrationFixture();
+  f.store.updateWebExecution(f.task, { initialInputState: "unknown" }, 8);
+  f.store.blockOrchestration(f.task, { source: "worktree", code: "branch_mismatch", message: "branch mismatch" }, 9);
+  const result = await f.backend.advance(f.task, new AbortController().signal);
+  expect(result.webExecution?.initialInputState).toBe("confirmed");
+  expect(result.webExecution?.executionGeneration).toBe("1");
+  expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
 });
 
 it.each(["unknown", "controller", "native", "generation", "claim", "session", "native-session", "not-stopped", "missing-stop-time", "alive", "changed-journal"] as const)("rejects unsafe evidence when retrying an allocated unsubmitted generation (%s)", async changed => {

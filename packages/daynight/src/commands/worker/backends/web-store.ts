@@ -7,6 +7,7 @@ import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, RecoveryState } from "./web-types.js";
 import { webRecordInteger as integer, webRecordChoice as oneOf, webRecordText as text, webRecordId as id, parseWebWorktreeV1 as parseWorktree, parseWebExecutionV1 as parseWebExecution, parseWebCleanupV1 as parseCleanup, webClaimKey as key, parseWebTaskV1 as validate } from "./web-record.js";
 import { webExecutionStoreFormat } from "./web-store-format.js";
+import { healthyOriginalGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
 
 const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 // The Worker owns Web execution state here; claim scheduling stays in the minimal index.
@@ -41,8 +42,48 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
   });
   const requireOrdinary = (task: LocalTask): void => { if (task.cleanup !== null || task.configuration === null) throw new Error("Cleanup fences ordinary execution."); };
   const needCleanup = (task: LocalTask): CleanupState => { if (task.cleanup === null) throw new Error("Cleanup has not started."); return task.cleanup; };
+  const getOrchestrationBlocker = (identity: ClaimIdentity): OrchestrationBlocker | null => read(() => {
+    const row = db.prepare("SELECT data FROM orchestration_blockers WHERE identity=?").get(key(identity)) as { data: string } | undefined;
+    if (row === undefined) return null;
+    const value = JSON.parse(row.data) as OrchestrationBlocker;
+    oneOf(value.source, ["worktree", "coordinator", "legacy_worktree"], "Orchestration source");
+    oneOf(value.code, ["branch_mismatch", "validation_failed", "advance_failed"], "Orchestration reason");
+    text(value.message, "Orchestration failure"); integer(value.observedAt, "Orchestration observation");
+    if (value.identity === null || typeof value.identity !== "object") throw new Error("Orchestration ownership evidence is missing.");
+    return value;
+  });
   return {
-    close: (): void => { closeSqliteDatabase(db, { file: filename, format: webExecutionStoreFormat }); }, getTask,
+    close: (): void => { closeSqliteDatabase(db, { file: filename, format: webExecutionStoreFormat }); }, getTask, getOrchestrationBlocker,
+    blockOrchestration: (identity: ClaimIdentity, failure: OrchestrationFailure, now: number): OrchestrationBlocker => atomic(() => {
+      const task = getTask(identity);
+      if (task === null || task.status !== "active" || task.cleanup !== null) throw new Error("Orchestration failure requires the original active execution.");
+      const previous = getOrchestrationBlocker(identity);
+      if (previous !== null) {
+        if (!sameOrchestrationIdentity(task, previous)) throw new Error("The blocked orchestration belongs to another execution identity.");
+        return previous;
+      }
+      const blocker: OrchestrationBlocker = { ...failure, identity: orchestrationIdentity(task), observedAt: integer(now, "Orchestration observation") };
+      db.prepare("INSERT INTO orchestration_blockers(identity,data) VALUES (?,?)").run(key(identity), JSON.stringify(blocker));
+      return getOrchestrationBlocker(identity)!;
+    }),
+    clearOrchestration: (identity: ClaimIdentity, expected: OrchestrationBlocker, observed: ControllerSnapshot | null, now: number, legacyReport?: SessionStartupReport): LocalTask => atomic(() => {
+      const task = getTask(identity);
+      if (task === null || task.status !== "active") throw new Error("The original active orchestration is missing.");
+      requireOrdinary(task);
+      if (!same(expected, getOrchestrationBlocker(identity)) || !sameOrchestrationIdentity(task, expected)) throw new Error("The blocked orchestration changed during verification.");
+      const execution = task.webExecution;
+      const stoppedRecovery = observed !== null && stoppedOriginalGeneration(task, observed)
+        && (task.recovery.retryAuthorized || (expected.source !== "legacy_worktree" && task.recovery.pauseReason === null));
+      const correctLegacyLatch = expected.source === "legacy_worktree" && !stoppedRecovery;
+      if (execution?.launchSubmission !== undefined && execution.launchSubmission !== "not-submitted" && !stoppedRecovery && (observed === null || !healthyOriginalGeneration(task, observed))) throw new Error("Orchestration recovery requires the healthy original generation or an authorized proven stop.");
+      if (correctLegacyLatch && (!legacyBranchLatch(task) || legacyReport === undefined || !same(legacyReport, execution?.startupReport))) throw new Error("A native recovery block cannot be cleared without the original legacy report revision.");
+      const recovery = correctLegacyLatch ? { count: task.recovery.count, pauseReason: null, retryAuthorized: false } : task.recovery;
+      const previous = execution?.startupReport;
+      const report = previous === undefined ? undefined : { ...previous, revision: String(BigInt(previous.revision) + 1n), observedAt: new Date(integer(now, "Orchestration verification")).toISOString(), recovery: recovery.pauseReason === null ? { state: "none" as const, reasonCode: null } : { state: "blocked" as const, reasonCode: task.recovery.reasonCode ?? "recovery_blocked" as const } };
+      const result = write({ ...task, recovery, updatedAt: now, webExecution: execution === null ? null : { ...execution, ...(report === undefined ? {} : { startupReport: report }) } });
+      db.prepare("DELETE FROM orchestration_blockers WHERE identity=?").run(key(identity));
+      return result;
+    }),
     listCompletedTasks: (): LocalTask[] => read(() => (db.prepare("SELECT data FROM executions").all() as { data: string }[]).map(row => validate(JSON.parse(row.data) as LocalTask)).filter(task => task.status === "done")),
     listUnfinishedTasks: (): LocalTask[] => read(() => (db.prepare("SELECT data FROM executions").all() as { data: string }[]).map(row => validate(JSON.parse(row.data) as LocalTask)).filter(task => task.status !== "done")),
     register: (input: ResourceOwner & { project: WorkerProject; serverOrigin: string; workerId: string; userId: string; configuration: FrozenExecutionConfiguration }, now: number): LocalTask => atomic(() => {

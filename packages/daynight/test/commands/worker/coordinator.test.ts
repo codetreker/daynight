@@ -18,6 +18,7 @@ import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
 import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
@@ -1825,14 +1826,14 @@ it.each(["archive", "worktree removal"])("releases a deleted Web task's last wor
   } finally { allowRemoval.resolve(); webStore.close(); }
 });
 
-it("persists Web failure exhaustion, reconciles waiting with fresh versions, and retains its slot after restart", async () => {
+it("keeps ordinary Web failures separate from native recovery and retries after restart", async () => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const f = await fixture();
   let webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
-  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 1 };
+  const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 3 };
   const advance = vi.fn(async (input: import("../../../src/commands/worker/backends/web-types.js").LocalTask) => {
     webStore.bindNativeSession(input, { source: "controller", sessionId: uuid(880) }, 2);
-    throw new Error("Original controller observation failed.");
+    throw new WorktreePreconditionError("branch_mismatch", "The task worktree no longer uses its original task branch.");
   });
   const update = vi.mocked(f.remote.update).getMockImplementation()!;
   vi.mocked(f.remote.update).mockImplementationOnce(async current => {
@@ -1845,11 +1846,12 @@ it("persists Web failure exhaustion, reconciles waiting with fresh versions, and
   try {
     await tick(); await eventually(() => expect(advance).toHaveBeenCalledTimes(1));
     await tick(); await eventually(() => expect(advance).toHaveBeenCalledTimes(2));
-    await tick();
+    await tick(); await eventually(() => expect(advance).toHaveBeenCalledTimes(3));
+    await tick(); await eventually(() => expect(advance).toHaveBeenCalledTimes(4));
     await eventually(() => expect(f.remote.update).toHaveBeenCalled());
     const row = f.store.listTasks()[0]!;
     const paused = webStore.getTask(row)!;
-    expect(paused.recovery.pauseReason).toContain("Original controller observation failed");
+    expect(paused.recovery.pauseReason).toBeNull();
     expect(paused.recovery.count).toBe(0);
     expect(paused.recovery.retryAuthorized).toBe(false);
     await tick();
@@ -1859,7 +1861,7 @@ it("persists Web failure exhaustion, reconciles waiting with fresh versions, and
     webStore.close(); webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
     coordinator = createWorkerCoordinator(options());
     await tick(); await tick();
-    expect(advance).toHaveBeenCalledTimes(2);
+    expect(advance.mock.calls.length).toBeGreaterThan(4);
     expect(f.remote.update).toHaveBeenCalledTimes(2);
     expect(webStore.getTask(row)?.recovery).toEqual(paused.recovery);
     expect(f.store.getTask(row)).toMatchObject({ status: "active", sessionId: uuid(880) });

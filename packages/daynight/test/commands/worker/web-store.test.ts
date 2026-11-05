@@ -3,6 +3,8 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, expect, it, vi } from "vitest";
 import { openWebExecutionStore, type WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
+import { openSqliteDatabase } from "../../../src/platform/sqlite-access.js";
+import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/web-store-format.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, "0")}`;
 const roots: string[] = [], stores = new Set<WebExecutionStore>(), databases = new Set<Database.Database>();
@@ -50,7 +52,25 @@ it("persists a distinct web execution without inventing Herdr resources or works
   const cleaning = reopened.beginCleanup(claim, { kind: "shutdown", deadline: 100 }, 5);
   expect(cleaning.cleanup).toEqual({ kind: "shutdown", startedAt: 5, deadline: 100 });
   expect(reopened.getTask(claim)?.cleanup).toEqual(cleaning.cleanup);
-  expect(connect(file).pragma("user_version", { simple: true })).toBe(2);
+  expect(connect(file).pragma("user_version", { simple: true })).toBe(3);
+});
+
+it("migrates version-two records intact, persists independent blockers, and fences old readers", () => {
+  const { file, store, project, claim } = fixture();
+  const original = store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, userId: id(6) }, 1);
+  close(store);
+  const db = connect(file); db.exec("DROP TABLE orchestration_blockers"); db.pragma("user_version=2");
+  const upgraded = open(file);
+  expect(upgraded.getTask(claim)).toEqual(original);
+  const blocker = upgraded.blockOrchestration(claim, { source: "worktree", code: "branch_mismatch", message: "Original branch differs." }, 2);
+  close(upgraded);
+  const reopened = open(file);
+  expect(reopened.getOrchestrationBlocker(claim)).toEqual(blocker);
+  expect(reopened.getTask(claim)?.recovery).toEqual({ count: 0, pauseReason: null, retryAuthorized: false });
+  const oldFormat = { ...webExecutionStoreFormat, migrations: webExecutionStoreFormat.migrations.slice(0, 1) };
+  expect(() => openSqliteDatabase({ file, format: oldFormat, allowCreate: true })).toThrow("unsupported-version");
+  expect(reopened.getOrchestrationBlocker(claim)).toEqual(blocker);
+  expect(() => reopened.clearOrchestration(claim, { ...blocker, observedAt: 3 }, null, 4)).toThrow("changed during verification");
 });
 
 it("retains shutdown provenance across worker reopen without resetting recovery state", () => {
@@ -95,14 +115,14 @@ it.each([false, true])("migrates version-one cleanup receipts to resource intent
   const db = connect(file);
   const legacy = { ...original, cleanup: { ...original.cleanup, mode: "web", input: "submitted", baseline: { stateChangeSeq: 5, completionSeq: 3 }, result: "completed", error: null, agentStopped: observed, workspaceClosed: null, backendResourcesClosed: observed, worktreeDeleted: observed } };
   db.prepare("UPDATE executions SET data=?").run(JSON.stringify(legacy));
-  db.pragma("user_version=1");
+  db.exec("DROP TABLE orchestration_blockers"); db.pragma("user_version=1");
   const events: unknown[] = [];
   const upgraded = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(upgraded);
   expect(upgraded.getTask(claim)).toEqual(original);
   expect(upgraded.getTask(claim)?.cleanup).toEqual({ kind: "terminal", startedAt: 4, deadline: 100 });
   expect(upgraded.getTask(claim)?.webExecution?.cleanupOperationId).toBe(id(7));
-  expect(db.pragma("user_version", { simple: true })).toBe(2);
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 1, toVersion: 2 }, { kind: "completed", fromVersion: 1, toVersion: 2 }]);
+  expect(db.pragma("user_version", { simple: true })).toBe(3);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 1, toVersion: 3 }, { kind: "completed", fromVersion: 1, toVersion: 3 }]);
   close(upgraded);
   expect(open(file).getTask(claim)).toEqual(original);
 });
@@ -126,10 +146,10 @@ it("rebuilds the current unversioned schema and discards its execution records",
   const db = connect(file); db.pragma("user_version = 0");
   const events: unknown[] = [];
   const rebuilt = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(rebuilt);
-  expect(db.pragma("user_version", { simple: true })).toBe(2);
+  expect(db.pragma("user_version", { simple: true })).toBe(3);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual([]);
   expect(rebuilt.getTask(claim)).toBeNull();
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 2 }, { kind: "completed", fromVersion: 0, toVersion: 2 }]);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 3 }, { kind: "completed", fromVersion: 0, toVersion: 3 }]);
   close(rebuilt); events.length = 0;
   const reopened = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(reopened);
   expect(events).toEqual([]);
@@ -141,7 +161,7 @@ it.each(["not json", '{"stored":"private value"}'])("discards malformed unversio
   db.pragma("ignore_check_constraints = ON");
   db.prepare("INSERT INTO executions VALUES(?,?)").run("another-claim", data);
   const rebuilt = open(file);
-  expect(db.pragma("user_version", { simple: true })).toBe(2);
+  expect(db.pragma("user_version", { simple: true })).toBe(3);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual([]);
   expect(rebuilt.listUnfinishedTasks()).toEqual([]);
 });
@@ -150,8 +170,8 @@ it("rebuilds an unknown unversioned schema with duplicate execution identities",
   const root = directory(), file = path.join(root, "state.sqlite"), db = connect(file);
   db.exec("CREATE TABLE executions(identity TEXT, data TEXT); CREATE TABLE unrelated(value TEXT); INSERT INTO executions VALUES('duplicate', 'invalid'), ('duplicate', 'invalid'); INSERT INTO unrelated VALUES('discarded')");
   const rebuilt = open(file);
-  expect(db.pragma("user_version", { simple: true })).toBe(2);
-  expect(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()).toEqual([{ name: "executions" }]);
+  expect(db.pragma("user_version", { simple: true })).toBe(3);
+  expect(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()).toEqual([{ name: "executions" }, { name: "orchestration_blockers" }]);
   expect(rebuilt.listUnfinishedTasks()).toEqual([]);
   expect(() => db.exec("INSERT INTO executions VALUES('invalid', 'not json')")).toThrow("CHECK constraint failed");
 });
@@ -171,8 +191,8 @@ it("discards FTS5 external content classified as a shadow table when rebuilding 
   });
   const rebuilt = open(file);
   expect(baselineReached).toBe(true);
-  expect(db.pragma("user_version", { simple: true })).toBe(2);
-  expect(db.prepare("SELECT type, name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual([{ type: "table", name: "executions" }]);
+  expect(db.pragma("user_version", { simple: true })).toBe(3);
+  expect(db.prepare("SELECT type, name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual([{ type: "table", name: "executions" }, { type: "table", name: "orchestration_blockers" }]);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual([]);
   expect(rebuilt.listUnfinishedTasks()).toEqual([]);
 });
@@ -208,13 +228,13 @@ it("rejects newer and unknown nonzero table formats without deleting state", () 
   store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
   close(store);
   const db = connect(file), before = db.prepare("SELECT * FROM executions").all();
-  db.pragma("user_version=3");
+  db.pragma("user_version=4");
   expect(() => open(file)).toThrow("unsupported-version");
-  expect(db.pragma("user_version", { simple: true })).toBe(3);
+  expect(db.pragma("user_version", { simple: true })).toBe(4);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual(before);
-  db.pragma("user_version=2"); db.exec("CREATE TABLE unexpected(value TEXT); INSERT INTO unexpected VALUES('retained')");
+  db.pragma("user_version=3"); db.exec("CREATE TABLE unexpected(value TEXT); INSERT INTO unexpected VALUES('retained')");
   expect(() => open(file)).toThrow("invalid-format");
-  expect(db.pragma("user_version", { simple: true })).toBe(2);
+  expect(db.pragma("user_version", { simple: true })).toBe(3);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual(before);
   expect(db.prepare("SELECT value FROM unexpected").get()).toEqual({ value: "retained" });
 });
@@ -225,7 +245,7 @@ it("validates current-version execution records during ordinary reads", () => {
   const db = connect(file), data = '{"stored":"private value"}';
   db.prepare("UPDATE executions SET data=?").run(data);
   expect(() => store.getTask(claim)).toThrow("Web execution record");
-  expect(db.pragma("user_version", { simple: true })).toBe(2);
+  expect(db.pragma("user_version", { simple: true })).toBe(3);
   expect(db.prepare("SELECT data FROM executions").get()).toEqual({ data });
 });
 
@@ -233,7 +253,7 @@ it("fences an open Web connection before mutating a changed format", () => {
   const { file, store, project, claim } = fixture();
   store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
   const db = connect(file), data = (db.prepare("SELECT data FROM executions").get() as { data: string }).data;
-  db.pragma("user_version=3");
+  db.pragma("user_version=4");
   expect(() => store.initializeWebExecution(claim, 3)).toThrow("unsupported-version");
   expect(() => store.getTask(claim)).toThrow("unsupported-version");
   expect(() => store.listCompletedTasks()).toThrow("unsupported-version");
