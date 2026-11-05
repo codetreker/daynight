@@ -26,6 +26,18 @@ The later readiness timeout and missing-proof cleanup error are consequences;
 they do not establish a second writer or successful cleanup. The killed queries
 do not reveal how long successful CIM acquisition would have needed.
 
+A separate encoding weakness appeared when comparing native proof with the
+original CIM query. [Hosted Windows validation](https://github.com/codetreker/daynight/actions/runs/41968955915/job/127052508668)
+at `0761ad522e17dcd9ca7d64af85a36b3c7e9808f5` established matching child self-proof,
+parent capture and later inspection, with an exactly matching CIM birth. Only
+the oracle's command hash differed. Reconstructing the controlled argument
+vector with Windows quoting reproduced the native hash; replacing its
+supplementary Unicode character with two question marks reproduced the oracle
+hash. Windows PowerShell's default console encoding had lost command text.
+[Console.OutputEncoding](https://learn.microsoft.com/en-us/dotnet/api/system.console.outputencoding?view=netframework-4.8.1)
+defaults to the system code page, so decoding its output as UTF-8 cannot recover
+characters already replaced by that encoder.
+
 ## Decision
 
 Windows process capture uses the existing Koffi dependency to query native
@@ -38,47 +50,59 @@ pointer bounds are validated before constructing a proof. The command-line
 query uses one owned allocation of the `UNICODE_STRING` header plus 65,536 bytes,
 covering its `USHORT` byte-length range without trusting a returned allocation
 size or dereferencing a pointer outside that buffer. The command text is hashed
-in full; an executable path is insufficient.
+in full Unicode; an executable path or text damaged by console encoding is
+insufficient.
 
-Birth is emitted in the existing UTC representation with seven fractional
-digits and CIM's microsecond precision: native FILETIME ticks are truncated to
-microseconds before formatting, leaving the final fractional digit zero.
+Birth retains the existing UTC representation with seven fractional digits and
+CIM's microsecond precision: native FILETIME ticks are truncated to microseconds
+before formatting, leaving the final fractional digit zero.
 [System.Management's conversion](https://github.com/dotnet/runtime/blob/51bd84c27560d2dd3e9ae04c84c8c1fa24ea1e07/src/libraries/System.Management/src/System/Management/ManagementDateTime.cs#L170-L201)
-expands CIM microseconds to DateTime ticks. Native hosted comparison against the
-actual CIM provider qualifies that representation. `ProcessProof` retains its
-PID, parent PID, nullable process group, birth, full-command hash and optional
-Job identity. Parent observation, Controller self-capture and later inspection
-therefore use the same identity representation.
+expands CIM microseconds to DateTime ticks. The hosted comparison established
+exact birth equivalence with the actual provider. `ProcessProof` retains its
+PID, parent PID, nullable process group, birth, command hash and optional Job
+identity fields. Native parent observation, Controller self-capture and later
+inspection use the same complete command text. Historical hashes made from
+lossy PowerShell output are not byte-equivalent to the full Unicode hash; they
+are not accepted or recomputed through a legacy hash fallback.
+
+Windows inspection reports `running` only when birth, command hash and process
+group all agree. A different birth establishes `replaced`. When birth still
+matches but the command hash or process group differs, inspection throws an
+identity-uncertainty error. The original process instance has not been proved
+stopped, regardless of why those fields differ. Stop confirmation propagates
+that error before inspecting the Job inventory, retaining execution evidence and
+resource responsibility. POSIX comparison behavior is unchanged.
 
 The existing acquisition defaults remain fifteen seconds on Windows and five
 seconds on POSIX, with explicit caller budgets and five-second inspection.
 Windows checks its deadline after library loading, process opening, each
 information call and handle closure, and waits for a call already in progress.
 A JavaScript timer cannot preempt a kernel call, so this is an admission and
-completion budget rather than a strict wall-clock interruption bound. Native acquisition starts no PowerShell or CIM query. The POSIX `ps`
-probe retains its timeout and locale behavior.
+completion budget rather than a strict wall-clock interruption bound. Native
+acquisition starts no PowerShell or CIM query. The POSIX `ps` probe retains its
+timeout and locale behavior.
 
 Acquisition failures propagate their original errors, including the native
 stage and status. If handle release also fails, an `AggregateError` retains both
 errors and names the acquisition error as its cause. A successful release
-rethrows the original acquisition error object. A failed Controller self-proof prevents that Controller's Job
-assignment, journal proof publication and authenticated IPC readiness. A failed
-parent observation retains its unknown submission while the original child can
-still finish its own startup. Existing Job setup and descendant inspection
-remain separate operations. Unknown submission still retains the
-original launch identity and resource responsibility; absence of proof or IPC
-never authorizes a new writer, deletion or a successful stop result. The
-fixture's joined teardown remains responsible for its resources.
+rethrows the original acquisition error object. A failed Controller self-proof
+prevents that Controller's Job assignment, journal proof publication and
+authenticated IPC readiness. A failed parent observation retains its unknown
+submission while the original child can still finish its own startup. Existing
+Job setup and descendant inspection remain separate operations. Unknown
+submission retains the original launch identity and resource responsibility;
+absence of proof or IPC never authorizes a new writer, deletion or a successful
+stop result. The fixture's joined teardown remains responsible for its resources.
 
 `NtQueryInformationProcess` is an internal Windows API whose information classes
 can change. Full command-line capture uses `ProcessCommandLineInformation`
 (class 60), as used for Windows 8.1 and newer by
 [System Informer](https://github.com/winsiderss/systeminformer/blob/0a4975a4763ad202747397ef5daf5893849b5b00/phlib/nativeprocess.c#L1922-L1972).
 Native library loading, unsupported classes, access denial and malformed results
-fail visibly. They are not retried through CIM, and they do
-not produce reduced or guessed identity. The native dependency must be
-reconsidered if a supported Windows environment cannot supply the full command
-line. [Microsoft's API guidance](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess)
+fail visibly. They are not retried through CIM and do not produce reduced or
+guessed identity. The native dependency must be reconsidered if a supported
+Windows environment cannot supply the full command line.
+[Microsoft's API guidance](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess)
 explains this dependency; [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)
 owns the native creation-time semantics and
 [CIM datetime](https://learn.microsoft.com/en-us/windows/win32/wmisdk/cim-datetime)
@@ -111,16 +135,28 @@ with bounded native output and no new package dependency. The internal
 command-line query remains a Windows compatibility dependency; native hosted
 validation is required alongside controlled regressions.
 
+A proof saved from lossy Unicode output remains uncertain when the same live
+birth is inspected against the complete native command line. The stored hash is
+not treated as another process's proof or replaced with a newly computed hash.
+A named Job lookup cannot substitute for original process-instance termination;
+stop confirmation therefore rejects the same-birth mismatch before considering
+its inventory. Recovery and resource deletion retain the original responsibility
+until complete stop evidence can be established.
+
 Focused regressions cover birth precision, complete Unicode command lines,
-PID replacement, native failures, malformed lengths and pointers, deadline
-checks and original-error preservation. The Windows-only
+PID replacement, same-birth identity uncertainty before Job inspection, native
+failures, malformed lengths and pointers, deadline checks and original-error
+preservation. The Windows-only
 [native identity regression](../../../../packages/daynight/test/commands/controller/process-proof-native-windows.test.ts)
 starts one controlled child and requires its self-proof, the parent's proof and
-later inspection to agree. One isolated CIM query compares the persisted birth
-and full-command hash against the provider's actual format. That oracle has its
-own sixty-second query allowance inside a ninety-second test; its extra time
-qualifies the format without becoming a production acquisition fallback. The
-child is stopped and its close joined after either success or failure. Real
+later inspection to agree. One isolated CIM query compares birth and the full
+command hash using explicit UTF-8 JSON transported inside an ASCII Base64
+envelope. Canonical Base64 and strict UTF-8 decoding prevent console code-page
+loss from weakening the comparison. That oracle has its own sixty-second query
+allowance inside a ninety-second test; it qualifies the provider's format
+without becoming a production acquisition fallback. Mismatch diagnostics record
+hashes, lengths and qualification flags, never the raw command text. The child
+is stopped and its close joined after either success or failure. Real
 Controller/Bot integration still owns proof-before-IPC ordering, one
 authenticated writer, no initialization user turn, and complete process-tree
 confirmation before resource deletion.

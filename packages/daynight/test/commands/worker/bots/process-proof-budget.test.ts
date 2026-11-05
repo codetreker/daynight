@@ -98,9 +98,27 @@ describe("ordinary process ownership inspection", () => {
     expect(liveness).toHaveBeenCalledTimes(2); expect(fixture.job).not.toHaveBeenCalled(); expect(fixture.execute).not.toHaveBeenCalled();
   });
 
-  it.each(["startedAt", "commandHash"] as const)("detects a reused PID with changed %s", async field => {
+  it("detects a reused Windows PID with a different birth", async () => {
     setPlatform("win32"); vi.spyOn(process, "kill").mockReturnValue(true);
-    fixture.native.mockResolvedValue({ ...proof(42), [field]: "replacement" });
+    fixture.native.mockResolvedValue({ ...proof(42), startedAt: "replacement" });
     expect(await inspectProcessProof(proof(42))).toBe("replaced");
+  });
+
+  it("confirms running Windows ownership when the complete proof still matches", async () => {
+    setPlatform("win32"); vi.spyOn(process, "kill").mockReturnValue(true);
+    expect(await inspectProcessProof(proof(42))).toBe("running");
+  });
+
+  it.each([{ commandHash: "different-command-evidence" }, { processGroupId: 42 }])("retains unknown Windows ownership for a live original birth with conflicting evidence %j", async mismatch => {
+    setPlatform("win32"); vi.spyOn(process, "kill").mockReturnValue(true);
+    fixture.native.mockResolvedValue({ ...proof(42), ...mismatch });
+    await expect(inspectProcessProof(proof(42))).rejects.toThrow("ownership remains unknown");
+  });
+
+  it("retains POSIX replacement semantics for a changed command with the same birth", async () => {
+    setPlatform("linux"); vi.spyOn(process, "kill").mockReturnValue(true);
+    const original = await captureProcessProof(42);
+    fixture.execute.mockImplementation((_file, args, _options, callback) => callback(null, `${args[1]} 1 ${args[1]} Thu Nov 5 00:00:00 2026 different command\n`));
+    expect(await inspectProcessProof(original)).toBe("replaced");
   });
 });

@@ -41,9 +41,14 @@ authorizes another process or deletion of an unproven process.
 
 The [native Windows proof decision](2026-11-05-windows-native-process-proof.md)
 replaces the PowerShell/CIM acquisition implementation after the same failure
-recurred beyond fifteen seconds. It retains these caller budgets and ownership
-rules while checking the deadline between native calls; an in-progress kernel
-call cannot be preempted by a JavaScript timer.
+recurred beyond fifteen seconds. It retains these caller budgets, proof field
+shape, birth precision and ownership rules while checking the deadline between
+native calls; an in-progress kernel call cannot be preempted by a JavaScript
+timer. That later decision also records the original PowerShell stdout's Unicode
+loss: complete native command hashes are not byte-equivalent to historical
+hashes of damaged text, and no legacy hash fallback is introduced. Windows
+inspection retains uncertainty when the same birth has a different command hash
+or process group; such a mismatch cannot establish original process termination.
 
 The real Bot fixture allows sixty seconds to observe readiness after interrupted
 parent acquisition, covering the child's sequential proof, Job setup and native

@@ -96,8 +96,14 @@ ticket paths while retaining original errors and unknown process ownership. The
 [Bot fixture decision](../.agents/notes/implemented/testing/2026-11-05-bot-fixture-teardown.md)
 owns this isolation and budget rationale. Windows process-proof acquisition
 uses the existing Koffi dependency to query birth, parent identity and the full
-command line through one retained process handle. It preserves the persisted
-proof representation and does not start a PowerShell/CIM query. Startup retains
+command line through one retained process handle. It retains the proof's field
+shape and birth precision, and hashes full Unicode text without PowerShell
+console encoding loss. Historical hashes of lossy command text are not
+byte-equivalent and are not accepted through a legacy fallback. Windows
+inspection throws identity uncertainty when birth still matches but command
+hash or process group differs; stop confirmation retains resources and rejects
+before querying the Job inventory. A different birth still establishes process
+replacement. Production capture starts no PowerShell/CIM query. Startup retains
 fifteen seconds on Windows and five seconds on POSIX; recurring identity
 inspection retains five seconds. Windows checks that budget between native calls
 and joins a call already in progress, so the budget cannot preempt a kernel
@@ -105,10 +111,14 @@ call. Focused regressions cover full command-line identity, birth formatting,
 query failures, malformed native output and original-error preservation. The
 [Windows native identity regression](../packages/daynight/test/commands/controller/process-proof-native-windows.test.ts)
 requires a controlled child's self-proof and parent capture to agree, then
-compares the persisted birth and command hash with one isolated CIM format
-oracle. The oracle owns a sixty-second allowance within a ninety-second test;
-production capture and inspection do not use it as a fallback. The child is
-stopped and its close joined even when an assertion fails. The
+compares birth and the complete command hash with one isolated CIM format
+oracle. The oracle transports explicit UTF-8 JSON in an ASCII Base64 envelope
+and validates canonical Base64 plus strict UTF-8 decoding, preserving Unicode
+independently of the console code page. Its sixty-second allowance belongs to a
+ninety-second test; production capture and inspection do not use it as a
+fallback. Mismatch diagnostics retain hashes, lengths and qualification flags
+without raw command text. The child is stopped and its close joined even when
+an assertion fails. The
 [native Windows proof decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-native-process-proof.md)
 owns the implementation and its dependency limits; the
 [startup budget decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-startup-process-proof-budget.md)

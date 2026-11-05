@@ -28,6 +28,9 @@ export const inspectProcessProof = async (proof: ProcessProof): Promise<"running
   let current: ProcessProof;
   try { current = await captureProcessProof(proof.pid, 5000); }
   catch (error) { try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; } throw error; }
+  // The original birth still identifies a live Windows process. Conflicting
+  // command evidence cannot authorize releasing its resources as a reused PID.
+  if (process.platform === "win32" && current.startedAt === proof.startedAt && (current.commandHash !== proof.commandHash || current.processGroupId !== proof.processGroupId)) throw new Error("The original Windows process has inconsistent identity evidence; ownership remains unknown.");
   return current.startedAt === proof.startedAt && current.commandHash === proof.commandHash && current.processGroupId === proof.processGroupId ? "running" : "replaced";
 };
 const groupMembers = async (group: number): Promise<number[]> => {
