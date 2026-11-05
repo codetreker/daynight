@@ -12,6 +12,7 @@ import { SessionInteractionCard } from './SessionInteractionCard';
 import { SessionError } from './SessionError';
 import { useSessionMessages } from './messages';
 import { useSessionHistoryPagination } from './useSessionHistoryPagination';
+import { usePendingInteractionLocator } from './usePendingInteractionLocator';
 import { useTimelineScroll } from '../../ui/useTimelineScroll';
 import { selectSessionDisplayEntries, type SessionDisplayMode } from './display-mode';
 
@@ -53,6 +54,8 @@ export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder
   useImperativeHandle(reading?.ref, () => readingHandle, [readingHandle]);
   const historyIdentity = state.snapshot ? `${sessionFenceKey(state.snapshot)}/${state.snapshot.historyEpoch}/${state.snapshot.connectionEpoch}` : identity;
   const history = useSessionHistoryPagination({ scroll, identity: historyIdentity, mode: displayMode, active, ready: historyReady, generation: connectionGeneration, revision: historyRevision, hasOlder, loading: loadingOlder, error: historyError, load: onLoadOlder });
+  const pendingInteractions = useMemo(() => state.snapshot?.activity === 'waiting_input' ? entries.flatMap(entry => entry.kind === 'interaction' && entry.interaction.state === 'pending' && sessionRespondGate(state, canRespond, entry.interaction) ? [{ entryId: entry.entryId, title: entry.interaction.title }] : []) : [], [entries, state, canRespond]);
+  const pending = usePendingInteractionLocator(scroll, active, pendingInteractions);
   return <div className="session-timeline-shell">
     <div className="session-timeline" ref={scroll.viewport} tabIndex={0} aria-label={m.title} onScroll={history.onScroll} onWheel={history.onWheel} onTouchStart={history.onTouchStart} onTouchMove={history.onTouchMove} onPointerDown={history.onPointerDown} onKeyDown={history.onKeyDown} onFocus={scroll.onFocus} onClick={(event) => { if (event.target instanceof Element && event.target.closest('a[data-footnote-ref], a[data-footnote-backref]')) scroll.pause(); }}>
       <div ref={scroll.content} className="session-timeline-content">
@@ -61,7 +64,10 @@ export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder
         {entries.length === 0 ? (suppressEmpty ? null : <p className="session-empty">{displayMode === 'conversation' ? m.conversationEmpty : m.empty}</p>) : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} resources={state.resources} active={active} canRespond={entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} /></article>)}
       </div>
     </div>
-    {scroll.showLatest ? <button className="button session-latest" onClick={history.latest}>{m.latest} ↓</button> : null}
+    {pending.target || scroll.showLatest ? <div className="session-timeline-navigation">
+      {pending.target ? <button type="button" className="button session-pending-request" onClick={pending.reveal}><span>{m.pendingRequest} · {pending.target.title}</span><span aria-hidden="true">{pending.target.direction === 'up' ? '↑' : '↓'}</span></button> : null}
+      {scroll.showLatest ? <button type="button" className="button session-latest" onClick={history.latest}>{m.latest} ↓</button> : null}
+    </div> : null}
   </div>;
 }
 
