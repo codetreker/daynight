@@ -25,7 +25,9 @@ Visible pages poll independent list, defaults and detail resources every five
 seconds. Complete pagination is published atomically so search covers the whole
 list and partial failures do not remove previously observed assistants. Only the
 selected authoritative detail can supply the Session binding. Startup readiness
-and current Worker availability remain separate observations.
+and current Worker availability remain separate observations. The
+[background-check decision](../bug-fix/2026-11-05-bot-background-check-display.md)
+separates retained presentation from temporary request admission.
 
 The routes reuse the Session shell's viewport height constraint. The Bot grid
 and conversation can shrink within it; the list and shared timeline own separate

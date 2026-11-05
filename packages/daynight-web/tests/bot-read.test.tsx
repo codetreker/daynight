@@ -27,3 +27,13 @@ it('disables new reads and removes owner content on invalidation',async()=>{
  await act(async()=>{});expect(load).not.toHaveBeenCalled();rerender({enabled:true});await waitFor(()=>expect(result.current.value).toBe('private'));
  await act(async()=>f.scope.invalidateScope());expect(result.current.value).toBeNull();expect(result.current.stale).toBe(true);act(()=>result.current.refresh());expect(load).toHaveBeenCalledTimes(1);
 });
+it('retains the confirmed value and its validity across admission pause and a pending recovery read',async()=>{
+ const next=Promise.withResolvers<{name:string}>(), load=vi.fn().mockResolvedValueOnce({name:'same'}).mockReturnValueOnce(next.promise);
+ const {result,rerender}=renderHook(({enabled})=>useBotRead('a',enabled,load),{...wrap(),initialProps:{enabled:true}});
+ await waitFor(()=>expect(result.current.value).toEqual({name:'same'})); const original=result.current.value;
+ rerender({enabled:false}); expect(result.current.value).toBe(original); expect(result.current.stale).toBe(false);
+ rerender({enabled:true}); await waitFor(()=>expect(load).toHaveBeenCalledTimes(2));
+ expect(result.current.value).toBe(original); expect(result.current.stale).toBe(false);
+ await act(async()=>next.resolve({name:'same'})); await waitFor(()=>expect(result.current.busy).toBe(false));
+ expect(result.current.value).toEqual(original); expect(result.current.stale).toBe(false);
+});

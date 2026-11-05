@@ -16,7 +16,9 @@ A Bot factory binds the existing independent Session API to its real owner,
 Session and test execution. The shared client, reducer and renderer retain their
 native contracts. A page cache owns at most three mounted panes and retains only
 serialized draft/receipt state plus the shared detached reading bookmark after
-LRU eviction. Identity validity remains independent of visible selection.
+LRU eviction. Identity validity remains independent of visible selection. The
+[background-check decision](../bug-fix/2026-11-05-bot-background-check-display.md)
+keeps the confirmed selected pane through temporary admission pauses.
 
 The [browser deletion decision](2026-11-05-bot-browser-deletion.md) adds reversible
 blocking and shares revocation across cache remounts in one account scope.
