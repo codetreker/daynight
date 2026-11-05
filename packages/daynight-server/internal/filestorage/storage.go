@@ -33,8 +33,8 @@ type Storage interface {
 	Delete(ctx context.Context, bucket, path string) error
 	// DeleteSessionArchives removes only the typed Session archive namespace,
 	// including objects without database metadata. The namespace must contain
-	// canonical nonzero ownership and Session UUIDs. Unmigrated legacy Session
-	// directories are rejected. Absence succeeds; cancellation, unsafe paths and
+	// canonical nonzero ownership and Session UUIDs. Objects outside the namespace
+	// are untouched. Absence succeeds; cancellation, unsafe paths and
 	// filesystem failures remain errors and may leave partial cleanup for retry.
 	// Callers must prevent
 	// concurrent writes with the persistent Session lock and deletion barrier.

@@ -155,53 +155,6 @@ func TestTerminalArchiveReadyReadsActualBytesAndSurvivesNewClaim(t *testing.T) {
 		t.Fatal("corrupt stored object read")
 	}
 }
-func TestTerminalArchiveRejectsUnmigratedObjectPathAndMissingRetryObject(t *testing.T) {
-	f, m, doc := terminalArchiveFixture(t)
-	ctx := t.Context()
-	finalizeFixture(t, f, m, doc)
-	data := encode(doc)
-	if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, data); err != nil {
-		t.Fatal(err)
-	}
-	var current string
-	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT object_path FROM session_archives WHERE session_id=$1`, m.SessionID).Scan(&current); err != nil {
-		t.Fatal(err)
-	}
-	legacy := m.SessionID + "/" + v2.HashBytes(data) + ".json"
-	if _, err := f.s.files.Put(ctx, archiveBucket, legacy, bytes.NewReader(data)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE session_archives SET object_path=$2 WHERE session_id=$1`, m.SessionID, legacy); err != nil {
-		t.Fatal(err)
-	}
-	for name, read := range map[string]func() error{
-		"status": func() error {
-			_, err := f.s.TerminalArchiveStatus(ctx, f.p, f.project, f.task, m.SessionID)
-			return err
-		},
-		"receipt": func() error { _, err := f.s.TerminalReceipt(ctx, f.p, f.project, f.task, m.SessionID); return err },
-		"content": func() error {
-			_, err := f.s.TerminalArchiveContent(ctx, f.p, f.project, f.task, m.SessionID)
-			return err
-		},
-		"retry": func() error {
-			_, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, data)
-			return err
-		},
-	} {
-		t.Run(name, func(t *testing.T) { botFault(t, read(), "source_corrupt") })
-	}
-	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE session_archives SET object_path=$2 WHERE session_id=$1`, m.SessionID, current); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.s.files.Delete(ctx, archiveBucket, current); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.s.PutTerminalArchive(ctx, f.p, f.project, f.task, m.SessionID, data); err == nil {
-		t.Fatal("ready terminal retry accepted a missing immutable object")
-	}
-}
-
 func TestTerminalFinalizationAndGenerationGrantCannotBothSucceed(t *testing.T) {
 	f, m, doc := terminalArchiveFixture(t)
 	ctx := context.Background()

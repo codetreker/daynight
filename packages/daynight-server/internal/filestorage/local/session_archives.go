@@ -26,7 +26,7 @@ func (s *Storage) DeleteSessionArchives(ctx context.Context, namespace sessionar
 	s.namespace.Lock()
 	defer s.namespace.Unlock()
 	directories := []*os.Root{s.root}
-	infos := []fs.FileInfo{nil}
+	var sessionInfo fs.FileInfo
 	components := append([]string{sessionarchive.Bucket}, strings.Split(namespace.Directory(), "/")...)
 	defer func() {
 		for i := len(directories) - 1; i > 0; i-- {
@@ -39,64 +39,23 @@ func (s *Storage) DeleteSessionArchives(ctx context.Context, namespace sessionar
 		}
 		directory, info, err := openArchiveDirectory(directories[i], component)
 		if errors.Is(err, fs.ErrNotExist) {
-			if err := s.syncArchiveDirectory(directories[i]); err != nil {
-				return err
-			}
-			return s.pruneArchiveParents(ctx, directories, infos, components, i)
+			return s.syncArchiveDirectory(directories[i])
 		}
 		if err != nil {
 			return err
 		}
 		directories = append(directories, directory)
-		infos = append(infos, info)
-		if i == 0 {
-			if _, err := directory.Lstat(namespace.SessionID()); err == nil {
-				return fmt.Errorf("%w: Session archive layout has not completed startup migration", filestorage.ErrInvalidAddress)
-			} else if !errors.Is(err, fs.ErrNotExist) {
-				return err
-			}
-		}
+		sessionInfo = info
 	}
 	last := len(directories) - 1
 	if err := removeArchiveContents(ctx, directories[last]); err != nil {
 		return err
 	}
-	if err := removeArchiveEntry(ctx, directories[last-1], components[last-1], infos[last]); err != nil {
+	if err := removeArchiveEntry(ctx, directories[last-1], components[last-1], sessionInfo); err != nil {
 		return err
 	}
 	// A retry repeats this barrier even after the Session directory disappeared.
-	if err := s.syncArchiveDirectory(directories[last-1]); err != nil {
-		return err
-	}
-	return s.pruneArchiveParents(ctx, directories, infos, components, last-1)
-}
-
-func (s *Storage) pruneArchiveParents(ctx context.Context, directories []*os.Root, infos []fs.FileInfo, components []string, last int) error {
-	// Shared shard and ownership directories are removed only after proving them
-	// empty; the bucket remains the common namespace boundary.
-	for i := last; i > 1; i-- {
-		file, err := directories[i].Open(".")
-		if err != nil {
-			return err
-		}
-		entries, readErr := file.ReadDir(1)
-		if errors.Is(readErr, io.EOF) {
-			readErr = nil
-		}
-		if err := errors.Join(readErr, file.Close()); err != nil {
-			return err
-		}
-		if len(entries) != 0 {
-			return nil
-		}
-		if err := removeArchiveEntry(ctx, directories[i-1], components[i-1], infos[i]); err != nil {
-			return err
-		}
-		if err := s.syncArchiveDirectory(directories[i-1]); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.syncArchiveDirectory(directories[last-1])
 }
 
 func openArchiveDirectory(parent *os.Root, name string) (*os.Root, fs.FileInfo, error) {

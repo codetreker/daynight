@@ -118,107 +118,6 @@ func TestDeleteSessionArchivesSyncFailureRemainsRetryable(t *testing.T) {
 	}
 }
 
-func TestDeleteSessionArchivesParentSyncFailurePreservesSiblingAndCanRetry(t *testing.T) {
-	storage, root := newStorage(t)
-	other := testArchiveNamespace(t, "8540b06e-11f4-4a2b-94af-f3e7ea790c85")
-	put(t, storage, sessionarchive.Bucket, archiveSessionPath+"/history.json", []byte("own history"))
-	put(t, storage, sessionarchive.Bucket, other.Directory()+"/history.json", []byte("sibling history"))
-	owner := filepath.Join(root, sessionarchive.Bucket, "users", archiveOwner)
-	ownerInfo, err := os.Stat(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	failure := errors.New("ownership directory sync failed")
-	storage.fileSync = func(file *os.File) error {
-		info, err := file.Stat()
-		if err != nil {
-			return err
-		}
-		if os.SameFile(info, ownerInfo) {
-			return failure
-		}
-		return file.Sync()
-	}
-	if err := storage.DeleteSessionArchives(t.Context(), testArchiveNamespace(t, archiveSession)); !errors.Is(err, failure) {
-		t.Fatalf("cleanup hid parent persistence failure: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(owner, "75")); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("own shard was not removed before its parent sync failed: %v", err)
-	}
-	if got := string(read(t, storage, sessionarchive.Bucket, other.Directory()+"/history.json")); got != "sibling history" {
-		t.Fatalf("failed cleanup changed a sibling: %q", got)
-	}
-	storage.fileSync = (*os.File).Sync
-	if err := storage.DeleteSessionArchives(t.Context(), testArchiveNamespace(t, archiveSession)); err != nil {
-		t.Fatal("retry after parent sync failure:", err)
-	}
-	if got := string(read(t, storage, sessionarchive.Bucket, other.Directory()+"/history.json")); got != "sibling history" {
-		t.Fatalf("cleanup retry changed a sibling: %q", got)
-	}
-}
-
-func TestDeleteSessionArchivesParentPermissionFailuresRemainVisibleAndRetryable(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses directory permissions")
-	}
-	for _, failure := range []string{"enumeration", "removal"} {
-		t.Run(failure, func(t *testing.T) {
-			storage, root := newStorage(t)
-			other := testArchiveNamespace(t, "8540b06e-11f4-4a2b-94af-f3e7ea790c85")
-			put(t, storage, sessionarchive.Bucket, archiveSessionPath+"/history.json", []byte("own history"))
-			put(t, storage, sessionarchive.Bucket, other.Directory()+"/history.json", []byte("sibling history"))
-			owner := filepath.Join(root, sessionarchive.Bucket, "users", archiveOwner)
-			shard := filepath.Join(owner, "75")
-			shardInfo, err := os.Stat(shard)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				_ = os.Chmod(owner, 0o700)
-				_ = os.Chmod(shard, 0o700)
-			})
-			storage.fileSync = func(file *os.File) error {
-				info, err := file.Stat()
-				if err != nil {
-					return err
-				}
-				if err := file.Sync(); err != nil {
-					return err
-				}
-				if os.SameFile(info, shardInfo) {
-					if failure == "enumeration" {
-						return os.Chmod(shard, 0o000)
-					}
-					return os.Chmod(owner, 0o500)
-				}
-				return nil
-			}
-			if err := storage.DeleteSessionArchives(t.Context(), testArchiveNamespace(t, archiveSession)); !errors.Is(err, fs.ErrPermission) {
-				t.Fatalf("cleanup hid parent %s failure: %v", failure, err)
-			}
-			if err := os.Chmod(owner, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chmod(shard, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Stat(filepath.Join(root, sessionarchive.Bucket, archiveSessionPath)); !errors.Is(err, fs.ErrNotExist) {
-				t.Fatalf("own Session was not removed before parent failure: %v", err)
-			}
-			if got := string(read(t, storage, sessionarchive.Bucket, other.Directory()+"/history.json")); got != "sibling history" {
-				t.Fatalf("failed cleanup changed a sibling: %q", got)
-			}
-			storage.fileSync = (*os.File).Sync
-			if err := storage.DeleteSessionArchives(t.Context(), testArchiveNamespace(t, archiveSession)); err != nil {
-				t.Fatal("retry after parent permission repair:", err)
-			}
-			if got := string(read(t, storage, sessionarchive.Bucket, other.Directory()+"/history.json")); got != "sibling history" {
-				t.Fatalf("cleanup retry changed a sibling: %q", got)
-			}
-		})
-	}
-}
-
 func TestDeleteSessionArchivesManyObjectsAndEmptyNamespace(t *testing.T) {
 	storage, root := newStorage(t)
 	if err := storage.DeleteSessionArchives(t.Context(), testArchiveNamespace(t, archiveSession)); err != nil {
@@ -297,8 +196,8 @@ func TestDeleteSessionArchivesPreservesOtherOwnersKindsAndShards(t *testing.T) {
 	if err := storage.DeleteSessionArchives(t.Context(), namespaces[0]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, sessionarchive.Bucket, "users", archiveOwner, "75")); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("empty shard remains: %v", err)
+	if _, err := os.Stat(filepath.Join(root, sessionarchive.Bucket, archiveSessionPath)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Session directory remains: %v", err)
 	}
 	for _, namespace := range namespaces[1:] {
 		if got := string(read(t, storage, sessionarchive.Bucket, namespace.Directory()+"/history.json")); got != "keep" {
@@ -307,21 +206,26 @@ func TestDeleteSessionArchivesPreservesOtherOwnersKindsAndShards(t *testing.T) {
 	}
 }
 
-func TestDeleteSessionArchivesRejectsLegacyOrphanNamespace(t *testing.T) {
+func TestDeleteSessionArchivesPreservesExistingUnrelatedNamespace(t *testing.T) {
 	storage, _ := newStorage(t)
-	put(t, storage, sessionarchive.Bucket, archiveSession+"/orphan.json", []byte("legacy"))
-	put(t, storage, sessionarchive.Bucket, archiveSessionPath+"/history.json", []byte("current"))
-	if err := storage.DeleteSessionArchives(t.Context(), testArchiveNamespace(t, archiveSession)); !errors.Is(err, filestorage.ErrInvalidAddress) {
-		t.Fatalf("cleanup ignored unmigrated private bytes: %v", err)
+	existing := archiveSession + "/orphan.json"
+	current := archiveSessionPath + "/history.json"
+	put(t, storage, sessionarchive.Bucket, existing, []byte("existing bytes"))
+	put(t, storage, sessionarchive.Bucket, current, []byte("current bytes"))
+	if err := storage.DeleteSessionArchives(t.Context(), testArchiveNamespace(t, archiveSession)); err != nil {
+		t.Fatal(err)
 	}
-	for _, name := range []string{archiveSession + "/orphan.json", archiveSessionPath + "/history.json"} {
-		object, err := storage.Open(t.Context(), sessionarchive.Bucket, name)
-		if err != nil {
-			t.Fatal("rejected cleanup modified storage", err)
-		}
-		if err := object.Body.Close(); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := storage.Open(t.Context(), sessionarchive.Bucket, current); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("current archive namespace remains: %v", err)
+	}
+	if got := string(read(t, storage, sessionarchive.Bucket, existing)); got != "existing bytes" {
+		t.Fatalf("cleanup changed an existing unrelated namespace: %q", got)
+	}
+	if err := storage.DeleteSessionArchives(t.Context(), testArchiveNamespace(t, archiveSession)); err != nil {
+		t.Fatal("repeated cleanup:", err)
+	}
+	if got := string(read(t, storage, sessionarchive.Bucket, existing)); got != "existing bytes" {
+		t.Fatalf("repeated cleanup changed an existing unrelated namespace: %q", got)
 	}
 }
 

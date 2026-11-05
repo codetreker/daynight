@@ -223,43 +223,6 @@ func TestStandaloneArchiveAfterStop(t *testing.T) {
 	}
 }
 
-func TestArchiveRejectsUnmigratedObjectPathAndMissingRetryObject(t *testing.T) {
-	f, v, data := archiveFixture(t)
-	ctx := t.Context()
-	archiveTerminal(t, f)
-	status, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var current string
-	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT object_path FROM session_archives WHERE session_id=$1`, v.SessionID).Scan(&current); err != nil {
-		t.Fatal(err)
-	}
-	legacy := v.SessionID + "/" + *status.SHA256 + ".json"
-	if _, err := f.s.files.Put(ctx, archiveBucket, legacy, bytes.NewReader(data)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE session_archives SET object_path=$2 WHERE session_id=$1`, v.SessionID, legacy); err != nil {
-		t.Fatal(err)
-	}
-	for name, read := range map[string]func() error{
-		"status":  func() error { _, err := f.s.ArchiveStatus(ctx, f.p, f.project, f.task, v.SessionID); return err },
-		"content": func() error { _, err := f.s.ArchiveContent(ctx, f.p, f.project, f.task, v.SessionID); return err },
-		"retry":   func() error { _, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data); return err },
-	} {
-		t.Run(name, func(t *testing.T) { botFault(t, read(), "source_corrupt") })
-	}
-	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE session_archives SET object_path=$2 WHERE session_id=$1`, v.SessionID, current); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.s.files.Delete(ctx, archiveBucket, current); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data); err == nil {
-		t.Fatal("ready retry accepted a missing immutable object")
-	}
-}
-
 func TestArchiveMemberCanReadButCannotPublish(t *testing.T) {
 	f, v, data := archiveFixture(t)
 	ctx := context.Background()

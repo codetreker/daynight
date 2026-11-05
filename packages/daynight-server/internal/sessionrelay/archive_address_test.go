@@ -8,7 +8,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
 )
 
-func TestArchiveObjectAddressRejectsInvalidRegistryIdentity(t *testing.T) {
+func TestArchiveObjectAddressRequiresCanonicalDirectoryComponents(t *testing.T) {
 	valid := "7540b06e-11f4-4a2b-94af-f3e7ea790c85"
 	for name, identity := range map[string]struct{ project, owner, session, digest string }{
 		"project":           {"../another-project", valid, valid, strings.Repeat("a", 64)},
@@ -20,9 +20,6 @@ func TestArchiveObjectAddressRejectsInvalidRegistryIdentity(t *testing.T) {
 			path, err := archiveObjectPath(identity.project, identity.owner, identity.session, identity.digest)
 			if !errors.Is(err, sessionarchive.ErrInvalidNamespace) || path != "" {
 				t.Fatalf("invalid registry identity produced an archive address: %q %v", path, err)
-			}
-			if err := validateArchiveObjectPath(identity.project, identity.owner, identity.session, identity.digest, ""); !errors.Is(err, sessionarchive.ErrInvalidNamespace) {
-				t.Fatalf("invalid registry identity was accepted for reading: %v", err)
 			}
 		})
 	}

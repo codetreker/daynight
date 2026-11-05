@@ -12,7 +12,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -128,26 +127,12 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	var databaseError *store.Error
 	var runtimeFailure *runtimeError
 	var identityFailure *service.IdentityProviderError
-	var archiveLayoutFailure *sessionrelay.ArchiveLayoutMigrationError
-	var migrationFields []any
 	fault, domainFailure := knownFault(err)
 	switch {
 	case errors.As(err, &identityFailure):
 		diagnostic, code = identityFailure.Error(), identityFailure.Code
 	case domainFailure && kind == fault.Code:
 		diagnostic, code = fault.Message, fault.Code
-	case errors.As(err, &archiveLayoutFailure):
-		diagnostic, code = "Session archive layout migration failed", "session_archive_layout_failed"
-		migrationPhase, migrationCategory := "unknown", "unknown"
-		switch archiveLayoutFailure.Phase {
-		case "configuration", "marker", "inventory", "placing", "metadata":
-			migrationPhase = archiveLayoutFailure.Phase
-		}
-		switch archiveLayoutFailure.Category {
-		case "configuration", "database", "filesystem", "unknown_owner", "invalid_metadata", "metadata_changed", "content_changed", "path_conflict", "canceled", "unsafe_entry", "missing_content", "content_corrupt", "invalid_marker":
-			migrationCategory = archiveLayoutFailure.Category
-		}
-		migrationFields = []any{"migration_phase", migrationPhase, "migration_category", migrationCategory}
 	case errors.As(err, &configurationError):
 		diagnostic = configurationError.Error()
 	case errors.As(err, &databaseError):
@@ -164,9 +149,8 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	if errors.As(err, &gatewayFailure) && validRequestID(gatewayFailure.RequestID) {
 		upstreamID = gatewayFailure.RequestID
 	}
-	fields := []any{"type", "operation_error", "component", component,
-		"phase", phase, "cause", kind, "error_code", code, "diagnostic", diagnostic, "request_id", RequestID(ctx), "upstream_request_id", upstreamID}
-	logger.ErrorContext(ctx, "operation failed", append(fields, migrationFields...)...)
+	logger.ErrorContext(ctx, "operation failed", "type", "operation_error", "component", component,
+		"phase", phase, "cause", kind, "error_code", code, "diagnostic", diagnostic, "request_id", RequestID(ctx), "upstream_request_id", upstreamID)
 }
 
 type responseRecorder struct {

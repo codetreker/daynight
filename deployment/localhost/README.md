@@ -238,7 +238,7 @@ Two Compose-managed named volumes hold application data:
 | Volume | Container path | Content |
 |---|---|---|
 | `postgres-data` | `/var/lib/postgresql` | PostgreSQL data, including users, sessions, project membership, attachment metadata and Session archive metadata/receipts |
-| `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<relativePath>` and Session archive bodies under the project/user and Session UUID shards described in the [archive upgrade](#session-archive-layout-upgrade) |
+| `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<relativePath>` and new Session archive bodies under the project/user and Session UUID shards described in the [Session design](../../docs/design/task-session-protocol.md#服务端归档布局) |
 
 Names are scoped to the Compose project. Server startup applies its embedded
 migrations. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
@@ -258,17 +258,14 @@ metadata/files and Session archive metadata/bodies, remove both volumes:
 docker compose down --volumes
 ```
 
-The database and file-storage directory form one backup pair, including Session
-archive metadata, receipts, bodies and the root `.session-archive-layout.json`
-completion marker. Archive and restore the whole root so the marker remains
-paired with the corresponding database and tree. Retain the affected
+The database and attachment directory form one backup pair. Retain the affected
 projects' current epoch values from authenticated task-sync snapshots for restore
 validation. Stop all server instances and direct database or file writers before
 capturing both; keep writes stopped until both artifacts are complete. This makes
 a normal backup stable but does
 not repair a mismatch that already existed: file operations and PostgreSQL
 metadata changes are not atomic. A database-only or directory-only restore does
-not restore task attachments or Session archives completely.
+not restore task attachments completely.
 
 From `deployment/localhost/`, create a pair using the running stack's production
 image for the archive. The temporary directory is local staging; retain the two
@@ -331,9 +328,8 @@ snapshot, so UUID rotation alone does not correct that data.
 
 After restore, sign in, confirm the affected project's epoch changed and a
 request with its saved old epoch returns a complete task snapshot. Check project
-membership, attachment lists, downloads and relative preview resources, read
-existing ready Session archives, and upload a new file. This is a manual paired
-backup/restore procedure; it adds no
+membership, attachment lists, downloads and relative preview resources, and
+upload a new file. This is a manual paired backup/restore procedure; it adds no
 backup service or cross-store recovery mechanism. The
 [deployment decision](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-persistence.md)
 owns the volume and validation rationale. The
@@ -467,84 +463,6 @@ Before new writes resume, this restores the captured state. After writers resume
 restoring that backup would discard subsequent changes and requires a separate
 data-preservation decision. Maintenance is not a backup system or general
 filesystem/PG reconciliation service.
-
-## Session archive layout upgrade
-
-Task Web/Herdr archive bodies use
-`session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
-Independent Test/Bot bodies use
-`session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
-The server automatically converts the original
-`session-archives/<sessionId>/<sha256>.json` directories during normal startup,
-after SQL schema initialization and before listening or readiness. Use the
-normal restart or rebuild/start workflow to run conversion. Attachment layout
-maintenance remains its own explicit procedure.
-
-Before the first conversion, stop every old-version server and all direct
-database/file writers, retain the prior image, and capture the matching pair using
-[normal backup](#persistence-and-backup). Keep old versions and direct writers
-stopped while the new server starts. Concurrent new-version starts serialize the
-conversion under a PostgreSQL advisory lock; none serves HTTP before completion.
-The storage archive contains the entire root, including Session bodies and
-`.session-archive-layout.json` when it exists.
-
-Startup checks that marker under the lock before scanning directories. Its only
-supported JSON value is `{"version":1}` in a regular nonsymlink file of at most
-128 bytes. A valid marker, after a repeated root-directory synchronization
-barrier, skips inventories and content scans. Fresh installations publish the
-same marker after verification. Invalid, truncated, duplicate/extra-field,
-unsupported-version or unsafe marker files cause startup failure with a visible
-diagnostic; they are not silently replaced.
-
-Without the marker, startup validates known ownership, exact old/new locations,
-registered lengths/digests, archive schema/identity and directory safety, then
-moves whole known Session directories by same-filesystem rename. Unregistered
-objects and empty directories remain with their Session. Unknown owners, missing
-or corrupt registered files, symlinks, special files and source/target conflicts
-fail without guessing or merging. Each moved directory is synchronized before
-its `object_path` commits. Only after all directories and metadata complete is
-the marker written, synchronized, renamed and synchronized in the root.
-
-The first conversion can take longer than `DAYNIGHT_STARTUP_TIMEOUT`: it follows
-the startup caller's cancellation context because its duration depends on bytes
-and storage throughput. Database/schema and listener startup each retain their
-own bounded phase. Inspect `docker compose ps --all` and
-`docker compose logs server` for progress and failure. In this deployment, a
-readiness wait timeout or unhealthy probe can fail the startup CLI while leaving
-the converter container running. Let that instance continue while inspecting its
-progress; it can become healthy after conversion without a restart. The
-`session archive layout ready` log reports conversion counts, or
-`already_applied=true` with zero counts when the trusted marker skips it.
-Readiness becomes available only afterward.
-
-A canceled or failed conversion leaves the service unready and preserves its
-known partial state. Correct the reported storage or metadata problem, then use
-the normal startup workflow again with the same database/root pair. The next
-startup validates files already moved while SQL still has the old path and
-finishes that update. Marker rename followed by a failed root barrier can leave
-visible marker bytes; the next startup repeats that barrier before trusting them.
-Temporary crash residue is not a completion marker. Do not overwrite conflicting
-trees or fabricate the marker to bypass a failure.
-
-After startup succeeds, read existing Web Task, independent Test/Bot and Herdr
-ready archives and compare their original bytes, SHA-256, lengths and terminal
-receipts. Public Session URLs and permissions remain the same. The conversion
-changes only physical object locations and its version marker, preserving SQL
-schema and task cache epochs. The [shared Session design](../../docs/design/task-session-protocol.md#服务端归档布局与迁移)
-owns validation and failure semantics; the
-[server guide](../../packages/daynight-server/README.md#session-archive-layout-startup)
-owns startup timing and logs.
-
-Backup and restore the completion marker together with the whole storage root
-and corresponding database. A database-only or directory-only restore may leave
-an old object path or a completion marker for a different captured tree. For
-rollback before writers resume, use the retained prior image and matching
-pre-upgrade SQL/files through the [fresh-volume restore](#persistence-and-backup)
-procedure. Historical restoration still requires affected task_cache_epoch
-rotation under that image's schema. Once new writes resume, restoring the old
-pair would discard them and requires a separate preservation decision. Startup
-migration performs bounded layout conversion, not general filesystem/database
-repair or a backup service.
 
 ## Exposure
 

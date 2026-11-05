@@ -16,7 +16,7 @@ func TestArchiveNamespacesGroupOwnershipAndShardSessionIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		expected := string(kind) + "/" + owner + "/75/" + session
-		if namespace.Directory() != expected || namespace.SessionID() != session {
+		if namespace.Directory() != expected {
 			t.Fatalf("namespace identity changed: %s", namespace.Directory())
 		}
 		path, err := namespace.ObjectPath(digest)

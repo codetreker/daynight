@@ -39,8 +39,10 @@ After native stop is confirmed, the launcher uploads one versioned archive to th
 service's existing file-storage abstraction. PostgreSQL stores only identity,
 status, object location, size and checksum. The
 [ownership-grouped layout decision](2026-11-05-session-archive-layout.md) replaces
-the direct Session directory arrangement with project/user ownership and UUID
-shards, while preserving the archive format and lifecycle described here.
+the direct Session directory arrangement for new writes with project/user
+ownership and UUID shards, while preserving the archive format and lifecycle
+described here. Existing archive files and metadata stay in place, and reads
+continue to use their persisted object paths with the original integrity checks.
 A matching ready receipt permits
 normal Worker worktree cleanup. Failed uploads retain their source and retry
 without restarting the Agent or repeating the task. Historical catch-up attempts

@@ -12,7 +12,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 )
 
 type Dependencies struct {
@@ -44,42 +43,18 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	startup, cancel := context.WithTimeout(ctx, config.StartupTimeout)
+	defer cancel()
 	files, err := local.New(config.StorageRoot)
 	if err != nil {
 		return nil, &ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "must identify a writable storage directory with supported filename semantics", cause: err}
 	}
-	startup, cancelStartup := context.WithTimeout(ctx, config.StartupTimeout)
 	database, err := store.Open(startup, config.DatabaseURL)
-	cancelStartup()
 	if err != nil {
 		return nil, errors.Join(err, files.Close())
 	}
-	// Layout conversion can outlast the bounded database bootstrap. The root
-	// startup context owns its cancellation, and HTTP admission waits for the
-	// durable completion marker.
-	layout, err := sessionrelay.EnsureSessionArchiveLayout(ctx, config.DatabaseURL, config.StorageRoot, logger)
+	listener, err := (&net.ListenConfig{}).Listen(startup, "tcp", config.ListenAddress)
 	if err != nil {
-		database.Close()
-		return nil, &runtimeError{phase: "archive_layout", cause: errors.Join(err, files.Close())}
-	}
-	logger.InfoContext(ctx, "session archive layout ready", "type", "lifecycle", "component", "session_archive_layout_migration",
-		"phase", layout.Phase, "already_applied", layout.AlreadyApplied, "sessions", layout.SessionCount, "moved", layout.MovedCount,
-		"files", layout.FileCount, "bytes", layout.TotalBytes)
-	listen, cancelListen := context.WithTimeout(ctx, config.StartupTimeout)
-	defer cancelListen()
-	// Numeric-address listener creation can bind without observing cancellation.
-	if err := listen.Err(); err != nil {
-		database.Close()
-		return nil, &runtimeError{phase: "listen", cause: errors.Join(err, files.Close())}
-	}
-	listener, err := (&net.ListenConfig{}).Listen(listen, "tcp", config.ListenAddress)
-	if err == nil {
-		err = listen.Err()
-	}
-	if err != nil {
-		if listener != nil {
-			err = errors.Join(err, listener.Close())
-		}
 		database.Close()
 		return nil, &runtimeError{phase: "listen", cause: errors.Join(err, files.Close())}
 	}

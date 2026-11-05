@@ -1,5 +1,5 @@
 // Package sessionarchive owns the physical namespace shared by archive writers,
-// readers, cleanup and offline layout maintenance.
+// readers and cleanup.
 package sessionarchive
 
 import (
@@ -52,8 +52,6 @@ func (n Namespace) Validate() error {
 func (n Namespace) Directory() string {
 	return string(n.kind) + "/" + n.ownerID + "/" + n.sessionID[:2] + "/" + n.sessionID
 }
-
-func (n Namespace) SessionID() string { return n.sessionID }
 
 func (n Namespace) ObjectPath(digest string) (string, error) {
 	if err := n.Validate(); err != nil {

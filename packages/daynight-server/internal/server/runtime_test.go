@@ -19,9 +19,12 @@ import (
 
 func testConfig(t *testing.T) Config {
 	t.Helper()
-	database := projectTestStore(t)
+	url := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
+	if url == "" {
+		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required for PostgreSQL tests")
+	}
 	config := configuredTestConfig()
-	config.DatabaseURL = database.Pool.Config().ConnConfig.ConnString()
+	config.DatabaseURL = url
 	config.StorageRoot = testStorageRoot(t)
 	return config
 }

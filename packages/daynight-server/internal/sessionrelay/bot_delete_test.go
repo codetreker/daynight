@@ -3,16 +3,17 @@ package sessionrelay
 import (
 	"context"
 	"errors"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
+	"io"
 	"io/fs"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
 )
@@ -178,7 +179,7 @@ func TestBotDeletionCleansEveryChildAndOrphanWithRetry(t *testing.T) {
 	}
 }
 
-func TestBotDeletionCannotCompleteWithUnmigratedOrphanHistory(t *testing.T) {
+func TestBotDeletionCleansCurrentHistoryAndPreservesExistingUnrelatedBytes(t *testing.T) {
 	f, out, _ := registeredBot(t)
 	ctx := t.Context()
 	files, err := local.New(t.TempDir())
@@ -187,9 +188,9 @@ func TestBotDeletionCannotCompleteWithUnmigratedOrphanHistory(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = files.Close() })
 	f.s.files = files
-	legacy := out.Session.SessionID + "/orphan.json"
+	existing := out.Session.SessionID + "/orphan.json"
 	current := testArchiveDirectory(t, "", f.p.UserID, out.Session.SessionID) + "/history.json"
-	for _, name := range []string{legacy, current} {
+	for _, name := range []string{existing, current} {
 		if _, err := files.Put(ctx, archiveBucket, name, strings.NewReader("private history")); err != nil {
 			t.Fatal(err)
 		}
@@ -199,17 +200,22 @@ func TestBotDeletionCannotCompleteWithUnmigratedOrphanHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := f.s.CompleteBotDeletion(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, botCleanupReceipt(out, request.DeletionID))
-	if err != nil || result.Deletion.ServerCleanup.State != "failed" {
-		t.Fatalf("unmigrated orphan history was reported removed: %+v %v", result, err)
+	if err != nil || result.Deletion.ServerCleanup.State != "completed" {
+		t.Fatalf("current history cleanup did not complete: %+v %v", result, err)
 	}
-	for _, name := range []string{legacy, current} {
-		object, err := files.Open(ctx, archiveBucket, name)
-		if err != nil {
-			t.Fatal("rejected cleanup changed private bytes", err)
-		}
-		if err := object.Body.Close(); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := files.Open(ctx, archiveBucket, current); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("current archive history remains: %v", err)
+	}
+	object, err := files.Open(ctx, archiveBucket, existing)
+	if err != nil {
+		t.Fatal("cleanup changed existing unrelated bytes", err)
+	}
+	content, readErr := io.ReadAll(object.Body)
+	if err := errors.Join(readErr, object.Body.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "private history" {
+		t.Fatalf("cleanup changed existing unrelated bytes: %q", content)
 	}
 }
 

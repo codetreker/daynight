@@ -36,14 +36,6 @@ func terminalArchive(ctx context.Context, tx pgx.Tx, r *terminalRecord) (v2.Arch
 	if path != nil {
 		object = *path
 	}
-	if out.State == "ready" {
-		if out.SHA256 == nil || path == nil {
-			return out, receipt, "", fault("source_corrupt", "Ready terminal archive metadata is incomplete.")
-		}
-		if err := validateArchiveObjectPath(r.Owner.ProjectID, r.Owner.OwnerUserID, r.Envelope.SessionID, *out.SHA256, object); err != nil {
-			return out, receipt, "", err
-		}
-	}
 	return out, receipt, object, nil
 }
 func (s *Service) TerminalArchiveStatus(ctx context.Context, p core.Principal, project, taskID, id string) (v2.Message, error) {
@@ -192,16 +184,13 @@ func (s *Service) PutTerminalArchive(ctx context.Context, p core.Principal, proj
 		if err := verifyTerminalArchive(r, doc); err != nil {
 			return err
 		}
-		status, receipt, storedPath, err := terminalArchive(ctx, tx, r)
+		status, receipt, _, err := terminalArchive(ctx, tx, r)
 		if err != nil {
 			return err
 		}
 		if receipt != nil {
 			if receipt.Disposition != "ready" || receipt.SHA256 == nil || *receipt.SHA256 != hash || receipt.ByteLength == nil || *receipt.ByteLength != size {
 				return conflict()
-			}
-			if _, err := s.readTerminalObject(ctx, storedPath, *receipt.SHA256, *receipt.ByteLength); err != nil {
-				return err
 			}
 			out = terminalEnvelope(r, "receipt", *receipt)
 			return nil

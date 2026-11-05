@@ -38,11 +38,11 @@ namespace from the original owner and Session, removes its whole user/shard/Sess
 directory, explicitly removes all SQL children and the Session, and reduces the
 Bot to deletion responsibility. The
 [archive layout decision](2026-11-05-session-archive-layout.md) owns these grouped
-addresses and automatic startup conversion with a durable completion marker.
-Cleanup rejects an unmigrated direct
-Session directory, including one containing only unregistered objects, and
-preserves other Sessions under the same owner or shard. Filesystem failures and SQL
-rollback never restore admission. A retry tolerates already removed files and
+addresses and the current-layout cleanup scope. Legacy archive bytes remain
+outside that scope and do not block current namespace deletion. Cleanup covers
+unregistered objects within its derived directory and preserves other Sessions
+under the same owner or shard. Filesystem failures and SQL rollback never restore
+admission. A retry tolerates already removed files and
 cannot downgrade a concurrent completed cleanup. Live caches are invalidated
 locally after deletion and on other instances when persistent removal is observed.
 The Controller's preliminary scope lookup must also invalidate on a missing

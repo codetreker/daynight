@@ -326,16 +326,10 @@ UniAuth and supply real credentials through private environment configuration;
 never commit them. The [deployment guide](../../deployment/localhost/README.md)
 owns the shared authentication setup.
 
-Use credentials suitable for the local PostgreSQL instance. Startup initializes
-local storage, opens and migrates the SQL store, then completes Session archive
-layout migration before listening or composing HTTP handlers. The database/schema
-phase and listener phase each have their own `DAYNIGHT_STARTUP_TIMEOUT`; archive
-conversion uses the startup caller's cancellation context because its duration
-depends on stored bytes. Failure prevents listening and exits nonzero. The
-[archive startup contract](#session-archive-layout-startup) owns its durable
-completion marker and retry behavior. The process also exits nonzero on shutdown
-failure. It never logs the database URL, driver error text, SQL, request body, or
-query string. Errors retain their original causes internally; logs expose safe
+Use credentials suitable for the local PostgreSQL instance. The process validates
+the connection before listening and exits nonzero on startup or shutdown failure.
+It never logs the database URL, driver error text, SQL, request body, or query
+string. Errors retain their original causes internally; logs expose safe
 diagnostics and cause categories.
 
 | Environment variable | Meaning | Default |
@@ -350,7 +344,7 @@ diagnostics and cause categories.
 | `DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN` | Explicit main-site HTTP test-origin policy (`0` or `1`) | `0` |
 | `DAYNIGHT_ALLOW_LOOPBACK_HTTP` | Separate SDK permission for a literal loopback UniAuth HTTP gateway (`0` or `1`) | `0` |
 | `DAYNIGHT_LISTEN_ADDR` | Numeric loopback IP and port, including IPv6 syntax | `127.0.0.1:8787` |
-| `DAYNIGHT_STARTUP_TIMEOUT` | Positive Go duration applied separately to database connection/schema migration and listener startup; archive layout conversion follows caller cancellation without this short phase timeout | `10s` |
+| `DAYNIGHT_STARTUP_TIMEOUT` | Positive Go duration for database connection and listener startup | `10s` |
 | `DAYNIGHT_SHUTDOWN_TIMEOUT` | Positive Go duration for draining HTTP requests | `10s` |
 | `DAYNIGHT_TASK_SYNC_OVERLAP` | Positive Go duration subtracted from a supplied task-summary watermark | `10s` |
 
@@ -557,21 +551,21 @@ addresses before resolving them through `os.Root`. It rejects roots that cannot
 distinguish case and rejects object access outside the root. `Open` returns the
 size of its opened handle. Callers own the returned body and input reader.
 
-Session archives use `internal/sessionarchive.Namespace` to derive ownership and
-Session UUID shards. Task Web/Herdr bodies use
+New Session archives use `internal/sessionarchive.Namespace` for project/user
+and Session UUID directories. Task Web/Herdr objects use
 `session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`;
-independent Test/Bot bodies use
+independent Test/Bot objects use
 `session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
 PostgreSQL retains the object path, length, digest and archive status or receipt.
-Runtime requires the stored path to match the original Session ownership; an
-old or mismatched path fails with `source_corrupt`. Public URLs and archive bytes
-retain their identity. The restricted `DeleteSessionArchives` operation accepts a
-validated Namespace, removes its whole Session directory including unregistered
-objects, and preserves same-owner/shard siblings. Normal startup completes old
-layout conversion before serving; a direct legacy Session directory still blocks
-cleanup if encountered. The
-[Session design](../../docs/design/task-session-protocol.md#服务端归档布局与迁移)
-owns the address and conversion mechanism.
+Readers continue to open the persisted `object_path` and apply the existing
+length/digest/structure checks. Existing files and metadata stay in place;
+read behavior, same-hash ready upload retries and public URLs remain unchanged.
+The restricted `DeleteSessionArchives` operation receives a validated Namespace
+and removes that current Session directory, including unregistered objects,
+while preserving same-owner/shard siblings. Old direct-directory files are
+outside this physical cleanup scope and do not block it. The
+[Session design](../../docs/design/task-session-protocol.md#服务端归档布局)
+owns the address rule.
 
 Writes stream through an owned temporary file and publish complete contents.
 An empty internal directory can be reused as a file path; existing child files
@@ -668,56 +662,6 @@ before reopening writers to avoid discarding new writes. The
 state and failure rules; the
 [upgrade runbook](../../deployment/localhost/README.md#attachment-layout-upgrade)
 owns the operator sequence.
-
-## Session archive layout startup
-
-Normal service startup calls `EnsureSessionArchiveLayout` after local storage and
-SQL schema initialization and before listening, handler composition or readiness.
-It uses the startup caller's cancellation context, followed by a fresh bounded
-listener phase. First conversion requires old application versions and direct
-database/file writers to
-remain stopped. Concurrent new startups serialize on a dedicated PostgreSQL
-advisory lock and do not serve HTTP until the layout is complete.
-
-Under that lock, startup first checks the storage-root completion marker
-`.session-archive-layout.json`. Its only supported JSON value is `{"version":1}`
-in a regular nonsymlink file of at most 128 bytes. Invalid or truncated JSON,
-duplicate/extra fields, unsupported versions or unsafe file types fail startup.
-The root-directory barrier is repeated before trusting a valid marker, then
-inventory and full content scans are skipped. Empty installations create the
-same marker after verification.
-
-Without a marker, startup validates ownership, exact legacy/new paths, complete
-directory inventories and registered lengths/digests, body schema and original
-Session identity before moving whole known Session directories. This preserves
-unregistered objects and empty directories. Unknown ownership, missing or corrupt
-registered objects, symlinks, special files and conflicting source/target trees
-fail explicitly. Each same-filesystem rename and its directory barriers precede
-that Session's `object_path` commit. The next startup verifies and finishes a
-known file-before-SQL interruption; request handling never reads a legacy path
-or performs layout conversion.
-
-Only after all directory synchronization and metadata commits succeed does
-startup write the marker through an owned temporary file, file synchronization,
-rename and root synchronization. Failure prevents readiness. A marker rename
-followed by a failed root barrier can leave visible bytes; the next startup must
-complete its own barrier before trusting them. Temporary crash residue proves no
-completion. The marker, archive tree and database belong to the same backup pair;
-a marker is neither a database identity ledger nor a substitute for ordinary
-archive integrity checks.
-
-The `session archive layout ready` lifecycle log exposes `phase`,
-`already_applied`, `sessions`, `moved`, `files` and `bytes`. First conversion reports
-verified existing Session trees and regular files, including unregistered and
-temporary objects. A valid marker reports `already_applied=true` and zero counts
-without scanning those trees. Safe startup errors expose `migration_phase` and
-`migration_category`. Archive bytes, lengths, digests, receipts,
-SQL schema and task cache epochs are preserved by layout conversion.
-
-The [shared Session design](../../docs/design/task-session-protocol.md#服务端归档布局与迁移)
-owns layout and failure semantics. The
-[deployment guide](../../deployment/localhost/README.md#session-archive-layout-upgrade)
-owns normal upgrade, progress diagnostics and paired restore.
 
 ## Task attachment API
 

@@ -82,15 +82,8 @@ needed when a command needs shell expansion, as in the example. The callback
 keeps its caller's working directory. Fixture preparation and the production
 image build each have a separate 600 second bound. Startup stages have bounded
 Docker operations; server activation has a 150 second outer bound around
-Compose's 120 second readiness wait. Server readiness follows automatic Session
-archive layout conversion and its durable completion marker. A fresh disposable
-root creates that marker without existing archive trees. If activation fails or
-its wait expires, the ordinary runner's exit cleanup terminates the server and
-removes both data volumes, including any conversion state and marker. The
-`--reconfigure` invocation leaves an active run's resources for its original
-runner to clean up. The callback's duration is controlled by its caller. The
-[normal deployment guide](../localhost/README.md#session-archive-layout-upgrade)
-owns persistent upgrade and startup-progress behavior.
+Compose's 120 second readiness wait. The callback's duration is controlled by its
+caller.
 
 Each invocation uses `daynight-dev-ci-<run-id>` as the explicit Compose project
 and a unique `daynight-dev-ci:<run-id>` image tag. All Compose operations use the
@@ -137,10 +130,8 @@ bash deployment/dev-ci/run.sh --reconfigure RUN_ID --bootstrap
 ```
 
 Keep all server instances and direct database or file writers stopped. Restore
-SQL and the whole storage-root archive into their fresh application volumes,
-including `.session-archive-layout.json` when it exists so archive layout state
-remains paired with the corresponding database and tree. Then use the project's
-PostgreSQL service to run
+SQL and the attachment archive into their fresh application volumes, then use the
+project's PostgreSQL service to run
 `UPDATE projects SET task_cache_epoch = gen_random_uuid()` for the affected
 projects before running `--reconfigure RUN_ID` to start the server. Restrict the
 `UPDATE` to the fixture's project IDs when restoring selected fixture data. Saved

@@ -16,14 +16,3 @@ func archiveObjectPath(project, owner, session, digest string) (string, error) {
 	}
 	return namespace.ObjectPath(digest)
 }
-
-func validateArchiveObjectPath(project, owner, session, digest, actual string) error {
-	expected, err := archiveObjectPath(project, owner, session, digest)
-	if err != nil {
-		return err
-	}
-	if actual != expected {
-		return fault("source_corrupt", "Session archive object path does not match the completed startup layout.")
-	}
-	return nil
-}
