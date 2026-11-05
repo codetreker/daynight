@@ -155,7 +155,7 @@ describe('composer provider controls', () => {
     const props = base(); props.state = { ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, commandsError: 'Native discovery failed' } } };
     render(<SessionComposer {...props} />);const input = screen.getByRole('textbox');fireEvent.change(input, { target: { value: '/' } });
     fireEvent.keyDown(input, { key: 'ArrowDown' });expect(screen.getByRole('option', { name: /\/permissions/ })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText('Native discovery failed')).toBeVisible();fireEvent.click(screen.getByRole('button', { name: 'Retry commands' }));
+    expect(screen.getByText('Native discovery failed')).toBeVisible();fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
     await waitFor(() => expect(props.onRefreshControls).toHaveBeenCalledOnce());expect(props.onSend).not.toHaveBeenCalled();
   });
   it('retains controls and draft while identity is paused, but cannot mutate', () => {
@@ -323,7 +323,7 @@ it.each(['ready', 'unavailable', 'failed', 'empty', 'disabled', 'refreshing'] as
   const draft = mode === 'empty' ? '/not-a-command' : 'Keep\nthis draft';
   fireEvent.change(input, { target: { value: draft } });
   if (mode !== 'empty') fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
-  if (mode === 'refreshing') fireEvent.click(screen.getByRole('button', { name: 'Retry commands' }));
+  if (mode === 'refreshing') fireEvent.click(screen.getByRole('button', { name: 'Refresh commands' }));
   const close = screen.getByRole('button', { name: 'Close' });
   expect(close).toBeEnabled();
   fireEvent.click(close);
@@ -338,7 +338,7 @@ it.each(['retry', 'option', 'close'] as const)('dismisses the command menu from 
   const props = base(), outer = vi.fn();
   render(<div onKeyDown={outer}><SessionComposer {...props} /></div>);
   const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: '/compact' } });
-  const element = target === 'option' ? screen.getByRole('option') : screen.getByRole('button', { name: target === 'close' ? 'Close' : 'Retry commands' });
+  const element = target === 'option' ? screen.getByRole('option') : screen.getByRole('button', { name: target === 'close' ? 'Close' : 'Refresh commands' });
   element.focus(); fireEvent.keyDown(element, { key: 'Escape' });
   expect(screen.queryByRole('listbox')).toBeNull(); expect(outer).not.toHaveBeenCalled();
   expect(input).toHaveFocus(); expect(input).toHaveValue('/compact');
@@ -563,4 +563,35 @@ it.each(['send_message', 'execute_command', 'update_setting', 'refresh_controls'
   expect(container.querySelector('.session-notice')).toBeNull();
   expect(screen.getByRole('button', { name: /Send|Awaiting provider confirmation/ })).toBeDisabled();
   expect(screen.getByRole('textbox')).toHaveValue('Draft retained');
+});
+
+it.each([
+  ['en', 'Open chat commands', 'Refresh commands', 'Refreshing…', 'Reload'],
+  ['zh-CN', '打开会话命令', '刷新命令', '正在刷新…', '重新加载'],
+] as const)('presents catalog refresh, busy and failure states in %s without duplicate discovery', async (locale, open, refresh, refreshing, reload) => {
+  const props = base();
+  let finish!: () => void;
+  props.onRefreshControls.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+  const view = createLocaleRender(locale)(<SessionComposer {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: open }));
+  const button = screen.getByRole('button', { name: refresh });
+  expect(button).toBeEnabled(); expect(button).toHaveAttribute('aria-busy', 'false');
+  const user = userEvent.setup();
+  button.focus(); await user.keyboard('{Enter}');
+  expect(screen.getByRole('button', { name: refreshing })).toBeDisabled();
+  expect(button).toHaveAttribute('aria-busy', 'true');
+  fireEvent.click(button); expect(props.onRefreshControls).toHaveBeenCalledOnce();
+  await act(async () => finish());
+  expect(button).toHaveAccessibleName(refresh); expect(button).toHaveAttribute('aria-busy', 'false');
+  const failed = { ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, commandsError: 'Native discovery failed' } } };
+  view.rerender(<SessionComposer {...props} state={failed} />);
+  expect(screen.getByRole('alert')).toHaveTextContent('Native discovery failed');
+  expect(button).toHaveAccessibleName(reload);
+  fireEvent.click(button);
+  expect(button).toHaveAccessibleName(refreshing); expect(button).toBeDisabled();
+  await act(async () => finish());
+  expect(button).toHaveAccessibleName(reload);
+  view.rerender(<SessionComposer {...props} />);
+  expect(button).toHaveAccessibleName(refresh); expect(screen.queryByRole('alert')).toBeNull();
+  expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
 });

@@ -240,6 +240,8 @@ PostgreSQL 保存 Session 归属、注册身份、授权、原生与连接代次
 
 响应操作按 interactionId 与 interactionRevision 限制同一交互的重复提交，不能按整个 turn 或 interaction_response 类型互斥。工具审批等待 tool_result 确认期间，同一工具提出的新 MCP form 必须可独立响应。浏览器只持久保存 operation 与交互身份的关联，不保存答案；缺少旧缓存时，服务端当前在线交互校验和 Controller 原生校验仍决定能否响应。
 
+Chatbox 的只读兜底提示与发送门禁分开：`waiting_input` 中存在 pending 且通过 `sessionRespondGate` 的交互时，不因 `sessionSendGate` 为 false 显示只读。同步、待确认操作和首次输入提示仍先判断。`SessionTimeline` 从当前可显示条目中筛选可回答请求，`usePendingInteractionLocator` 观察卡片与时间线的几何交集、滚动、尺寸和本地回答状态；部分可见的大卡片不要求完整容纳在视口中。定位入口与“最新”共用底部导航区域，标题保留原生内容，入口前缀随页面语言变化。定位暂停跟随、更新阅读锚点并聚焦卡片，不发送回答；卡片本地提交或完成后，即使远端 pending 快照尚未更新，也不保留定位入口。实现取舍见[等待交互定位决策](../../.agents/notes/implemented/bug-fix/2026-11-06-pending-interaction-navigation.md)。
+
 ## 原生正文的显示转换
 
 Controller 的 `ProviderOptions.onTimeline` 在调用 `journal.projectTimeline` 前通过 `providerDisplayEntry` 生成显示副本。Codex、Claude、Copilot 的实时事件和原生历史重放均经过这个入口；转换位于 `parseSourceEvent` 之前，既有 `sessionDisplayEntry` 整条 wire 预算降级继续位于持久化投影之后。
@@ -300,13 +302,15 @@ composer 通过实际 scrollHeight 与宽度变化调整输入的期望高度并
 
 composer 的表单保留提交、快捷键和设置面板的所有权；内部共同容器提供输入区、设置入口、活动状态、操作按钮的统一边框；快捷键说明作为发送操作的可访问提示，不占常驻布局行。textarea 使用透明背景且不单独绘制边框，焦点样式由共同容器与各可聚焦控件承担。底部布局按可用容器宽度允许设置、状态和动作分组换行，不使用视觉重排改变键盘顺序；composer 宽度不超过 360px 时进一步截断过长模型标签，避免设置入口额外占行而挤出发送操作。设置面板继续由 composer 持有展开状态，命令菜单与输入共用同一表单。选择理由见[统一 Chatbox 分组决策](../../.agents/notes/implemented/bug-fix/2026-11-04-unified-session-chatbox.md)。
 
-命令菜单保持在 composer 的文档流内。Session、composer、输入共同容器与菜单形成 flex 收缩链，timeline 不再用固定最小高度挤占输入与操作的空间。菜单标题、重试和关闭按钮位于滚动内容之外；标题行允许换行，标题本身不收缩，窄面板中操作组整体移到下一行，避免标题被挤成逐字换行。目录、错误与空态在内部 body 滚动。组件按标题的实际高度及其 margin、目录 body 的 CSS 最小高度、菜单 padding 与 border 计算菜单最小高度；body 至少保留 36px，避免仅保留标题时目录被压成零高度而失去可点击区域。输入共同容器的最小高度包含 textarea 的 CSS 最小高度、底部操作的实际高度与间距、边框、内边距及当前错误。ResizeObserver 跟随换行后的标题、操作区和容器尺寸更新约束。textarea 可以在期望高度与最小高度之间收缩，底部操作不收缩；菜单的最大高度只约束宽裕空间下的大小。键盘选中项变化或目录可视区调整时，使用定位在目录 body 内的 offsetTop/offsetHeight 直接设置 scrollTop，保持同一未缩放坐标系，避免整数尺寸比例换算产生累计偏移，也不滚动祖先容器。
+命令菜单保持在 composer 的文档流内。Session、composer、输入共同容器与菜单形成 flex 收缩链，timeline 不再用固定最小高度挤占输入与操作的空间。菜单标题、刷新和关闭按钮位于滚动内容之外；标题行允许换行，标题本身不收缩，窄面板中操作组整体移到下一行，避免标题被挤成逐字换行。目录、错误与空态在内部 body 滚动。组件按标题的实际高度及其 margin、目录 body 的 CSS 最小高度、菜单 padding 与 border 计算菜单最小高度；body 至少保留 36px，避免仅保留标题时目录被压成零高度而失去可点击区域。输入共同容器的最小高度包含 textarea 的 CSS 最小高度、底部操作的实际高度与间距、边框、内边距及当前错误。ResizeObserver 跟随换行后的标题、操作区和容器尺寸更新约束。textarea 可以在期望高度与最小高度之间收缩，底部操作不收缩；菜单的最大高度只约束宽裕空间下的大小。键盘选中项变化或目录可视区调整时，使用定位在目录 body 内的 offsetTop/offsetHeight 直接设置 scrollTop，保持同一未缩放坐标系，避免整数尺寸比例换算产生累计偏移，也不滚动祖先容器。
 
 嵌入任务详情时，composer 将上述最小尺寸、表单 padding 与其他子项、Session 中除 timeline 外的兄弟区域以及 Tabs 的实际外部高度相加，写入所属 `.task-detail-body` 的 `--session-composer-space`。只有 Session tab 可见时，CSS 才根据 body 剩余高度收缩任务元数据区域的 max-height；元数据保留内部滚动。这个测量替代对所有 tab 一律预留 120px 的假设，避免长任务标题与状态区域把 Session 必要控件裁掉。
 
 独立 Test Session 使用所属 `.test-session-shell .content` 保存同名预留变量。预算包括表单最小空间、Session header 与其他非 timeline 区域、TestSessionPage 返回链接和标题的外部高度、content 上下 padding 与 Session 边框。`.auth-shell.test-session-shell .content` 以 `min(100%, var(--session-composer-space))` 约束最小高度；topbar 允许 flex 收缩并内部滚动，使其控件仍可访问。独立页用明确的 18px 底部 padding 覆盖认证应用通用内容区的额外底部留白，避免与 Session 自身布局重复占用空间。任务详情仍使用自己的 body 与 metadata 预算；没有这两类宿主时仅使用共享 flex 布局。相关内容和尺寸变化重新计算所属宿主的预留值，失活与卸载清理观察器及 CSS 变量。
 
 viewport 高度不超过 500px 时，composer、菜单与 Session header 减少纵向留白，独立页同时收紧 topbar、内容区与页标题的留白，其中认证独立页 content 的底部 padding 为 8px，给基本控件和可点击目录区域让出空间。这个密度调整不替代实际容器的 flex 约束与最小尺寸测量。
+
+刷新按钮沿用 `refreshCommands` 的 `refreshing` 生命周期和 `onRefreshControls` 调用：刷新中优先显示专用本地化忙碌文案，设置 `aria-busy` 并沿用既有 disabled 条件；非刷新中以菜单实际渲染错误的 `controls.commandsError` 选择重新加载或正常刷新文案。普通发送、命令执行或刷新请求自身的 composer 错误不冒充目录加载错误。
 
 关闭菜单不经过控制权限或原生操作 gate，也不改写草稿。 textarea 的非 IME Shift+Tab 在命令确认分支之前处理，使用 `flushSync` 同步收起候选 DOM，然后保留事件默认行为和传播。浏览器与外层焦点边界依据收起后的控件计算反向顺序，不会进入刚隐藏的候选；这个路径不调用恢复输入焦点的关闭回调，也不依赖连接、候选数量或执行 gate。普通 Tab、Enter 分类和 IME 保护仍由原有分支处理。关闭按钮、命令开关与普通 Escape 收起目录；显式关闭恢复 textarea 焦点并使用 `preventScroll`。菜单在 active 时向最近的 `.task-agent-session` 注册原生冒泡 keydown 监听，没有 Session 容器时使用 form，使标题栏焦点也先经过命令菜单的 Escape 处理。监听尊重已消费的事件；IME Escape 只停止传播而不阻止默认行为，普通 Escape 才阻止默认行为并关闭菜单。Display 打开时让出该监听，快捷键提示的既有 capture 监听保持更高优先级；表单处理仍覆盖自身的设置面板与命令关闭。外部 pointer 只收起目录，不恢复输入焦点、不阻止事件默认行为，使被点击控件继续获得焦点并执行自身操作。失活、关闭或卸载移除菜单拥有的监听。布局与关闭机制的取舍见[命令菜单空间与关闭决策](../../.agents/notes/implemented/bug-fix/2026-11-04-session-command-menu.md)。
 
