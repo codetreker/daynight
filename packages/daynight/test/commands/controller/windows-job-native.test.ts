@@ -20,6 +20,20 @@ test.skipIf(process.platform !== "win32")("queries and terminates a real named J
   // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwmaketemporaryobject
   const job: unknown = create(null, name);
   if (job === null) throw new Error(`Fixture Job creation failed (Win32 ${lastError()}).`);
+  const pointerSize = koffi.sizeof("uintptr_t");
+  const inventory = (): number[] => {
+    if (pointerSize !== 4 && pointerSize !== 8) throw new Error("Unsupported fixture Job pointer size.");
+    const data = Buffer.alloc(262_144);
+    if (query(job, 3, data, data.length, null) === 0) throw new Error(`Fixture Job query failed (Win32 ${lastError()}).`);
+    const assigned = data.readUInt32LE(0), count = data.readUInt32LE(4);
+    if (count > assigned || 8 + count * pointerSize > data.length) throw new Error("Invalid fixture Job inventory size.");
+    const pids = Array.from({ length: count }, (_, index) => {
+      const offset = 8 + index * pointerSize;
+      return pointerSize === 8 ? Number(data.readBigUInt64LE(offset)) : data.readUInt32LE(offset);
+    });
+    if (pids.some(pid => !Number.isSafeInteger(pid) || pid <= 0)) throw new Error("Invalid fixture Job process identity.");
+    return pids.sort((a, b) => a - b);
+  };
   const script = `
 import { spawn } from 'node:child_process';
 process.on('message', message => {
@@ -62,7 +76,12 @@ process.send({ ready: true });
     expect(descendant.parentPid).toBe(child.pid);
     expect(await inspectProcessProof(leader)).toBe("running");
     expect(await inspectProcessProof(descendant)).toBe("running");
-    expect([...(await inspectControllerJob(name))].sort((a, b) => a - b)).toEqual([leader.pid, descendant.pid].sort((a, b) => a - b));
+    await vi.waitFor(async () => {
+      const expected = inventory();
+      expect(expected).toContain(leader!.pid);
+      expect(expected).toContain(descendant!.pid);
+      expect([...(await inspectControllerJob(name))].sort((a, b) => a - b)).toEqual(expected);
+    }, { timeout: 10_000, interval: 25 });
     await inspectControllerJob(name, true);
     await waitForClose();
     await vi.waitFor(async () => {
@@ -79,11 +98,7 @@ process.send({ ready: true });
     try {
       if (child.exitCode === null && child.signalCode === null) child.kill();
       await waitForClose();
-      await vi.waitFor(() => {
-        const data = Buffer.alloc(262_144);
-        if (query(job, 3, data, data.length, null) === 0) throw new Error(`Fixture Job query failed (Win32 ${lastError()}).`);
-        expect(data.readUInt32LE(4)).toBe(0);
-      }, { timeout: 10_000, interval: 25 });
+      await vi.waitFor(() => expect(inventory()).toEqual([]), { timeout: 10_000, interval: 25 });
       if (descendant !== undefined) await vi.waitFor(async () => expect(await inspectProcessProof(descendant!)).toBe("stopped"), { timeout: 10_000, interval: 25 });
     } catch (error) { cleanupFailures.push(error); }
     try { if (close(job) === 0) throw new Error(`Fixture Job handle release failed (Win32 ${lastError()}).`); }
