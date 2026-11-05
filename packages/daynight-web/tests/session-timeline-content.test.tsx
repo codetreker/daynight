@@ -32,6 +32,8 @@ it.each([
   ['commandExecution', "sh -c 'echo 'hello", 'echo hello'],
   ['commandExecution', `sh -c ec"ho"' ok'`, 'echo ok'],
   ['commandExecution', String.raw`sh -c echo\ ok`, 'echo ok'],
+  ['commandExecution', "sh -c ' -n'", '-n'],
+  ['commandExecution', 'sh -c " +n" ', '+n'],
   ['commandExecution', "/bin/zsh -lc 'find . -maxdepth 1 -type f | wc -l'", 'find . -maxdepth 1 -type f | wc -l'],
   ['commandExecution', String.raw`/bin/bash -lc "printf '%s\\n' \"hello\" && echo \$HOME"`, String.raw`printf '%s\n' "hello" && echo $HOME`],
   ['commandExecution', String.raw`/usr/bin/dash -c 'printf '\''hello'\'''`, "printf 'hello'"],
@@ -53,6 +55,14 @@ it.each([
   'git status --short',
   'sh -c',
   'sh -c echo argument',
+  'sh -c -n',
+  'sh -c --',
+  'sh -c -',
+  'sh -c +n',
+  'sh -c +',
+  "sh -c '-n'",
+  'sh -c "-n echo SAFE"',
+  `sh -c "-"n`,
   'sh -c $HOME',
   'sh -c $(pwd)',
   'sh -c `pwd`',
@@ -88,6 +98,15 @@ it.each([
 ])('keeps uncertain or compound shell invocations intact: %s', (input) => {
   const view = show([{ kind: 'tool_call', entryId: '1', entrySeq: '1', revision: '1', callId: 'c', name: 'commandExecution', input, output: [], status: 'completed', truncated: false }]);
   expect(view.container.querySelector('.session-tool-summary')?.textContent).toBe(input);
+});
+it.each([
+  ["sh -c '-n'  ", "sh -c '-n'"],
+  ['sh -c "+n"\t', 'sh -c "+n"'],
+  ['sh -c -- ', 'sh -c --'],
+  ["  sh -c '+n'", "sh -c '+n'"],
+])('keeps shell option arguments wrapped before whitespace normalization: %s', (input, summary) => {
+  const view = show([{ kind: 'tool_call', entryId: '1', entrySeq: '1', revision: '1', callId: 'c', name: 'commandExecution', input, output: [], status: 'completed', truncated: false }]);
+  expect(view.container.querySelector('.session-tool-summary')?.textContent).toBe(summary);
 });
 it.each([
   ['search', "sh -c 'query text'", "sh -c 'query text'"],

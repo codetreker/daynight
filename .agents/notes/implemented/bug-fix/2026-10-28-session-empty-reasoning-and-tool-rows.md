@@ -32,7 +32,8 @@ and `ksh`, optionally under `/bin/` or `/usr/bin/`, with `-c` or `-lc`. It decod
 single and double quoting, including adjacent literal fragments and backslash
 escapes, without evaluating shell expansions. Simple unquoted words such as
 `date` are also recognized. Unclosed quotes, dynamic outer
-expansions, extra arguments, operators and unsupported launchers keep their
+expansions, option-like arguments beginning with `-` or `+`, extra arguments,
+operators and unsupported launchers keep their
 original summary. This applies to Codex `commandExecution` text and selected
 JSON `command` or `cmd` fields; other tool text and JSON field selection keep
 their existing behavior. Whitespace normalization and the 180-character summary

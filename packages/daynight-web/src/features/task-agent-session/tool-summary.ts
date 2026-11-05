@@ -32,10 +32,12 @@ function unwrapShellCommand(input: string): string {
     } else if (literalCharacter.test(character)) {
       command += character;
     } else {
-      return /^[ \t\n]*$/.test(input.slice(index - 1)) ? command : input;
+      if (!/^[ \t\n]*$/.test(input.slice(index - 1))) return input;
+      break;
     }
   }
-  return quote === null ? command : input;
+  // Shells can consume a leading sign as an option even after -c.
+  return quote === null && !/^[+-]/.test(command) ? command : input;
 }
 
 export function toolSummary(input: string, toolName: string): string {
