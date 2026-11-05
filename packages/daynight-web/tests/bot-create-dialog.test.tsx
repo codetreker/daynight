@@ -20,12 +20,12 @@ const bot = { id: wid(3), deletion: null, name: 'Helper', startupResult: { state
 const flush = () => act(async () => { for (let n = 0; n < 30; n++) await Promise.resolve(); });
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; };
 const onCreated = vi.fn(), onClose = vi.fn();
-function Harness() {
+function Harness({ initiallyOpen = true }: { initiallyOpen?: boolean }) {
   const [unresolvedRequest, onUnresolvedRequestChange] = useState<api.CreateBotInput | null>(null);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(initiallyOpen);
   return <><button onClick={() => setOpen(true)}>Open form</button>{open && <BotCreateDialog unresolvedRequest={unresolvedRequest} onUnresolvedRequestChange={onUnresolvedRequestChange} onClose={() => { onClose(); setOpen(false); }} onCreated={onCreated} />}</>;
 }
-const mount = () => renderWithLocale(<Harness />, { locale: 'en', taskCache: { viewerId: owner } });
+const mount = (initiallyOpen = true) => renderWithLocale(<Harness initiallyOpen={initiallyOpen} />, { locale: 'en', taskCache: { viewerId: owner } });
 const name = (value = 'Helper') => fireEvent.change(assistantNameInput(), { target: { value } });
 const submit = () => fireEvent.click(assistantCreateSubmit());
 const advanced = expandAssistantAdvancedSettings;
@@ -34,8 +34,9 @@ beforeEach(() => { vi.mocked(api.getBotDefaults).mockResolvedValue(defaults()); 
 it('requires only a name and leaves defaults implicit on creation', async () => {
   mount(); await flush();
   expect(screen.getByRole('textbox', { name: 'Name' })).toHaveFocus();
-  const workerChoice = screen.queryByRole('combobox', { name: 'Worker' });
-  if (workerChoice) expect(workerChoice).not.toBeVisible();
+  expect(screen.getByLabelText('Worker')).not.toBeVisible();
+  expect(screen.getByLabelText('Working directory')).not.toBeVisible();
+  expect(screen.getByLabelText('Agent')).not.toBeVisible();
   expect(document.querySelectorAll('[required]')).toHaveLength(1);
   name(); submit(); await flush();
   expect(api.createBot).toHaveBeenCalledTimes(1);
@@ -43,10 +44,14 @@ it('requires only a name and leaves defaults implicit on creation', async () => 
   expect(onCreated).toHaveBeenCalledWith(bot);
 });
 it('cancels without creating or changing preferences and restores focus', async () => {
-  mount(); await flush(); advanced();
+  mount(false);
+  const opener = screen.getByRole('button', { name: 'Open form' });
+  opener.focus(); fireEvent.click(opener); await flush(); advanced();
   fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: '/ordinary' } });
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); await flush();
   expect(api.createBot).not.toHaveBeenCalled(); expect(onClose).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('textbox', { name: 'Name' })).toBeNull();
+  expect(opener).toHaveFocus();
 });
 it('keeps new Worker defaults when the previous response arrives late', async () => {
   const first = deferred<api.BotDefaults>(), second = deferred<api.BotDefaults>();
@@ -57,7 +62,9 @@ it('keeps new Worker defaults when the previous response arrives late', async ()
   second.resolve(defaults()); await flush(); first.resolve(defaults(2)); await flush();
   expect(screen.getByRole('textbox', { name: 'Working directory' })).toHaveValue('/ordinary-1');
   name(); submit(); await flush();
-  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toMatchObject({ overrides: { workerId: wid(1) } });
+  expect(api.getBotDefaults).toHaveBeenNthCalledWith(2, wid(2), expect.any(AbortSignal), expect.objectContaining({ userId: owner }));
+  expect(api.getBotDefaults).toHaveBeenNthCalledWith(3, wid(1), expect.any(AbortSignal), expect.objectContaining({ userId: owner }));
+  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper', overrides: { workerId: wid(1) } });
 });
 it('resets explicit directory and provider when changing Worker', async () => {
   vi.mocked(api.getBotDefaults).mockResolvedValueOnce(defaults()).mockResolvedValueOnce(defaults(2));
@@ -65,8 +72,11 @@ it('resets explicit directory and provider when changing Worker', async () => {
   fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: '/custom' } });
   fireEvent.change(screen.getByRole('combobox', { name: 'Agent' }), { target: { value: 'claude' } });
   fireEvent.change(screen.getByRole('combobox', { name: 'Worker' }), { target: { value: wid(2) } }); await flush();
+  expect(screen.getByRole('textbox', { name: 'Working directory' })).toHaveValue('/ordinary-2');
+  expect(screen.getByRole('combobox', { name: 'Agent' })).toHaveValue('copilot');
   name(); submit(); await flush();
-  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toMatchObject({ overrides: { workerId: wid(2) } });
+  expect(api.createBot).toHaveBeenCalledOnce();
+  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper', overrides: { workerId: wid(2) } });
 });
 it('queries an unknown submission by its original ID, including after closing', async () => {
   vi.mocked(api.createBot).mockImplementation(async input => { throw new api.BotCreationUnknown(input.id, new ApiError('network')); });
@@ -84,9 +94,16 @@ it('keeps an unknown request after a 404 and permits another read only', async (
   vi.mocked(api.createBot).mockImplementation(async input => { throw new api.BotCreationUnknown(input.id, new ApiError('network')); });
   vi.mocked(api.getBot).mockRejectedValue(new ApiError('server', 404, 'not_found'));
   mount(); await flush(); name(); submit(); await flush();
+  const originalId = vi.mocked(api.createBot).mock.calls[0]![0].id;
   fireEvent.click(screen.getByRole('button', { name: 'Check creation' })); await flush();
   expect(screen.getByText('Creation is not confirmed. Check this ID again before creating another assistant.')).toBeInTheDocument();
+  expect(screen.getByText(originalId)).toBeInTheDocument();
+  expect(screen.queryByRole('textbox', { name: 'Name' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Check creation' })); await flush();
+  expect(api.getBot).toHaveBeenCalledTimes(2);
+  for (const call of vi.mocked(api.getBot).mock.calls) expect(call).toEqual([originalId, expect.any(AbortSignal), expect.objectContaining({ userId: owner })]);
   expect(api.createBot).toHaveBeenCalledOnce();
+  expect(onCreated).not.toHaveBeenCalled();
 });
 it.each(['offline', 'unsupported', 'stale'])('reports %s Worker without allowing creation', async reason => {
   vi.mocked(api.getBotDefaults).mockResolvedValue({ ...defaults(), configuration: null, reason, workers: [{ ...worker(), state: reason, reason, configuration: null }] } as api.BotDefaults);
@@ -103,17 +120,36 @@ it('allows explicitly replacing an unavailable default provider', async () => {
 });
 it('shows a confirmed rejection and allows a corrected fresh request', async () => {
   vi.mocked(api.createBot).mockRejectedValueOnce(new ApiError('server', 409, 'conflict', null, undefined, undefined, 'Directory is unavailable.'));
-  mount(); await flush(); name(); submit(); await flush();
+  mount(); await flush(); advanced(); name();
+  fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: '/unavailable' } });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Agent' }), { target: { value: 'claude' } });
+  submit(); await flush();
   expect(screen.getByText('Directory is unavailable.')).toBeInTheDocument();
-  submit(); await flush(); expect(api.createBot).toHaveBeenCalledTimes(2);
+  expect(assistantNameInput()).toHaveValue('Helper');
+  expect(screen.getByLabelText('Working directory')).toHaveValue('/unavailable');
+  expect(screen.getByLabelText('Agent')).toHaveValue('claude');
+  expect(onCreated).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Check creation' })).toBeNull();
+  advanced();
+  fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: '/corrected' } });
+  submit(); await flush();
+  expect(api.createBot).toHaveBeenCalledTimes(2);
+  const [first, second] = vi.mocked(api.createBot).mock.calls.map(call => call[0]);
+  expect(first).toEqual({ id: expect.any(String), name: 'Helper', overrides: { cwd: '/unavailable', provider: 'claude' } });
+  expect(second).toEqual({ id: expect.any(String), name: 'Helper', overrides: { cwd: '/corrected', provider: 'claude' } });
+  expect(second!.id).not.toBe(first!.id);
+  expect(api.getBot).not.toHaveBeenCalled();
+  expect(onCreated).toHaveBeenCalledWith(bot);
 });
-it('accepts forty Unicode characters and rejects control characters', async () => {
-  mount(); await flush(); name('😀'.repeat(40)); submit(); await flush(); expect(api.createBot).toHaveBeenCalledOnce();
+it('trims Unicode whitespace and counts astral characters as one character', async () => {
+  mount(); await flush(); name(`\u3000${'😀'.repeat(40)}\u2003`); submit(); await flush();
+  expect(api.createBot).toHaveBeenCalledOnce();
+  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: '😀'.repeat(40) });
 });
 it('preserves form input when changing language', async () => {
   const view = mount(); await flush(); name('助手'); const input = screen.getByRole('textbox', { name: 'Name' }); view.setLocale('zh-CN'); expect(screen.getByRole('textbox', { name: '名称' })).toBe(input); expect(input).toHaveValue('助手'); expect(api.getBotDefaults).toHaveBeenCalledOnce();
 });
-it.each([' ', 'x'.repeat(41), 'bad\u0001name'])('rejects invalid names without dispatching', async invalid => {
+it.each([' ', 'x'.repeat(41), '😀'.repeat(41), 'bad\u0001name', 'bad\ud800name'])('rejects invalid names without dispatching', async invalid => {
   mount(); await flush(); name(invalid); submit(); await flush();
   expect(api.createBot).not.toHaveBeenCalled(); expect(screen.getByText('Enter 1–40 characters without control characters.')).toBeInTheDocument();
 });
@@ -162,4 +198,66 @@ it('dismisses creation on Escape and returns focus to its opener', async () => {
   expect(screen.queryByRole('textbox', { name: 'Name' })).toBeNull();
   expect(opener).toHaveFocus(); expect(document.body.style.overflow).not.toBe('hidden');
   expect(onCreated).not.toHaveBeenCalled();
+});
+
+it('does not submit until the initial defaults have arrived', async () => {
+  const pending = deferred<api.BotDefaults>();
+  vi.mocked(api.getBotDefaults).mockReturnValueOnce(pending.promise);
+  mount(); await flush(); name();
+  expect(assistantCreateSubmit()).toBeDisabled();
+  fireEvent.submit((assistantNameInput() as HTMLInputElement).form!); await flush();
+  expect(api.createBot).not.toHaveBeenCalled();
+  pending.resolve(defaults()); await flush();
+  expect(assistantNameInput()).toHaveValue('Helper');
+  expect(assistantCreateSubmit()).toBeEnabled();
+  submit(); await flush();
+  expect(api.createBot).toHaveBeenCalledOnce();
+  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper' });
+});
+
+it('returns to implicit defaults when switching an explicit Worker back to automatic', async () => {
+  vi.mocked(api.getBotDefaults).mockResolvedValueOnce(defaults()).mockResolvedValueOnce(defaults(2)).mockResolvedValueOnce(defaults());
+  mount(); await flush(); advanced();
+  fireEvent.change(screen.getByRole('combobox', { name: 'Worker' }), { target: { value: wid(2) } }); await flush();
+  fireEvent.change(screen.getByRole('textbox', { name: 'Working directory' }), { target: { value: '/custom-2' } });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Agent' }), { target: { value: 'claude' } });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Worker' }), { target: { value: '' } }); await flush();
+  expect(screen.getByRole('textbox', { name: 'Working directory' })).toHaveValue('/ordinary-1');
+  expect(screen.getByRole('combobox', { name: 'Agent' })).toHaveValue('copilot');
+  expect(api.getBotDefaults).toHaveBeenLastCalledWith(null, expect.any(AbortSignal), expect.objectContaining({ userId: owner }));
+  name(); submit(); await flush();
+  expect(api.createBot).toHaveBeenCalledOnce();
+  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper' });
+});
+
+it('retains explicit advanced settings across locale changes and collapse', async () => {
+  const view = mount(); await flush(); advanced(); name('助手');
+  const input = assistantNameInput();
+  const directory = screen.getByRole('textbox', { name: 'Working directory' });
+  fireEvent.change(directory, { target: { value: '/projects/中文' } });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Agent' }), { target: { value: 'codex' } });
+  view.setLocale('zh-CN');
+  expect(screen.getByRole('textbox', { name: '名称' })).toBe(input);
+  expect(screen.getByRole('textbox', { name: '工作目录' })).toBe(directory);
+  expect(directory).toHaveValue('/projects/中文');
+  expect(screen.getByRole('combobox', { name: 'Agent' })).toHaveValue('codex');
+  fireEvent.click(screen.getByText('高级设置'));
+  expect(directory).not.toBeVisible();
+  submit(); await flush();
+  expect(api.getBotDefaults).toHaveBeenCalledOnce();
+  expect(api.createBot).toHaveBeenCalledOnce();
+  expect(vi.mocked(api.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: '助手', overrides: { cwd: '/projects/中文', provider: 'codex' } });
+});
+
+it('keeps composition Escape inside the form without cancelling the draft', async () => {
+  mount(); await flush(); name('尚未完成');
+  const input = assistantNameInput();
+  fireEvent.keyDown(input, { key: 'Escape', code: 'Escape', isComposing: true }); await flush();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(assistantNameInput()).toBe(input);
+  expect(input).toHaveValue('尚未完成');
+  expect(input).toHaveFocus();
+  expect(api.createBot).not.toHaveBeenCalled();
+  pressAssistantEscape(input); await flush();
+  expect(onClose).toHaveBeenCalledOnce();
 });
