@@ -10,7 +10,7 @@ import type { SessionOperation, SessionSnapshot } from '../src/api/types';
 const snapshot = (): TaskSessionSnapshot => ({ ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), executionGeneration: '1', connectionEpoch: '1', lastEventSeq: '0' });
 const userId = '00000009-1111-4111-8111-111111111111';
 const clients: TaskSessionClient[] = [];
-afterEach(() => { clients.forEach((c) => c.close()); clients.length = 0; });
+afterEach(() => { clients.forEach((c) => c.close()); clients.length = 0; vi.useRealTimers(); });
 function fixture(storage: Storage | null = null, principal = userId) {
   const s = snapshot(); let receive!: (message: BrowserMessage) => void; let close!: () => void;
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' };
@@ -21,6 +21,53 @@ function fixture(storage: Storage | null = null, principal = userId) {
 }
 async function ready(f: ReturnType<typeof fixture>) { await f.client.start(); f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: f.s, cursor: 'zero' }); await vi.waitFor(() => expect(f.client.snapshot().connected).toBe(true)); }
 describe('task session transport lifecycle', () => {
+  it('discovers a later native registration without bypassing the wait or rebuilding its channel', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    vi.mocked(f.api.current).mockResolvedValue({ status: 'not_registered', claimId: f.s.claimId, agentControlMode: 'web' });
+    f.client.syncAvailability(); await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 11; i++) { f.client.syncAvailability(); await vi.advanceTimersByTimeAsync(250); }
+    expect(f.api.current).toHaveBeenCalledOnce();
+    expect(f.client.snapshot().status).toBe('not_registered');
+    vi.mocked(f.api.current).mockResolvedValue({ status: 'registered', session: f.s, startupReport: null });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(f.api.current).toHaveBeenCalledTimes(2);
+    expect(f.client.snapshot()).toMatchObject({ status: 'ready', startupReport: null });
+    f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: f.s, cursor: 'zero' });
+    await vi.advanceTimersByTimeAsync(0);
+    f.client.setDraft('preserve this draft');
+    for (let i = 0; i < 16; i++) { f.client.syncAvailability(); await vi.advanceTimersByTimeAsync(250); }
+    expect(f.api.current).toHaveBeenCalledTimes(3);
+    expect(f.api.channel).toHaveBeenCalledOnce();
+    expect(f.client.snapshot()).toMatchObject({ status: 'ready', connected: true, startupReport: null, draft: { text: 'preserve this draft' } });
+  });
+  it('keeps a slow native discovery serial across availability checks', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let resolve!: (value: { status: 'not_registered'; claimId: string; agentControlMode: 'web' }) => void;
+    vi.mocked(f.api.current).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    f.client.syncAvailability();
+    for (let i = 0; i < 20; i++) { f.client.syncAvailability(); await vi.advanceTimersByTimeAsync(250); }
+    expect(f.api.current).toHaveBeenCalledOnce();
+    resolve({ status: 'not_registered', claimId: f.s.claimId, agentControlMode: 'web' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.client.snapshot().status).toBe('not_registered');
+    await vi.advanceTimersByTimeAsync(2999); expect(f.api.current).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1); expect(f.api.current).toHaveBeenCalledTimes(2);
+  });
+  it('keeps a native not-applicable state stable until an explicit refresh', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    vi.mocked(f.api.current).mockResolvedValue({ status: 'not_applicable', claimId: null, agentControlMode: null });
+    f.client.syncAvailability(); await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 32; i++) { f.client.syncAvailability(); await vi.advanceTimersByTimeAsync(250); }
+    expect(f.api.current).toHaveBeenCalledOnce();
+    expect(f.client.snapshot().status).toBe('unavailable');
+    vi.mocked(f.api.current).mockResolvedValue({ status: 'registered', session: f.s, startupReport: null });
+    f.client.refresh(); await vi.advanceTimersByTimeAsync(0);
+    expect(f.api.current).toHaveBeenCalledTimes(2);
+    expect(f.api.channel).toHaveBeenCalledOnce();
+  });
   it('keeps registered sessions and durable history readable when the channel cannot open', async () => {
     const f = fixture(); await f.client.start(); f.disconnect();
     await vi.waitFor(() => expect(f.api.timeline).toHaveBeenCalledOnce());

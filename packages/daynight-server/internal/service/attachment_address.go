@@ -1,7 +1,7 @@
 package service
 
 import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-import "github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 
 type attachmentAddress struct {
 	projectID    string

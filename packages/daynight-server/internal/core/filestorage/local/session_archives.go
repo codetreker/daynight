@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 )
 
 // DeleteSessionArchives never accepts a caller-selected bucket or path prefix.

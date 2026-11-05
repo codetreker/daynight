@@ -5,6 +5,7 @@ import type { SessionV2Key, SessionV2Payloads } from '../../../../daynight/src/s
 
 export type TerminalClientSnapshot = {
   phase: 'loading' | 'ready' | 'disconnected' | 'unavailable' | 'error';
+  availability: 'not_registered' | 'not_applicable' | null;
   transport: 'paused' | 'connecting' | 'connected' | 'disconnected';
   session: TerminalSessionState | null; pending: boolean; inputReady: boolean; ownsControl: boolean;
   result: SessionV2Payloads['operation_result'] | null; error: unknown | null; unknownAcknowledged: boolean;
@@ -23,7 +24,7 @@ const terminal = (state: SessionV2Payloads['operation_result']['state']) => stat
 /** Owns one visible viewer, never a native attach or an automatic input retry. */
 export class TerminalSessionClient {
   readonly browserClientId: string;
-  private view: TerminalClientSnapshot = { phase: 'loading', transport: 'paused', session: null, pending: false, inputReady: false, ownsControl: false, result: null, error: null, unknownAcknowledged: false };
+  private view: TerminalClientSnapshot = { phase: 'loading', availability: null, transport: 'paused', session: null, pending: false, inputReady: false, ownsControl: false, result: null, error: null, unknownAcknowledged: false };
   private listeners = new Set<() => void>();
   private visible = false;
   private ended = false;
@@ -42,6 +43,7 @@ export class TerminalSessionClient {
   private leaseKey: string | null = null;
   private leaseSeq = 0n;
   private opening = false;
+  private interrupted = false;
   private storage: Storage | null = null;
   private persistenceError: unknown | null = null;
   private readonly storageKey: string;
@@ -88,7 +90,7 @@ export class TerminalSessionClient {
   private request() { const controller = new AbortController(); this.requests.add(controller); return controller; }
   private forget(controller: AbortController) { this.requests.delete(controller); }
   private stopTransport() {
-    this.generation++; this.opening = false;
+    this.generation++; this.opening = false; this.interrupted = false;
     this.channelState = null; this.needsReconciliation = false;
     this.channel?.close(); this.channel = null;
     for (const c of this.requests) c.abort(); this.requests.clear();
@@ -100,7 +102,12 @@ export class TerminalSessionClient {
   }
   setVisible = (visible: boolean): void => {
     if (!this.owned()) return;
-    if (this.visible === visible) { if (visible && this.channel === null) void this.start(); return; }
+    if (this.visible === visible) {
+      // A transient admission gate can close when a timer fires between visibility checks.
+      if (visible && this.channel === null && this.reconnectTimer === null && !this.opening && (this.interrupted || this.view.availability !== 'not_applicable')) void this.start();
+      else if (visible && this.channel !== null) this.scheduleReconciliation();
+      return;
+    }
     this.visible = visible;
     if (!visible) { this.stopTransport(); this.publish({ transport: 'paused' }); }
     else void this.start();
@@ -152,18 +159,24 @@ export class TerminalSessionClient {
       this.channelState = received;
     }
     const phase = !next.connected ? 'disconnected' : source === 'channel' || !this.needsReconciliation && this.view.transport === 'connected' && this.channelMatches(next) ? 'ready' : this.view.session === null ? 'loading' : this.view.phase;
-    this.publish({ session: next, phase, ...(source === 'channel' ? { transport: 'connected' as const, error: null } : {}) });
+    this.publish({ session: next, availability: null, phase, ...(source === 'channel' ? { transport: 'connected' as const, error: null } : {}) });
     this.scheduleReconciliation();
   }
   private async start() {
     if (!this.live() || this.opening) return;
-    this.opening = true; const generation = this.generation, controller = this.request();
-    this.publish({ transport: 'connecting', ...(this.view.session === null ? { phase: 'loading' as const, error: null } : {}) });
+    this.opening = true; this.interrupted = false; const generation = this.generation, controller = this.request();
+    if (this.view.session !== null || this.view.phase === 'loading') this.publish({ transport: 'connecting', ...(this.view.phase === 'loading' ? { error: null } : {}) });
     try {
       const current = this.view.session === null ? await this.options.api.current(controller.signal) : await this.options.api.state(this.view.session.sessionId, controller.signal);
       if (!this.live(generation)) return;
-      if (current.status !== 'registered') { this.publish({ phase: 'unavailable', session: null }); this.scheduleReconnect(); return; }
+      if (current.status !== 'registered') {
+        if (current.status === 'not_registered' && current.claimId !== this.options.claimId) { this.invalidate(new ApiError('protocol', null, 'stale_fence')); return; }
+        if (this.view.phase !== 'unavailable' || this.view.availability !== current.status || this.view.error !== null || this.view.transport !== 'disconnected') this.publish({ phase: 'unavailable', availability: current.status, transport: 'disconnected', session: null, error: null });
+        if (current.status === 'not_registered') this.scheduleReconnect();
+        return;
+      }
       if (current.claimId !== this.options.claimId) { this.invalidate(new ApiError('protocol', null, 'stale_fence')); return; }
+      if (this.view.transport !== 'connecting') this.publish({ transport: 'connecting' });
       this.receive(current, generation, 'read');
       if (!this.live(generation) || this.view.session === null) return;
       this.channel = this.options.api.channel(this.view.session.sessionId, this.browserClientId, state => this.receive(state, generation, 'channel'), error => {
@@ -172,11 +185,11 @@ export class TerminalSessionClient {
       });
       this.renewTimer = setInterval(() => { if (!this.live()) { this.stopTransport(); this.publish({ transport: 'paused' }); return; } this.publish({}); if (this.view.ownsControl && !this.view.pending) void this.control('renew_control'); }, SESSION_V2_LIMITS.leaseRenewMs);
     } catch (error) { if (this.live(generation)) this.failure(error); }
-    finally { this.forget(controller); if (generation === this.generation) this.opening = false; }
+    finally { this.forget(controller); if (generation === this.generation) { this.opening = false; if (this.owned() && this.visible && !this.live(generation)) this.interrupted = true; } }
   }
   private scheduleReconnect() {
     if (!this.live() || this.reconnectTimer !== null) return;
-    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; void this.start(); }, 1500);
+    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; if (!this.live() && this.owned() && this.visible) this.interrupted = true; else void this.start(); }, 1500);
   }
   private scheduleReconciliation() {
     if (!this.live() || this.view.transport !== 'connected' || this.channelConfirmed()) {
@@ -202,7 +215,11 @@ export class TerminalSessionClient {
   refresh = (): Promise<void> => this.refreshState(false);
   private async refreshState(bounded: boolean): Promise<void> {
     if (!this.live()) return;
-    if (this.channel === null || this.view.session === null) { await this.start(); return; }
+    if (this.channel === null || this.view.session === null) {
+      if (this.opening) return;
+      if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer); this.reconnectTimer = null;
+      await this.start(); return;
+    }
     const generation = this.generation, controller = this.request(), readRevision = this.channelRevision;
     try {
       const read = () => this.options.api.state(this.view.session!.sessionId, controller.signal);
@@ -301,6 +318,6 @@ export class TerminalSessionClient {
     } finally { this.forget(controller); }
   }
   acknowledgeUnknown = (): void => { if (!this.owned() || this.view.result?.state !== 'unknown' || !this.persist(this.pendingOperation, true)) return; this.publish({ unknownAcknowledged: true, pending: false, error: null }); };
-  invalidate = (reason: unknown = new ApiError('server', 403, 'permission_denied')): void => { this.ended = true; this.visible = false; this.stopTransport(); this.pendingOperation = null; this.publish({ phase: 'unavailable', transport: 'disconnected', session: null, pending: false, ownsControl: false, result: null, error: reason }); };
+  invalidate = (reason: unknown = new ApiError('server', 403, 'permission_denied')): void => { this.ended = true; this.visible = false; this.stopTransport(); this.pendingOperation = null; this.publish({ phase: 'unavailable', availability: null, transport: 'disconnected', session: null, pending: false, ownsControl: false, result: null, error: reason }); };
   close = (): void => { this.ended = true; this.visible = false; this.stopTransport(); this.listeners.clear(); };
 }

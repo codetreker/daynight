@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 )
 
 func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {

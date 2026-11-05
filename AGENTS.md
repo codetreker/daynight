@@ -188,9 +188,13 @@ CI unit, integration, and other routine test suites must not run stress-test
 cases. Run stress tests separately from these CI suites: slower CI runners make
 these cases expensive and delay PR delivery across the repository.
 
-Diagnose a failing check before retrying. Repeat an unchanged failure only after
-confirming a transient infrastructure cause. Add time bounds to commands that
-may hang and keep output streaming. Summarize actual checks and their limits.
+Inspect failure logs before retrying. Each failed check on the same commit may
+be rerun at most twice beyond its initial run, without first proving a transient
+infrastructure cause. Count retries across sessions, restarts and workflow
+reruns. If both retries fail, diagnose and repair the cause before further
+validation. A passing retry does not establish the root cause or relax required
+checks and acceptance criteria. Add time bounds to commands that may hang, keep
+output streaming, and report retries, observed results and their limits.
 
 Preserve task scope when staging and committing; use the repository's commit
 conventions and default Git identity. Omit AI tool co-author attribution. Keep
