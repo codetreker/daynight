@@ -210,6 +210,23 @@ it('keeps input, controls, activity, actions, and keyboard help inside one chatb
   expect(props.onSend).not.toHaveBeenCalled();
 });
 
+it('groups interruption with submission while preserving the custom footer activity contract', () => {
+  const props = base();
+  props.state = { ...props.state, snapshot: { ...props.state.snapshot!, activity: 'working', currentTurnId: 'turn', turnStartedAt: new Date().toISOString(), operations: { canSend: true, canCancel: true, canRespond: true } } };
+  const view = render(<SessionComposer {...props} />);
+  const interrupt = screen.getByRole('button', { name: 'Interrupt' });
+  const actions = interrupt.closest('.session-primary-actions');
+  expect(actions).not.toBeNull();
+  expect(actions).toContainElement(screen.getByRole('button', { name: 'Add to current turn' }));
+  expect(screen.getByLabelText('Agent activity')).not.toContainElement(interrupt);
+  fireEvent.mouseEnter(interrupt);
+  expect(screen.getByRole('button', { name: 'Add to current turn' }).parentElement).not.toHaveAttribute('data-hint-open');
+  view.rerender(<SessionComposer {...props} presentation={{ renderFooter: ({ settings, activity, submit }) => <>{settings}<section aria-label="Custom activity">{activity}</section>{submit}</> }} />);
+  expect(screen.getByLabelText('Custom activity')).toContainElement(screen.getByRole('button', { name: 'Interrupt' }));
+  expect(screen.getByLabelText('Custom activity')).toHaveTextContent('Working');
+  expect(screen.getAllByRole('button', { name: 'Interrupt' })).toHaveLength(1);
+});
+
 it('keeps failed submission details with the draft inside the same chatbox', async () => {
   const props = base(); props.onSend.mockRejectedValue(new Error('Native delivery failed'));
   render(<SessionComposer {...props} />);
