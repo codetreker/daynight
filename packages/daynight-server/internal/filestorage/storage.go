@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
 )
 
 var (
@@ -29,12 +31,14 @@ type Storage interface {
 	Put(ctx context.Context, bucket, path string, content io.Reader) (FileInfo, error)
 	Open(ctx context.Context, bucket, path string) (Object, error)
 	Delete(ctx context.Context, bucket, path string) error
-	// DeleteSessionArchives removes only session-archives/<sessionID>, including
-	// objects without database metadata. sessionID must be a nonzero canonical
-	// UUID. Absence succeeds; cancellation, unsafe paths and filesystem failures
-	// remain errors and may leave partial cleanup for retry. Callers must prevent
+	// DeleteSessionArchives removes only the typed Session archive namespace,
+	// including objects without database metadata. The namespace must contain
+	// canonical nonzero ownership and Session UUIDs. Objects outside the namespace
+	// are untouched. Absence succeeds; cancellation, unsafe paths and
+	// filesystem failures remain errors and may leave partial cleanup for retry.
+	// Callers must prevent
 	// concurrent writes with the persistent Session lock and deletion barrier.
-	DeleteSessionArchives(ctx context.Context, sessionID string) error
+	DeleteSessionArchives(ctx context.Context, namespace sessionarchive.Namespace) error
 }
 
 // ValidateAddress preserves each accepted name; callers must not clean or normalize it.

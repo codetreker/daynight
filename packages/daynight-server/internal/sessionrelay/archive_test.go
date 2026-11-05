@@ -131,7 +131,7 @@ func TestArchiveStorageFailureAndIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := v.SessionID + "/" + *status.SHA256 + ".json"
+	path := "projects/" + f.project + "/" + v.SessionID[:2] + "/" + v.SessionID + "/" + *status.SHA256 + ".json"
 	if _, err = storage.Put(ctx, archiveBucket, path, strings.NewReader("corrupt")); err != nil {
 		t.Fatal(err)
 	}
@@ -203,6 +203,14 @@ func TestStandaloneArchiveAfterStop(t *testing.T) {
 	}
 	if _, err = f.s.PutArchive(ctx, f.p, "", "", v.SessionID, data); err != nil {
 		t.Fatal(err)
+	}
+	var physicalPath string
+	if err = f.s.DB.Pool.QueryRow(ctx, `SELECT object_path FROM session_archives WHERE session_id=$1`, v.SessionID).Scan(&physicalPath); err != nil {
+		t.Fatal(err)
+	}
+	expected := "users/" + f.p.UserID + "/" + v.SessionID[:2] + "/" + v.SessionID + "/"
+	if !strings.HasPrefix(physicalPath, expected) {
+		t.Fatalf("standalone archive is outside its user's shard: %s", physicalPath)
 	}
 	if _, err = f.s.ArchiveContent(ctx, f.p, "", "", v.SessionID); err != nil {
 		t.Fatal(err)

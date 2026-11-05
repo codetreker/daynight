@@ -253,7 +253,12 @@ func (s *Service) cleanBotDeletion(ctx context.Context, p core.Principal, id, de
 				cleanupFailed = true
 				return fault("controller_offline", "Archive file storage is unavailable.")
 			}
-			if err = s.files.DeleteSessionArchives(ctx, sid); err != nil {
+			namespace, err := archiveNamespace("", bot.OwnerUserID, sid)
+			if err != nil {
+				cleanupFailed = true
+				return err
+			}
+			if err = s.files.DeleteSessionArchives(ctx, namespace); err != nil {
 				cleanupFailed = true
 				return err
 			}

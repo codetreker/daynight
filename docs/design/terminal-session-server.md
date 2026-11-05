@@ -104,10 +104,18 @@ ready 包必须与冻结运行账本完全相符，每代文件数量、来源�
 运行启用录制时，合法零帧原因是 ended_before_first_sample；全部未启用时才是
 recording_not_enabled。每代证据独立核对。
 
-服务端向 `session-archives` 写原始字节，重新打开并核对大小和 SHA-256 后持久
-保存 receipt；下载再次校验文件和身份，并直接发送原始存储字节，不重新编码 JSON。ready/unavailable 的不同正文、原因或
-finalizationId 不能覆盖已有终态。failed 不产生允许清理的回执。正文 SHA-256、
-来源摘要、日志摘要与 dispositionDigest 各自具有明确对象，不能互相替代。
+服务端通过共享 `sessionarchive.Namespace` 将 Task Herdr 正文写入
+`session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`。
+该地址与 Web Task 归档共用归属及分片规则；独立 Test/Bot 归档使用用户分组。
+新写入使用此布局，既有文件与元数据保持原状。读取继续打开持久 `object_path`，
+上传重试和回执沿用原语义，不根据目录布局增加拒绝条件。
+[共享归档设计](task-session-protocol.md#服务端归档布局)拥有物理地址规则。
+
+写入保留原始字节，重新打开并核对大小和 SHA-256 后持久保存 receipt；下载再次
+校验文件和身份，并直接发送原始存储字节，不重新编码 JSON。ready/unavailable
+的不同正文、原因或 finalizationId 不能覆盖已有终态。failed 不产生允许清理的
+回执。正文 SHA-256、来源摘要、日志摘要与 dispositionDigest 各自具有明确对象，
+不能互相替代。
 
 普通附件的替换/删除只能操作 task-attachments，不能改变权威归档。历史分页按
 created_at/id 稳定排序，不依赖当前 claim。成员撤销后拒绝读取；任务删除后拒绝

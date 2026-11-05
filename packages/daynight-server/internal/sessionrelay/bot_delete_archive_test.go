@@ -14,6 +14,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
 )
@@ -50,11 +51,11 @@ func TestBotDeletionWaitsForAdmittedArchiveAndRemovesItsNamespace(t *testing.T) 
 	files := f.s.files
 	// This file models a successful object write whose metadata transaction
 	// never committed; cleanup must enumerate the Session namespace itself.
-	orphan := out.Session.SessionID + "/orphan.json"
+	orphan := testArchiveDirectory(t, "", f.p.UserID, out.Session.SessionID) + "/orphan.json"
 	if _, err := files.Put(ctx, archiveBucket, orphan, bytes.NewBufferString("orphan")); err != nil {
 		t.Fatal(err)
 	}
-	unrelated := uuid.NewString() + "/task.json"
+	unrelated := testArchiveDirectory(t, f.project, f.p.UserID, uuid.NewString()) + "/task.json"
 	if _, err := files.Put(ctx, archiveBucket, unrelated, bytes.NewBufferString("task archive")); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func TestBotDeletionWaitsForAdmittedArchiveAndRemovesItsNamespace(t *testing.T) 
 	if err != nil || done.Deletion == nil || done.Deletion.ServerCleanup.State != "completed" {
 		t.Fatalf("cleanup did not complete: %+v %v", done, err)
 	}
-	if _, err = os.Stat(filepath.Join(root, archiveBucket, out.Session.SessionID)); !errors.Is(err, fs.ErrNotExist) {
+	if _, err = os.Stat(filepath.Join(root, archiveBucket, testArchiveDirectory(t, "", f.p.UserID, out.Session.SessionID))); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("admitted upload or orphan namespace remains: %v", err)
 	}
 	if data, err := os.ReadFile(filepath.Join(root, archiveBucket, unrelated)); err != nil || string(data) != "task archive" {
@@ -109,11 +110,11 @@ type blockingBotCleanupStorage struct {
 	release chan struct{}
 }
 
-func (s *blockingBotCleanupStorage) DeleteSessionArchives(ctx context.Context, id string) error {
+func (s *blockingBotCleanupStorage) DeleteSessionArchives(ctx context.Context, namespace sessionarchive.Namespace) error {
 	close(s.entered)
 	select {
 	case <-s.release:
-		return s.Storage.DeleteSessionArchives(ctx, id)
+		return s.Storage.DeleteSessionArchives(ctx, namespace)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -158,7 +159,7 @@ func TestBotDeletionPrecedesArchiveAndCleanupCannotBeFollowedByLateUpload(t *tes
 		t.Fatalf("delete-first ordering failed: wait=%v cleanup=%v upload=%v", waitErr, cleanupErr, uploadErr)
 	}
 	botFault(t, uploadErr, "resource_conflict")
-	if _, err = os.Stat(filepath.Join(root, archiveBucket, out.Session.SessionID)); !errors.Is(err, fs.ErrNotExist) {
+	if _, err = os.Stat(filepath.Join(root, archiveBucket, testArchiveDirectory(t, "", f.p.UserID, out.Session.SessionID))); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("late upload recreated deleted namespace: %v", err)
 	}
 	var records int

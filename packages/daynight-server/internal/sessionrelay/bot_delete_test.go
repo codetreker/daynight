@@ -3,15 +3,17 @@ package sessionrelay
 import (
 	"context"
 	"errors"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"io"
 	"io/fs"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
 )
@@ -73,11 +75,11 @@ type failedBotFiles struct {
 	fail bool
 }
 
-func (f *failedBotFiles) DeleteSessionArchives(ctx context.Context, id string) error {
+func (f *failedBotFiles) DeleteSessionArchives(ctx context.Context, namespace sessionarchive.Namespace) error {
 	if f.fail {
 		return errors.New("injected file failure")
 	}
-	return f.Storage.DeleteSessionArchives(ctx, id)
+	return f.Storage.DeleteSessionArchives(ctx, namespace)
 }
 func botCleanupReceipt(out BotRegistrationResult, deletionID string) BotDeletionReceipt {
 	return BotDeletionReceipt{DeletionID: deletionID, Result: core.BotCleanupResult{State: "completed"}, Stop: &sp.TestStop{Protocol: sp.Protocol, Fence: out.Session.Fence, ControllerID: out.Session.Identity.ControllerID, ControllerInstanceID: out.Session.Identity.ControllerInstanceID, StopProof: sp.StopProof{Kind: "never_started", RecordID: uuid.NewString(), PreviousControllerInstanceID: out.Session.Identity.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}
@@ -111,7 +113,7 @@ func TestBotDeletionCleansEveryChildAndOrphanWithRetry(t *testing.T) {
 				}
 			}
 			other := uuid.NewString()
-			for _, path := range []string{id + "/orphan.json", other + "/keep.json"} {
+			for _, path := range []string{testArchiveDirectory(t, "", f.p.UserID, id) + "/orphan.json", testArchiveDirectory(t, "", f.p.UserID, other) + "/keep.json"} {
 				if _, err = files.Put(ctx, archiveBucket, path, strings.NewReader("private")); err != nil {
 					t.Fatal(err)
 				}
@@ -161,10 +163,10 @@ func TestBotDeletionCleansEveryChildAndOrphanWithRetry(t *testing.T) {
 					t.Fatalf("retained %s: %d %v", table, n, err)
 				}
 			}
-			if _, err = files.Open(ctx, archiveBucket, id+"/orphan.json"); !errors.Is(err, fs.ErrNotExist) {
+			if _, err = files.Open(ctx, archiveBucket, testArchiveDirectory(t, "", f.p.UserID, id)+"/orphan.json"); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("orphan remains: %v", err)
 			}
-			if object, openErr := files.Open(ctx, archiveBucket, other+"/keep.json"); openErr != nil {
+			if object, openErr := files.Open(ctx, archiveBucket, testArchiveDirectory(t, "", f.p.UserID, other)+"/keep.json"); openErr != nil {
 				t.Fatal("unrelated namespace removed", openErr)
 			} else {
 				_ = object.Body.Close()
@@ -174,6 +176,46 @@ func TestBotDeletionCleansEveryChildAndOrphanWithRetry(t *testing.T) {
 				t.Fatal("task removed", err)
 			}
 		})
+	}
+}
+
+func TestBotDeletionCleansCurrentHistoryAndPreservesExistingUnrelatedBytes(t *testing.T) {
+	f, out, _ := registeredBot(t)
+	ctx := t.Context()
+	files, err := local.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = files.Close() })
+	f.s.files = files
+	existing := out.Session.SessionID + "/orphan.json"
+	current := testArchiveDirectory(t, "", f.p.UserID, out.Session.SessionID) + "/history.json"
+	for _, name := range []string{existing, current} {
+		if _, err := files.Put(ctx, archiveBucket, name, strings.NewReader("private history")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := service.DeleteBot{Version: out.Bot.Version, DeletionID: uuid.NewString()}
+	if _, err := f.s.DeleteBot(ctx, f.p, out.Bot.ID, request); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.s.CompleteBotDeletion(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, botCleanupReceipt(out, request.DeletionID))
+	if err != nil || result.Deletion.ServerCleanup.State != "completed" {
+		t.Fatalf("current history cleanup did not complete: %+v %v", result, err)
+	}
+	if _, err := files.Open(ctx, archiveBucket, current); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("current archive history remains: %v", err)
+	}
+	object, err := files.Open(ctx, archiveBucket, existing)
+	if err != nil {
+		t.Fatal("cleanup changed existing unrelated bytes", err)
+	}
+	content, readErr := io.ReadAll(object.Body)
+	if err := errors.Join(readErr, object.Body.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "private history" {
+		t.Fatalf("cleanup changed existing unrelated bytes: %q", content)
 	}
 }
 
@@ -248,7 +290,7 @@ func TestBotDeletionCleansResidualAssociationsBeyondCurrentSession(t *testing.T)
 		t.Fatal(err)
 	}
 	for _, id := range []string{out.Session.SessionID, residual} {
-		if _, err = files.Put(ctx, archiveBucket, id+"/orphan.json", strings.NewReader("private")); err != nil {
+		if _, err = files.Put(ctx, archiveBucket, testArchiveDirectory(t, "", f.p.UserID, id)+"/orphan.json", strings.NewReader("private")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -265,7 +307,7 @@ func TestBotDeletionCleansResidualAssociationsBeyondCurrentSession(t *testing.T)
 		t.Fatalf("residual sessions %d: %v", count, err)
 	}
 	for _, id := range []string{out.Session.SessionID, residual} {
-		if object, err := files.Open(ctx, archiveBucket, id+"/orphan.json"); !errors.Is(err, fs.ErrNotExist) {
+		if object, err := files.Open(ctx, archiveBucket, testArchiveDirectory(t, "", f.p.UserID, id)+"/orphan.json"); !errors.Is(err, fs.ErrNotExist) {
 			if err == nil {
 				_ = object.Body.Close()
 			}

@@ -551,6 +551,22 @@ addresses before resolving them through `os.Root`. It rejects roots that cannot
 distinguish case and rejects object access outside the root. `Open` returns the
 size of its opened handle. Callers own the returned body and input reader.
 
+New Session archives use `internal/sessionarchive.Namespace` for project/user
+and Session UUID directories. Task Web/Herdr objects use
+`session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`;
+independent Test/Bot objects use
+`session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
+PostgreSQL retains the object path, length, digest and archive status or receipt.
+Readers continue to open the persisted `object_path` and apply the existing
+length/digest/structure checks. Existing files and metadata stay in place;
+read behavior, same-hash ready upload retries and public URLs remain unchanged.
+The restricted `DeleteSessionArchives` operation receives a validated Namespace
+and removes that current Session directory, including unregistered objects,
+while preserving same-owner/shard siblings. Old direct-directory files are
+outside this physical cleanup scope and do not block it. The
+[Session design](../../docs/design/task-session-protocol.md#服务端归档布局)
+owns the address rule.
+
 Writes stream through an owned temporary file and publish complete contents.
 An empty internal directory can be reused as a file path; existing child files
 remain conflicts. Internal namespace synchronization belongs to this storage
@@ -562,7 +578,8 @@ Both Compose deployments mount a project-scoped `attachment-data` volume at
 `DAYNIGHT_STORAGE_ROOT=/var/lib/daynight/storage`. Fresh-volume initialization
 preserves the image directory's UID/GID `10001:10001`, and the normal nonroot
 server writes without a privileged startup process. Normal restart and rebuild
-retain PostgreSQL metadata and attachment bytes; dev-ci removes both owned data
+retain PostgreSQL metadata, attachment bytes and Session archive bodies; dev-ci
+removes both owned data
 volumes on cleanup. The [deployment guide](../../deployment/localhost/README.md#persistence-and-backup)
 owns retention and the stopped-write, paired PostgreSQL/directory backup and
 restore commands. Before reopening a restored/imported history, rotate affected

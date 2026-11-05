@@ -164,7 +164,11 @@ SHA-256。发送前持久原请求；请求响应丢失后，通过
 零帧。`partial`、`unknown` 与无内容状态均不能放宽身份、权限或 hash 校验。
 停止证据不足保持 `stop_unknown`，不能封最终文件、删除 worktree 或恢复替代运行。
 
-归档使用 `session-archives` 与原 Session 权限，不是可覆盖的普通附件。
+归档使用 `session-archives` 与原 Session 权限，不是可覆盖的普通附件。新 Task 归档
+按原项目和 Session UUID 前两位分组，与 Web Task 归档使用同一目录规则。既有
+文件和元数据保持原状，读取继续使用登记位置；正文、校验值、回执、公开 URL
+和上传重试沿用原语义。
+[共享 Session 需求](task-sessions.md#内容归属与结束后历史)拥有目录布局要求。
 正文 hash 对实际上传 UTF-8 字节计算，重试上传同一字节。帧 hash 对所保存的原始
 帧 JSON 字节计算。`dispositionDigest` 对规范化终态记录计算，与正文 hash 不可
 互换。ready 回执绑定正文 hash、长度、完整性；unavailable 回执绑定不可变原因
