@@ -198,7 +198,10 @@ keeping the workspace visible and interactive. Pending verification preserves
 focus, dialogs, drafts, scroll and embedded documents. Each new qualifying return
 aborts and replaces pending verification, so earlier responses cannot overwrite
 the latest identity decision. A failed check retains state behind the blocking
-retry overlay until a successful check; the same user keeps their forms and view,
+retry overlay until a successful check. The native modal inherits the current language,
+contains no language selector or preference feedback, and cannot be dismissed with
+Escape; recovery attempts to restore focus if the original element remains connected.
+The same user keeps their forms and view,
 while a changed user remounts user-owned content. Previously loaded content stays
 visible until identity loss, a different identity or a verification error is
 confirmed. Leaving the top-level page pauses new API reads and writes before
