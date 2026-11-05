@@ -12,10 +12,12 @@ they control. The extra visual separation also consumes conversation space.
 
 A shared composer surface encloses the input, controls, activity and actions.
 The keyboard hint belongs to the send action and appears on hover or keyboard
-focus without reserving a row. The input occupies the upper area without its own border. The
-lower area groups settings, activity with interruption, and submission in DOM
-order; groups wrap when the container has limited space, including narrow desktop
-panels. Focus remains visible both for the
+focus without reserving a row. The input occupies the upper area without its own
+border. The original grouping placed interruption with activity and allowed
+flex wrapping to fit narrow containers. The
+[responsive footer decision](2026-11-06-responsive-session-footer.md) replaces
+that layout with settings, status, and a joint Interrupt/submission group while
+retaining the common surface and DOM order. Focus remains visible both for the
 input surface and for individual keyboard controls.
 
 The form retains submission and keyboard ownership, and errors remain visible.

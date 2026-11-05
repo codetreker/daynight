@@ -149,6 +149,8 @@ Codex 动态读取 model/list、configRequirements/read，以 thread/settings/up
 
 Web 将 setting intent 按用户、执行与 operationId 保存，展示 pending 目标和原生实际值；确认前不乐观替换实际值。命令目录在 / 菜单中提供过滤、键盘选择和参数，model/permissions 为本地打开设置面板的保留入口。SessionComposer 对提交和发送按钮采用同一完整名称分类：零匹配使用 sessionSendGate 与 send_message，一个匹配进入命令路径，多个同名匹配保留歧义错误。前缀过滤只提供候选，不决定操作类型；client.send 不因正文以 slash 开头而拒绝，既有身份、执行、能力和待确认操作校验保持不变。
 
+设置与内置命令文案由 Web 的 Session 消息目录按当前语言呈现。设置名和说明以 Provider 与稳定 setting ID 定位，权限选项以该设置内的 value 定位；模型与原生 effort 标签原样展示，Claude 的 `default` effort 选项使用内置原生默认值文案。未知项回退下发原文。pending 提示中的已确认值使用同一选项映射。翻译只在渲染时应用，不改写 controls、revision、setting intent 或命令目录签名，因此语言切换不清除命令选择与草稿。旧格式不带命令说明来源；内置说明及缺省说明按 Provider、已知命令身份和精确英文文案识别，其他文本保持原样。兼容限制及取舍见[设置文案本地化决策](../../.agents/notes/implemented/bug-fix/2026-11-06-session-controls-localization.md)。
+
 菜单的默认高亮与明确候选选择分离，直接 Enter 不消费仅前缀匹配的默认项。临时候选随输入、目录和菜单生命周期变化重置；目录按 revision、错误及命令字段的稳定签名比较，等值快照重建 controls 对象不清除明确选择。显式选择带参数命令产生独立的 commandId 与命令头意图，参数编辑、目录刷新和菜单关闭保留它，修改命令头、清空草稿或切换 Session 才清除。提交使用当前 controls revision 验证同一 ID 与完整名称，不能冻结旧 revision，也不能在移除、替换、不可用或歧义后退回普通消息。原生命令草稿仍沿用 revision 与受理回执绑定；execute_command 的拒绝、失败或 unknown 不调用普通发送路径。运行中目录查询错误通过 refresh_controls 重新读取；只读与失效投影深拷贝后关闭 mutable/available，不能改写持久能力。没有命令目录时，普通消息仍由原有发送权限决定。
 
 已核实的排队取消使用 input_cancelled，主动中断只有在成功原生 ACK、输入 UUID 匹配且 terminal_reason 为 aborted_streaming/aborted_tools 时使用 turn_interrupted。Web 将这两个终止诊断显示为中性状态；其他诊断仍是错误提示，不能仅凭用户点击中断或错误文本掩盖原生故障。
@@ -300,7 +302,11 @@ client 持有 `{text, revision, submission}` 草稿，`submission` 关联 operat
 
 composer 通过实际 scrollHeight 与宽度变化调整输入的期望高度并遵守最大高度；空间不足时 textarea 可收缩至可编辑的最小高度，额外草稿内容在输入内滚动。发送过程中记录焦点是否仍属于该输入操作，仅在页面可见、组件 active 且未转移到其他控件时恢复焦点。IME、Shift+Enter 和原生 capability gating 继续独立生效。
 
-composer 的表单保留提交、快捷键和设置面板的所有权；内部共同容器提供输入区、设置入口、活动状态、操作按钮的统一边框；快捷键说明作为发送操作的可访问提示，不占常驻布局行。textarea 使用透明背景且不单独绘制边框，焦点样式由共同容器与各可聚焦控件承担。底部布局按可用容器宽度允许设置、状态和动作分组换行，不使用视觉重排改变键盘顺序；composer 宽度不超过 360px 时进一步截断过长模型标签，避免设置入口额外占行而挤出发送操作。设置面板继续由 composer 持有展开状态，命令菜单与输入共用同一表单。选择理由见[统一 Chatbox 分组决策](../../.agents/notes/implemented/bug-fix/2026-11-04-unified-session-chatbox.md)。
+composer 的表单保留提交、快捷键和设置面板的所有权；内部共同容器提供输入区、设置入口、活动状态、操作按钮的统一边框；快捷键说明作为发送操作的可访问提示，不占常驻布局行。textarea 使用透明背景且不单独绘制边框，焦点样式由共同容器与各可聚焦控件承担。设置面板继续由 composer 持有展开状态，命令菜单与输入共用同一表单。共同边界的选择理由见[统一 Chatbox 分组决策](../../.agents/notes/implemented/bug-fix/2026-11-04-unified-session-chatbox.md)。
+
+默认 footer 使用 Grid 排列设置、状态、主操作三组；主操作中的 Interrupt 与 submit 使用不换行的 flex 容器，长发送标签在按钮内部换行。`.session-composer-surface` 是独立的 inline-size 查询容器，使阈值使用实际 footer 内容宽度。阈值按该内框中设置入口、按钮和间距的实际预算选取，不能把包含外部 padding 的原型容器宽度直接套入。状态和 Interrupt 均不可见且主操作仅为普通 Send 时，234px 以下两行、达到 234px 后一行；无可见状态时，若 Interrupt 仍可见或主操作为 Awaiting provider confirmation、Executing command 或 Add to current turn 等长标签，不足 516px 保持第二行，达到 516px 后才与设置同排。有可见状态时，346px 以下三行，346px 至不足 516px 两行，达到 516px 后三组同一行。状态与主操作同排时，Grid 为两者分别分配受限宽度，避免长操作标签挤没状态；三组同排时还保留设置组的最小宽度。组内文字换行只增加本组高度，不能重新拆开操作组、覆盖相邻控件或横向溢出。DOM 按设置、状态、Interrupt、submit 排列，不通过 CSS order 或重复控件改变键盘顺序。模型按钮中的文字 span 可收缩并省略，caret 独立且不收缩；按钮最小宽度 52px。粗指针下底部按钮最小高度和命令入口最小宽度均为 36px。
+
+`SessionActivity` 继续拥有计时、状态选择与 Interrupt 的可见性和门禁；可选的 `render(status, interrupt)` 只让默认 composer 分别安放已生成的节点。即使状态由 Session 主提示代为显示，中断仍按独立条件保留。没有可见状态或中断时仍调用该 render，以保留默认主操作中的 submit。未提供 render 时仍返回原有状态与 Interrupt 的组合。`presentation.renderFooter({ settings, activity, submit })` 继续收到这一组合 activity 与原 submit，保持自定义布局契约；默认 Grid 仅应用于默认 footer。快捷键提示仍由 submit 自己的操作容器持有，Interrupt 的 hover 或 focus 不获得发送提示。此分组不改变 Session header、外层布局或发送、追加、中断、设置、命令的协议。取舍和后续入口的约束见[响应式底部操作区决策](../../.agents/notes/implemented/bug-fix/2026-11-06-responsive-session-footer.md)。
 
 命令菜单保持在 composer 的文档流内。Session、composer、输入共同容器与菜单形成 flex 收缩链，timeline 不再用固定最小高度挤占输入与操作的空间。菜单标题、刷新和关闭按钮位于滚动内容之外；标题行允许换行，标题本身不收缩，窄面板中操作组整体移到下一行，避免标题被挤成逐字换行。目录、错误与空态在内部 body 滚动。组件按标题的实际高度及其 margin、目录 body 的 CSS 最小高度、菜单 padding 与 border 计算菜单最小高度；body 至少保留 36px，避免仅保留标题时目录被压成零高度而失去可点击区域。输入共同容器的最小高度包含 textarea 的 CSS 最小高度、底部操作的实际高度与间距、边框、内边距及当前错误。ResizeObserver 跟随换行后的标题、操作区和容器尺寸更新约束。textarea 可以在期望高度与最小高度之间收缩，底部操作不收缩；菜单的最大高度只约束宽裕空间下的大小。键盘选中项变化或目录可视区调整时，使用定位在目录 body 内的 offsetTop/offsetHeight 直接设置 scrollTop，保持同一未缩放坐标系，避免整数尺寸比例换算产生累计偏移，也不滚动祖先容器。
 
