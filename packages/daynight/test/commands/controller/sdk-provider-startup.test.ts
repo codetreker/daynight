@@ -7,10 +7,11 @@ import { openClaudeProvider } from "../../../src/commands/controller/providers/c
 import { openCopilotProvider } from "../../../src/commands/controller/providers/copilot.js";
 import { startupFailure } from "../../../src/commands/controller/startup.js";
 import type { ProviderState } from "../../../src/commands/controller/providers/types.js";
+import { captureStartupDeadline, stopStartupChildren } from "../../helpers/startup-deadline.js";
 
 const roots: string[] = [], children: ChildProcess[] = [];
 afterEach(async () => {
-  for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  await stopStartupChildren(children.splice(0));
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
@@ -22,19 +23,29 @@ for (const provider of ["copilot", "claude"] as const) {
     const root = await mkdtemp(path.join(base, "case-")); roots.push(root);
     const log = path.join(root, "requests.log"), states: ProviderState[] = [];
     const open = provider === "copilot" ? openCopilotProvider : openClaudeProvider;
-    const error: unknown = await open({ cwd: root, model: null, args: [], resumeNativeSessionId: mode === "reject-resume" ? randomUUID() : null,
-      executable: path.resolve(import.meta.dirname, `fixtures/${provider}-startup.mjs`),
-      env: { ...process.env, DAYNIGHT_TEST_STARTUP_MODE: mode, DAYNIGHT_TEST_STARTUP_LOG: log },
-      onTimeline: () => {}, onState: state => states.push(structuredClone(state)), onSpawn: child => children.push(child),
-    }).then(async opened => { await opened.close(); throw new Error("Fixture unexpectedly initialized."); }, error => error);
-    expect(error).toBeInstanceOf(Error);
-    expect(startupFailure(error)).toEqual(mode.startsWith("reject") ? { state: "failed", reasonCode: "native_rejected" }
-      : { state: "unknown", reasonCode: mode === "timeout" ? "native_timeout" : "native_transport_unknown" });
-    const requests = (await readFile(log, "utf8")).trim().split("\n");
-    expect(requests).toContain(provider === "claude" ? "control_request:initialize" : mode === "reject-connect" ? "connect" : mode === "reject-resume" ? "session.resume" : "session.create");
-    expect(requests.some(method => method === "session.send" || method.startsWith("user:"))).toBe(false);
-    if (provider === "copilot") expect(requests).not.toContain("runtime.shutdown");
-    expect(states.every(state => state.nativeSessionId === null)).toBe(true);
-    expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true);
+    const deadline = mode === "timeout" ? captureStartupDeadline() : undefined;
+    let opening: Promise<unknown> | undefined;
+    try {
+      opening = open({ cwd: root, model: null, args: [], resumeNativeSessionId: mode === "reject-resume" ? randomUUID() : null,
+        executable: path.resolve(import.meta.dirname, `fixtures/${provider}-startup.mjs`),
+        env: { ...process.env, DAYNIGHT_TEST_STARTUP_MODE: mode, DAYNIGHT_TEST_STARTUP_LOG: log },
+        onTimeline: () => {}, onState: state => states.push(structuredClone(state)), onSpawn: child => children.push(child),
+      }).then(async opened => { await opened.close(); throw new Error("Fixture unexpectedly initialized."); }, error => error);
+      void opening.catch(() => {});
+      if (deadline) await deadline.expireAfterRequest(log, requests => requests.includes(provider === "claude" ? "control_request:initialize" : "session.create"));
+      const error: unknown = await opening;
+      expect(error).toBeInstanceOf(Error);
+      expect(startupFailure(error)).toEqual(mode.startsWith("reject") ? { state: "failed", reasonCode: "native_rejected" }
+        : { state: "unknown", reasonCode: mode === "timeout" ? "native_timeout" : "native_transport_unknown" });
+      const requests = (await readFile(log, "utf8")).trim().split("\n");
+      expect(requests).toContain(provider === "claude" ? "control_request:initialize" : mode === "reject-connect" ? "connect" : mode === "reject-resume" ? "session.resume" : "session.create");
+      expect(requests.some(method => method === "session.send" || method.startsWith("user:"))).toBe(false);
+      if (provider === "copilot") expect(requests).not.toContain("runtime.shutdown");
+      expect(states.every(state => state.nativeSessionId === null)).toBe(true);
+      expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true);
+    } finally {
+      try { await stopStartupChildren(children); await opening?.catch(() => {}); }
+      finally { deadline?.restore(); }
+    }
   }, 45_000);
 }
