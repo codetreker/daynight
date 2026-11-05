@@ -147,7 +147,7 @@ func TestTerminalArchiveReadyReadsActualBytesAndSurvivesNewClaim(t *testing.T) {
 	if _, err = restarted.TerminalArchiveContent(ctx, f.p, uuid.NewString(), f.task, m.SessionID); err == nil {
 		t.Fatal("cross-project read")
 	}
-	path := m.SessionID + "/" + v2.HashBytes(data) + ".json"
+	path := "projects/" + f.project + "/" + m.SessionID[:2] + "/" + m.SessionID + "/" + v2.HashBytes(data) + ".json"
 	if _, err = f.s.files.Put(ctx, archiveBucket, path, bytes.NewBufferString("corrupt")); err != nil {
 		t.Fatal(err)
 	}

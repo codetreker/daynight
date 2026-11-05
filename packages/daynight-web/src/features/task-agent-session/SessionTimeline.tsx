@@ -1,5 +1,5 @@
 import { sessionFenceKey } from '../../../../daynight/src/session/protocol';
-import { memo, useImperativeHandle, useMemo, useState, type ReactNode, type Ref } from 'react';
+import { memo, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { legacySubagentActivity } from './legacy-subagent-activity';
 import '../../styles/markdown.css';
 import './session-timeline.css';
@@ -9,6 +9,7 @@ import type { InteractionResponse, MessagePart, SessionInteraction, TimelineEntr
 import { sessionRespondGate, hasPendingResponse, type SessionState } from './state';
 import { SessionResourceView } from './SessionResourceView';
 import { SessionInteractionCard } from './SessionInteractionCard';
+import { SessionError } from './SessionError';
 import { useSessionMessages } from './messages';
 import { useSessionHistoryPagination } from './useSessionHistoryPagination';
 import { useTimelineScroll } from '../../ui/useTimelineScroll';
@@ -20,13 +21,16 @@ export type SessionTimelineReadingHandle = Pick<ReturnType<typeof useTimelineScr
 // SessionTimeline adds the actual session fence and history epoch.
 export type SessionTimelineReading = { readonly scope: string; readonly ref: Ref<SessionTimelineReadingHandle> };
 
-export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder, loadingOlder, onLoadOlder, onLoadResource, historyError = null, displayMode = 'standard', historyReady = false, historyRevision = 0, connectionGeneration = 0, reading }: {
+export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder, loadingOlder, onLoadOlder, onLoadResource, historyError = null, suppressEmpty = false, displayMode = 'standard', historyReady = false, historyComplete = false, historyRevision = 0, connectionGeneration = 0, reading }: {
   readonly state: SessionState; readonly active: boolean; readonly canRespond: boolean;
   readonly onRespond: (interaction: SessionInteraction, response: InteractionResponse) => Promise<void>;
   readonly hasOlder: boolean; readonly loadingOlder: boolean; readonly onLoadOlder: () => Promise<void>;
   readonly onLoadResource: (resourceId: string, signal: AbortSignal) => Promise<Blob>; readonly historyError?: string | null;
+  readonly suppressEmpty?: boolean;
   readonly displayMode?: SessionDisplayMode;
   readonly reading?: SessionTimelineReading;
+  /** Confirmed complete history, independent of live pagination admission and errors. */
+  readonly historyComplete?: boolean;
   readonly historyReady?: boolean; readonly historyRevision?: number; readonly connectionGeneration?: number;
 }) {
   const m = useSessionMessages();
@@ -36,9 +40,17 @@ export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder
   const identity = reading && state.snapshot ? JSON.stringify([reading.scope, sessionFenceKey(state.snapshot)]) : `${state.snapshot?.sessionId}/${state.snapshot?.historyEpoch}`;
   const scroll = useTimelineScroll(identity, active, state.entries, undefined, { originalKeys, visibleKeys, mode: displayMode }, reading && state.snapshot ? {
     historyEpoch: state.snapshot.historyEpoch,
-    historyComplete: historyReady && !hasOlder && !loadingOlder && !historyError,
+    historyComplete: historyComplete || historyReady && !hasOlder && !loadingOlder && !historyError,
   } : undefined);
-  useImperativeHandle(reading?.ref, () => ({ captureBookmark: scroll.captureBookmark, restoreBookmark: scroll.restoreBookmark, getRestoreStatus: scroll.getRestoreStatus }));
+  // The handle identifies this mounted Timeline; proxies retain the latest
+  // visibility, history boundary and ownership checks across its renders.
+  const currentScroll = useRef(scroll); currentScroll.current = scroll;
+  const readingHandle = useMemo<SessionTimelineReadingHandle>(() => ({
+    captureBookmark: () => currentScroll.current.captureBookmark(),
+    restoreBookmark: bookmark => currentScroll.current.restoreBookmark(bookmark),
+    getRestoreStatus: () => currentScroll.current.getRestoreStatus(),
+  }), []);
+  useImperativeHandle(reading?.ref, () => readingHandle, [readingHandle]);
   const historyIdentity = state.snapshot ? `${sessionFenceKey(state.snapshot)}/${state.snapshot.historyEpoch}/${state.snapshot.connectionEpoch}` : identity;
   const history = useSessionHistoryPagination({ scroll, identity: historyIdentity, mode: displayMode, active, ready: historyReady, generation: connectionGeneration, revision: historyRevision, hasOlder, loading: loadingOlder, error: historyError, load: onLoadOlder });
   return <div className="session-timeline-shell">
@@ -46,7 +58,7 @@ export function SessionTimeline({ state, active, canRespond, onRespond, hasOlder
       <div ref={scroll.content} className="session-timeline-content">
         {loadingOlder ? <div className="session-history-loading" role="status" aria-live="polite">{m.loadingOlder}</div> : null}
         {history.error ? <div role="alert" className="session-error session-history-error"><span>{history.error}</span>{hasOlder ? <button type="button" className="inline-link" disabled={!active || !historyReady || loadingOlder} onClick={history.retry}>{m.retryHistory}</button> : null}</div> : null}
-        {entries.length === 0 ? <p className="session-empty">{displayMode === 'conversation' ? m.conversationEmpty : m.empty}</p> : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} resources={state.resources} active={active} canRespond={entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} /></article>)}
+        {entries.length === 0 ? (suppressEmpty ? null : <p className="session-empty">{displayMode === 'conversation' ? m.conversationEmpty : m.empty}</p>) : entries.map((entry) => <article key={entry.entryId} data-entry-key={entry.entryId} className={`session-entry session-entry-${entry.kind}`}><SessionEntry entry={entry} resources={state.resources} active={active} canRespond={entry.kind === 'interaction' && sessionRespondGate(state, canRespond, entry.interaction)} pendingResponse={entry.kind === 'interaction' && hasPendingResponse(state, entry.interaction)} onRespond={onRespond} onLoadResource={onLoadResource} /></article>)}
       </div>
     </div>
     {scroll.showLatest ? <button className="button session-latest" onClick={history.latest}>{m.latest} ↓</button> : null}
@@ -93,7 +105,7 @@ const SessionEntry = memo(function SessionEntry({ entry, resources, active, canR
         if (entry.code === 'input_cancelled' || entry.code === 'turn_interrupted') return <p className="session-cancellation" role="status">{entry.code === 'input_cancelled' ? labels.inputCancelled : labels.turnInterrupted}</p>;
         const activity = legacySubagentActivity(entry);
         if (activity) return <LazyDetails className="session-tool" summary={<><svg className="session-tool-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg><strong className="session-tool-name" title={activity.name}>{activity.name}</strong><span className="session-tool-summary">{toolSummary(activity.input)}</span></>}><pre className="session-tool-input" tabIndex={0}>{activity.input}</pre></LazyDetails>;
-        return <div className="session-error" role="alert"><strong>{entry.code}</strong><p>{entry.message}</p></div>;
+        return <SessionError entry={entry} />;
       }
       case 'compaction': return <details className="session-compaction"><summary>{m.compaction}</summary><p>{entry.summary}</p></details>;
       case 'todo': return <section aria-label={m.todo}><ul className="session-todos">{entry.items.map((todo) => <li key={todo.id} data-status={todo.status}><span aria-hidden="true">{todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○'}</span> {todo.text}</li>)}</ul></section>;

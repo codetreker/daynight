@@ -15,6 +15,12 @@ export const createWorkerSessionApi = (serverOrigin: string, serverToken: string
   };
   const prefix = (task: LocalTask): string => `/api/v1/projects/${task.projectId}/tasks/${task.taskId}/sessions`;
   return {
+    supportsStartupReports: async (signal: AbortSignal): Promise<boolean> => {
+      const response = await fetch(`${serverOrigin}/api/v1/session-capabilities`, { headers: { authorization: `Bearer ${serverToken}` }, signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]) });
+      if (!response.ok) throw new Error("Startup reporting capability could not be confirmed.");
+      const value = await response.json() as { startupReportVersion?: unknown };
+      return value.startupReportVersion === 1;
+    },
     verifyUnregistered: async (identity: { projectId: string; taskId: string; claimId: string }, signal: AbortSignal, timeoutMs = 30_000): Promise<void> => {
       const result = parseCurrentSessionResponse(await request(`/api/v1/projects/${identity.projectId}/tasks/${identity.taskId}/sessions/current`, undefined, signal, "GET", timeoutMs));
       if (result.status !== "not_registered" || result.claimId !== identity.claimId) throw new Error("The original Web launch provenance is missing; an existing or superseded Session cannot be recreated or deleted. Restore its execution evidence.");

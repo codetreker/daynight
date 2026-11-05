@@ -312,9 +312,11 @@ describe("API requests", () => {
   it("uses targeted decoders for project creation, project pages and task synchronization", async () => {
     const version = 9_007_199_254_740_993n;
     const source = rawProject(version.toString());
-    const fetcher = vi.fn().mockResolvedValue(new Response(source, { status: 201, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
+    const access = { ...taskSyncFixture(parseTaskGraph(graph, projectId), { versionForTask: () => 1n }).actorAccess, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { ...sync.actorAccess.directGrant!, role: "admin" } };
+    const creationSource = `${source.slice(0, -1)},"access":${stringifyWireJson(access)}}`;
+    const fetcher = vi.fn().mockResolvedValue(new Response(creationSource, { status: 201, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     vi.stubGlobal("fetch", fetcher);
-    expect((await createProject({ name: project.name, repoUrl: project.repoUrl }, signal())).settings.version).toBe(version);
+    expect((await createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: TEST_VIEWER_ID }, signal(), vi.fn())).settings.version).toBe(version);
     fetcher.mockResolvedValue(new Response(`{"items":[${source}],"nextCursor":null}`, { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     expect((await listProjects({}, signal())).items[0]?.settings.version).toBe(version);
     fetcher.mockResolvedValue(new Response(rawSync(source), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));

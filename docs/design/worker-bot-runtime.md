@@ -1,0 +1,61 @@
+# Worker Bot 执行层设计
+
+[需求](../spec/worker-bot-runtime.md)定义启动、维护、恢复和删除保证，[决策记录](../../.agents/notes/implemented/architecture/2026-11-05-worker-bot-runtime.md)说明隔离、共享机制与停证取舍。
+
+## 数据与句柄
+
+`bots/store.ts` 保持冻结定义和首次注册意图；`bots/execution-store.ts` 在同一个 Worker SQLite 中维护独立 `bot_executions` 表。`009-bot-executions.sql` 引入执行证据；`010-bot-recovery.sql` 将 Worker 格式升级到 10，为旧意图补充当前 `controllerInstanceId`，并初始化恢复计数、正常关停来源、阻止原因、前代停证及保留路径。旧 Worker 拒绝打开不理解的格式，不能忽略恢复字段后重复启动。
+
+执行行按服务、账号、Worker、Bot 隔离。首次 `registration` 保持不变，`intent.controllerInstanceId` 表示当前代 Controller；换代只改变当前 generation、launchId、Controller instance 和对应 ticket 路径。Session、testExecutionId、initialOperationId、已知 native ID、角色及冻结配置延续原身份。
+
+执行写入在即时事务中重新核对库存中的当前 intent。未知提交不能回退为未提交；同代已知 native ID 与进程出生证明不能更换或丢弃。`beginRecovery` 同时更新库存意图与执行证据，避免崩溃后出现新 intent 配旧代提交状态。它要求原代完整 stopped snapshot、native ID、Controller process proof 与允许的恢复预算，保存前代停证及原 launch/别名路径后，产生一个未提交的新目标。普通 patch 不能修改恢复计数或关停来源。
+
+删除进度保存在既有 `bots.record` JSON 的可选 `cleanup` 中，固定原 `deletionId`、请求版本、stopProof、清理目标和完成状态；缺省表示尚未准备清理。`011-bot-deletion.sql` 将 Worker 格式升为 11，不新增表，但阻止旧 Worker 打开或继续使用数据库：旧版 observe 会重写 JSON 并丢弃不认识的清理字段，仅依赖 deletion marker 拒绝启动无法保住 journal 删除后的唯一回执。本地清理完成时，在同一事务中清空定义和 intent、删除 `bot_executions` 行并裁剪目标列表，保留原停证与完成回执身份。
+
+删除投影保留停止与精确清理所需的原责任，只有本地私有清理完成后才裁剪定义和执行资料。Task 表、maxConcurrent、收尾期限和容量计算不读取 Bot 执行行；保留的私有路径也不授予删除普通 cwd 或共享 native home 的权限。
+
+## 启动与授权
+
+`createBotProcess` 按 Bot 串行化启动、续期、停止和删除。首次预检先验证参数及目标配置环境，再持久化身份和 `selectBotRole` 选择的角色。这样预检失败报告导致的 Bot 版本递增不会提前固定一个失效的注册版本。
+
+`bots/session-api.ts` 用 Worker 正常 PAT 调用 Bot register/grant/report 和 deletion-complete；响应必须携带相同账号，字节数与请求时间有界。注册传递首次 `botVersion`，之后的 grant/report 使用当前观察版本。HTTP 客户端不自动重复 POST；运行时先 GET 原 Bot，再核对或继续原请求。ready 报告前读取服务端 Session，核对完整 fence、同步状态和 native identity。删除回执使用固定 `deletionId` 和原执行 stopProof，不读取已被删除屏障禁止访问的 Session 历史。
+
+ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，为独立 Session，不含 Task/claim/worktree，角色与初始输入分别编码。Controller 自身仍负责 Provider 适配与原生权限。准备出的环境和别名责任保留到原执行停止；提交前失败可以释放当前准备资源，提交后未知结果不能清理仍可能使用的目录。
+
+`backends/controller-process.ts` 被 Task 与 Bot 实际共享：日志准备、持久提交回调、detached spawn、process proof、认证 IPC 观察和按执行串行化。Task 的 worktree、claim、cleanup prompt、归档及回收仍由原 backend 持有。明确 OS 启动拒绝先持久化，再报告服务端；Provider 快速拒绝后 IPC 可能已关闭，此时只允许读取同 fence 的 journal 失败证据，旧 ready 记录不能作为当前在线证明。启动时的 Windows 进程证明采集使用共享 15 秒预算，POSIX 采集和日常身份复核仍为 5 秒；完整证明、认证 IPC 和资源责任由[Session 设计](task-session-protocol.md)拥有。
+
+## 原会话恢复
+
+对已提交执行，先用原 ticket 观察 Controller。可观察且仍在 starting、ready 或 working 的执行继续复用，并撤销先前未完成停机的来源标记，避免后来异常退出获得正常重启豁免；无法观察时读取同一 journal 和持久进程证据。恢复路径不为了获得停证主动杀死一个可能存活的 writer。`confirmControllerProcessesStopped` 核对原进程实例及所属进程组或 Windows Job Object，随后通过 journal 的停证写入和 snapshot CAS 固定原 generation 已停止。缺失证明或 native ID 时保留责任并报告，不能新建空白会话。
+
+`beginRecovery` 将正常关停与异常恢复区分。`markShutdown` 只从停止前新鲜、健康的认证观察建立 `restartAfterShutdown`，既有阻止原因不允许该标记覆盖。异常换代递增 `recoveryCount`，正常来源且 stopped snapshot 没有 error 时不递增；两条路径均不重置此前异常次数。达到预算的健康执行仍可正常停止和恢复，异常停止则持久阻止继续恢复。
+
+新目标写入后重新验证 CLI owner/server 和运行环境，恢复 ticket 沿用前代 native home，固定 `resumeNativeSessionId`，保持 `initialInput: "none"`。同一 journal 继续持有旧操作及回执；不会因重启再调用旧用户操作。旧 ticket 和各代别名目录保留为精确清理输入。
+
+grant 接收持久前代的 generation、Controller instance、recordId 和 stoppedAt。客户端先检查直接相邻代、不同 instance、已知 native ID 和完整停证，再读取服务端原 Session。服务端仍是精确前代时，提交 `previousGeneration` 和 stopProof；已是目标代时，只提交目标 fence 的 reconnect grant。未知响应不改变目标身份；其它代、instance 或 native ID 一律拒绝，服务端仍执行版本、权限和 fence 检查。
+
+## 发现、授权维护与退出
+
+`createManagedAssistantRuntime` 提供单轮 `tick`、持续 `run` 和显式 `shutdown`，构造时必须传入 `deletion: BotDeletionManager`。持续发现为每个 Bot 调度一项独立工作：活动定义进入执行管理，删除投影进入 `deletion.advance`；同 Bot 已有在途工作时不重复调度。发现循环不等待慢启动或清理完成，因此其它 Bot 仍可被发现。删除失败经 `onError` 返回并保留责任，下次权威对账后继续推进；它不转成启动失败报告。每次启动及结果报告读取权威单项；清单失败保持旧库存但不启动陈旧定义或执行删除。
+
+通用 `maintainControllerGrants` 同时供 Task 和 Bot 使用，按执行隔离错误并抑制重复诊断；每个执行最多一个在途刷新，慢执行不延迟其它执行下一轮调度。Bot 的维护循环与发现循环并行运行，续期前检查当前绑定和凭据有效期，在相同 generation 下更新私有凭据文件。
+
+取消 `run` 或显式 `shutdown` 先关闭调度并取消在途管理操作，等待发现、续期和启动 job 全部结束，再对本地责任清单中每个 Bot 进行有界停止。停止不依赖远端可用性，按原 ticket 尝试 IPC stop，并通过原进程证明停止进程树；IPC 回执或 timeout 单独不决定结果。恢复子进程可能已提交，而共享 journal 尚未替换前代 snapshot；此时不把前代 snapshot 当作当前原生进程证据，仍依据父进程已保存的当前子进程出生证明尝试停止。当前代 journal 停证缺失仍报告失败并保留责任，不能借前代已停止状态宣称完成。OS 确认与 journal 停证完成后才返回成功，不调用 StopTest、归档、cleanup prompt 或删除接口。每个 Bot 独立完成停止尝试，全部错误一并交给调用方；stores 与 Worker 实例锁必须保留到这些尝试完成。
+
+Windows Job 终止是异步的。`stopControllerProcesses` 请求终止后，反复通过 `confirmControllerProcessesStopped` 核对全部已保留的 Controller/native 进程身份及 Job 成员；成员列表先变空不等于原进程均已停止。调用方的原 deadline 是启动新一轮完整确认的预算，轮询不重置该期限，到时不再开始下一轮；已经开始的系统探测沿用既有单次 timeout，因此不承诺严格的总 wall-clock 上界。预算耗尽仍未取得完整停证、权限错误或未知查询结果均保留失败、执行资料与删除责任。
+
+`shutdownWorkerExecutions` 汇总 Task 和 Bot 的执行所有者，等待每项停止尝试并保留失败。Task 退出仍由 coordinator 和原 backend 完成，不把 Bot 停机规则注入 Task 归档及容量逻辑。正式 `runWorker` 尚未启用 Bot 调度或 `assistantHost` 广告；调用者的产品组合仍须明确接入这些执行所有者。
+
+## 精确删除与失败保留
+
+`bots/delete.ts` 的 `createBotDeletion.advance` 先读取原 Bot 的权威删除投影，再通过 `createBotProcess.withDeletion` 与同 Bot 的启动、续期和停止共用串行化。删除意图先阻止新的生命周期动作；已提交 child 的 process proof、当前代 snapshot 和失败证据仍可写回，以便删除能停止已经存在的 writer。回调只有在取得原 Bot 删除身份后执行，不能用陈旧记录跨过新的执行意图。
+
+首次清理调用同锁内的停止函数，复用原 ticket、认证 IPC 和 OS 进程树停证。已提交执行的当前代 journal 停证提供 receipt 所需的 sessionId、testExecutionId、generation、Controller identity、recordId 和 stoppedAt；IPC 已回执但进程仍活时不进入文件删除。已经确认 sessionId、未提交或被 OS 明确拒绝且没有进程或 snapshot 证据的首次执行可以使用 `never_started`。存在持久 intent 但 sessionId 未确认时，注册可能已经提交，删除保留原注册身份并报错；恢复目标尚未提交而远端可能仍在前代或已换代时同样保留责任，不猜测远端 fence。
+
+停止完成后，`prepareDeletion` 在 Worker SQLite 中保存停证、文件计划、清理进度和固定完成回执所需的身份，位置独立于执行私有目录。重试优先读取该责任，不要求已删除的 journal 再次生成 stopProof。`delete-files.ts` 根据原 intent、执行记录保存的历史 launch/别名归属和配置根捕获文件计划，不接收远端提供的任意删除路径。执行目录只能是 `controller/executions/<executionId>`，ticket 由各 `launchId` 重新推导；存在的正式 ticket 还须解析并核对账号、服务、独立执行、Session、Controller 和代际归属。当前与保留 launch 的 `<launchId>.json.<uuid>.tmp` 也进入计划，其中临时 UUID 必须规范，不能据此扩大到共享 launch 目录的其它文件。IPC 使用原端点规则处理长路径下的 Unix socket；Windows pipe 不当作磁盘目录递归删除。
+
+目录清理复用受限物理目录遍历和 inode 校验，拒绝符号链接、Git 元数据和替换后的目标。计划同时检查冻结 cwd、各正式 ticket 的 cwd 与 native home，拒绝把这些目录本身或包含它们的目录作为删除目标；检查包括原路径与物理解析路径。单个 ticket、临时文件与 socket 按原文件身份删除。每项成功后由 `completeDeletionTarget` 持久保存进度；再次处理同一 `deletionId` 时跳过已经完成的目标，不能因为旧路径被新文件占用而重复清理。journal 所在执行目录排在其它私有目标之后。文件或权限错误保留未完成目标和停证，不删除普通 cwd、native home、Task 或 worktree，也不调用 cleanup prompt、StopTest 或归档上传。
+
+无持久 intent 时没有可供跨重启定位的执行文件计划。当前进程仍持有的 preflight 清理句柄可以重试释放探针与别名；Worker 崩溃前未登记的孤立 preflight 别名目录不保证被发现。该边界不影响已持久登记的执行资料按原身份完成删除，也不把共享别名根扫描变成 Bot 清理权限。
+
+所有本地目标完成后，`finishDeletion` 原子裁剪库存定义、角色和执行资料，只留下删除投影及不含对话正文的责任。`completeDeletion` 提交原 `{deletionId, stop, result}`；本地现存 intent 可校验完整 fence，裁剪后使用持久 receipt 保持完全相同的请求。停止失败报告 `execution_stop_unproven`，文件清理失败报告 `private_cleanup_failed`，失败报告自身不确定时一并保留原错误。服务端响应必须确认相同删除身份和 workerCleanup 结果，serverCleanup 仍可为 pending 或 failed。客户端不把传输失败解释为拒绝，也不自动重复 POST；下一轮先读取原删除状态，再决定是否提交相同回执。服务端的 admission barrier、回执 digest 与历史清理机制由[助手设计](assistant.md)拥有。

@@ -2,11 +2,15 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
@@ -31,6 +35,7 @@ type UpdateWorker struct {
 	Phase           *core.WorkerPhase
 	Herdr           **core.WorkerHerdr
 	NativeSessionID **string
+	StartupReport   *sp.StartupReport
 }
 
 type ReleaseWorker struct {
@@ -116,7 +121,7 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal core.Principal, proj
 	if err != nil {
 		return core.Task{}, err
 	}
-	if input.Phase == nil && input.Herdr == nil && input.NativeSessionID == nil {
+	if input.Phase == nil && input.Herdr == nil && input.NativeSessionID == nil && input.StartupReport == nil {
 		return core.Task{}, invalidInput("At least one worker execution field must be provided.")
 	}
 	if input.Phase != nil && !input.Phase.Valid() {
@@ -131,7 +136,16 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal core.Principal, proj
 	if input.NativeSessionID != nil && *input.NativeSessionID != nil && !workerText(**input.NativeSessionID) {
 		return core.Task{}, invalidInput("Native session ID must be null or nonempty UTF-8 text without NUL.")
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(_ *store.ProjectTx, current core.Task) (taskMutation, error) {
+	if input.StartupReport != nil {
+		raw, err := json.Marshal(input.StartupReport)
+		if err != nil {
+			return core.Task{}, invalidInput("Invalid startup report.")
+		}
+		if _, err = sp.DecodeStartupReport(raw); err != nil {
+			return core.Task{}, invalidInput("Invalid startup report.")
+		}
+	}
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
 		worker, err := activeWorker(current, claimID)
 		if err != nil {
 			return taskMutation{}, err
@@ -141,6 +155,31 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal core.Principal, proj
 		}
 		if worker.AgentControlMode == core.AgentControlModeWeb && input.Herdr != nil && *input.Herdr != nil {
 			return taskMutation{}, invalidInput("Web execution cannot bind Herdr resources.")
+		}
+		reportChanged := false
+		if input.StartupReport != nil {
+			if worker.AgentControlMode != core.AgentControlModeWeb || input.StartupReport.ClaimID != claimID {
+				return taskMutation{}, claimConflict()
+			}
+			matched, err := tx.MatchSessionStartup(ctx, current.ID, worker, *input.StartupReport)
+			if err != nil {
+				return taskMutation{}, err
+			}
+			if !matched {
+				return taskMutation{}, claimConflict()
+			}
+			previous, err := taskproperties.SessionStartup(current.Properties)
+			if err != nil {
+				return taskMutation{}, err
+			}
+			reportChanged = !reflect.DeepEqual(previous, input.StartupReport)
+			if previous != nil && previous.ClaimID == claimID && previous.SessionID == input.StartupReport.SessionID && previous.ExecutionGeneration == input.StartupReport.ExecutionGeneration && previous.ControllerInstanceID == input.StartupReport.ControllerInstanceID {
+				before, _ := strconv.ParseInt(previous.Revision, 10, 64)
+				after, _ := strconv.ParseInt(input.StartupReport.Revision, 10, 64)
+				if after < before || after == before && reportChanged {
+					return taskMutation{}, claimConflict()
+				}
+			}
 		}
 		next := *worker
 		if input.Phase != nil {
@@ -152,13 +191,19 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal core.Principal, proj
 		if input.NativeSessionID != nil {
 			next.NativeSessionID = *input.NativeSessionID
 		}
-		if next.Phase == worker.Phase && equalOptional(next.Herdr, worker.Herdr) && equalOptional(next.NativeSessionID, worker.NativeSessionID) {
+		if !reportChanged && next.Phase == worker.Phase && equalOptional(next.Herdr, worker.Herdr) && equalOptional(next.NativeSessionID, worker.NativeSessionID) {
 			return taskMutation{current: current}, nil
 		}
 		values := currentTaskWrite(current)
 		values.Properties, err = taskproperties.WithWorker(values.Properties, &next)
 		if err != nil {
 			return taskMutation{}, err
+		}
+		if reportChanged {
+			values.Properties["sessionStartup"], err = json.Marshal(input.StartupReport)
+			if err != nil {
+				return taskMutation{}, err
+			}
 		}
 		return taskMutation{id: current.ID, current: current, values: values, changed: true}, nil
 	})
@@ -275,6 +320,7 @@ func acquireWorker(ctx context.Context, tx *store.ProjectTx, current core.Task, 
 		return taskMutation{}, err
 	}
 	values := currentTaskWrite(current)
+	delete(values.Properties, "sessionStartup")
 	values.Status = core.TaskInProgress
 	values.Properties, err = taskproperties.WithWorker(values.Properties, &core.WorkerClaim{ClaimID: descriptor.ClaimID, State: core.WorkerActive, UserID: userID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode, WorktreeID: descriptor.WorktreeID, Phase: core.WorkerPreparing, ClaimedAt: claimedAt})
 	if err != nil {

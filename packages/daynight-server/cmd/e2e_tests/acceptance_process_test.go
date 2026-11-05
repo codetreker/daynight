@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -39,6 +40,7 @@ type acceptanceEvidence struct {
 	GitHubSHA    string                `json:"githubSha,omitempty"`
 	Dirty        bool                  `json:"dirty"`
 	GoVersion    string                `json:"goVersion"`
+	RaceEnabled  bool                  `json:"raceEnabled"`
 	PostgreSQL   string                `json:"postgresqlVersion"`
 	BinarySHA256 string                `json:"binarySha256"`
 	Build        string                `json:"build"`
@@ -99,7 +101,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "acceptance: cannot create evidence directory")
 		os.Exit(1)
 	}
-	binaryAcceptance = &acceptanceEvidence{path: filepath.Join(temporary, "acceptance-evidence.json"), GoVersion: runtime.Version(), Build: "pending", Result: "running", Scenarios: []*acceptanceScenario{}}
+	binaryAcceptance = &acceptanceEvidence{path: filepath.Join(temporary, "acceptance-evidence.json"), GoVersion: runtime.Version(), RaceEnabled: acceptanceRaceEnabled, Build: "pending", Result: "running", Scenarios: []*acceptanceScenario{}}
 	finish := func(code int) {
 		result := "passed"
 		if code != 0 {
@@ -159,14 +161,14 @@ func TestMain(m *testing.M) {
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	command := exec.CommandContext(ctx, "go", "build", "-race", "-o", binaryAcceptance.Binary, "./cmd/daynight-server")
+	command := exec.CommandContext(ctx, "go", "build", "-race="+strconv.FormatBool(acceptanceRaceEnabled), "-o", binaryAcceptance.Binary, "./cmd/daynight-server")
 	command.Dir, command.Env, command.Stdout, command.Stderr = moduleRoot, acceptanceEnvironment(environment), os.Stdout, os.Stderr
 	err = command.Run()
 	cancel()
 	if err != nil {
 		_ = os.RemoveAll(buildDirectory)
 		_ = binaryAcceptance.update(func() { binaryAcceptance.Build = "failed" })
-		fmt.Fprintln(os.Stderr, "acceptance: fresh race-enabled binary build failed")
+		fmt.Fprintln(os.Stderr, "acceptance: fresh server binary build failed")
 		finish(1)
 	}
 	content, err := os.ReadFile(binaryAcceptance.Binary)
@@ -686,9 +688,14 @@ func acceptanceError(t *testing.T, response acceptanceResponse, status int, code
 	return value
 }
 
+func (p *acceptanceProcess) expectedUserID(t *testing.T) string {
+	t.Helper()
+	return acceptanceDecode[api.User](t, p.request(context.Background(), http.MethodGet, "/api/v1/me", nil, ""), http.StatusOK).ID
+}
+
 func (p *acceptanceProcess) project(t *testing.T, name string) api.Project {
 	t.Helper()
-	response := p.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: name, RepoURL: "https://github.com/example/acceptance-repo"}, "")
+	response := p.request(context.Background(), http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{ExpectedUserID: p.expectedUserID(t), Name: name, RepoURL: "https://github.com/example/acceptance-repo"}, "")
 	project := acceptanceDecode[api.Project](t, response, http.StatusCreated)
 	if response.header.Get("Location") != "/api/v1/projects/"+project.ID || project.ID == "" || project.Settings != (api.ProjectSettings{Version: 1, ExecutionWarningMinutes: 60}) {
 		t.Fatal("project identity or Location is invalid")

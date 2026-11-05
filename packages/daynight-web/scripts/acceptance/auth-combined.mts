@@ -463,11 +463,11 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const bobUser = await request<User>(bob, origin, 'GET', '/api/v1/me', 200);
     check(aliceUser.id !== bobUser.id && aliceUser.email === bobUser.email, 'Normal same-email users did not remain distinct.');
     const a0 = await projectIds(alice, origin), b0 = await projectIds(bob, origin);
-    const shared = await request<Project>(alice, origin, 'POST', '/api/v1/projects', 201, { name: `Combined shared ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}` });
-    const privateProject = await request<Project>(bob, origin, 'POST', '/api/v1/projects', 201, { name: `Combined private ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}` });
+    const shared = await request<Project>(alice, origin, 'POST', '/api/v1/projects', 201, { name: `Combined shared ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}`, expectedUserId: aliceUser.id });
+    const privateProject = await request<Project>(bob, origin, 'POST', '/api/v1/projects', 201, { name: `Combined private ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}`, expectedUserId: bobUser.id });
     sameIds(await projectIds(alice, origin), [...a0, shared.id], 'Alice private-project pagination differs.');
     sameIds(await projectIds(bob, origin), [...b0, privateProject.id], 'Bob private-project pagination differs.');
-    const invite = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, {});
+    const invite = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, { expectedUserId: aliceUser.id });
     const inviteToken = new URL(invite.link).hash.slice(1); secrets.add(inviteToken);
     const alicePage = await aliceContext.newPage(), bobPage = await bobContext.newPage();
     for (const page of [alicePage, bobPage]) { page.setDefaultTimeout(15_000); page.setDefaultNavigationTimeout(30_000); }
@@ -486,7 +486,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const reading = `# Fullscreen reading\n\n${'Browser and installed CLI share this long reading task.\n\n'.repeat(120)}`;
     const task = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${shared.id}/tasks`, 201, { title: 'Combined member task', description: reading });
     const privateTask = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${privateProject.id}/tasks`, 201, { title: 'Private authority control' });
-    await request(bob, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 403, {});
+    await request(bob, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 403, { expectedUserId: bobUser.id });
     await request(bob, origin, 'PATCH', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 403, { version: bobMember.directGrant.version, role: 'admin', expectedUserId: bobUser.id });
     await record('normal-member-writes', { taskId: task.id, privateTaskId: privateTask.id, memberVersion: bobMember.directGrant.version.toString(), administratorDenial: 403 });
     const originalToken = await bilingualToken(bobPage, bobContext, origin, secrets, signal);
@@ -543,7 +543,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await screenshots(bobPage, 'shared-preview-chinese');
     const fullscreen = await fullscreenPreview(bobPage, bobContext, origin, shared.id, task);
     await record('same-data-cli-browser', { projectId: shared.id, taskId: task.id, taskVersion: snapshot.version.toString(), path: 'shared/data.bin', bytes: binary.length, sha256: hash(binary), propertiesRetained: true, moduleAndRelativeFetch: true, fullscreen });
-    const pending = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, {});
+    const pending = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, { expectedUserId: aliceUser.id });
     const pendingToken = new URL(pending.link).hash.slice(1); secrets.add(pendingToken);
     const memberSnapshot = encode(await request(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200));
     receipt.restart = await options.restartTarget(run, signal); await save();

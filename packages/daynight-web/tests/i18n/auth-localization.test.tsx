@@ -12,6 +12,7 @@ import { getFormats } from "../../src/i18n/formats";
 import { en } from "../../src/i18n/messages/en";
 import { zhCN } from "../../src/i18n/messages/zh-CN";
 import { renderWithLocale } from "../helpers/renderWithLocale";
+import { personalTeamPage } from "../helpers/team";
 
 const userId = "00000000-0000-4000-8000-000000000001";
 const projectId = "00000000-0000-4000-8000-000000000002";
@@ -30,6 +31,7 @@ const deferred = <T,>() => {
 };
 const defaults = (url: string): Response => {
   if (url === "/api/v1/me") return json(user);
+  if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(userId));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url === "/api/v1/projects" || url.startsWith("/api/v1/projects?")) return json({ items: [], nextCursor: null });
   if (url === "/api/v1/me/tokens") return json({ items: [] });
@@ -74,7 +76,7 @@ describe("authentication language changes", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(signal.aborted).toBe(false);
     await act(async () => pending.resolve(json(user)));
-    await screen.findByRole("heading", { name: zhCN.workspace.app.projects });
+    await screen.findByRole("heading", { name: "个人" });
     expect(document.title).toBe(zhCN.auth.shell.documentTitle.projects);
     expect(language()).toHaveValue("zh-CN");
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
@@ -181,7 +183,7 @@ describe("authentication language changes", () => {
     const pending = deferred<Response>();
     const fetcher = install(() => pending.promise);
     const interaction = userEvent.setup();
-    renderWithLocale(<CreateProjectDialog onClose={vi.fn()} onCreated={vi.fn()} />, { locale: "en" });
+    renderWithLocale(<CreateProjectDialog userId={userId} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />, { locale: "en" });
     const dialog = screen.getByRole("dialog", { name: en.auth.createProject.title });
     const name = within(dialog).getByLabelText(/Project name/);
     const repository = within(dialog).getByLabelText(/Repository URL/);
@@ -196,25 +198,79 @@ describe("authentication language changes", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher.mock.calls[0]![1]!.signal!.aborted).toBe(false);
     await act(async () => pending.resolve(failure(503, "internal_error")));
-    expect(screen.getByRole("alert")).toHaveTextContent(zhCN.auth.createProject.error);
+    expect(screen.getByRole("alert")).toHaveTextContent(zhCN.auth.createProject.unknown);
     expect(screen.getByText("auth-locale-request")).toBeVisible();
+    expect(within(dialog).queryByRole("button", { name: zhCN.auth.createProject.submit })).not.toBeInTheDocument();
+    fetcher.mockResolvedValueOnce(json({ items: [], nextCursor: null }));
+    await interaction.click(within(dialog).getByRole("button", { name: zhCN.auth.createProject.checkProjects }));
+    await screen.findByText(zhCN.auth.createProject.noProjects);
+    expect(screen.getByText(zhCN.auth.createProject.unknown)).toBeVisible();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]![0]).toBe("/api/v1/projects?limit=50");
+  });
+
+  it("keeps an unknown result and rejects a different account's project list", async () => {
+    const mismatch = vi.fn();
+    const fetcher = install((_url, init) => init?.method === "POST" ? failure(503, "write_outcome_unknown") : new Response(JSON.stringify({ items: [], nextCursor: null }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": memberId } }));
+    const interaction = userEvent.setup();
+    renderWithLocale(<CreateProjectDialog userId={userId} onIdentityMismatch={mismatch} onClose={vi.fn()} onCreated={vi.fn()} />, { locale: "en" });
+    const dialog = screen.getByRole("dialog", { name: en.auth.createProject.title });
+    await interaction.type(within(dialog).getByLabelText(/Project name/), "Original");
+    await interaction.type(within(dialog).getByLabelText(/Repository URL/), "https://example.com/repo");
+    await interaction.click(within(dialog).getByRole("button", { name: en.auth.createProject.submit }));
+    await screen.findByText(en.auth.createProject.unknown);
+    await interaction.click(within(dialog).getByRole("button", { name: en.auth.createProject.checkProjects }));
+    await screen.findByText(en.auth.createProject.checkFailed);
+    expect(screen.getByText(en.auth.createProject.unknown)).toBeVisible();
+    expect(within(dialog).queryByText(en.auth.createProject.noProjects)).toBeNull();
+    expect(mismatch).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("keeps unknown while reading and retrying project pages", async () => {
+    const observed = (id: string, name: string) => ({ id, name, repoUrl: "git@example.com:org/repo.git", settings: { version: 1, executionWarningMinutes: 60 }, ownership: { teamId: user.personalTeam.id, version: 1 }, createdAt: timestamp, updatedAt: timestamp });
+    let continuation = 0;
+    const fetcher = install((url, init) => {
+      if (init?.method === "POST") return failure(503, "write_outcome_unknown");
+      if (!url.includes("cursor=")) return json({ items: [observed(projectId, "Observed one")], nextCursor: "next" });
+      if (++continuation === 1) return failure(503, "internal_error");
+      return json({ items: [observed(tokenId, "Observed two")], nextCursor: null });
+    });
+    const interaction = userEvent.setup();
+    renderWithLocale(<CreateProjectDialog userId={userId} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />, { locale: "en" });
+    const dialog = screen.getByRole("dialog", { name: en.auth.createProject.title });
+    await interaction.type(within(dialog).getByLabelText(/Project name/), "Original");
+    await interaction.type(within(dialog).getByLabelText(/Repository URL/), "https://example.com/repo");
+    await interaction.click(within(dialog).getByRole("button", { name: en.auth.createProject.submit }));
+    await screen.findByText(en.auth.createProject.unknown);
+    await interaction.click(within(dialog).getByRole("button", { name: en.auth.createProject.checkProjects }));
+    expect(await screen.findByRole("link", { name: "Observed one" })).toHaveAttribute("href", `/projects/${projectId}`);
+    await interaction.click(within(dialog).getByRole("button", { name: en.auth.createProject.loadMore }));
+    await screen.findByText(en.auth.createProject.checkFailed);
+    expect(screen.getByText(en.auth.createProject.unknown)).toBeVisible();
+    await interaction.click(within(dialog).getByRole("button", { name: en.auth.createProject.loadMore }));
+    expect(await screen.findByRole("link", { name: "Observed two" })).toHaveAttribute("href", `/projects/${tokenId}`);
+    expect(screen.getByText(en.auth.createProject.unknown)).toBeVisible();
+    expect(within(dialog).queryByRole("button", { name: en.auth.createProject.submit })).toBeNull();
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
   });
 
   it("keeps the observed member and role while switching the pending role dialog", async () => {
     const pending = deferred<Response>();
-    const fetcher = install((url, init) => init?.method === "PATCH" ? pending.promise : defaults(url));
+    const fetcher = install((url, init) => url === `/api/v1/projects/${projectId}/grants/${memberId}` && init?.method === "PUT" ? pending.promise : defaults(url));
     const interaction = userEvent.setup();
     renderWithLocale(<MembersPanel projectId={projectId} projectName="项目 Raw" user={user} onRemoved={vi.fn()} />, { locale: "en", taskCache: { viewerId: userId } });
     const role = await screen.findByRole("combobox", { name: en.auth.management.members.roleLabel({ name: "协作者 Raw" }) });
     await interaction.selectOptions(role, "admin");
     const dialog = screen.getByRole("dialog", { name: en.auth.management.members.roleTitle({ name: "协作者 Raw" }) });
     await interaction.click(within(dialog).getByRole("button", { name: en.auth.management.members.saveRole }));
+    await waitFor(() => expect(fetcher.mock.calls.some(([url, init]) => url === `/api/v1/projects/${projectId}/grants/${memberId}` && init?.method === "PUT")).toBe(true));
     const requests = fetcher.mock.calls.length;
     await interaction.selectOptions(language(within(dialog)), "zh-CN");
     expect(screen.getByRole("dialog", { name: zhCN.auth.management.members.roleTitle({ name: "协作者 Raw" }) })).toBe(dialog);
     expect(within(dialog).getByRole("button", { name: zhCN.auth.management.common.submitPending })).toBeDisabled();
     expect(fetcher).toHaveBeenCalledTimes(requests);
-    const mutation = fetcher.mock.calls.find(([, init]) => init?.method === "PATCH")!;
+    const mutation = fetcher.mock.calls.find(([url, init]) => url === `/api/v1/projects/${projectId}/grants/${memberId}` && init?.method === "PUT")!;
     expect(mutation[1]!.body).toBe(`{"version":12,"role":"admin","expectedUserId":"${userId}"}`);
     expect(mutation[1]!.signal!.aborted).toBe(false);
     await act(async () => pending.resolve(failure(503, "internal_error")));
@@ -222,7 +278,7 @@ describe("authentication language changes", () => {
     expect(screen.getByText(zhCN.auth.management.members.grantUnknown)).toBeVisible();
     expect(screen.getByRole("button", { name: zhCN.auth.management.members.readCurrentMembers })).toBeVisible();
     expect(screen.getByText("auth-locale-request")).toBeVisible();
-    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url, init]) => url === `/api/v1/projects/${projectId}/grants/${memberId}` && init?.method === "PUT")).toHaveLength(1);
   });
 
   it.each(["token", "member", "invitation"] as const)("keeps the %s revocation target while translating confirmation and cancellation", async (kind) => {
@@ -260,6 +316,24 @@ describe("authentication language changes", () => {
     expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
   });
 
+  it.each(["direct", "inherited"] as const)("shows the %s invitation relationship in both languages", async (kind) => {
+    window.history.replaceState(null, "", "/invitations#relationship-secret");
+    const direct = directAccessFixture(projectId, userId, "admin");
+    const inherited = { ...direct, directGrant: null, teamRole: "admin", canTransfer: true };
+    const access = kind === "direct" ? direct : inherited;
+    const fetcher = install((url) => url === "/api/v1/invitations/inspect" ? json({ projectId, projectName: "Project", directGrant: access.directGrant, access }) : defaults(url));
+    const interaction = userEvent.setup();
+    renderWithLocale(<AuthenticatedApp />, { locale: "en" });
+    await screen.findByText(kind === "direct" ? en.auth.invitation.preserveDirect : en.auth.invitation.inheritedAdmin);
+    if (kind === "direct") expect(screen.getByText(`${en.auth.invitation.currentDirectRole}: ${en.auth.roles.admin}`)).toBeVisible();
+    else expect(screen.getByText(en.auth.invitation.memberRole)).toBeVisible();
+    await interaction.selectOptions(language(), "zh-CN");
+    expect(screen.getByText(kind === "direct" ? zhCN.auth.invitation.preserveDirect : zhCN.auth.invitation.inheritedAdmin)).toBeVisible();
+    if (kind === "direct") expect(screen.getByText(`${zhCN.auth.invitation.currentDirectRole}: ${zhCN.auth.roles.admin}`)).toBeVisible();
+    else expect(screen.getByText(zhCN.auth.invitation.memberRole)).toBeVisible();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
+  });
+
   it("keeps invitation inspection pending across a language change without accepting or losing the fragment secret", async () => {
     window.history.replaceState(null, "", "/invitations#raw-invitation-secret");
     const pending = deferred<Response>();
@@ -272,10 +346,10 @@ describe("authentication language changes", () => {
     await interaction.selectOptions(language(), "zh-CN");
     expect(screen.getByRole("heading", { name: zhCN.auth.invitation.loading })).toBe(heading);
     expect(window.location.hash).toBe("");
-    expect(window.sessionStorage.getItem(invitationStorageKey)).toBe("raw-invitation-secret");
+    expect(window.sessionStorage.getItem(invitationStorageKey)).toBeNull();
     expect(document.title).toBe(zhCN.auth.shell.documentTitle.invitations);
     expect(fetcher).toHaveBeenCalledTimes(requests);
-    await act(async () => pending.resolve(json({ projectId, projectName: "项目 Raw" })));
+    await act(async () => pending.resolve(json({ projectId, projectName: "项目 Raw", directGrant: null, access: null })));
     expect(screen.getByRole("heading", { name: zhCN.auth.invitation.invited })).toBeVisible();
     expect(screen.getByRole("heading", { name: "项目 Raw" })).toBeVisible();
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/invitations/accept")).toHaveLength(0);

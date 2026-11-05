@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { coveragePackages, readBudgetToken, requireTestOnlyE2E, runProjectTaskAcceptance } from "../../scripts/project-task-acceptance.js";
+import { coveragePackages, goValidationArguments, readBudgetToken, requireTestOnlyE2E, runProjectTaskAcceptance } from "../../scripts/project-task-acceptance.js";
 import { runBudgetProbes } from "../../scripts/project-task-budgets.js";
 import type { InstalledCliReceipt } from "../fixtures/installed-cli.js";
 
@@ -16,6 +16,46 @@ const fixture = async (source: string) => {
   return { directory, file };
 };
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
+
+describe("Go validation race selection", () => {
+  it.each([undefined, "true"])("retains race detection for local defaults and main CI (%s)", (setting) => {
+    const args = goValidationArguments(setting);
+    expect(args.coverage).toContain("--race=true");
+    expect(args.e2e).toEqual(["test", "-race=true", "-count=1", "-timeout=10m", "./cmd/e2e_tests"]);
+    expect(args.coverage).toContain("--ci");
+    expect(args.coverage).toContain(".go-cov.toml");
+  });
+
+  it("disables only race instrumentation for the explicit PR setting", () => {
+    const args = goValidationArguments("false");
+    expect(args.coverage).toContain("--race=false");
+    expect(args.e2e).toEqual(["test", "-race=false", "-count=1", "-timeout=10m", "./cmd/e2e_tests"]);
+    expect(args.coverage.filter((arg) => !arg.startsWith("--race="))).toEqual(
+      goValidationArguments("true").coverage.filter((arg) => !arg.startsWith("--race=")),
+    );
+  });
+
+  it.each([undefined, "", "-race", "-race=true", "-trimpath -race=true", "-race=true -mod=readonly", "-ldflags='-s -w'"])(
+    "overrides ambient race flags for coverage while preserving other Go flags (%j)", (goFlags) => {
+      const args = goValidationArguments("false", goFlags);
+      expect(args.coverageGoFlags).toBe(goFlags === undefined || goFlags === "" ? "-race=false" : `${goFlags} -race=false`);
+      expect(args.e2e).toContain("-race=false");
+    },
+  );
+
+  it.each([undefined, "true"])("leaves the coverage tool's ambient Go flags intact when race is enabled (%s)", (setting) => {
+    for (const goFlags of [undefined, "", "-race=false", "-trimpath -race=false", "-ldflags='-s -w'"]) {
+      expect(goValidationArguments(setting, goFlags).coverageGoFlags).toBe(goFlags);
+    }
+  });
+
+  it.each(["", "TRUE", "0", "1", "false ", "invalid"])("rejects malformed race settings before preparation (%j)", async (setting) => {
+    expect(() => goValidationArguments(setting)).toThrow("DAYNIGHT_TEST_RACE must be true or false.");
+    vi.stubEnv("DAYNIGHT_TEST_RACE", setting);
+    try { await expect(runProjectTaskAcceptance()).rejects.toThrow("DAYNIGHT_TEST_RACE must be true or false."); }
+    finally { vi.unstubAllEnvs(); }
+  });
+});
 
 describe("local CLI stress entrypoints", () => {
   it("refuses local stress work in CI before starting any installed or service fixtures", async () => {

@@ -25,11 +25,11 @@ const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot 
       done: tasks.filter((item) => item.status === 'done').length + 1,
       ready: tasks.filter((item) => item.ready).length, blocked: 0 },
   };
-  return { graph, index: buildGraphIndex(graph), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: 0, receivedMonotonic: 0, revision: 1 };
+  return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: 0, receivedMonotonic: 0, revision: 1 };
 };
 const noop = () => {};
 const content = (value: GraphSnapshot, onOpenTask = noop) => <TaskExecutionClockProvider projectId="project" snapshot={value}>
-  <ChainList projectId="00000000-0000-4000-8000-000000000101" index={value.index} representativeIds={['Goal']} allRepresentativeIds={['Goal']} openChainId={null}
+  <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={value.index} representativeIds={['Goal']} allRepresentativeIds={['Goal']} openChainId={null}
     onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showAll onShowAllChange={noop} />
 </TaskExecutionClockProvider>;
 const row = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!;
@@ -53,7 +53,7 @@ describe('Goal child execution duration', () => {
     const view = renderWithLocale(content(snapshot(tasks), onOpenTask), { locale, taskCache: true });
     expand();
     const running = [row('manual'), row('automatic')];
-    const names = locale === 'en' ? ['manualAssignee: UnassignedIn progress', 'automaticAssignee: UnassignedIn progress'] : ['manual负责人：未分配进行中', 'automatic负责人：未分配进行中'];
+    const names = locale === 'en' ? ['manual Assignee: Unassigned Automatic execution off No machine record In progress', 'automatic Assignee: Unassigned Automatic execution on No machine record In progress'] : ['manual 负责人：未分配 自动执行已关闭 暂无执行机器记录 进行中', 'automatic 负责人：未分配 自动执行已开启 暂无执行机器记录 进行中'];
     for (const [index, element] of running.entries()) {
       expect(element).toHaveAccessibleName(names[index]!);
       expect(element.querySelector('time')).toHaveTextContent(locale === 'en' ? '< 1 min' : '不足 1 分钟');

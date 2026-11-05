@@ -30,7 +30,7 @@ export const graphFixture = (details: readonly TaskDetail[]): TaskGraph => {
 };
 export const snapshotFixture = (details: readonly TaskDetail[], revision = 1): GraphSnapshot => {
   const graph = graphFixture(details);
-  return { graph, index: buildGraphIndex(graph), pausedTaskIds: new Set(details.filter((task) => readTaskPaused(task.properties) === true).map((task) => task.id)), revision, observedAt: graph.observedAt, receivedMonotonic: performance.now(), receivedAt: Date.now() };
+  return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set(details.filter((task) => readTaskPaused(task.properties) === true).map((task) => task.id)), revision, observedAt: graph.observedAt, receivedMonotonic: performance.now(), receivedAt: Date.now() };
 };
 export const resourceResponse = (body: unknown, viewerId?: string): Response => new Response(stringifyWireJson(body), { headers: viewerId === undefined ? { 'Content-Type': 'application/json' } : viewerHeaders(viewerId, { 'Content-Type': 'application/json' }) });
 export const withDetailResources = (projectId: string, taskId: string, fallback: (url: string, options?: RequestInit) => Response | Promise<Response>, changes: Partial<TaskDetail> = {}, viewer: string | (() => string) = TEST_VIEWER_ID) =>
@@ -39,5 +39,6 @@ export const withDetailResources = (projectId: string, taskId: string, fallback:
     const parsed = new URL(url, location.origin);
     if (parsed.pathname === `/api/v1/projects/${projectId}/task-sync`) return taskSyncResponse(graphFixture([task]), { query: taskSyncQuery(parsed), versionForTask: () => task.version, propertiesForTask: () => task.properties, viewerId: typeof viewer === 'string' ? viewer : viewer() });
     if (url === `/api/v1/projects/${projectId}/tasks/${taskId}`) return resourceResponse(task, typeof viewer === 'string' ? viewer : viewer());
+    if (parsed.pathname === `/api/v1/projects/${projectId}/tasks/${taskId}/sessions`) return resourceResponse({ items: [], nextCursor: null }, typeof viewer === 'string' ? viewer : viewer());
     return fallback(url, options);
   };

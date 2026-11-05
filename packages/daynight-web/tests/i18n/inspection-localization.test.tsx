@@ -189,7 +189,7 @@ describe('inspection language changes', () => {
     } }), { status: 404, headers: viewerHeaders(world.scope.userId, { 'Content-Type': 'application/json' }) }));
     vi.stubGlobal('fetch', fetch);
     const view = renderWithLocale(<TaskDetailDialog projectId={projectId} taskId={taskId}
-      snapshot={{ observedAt: graph.observedAt, graph, index: world.scope.getAuthorizedProject(projectId)!.index, pausedTaskIds: world.scope.getAuthorizedProject(projectId)!.pausedTaskIds, receivedMonotonic: performance.now(), receivedAt: Date.now(), revision: 1 }}
+      snapshot={{ observedAt: graph.observedAt, graph, index: world.scope.getAuthorizedProject(projectId)!.index, workerMachines: new Map(), pausedTaskIds: world.scope.getAuthorizedProject(projectId)!.pausedTaskIds, receivedMonotonic: performance.now(), receivedAt: Date.now(), revision: 1 }}
       onSelectTask={vi.fn()} onClose={vi.fn()} onRestoreFocus={vi.fn()} onRefreshGraph={vi.fn()} />, { locale: 'zh-CN', taskCache: { scope: world.scope } });
     try {
       expect(await screen.findByRole('alert')).toHaveTextContent('这个任务已无法读取，请刷新任务图。');

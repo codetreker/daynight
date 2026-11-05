@@ -174,6 +174,10 @@ func terminalControlTransition(request v2.ControlRequest, actor string, state v2
 		if state.State != "suspended" || state.Lease != nil || number(state.ControlEpoch) <= number(request.ControlEpoch) {
 			return conflict()
 		}
+	case "resolve_initial_assignment":
+		if state.State != "suspended" || state.Lease != nil || state.InitialAssignment != "transport_completed" || number(state.ControlEpoch) <= number(request.ControlEpoch) {
+			return conflict()
+		}
 	case "resume_automation":
 		if state.State != "automation" || state.Lease != nil || !request.DraftHandled || number(state.ControlEpoch) <= number(request.ControlEpoch) {
 			return conflict()
@@ -194,9 +198,12 @@ func terminalInitialProgress(previous, next string, request *v2.ControlRequest) 
 	case "pending":
 		return next == "dispatching" || next == "transport_completed" || next == "unknown"
 	case "dispatching":
-		return next == "transport_completed" || next == "unknown"
+		// The fenced Worker can prove a zero-write rejection from its durable
+		// input receipt. Only that outcome returns an attempt to pending;
+		// uncertain or completed delivery below cannot become sendable again.
+		return next == "pending" || next == "transport_completed" || next == "unknown"
 	case "unknown", "unconfirmed":
-		return request != nil && request.Action == "resume_automation" && request.InitialUnknownDisposition != nil && *request.InitialUnknownDisposition == "delivered_continue" && next == "transport_completed"
+		return request != nil && request.Action == "resolve_initial_assignment" && request.InitialUnknownDisposition != nil && *request.InitialUnknownDisposition == "delivered_continue" && next == "transport_completed"
 	}
 	return false
 }
@@ -489,11 +496,15 @@ func (s *Service) terminalCommandAllowed(ctx context.Context, tx pgx.Tx, r *term
 			if request.LeaseID == nil || r.Control.Lease == nil || *request.LeaseID != r.Control.Lease.LeaseID || r.Control.Lease.HolderUserID != p.UserID || r.Control.Lease.BrowserClientID != request.BrowserClientID {
 				return fault("lease_expired", "The terminal lease is no longer held by this browser.")
 			}
-		case "resume_automation":
+		case "resolve_initial_assignment", "resume_automation":
 			if r.Control.Lease != nil || r.Control.State != "suspended" {
-				return fault("input_busy", "Release the terminal lease before resuming automation.")
+				return fault("input_busy", "Release the terminal lease before deciding initial delivery or resuming automation.")
 			}
-			if r.Control.InitialAssignment == "unknown" && (request.InitialUnknownDisposition == nil || *request.InitialUnknownDisposition != "delivered_continue") {
+			unresolved := r.Control.InitialAssignment == "unknown" || r.Control.InitialAssignment == "unconfirmed"
+			if request.Action == "resolve_initial_assignment" && !unresolved {
+				return conflict()
+			}
+			if request.Action == "resume_automation" && unresolved {
 				return fault("input_unknown", "Resolve the unknown initial assignment explicitly.")
 			}
 		default:
@@ -604,6 +615,7 @@ func (s *Service) SubmitTerminal(ctx context.Context, p core.Principal, project,
 		if cancelBody, e = s.storeTerminalBody(r, operationID, raw, deadline); e != nil {
 			return e
 		}
+		invalidateAutomationRecoveries(r)
 		result := terminalResult(operationID, "queued", "")
 		r.OperationSeq++
 		if c.Input != nil {

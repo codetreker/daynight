@@ -724,6 +724,131 @@
       "file": "invalid-control-ack-unsettled.json",
       "type": "message",
       "valid": false
+    },
+    {
+      "file": "valid-recovery-prepare.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recovery-consume.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recovery-prepared.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recovery-consumed.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-recovery-native.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-no-epoch-advance.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-unknown.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-skipped-generation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-missing-consumed.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-extra-field.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-closing-equals-source.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-closing-regression.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-prepared-generation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-stale-connection.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-stale-control.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-control-regression.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-skipped-generation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-envelope-generation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-resolve-initial-assignment.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-resume-with-initial-disposition.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resolve-initial-lease.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resolve-initial-draft.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resolve-initial-missing-disposition.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resume-with-lease.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-control-unresolved-initial.json",
+      "type": "message",
+      "valid": true
     }
   ]
 }

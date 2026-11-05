@@ -32,7 +32,7 @@ func requireFault(t *testing.T, err error, code string) *Fault {
 func TestCreateAndGetProject(t *testing.T) {
 	projects, _, _, principal := projectService(t)
 	ctx := context.Background()
-	input := CreateProject{Name: "  Application project  ", RepoURL: "ssh://git@Git.Example:2222/Team/Application.git"}
+	input := CreateProject{ExpectedUserID: principal.UserID, Name: "  Application project  ", RepoURL: "ssh://git@Git.Example:2222/Team/Application.git"}
 	first, err := projects.Create(ctx, principal, input)
 	if err != nil {
 		t.Fatal(err)
@@ -80,10 +80,10 @@ func TestCreateValidationAndEntropyFailure(t *testing.T) {
 	_, _, _, principal := projectService(t)
 	projects := NewProjects(nil)
 	for _, name := range []string{"", " \t\n\u2003", "bad\x00name", "bad\xffname"} {
-		_, err := projects.Create(context.Background(), principal, CreateProject{Name: name, RepoURL: "https://example.com/repo"})
+		_, err := projects.Create(context.Background(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: name, RepoURL: "https://example.com/repo"})
 		requireFault(t, err, "invalid_input")
 	}
-	_, err := projects.Create(context.Background(), principal, CreateProject{Name: "Project", RepoURL: "https://secret-token@example.com/repo"})
+	_, err := projects.Create(context.Background(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Project", RepoURL: "https://secret-token@example.com/repo"})
 	requireFault(t, err, "invalid_input")
 	if strings.Contains(err.Error(), "secret-token") {
 		t.Fatal("validation disclosed input credentials")
@@ -91,7 +91,7 @@ func TestCreateValidationAndEntropyFailure(t *testing.T) {
 	sentinel := errors.New("entropy unavailable")
 	uuid.SetRand(entropyFailure{sentinel})
 	t.Cleanup(func() { uuid.SetRand(rand.Reader) })
-	_, err = projects.Create(context.Background(), principal, CreateProject{Name: "Project", RepoURL: "https://example.com/repo"})
+	_, err = projects.Create(context.Background(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Project", RepoURL: "https://example.com/repo"})
 	var fault *Fault
 	if !errors.Is(err, sentinel) || errors.As(err, &fault) {
 		t.Fatalf("entropy failure must retain operational cause: %v", err)
@@ -102,7 +102,7 @@ func TestProjectStoreFailuresRemainOperational(t *testing.T) {
 	projects, database, _, principal := projectService(t)
 	database.Close()
 	ctx := context.Background()
-	_, createErr := projects.Create(ctx, principal, CreateProject{Name: "Project", RepoURL: "https://example.com/repo"})
+	_, createErr := projects.Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Project", RepoURL: "https://example.com/repo"})
 	_, getErr := projects.Get(ctx, principal, "00000000-0000-0000-0000-000000000001")
 	_, listErr := projects.List(ctx, principal, PageRequest{Limit: 50})
 	for _, err := range []error{createErr, getErr, listErr} {
@@ -220,7 +220,7 @@ func TestProjectScopedPaginationAndValidation(t *testing.T) {
 	outsider := servicePrincipal(t, database)
 	var created []core.Project
 	for i := 0; i < 3; i++ {
-		project, err := projects.Create(ctx, owner, CreateProject{Name: fmt.Sprintf("Project %d", i), RepoURL: "https://example.com/repo"})
+		project, err := projects.Create(ctx, owner, CreateProject{ExpectedUserID: owner.UserID, Name: fmt.Sprintf("Project %d", i), RepoURL: "https://example.com/repo"})
 		if err != nil {
 			t.Fatal(err)
 		}

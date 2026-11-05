@@ -5,6 +5,7 @@ import { bearerContext, type AuthenticatedAPI } from './authentication';
 import { createProject, createTask, expect, seedUserProfile, test } from './fixtures';
 import { closeChain, openChain } from './chain-dialog';
 import { selectOverview, selectTaskList } from './project-view';
+import { createWireReceipts } from '../../scripts/acceptance/wire-receipts.mts';
 
 const scenario = { annotation: { type: 'scenario', description: 'task-assignment-layout' } };
 const longName = 'Alexandra 长姓名负责人 María del Carmen — complete accessible identity across task views';
@@ -77,26 +78,15 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
   const requests: string[][] = [];
   const payloads: { readonly userIds: readonly string[]; readonly bytes: number }[] = [];
   const payloadReads: Promise<void>[] = [];
-  type WireReceipt = { readonly path: string; validator: boolean; wireStatus: number | null; wireBytes: number | null };
-  const wire = new Map<string, WireReceipt>();
-  const validators = new Map<string, boolean>();
+  const wire = createWireReceipts(['/api/v1/me', peoplePath]);
   const network = await page.context().newCDPSession(page);
   await network.send('Network.enable');
   // Routing disables Chromium's HTTP cache, so this phase observes the real network without intercepting requests.
-  network.on('Network.requestWillBeSent', (event) => {
-    const path = new URL(event.request.url).pathname;
-    if (path === '/api/v1/me' || path === peoplePath) wire.set(event.requestId, {
-      path, validator: validators.get(event.requestId) ?? Object.keys(event.request.headers).some((name) => name.toLowerCase() === 'if-none-match'), wireStatus: null, wireBytes: null,
-    });
-  });
-  network.on('Network.requestWillBeSentExtraInfo', (event) => {
-    const validator = Object.keys(event.headers).some((name) => name.toLowerCase() === 'if-none-match');
-    validators.set(event.requestId, validator);
-    const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.validator = validator;
-  });
-  network.on('Network.responseReceivedExtraInfo', (event) => { const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireStatus = event.statusCode; });
-  network.on('Network.loadingFinished', (event) => { const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireBytes = event.encodedDataLength; });
-  const meReceipts = () => [...wire.values()].filter((receipt) => receipt.path === '/api/v1/me');
+  network.on('Network.requestWillBeSent', wire.requestWillBeSent);
+  network.on('Network.requestWillBeSentExtraInfo', wire.requestWillBeSentExtraInfo);
+  network.on('Network.responseReceivedExtraInfo', wire.responseReceivedExtraInfo);
+  network.on('Network.loadingFinished', wire.loadingFinished);
+  const meReceipts = () => wire.receipts().filter((receipt) => receipt.path === '/api/v1/me');
   const expectMe = async (index: number, status: number) => {
     await expect.poll(() => meReceipts()[index]?.wireStatus).toBe(status);
     // Session expiry aborts the active identity fetch after the 401 headers arrive.
@@ -156,9 +146,9 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
     await expectMe(1, 304);
     expect(requests, 'Fresh admission reuses the persisted profile after reloading the document').toEqual([[alice.id]]);
 
-    const invitation = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: {} }); expect(invitation.status()).toBe(201);
+    const invitation = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: { expectedUserId: alice.id } }); expect(invitation.status()).toBe(201);
     const invitationBody = await invitation.json() as { link: string };
-    expect((await missing.post('/api/v1/invitations/accept', { data: { token: new URL(invitationBody.link).hash.slice(1) } })).status()).toBe(200);
+    expect((await missing.post('/api/v1/invitations/accept', { data: { token: new URL(invitationBody.link).hash.slice(1), expectedUserId: missingProfile.id } })).status()).toBe(200);
     const added = await createTask(api, project.id, { title: 'New assignee needs only one missing profile', assignedTo: missingProfile.id });
     await nextSync();
     const addedRow = page.locator(`#standalone-task-${added.id}`);
@@ -208,12 +198,15 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
     await expect(page.getByRole('heading', { name: /^(登录你的工作空间|Sign in to your workspace)$/, exact: true })).toBeVisible();
     await expect(page.getByText(first.title, { exact: true })).toHaveCount(0);
     await Promise.all(payloadReads);
-    await info.attach('assignment-people-cache', { body: JSON.stringify({ projectId: project.id, avatarBytes: Buffer.byteLength(avatar), requests, payloads, wire: [...wire.values()] }), contentType: 'application/json' });
   } finally {
-    page.off('request', observeRequest); page.off('response', observeResponse);
-    await page.clock.resume(); await network.detach();
-    await Promise.all(payloadReads);
-    await seedUserProfile(missingProfile.id, { name: missingProfile.name, avatarUrl: missingProfile.avatarUrl });
+    try {
+      await info.attach('assignment-people-cache', { body: JSON.stringify({ projectId: project.id, avatarBytes: Buffer.byteLength(avatar), requests, payloads, wire: wire.receipts() }), contentType: 'application/json' });
+    } finally {
+      page.off('request', observeRequest); page.off('response', observeResponse);
+      await page.clock.resume(); await network.detach();
+      await Promise.all(payloadReads);
+      await seedUserProfile(missingProfile.id, { name: missingProfile.name, avatarUrl: missingProfile.avatarUrl });
+    }
   }
 };
 
@@ -224,9 +217,9 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
   const aliceProfile = await profile(api), bobProfile = await profile(bob);
   try {
     const project = await createProject(api, { name: 'Assignee layout and full graph acceptance' });
-    const invitation = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: {} }); expect(invitation.status()).toBe(201);
+    const invitation = await api.post(`/api/v1/projects/${project.id}/invitations`, { data: { expectedUserId: aliceProfile.id } }); expect(invitation.status()).toBe(201);
     const invitationBody = await invitation.json() as { link: string };
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitationBody.link).hash.slice(1) } })).status()).toBe(200);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(invitationBody.link).hash.slice(1), expectedUserId: bobProfile.id } })).status()).toBe(200);
     await seedUserProfile(aliceProfile.id, { name: longName, avatarUrl: new URL('/missing-assignee-avatar.png', baseURL).href });
     await seedUserProfile(bobProfile.id, { name: null, avatarUrl: null });
     const assigned = await createTask(api, project.id, { title: 'Current long-name assignee', assignedTo: aliceProfile.id, requiredPlatform: 'windows', description: Array.from({ length: 60 }, (_, index) => `## Reading ${index + 1}\n\nLong task material keeps the shared detail scrollable.`).join('\n\n') });
@@ -285,7 +278,7 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     await expect(goalRow.locator('.root-progress-label')).toHaveText('0/3 completed'); await goalRow.locator('.goal-toggle').click();
     await expect(goalRow.getByText('1 matching child tasks', { exact: true })).toBeVisible();
     await expect(page.locator(`#chain-task-${goal.id}-${child.id}`)).toBeVisible();
-    await expect(page.locator(`#chain-task-${goal.id}-${child.id} .graph-blocked-badge`)).toBeVisible();
+    await expect(page.locator(`#chain-task-${goal.id}-${child.id}`).locator('..').locator('.graph-blocked-badge')).toBeVisible();
     await expect(page.locator(`#chain-task-${goal.id}-${hiddenSibling.id}`)).toHaveCount(0);
     await page.locator(`#chain-task-${goal.id}-${child.id}`).click();
     await expect(detail(page).locator('.task-detail-blocked')).toBeVisible();

@@ -17,6 +17,12 @@ const seeds = new Map<RefFormat, Promise<string>>();
 const directories: string[] = [];
 const managers: ReturnType<typeof createWorkerGitManager>[] = [];
 const operations: Operation[] = [];
+const pendingReservations = new Set<Promise<unknown>>();
+const reservation = <T>(pending: Promise<T>): Promise<T> => {
+  pendingReservations.add(pending);
+  void pending.then(() => pendingReservations.delete(pending), () => pendingReservations.delete(pending));
+  return pending;
+};
 const env = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("GIT_")));
 const git = (cwd: string, args: string[]): string => execFileSync("git", args, { cwd, env: env(), encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }).replace(/\r?\n$/, "");
 const operation = (): Operation => { const result = createOperation(); operations.push(result); return result; };
@@ -63,6 +69,7 @@ afterAll(async () => {
 afterEach(async () => {
   vi.unstubAllEnvs();
   operations.splice(0).forEach((entry) => entry.dispose());
+  await Promise.allSettled([...pendingReservations]);
   await Promise.all(managers.splice(0).map((entry) => entry.dispose()));
   await Promise.all(directories.splice(0).map((entry) => rm(entry, { recursive: true, force: true })));
 });
@@ -253,16 +260,29 @@ describe("worker repositories and task worktrees", () => {
     expect(result.root).toBe(destination); expect(cloneTimeout).toBe(120_000); expect(await readFile(path.join(destination, "tracked.txt"), "utf8")).toBe("original\n");
   });
 
-  it("retains clone failures and rejects existing nonrepositories, nested paths and mismatched origins", async () => {
+  it("retries empty failed clone reservations and rejects existing nonrepositories, nested paths and mismatched origins", async () => {
     const f = await fixture(); const failed = new Error("controlled clone failure"); let attempts = 0;
     const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => { if (args.includes("clone")) { attempts += 1; throw failed; } return runRepositoryGit(cwd, args, op, options); } });
     const destination = path.join(f.root, "failed clone");
     await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toBe(failed);
-    expect(await readdir(destination)).toEqual([]);
-    await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toThrow(/Git command failed|worktree root/); expect(attempts).toBe(1);
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toBe(failed); expect(attempts).toBe(2);
+    await mkdir(destination);
+    await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toThrow(/Git command failed|worktree root/); expect(attempts).toBe(2);
     await mkdir(path.join(f.repository, "nested"));
     await expect(adapter.prepareRepository({ ...f.project, localPath: path.join(f.repository, "nested") }, operation())).rejects.toThrow("worktree root");
     await expect(adapter.prepareRepository({ ...f.project, repoUrl: "https://example.com/other/repository.git" }, operation())).rejects.toThrow("origin does not match");
+  });
+
+  it("retains nonempty failed clone output", async () => {
+    const f = await fixture(); const destination = path.join(f.root, "partial clone"), failed = new Error("clone failed");
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+      if (!args.includes("clone")) return runRepositoryGit(cwd, args, op, options);
+      await writeFile(path.join(destination, "retained"), "user data");
+      throw failed;
+    } });
+    await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toBe(failed);
+    expect(await readFile(path.join(destination, "retained"), "utf8")).toBe("user data");
   });
 
   it("creates fixed task branch/path with native ownership and preserves the reserved directory inode", async () => {
@@ -316,16 +336,21 @@ describe("worker repositories and task worktrees", () => {
 
   it.each(["original claim", "new claim"] as const)("reuses an empty unregistered reservation for the %s", async (kind) => {
     const f = await fixture(); const adapter = manager(f.root);
-    const previous = await adapter.prepareWorktree(f.project, f.owner, operation());
-    const previousHead = git(f.repository, ["rev-parse", previous.branch]);
-    await adapter.removeWorktree(f.project, f.owner, operation());
-    await mkdir(previous.worktreePath);
+    // We construct retained state directly to reserve the test budget for actual reservation recovery.
+    const branch = `daynight/${f.owner.taskId}`;
+    const previousHead = git(f.repository, ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "retained task branch"]);
+    git(f.repository, ["branch", branch, previousHead]);
+    const target = path.join(f.repository, ".worktrees", "daynight", f.owner.taskId);
+    await mkdir(target, { recursive: true });
+    expect(await readdir(target)).toEqual([]);
+    expect(worktreePaths(f.repository)).not.toContain(path.normalize(target));
     const owner = kind === "new claim" ? changedClaim(f.owner) : f.owner;
-    const binding = await adapter.prepareWorktree(f.project, owner, operation());
-    expect(await adapter.verifyWorktree(f.project, owner, operation())).toEqual(binding);
+    const binding = await reservation(adapter.prepareWorktree(f.project, owner, operation()));
+    expect(binding.worktreePath).toBe(target);
+    expect(await reservation(adapter.verifyWorktree(f.project, owner, operation()))).toEqual(binding);
     expect(git(f.repository, ["rev-parse", binding.branch])).toBe(previousHead);
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
-    if (kind === "new claim") await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("does not match this claim");
+    if (kind === "new claim") await expect(reservation(adapter.verifyWorktree(f.project, f.owner, operation()))).rejects.toThrow("does not match this claim");
   });
 
   it("recovers an interrupted reservation before Git created its branch or registration", async () => {

@@ -1,6 +1,7 @@
 import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
 import { stringifyApiJson } from "../../src/api/json";
 import { selectTaskList } from './project-view';
+import { expectLanguageLayout } from './language-layout';
 import { randomUUID } from 'node:crypto';
 import type { Page, Route, TestInfo } from '@playwright/test';
 import { attachmentDownloadUrl, attachmentPreviewUrl } from '../../src/api/client';
@@ -8,6 +9,7 @@ import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type ProjectRecord } from '../.
 import { authenticatedAPI, bearerContext, browserAuthentication, tokenContext, type AuthenticatedAPI } from './authentication';
 import { executeTask, createProject, createTask, expect, test } from './fixtures';
 import { attachmentFileButton } from './attachment-tree';
+import { verifyScopedInvitationManagement } from './w7-invitations';
 
 const scenario = (description: string) => ({ annotation: { type: 'scenario', description } });
 const origin = (info: TestInfo): string => {
@@ -30,7 +32,7 @@ const user = async (request: AuthenticatedAPI): Promise<{ id: string; name: stri
   return await response.json() as { id: string; name: string; email: string };
 };
 const invitation = async (request: AuthenticatedAPI, projectId: string): Promise<{ id: string; token: string }> => {
-  const response = await request.post(`/api/v1/projects/${projectId}/invitations`, { data: {} });
+  const response = await request.post(`/api/v1/projects/${projectId}/invitations`, { data: { expectedUserId: (await user(request)).id } });
   expect(response.status()).toBe(201);
   const value = await response.json() as { id: string; link: string };
   return { id: value.id, token: new URL(value.link).hash.slice(1) };
@@ -58,7 +60,7 @@ test.describe('visible authentication protocol', () => {
       for (const width of [320, 361, 375, 390]) {
         await page.setViewportSize({ width, height: 844 });
         await expect(page.locator('.site-header .brand')).toBeVisible();
-        await expect(page.locator('.site-header select')).toBeVisible();
+        await expectLanguageLayout(page.locator('.site-header select'));
         await expect(page.locator('.site-header .nav-start')).toBeVisible();
         const geometry = await page.locator('.landing-page .site-header').evaluate((header) => ({
           viewport: window.innerWidth,
@@ -108,7 +110,11 @@ test.describe('visible authentication protocol', () => {
       await narrowHeaderFits('Identity unavailable');
     } finally { await page.unroute(`${baseURL}/api/v1/me`, unavailableIdentity); }
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
+    await narrowHeaderFits('Chinese');
+    await picture(page, info, 'language-selector-landing-narrow');
     await page.setViewportSize(originalViewport);
+    await expectLanguageLayout(page.locator('.site-header select'));
+    await picture(page, info, 'language-selector-landing-desktop');
     await expect(page.locator('.landing-page')).toBeVisible();
     await expect(page.locator('.auth-shell')).toHaveCount(0);
     await page.locator('.landing-page a[href="/login"]').first().click();
@@ -154,7 +160,7 @@ test.describe('visible authentication protocol', () => {
       await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
       await page.goto('/login');
       await expect(page).toHaveURL(`${baseURL}/projects`);
-      await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
       await page.goto('/');
       await expect(page).toHaveURL(`${baseURL}/`);
       await expect(page.locator('.landing-page')).toBeVisible();
@@ -166,7 +172,7 @@ test.describe('visible authentication protocol', () => {
       await page.setViewportSize(originalViewport);
       await page.locator('.landing-page a[href="/projects"]').first().click();
       await expect(page).toHaveURL(`${baseURL}/projects`);
-      await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
       const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
       await page.getByRole('button', { name: '退出登录', exact: true }).click();
       expect((await signedOut).status()).toBe(204);
@@ -183,7 +189,7 @@ test.describe('visible authentication protocol', () => {
   });
 });
 
-test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page, context, api: request, playwright }, info) => {
+test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page, context, api: request, playwright, allowBrowserWrites }, info) => {
   const baseURL = origin(info);
   const bob = await bearerContext(playwright.request, baseURL, 'bob');
   const anonymous = await playwright.request.newContext({ baseURL });
@@ -196,6 +202,27 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     const bobUser = await user(bob);
     expect(aliceUser.email).toBe(bobUser.email);
     expect(aliceUser.id).not.toBe(bobUser.id);
+    const rawName = `  Browser project ${randomUUID()}  `;
+    const rawRepo = `git@example.org:group/${randomUUID()}.git`;
+    allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 1 }]);
+    await page.goto('/projects');
+    await page.getByRole('button', { name: '＋ 创建项目' }).click();
+    const creation = page.getByRole('dialog', { name: '创建私有项目' });
+    await creation.getByLabel('项目名称').fill(rawName);
+    await creation.getByLabel('仓库地址').fill(rawRepo);
+    const responsePromise = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects` && response.request().method() === 'POST');
+    await creation.getByRole('button', { name: '创建项目', exact: true }).click();
+    const createdResponse = await responsePromise;
+    expect(createdResponse.status()).toBe(201);
+    expect(createdResponse.headers()['daynight-user-id']).toBe(aliceUser.id);
+    const profile = await (await request.get('/api/v1/me')).json() as { personalTeam: { id: string } };
+    expect(createdResponse.request().postDataJSON()).toEqual({ name: rawName, repoUrl: rawRepo, expectedUserId: aliceUser.id, teamId: profile.personalTeam.id });
+    const created = await createdResponse.json() as { id: string; name: string; repoUrl: string; ownership: { teamId: string }; access: { directGrant: { role: string } } };
+    expect(created.name).toBe(rawName);
+    expect(created.repoUrl).toBe(rawRepo);
+    expect(created.access.directGrant.role).toBe('admin');
+    expect(created.ownership.teamId).toBe(profile.personalTeam.id);
+    await expect(page).toHaveURL(`${baseURL}/projects/${created.id}`);
     const task = await createTask(request, own.id, { title: 'Private resource boundary', description: 'Visible only to project members.', assignedTo: aliceUser.id });
     const file = attachmentDownloadUrl(own.id, task.id, 'site/index.html');
     const preview = attachmentPreviewUrl(own.id, task.id, 'site/index.html');
@@ -447,7 +474,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     heldChecks[1]!.release();
     await heldChecks[1]!.completed;
     await expect(page.locator('body')).not.toHaveClass(/auth-session-checking/);
-    await expect(page.getByRole('link', { name: '账户设置：Alice', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '账户菜单：Alice', exact: true })).toBeVisible();
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
     pendingGraphWindows.push({ identity: 'changed-user', baseline: changedUserGraphBaseline, beforeRelease: graphRequests.length });
     const deniedGraph = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${own.id}/task-sync`
@@ -459,7 +486,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(graphRefusal.status()).toBe(404);
     expect(graphRefusal.headers()['daynight-user-id']).toBe(bobUser.id);
     expect((await graphRefusal.json() as { error: { code: string } }).error.code).toBe('not_found');
-    await expect(page.getByRole('link', { name: '账户设置：Bob', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '账户菜单：Bob', exact: true })).toBeVisible();
     await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
     await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
@@ -504,38 +531,51 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     const bobUser = await user(bob);
     const alice = await user(request);
     const invite = await invitation(request, project.id);
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: invite.token } })).status()).toBe(200);
-    const target = `/api/v1/projects/${project.id}/members/${bobUser.id}`;
-    allowBrowserWrites([{ method: 'PATCH', url: `${baseURL}${target}`, count: 2 },
-      { method: 'DELETE', url: `${baseURL}/api/v1/projects/${project.id}/members/${alice.id}`, count: 1 }]);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: invite.token, expectedUserId: bobUser.id } })).status()).toBe(200);
+    const target = `/api/v1/projects/${project.id}/grants/${bobUser.id}`;
+    const selfTarget = `/api/v1/projects/${project.id}/grants/${alice.id}`;
+    allowBrowserWrites([{ method: 'PUT', url: `${baseURL}${target}`, count: 2 },
+      { method: 'DELETE', url: `${baseURL}${selfTarget}`, count: 1 }]);
     await page.goto(`/projects/${project.id}/members`);
-    const bobRole = page.getByRole('combobox', { name: `${bobUser.name} 的项目角色`, exact: true });
+    const bobRole = page.getByRole('combobox', { name: `${bobUser.name} 的单独授权`, exact: true });
     await expect(bobRole).toHaveValue('member');
-    await expect(page.getByRole('combobox', { name: `${alice.name} 的项目角色`, exact: true })).toBeEnabled();
+    await expect(page.getByRole('combobox', { name: `${alice.name} 的单独授权`, exact: true })).toBeEnabled();
     const observed = (await memberList(request, project.id)).items.find((member) => member.userId === bobUser.id)!;
-    expect((await request.patch(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: observed.directGrant!.version, role: 'admin', expectedUserId: alice.id }) })).status()).toBe(200);
+    expect((await request.put(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: observed.directGrant!.version, role: 'admin', expectedUserId: alice.id }) })).status()).toBe(200);
     await bobRole.selectOption('admin');
+    const conflict = page.waitForResponse((response) => response.url() === `${baseURL}${target}` && response.request().method() === 'PUT');
     await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
+    expect((await conflict).status()).toBe(409);
     await expect(page.getByRole('status').filter({ hasText: '成员状态已变化' })).toBeVisible();
     await expect(bobRole).toHaveValue('admin');
     await bobRole.selectOption('member');
+    const replaced = page.waitForResponse((response) => response.url() === `${baseURL}${target}` && response.request().method() === 'PUT');
     await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
+    const replaceReceipt = await replaced;
+    expect(replaceReceipt.status()).toBe(200);
+    expect(await replaceReceipt.json()).toMatchObject({ grant: { projectId: project.id, userId: bobUser.id, role: 'member' }, actorAccess: { effectiveRole: 'admin' } });
+    await expect(page.getByRole('status').filter({ hasText: `已将 ${bobUser.name} 的单独授权保存为` })).toBeVisible();
     await expect(bobRole).toHaveValue('member');
     const current = (await memberList(request, project.id)).items.find((member) => member.userId === bobUser.id)!;
     expect(current.directGrant!.version).not.toBe(observed.directGrant!.version);
-    expect((await bob.patch(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.directGrant!.version, role: 'admin', expectedUserId: bobUser.id }) })).status()).toBe(403);
+    expect((await bob.put(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.directGrant!.version, role: 'admin', expectedUserId: bobUser.id }) })).status()).toBe(403);
     const collaborative = await createTask(bob, project.id, { title: 'Member can write project tasks' });
     await executeTask(bob, project.id, collaborative);
     const memberFile = attachmentDownloadUrl(project.id, collaborative.id, 'member.txt');
     expect((await bob.put(memberFile, { headers: { 'Content-Type': 'text/plain' }, data: 'Member attachment write' })).status()).toBe(201);
     expect((await bob.get(memberFile)).status()).toBe(200);
-    await page.getByRole('button', { name: `移除 ${alice.name}`, exact: true }).click();
-    const removeSelf = page.getByRole('dialog').getByRole('button', { name: '移除成员', exact: true });
+    await page.getByRole('button', { name: `移除 ${alice.name} 的单独授权`, exact: true }).click();
+    const removeSelf = page.getByRole('dialog').getByRole('button', { name: '移除授权', exact: true });
     await expect(removeSelf).toBeEnabled();
+    const removed = page.waitForResponse((response) => response.url() === `${baseURL}${selfTarget}` && response.request().method() === 'DELETE');
     await removeSelf.click();
+    const removeReceipt = await removed;
+    expect(removeReceipt.status()).toBe(200);
+    expect(await removeReceipt.json()).toMatchObject({ projectId: project.id, userId: alice.id, deleted: true, actorAccess: { effectiveRole: 'admin', directGrant: null } });
+    await expect(page.getByRole('status').filter({ hasText: `已移除 ${alice.name} 的单独授权` })).toBeVisible();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '邀请成员', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: `移除 ${alice.name}`, exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: `移除 ${alice.name} 的单独授权`, exact: true })).toHaveCount(0);
     const inherited = (await memberList(request, project.id)).items.find((member) => member.userId === alice.id)!;
     expect(inherited.effectiveRole).toBe('admin');
     expect(inherited.directGrant).toBeNull();
@@ -548,7 +588,7 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     await expect(page.getByText('你可以读写项目中的任务和附件。成员与邀请由项目管理员管理。')).toBeVisible();
     await expect(page.getByRole('button', { name: '邀请成员', exact: true })).toHaveCount(0);
     await picture(page, info, 'auth-project-members');
-    expect((await request.delete(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.directGrant!.version, expectedUserId: alice.id }) })).status()).toBe(204);
+    expect((await request.delete(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: current.directGrant!.version, expectedUserId: alice.id }) })).status()).toBe(200);
     expect((await bob.get(memberFile)).status()).toBe(404);
     expect((await bob.get(`/api/v1/projects/${project.id}/tasks/${collaborative.id}`)).status()).toBe(404);
     await page.goto(`/projects/${project.id}`);
@@ -596,9 +636,12 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   const project = await createProject(request, { name: `Invitation ${randomUUID()}` });
   allowBrowserWrites([
     { method: 'POST', url: `${baseURL}/api/v1/projects/${project.id}/invitations`, count: 1 },
-    { method: 'POST', url: `${baseURL}/api/v1/invitations/inspect`, count: 2 },
-    { method: 'POST', url: `${baseURL}/api/v1/invitations/accept`, count: 1 },
+    { method: 'POST', url: `${baseURL}/api/v1/invitations/inspect`, count: 3 },
+    { method: 'POST', url: `${baseURL}/api/v1/invitations/accept`, count: 2 },
+    { method: 'POST', url: `${baseURL}/api/v1/team-invitations/inspect`, count: 5 },
+    { method: 'POST', url: `${baseURL}/api/v1/team-invitations/accept`, count: 3 },
   ]);
+  await verifyScopedInvitationManagement(page, context, playwright.request, request, baseURL, allowBrowserWrites);
   await page.goto(`/projects/${project.id}/members`);
   await page.getByRole('button', { name: '邀请成员', exact: true }).click();
   const created = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects/${project.id}/invitations` && response.request().method() === 'POST');
@@ -613,7 +656,7 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   expect((await active.json() as { items: { id: string }[] }).items.map((item) => item.id)).toContain(metadata.id);
   await browserAuthentication(context, baseURL, 'bob');
   await page.goto('/projects');
-  await expect(page.getByRole('link', { name: '账户设置：Bob', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '账户菜单：Bob', exact: true })).toBeVisible();
   await openInvitation(page, metadata.link);
   await expect(page.getByRole('heading', { name: '你受邀加入一个项目' })).toBeVisible();
   await expect(page.locator('.invite-account .person-name')).toHaveText('Bob');
@@ -628,13 +671,142 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   try {
     const identity = await user(bob);
     expect((await memberList(request, project.id)).items.find((member) => member.userId === identity.id)?.directGrant?.role).toBe('member');
-    expect((await bob.post('/api/v1/invitations/inspect', { data: { token: new URL(metadata.link).hash.slice(1) } })).status()).toBe(410);
+    expect((await bob.post('/api/v1/invitations/inspect', { data: { token: new URL(metadata.link).hash.slice(1) } })).status()).toBe(404);
     const revoked = await invitation(request, project.id);
-    expect((await request.delete(`/api/v1/projects/${project.id}/invitations/${revoked.id}`)).status()).toBe(204);
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: revoked.token } })).status()).toBe(410);
+    expect((await request.delete(`/api/v1/projects/${project.id}/invitations/${revoked.id}`, { data: { expectedUserId: (await user(request)).id } })).status()).toBe(204);
+    expect((await bob.post('/api/v1/invitations/accept', { data: { token: revoked.token, expectedUserId: identity.id } })).status()).toBe(404);
     expect(await page.evaluate(() => sessionStorage.getItem('daynight.pendingInvitation') === null), 'Accepted invitation clears pending session storage').toBe(true);
     await picture(page, info, 'auth-invitations');
   } finally { await bob.dispose(); }
+
+  const alice = await user(request);
+  const teamName = `Invitation Team ${randomUUID()}`;
+  const teamResponse = await request.post('/api/v1/teams', { data: { name: teamName, expectedUserId: alice.id } });
+  expect(teamResponse.status()).toBe(201);
+  const team = await teamResponse.json() as { id: string; name: string };
+  const teamInvitationResponse = await request.post(`/api/v1/teams/${team.id}/invitations`, { data: { expectedUserId: alice.id } });
+  expect(teamInvitationResponse.status()).toBe(201);
+  const teamInvitation = await teamInvitationResponse.json() as { id: string; link: string };
+  expect(new URL(teamInvitation.link).pathname).toBe('/team-invitations');
+
+  // An existing admin retains their role and does not spend the invitation.
+  await browserAuthentication(context, baseURL, 'alice');
+  await openInvitation(page, teamInvitation.link);
+  await expect(page.getByRole('heading', { name: '你已经是 Team 成员' })).toBeVisible();
+  expect(new URL(page.url()).hash === '', 'Team invitation fragment is removed immediately').toBe(true);
+  const existingAcceptance = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/team-invitations/accept` && response.request().method() === 'POST');
+  await page.getByRole('button', { name: '接受邀请并加入', exact: true }).click();
+  const existingReceipt = await existingAcceptance;
+  expect(existingReceipt.status()).toBe(200);
+  expect(await existingReceipt.json()).toMatchObject({ team: { id: team.id }, membership: { teamId: team.id, userId: alice.id, role: 'admin' }, joined: false, consumed: false });
+  await expect(page.getByText('你已经是此 Team 的成员', { exact: true })).toBeVisible();
+  await openInvitation(page, teamInvitation.link);
+  await expect(page.getByRole('heading', { name: '你已经是 Team 成员' })).toBeVisible();
+  expect(new URL(page.url()).hash === '', 'Reopening the same invitation removes its fragment').toBe(true);
+  expect(await page.evaluate((token) => !JSON.stringify(history.state).includes(token), new URL(teamInvitation.link).hash.slice(1))).toBe(true);
+  const available = await request.get(`/api/v1/teams/${team.id}/invitations`);
+  expect((await available.json() as { items: { id: string }[] }).items.some((item) => item.id === teamInvitation.id)).toBe(true);
+
+  // Control only the external OAuth provider; the application login, callback and return are real.
+  await context.clearCookies();
+  await page.goto('/');
+  expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(401);
+  await openInvitation(page, teamInvitation.link);
+  await expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible();
+  expect(new URL(page.url()).hash === '', 'Login return URL does not contain the invitation secret').toBe(true);
+  expect(new URL(page.url()).searchParams.get('returnPath')).toBe('/team-invitations');
+  expect(await page.evaluate(() => sessionStorage.getItem('daynight.pendingTeamInvitation') !== null)).toBe(true);
+  const providerSession = await context.newCDPSession(page);
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const controlledProvider = new Promise<void>((resolve, reject) => {
+    deadline = setTimeout(() => reject(new Error('The controlled external provider request was not reached.')), 15_000);
+    providerSession.once('Fetch.requestPaused', (event) => {
+      void (async () => {
+        const upstream = new URL(event.request.url);
+        if (upstream.origin !== 'https://github.com' || upstream.pathname !== '/login/oauth/authorize'
+          || upstream.searchParams.get('code_challenge_method') !== 'S256') throw new Error('The external provider authorization or PKCE request changed.');
+        const challenge = upstream.searchParams.get('code_challenge');
+        const state = upstream.searchParams.get('state');
+        const callback = upstream.searchParams.get('redirect_uri');
+        if (challenge === null || state === null || callback === null) throw new Error('External provider request omitted required PKCE or callback fields.');
+        const target = new URL(callback);
+        target.search = new URLSearchParams({ state, code: `bob:${challenge}` }).toString();
+        await providerSession.send('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: 302,
+          responseHeaders: [{ name: 'Location', value: target.href }], body: '' });
+      })().then(resolve, reject);
+    });
+  });
+  try {
+    await providerSession.send('Fetch.enable', { patterns: [{ urlPattern: 'https://github.com/login/oauth/authorize*', requestStage: 'Request' }] });
+    await Promise.all([page.getByRole('button', { name: '使用 GitHub 登录', exact: true }).click(), controlledProvider]);
+    await expect(page.getByRole('heading', { name: '你受邀加入一个 Team' })).toBeVisible();
+    await expect(page.locator('.invite-account .person-name')).toHaveText('Bob');
+    await expect(page.getByText(teamName, { exact: true })).toBeVisible();
+    expect(new URL(page.url()).hash === '').toBe(true);
+    expect(await page.evaluate(() => sessionStorage.getItem('daynight.pendingTeamInvitation') === null)).toBe(true);
+    const acceptance = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/team-invitations/accept` && response.request().method() === 'POST');
+    await page.getByRole('button', { name: '接受邀请并加入', exact: true }).click();
+    const receiptResponse = await acceptance;
+    expect(receiptResponse.status()).toBe(200);
+    const receipt = await receiptResponse.json() as { team: { id: string; name: string }; membership: { teamId: string; userId: string; role: string }; joined: boolean; consumed: boolean };
+    const bob = await user(authenticatedAPI(context.request));
+    expect(receipt).toMatchObject({ team: { id: team.id, name: teamName }, membership: { teamId: team.id, userId: bob.id, role: 'member' }, joined: true, consumed: true });
+    await expect(page.getByText('你已加入此 Team', { exact: true })).toBeVisible();
+    await expect(page.getByText(teamName, { exact: true })).toBeVisible();
+    await expect(page.getByText(`Team ID: ${team.id}`, { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => sessionStorage.getItem('daynight.pendingTeamInvitation') === null)).toBe(true);
+    const actual = await authenticatedAPI(context.request).get(`/api/v1/teams/${team.id}`);
+    expect(actual.status()).toBe(200);
+    expect(await actual.json()).toMatchObject({ id: team.id, name: teamName, membership: { teamId: team.id, userId: bob.id, role: 'member' } });
+    await page.setViewportSize({ width: 320, height: 844 });
+    expect(await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) <= innerWidth)).toBe(true);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+    await expect(page.getByText('You joined this Team', { exact: true })).toBeVisible();
+    await expect(page.getByText(`Team ID: ${team.id}`, { exact: true })).toBeVisible();
+    const openTeam = page.getByRole('link', { name: 'Open Team' });
+    await expect(openTeam).toHaveAttribute('href', `/teams/${team.id}`);
+    await openTeam.click();
+    await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
+    await expect(page.getByRole('heading', { name: teamName, exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate((id) => localStorage.getItem(`daynight.selectedTeam:${id}`), bob.id)).toBe(team.id);
+    await openInvitation(page, teamInvitation.link);
+    await expect(page.getByRole('heading', { name: 'Invitation unavailable' })).toBeVisible();
+    expect(new URL(page.url()).hash === '', 'Reopening a consumed invitation removes its fragment').toBe(true);
+    expect(await page.evaluate((token) => !JSON.stringify(history.state).includes(token), new URL(teamInvitation.link).hash.slice(1))).toBe(true);
+
+    // Drop a confirmed server response to prove that the browser never reports or replays an unknown write.
+    const unknownTeamResponse = await request.post('/api/v1/teams', { data: { name: `Unknown Team ${randomUUID()}`, expectedUserId: alice.id } });
+    expect(unknownTeamResponse.status()).toBe(201);
+    const unknownTeam = await unknownTeamResponse.json() as { id: string };
+    const unknownInvitationResponse = await request.post(`/api/v1/teams/${unknownTeam.id}/invitations`, { data: { expectedUserId: alice.id } });
+    expect(unknownInvitationResponse.status()).toBe(201);
+    const unknownInvitation = await unknownInvitationResponse.json() as { link: string };
+    await page.goto('/projects');
+    await expect(page.getByRole('heading', { name: teamName, exact: true })).toBeVisible();
+    await openInvitation(page, unknownInvitation.link);
+    await expect(page.getByRole('heading', { name: 'You are invited to a Team' })).toBeVisible();
+    let committedStatus: number | undefined;
+    const loseResponse = async (route: Route) => {
+      const response = await route.fetch();
+      committedStatus = response.status();
+      await route.abort();
+    };
+    await page.route(`${baseURL}/api/v1/team-invitations/accept`, loseResponse);
+    try {
+      await page.getByRole('button', { name: 'Accept invitation and join', exact: true }).click();
+      await expect(page.getByRole('alert')).toContainText('The result is unknown');
+      expect(committedStatus).toBe(200);
+      await expect(page.getByRole('button', { name: 'Accept invitation and join', exact: true })).toBeDisabled();
+      await expect(page.getByText('You joined this Team', { exact: true })).toHaveCount(0);
+      const actualUnknown = await authenticatedAPI(context.request).get(`/api/v1/teams/${unknownTeam.id}`);
+      expect(actualUnknown.status()).toBe(200);
+      expect(await actualUnknown.json()).toMatchObject({ id: unknownTeam.id, membership: { userId: bob.id, role: 'member' } });
+    } finally { await page.unroute(`${baseURL}/api/v1/team-invitations/accept`, loseResponse); }
+  } finally {
+    clearTimeout(deadline);
+    await providerSession.send('Fetch.disable');
+    await providerSession.detach();
+  }
 });
 
 test('auth-resource-session', scenario('auth-resource-session'), async ({ page, context, api: request, allowBrowserWrites }, info) => {

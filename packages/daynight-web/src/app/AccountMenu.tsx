@@ -1,0 +1,58 @@
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n/LocaleProvider";
+import { useBrowserLocation } from "./browser-location";
+import { navigate } from "./router";
+
+export const AccountMenu = ({ name }: { readonly name: string }) => {
+  const { messages: { auth: { shell: m } } } = useI18n();
+  const location = useBrowserLocation();
+  const [openedAt, setOpenedAt] = useState<typeof location | null>(null);
+  const open = openedAt === location;
+  const container = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const item = useRef<HTMLAnchorElement>(null);
+  const menuId = useId();
+  const close = (restore: boolean) => { setOpenedAt(null); if (restore) trigger.current?.focus({ preventScroll: true }); };
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const position = () => {
+      const anchor = trigger.current!.getBoundingClientRect();
+      const element = menu.current!;
+      const box = element.getBoundingClientRect();
+      element.style.left = `${Math.max(8, Math.min(anchor.right - box.width, window.innerWidth - box.width - 8))}px`;
+      element.style.top = `${anchor.bottom + box.height + 8 <= window.innerHeight ? anchor.bottom + 4 : Math.max(8, anchor.top - box.height - 4)}px`;
+    };
+    position();
+    item.current?.focus({ preventScroll: true });
+    window.addEventListener("resize", position);
+    document.addEventListener("scroll", position, true);
+    return () => { window.removeEventListener("resize", position); document.removeEventListener("scroll", position, true); };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => { if (!container.current?.contains(event.target as Node)) setOpenedAt(null); };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [open]);
+
+  return <div className="account-picker" ref={container} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) close(false); }}>
+    <button className="account-button" ref={trigger} type="button" aria-label={m.accountMenu({ name })} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
+      onClick={() => open ? close(false) : setOpenedAt(location)} onKeyDown={(event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpenedAt(location); }
+        else if (event.key === "Escape" && open) { event.preventDefault(); close(true); }
+      }}><span className="avatar" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span><span className="account-name">{name}</span></button>
+    {open && <div className="account-menu" id={menuId} ref={menu} role="menu" aria-label={m.accountMenu({ name })} onKeyDown={(event) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); }
+      else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); item.current?.focus(); }
+    }}><a className="account-menu-item" ref={item} role="menuitem" tabIndex={-1} href="/account" onKeyDown={(event) => {
+      if (event.key === " ") { event.preventDefault(); event.currentTarget.click(); }
+    }} onClick={(event) => {
+      close(location.pathname === "/account" || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey);
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault(); navigate(event.currentTarget.pathname);
+    }}>{m.accountSettings}</a></div>}
+  </div>;
+};

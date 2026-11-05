@@ -26,9 +26,11 @@ const projectSettings = (value: unknown): Project["settings"] => {
 
 export const project = (value: unknown): Project => {
   const data = record(value);
+  const name = string(data.name);
+  if (!name.isWellFormed() || name.includes("\0") || !/[^\p{White_Space}]/u.test(name)) return malformed();
   return {
     id: id(data.id),
-    name: nonemptyString(data.name),
+    name,
     repoUrl: nonemptyString(data.repoUrl),
     settings: projectSettings(data.settings),
     ownership: parseProjectOwnership(data.ownership),
@@ -131,14 +133,21 @@ export type ServerError = {
   readonly code: string;
   readonly requestId: string;
   readonly graphLimit?: GraphLimitDetails;
+  readonly serverMessage?: string;
+  readonly stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number };
 };
 
-export const parseServerError = (value: unknown): ServerError => {
+export const parseServerError = (value: unknown, includeSteps = false): ServerError => {
   const data = record(record(value).error);
   const code = string(data.code);
   const requestId = string(data.requestId);
   if (!/^[a-z][a-z0-9_]{0,63}$/.test(code) || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(requestId)) return malformed();
-  string(data.message);
+  const message = string(data.message);
+  if (includeSteps && code === "steps_limit_exceeded") {
+    const details = record(data.details);
+    return { code, requestId, serverMessage: message, stepsLimit: { encodedBytes: count(details.encodedBytes), maxEncodedBytes: count(details.maxEncodedBytes) } };
+  }
+  if (includeSteps && code !== "graph_limit_exceeded") return { code, requestId, serverMessage: message };
   if (code !== "graph_limit_exceeded") return { code, requestId };
   const details = record(data.details);
   return {

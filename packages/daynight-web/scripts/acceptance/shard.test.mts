@@ -23,11 +23,11 @@ test('only the two explicit shard identities are accepted and shared checks have
 });
 
 test('collection validates the complete canonical inventory and each selected subset', () => {
-  const half = functionalScenarios.length / 2;
+  const half = Math.ceil(functionalScenarios.length / 2);
   assert.deepEqual(readFunctionalCollection(collection([...functionalScenarios].reverse()), undefined), [...functionalScenarios].reverse());
   for (const current of [1, 2] as const) {
     const selected = { current, total: 2 } as const;
-    const names = functionalScenarios.slice((current - 1) * half, current * half);
+    const names = current === 1 ? functionalScenarios.slice(0, half) : functionalScenarios.slice(half);
     assert.deepEqual(readFunctionalCollection(collection(names, selected), selected), names);
     assert.deepEqual(requireSelection(names, selected), names);
   }
@@ -36,7 +36,7 @@ test('collection validates the complete canonical inventory and each selected su
 });
 
 test('unknown, duplicated, missing and incorrectly sized functional selections fail closed', () => {
-  const half = functionalScenarios.slice(0, functionalScenarios.length / 2);
+  const half = functionalScenarios.slice(0, Math.ceil(functionalScenarios.length / 2));
   for (const names of [[], half.slice(1), [...half, functionalScenarios.at(-1)!], [...half.slice(1), half[1]!], [...half.slice(1), 'foreign']]) {
     assert.throws(() => requireSelection(names, shard), /incomplete, duplicated or unknown/);
   }

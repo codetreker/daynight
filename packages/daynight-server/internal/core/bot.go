@@ -16,6 +16,7 @@ type Bot struct {
 	ResolvedConfiguration BotConfiguration
 	RoleConfiguration     *BotRoleConfiguration
 	SessionID             *string
+	TestExecutionID       *string
 	StartupResult         BotStartupResult
 	Deletion              *BotDeletion
 	CreatedAt             time.Time
@@ -57,6 +58,8 @@ type BotCleanupResult struct {
 // BotDeletion records the original deletion request and both cleanup obligations.
 // A pending intent is not evidence that a process stopped or history was removed.
 type BotDeletion struct {
+	// ReceiptDigest preserves exact completed Worker replay after Session removal.
+	ReceiptDigest    string           `json:"receiptDigest,omitempty"`
 	DeletionID       string           `json:"deletionId"`
 	RequestedVersion int64            `json:"requestedVersion,string"`
 	WorkerCleanup    BotCleanupResult `json:"workerCleanup"`

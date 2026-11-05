@@ -2,6 +2,7 @@ import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js"
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CodexControls } from "./controls-codex.js";
+import { CodexErrors } from "./codex-errors.js";
 import { NativeTurns } from "./turns.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -23,6 +24,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   let turnStartedAt: string | null = null;
   let controls: CodexControls;
   const pending = new Map<string, Pending>(); const turns = new NativeTurns();
+  const errors = new CodexErrors(options.onTimeline);
   const capabilities = { send: true, steer: true, cancel: true, respond: true };
   const state = () => options.onState({ nativeSessionId: nativeId || null, activity: pending.size ? "waiting_input" : activity, currentTurnId, turnStartedAt, ...(controls ? { controls: controls.store.value } : {}), capabilities: closed ? { send: false, steer: false, cancel: false, respond: false } : capabilities });
   const showInteraction = (value: Pending) => options.onTimeline({ entryId: value.interaction.interactionId, revision: value.interaction.revision, kind: "interaction", interaction: value.interaction });
@@ -55,16 +57,16 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const rpc = new NativeRpc(child, message => {
     if (message.id !== undefined) { request(message); return; }
     const method = string(message.method), p = record(message.params);
-    if (p.threadId && nativeId && p.threadId !== nativeId) return;
+    if (p.threadId && nativeId && p.threadId !== nativeId && (method !== "error" || typeof p.threadId === "string")) return;
     if (method === "thread/settings/updated") controls?.observe(p.threadSettings);
-    if (method === "turn/started") { currentTurnId = string(record(p.turn).id); activity = "working"; turnStartedAt = new Date().toISOString(); state(); }
-    if (method === "turn/completed") { const turn = record(p.turn); turns.complete(string(turn.id), turn.status === "completed" ? null : new Error(`Native turn ended with ${string(turn.status)}: ${readable(turn.error)}`)); if (!currentTurnId || record(p.turn).id === currentTurnId) { currentTurnId = null; turnStartedAt = null; activity = "idle"; expire(); state(); } }
+    if (method === "turn/started") { errors.started(); currentTurnId = string(record(p.turn).id); activity = "working"; turnStartedAt = new Date().toISOString(); state(); }
+    if (method === "turn/completed") { const turn = record(p.turn); errors.completed(p, nativeId); turns.complete(string(turn.id), turn.status === "completed" ? null : new Error(`Native turn ended with ${string(turn.status)}: ${readable(turn.error)}`)); if (!currentTurnId || record(p.turn).id === currentTurnId) { currentTurnId = null; turnStartedAt = null; activity = "idle"; expire(); state(); } }
     if (method === "item/started" || method === "item/completed") projectItem(p.item, method === "item/completed");
     if (method === "item/agentMessage/delta") projection?.delta(string(p.itemId), string(p.delta), "assistant_message");
     if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") projection?.delta(string(p.itemId), string(p.delta), "reasoning");
     if (method === "item/commandExecution/outputDelta" || method === "item/fileChange/outputDelta") projection?.toolDelta(string(p.itemId), string(p.delta));
     if (method === "serverRequest/resolved") for (const [id, value] of pending) if (value.nativeId === p.requestId) { value.interaction = { ...value.interaction, state: "resolved", revision: "2" }; showInteraction(value); pending.delete(id); value.settled?.(); state(); }
-    if (method === "error") options.onTimeline({ entryId: randomUUID(), revision: "1", kind: "error", code: "native_error", message: limited(readable(p.error ?? p)) });
+    if (method === "error") errors.notification(p, nativeId, currentTurnId);
     if (method === "turn/plan/updated") options.onTimeline({ entryId: nativeEntryId(nativeId, `plan:${string(p.turnId)}`), revision: "1", kind: "todo", items: (Array.isArray(p.plan) ? p.plan : []).map((raw, index) => { const item = record(raw); return { id: String(index), text: string(item.step), status: item.status === "completed" ? "completed" as const : item.status === "inProgress" ? "in_progress" as const : "pending" as const }; }) });
   });
   controls = new CodexControls(rpc, () => nativeId, () => currentTurnId, options.cwd, options.env?.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"), state, options.onControlConfirmed, options.controlsRevisionFloor);
@@ -87,7 +89,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     const aliasOverrides = options.agentCliEnvironment
       ? codexAgentCliOverrides(options.agentCliEnvironment, await rpc.request("config/read", { cwd: options.cwd, includeLayers: false }))
       : {};
-    const response = record(await rpc.request(options.resumeNativeSessionId ? "thread/resume" : "thread/start", { ...(options.resumeNativeSessionId ? { threadId: options.resumeNativeSessionId, excludeTurns: true } : {}), cwd: options.cwd, ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && options.unattended ? { sandbox: "danger-full-access", approvalPolicy: "never" } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.sandbox ? { sandbox: config.sandbox } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.approvalPolicy ? { approvalPolicy: config.approvalPolicy } : {}), config: { "features.default_mode_request_user_input": true, ...aliasOverrides } }));
+    const response = record(await rpc.request(options.resumeNativeSessionId ? "thread/resume" : "thread/start", { ...(options.resumeNativeSessionId ? { threadId: options.resumeNativeSessionId, excludeTurns: true } : {}), cwd: options.cwd, ...(options.instructions !== undefined ? { developerInstructions: options.instructions } : {}), ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && options.unattended ? { sandbox: "danger-full-access", approvalPolicy: "never" } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.sandbox ? { sandbox: config.sandbox } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.approvalPolicy ? { approvalPolicy: config.approvalPolicy } : {}), config: { "features.default_mode_request_user_input": true, ...aliasOverrides } }));
     const thread = record(response.thread); nativeId = string(thread.id);
     if (!nativeId || options.resumeNativeSessionId && nativeId !== options.resumeNativeSessionId || await realpath(string(thread.cwd)) !== await realpath(options.cwd)) throw new Error("Native Codex session identity or working directory mismatch.");
     controls.seed({ ...response, ...(!options.resumeNativeSessionId && config.effort ? { effort: config.effort } : {}) });

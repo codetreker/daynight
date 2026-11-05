@@ -201,7 +201,10 @@ func (s *Service) PutTerminalArchive(ctx context.Context, p core.Principal, proj
 		if s.files == nil {
 			return fault("archive_pending", "Archive file storage is unavailable.")
 		}
-		path := id + "/" + hash + ".json"
+		path, err := archiveObjectPath(r.Owner.ProjectID, r.Owner.OwnerUserID, id, hash)
+		if err != nil {
+			return err
+		}
 		info, err := s.files.Put(ctx, archiveBucket, path, bytes.NewReader(data))
 		if err != nil {
 			return err

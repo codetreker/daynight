@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { performance } from "node:perf_hooks";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, createApiClient, createOperation, DEFAULT_OPERATION_LIMITS, OperationError, parseApiJson, parseVersionArgument, stringifyApiJson } from "../../src/api/index.js";
@@ -14,6 +15,7 @@ const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/R
 const task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, assignedTo: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
 const refusal = (code = "not_found", details?: unknown) => ({ error: { code, message: "Actual server explanation.", requestId: "req-1", ...(details === undefined ? {} : { details }) } });
 const jsonResponse = (value: unknown, status = 200, principal?: string) => new Response(stringifyApiJson(value), { status, headers: { "Content-Type": "application/json", ...(principal === undefined ? {} : { "Daynight-User-ID": principal }) } });
+const creationReceipt = <T extends { id: string; ownership: { teamId: string; version: bigint }; createdAt: string; updatedAt: string }>(value: T, userId: string) => ({ ...value, access: { projectId: value.id, ownerTeam: { id: value.ownership.teamId, kind: "personal", name: null }, ownership: value.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: value.id, userId, role: "admin", version: 1n, createdAt: value.createdAt, updatedAt: value.updatedAt } } });
 const cleanups: (() => void | Promise<void>)[] = [];
 const operation = (limits: Parameters<typeof createOperation>[0] = {}): Operation => {
   const created = createOperation(limits);
@@ -299,18 +301,18 @@ describe("operation-scoped API access", () => {
 
   it("uses exact mutation methods and preserves optional fields, empty values and duplicate dependency input", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(jsonResponse(project, 201))
+      .mockResolvedValueOnce(jsonResponse(creationReceipt(project, projectId), 201, projectId))
       .mockResolvedValueOnce(jsonResponse(task, 201))
       .mockResolvedValueOnce(jsonResponse(task, 201))
       .mockResolvedValueOnce(jsonResponse({ ...task, version: 9_007_199_254_740_994n }));
     const api = client(fetch);
-    await api.createProject({ name: "Project", repoUrl: project.repoUrl });
+    await api.createProject({ name: "Project", repoUrl: project.repoUrl, expectedUserId: projectId });
     await api.createTask(projectId, { title: "Task" });
     await api.createTask(projectId, { title: "Task", description: "", dependsOn: [otherId, otherId] });
     await api.updateTask(projectId, taskId, { version: 9_007_199_254_740_993n, description: "", dependsOn: [] });
     expect(fetch.mock.calls.map((call) => call[1]?.method)).toEqual(["POST", "POST", "POST", "PATCH"]);
     expect(fetch.mock.calls.map((call) => call[1]?.body)).toEqual([
-      JSON.stringify({ name: "Project", repoUrl: project.repoUrl }),
+      JSON.stringify({ name: "Project", repoUrl: project.repoUrl, expectedUserId: projectId }),
       '{"title":"Task"}',
       JSON.stringify({ title: "Task", description: "", dependsOn: [otherId, otherId] }),
       '{"version":9007199254740993,"description":"","dependsOn":[]}',
@@ -435,7 +437,7 @@ describe("operation-scoped API access", () => {
       response.end("{}");
     });
     const api = createApiClient({ serverUrl: url, operation: operation() });
-    await expect(api.createProject({ name: "Project", repoUrl: project.repoUrl })).rejects.toMatchObject({ status: 307, outcomeUnconfirmed: true });
+    await expect(api.createProject({ name: "Project", repoUrl: project.repoUrl, expectedUserId: projectId })).rejects.toMatchObject({ status: 307, outcomeUnconfirmed: true });
     expect(methods).toEqual(["POST /api/v1/projects"]);
   });
 
@@ -511,13 +513,16 @@ describe("operation-scoped API access", () => {
   });
 
   it("checks the single request deadline after synchronous parsing stalls the timer", async () => {
+    const response = jsonResponse(project);
+    let elapsed = 0;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(performance, "now").mockImplementation(() => elapsed);
     const original = JSON.parse;
     const spy = vi.spyOn(JSON, "parse").mockImplementation((...args: Parameters<typeof JSON.parse>) => {
-      const until = performance.now() + 15;
-      while (performance.now() < until) { /* Keep the deadline timer from running during parsing. */ }
+      elapsed = 15;
       return original(...args);
     });
-    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(project)), operation({ limits: { requestMs: 10 } })).getProject(projectId)).rejects.toMatchObject({ cause: { kind: "request_timeout" } });
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response), operation({ limits: { requestMs: 10 } })).getProject(projectId)).rejects.toMatchObject({ phase: "protocol", cause: { kind: "request_timeout" } });
     expect(spy).toHaveBeenCalled();
   });
 
@@ -567,7 +572,7 @@ describe("operation-scoped API access", () => {
   it("rejects an already cancelled operation without calling fetch", async () => {
     const source = new AbortController(); source.abort();
     const fetch = vi.fn<typeof globalThis.fetch>();
-    await expect(client(fetch, operation({ signal: source.signal })).createProject({ name: "P", repoUrl: project.repoUrl })).rejects.toMatchObject({ phase: "prepare", outcomeUnconfirmed: false, cause: { kind: "cancelled" } });
+    await expect(client(fetch, operation({ signal: source.signal })).createProject({ name: "P", repoUrl: project.repoUrl, expectedUserId: projectId })).rejects.toMatchObject({ phase: "prepare", outcomeUnconfirmed: false, cause: { kind: "cancelled" } });
     expect(fetch).not.toHaveBeenCalled();
   });
 });
@@ -713,15 +718,36 @@ describe("response DTO contract", () => {
     const wire = stringifyApiJson(value);
     expect(wire).toContain(`"settings":{"version":${version},"executionWarningMinutes":2147483647}`);
     const fetch = vi.fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(jsonResponse(value, 201))
+      .mockResolvedValueOnce(jsonResponse(creationReceipt(value, projectId), 201, projectId))
       .mockResolvedValueOnce(jsonResponse(value))
       .mockResolvedValueOnce(jsonResponse({ items: [value], nextCursor: null }))
       .mockResolvedValueOnce(jsonResponse(graphValue));
     const api = client(fetch);
-    await expect(api.createProject({ name: value.name, repoUrl: value.repoUrl })).resolves.toEqual(value);
+    await expect(api.createProject({ name: value.name, repoUrl: value.repoUrl, expectedUserId: projectId })).resolves.toEqual(value);
     await expect(api.getProject(projectId)).resolves.toEqual(value);
     await expect(api.listProjects()).resolves.toEqual([value]);
     await expect(api.getTaskGraph(projectId, taskId)).resolves.toEqual(graphValue);
+  });
+
+  it("encodes an explicit team and checks the created ownership and direct grant", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(creationReceipt(project, projectId), 201, projectId));
+    const api = client(fetch);
+    const teamId = project.ownership.teamId;
+    await expect(api.createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId.toUpperCase(), teamId: teamId.toUpperCase() })).resolves.toEqual(project);
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId, teamId });
+    const receipt = creationReceipt(project, projectId);
+    for (const mismatch of [{ name: "Different" }, { repoUrl: "https://example.test/other/repo" }]) {
+      fetch.mockResolvedValueOnce(jsonResponse({ ...receipt, ...mismatch }, 201, projectId));
+      await expect(api.createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId, teamId })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    }
+    for (const access of [
+      { ...receipt.access, ownership: { ...receipt.access.ownership, version: 2n } },
+      { ...receipt.access, directGrant: null },
+      { ...receipt.access, directGrant: { ...receipt.access.directGrant, userId: otherId } },
+    ]) {
+      fetch.mockResolvedValueOnce(jsonResponse({ ...project, access }, 201, projectId));
+      await expect(api.createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId, teamId })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    }
   });
 
   it.each([

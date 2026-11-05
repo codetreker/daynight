@@ -3,6 +3,7 @@ import { CliCancelledError, withCliCancellation } from "../../cli/cancellation.j
 import type { CliContext } from "../../cli/context.js";
 import { terminalText } from "../../platform/terminal.js";
 import { readWorkerConfiguration } from "./config.js";
+import { assertWorkerConfigurationIsLocal } from "./configuration-source.js";
 import type { WorkerRepositoryConfiguration } from "./config.js";
 import { resolveWorkerPaths } from "./paths.js";
 import { changeWorkerRepositories, configuredWorkerProjectIds, readWorkerProjects, readWorkerRepositorySnapshot } from "./repositories.js";
@@ -82,7 +83,7 @@ const changeRepositories = async (
     signal,
   });
   signal.throwIfAborted();
-  context.stderr(`Worker repositories saved to ${paths.configFile}. Changes apply at the next worker startup.\n`);
+  context.stderr(`Worker repositories saved to ${paths.configFile}. This local selection is imported when the Worker first connects to cloud management.\n`);
 };
 
 export const ensureWorkerRepositories = async (
@@ -104,7 +105,9 @@ export const runWorkerRepositoryCommand = async (
 ): Promise<void> => withCliCancellation(context, async (signal) => {
   signal.throwIfAborted();
   if (request.kind === "list") {
-    const configuration = await dependencies.readConfiguration(resolveWorkerPaths(context.homeDirectory()), signal);
+    const paths = resolveWorkerPaths(context.homeDirectory());
+    await assertWorkerConfigurationIsLocal(paths, signal);
+    const configuration = await dependencies.readConfiguration(paths, signal);
     context.stdout(renderRepositories(configuration.repositories, request.json));
     return;
   }

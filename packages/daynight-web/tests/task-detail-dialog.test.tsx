@@ -2,7 +2,8 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-libra
 import { renderWithLocale } from './helpers/renderWithLocale';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
+import type { AttachmentRecordSlots } from '../src/features/task-detail/attachments/TaskAttachments';
 import type { GraphTask, Project, TaskDetail, TaskGraph } from '../src/api/types';
 import { stringifyApiJson } from '../src/api/json';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
@@ -18,6 +19,7 @@ const snapshotDetails = new WeakMap<GraphSnapshot, readonly TaskDetail[]>();
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({
   TaskAttachmentsPanel: ({ projectId, taskId }: { readonly projectId: string; readonly taskId: string }) => <section aria-label="附件" data-project-id={projectId} data-task-id={taskId}><input aria-label="附件草稿" defaultValue="" /></section>,
 }));
+vi.mock('../src/features/task-agent-session/TaskSessionHost', async original => ({ ...await original<typeof import('../src/features/task-agent-session/TaskSessionHost')>(), ManagedSessionRecords: ({ children }: { children: (records: AttachmentRecordSlots) => ReactNode }) => children({ sidebar: null, preview: null, clearSelection: () => {} }) }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
@@ -42,7 +44,7 @@ const snapshot = (tasks = [detail()], revision = 1): GraphSnapshot => {
       blocked: tasks.filter((task) => task.status === 'todo' && !task.ready).length,
     },
   };
-  const value = { observedAt: graph.observedAt, graph, index: buildGraphIndex(graph), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: Date.now(), revision };
+  const value = { observedAt: graph.observedAt, graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: Date.now(), revision };
   snapshotDetails.set(value, tasks);
   return value;
 };
@@ -87,6 +89,28 @@ beforeEach(() => {
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
 
 describe('task detail dialog', () => {
+  it('keeps discard confirmation above the modal detail focus owner', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/steps')
+      ? new Response(stringifyApiJson({ projectId, taskId: id(1), version: 1n, steps: [] }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) })
+      : response(detail())));
+    await open(props(), 'en');
+    await screen.findByRole('heading', { name: '任务 1' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Steps' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Add step' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    const confirmation = screen.getByRole('alertdialog');
+    const keep = within(confirmation).getByRole('button', { name: 'Keep editing' });
+    const discard = within(confirmation).getByRole('button', { name: 'Discard' });
+    expect(keep).toHaveFocus();
+    expect(document.querySelector('.task-detail-dialog')).toHaveAttribute('inert');
+    await userEvent.tab(); expect(discard).toHaveFocus();
+    await userEvent.tab({ shift: true }); expect(keep).toHaveFocus();
+    fireEvent.click(keep);
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Draft');
+    expect(document.querySelector('.task-detail-dialog')).not.toHaveAttribute('inert');
+  });
   it('copies the complete title independently of the ID and reports a localized failure with retry', async () => {
     const reviewed = detail(1, { title: `${'完整标题 & <文本> 🧩 '.repeat(30)}\n结尾` });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(reviewed)));

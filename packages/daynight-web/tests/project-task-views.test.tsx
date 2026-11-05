@@ -119,13 +119,13 @@ describe('project task views', () => {
     expect(showAll).not.toBeChecked();
     fireEvent.click(goal);
     const list = document.getElementById(`goal-children-${canonicalTask(1)}`)!;
-    const childRows = list.querySelectorAll<HTMLButtonElement>('.goal-task-row');
+    const childRows = list.querySelectorAll<HTMLButtonElement>('.goal-task-main');
     expect(childRows).toHaveLength(3);
     for (const [position, status] of ['进行中', '待处理', '已完成'].entries()) {
       expect(childRows[position]).toBeVisible();
-      expect(childRows[position]!.querySelector('.root-status')).toHaveTextContent(status);
+      expect(childRows[position]!.closest('.goal-task-row')!.querySelector('.root-status')).toHaveTextContent(status);
     }
-    expect(goal.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(goal.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
     const completedChild = childRows[2]!;
     completedChild.focus();
     fireEvent.click(completedChild);
@@ -160,7 +160,7 @@ describe('project task views', () => {
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     await waitFor(() => expect(goalDetails).toHaveFocus());
     expect(goal).toHaveAttribute('aria-expanded', 'true');
-    expect(goal.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(goal.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
     fireEvent.click(tab('standalone'));
     fireEvent.click(tab('chains'));
     expect(chainRow()).toHaveAttribute('aria-expanded', 'false');
@@ -176,10 +176,10 @@ describe('project task views', () => {
     const stats = screen.getByRole('region', { name: '项目任务统计', hidden: true });
     expect(stats.querySelectorAll('.stat')).toHaveLength(6);
     expect(stats).toHaveTextContent('待处理5等待开始');
-    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.querySelector('.root-status')).toHaveTextContent('待处理');
+    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.parentElement!.querySelector('.root-status')).toHaveTextContent('待处理');
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.querySelector('.root-progress-label')).toHaveTextContent('0/3 已完成');
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000003')).toBeNull();
-    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000005')?.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000005')?.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
     fireEvent.click(tab('standalone'));
     expect(row('00000000-0000-4000-8000-000000000004')).toHaveTextContent('待处理');
     expect(row('00000000-0000-4000-8000-000000000004').querySelector('.root-status')).toHaveClass('graph-status-todo');
@@ -563,7 +563,7 @@ describe('project overview and task workspace', () => {
 
   const mockNavigationSnapshot = (tasks: GraphTask[], revision: number): TaskGraphModule.GraphSnapshot => {
     const graph = snapshot(tasks);
-    return { graph, index: buildGraphIndex(graph), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: Date.now(), receivedMonotonic: performance.now(), revision };
+    return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: Date.now(), receivedMonotonic: performance.now(), revision };
   };
   const interceptOverviewNavigation = () => {
     let navigate!: Parameters<typeof ProjectOverviewModule.ProjectOverview>[0]['onNavigate'];
@@ -1014,7 +1014,7 @@ describe('status-first project presentation', () => {
     graphRequest.mockResolvedValue(value);
     mount(); await findChainRow(canonicalTask(3));
     expect(presentedIds('chains')).toEqual([3, 1, 7, 5, 11, 9].map(canonicalTask));
-    expect(chainRow(canonicalTask(1)).querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(chainRow(canonicalTask(1)).parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
     fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
     expect(presentedIds('chains')).toEqual([3, 1, 7, 5, 11, 9].map(canonicalTask));
     fireEvent.click(tab('standalone'));

@@ -9,7 +9,19 @@ export type WorkerProbe<T> =
 export type WorkerExecutableProbe = WorkerProbe<string> | { readonly state: 'not_installed'; readonly checkedAt: string };
 export type WorkerHerdrProbe = WorkerProbe<string> | { readonly state: 'not_running'; readonly checkedAt: string };
 export type WorkerMachine = { readonly id: string; readonly name: string };
+export type WorkerAssistantHostReason = 'unsupported_arguments' | 'invalid_cwd' | 'not_found' | 'permission_denied' | 'timeout' | 'command_failed' | 'invalid_output' | 'unavailable';
+export type WorkerAssistantHost = {
+  readonly protocolVersion: 1;
+  readonly observedAt: string;
+  readonly defaultCwd: string;
+  readonly defaultProvider: WorkerAgent;
+  readonly providers: readonly {
+    readonly provider: WorkerAgent; readonly available: boolean; readonly reason: WorkerAssistantHostReason | null;
+    readonly model: string | null; readonly args: readonly string[];
+  }[];
+};
 export type WorkerTelemetry = {
+  readonly assistantHost?: WorkerAssistantHost;
   readonly machine: WorkerMachine;
   readonly platform: ExecutionPlatform;
   readonly workingDirectory: string;
@@ -88,10 +100,39 @@ const software = <T extends 'not_installed' | 'not_running'>(value: unknown, abs
   fields(data, ['state', 'checkedAt']);
   return { state: absent, checkedAt: timestamp(data.checkedAt) };
 };
+const assistantHost = (value: unknown, platform: ExecutionPlatform): WorkerAssistantHost => {
+  const data = fields(value, ['protocolVersion', 'observedAt', 'defaultCwd', 'defaultProvider', 'providers']);
+  const boundedText = (value: unknown, maxBytes: number): string => {
+    const parsed = text(value);
+    if (/\p{Cc}/u.test(parsed) || new TextEncoder().encode(parsed).length > maxBytes) return malformed();
+    return parsed;
+  };
+  const defaultCwd = boundedText(data.defaultCwd, 4096);
+  const windowsPath = defaultCwd.replaceAll('\\', '/');
+  const unc = windowsPath.startsWith('//') ? windowsPath.slice(2).split('/') : [];
+  if (data.protocolVersion !== 1 || !(platform === 'windows'
+    ? /^[a-z]:\//i.test(windowsPath) || unc.length >= 2 && !!unc[0] && unc[0] !== '.' && unc[0] !== '?' && !!unc[1]
+    : defaultCwd.startsWith('/'))) return malformed();
+  const providerNames = ['codex', 'claude', 'copilot'] as const;
+  const providers = array(data.providers, value => {
+    const entry = fields(value, ['provider', 'available', 'reason', 'model', 'args']);
+    const reason = entry.reason === null ? null : choice<WorkerAssistantHostReason>(entry.reason,
+      ['unsupported_arguments', 'invalid_cwd', 'not_found', 'permission_denied', 'timeout', 'command_failed', 'invalid_output', 'unavailable']);
+    const model = entry.model === null ? null : boundedText(entry.model, 256);
+    const args = array(entry.args, value => boundedText(value, 4096));
+    if (typeof entry.available !== 'boolean' || entry.available !== (reason === null) || args.length > 128
+      || reason === 'unsupported_arguments' && (model !== null || args.length !== 0)) return malformed();
+    return { provider: choice(entry.provider, providerNames), available: entry.available, reason, model, args };
+  });
+  if (providers.length !== 3 || new Set(providers.map(entry => entry.provider)).size !== 3) return malformed();
+  return { protocolVersion: 1, observedAt: timestamp(data.observedAt), defaultCwd,
+    defaultProvider: choice(data.defaultProvider, providerNames), providers };
+};
 const telemetry = (value: unknown): WorkerTelemetry => {
-  const data = fields(value, ['machine', 'platform', 'workingDirectory', 'sampledAt', 'os', 'cpu', 'memory', 'disk', 'versions']);
+  const data = fields(value, ['machine', 'platform', 'workingDirectory', 'sampledAt', 'os', 'cpu', 'memory', 'disk', 'versions', ...(Object.hasOwn(record(value), 'assistantHost') ? ['assistantHost'] : [])]);
   const versions = fields(data.versions, ['daynight', 'herdr', 'codex', 'copilot']);
   return {
+    ...(Object.hasOwn(data, 'assistantHost') ? { assistantHost: assistantHost(data.assistantHost, executionPlatform(data.platform)) } : {}),
     machine: machine(data.machine), platform: executionPlatform(data.platform), workingDirectory: text(data.workingDirectory), sampledAt: timestamp(data.sampledAt),
     os: probe(data.os, value => {
       const os = fields(value, ['type', 'release', 'version', 'arch']);

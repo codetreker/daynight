@@ -5,7 +5,8 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { query, getSessionInfo, getSessionMessages, type SDKUserMessage, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 import type { InteractionResponse, SessionInteraction } from "../../../session/protocol.js";
-import { record, string, NativeRpcError } from "./native-rpc.js";
+import { record, string, NativeRpcError, NativeRpcTimeoutError } from "./native-rpc.js";
+import { ControllerStartupError } from "../startup.js";
 import { nativeEntryId, parseProviderArguments, readable, limited } from "./projection.js";
 import { formInteraction, validateResponse } from "./interactions.js";
 import type { NativeProvider, ProviderOptions, ProviderReceipt, ProviderState } from "./types.js";
@@ -16,7 +17,7 @@ class InputStream implements AsyncIterable<SDKUserMessage> {
   close(): void { this.closed = true; this.wake?.(); }
   async *[Symbol.asyncIterator](): AsyncGenerator<SDKUserMessage> { while (!this.closed) { const item = this.items.shift(); if (item) { yield item; continue; } await new Promise<void>(resolve => { this.wake = resolve; }); this.wake = null; } }
 }
-const deadline = <T>(promise: Promise<T>, message: string, ms = 30_000): Promise<T> => new Promise((resolve, reject) => { const timer = setTimeout(() => reject(new Error(message)), ms); promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); }); });
+const deadline = <T>(promise: Promise<T>, message: string, ms = 30_000): Promise<T> => new Promise((resolve, reject) => { const timer = setTimeout(() => reject(new NativeRpcTimeoutError(message)), ms); promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); }); });
 type PendingInteraction = { interaction: SessionInteraction; resolve(response: InteractionResponse): void; reject(error: Error): void; nativeToolId: string | null; turnId: string | null; submitted: boolean; confirm?: () => void; rejectConfirmation?: (error: Error) => void };
 export const openClaudeProvider = async (options: ProviderOptions): Promise<NativeProvider> => {
   const config = parseProviderArguments("claude", options.args), input = new InputStream();
@@ -148,6 +149,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   }
   const native = query({ prompt: input, options: {
     ...(options.resumeNativeSessionId ? { resume: nativeId } : { sessionId: nativeId }), cwd: options.cwd,
+    ...(options.instructions !== undefined ? { systemPrompt: { type: "preset", preset: "claude_code", append: options.instructions } as const } : {}),
     ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && config.effort ? { effort: config.effort } : {}),
     ...(config.additionalDirectories ? { additionalDirectories: config.additionalDirectories } : {}),
     ...(options.executable ? { pathToClaudeCodeExecutable: options.executable } : {}), env: options.env ?? process.env,
@@ -201,7 +203,14 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     await Promise.all(children.map(child => child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : deadline(new Promise<void>(resolve => child.once("close", () => resolve())), "Native Claude stop is unconfirmed.", 10_000)));
     await pump; activity = "stopped"; for (const p of interactions.values()) { publishInteraction({ ...p.interaction, revision: "2", state: "expired" }); p.reject(stopped); p.rejectConfirmation?.(stopped); } interactions.clear(); state();
   };
-  try { await deadline(native.initializationResult(), "Claude initialization timed out."); if (disconnected) throw new Error("Native Claude connection ended during initialization."); await controls.refresh(); activity = "idle"; state(); } catch (error) { await close(); throw error; }
+  try { await deadline(native.initializationResult(), "Claude initialization timed out."); if (disconnected) throw new Error("Native Claude connection ended during initialization."); await controls.refresh(); activity = "idle"; state(); }
+  catch (error) {
+    // The SDK marks a native control_response rejection separately from transport errors.
+    const failure = error instanceof Error && "errorClass" in error && error.errorClass === "control_request_failed"
+      ? new ControllerStartupError({ state: "failed", reasonCode: "native_rejected" }, error.message, { cause: error }) : error;
+    try { await close(); } catch { options.onDiagnostic?.("Claude startup cleanup failed; native process stop remains unconfirmed."); }
+    throw failure;
+  }
   const send = async (text: string, operationId: string, expectedTurnId: string | null): Promise<ProviderReceipt> => {
       if (closed || disconnected || currentTurnId !== expectedTurnId || interactions.size) throw new NativeRpcError(-32602, "Claude cannot accept input in this session state.");
       if (currentTurnId !== null) {

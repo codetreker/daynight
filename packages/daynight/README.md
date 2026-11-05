@@ -1,11 +1,11 @@
 # Daynight CLI
 
 The `@codetreker/daynight` package provides the `daynight` command and its `dn`
-alias. Use it to manage server-backed projects, tasks, discussion threads and
-attachments, install the `using-daynight` skill for coding agents, run foreground
-task workers through
-Herdr or browser-connected native Controllers, and run a local GitHub PR reviewer through Copilot CLI. Both command names
-share configuration and behavior. Supported native platforms are Linux, Windows
+alias. Use it to manage server-backed projects, tasks, discussion threads,
+attachments and Bot definitions, inspect remote Workers, install the
+`using-daynight` skill for coding agents, run foreground task workers through
+Herdr or browser-connected native Controllers, and run a local GitHub PR reviewer
+through Copilot CLI. Both command names share configuration and behavior. Supported native platforms are Linux, Windows
 and Apple Silicon (ARM64) macOS. Intel macOS is unsupported.
 
 See the [project overview](../../README.md) for the browser workspace and service,
@@ -33,6 +33,8 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Task deletion](#task-deletion)
 - [Task discussion threads](#task-discussion-threads)
 - [Task attachments](#task-attachments)
+- [Bot management](#bot-management)
+- [Remote Worker queries](#remote-worker-queries)
 - [Worker configuration and startup](#worker-configuration-and-startup)
 - [Worker manual management](#worker-manual-management)
 - [Review configuration and startup](#review-configuration-and-startup)
@@ -133,12 +135,15 @@ daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
 daynight worker                     # Show worker help
+daynight worker list [--json]        # Query this account's remote Workers
+daynight worker show <worker-id> [--json]
 daynight worker setup               # Check prerequisites and choose an agent and Projects
 daynight worker run                 # Run until interrupted
 daynight worker attach              # Connect to an existing Herdr task runtime
 daynight worker repo list [--json]
 daynight worker repo add [--project <project-id>]
 daynight worker repo remove [--project <project-id>]
+daynight worker resources list       # Inspect retained Herdr recordings and stop evidence
 daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
 daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
 daynight worker resume <task-id> --claim-id <previous-claim-id> --if-version <version> [--project <project-id>]
@@ -153,9 +158,31 @@ daynight completion setup [--shell bash|zsh] [--rc-file <path>]
 daynight skill                      # Show skill help
 daynight skill install              # Select Agents, then User or Project scope
 daynight project
-daynight project create <name> [--repo <repo>]
+daynight project create <name> [--repo <repo>] [--team <uuid|personal>] [--confirm]
 daynight project list [--json]
 daynight project show <project-id> [--json]
+daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] [--if-version <version>] [--confirm] [--json]
+daynight team list [--json]
+daynight team show [--team <uuid|personal>] [--json]
+daynight team create <name> [--confirm] [--json]
+daynight team rename <name> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team delete [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team invitation create [--team <uuid|personal>] [--confirm] [--json]
+daynight team invitation list [--team <uuid|personal>] [--json]
+daynight team invitation revoke <invite-id> [--team <uuid|personal>] [--confirm] [--json]
+daynight team member list [--team <uuid|personal>] [--json]
+daynight team member set-role <user-id> <member|admin> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team member remove <user-id> [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team leave [--team <uuid|personal>] [--if-version <version>] [--confirm] [--json]
+daynight team projects [--team <uuid|personal>] [--json]
+daynight team default show [--json]
+daynight team default set <uuid|personal> [--confirm] [--json]
+daynight invitation inspect [--stdin] [--json]
+daynight invitation accept [--stdin] [--confirm] [--json]
+daynight bot list [--json]
+daynight bot show <bot-id> [--json]
+daynight bot create --name <name> [--worker <worker-id>] [--cwd <path>] [--agent <codex|claude|copilot>] [--request-id <uuid>] [--json]
+daynight bot delete <bot-id> --if-version <version> [--request-id <uuid>] [--json]
 daynight task
 daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
@@ -397,7 +424,7 @@ records startup-file ownership and installation limits.
 ## Configuration setup
 
 The shared configuration file is `~/.daynight/config.yml`. The complete
-[`config.example.yml`](config.example.yml) covers service access, review and worker
+[`config.example.yml`](config.example.yml) covers service access, Team defaults, review and worker
 settings with their defaults and optional overrides. It is included at the root
 of the npm package. For an npm global installation, locate it with:
 
@@ -526,7 +553,7 @@ cleanup. Then use the same commands:
 
 ```bash
 daynight project create "Example"
-daynight project create "Example" --repo https://github.com/OWNER/REPO.git
+daynight project create "Example" --repo https://github.com/OWNER/REPO.git --team personal --confirm
 daynight project list
 daynight project list --json
 daynight project show <project-id> --json
@@ -540,11 +567,20 @@ with `-`, use `daynight project create -- -name` or put an explicit repository
 option before the terminator: `daynight project create --repo <repo> -- -name`.
 The name is sent unchanged.
 
-Creation first scans every project page and compares canonical repository
-identities. With no match it registers the original name and repository address.
-With one match it reports `Project already exists.` and the existing project,
-leaving that project's name and address unchanged. Multiple matches fail with
-their IDs; lookup failures and exhausted command budgets stop before creation.
+Creation first scans every accessible project page and compares canonical repository
+identities. With one match it reports `Project already exists.` and the existing
+project, without resolving a Team, confirming or writing. Multiple matches fail
+with their IDs. With no match, `--team <uuid|personal>` selects the target; without
+it, the CLI uses the configured default for the current service and account, or
+Personal when no default is configured. An invalid or inaccessible default fails
+without falling back. The target must be accessible to the current user.
+
+Creation requires confirmation: `--confirm` skips the interactive prompt, and a
+noninteractive invocation without it fails before writing. The CLI binds the
+request and response to the current user and submits the original name and
+repository address. The creator receives a direct admin grant. An unknown write is
+not automatically replayed. Lookup failures and exhausted command budgets stop
+before creation.
 This client preflight does not provide atomic uniqueness against concurrent
 creators, and the service continues to allow duplicate repository registrations.
 Project commands do not write repository bindings or ignore rules. Lists traverse
@@ -553,6 +589,124 @@ terminal-control escapes. JSON preserves resource fields and nanosecond timestam
 strings; a later-page failure produces an error with empty stdout. The
 [project/task requirements](../../docs/spec/daynight-project-task.md) own the complete
 behavior and remaining task-command scope.
+
+`project transfer` moves a Project to a Team identified by UUID or a same-service
+`/teams/<uuid>` link. It resolves the explicit Project or current repository
+without changing its binding or default Team. Only the current owner Team admin
+can transfer; destination membership is not required. The preview identifies the
+source, destination and expected access before confirmation. `--confirm` skips
+the prompt but retains the preview's exact versions and identity checks. An
+optional `--if-version` rejects a preview with a different ownership version.
+A successful receipt may report no remaining access. Conflicts require a fresh
+preview and decision; a lost receipt remains unknown even if a later read is 404.
+Project grants and invitations are preserved.
+
+## Team context
+
+`team list` reads all Teams joined by the current account. `team show` and
+`team projects` use `--team <uuid|personal>` when supplied; otherwise they use
+the configured `teamDefaults` entry for the normalized service origin and current
+account, or the account's Personal Team when that entry is absent. `team default
+show` verifies and displays the resolved target. An invalid or inaccessible
+configured target fails explicitly; `team list` and an explicit `--team` remain
+available. These read commands do not change configuration or remote resources.
+Lists finish and validate every page before producing output. Use `--json` for
+complete resources. Project discovery and `project list` still use all accessible
+projects, independently of this default.
+
+`team default set <uuid|personal>` validates the target and current membership,
+then saves it for the current service and account. It does not depend on the old
+default, so it can repair an invalid or inaccessible selection. `personal` saves
+the account's actual Personal Team UUID. Without `--confirm`, an interactive
+confirmation shows the target and role; non-interactive calls fail before writing.
+Cancellation or an identity mismatch leaves the configuration unchanged. The
+command does not alter remote preferences or repository bindings.
+
+The saved map uses canonical UUIDs and the normalized service origin as keys:
+
+```yaml
+teamDefaults:
+  https://daynight.cc:
+    80be22c3-96d8-4ed1-bcd3-b820f2508c62: b95baeff-1522-4d99-a9b4-dfcb58392eca
+```
+
+`team default show --json` and `team default set --json` return `configured`
+(the saved ID, or `null` for an absent entry on show) and the verified `team`
+resource. A token rotation for the same account retains its selection; other
+accounts and services have independent entries. The write preserves comments,
+unknown fields and other entries. It refuses to overwrite a changed credential
+or current entry, or to change unrelated settings through YAML aliases. Resolve
+the conflict or separate the aliases before retrying. When a local replacement
+result is uncertain, the command reads the current entry and does not replay the
+write automatically.
+
+`team create` creates an ordinary Team, `team rename` changes its name, and
+`team delete` removes an empty ordinary Team. Names preserve their original
+characters and whitespace and may be duplicated. Rename and delete resolve the
+explicit or default Team and use an observed version; `--if-version` retains the
+specified positive int64 version, rejecting a mismatch with the observed version
+before submission. Personal Teams cannot be renamed or deleted.
+
+Each write requires interactive confirmation or the boolean `--confirm` flag.
+Without it, non-interactive calls fail before writing. Delete prompts for the
+displayed JSON string literal and compares its decoded value exactly with the
+raw Team name; create and rename accept `y` or `yes` case-insensitively.
+Cancellation, refusal or a mismatch does not submit. Even with
+`--confirm`, delete sends the real name and version; the service still checks
+identity, authority and preconditions. Success uses the validated receipt;
+conflicts require a fresh decision, and unknown outcomes are never replayed.
+Reading current facts does not recover a lost receipt. A later output or cleanup
+failure retains a confirmed receipt. Use `--json` for the confirmed resource or
+deletion receipt.
+
+`team invitation create` creates a single-use link for an ordinary Team. The
+link is disclosed once on stdout; save it securely before sharing it. Listing
+invitations returns metadata only and cannot recover the link. `revoke` disables
+an invitation; an unchanged receipt can also mean it was already revoked,
+consumed, or absent. Create
+and revoke require confirmation or `--confirm`, and use the explicit or default
+Team context. Personal Teams cannot have invitations. An unknown create result
+does not cause a replacement invitation to be created automatically.
+`team member list` reads the selected Team's complete member directory, including
+nullable profile fields, roles and membership versions. `team member set-role`
+changes an existing member's role; `team member remove` removes one, and `team
+leave` removes the current user. Only a Team admin can manage other members or
+change roles; any member can leave. Personal membership is immutable and an
+ordinary Team must retain an admin. These operations do not change Project grants
+or the configured default Team.
+
+Membership writes use the target member's observed positive int64 membership
+version, not the Team or Project grant version. Supply its exact digits with
+`--if-version` to retain an earlier decision; a mismatch with the current
+observation is rejected before submission. Writes require interactive confirmation
+or `--confirm`, and bind the current user to the request and response. A validated
+receipt reports the actor's remaining Team role, including `null` after leaving;
+a successful self-exit uses that receipt without a follow-up Team read. Unknown
+outcomes are not automatically replayed. A later read only establishes current
+facts and cannot recover a lost receipt.
+
+## Accept an invitation
+
+Use `invitation inspect` to preview a Project or Team invitation without
+consuming it. Use `invitation accept` to accept for the currently signed-in
+account; neither command resolves the configured default Team. Supply the
+same-service invitation link through the hidden terminal prompt, or through
+standard input with `--stdin`. Standard input is read to EOF, accepts up to
+4096 bytes and may end in one LF or CRLF. Do not put links or tokens in
+arguments, flags, shell history, or logs. The CLI does not persist the secret.
+The link fragment is sent only in the request body.
+
+Acceptance displays the target and current account for confirmation. A
+non-interactive acceptance requires `--confirm`; without confirmation it does
+not write. An existing direct Project grant or Team membership retains its
+role and does not consume the invitation. Inherited-only Project access does
+not replace a direct grant: accepting creates a direct member grant. Invalid,
+expired, revoked, consumed or deleted-target invitations are unavailable.
+
+Identity mismatch is a refusal. A lost or malformed acceptance response may
+follow a commit and is reported as an unknown outcome; the CLI does not replay
+it automatically. Reading current membership cannot recover the original
+receipt. Use `--json` for the validated preview or acceptance receipt.
 
 ## Task management
 
@@ -1269,6 +1423,114 @@ executable HTML retains the application origin. The
 [CLI delivery decision](../../.agents/notes/archived/feature/2026-10-21-task-attachment-cli.md)
 records binary transport and output ownership.
 
+## Bot management
+
+Bot commands use the configured server and signed-in account. They work in an
+ordinary directory without Git or a Project and do not accept `--project`.
+
+```bash
+daynight bot list --json
+daynight bot create --name "Planning assistant" --json
+daynight bot show <bot-id> --json
+daynight bot delete <bot-id> --if-version <observed-version> --json
+```
+
+Creation needs only `--name`. Optional `--worker`, `--cwd` and `--agent` preserve
+explicit choices; the service resolves and freezes omitted settings. The
+specified directory belongs to the target Worker, may be outside a repository,
+and must be an absolute path for that machine. The CLI does not create it or
+substitute the local working directory. An active response reports the actual
+`startupResult`: accepting a `pending` definition does not establish a running
+or ready assistant. An existing `ready` result is a startup observation, not a
+promise that its Worker is currently online. Replaying the original creation
+request after deletion returns the minimal deletion responsibility and its actual
+cleanup stages, without recreating the definition or claiming startup.
+
+Creation and deletion accept `--request-id <uuid>`. When omitted, the CLI generates
+the UUID before sending the write. For creation it is the Bot ID; for deletion
+it is the `deletionId`, while `<bot-id>` still identifies the Bot. Keep the
+original identity and payload when checking an uncertain response. The CLI never
+retries a write automatically or generates a replacement ID after a failure.
+Use `daynight bot show <bot-id> --json` to read current facts before deciding
+whether another write is appropriate.
+
+Deletion requires the exact observed `--if-version`; the CLI does not fetch a
+new version to replace it. Bot versions, creation order and requested deletion
+versions are positive int64 decimal strings in JSON, including values beyond
+JavaScript's safe integer range. A version conflict remains an error. Read the
+current Bot and reassess the deletion instead of blindly resubmitting it.
+
+Deletion output retains the original request identity and both `workerCleanup`
+and `serverCleanup` results. A pending stage means cleanup is unfinished; only
+both stages completed establish completion. A failed stage retains its error
+code. Deleted definitions disappear from `bot list`, while `bot show` returns
+only their minimal deletion responsibility. List disappearance is not proof of
+process termination or history removal. The service commits a deletion barrier
+before cleanup, and requires the bound Worker's verified stop receipt before
+server history cleanup can complete. The CLI consumes those stages; it does not
+stop native processes or generate cleanup receipts. These entry points do not
+enable the complete assistant UI or establish complete Bot hosting.
+
+All four commands support `--json`. `list` emits an array; `show`, `create` and
+`delete` emit a Bot resource. Lists follow every page and produce output only
+after all pages succeed; a later-page error is not an empty or partial success.
+Operation failures exit 1. With `--json`, stderr contains one
+`{ "error": { ... } }` object with `operation`, available `botId`, `requestId`,
+`phase`, HTTP `status`, `code` and `serverRequestId`, plus `outcomeUnconfirmed`.
+Known configuration failures and request conflicts also include an actionable `reason`; missing authentication reports `login_required`.
+An unknown write also supplies `reconcile`, containing the original Bot's show
+command. The client `requestId` identifies the creation or deletion request;
+`serverRequestId` correlates the response. HTTP 401, 403, 404 and 409 remain
+failures. Diagnostics do not print credentials, raw transport causes or server
+error bodies. Invalid command syntax retains the normal text diagnostic and
+exit 2 even when `--json` is present.
+
+The [assistant requirements](../../docs/spec/assistant.md) define management and
+lifecycle behavior; the [design](../../docs/design/assistant.md) explains identity,
+version and deletion ownership.
+
+The Worker provides a [versioned assistant role and CLI environment helpers](../../docs/design/bot-role-environment.md)
+for hosting consumers. Role selection preserves the server-frozen text and
+revision, retains an unconfirmed local preparation, and rejects disagreements.
+Environment preparation uses the target Worker's `DN_CONFIG_DIR` and normal CLI
+credential, checks its server and current account, and probes the effective CLI
+in the Bot's ordinary directory. It preserves native homes and existing alias
+rules; Controller relay credentials are not CLI credentials. The caller owns
+durable preparation, registration, startup and release of its prepared aliases.
+These helpers do not themselves enable Bot hosting or bypass native approvals.
+
+## Remote Worker queries
+
+```bash
+daynight worker list --json
+daynight worker show <worker-id> --json
+```
+
+These commands read the current account's remote observations without a Project,
+Git repository or local Worker configuration. They neither start a Worker nor
+take its local runtime lock. `worker repo list` separately lists repositories
+configured on this machine.
+
+`worker list --json` returns `{observedAt,items}` after every page succeeds.
+`worker show --json` returns `{observedAt,worker}`. The service includes Workers
+reported within the last 72 hours; an older, missing or inaccessible Worker is
+not a current detail result. `observedAt` is server time, and `lastReportedAt`
+identifies the retained report. Human-readable online/offline state compares
+those timestamps using the 120-second threshold; it does not reserve capacity
+or prove a Provider can start.
+
+Task observations remain distinct from connection state. `unavailable` inventory
+has null `activeTaskCount` and `taskObservedAt`, not zero tasks; `stale` retains
+an earlier observation. Detail includes task identities, resource probes, their
+sample times and errors, and optional `assistantHost` observations. A missing
+assistantHost means hosting support has not been reported. Offline Workers,
+failed probes and unknown inventories are never reported as idle capacity.
+Read or later-page failures remain errors rather than an empty success.
+With `--json`, operation failures print one `error` object on stderr with the
+operation, optional Worker ID, phase, HTTP status, code and response request ID.
+No raw transport cause or server error body is printed; missing authentication
+reports `reason: "login_required"`. Failed reads exit 1.
+
 ## Worker configuration and startup
 
 `daynight worker run` is a foreground reconciler. It claims eligible ready tasks
@@ -1301,13 +1563,28 @@ bounded attempts, cancellation and sanitized diagnostics. Reporting uses the
 existing service credentials and stable worker identity, with no separate
 command or configuration switch.
 
-Start with interactive setup:
+The cloud target owns concurrency, polling and recovery limits, Project
+selection, and global/per-Project Agent, model and arguments. Repository roots,
+local paths, service credentials, Worker identity and `agentControlMode` stay
+local. First enrollment imports a candidate from the original local YAML only
+when no cloud target exists. Later starts and heartbeats always use the cloud
+target; a local copy cannot replace it. Configuration enrollment does not depend
+on active claims or alter task/claim formats, permission or recovery rules.
+
+For a Worker that has not enrolled, optional interactive setup prepares its local
+candidate:
 
 ```bash
 daynight login
 daynight worker setup
 daynight worker run
 ```
+
+A local candidate can have no Projects. Normal `worker run` authenticates and
+queries cloud configuration before managed local values, repository selection,
+repository preparation or business backend initialization. An existing target
+bypasses stale local managed fields. Empty cloud Projects keeps the Worker
+running and reporting; it does not open a picker or require `repo add`.
 
 `setup` requires terminal input and stderr. It reports environment checks and
 repair instructions, asks which native agent should execute tasks, then lists
@@ -1322,7 +1599,10 @@ per-Project values. Setup previews Projects, paths, removed registrations and
 native-setting resets before confirmation, then atomically saves agent settings
 and the complete selection. Cancellation, invalid choices, inaccessible Project
 inventory, related concurrent changes and write failures leave configuration
-unchanged.
+unchanged. Once a cloud target exists, local setup and managed-field writes
+require changing those values in the cloud instead. Writers check enrollment
+before interaction and final persistence; a missing local cache does not mean
+the Worker is unenrolled.
 
 Local diagnostics inspect tools and integration settings without starting Herdr
 or native agents. Missing prerequisites are reported together; selected-agent
@@ -1378,7 +1658,7 @@ hooks need PowerShell. Native capability and launch failures remain visible.
 Git transport and task tools, such as authenticated GitHub CLI for PR delivery,
 must be ready.
 
-Manage individual Project registrations with:
+Before enrollment, manage individual local Project registrations with:
 
 ```bash
 daynight worker repo add
@@ -1404,13 +1684,17 @@ they do not create Projects, clone repositories, acquire tasks or start Herdr.
 Cancellation, empty selection, failed remote reads and save errors leave the
 selection unchanged.
 
-With an empty repository list, interactive run guides the same selection before
-starting tasks. Noninteractive startup requires a configured repository and
-prints `worker repo add --project PROJECT_UUID` guidance. Service credentials
-and selected worker settings come from one captured configuration source;
-changed credentials require restarting the command. Startup resolves configured
-Projects into the local projects table before reading claim inventory, including
-when the state database is empty.
+Service credentials, local repository root, mode and the first-import candidate
+come from one captured source; changed credentials require restarting the
+command. Cloud lookup and reporting do not wait for Project preparation or task inventory.
+Selected Projects use existing local bindings or are prepared under
+`worker.repositoryRoot`; only confirmed prepared Projects can execute. A failed
+preparation does not block independent healthy Projects. Removing a Project
+excludes it from scheduling and stops its executions while retaining their
+claims, worktrees and session history. Unconfirmed stops continue to occupy
+capacity; stopped retained worktrees do not permanently occupy a slot. Project
+failures are reported and retried. Persistent local mappings remain available
+to ownership inventory and resource discovery independently of the selection.
 
 `worker.repositoryRoot` defaults to `~/daynights`, independently of review's
 root. New registration expands the actual home shortcut or resolves a path
@@ -1418,17 +1702,19 @@ relative to config.yml; existing paths are retained when the root changes.
 Ordinary repositories use `<root>/<host>/<owner>/<repo>`; generic transport,
 user, port and nested-path identities use distinct encoded coordinates.
 
-Network and prompts hold no configuration lock. The atomic writer rereads YAML,
-preserves comments and unrelated edits, and refuses changed worker root,
-repository selection or service credentials. Setup also protects observed global
+Network and prompts hold no configuration lock. The final cloud ownership check
+runs immediately before taking that lock; the atomic writer then rereads YAML,
+preserves comments and unrelated edits, and refuses changed Worker identity,
+worker root, repository selection or service credentials. Setup also protects observed global
 agent/model/args values and saves those fields with the selected Projects. Repo
 commands only own repositories; neither operation changes repositoryRoot. Shared aliases that would alter
 unrelated effective settings are rejected; unaffected aliases remain valid.
 Repository identities, Project IDs and physical paths must remain distinct,
 including the Daynight state directory.
 
-For explicit paths and runtime overrides, retain the shared service and review
-settings and configure worker directly:
+For explicit local paths and an initial runtime candidate, retain shared service
+and review settings and configure worker directly. After enrollment, edit the
+managed runtime fields in the cloud:
 
 ```yaml
 worker:
@@ -1450,19 +1736,22 @@ worker:
       args: []
 ```
 
-These are the defaults for optional runtime fields. A missing file, omitted
-worker mapping and `worker: {}` use the same defaults; omitted repositories is
-an empty list. Worker never infers repositories from review. Reads do not create
-or rewrite configuration. Unknown root, worker and repository-entry fields are
-ignored at runtime and preserved during configuration edits. Known non-nullable
-fields still reject explicit null, invalid types or values; malformed YAML,
-filesystem failures and cancellation remain errors. model:null clears the model
-setting.
+These are the defaults for the initial candidate. A missing file, omitted worker
+mapping and `worker: {}` use the same defaults; omitted repositories is an empty
+list. Worker never infers repositories from review. Reads do not create or
+rewrite configuration. Unknown root, worker and repository-entry fields are
+ignored during projection and preserved during configuration edits. Local fields
+and an initial candidate still reject invalid known values; malformed YAML,
+filesystem failures and cancellation remain errors. Existing cloud targets do
+not require parsing stale managed YAML values. `model: null` clears the model;
+omitted Project override fields preserve inheritance, while `args: []` clears
+arguments explicitly.
 
-Each repository requires remote/path and may specify projectId or agent/model/args.
-The service Project must already exist and match the repository; use projectId
-when remote discovery is ambiguous. Missing local repositories are cloned;
-existing roots and origins are verified without resetting files or branches.
+The initial candidate resolves each repository remote and optional projectId to
+an existing service Project, preserving native override intent. Use projectId
+when remote discovery is ambiguous. A local binding requires a valid path when
+used; selected existing bindings use the normal clone/origin checks without
+resetting files or branches. A Project without a prepared binding stays pending.
 Credentials belong in native authentication configuration, outside repository
 URLs and argument lists.
 
@@ -1478,10 +1767,45 @@ Repository agent settings override fields independently for the same type.
 Explicit null model or [] args clears that field; switching type clears omitted
 model/args, and args replaces the list. Worker owns cwd/session/model/mode
 arguments and the fixed full-access policy; conflicting arguments are rejected
-before launch. Configuration loads at startup without hot reload. Each claim
-retains its recorded agent type and native session ID; a restarted agent uses the
-current settings appropriate to that type. Settings for another type are not
-applied to it.
+before application.
+
+The Worker stores its target, successful per-item values, errors and observation
+acknowledgments in `worker/configuration.json`, scoped to the service origin,
+authenticated user and Worker ID. One serialized commit owner merges receives,
+application results and acknowledgments, atomically persists the latest state,
+then publishes an immutable effective view. Invalid scope, corrupt data and
+storage errors remain failures. Cached native success history is retained for
+observation. For both global and Project native settings, a new runtime validates
+the current cloud target first and publishes that tuple on success, including
+explicit null model and empty arguments. Only a failed target validation permits
+revalidation of historical successful settings under the current local control
+mode. Unvalidated history remains unavailable while the target is being checked;
+values already validated in this runtime remain usable during later updates.
+Atomic file replacement alone does not permit an older application result to
+overwrite a newer target.
+
+Heartbeats exchange targets and actual results; native and Project operations
+run outside the report attempt and cache commit queue. Independent successful
+items stay applied when another item fails. An item without a successful value
+remains unavailable. Failed items retry after 5, 10, 20, 40 and then 60 seconds;
+new targets replace old application retries. Already-started Project removal
+work retains its original revision until its adapter completes. A recovered
+failure remains reportable until
+accepted, and an acknowledgment cannot clear failures that arose during the
+request. The [Worker requirements](../../docs/spec/daynight-worker.md) and
+[configuration decision](../../.agents/notes/implemented/architecture/2026-11-04-worker-cloud-runtime-configuration.md)
+define the state and failure guarantees.
+
+The existing coordinator reads current successful concurrency, polling,
+recovery and native values. Lowering concurrency does not stop existing tasks;
+new starts wait until usage is below the limit. The next post-round polling wait
+uses the applied interval. Running native processes retain their launch
+arguments. Each claim retains its recorded agent type and native session ID;
+Herdr restarts use current settings appropriate to that type, while Web recovery
+keeps its existing frozen execution configuration. Settings for another type are
+not applied to it. A running disconnected Worker retains successful values;
+restart checks the cloud before normal scheduling. Task inventory or backend
+preparation failures do not disable configuration exchange.
 
 New tasks have automatic execution disabled. Enable it explicitly through the
 normal task update workflow after reading the current task and version. Worker
@@ -1493,7 +1817,7 @@ daynight worker run
 ```
 
 First use generates and atomically saves stable root workerId. One instance owns
-`worker/` state under the selected configuration root (default `~/.daynight/worker/`), its SQLite, lock, logs, temporary resources and
+`worker/` state under the selected configuration root (default `~/.daynight/worker/`), its configuration cache, SQLite, lock, logs, temporary resources and
 private Herdr resources. On macOS, each actual run has its own existing Herdr
 daemon and durable lifecycle record; Linux and Windows use the shared private
 daemon. Each task uses branch `daynight/<task-id>` and directory
@@ -1549,8 +1873,8 @@ Status is pending, active or done. Pending is an actual acquired claim waiting
 for startup; active owns startup, running, recovery or cleanup responsibility;
 done means the claim's local execution has ended. macOS Herdr may still retain
 its worktree and separate archive responsibility. Completed rows remain,
-and at most one claim for the same Project/task can be active. A removed config
-entry stops new acquisition but its saved Project mapping continues reconciliation.
+and at most one claim for the same Project/task can be active. A removed Project
+is excluded from automatic execution and its saved mapping continues reconciliation.
 Mappings with unfinished tasks or actual managed resources cannot be rebound.
 
 The state directory belongs to the configured single service, Daynight account
@@ -1638,9 +1962,17 @@ shell without its extra launch environment. The saved SQLite session_id selects
 resume or fresh startup; an inactive pane's retained reference is not saved as a
 newly observed session ID. A live agent keeps its current connection.
 
+Workspace creation supplies the shell's initial cwd. Before every fresh
+`agent.start` attempt, after caller admission, the original pane's current cwd
+must canonical-match the task worktree. Herdr writes argv into the existing
+shell, whose startup scripts may have changed directories; native trust
+arguments do not set cwd. A mismatch fails as definitely not-submitted without
+starting the native agent. Reconnecting to an existing live agent returns
+before this launch-only check.
+
 A replacement shell can still be initializing when Herdr rejects `agent.start`
 with `agent_pane_busy`. The adapter retries this explicit rejection for at most
-two seconds while the original workspace, pane, terminal and cwd remain owned,
+two seconds while the original workspace, pane and terminal remain owned,
 no Agent has appeared, and foreground process evidence confirms shell
 initialization. Cancellation and the original operation deadline still apply.
 Recovery within that call does not consume an execution failure attempt. Busy
@@ -1685,7 +2017,8 @@ observation before another decision, without blind replay. Terminal cleanup
 suppresses business pings.
 
 Before a periodic ping reaches the native agent, the worker rereads the task
-from the service after workspace serialization and native readiness checks,
+from the service after workspace serialization, native readiness and known
+input-blocker checks,
 verifies the original active claim, worker and worktree, and checks
 `properties.paused`. A true value skips that input without advancing its
 submission baseline. Setting false or removing the property therefore permits
@@ -1752,11 +2085,40 @@ versions fail explicitly.
 
 The policy applies only to native invocations and task workspaces. Global native
 configuration, credentials and organization/OS policies keep their existing
-owners; task delivery still follows its business authorization. Input-readiness
-and supported Codex composer checks remain. Unknown layouts, missing credentials,
-integration failures and launch errors stay visible. Use attach for business
-input. Reconnecting an already alive agent does not promise to resend an input
-lost across a process interruption.
+owners; task delivery still follows its business authorization. Automatic input
+uses Herdr's structured agent identity, readiness, launch and blocked states.
+For Codex and Claude, it then reads the bound pane's complete visible text only
+to reject explicit known menu or disabled-input patterns. Normal composers,
+status bars, directory displays, placeholders and borders are not required.
+Customized or unknown normal layouts proceed immediately after readiness; there
+is no layout whitelist or unknown-layout wait. Any supplied final task
+authorization guard runs after the read and binding/state recheck. Known blockers retain the
+pending initial input or continuation opportunity without advancing its submitted
+baseline or consuming execution recovery attempts; closing them permits a later
+patrol to continue. Failed, malformed or truncated reads remain unsent errors.
+The blocker set does not claim to recognize every future native screen. On macOS,
+`automatic` and `cleanup` inspection report composer evidence as unavailable;
+`manual` permits its lease holder to operate menus. Explicit handback and clean
+orderly recovery use the separate `resume` purpose: Codex and Claude require
+ANSI-preserved empty-field evidence without optional model, cwd or status-bar
+requirements. Codex placeholder words alone are insufficient: DIM renderer
+attributes and current field geometry distinguish them from literal or multiline
+drafts. Claude accepts a genuinely blank bordered field, not ambiguous Try text.
+Unknown or unsupported styles cannot become empty. Copilot retains
+unavailable composer evidence and its explicit handback responsibility. Durable
+leases, fences, draft dispositions, cleanup priority and unknown-input results
+retain their existing guarantees. A typed known blocker before any native write
+remains waiting after journal serialization and lifecycle pending projection;
+a possible write still produces an unknown outcome on failure.
+The worker supplies the initial task cwd at workspace creation and checks the
+original shell cwd only immediately before a fresh native start. Resource
+discovery, live-agent reconnection, input observation and stopping do not require
+pane and agent cwd metadata to agree. A human workspace at the same cwd does not prevent creation
+of a separately owned task workspace. Actual creation errors come from
+`workspace.create`. Original workspace/pane/terminal binding, final task
+authorization, process-stop evidence and prompt receipts remain checked. Missing credentials, integration failures and launch errors
+stay visible. Use attach for business input. Reconnecting an already alive agent
+does not promise to resend an input lost across a process interruption.
 
 When the original claim is absent from a successful complete inventory, the
 backend owns terminal resource cleanup. macOS Herdr writes its stop intent and
@@ -1767,14 +2129,24 @@ Unknown identity, replacement or stop outcomes retain responsibility and block
 new runs. A journal write failure permits only an unconfirmed best-effort stop;
 pane disappearance cannot prove success after restart.
 
-Herdr lifecycle registration advertises `observe=false`, `control=false` and
-`archive=false`. Terminal recording, browser control and archive finalization
-are not enabled. Consequently macOS Herdr terminal cleanup retains its worktree
-and separate archive responsibility even after confirmed stopping. It does not
-send a cleanup prompt or claim a final ready archive. A terminal run can mark
-its local execution row done and release its slot after segment and ledger
-confirmation, while
-the retained worktree continues to block another claim for the same task.
+macOS Herdr records complete terminal samples independently of viewers and
+network connectivity. The combined Worker publishes its observation, control
+and archive capabilities through Session v2; a compatible page is still required
+to render terminal content and expose its controls. Samples are durable before
+publication as recorded. Identical screens retain a five-second checkpoint of
+their observed duration; interrupted intervals and recording limits remain
+visible in partial archives.
+
+A durable input arbiter revokes control before cleanup. It sends one bounded
+advisory prompt only from safe automation with no manual draft or unknown
+input; other states skip the prompt and proceed with controlled stopping.
+Confirmed stopping releases the execution slot while a separate queue freezes
+the original Session and uploads its fixed archive. Worktree deletion requires
+the matching durable `ready` or legitimate `unavailable` receipt. Failed source
+or upload responsibility retains the original worktree and blocks a new claim
+for that task; other tasks may run within the independent resource budgets.
+See [retained recordings](#retained-herdr-recordings) for inspection and explicit
+recovery or disposal.
 
 For Linux/Windows legacy Herdr and Web, when the original claim is absent from a
 successful complete inventory, the worker asks its agent to release attributable
@@ -1821,7 +2193,7 @@ Restart resumes the same claim's remaining resources without starting business
 execution. Previously confirmed cleanup responsibility can continue during later
 service-read failures.
 
-Failed claims retry independently after 1, 2, 4, 8, 16, 32 and then at most 60
+Native cleanup failures retry independently after 1, 2, 4, 8, 16, 32 and then at most 60
 seconds, when normal reconciliation next observes eligibility. Backoff does not
 spend execution recovery budget or release a capacity slot. Other eligible
 cleanup and healthy execution continue under the existing capacity limit. Errors
@@ -1854,6 +2226,13 @@ then remove its retained worktree and unblock a later claim for the same task.
 An unknown original agent type retains the workspace with a visible error;
 current configuration does not establish that historical type. Unproven Git-only
 resources remain untouched.
+
+The [Herdr input design](../../docs/design/herdr-input-arbitration.md) defines
+`worker/herdr-inputs.sqlite`, strict terminal transport, retained operation IDs,
+manual leases and explicit handback. Native idle and Detach do not resume
+automation. Unknown inputs are never automatically replayed; an explicit initial
+delivery disposition remains distinct from a provider acknowledgement. Strict
+input currently requires the validated Herdr 0.9.5 protocol profile.
 
 The [Herdr lifecycle design](../../docs/design/herdr-worker-lifecycle.md) defines
 the persisted identities, crash boundaries and supported macOS process scope;
@@ -2028,10 +2407,68 @@ the supported behavior and verification boundary.
 
 ## Worker manual management
 
-Stop `daynight worker run` before retry, release or resume. Each command
-acquires the same instance lock and synchronously handles one specified claim;
-an occupied lock returns an instruction to stop the runner. Management does not
-write a durable intent or coordinate through a background request queue.
+Stop `daynight worker run` before retry, release, resume or resource management.
+Each command acquires the same instance lock; an occupied lock returns an
+instruction to stop the runner. Retry, release and resume synchronously handle
+one specified claim without a background request queue. Resource disposal
+persists its explicit decision so an interrupted deletion can resume against
+the original identity.
+
+### Retained Herdr recordings
+
+Inspect retained macOS Herdr resources before choosing a retry or disposal:
+
+```bash
+daynight worker resources list
+```
+
+The JSON result identifies the original Session, project/task/claim/worktree,
+stop evidence, source and worktree paths, source byte count, archive state,
+retry time and any disposal decision. Inspection never starts an Agent. A
+confirmed original stop releases execution capacity even if archival failed;
+`stop_unknown` still consumes capacity. The old worktree continues to reserve
+its task path until verified removal.
+
+New claims are blocked at 20 retained worktrees or 2 GiB of pending recording
+source, or when the worker filesystem has less than 1 GiB available. Each round
+advances at most one historical Herdr archive. Temporary upload failures use
+5-second to 5-minute exponential backoff; permissions and permanent corruption
+require explicit attention. Other running tasks continue. Ready local sources
+are retained and still consume actual disk space; there is no automatic source
+expiry or garbage collection.
+
+After restoring the original owner's access or resolving a transient cause,
+request another archive attempt with the identities from inspection:
+
+```bash
+daynight worker resources retry <task-id> --project <project-id> \
+  --claim-id <claim-id> --session-id <session-id> --worktree-id <worktree-id>
+```
+
+Archive retry preserves the original operation and source. It never resumes an
+Agent, switches archive owner or converts corrupt source into a partial or
+unavailable archive. Normal worktree cleanup requires a durable, matching
+`ready` or legitimate `unavailable` receipt.
+
+For an irrecoverable failure, explicitly choose `abandon` to stop retries while
+retaining files, or `delete` to remove that original worktree and recording
+source. Deletion discards local recording evidence. Both choices require the
+original execution to be confirmed stopped and its claim to be terminal:
+
+```bash
+daynight worker resources dispose <task-id> --project <project-id> \
+  --claim-id <claim-id> --session-id <session-id> --worktree-id <worktree-id> \
+  --operation-id <new-operation-uuid> --action abandon --confirm
+```
+
+Use `--action delete` only after reviewing the exact paths and consequences.
+The stable operation UUID identifies this explicit choice; reuse it with the
+same action after an interrupted result. Identity mismatches, active claims,
+unknown stop evidence and missing confirmation are refused. Disposal preserves
+the archive's historical failure and never manufactures a successful receipt.
+Worktree deletion retains the existing ownership and resource-use checks.
+
+### Active claim management
 
 Retry performs one attempt for an active claim still owned by this worker:
 
@@ -2067,7 +2504,7 @@ notify and stop agent → close workspace → submit remote change
 
 macOS Herdr release instead confirms the durable original stop without a
 cleanup prompt, submits the remote change, and retains the worktree until
-archive finalization is available. The ordering above applies to legacy Herdr;
+a matching finalization receipt permits deletion. The ordering above applies to legacy Herdr;
 Web also applies its own archive gate. The worktree is retained until remote
 confirmation. A refusal leaves it available
 for original execution recovery; success followed by local deletion failure is

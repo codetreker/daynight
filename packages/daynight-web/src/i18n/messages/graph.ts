@@ -6,6 +6,9 @@ export type GraphMessages = {
   readonly inProgressCount: (args: { count: number }) => string;
   readonly progress: (args: { done: number; total: number }) => string;
   readonly chainTitle: string;
+  readonly noMachineRecord: string;
+  readonly claimMachine: (args: { name: string }) => string;
+  readonly recordedMachine: (args: { name: string }) => string;
   readonly childTasks: (args: { count: number }) => string;
   readonly goalDetails: string;
   readonly goalDetailsLabel: (args: { title: string }) => string;

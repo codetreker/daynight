@@ -80,8 +80,14 @@ The [ARM64 support decision](2026-11-04-macos-arm64-support.md) replaces that
 architecture-independent premise. Environment receipts continue retaining the
 actual OS, architecture, toolchain and tested source.
 
-The 180-second hook/callback, 120-second command and 10-minute job limits
-retain their settings. Setup and behavior consume separate hook/callback allowances;
+The 180-second hook/callback and 120-second command limits retain their settings.
+The [native phase decision](2026-11-04-parallel-native-cli-validation.md)
+originally replaced the combined platform job with independent ordinary and
+installed jobs, each bounded to 10 minutes. Their separate ceilings and duplicated
+bootstrap changed the earlier total platform budget. The later
+[single macOS allocation decision](2026-11-05-single-macos-native-allocation.md)
+keeps both complete phases and their validation bounds on one 20-minute macOS
+job; Linux and Windows retain independent jobs. Setup and behavior consume separate hook/callback allowances;
 this changes budget ownership and does not preserve the old scenario-total
 allowance or imply less total work. Ubuntu still builds the runtime matrix's
 packed artifact. The [development guide](../../../../docs/development.md) owns
@@ -120,9 +126,10 @@ The original Intel selection made the lane's OS major version and architecture
 explicit while retaining normal GitHub image updates. Capacity remained under
 GitHub's control, and native acquisition annotations were required to diagnose
 a failure before execution. The later [ARM64 support
-decision](2026-11-04-macos-arm64-support.md) owns the current runner and support
-policy. Full native CI must pass on that runner before its configuration is
-accepted; catalog support, component probes and dependency targets do not prove
+decision](2026-11-04-macos-arm64-support.md) owns the support policy, and the
+[image availability decision](2026-11-05-macos-ci-image-availability.md) selects the
+current standard ARM64 image. Full native CI must pass on that runner before its
+configuration is accepted; catalog support, component probes and dependency targets do not prove
 whole-suite execution.
 
 Local phase measurements do not prove native-platform speed, and changes in
