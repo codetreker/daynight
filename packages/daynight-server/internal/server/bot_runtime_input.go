@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonunicode"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 )
 

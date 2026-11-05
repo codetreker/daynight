@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
 func (h *sessionRoutes) registerArchiveRoutes(mux *http.ServeMux) {

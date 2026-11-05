@@ -12,7 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonunicode"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 	"github.com/jackc/pgx/v5/pgconn"

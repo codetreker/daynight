@@ -11,7 +11,7 @@ import (
 
 func fixtureBytes(t *testing.T, name string) []byte {
 	t.Helper()
-	b, e := os.ReadFile(filepath.Join("..", "..", "..", "..", "daynight", "test", "session", "fixtures", "v2", name+".json"))
+	b, e := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "..", "daynight", "test", "session", "fixtures", "v2", name+".json"))
 	if e != nil {
 		t.Fatal(e)
 	}
