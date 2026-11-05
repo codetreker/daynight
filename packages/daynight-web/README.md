@@ -1812,7 +1812,7 @@ pnpm web:test
 The build typechecks the package and emits production HTML and hashed assets to
 `packages/daynight-web/dist/`. `scripts/publish-assets.mts` validates the index,
 its local asset references and ordinary files, prepares a complete staged copy,
-and replaces `packages/daynight-server/internal/webui/dist/`. Failed validation
+and replaces `packages/daynight-server/internal/service/webui/dist/`. Failed validation
 or publication fails the build; a failed swap attempts to restore previous assets
 and reports both causes if rollback also fails.
 The Go binary embeds the published output. Both generated directories are ignored

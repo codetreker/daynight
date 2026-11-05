@@ -187,7 +187,7 @@ test('CLI resolves its known package paths independently of cwd and exits nonzer
   await fixture(async (_paths, root) => {
     const packageDirectory = join(root, 'packages/daynight-web');
     const relocated = join(packageDirectory, 'scripts/publish-assets.mts');
-    const destination = join(root, 'packages/daynight-server/internal/webui/dist');
+    const destination = join(root, 'packages/daynight-server/internal/service/webui/dist');
     await mkdir(dirname(relocated), { recursive: true });
     await copyFile(script, relocated);
     const run = (args: string[] = []) => {

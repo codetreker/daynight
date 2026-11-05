@@ -22,7 +22,7 @@ RUN go mod download
 COPY packages/daynight-server/api ./api
 COPY packages/daynight-server/cmd ./cmd
 COPY packages/daynight-server/internal ./internal
-COPY --from=web /src/packages/daynight-server/internal/webui/dist ./internal/webui/dist
+COPY --from=web /src/packages/daynight-server/internal/service/webui/dist ./internal/service/webui/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/daynight-server ./cmd/daynight-server
 
 FROM alpine:3.24

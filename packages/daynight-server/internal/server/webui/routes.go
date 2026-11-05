@@ -1,4 +1,4 @@
-package server
+package webui
 
 import (
 	"errors"
@@ -7,11 +7,10 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/webui"
+	resources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 )
 
-func uiRoutes(mux *http.ServeMux, logger *slog.Logger) {
-	ui := webui.New()
+func (ui *UI) RegisterRoutes(mux *http.ServeMux, logger *slog.Logger) {
 	page := uiHandler(logger, ui.Page)
 	asset := uiHandler(logger, ui.Asset)
 	for _, pattern := range []string{
@@ -29,12 +28,12 @@ func uiRoutes(mux *http.ServeMux, logger *slog.Logger) {
 func uiHandler(logger *slog.Logger, serve func(http.ResponseWriter, *http.Request) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
 		if err := serve(w, request); err != nil {
-			var responseError *webui.ResponseError
+			var responseError *ResponseError
 			if errors.As(err, &responseError) {
 				httpx.LogFailure(logger, request.Context(), "webui", "response", err)
 				return
 			}
-			if errors.Is(err, webui.ErrNotFound) {
+			if errors.Is(err, resources.ErrNotFound) {
 				err = &model.Fault{Code: "not_found", Message: "resource not found", Cause: err}
 			}
 			httpx.WriteError(w, request, logger, "webui", "read", err)

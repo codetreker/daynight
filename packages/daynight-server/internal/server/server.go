@@ -3,6 +3,8 @@ package server
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
+	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 
@@ -48,7 +50,8 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	botsRoutes(mux, service.NewBots(dependencies.Store), relay.service, auth, logger)
 	relay.register(mux)
 	healthRoutes(mux, dependencies.Store, logger)
-	uiRoutes(mux, logger)
+	web := webhttp.New(webresources.New())
+	web.RegisterRoutes(mux, logger)
 	mux.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})

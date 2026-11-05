@@ -1,9 +1,6 @@
 package webui
 
 import (
-	"embed"
-	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"mime"
@@ -12,19 +9,18 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	resources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 )
-
-// Both patterns must match real build output before this package can compile.
-//
-//go:embed dist/index.html dist/assets/*
-var bundled embed.FS
-
-var ErrNotFound = errors.New("web resource not found")
 
 var hashedAsset = regexp.MustCompile(`-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9.]+$`)
 
+type ResourceReader interface {
+	Read(name string) ([]byte, error)
+}
+
 type UI struct {
-	files fs.FS
+	resources ResourceReader
 }
 
 type ResponseError struct {
@@ -34,7 +30,7 @@ type ResponseError struct {
 func (e *ResponseError) Error() string { return "web response failed" }
 func (e *ResponseError) Unwrap() error { return e.Cause }
 
-func New() *UI { return &UI{files: bundled} }
+func New(resources ResourceReader) *UI { return &UI{resources: resources} }
 
 func (u *UI) Page(w http.ResponseWriter, request *http.Request) error {
 	return u.serve(w, request, "dist/index.html", "text/html; charset=utf-8", "no-store")
@@ -42,11 +38,11 @@ func (u *UI) Page(w http.ResponseWriter, request *http.Request) error {
 
 func (u *UI) Asset(w http.ResponseWriter, request *http.Request) error {
 	if !strings.HasPrefix(request.URL.Path, "/assets/") {
-		return ErrNotFound
+		return resources.ErrNotFound
 	}
 	name := strings.TrimPrefix(request.URL.Path, "/assets/")
 	if !fs.ValidPath(name) || name == "." {
-		return ErrNotFound
+		return resources.ErrNotFound
 	}
 	cache := "no-store"
 	if hashedAsset.MatchString(path.Base(name)) {
@@ -55,34 +51,11 @@ func (u *UI) Asset(w http.ResponseWriter, request *http.Request) error {
 	return u.serve(w, request, "dist/assets/"+name, mime.TypeByExtension(path.Ext(name)), cache)
 }
 
-func (u *UI) read(name string) ([]byte, error) {
-	file, err := u.files.Open(name)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("%w: %w", ErrNotFound, err)
-		}
-		return nil, err
-	}
-	info, statErr := file.Stat()
-	var data []byte
-	var readErr error
-	if statErr == nil && !info.IsDir() {
-		data, readErr = io.ReadAll(file)
-	}
-	if err := errors.Join(statErr, readErr, file.Close()); err != nil {
-		return nil, err
-	}
-	if info.IsDir() {
-		return nil, ErrNotFound
-	}
-	return data, nil
-}
-
 func (u *UI) serve(w http.ResponseWriter, request *http.Request, name, contentType, cache string) error {
 	if err := request.Context().Err(); err != nil {
 		return err
 	}
-	data, err := u.read(name)
+	data, err := u.resources.Read(name)
 	if err != nil {
 		return err
 	}
