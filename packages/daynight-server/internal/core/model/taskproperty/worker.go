@@ -1,4 +1,4 @@
-package taskproperties
+package taskproperty
 
 import (
 	"bytes"

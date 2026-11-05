@@ -7,7 +7,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 )
 
 type MoveTaskStep struct {
@@ -35,7 +36,7 @@ func canonicalStepPlacement(input MoveTaskStep) (tasksteps.Placement, error) {
 		if *anchor == nil {
 			continue
 		}
-		canonical, err := tasksteps.CanonicalID(**anchor)
+		canonical, err := taskcodec.CanonicalID(**anchor)
 		if err != nil {
 			return placement, invalidInput(err.Error())
 		}
@@ -50,7 +51,7 @@ func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, project
 	if err != nil {
 		return result, err
 	}
-	stepID, err = tasksteps.CanonicalID(stepID)
+	stepID, err = taskcodec.CanonicalID(stepID)
 	if err != nil {
 		return result, invalidInput(err.Error())
 	}
@@ -72,7 +73,7 @@ func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, project
 		if err != nil {
 			return err
 		}
-		if _, err := tasksteps.Collection(header, current); err != nil {
+		if _, err := taskcodec.Collection(header, current); err != nil {
 			return err
 		}
 		candidate, from, to, err := tasksteps.MoveCandidate(current, stepID, placement)
@@ -87,7 +88,7 @@ func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, project
 			return err
 		}
 		if from == to {
-			result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, current)
+			result.Resource, result.JSON, err = taskcodec.EncodeCollection(header, current)
 			return err
 		}
 		if header.Version == math.MaxInt64 {
@@ -98,7 +99,7 @@ func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, project
 			return err
 		}
 		header.Version++
-		result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, candidate)
+		result.Resource, result.JSON, err = taskcodec.EncodeCollection(header, candidate)
 		if err != nil {
 			return taskStepsEncodingFault(err)
 		}

@@ -11,7 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 )
 
@@ -299,14 +299,14 @@ func TestTaskStepsAddQueryFailuresRemainInternal(t *testing.T) {
 }
 
 func TestTaskStepsEncodingFaultPreservesCapacityAndOriginalCause(t *testing.T) {
-	limit := &tasksteps.LimitError{EncodedBytes: tasksteps.MaxEncodedBytes + 1}
+	limit := &taskcodec.LimitError{EncodedBytes: taskcodec.MaxEncodedBytes + 1}
 	for _, original := range []error{limit, fmt.Errorf("candidate encoding: %w", limit)} {
 		converted := taskStepsEncodingFault(original)
 		fault, pure := TaskStepsFault(converted)
-		if !pure || fault.Code != "steps_limit_exceeded" || fault.Message == "" || fault.StepsLimit == nil || fault.StepsLimit.EncodedBytes != tasksteps.MaxEncodedBytes+1 || fault.StepsLimit.MaxEncodedBytes != tasksteps.MaxEncodedBytes {
+		if !pure || fault.Code != "steps_limit_exceeded" || fault.Message == "" || fault.StepsLimit == nil || fault.StepsLimit.EncodedBytes != taskcodec.MaxEncodedBytes+1 || fault.StepsLimit.MaxEncodedBytes != taskcodec.MaxEncodedBytes {
 			t.Fatalf("capacity refusal lost its public details: %#v", converted)
 		}
-		var actual *tasksteps.LimitError
+		var actual *taskcodec.LimitError
 		if fault.Cause != original || !errors.Is(converted, original) || !errors.Is(converted, limit) || !errors.As(converted, &actual) || actual != limit {
 			t.Fatal("capacity conversion lost the original encoding error chain")
 		}

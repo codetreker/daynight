@@ -52,7 +52,10 @@ independent drafts and reading positions. The current name opens details without
 rebuilding the conversation; narrow layouts and full screen share the existing
 focus rules. Closing a view does not stop its Worker-owned Agent. List deletion
 uses authoritative cleanup stages and invalidates only the target's known
-conversation state; an old Test URL cannot bypass deletion.
+conversation state; an old Test URL cannot bypass deletion. Background identity
+and data checks retain confirmed dialogs, the selected conversation and its
+reading state while request and publication admission remain enforced. Actual
+access loss still clears the affected state.
 
 The [management requirements](../../docs/spec/bot-management-web.md) and
 [Session design](../../docs/design/bot-session-view.md) own behavior and identity
@@ -146,11 +149,14 @@ attachment pages defer restoration until the workspace appears. Team-dependent
 links and its project directory wait for a verified selection, while the page's
 own resource and the shared-project directory can load independently. Restoration
 failures expose a workspace retry without replacing the saved choice. Only a
-verified missing Team clears that choice and restores Personal. When the
-confirmed selection is Personal, Team members and settings entries are omitted
-from the sidebar in all layouts; ordinary Teams retain links to their own
-member and settings pages regardless of their names. Direct Personal member and
-settings URLs remain available under their existing access rules. The
+verified missing Team clears that choice and restores Personal. Background
+checks retain the confirmed Team and all loaded selector pages until a complete
+refreshed prefix is available; actual changes and recoverable errors remain
+visible. Explicit refresh still reads the directory. When the confirmed selection
+is Personal, Team members and settings entries are omitted from the sidebar in
+all layouts; ordinary Teams retain links to their own member and settings pages
+regardless of their names. Direct Personal member and settings URLs remain
+available under their existing access rules. The
 [personal Team navigation decision](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)
 records this visibility choice. The
 [browser Team preference decision](../../.agents/notes/implemented/feature/2026-11-04-browser-team-preference.md)
@@ -261,7 +267,10 @@ identity-bound representation. An unchanged authenticated response is bodyless
 current login without retransferring an unchanged avatar. A different account,
 changed profile or missing HTTP cache receives 200. Authentication and profile
 read failures retain no-store errors; no custom `/me` IndexedDB is used.
-Team settings, members and invitations retain loaded content, drafts and open
+Team settings display the selectable Team ID with an adjacent copy button for every
+viewer. Clipboard success and failure are reported locally; failure leaves the ID
+selectable and retryable. Pending copies are guarded and results are discarded when
+the Team or identity context changes. Team settings, members and invitations retain loaded content, drafts and open
 confirmations during ordinary identity checks. Same-account recovery rereads them
 in the background; writes require fresh Team, membership and invitation admission.
 A changed selected member role or version invalidates its confirmation. Project

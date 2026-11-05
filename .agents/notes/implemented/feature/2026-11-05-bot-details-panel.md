@@ -18,7 +18,9 @@ visibility outside Session cache and client identity. The name button opens a
 panel beside the existing conversation subtree. Both consume the same selected
 Bot read; changing that resource clears the previous details while retaining the
 open intent. The panel displays only name, observed status, Worker, frozen cwd
-and Agent. Startup success remains distinct from current availability.
+and Agent. Startup success remains distinct from current availability. The
+[background-check decision](../bug-fix/2026-11-05-bot-background-check-display.md)
+preserves the open panel while admission is temporarily paused.
 
 The same dialog element participates in the desktop layout as a nonmodal
 complementary region and uses native `showModal()` at widths up to 1000px. Native

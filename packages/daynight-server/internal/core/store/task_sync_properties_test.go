@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -49,7 +49,7 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQuery(t *testing.T) {
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	empty := queryTask(t, database, project.ID, 11, model.TaskTodo)
 	foreign := queryTask(t, database, other.ID, 12, model.TaskTodo)
-	before, err := taskproperties.Normalize(model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque\u0000","title":"Repeated 中文"},{"url":"opaque\u0000","title":"Repeated 中文"}]`)}, false)
+	before, err := taskproperties.Normalize(model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque\u0000","title":"Repeated 中文"},{"url":"opaque\u0000","title":"Repeated 中文"}]`)})
 	if err != nil {
 		t.Fatal(err)
 	}

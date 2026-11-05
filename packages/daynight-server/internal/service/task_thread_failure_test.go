@@ -11,7 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskthreadjson"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -281,7 +281,7 @@ func TestThreadReadDatabaseFailureAndOversizeInvariantAreVisible(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	threads := NewTaskThreads(database)
 	task := createTask(t, tasks, principal, project.ID, "Stored invariant")
-	oversize := model.ThreadMessage{ID: uuid.NewString(), Body: strings.Repeat("x", taskthreadjson.PageLimit+1)}
+	oversize := model.ThreadMessage{ID: uuid.NewString(), Body: strings.Repeat("x", taskcodec.PageLimit+1)}
 	_, err := selectThreadPage(context.Background(), []model.ThreadMessage{oversize}, 1, false, false)
 	if err == nil {
 		t.Fatal("oversize stored message silently skipped")

@@ -1,4 +1,4 @@
-package tasksteps
+package steps
 
 import (
 	"bytes"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 )
 
 func TestDeleteCandidatePreservesSurvivorsAndSourceRows(t *testing.T) {
@@ -52,12 +53,13 @@ func TestDeleteCandidatePreservesSurvivorsAndSourceRows(t *testing.T) {
 }
 
 func TestDeleteCandidateSingletonEncodesExplicitEmptyCollection(t *testing.T) {
-	header, step := fixture()
+	header := model.TaskHeader{ProjectID: "00000000-0000-4000-8000-000000000001", ID: "00000000-0000-4000-8000-000000000002", Version: 1}
+	step := model.TaskStep{ID: "00abcdef"}
 	candidate, index, err := DeleteCandidate([]model.TaskStep{step}, step.ID)
 	if err != nil || index != 0 || candidate == nil || len(candidate) != 0 {
 		t.Fatal("singleton deletion lost explicit empty collection")
 	}
-	resource, data, err := EncodeCollection(header, candidate)
+	resource, data, err := codec.EncodeCollection(header, candidate)
 	if err != nil || resource.Steps == nil || len(resource.Steps) != 0 || !bytes.Contains(data, []byte(`"steps":[]`)) {
 		t.Fatal("singleton deletion cannot produce complete empty public resource")
 	}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { BotCreationUnknown, createBot, getBot, getBotDefaults, type Bot, type BotDefaults, type CreateBotInput } from '../../api/bots';
-import { ApiError, isAbortError } from '../../api/client';
+import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
 import type { WorkerAgent } from '../../api/types';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -8,7 +8,8 @@ import { useBotMessages } from './messages';
 import './create-dialog.css';
 
 /** The page retains an unresolved request when this dialog closes. It is never resubmitted. */
-export function BotCreateDialog({ unresolvedRequest, onUnresolvedRequestChange, onClose, onCreated }: {
+export function BotCreateDialog({ enabled = true, unresolvedRequest, onUnresolvedRequestChange, onClose, onCreated }: {
+  readonly enabled?: boolean;
   readonly unresolvedRequest: CreateBotInput | null;
   readonly onUnresolvedRequestChange: (input: CreateBotInput | null) => void;
   readonly onClose: () => void;
@@ -69,7 +70,7 @@ export function BotCreateDialog({ unresolvedRequest, onUnresolvedRequestChange, 
   const finish = (bot: Bot) => { onUnresolvedRequestChange(null); onCreated(bot); };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (operation.current !== null || unknown || !canCreate || scope.isInvalidated) return;
+    if (operation.current !== null || unknown || !canCreate || !enabled || authRequestsPaused() || scope.isInvalidated) return;
     const trimmed = name.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
     if (!trimmed.isWellFormed() || [...trimmed].length < 1 || [...trimmed].length > 40 || /\p{Cc}/u.test(trimmed)) { setValidation('name'); nameInput.current?.focus(); return; }
     const explicitCwd = cwd === null || cwd === '' ? undefined : cwd;
@@ -95,7 +96,7 @@ export function BotCreateDialog({ unresolvedRequest, onUnresolvedRequestChange, 
     })();
   };
   const check = () => {
-    if (operation.current || unresolvedRequest === null || scope.isInvalidated) return;
+    if (operation.current || unresolvedRequest === null || !enabled || authRequestsPaused() || scope.isInvalidated) return;
     const input = unresolvedRequest, controller = new AbortController(), signal = AbortSignal.any([controller.signal, scope.signal]);
     operation.current = controller; setBusy(true); setChecking(true); setError(null);
     void (async () => {

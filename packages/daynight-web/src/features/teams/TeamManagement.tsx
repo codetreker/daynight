@@ -4,6 +4,7 @@ import { createTeam, deleteTeam, getTeam, listTeams, renameTeam, type Team } fro
 import { useI18n } from "../../i18n/LocaleProvider";
 import { ManagementDialog } from "../management/ManagementDialog";
 import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
+import { TeamIdCopy } from "./TeamIdCopy";
 
 const messages = (zh: boolean) => zh ? {
   create: "创建 Team", name: "Team 名称", edit: "修改", editName: "修改 Team 名称", createHint: "你将成为新 Team 的 Admin。", cancel: "取消", close: "关闭", save: "保存修改", saving: "正在提交", invalid: "请输入有效且不全为空白的名称。", failed: "操作失败，请检查后重试。", unknown: "结果未知。请核对当前状态；无法确认原操作是否成功。", check: "查看当前状态", checking: "正在读取", checkFailed: "无法读取当前状态。", storageError: "无法读取或清除已保存的 Team 选择，请重试。", observed: "当前 Team", more: "加载更多", settings: "Team 设置", basic: "基本信息", description: "Team 名称展示在导航和项目归属中。", id: "Team ID", personal: "个人", readOnly: "只有普通 Team 的 admin 可以修改设置。", delete: "删除 Team", deleteHint: "删除前必须转出全部项目。", confirm: "输入 Team 名称确认", mismatch: "输入的 Team 名称不匹配。", conflict: "Team 已变化。请核对当前名称和版本后重新操作。", notEmpty: "Team 仍有项目，请先转出全部项目。", unavailable: "此 Team 不可用或你没有访问权限。", saved: "已保存", retry: "重试", created: "当前可访问的 Team", idLabel: "请求 ID："
@@ -86,11 +87,12 @@ export const CreateTeamDialog = ({ admission, onIdentityMismatch, onClose, onCre
   </ManagementDialog>;
 };
 
-export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpdated, onDeleted, onUnavailable, active = true, admissionBlocked = false }: CommonProps & { readonly teamId: string; readonly active?: boolean; readonly admissionBlocked?: boolean; readonly onUpdated: (team: Team) => void; readonly onDeleted: () => void; readonly onUnavailable?: () => "forgotten" | "changed" | "storage_error" }) => {
+export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpdated, onDeleted, onUnavailable, onGuardChange, active = true, admissionBlocked = false, preferenceDenied = false, confirmedTeam = null }: CommonProps & { readonly teamId: string; readonly active?: boolean; readonly admissionBlocked?: boolean; readonly preferenceDenied?: boolean; readonly confirmedTeam?: Team | null; readonly onUpdated: (team: Team) => void; readonly onDeleted: () => void; readonly onUnavailable?: () => "forgotten" | "changed" | "storage_error"; readonly onGuardChange?: (guarded: boolean) => void }) => {
   const { locale, messages: { auth: { roles } } } = useI18n(), zh = locale === "zh-CN", m = messages(zh);
   const [team, setTeam] = useState<Team | null>(null), [draft, setDraft] = useState(""), [edited, setEdited] = useState(false), [invalid, setInvalid] = useState(false);
   const [loading, setLoading] = useState(true), [readError, setReadError] = useState<unknown>(null), [accessDenied, setAccessDenied] = useState(false), [storageError, setStorageError] = useState(false), [saved, setSaved] = useState(false), [changed, setChanged] = useState(false);
   const latestTeam = useRef<Team | null>(null);
+  if (latestTeam.current !== null && confirmedTeam?.id === teamId) latestTeam.current = mergeTeam(latestTeam.current, confirmedTeam);
   // Display survives identity checks; writes still require a fresh Team read.
   const fresh = useRef(false), backgroundRecheck = useRef(false);
   if (!active) { fresh.current = false; backgroundRecheck.current = false; }
@@ -99,8 +101,22 @@ export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpd
   const renameOpen = useRef(false); renameOpen.current = renaming;
   const read = useRef<AbortController | null>(null), op = useOperation(admission);
   const operation = useRef(op); operation.current = op;
-  const unavailable = useRef(onUnavailable); unavailable.current = onUnavailable;
+  const guardCallback = useRef(onGuardChange); guardCallback.current = onGuardChange;
+  const guarded = useRef(false);
+  const setGuard = (value: boolean) => { if (guarded.current !== value) { guarded.current = value; guardCallback.current?.(value); } };
+  useEffect(() => { setGuard(op.pending || op.result?.kind === "unknown"); }, [op.pending, op.result]);
+  useEffect(() => () => { if (guarded.current) { guarded.current = false; guardCallback.current?.(false); } }, []);
+  const unavailableCallback = useRef(onUnavailable); unavailableCallback.current = onUnavailable;
   const deleteButton = useRef<HTMLButtonElement>(null), editButton = useRef<HTMLButtonElement>(null), heading = useRef<HTMLHeadingElement>(null), restoreFocus = useRef(false), restoreEditFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (team === null || confirmedTeam?.id !== teamId || confirmedTeam.version <= team.version && confirmedTeam.membership.version <= team.membership.version) return;
+    const merged = mergeTeam(team, confirmedTeam);
+    setTeam(merged);
+    if (team.version !== merged.version) {
+      if (!renameOpen.current) { setDraft(merged.name ?? ""); setEdited(false); }
+      setChanged(true); setTyped(""); setSaved(false);
+    }
+  }, [team, confirmedTeam, teamId]);
   useLayoutEffect(() => {
     if (!deleting && restoreFocus.current) {
       restoreFocus.current = false;
@@ -135,7 +151,7 @@ export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpd
       if (signal.aborted || admission.isInvalidated) return null;
       const denied = error instanceof ApiError && error.kind === "server" && ((error.status === 403 && error.code === "forbidden") || (error.status === 404 && error.code === "not_found"));
       if (denied) setAccessDenied(true);
-      const unavailableResult = denied && error.status === 404 && !operation.current.guarded() ? unavailable.current?.() : undefined;
+      const unavailableResult = denied && error.status === 404 && !operation.current.guarded() ? unavailableCallback.current?.() : undefined;
       if (unavailableResult !== "forgotten") { setStorageError(unavailableResult === "storage_error"); setReadError(error); }
     } return null; }
     finally { if (read.current === controller) { read.current = null; if (!signal.aborted && !admission.isInvalidated) setLoading(false); } }
@@ -149,21 +165,24 @@ export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpd
   }, [load, active, admissionBlocked]);
   const editable = team?.kind === "ordinary" && team.membership.role === "admin";
   const unknown = op.result?.kind === "unknown";
+  const unavailable = accessDenied || preferenceDenied;
   const openRename = () => {
     if (!active || !team || !editable || loading || op.pending || unknown || readError !== null || op.guarded()) return;
     setDraft(team.name ?? ""); setEdited(false); setInvalid(false); setSaved(false); op.clear(); setRenaming(true);
   };
   const conflict = (error: unknown) => { if (error instanceof ApiError && (error.code === "version_conflict" || error.code === "forbidden" || error.code === "not_found")) { setTyped(""); void load(true); } };
   const save = (event: FormEvent) => {
-    event.preventDefault(); if (!active || authRequestsPaused() || !fresh.current || !renaming || !team || !editable || loading || readError !== null || !edited || unknown) return;
+    event.preventDefault(); if (!active || preferenceDenied || authRequestsPaused() || op.guarded() || !fresh.current || !renaming || !team || !editable || loading || readError !== null || !edited || unknown) return;
     if (!validName(draft)) { setInvalid(true); return; }
     setSaved(false);
+    setGuard(true);
     void op.run((signal, dispatched) => renameTeam(admission.userId, team, draft, signal, onIdentityMismatch, dispatched), (value) => { const merged = mergeTeam(latestTeam.current, value); latestTeam.current = merged; setTeam(merged); setDraft(merged.name ?? ""); setEdited(false); setChanged(false); setSaved(true); closeRename(); onUpdated(merged); }, conflict);
   };
   const openDelete = () => { if (!active || !editable || loading || op.pending || unknown) return; void (async () => { const latest = await load(false); if (latest?.kind === "ordinary" && latest.membership.role === "admin") { setTyped(""); setMismatch(false); op.clear(); setDeleting(true); } })(); };
   const remove = (event: FormEvent) => {
-    event.preventDefault(); if (!active || authRequestsPaused() || !fresh.current || !team || !editable || loading || readError !== null || unknown) return;
+    event.preventDefault(); if (!active || preferenceDenied || authRequestsPaused() || op.guarded() || !fresh.current || !team || !editable || loading || readError !== null || unknown) return;
     if (typed !== textValue(team.name!)) { setMismatch(true); return; }
+    setGuard(true);
     void op.run((signal, dispatched) => deleteTeam(admission.userId, team, signal, onIdentityMismatch, dispatched), () => onDeleted(), conflict);
   };
   return <>
@@ -171,18 +190,20 @@ export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpd
     {loading && <div className="empty-inline" role="status">{m.checking}</div>}
     {readError !== null && <div className="notice error" role="alert"><p>{storageError ? m.storageError : readError instanceof ApiError && readError.kind === "server" && (readError.code === "not_found" || readError.code === "forbidden") ? m.unavailable : m.checkFailed}</p>{readError instanceof ApiError && readError.requestId !== null && <p>{m.idLabel}<code>{readError.requestId}</code></p>}<button type="button" className="button" onClick={() => { void load(true); }}>{m.retry}</button></div>}
     {!deleting && !renaming && changed && <div className="notice warning" role="alert">{m.conflict}</div>}
-    {(!deleting && !renaming || accessDenied) && <ErrorNotice result={op.result} zh={zh} />}
+    {unavailable && op.pending && <div role="status">{m.saving}</div>}
+    {unavailable && saved && <p role="status">{m.saved}</p>}
+    {(!deleting && !renaming || unavailable) && <ErrorNotice result={op.result} zh={zh} />}
     {!deleting && !renaming && unknown && <button className="button" type="button" disabled={loading} onClick={() => { void load(true); }}>{m.check}</button>}
-    {team !== null && !accessDenied && <div className="team-settings-page"><section className="panel"><header className="panel-heading"><div><h2>{m.basic}</h2><p>{m.description}</p></div><span className="badge">{roles[team.membership.role]}</span></header>
+    {team !== null && !unavailable && <div className="team-settings-page"><section className="panel"><header className="panel-heading"><div><h2>{m.basic}</h2><p>{m.description}</p></div><span className="badge">{roles[team.membership.role]}</span></header>
       <div className="panel-body settings-form"><dl className="team-settings-details"><div><dt>{m.name}</dt><dd className="team-settings-name"><span>{team.kind === "personal" ? m.personal : team.name}</span>{editable && <button ref={editButton} className="button" type="button" disabled={loading || op.pending || unknown || readError !== null} onClick={openRename}>{m.edit}</button>}</dd></div>
-        <div><dt>{m.id}</dt><dd className="team-settings-id">{team.id}</dd></div></dl>
+        <div><dt>{m.id}</dt><dd>{team.id === teamId ? <TeamIdCopy key={`${admission.userId}/${team.id}`} value={team.id} admission={admission} active={active} zh={zh} /> : null}</dd></div></dl>
         {!editable && <p className="settings-lock">{m.readOnly}</p>}{saved && <p role="status">{m.saved}</p>}
       </div></section><section className="panel danger-zone"><header className="panel-heading"><div><h2>{m.delete}</h2><p>{m.deleteHint}</p></div></header><div className="panel-body"><button ref={deleteButton} className="button danger" type="button" disabled={!editable || loading || op.pending || unknown || readError !== null} onClick={openDelete}>{m.delete}</button></div></section></div>}
-    {renaming && team !== null && <ManagementDialog title={m.editName} busy={op.pending} suspended={!active || accessDenied} onClose={closeRename} footer={<><button className="button" type="button" disabled={op.pending} onClick={closeRename}>{unknown ? m.close : m.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={loading} onClick={() => { void load(true); }}>{m.check}</button> : <button className="button primary" type="submit" form="rename-team-form" disabled={op.pending || loading || readError !== null || !editable || !edited}>{op.pending ? m.saving : m.save}</button>}</>}>
+    {renaming && team !== null && <ManagementDialog title={m.editName} busy={op.pending} suspended={!active || unavailable} onClose={closeRename} footer={<><button className="button" type="button" disabled={op.pending} onClick={closeRename}>{unknown ? m.close : m.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={loading} onClick={() => { void load(true); }}>{m.check}</button> : <button className="button primary" type="submit" form="rename-team-form" disabled={op.pending || loading || readError !== null || !editable || !edited}>{op.pending ? m.saving : m.save}</button>}</>}>
       <form id="rename-team-form" onSubmit={save} noValidate><div className="field"><label htmlFor="team-settings-name">{m.name}</label><textarea id="team-settings-name" rows={1} value={draft} disabled={loading || op.pending || unknown || readError !== null || !editable} onChange={(event) => { setDraft(event.target.value); setEdited(true); setInvalid(false); setSaved(false); setChanged(false); }} />{invalid && <p className="hint error" role="alert">{m.invalid}</p>}</div></form>
       <ErrorNotice result={op.result} zh={zh} />{changed && <div className="notice warning" role="alert"><p>{m.conflict}</p><p className="team-settings-current">{m.observed}: <strong>{team.name}</strong></p></div>}{readError !== null && <div role="alert"><p>{storageError ? m.storageError : readError instanceof ApiError && readError.kind === "server" && (readError.code === "not_found" || readError.code === "forbidden") ? m.unavailable : m.checkFailed}</p>{readError instanceof ApiError && readError.requestId !== null && <p>{m.idLabel}<code>{readError.requestId}</code></p>}<button type="button" className="button" onClick={() => { void load(false); }}>{m.retry}</button></div>}
     </ManagementDialog>}
-    {deleting && team !== null && <ManagementDialog title={m.delete} busy={op.pending} suspended={!active || accessDenied} onClose={closeDelete} footer={<><button className="button" type="button" disabled={op.pending} onClick={closeDelete}>{unknown ? m.close : m.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={loading} onClick={() => { void load(false); }}>{m.check}</button> : <button className="button danger" type="submit" form="delete-team-form" disabled={op.pending || loading || readError !== null || !editable}>{op.pending ? m.saving : m.delete}</button>}</>}>
+    {deleting && team !== null && <ManagementDialog title={m.delete} busy={op.pending} suspended={!active || unavailable} onClose={closeDelete} footer={<><button className="button" type="button" disabled={op.pending} onClick={closeDelete}>{unknown ? m.close : m.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={loading} onClick={() => { void load(false); }}>{m.check}</button> : <button className="button danger" type="submit" form="delete-team-form" disabled={op.pending || loading || readError !== null || !editable}>{op.pending ? m.saving : m.delete}</button>}</>}>
       <p>{m.deleteHint}</p><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}><strong>{team.name}</strong></p><form id="delete-team-form" onSubmit={remove} noValidate><div className="field"><label htmlFor="delete-team-name">{m.confirm}</label><textarea id="delete-team-name" rows={1} value={typed} disabled={op.pending || unknown || loading} onChange={(event) => { setTyped(event.target.value); setMismatch(false); }} onPaste={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()} autoComplete="off" />{mismatch && <p className="hint error" role="alert">{m.mismatch}</p>}</div></form>
       <ErrorNotice result={op.result} zh={zh} />{changed && <div className="notice warning" role="alert">{m.conflict}</div>}{readError !== null && <div role="alert"><p>{storageError ? m.storageError : readError instanceof ApiError && readError.kind === "server" && (readError.code === "not_found" || readError.code === "forbidden") ? m.unavailable : m.checkFailed}</p>{readError instanceof ApiError && readError.requestId !== null && <p>{m.idLabel}<code>{readError.requestId}</code></p>}</div>}
     </ManagementDialog>}

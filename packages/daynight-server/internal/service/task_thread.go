@@ -11,7 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskthreadjson"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 )
 
 const threadOperationTimeout = 10 * time.Second
@@ -120,7 +120,7 @@ func (s *TaskThreads) Post(ctx context.Context, principal model.Principal, proje
 	if !utf8.ValidString(input.Body) || strings.ContainsRune(input.Body, 0) || strings.TrimSpace(input.Body) == "" {
 		return ThreadMessageDocument{}, invalidInput("Message body must be nonempty UTF-8 text without NUL characters.")
 	}
-	if len(input.Body) > taskthreadjson.MessageLimit {
+	if len(input.Body) > taskcodec.MessageLimit {
 		return ThreadMessageDocument{}, threadMessageTooLarge()
 	}
 	input.ReplyTo, err = canonicalThreadID(input.ReplyTo)
@@ -221,18 +221,18 @@ func admitThreadMessage(ctx context.Context, message model.ThreadMessage) ([]byt
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	normal, err := taskthreadjson.EncodeMessage(message, false)
+	normal, err := taskcodec.EncodeMessage(message, false)
 	if err != nil {
 		return nil, fmt.Errorf("encode thread message: %w", err)
 	}
-	details, err := taskthreadjson.EncodeMessage(message, true)
+	details, err := taskcodec.EncodeMessage(message, true)
 	if err != nil {
 		return nil, fmt.Errorf("encode detailed thread message: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if len(normal) > taskthreadjson.MessageLimit || len(details) > taskthreadjson.MessageLimit {
+	if len(normal) > taskcodec.MessageLimit || len(details) > taskcodec.MessageLimit {
 		return nil, threadMessageTooLarge()
 	}
 	return normal, nil
@@ -305,11 +305,11 @@ func (s *TaskThreads) List(ctx context.Context, principal model.Principal, proje
 				return err
 			}
 		}
-		encoded, err := taskthreadjson.EncodePage(page, input.Details)
+		encoded, err := taskcodec.EncodePage(page, input.Details)
 		if err != nil {
 			return fmt.Errorf("encode thread page: %w", err)
 		}
-		if len(encoded) > taskthreadjson.PageLimit {
+		if len(encoded) > taskcodec.PageLimit {
 			return errors.New("encoded thread page exceeds byte budget")
 		}
 		if err := ctx.Err(); err != nil {
@@ -326,7 +326,7 @@ func (s *TaskThreads) List(ctx context.Context, principal model.Principal, proje
 
 func selectThreadPage(ctx context.Context, candidates []model.ThreadMessage, count int, details, reverse bool) (model.ThreadPage, error) {
 	page := model.ThreadPage{Items: make([]model.ThreadMessage, 0, min(count, len(candidates)))}
-	empty, err := taskthreadjson.EncodePage(page, details)
+	empty, err := taskcodec.EncodePage(page, details)
 	if err != nil {
 		return model.ThreadPage{}, err
 	}
@@ -338,7 +338,7 @@ func selectThreadPage(ctx context.Context, candidates []model.ThreadMessage, cou
 		if len(page.Items) == count {
 			break
 		}
-		encoded, err := taskthreadjson.EncodeMessage(candidate, details)
+		encoded, err := taskcodec.EncodeMessage(candidate, details)
 		if err != nil {
 			return model.ThreadPage{}, err
 		}
@@ -346,7 +346,7 @@ func selectThreadPage(ctx context.Context, candidates []model.ThreadMessage, cou
 		if len(page.Items) > 0 {
 			extra++
 		}
-		if size+extra > taskthreadjson.PageLimit {
+		if size+extra > taskcodec.PageLimit {
 			if len(page.Items) == 0 {
 				return model.ThreadPage{}, errors.New("stored thread message cannot fit in a page")
 			}

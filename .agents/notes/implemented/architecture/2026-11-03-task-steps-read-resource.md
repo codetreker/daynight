@@ -26,7 +26,7 @@ The header avoids hydrating properties, dependencies or execution policy.
 Collection reads validate every row and dense order; item reads validate the
 target within its declared Task. Soft deletion is checked after membership.
 
-`internal/tasksteps` owns the public DTO and deterministic `json.Encoder.Encode`
+`internal/core/task/codec` owns the public DTO and deterministic `json.Encoder.Encode`
 bytes. The same bytes include escaping and the terminal newline, with capacity
 reserved for a 19-digit parent version. Invalid storage fails the resource read.
 Steps do not appear in Task, graph or synchronization payloads and reads preserve
@@ -45,8 +45,8 @@ edit rewrites the complete collection and database integrity cannot distinguish
 individual identities and positions. Normalized rows preserve those invariants.
 
 **Reuse full Task loading or the Thread codec.** Full Task loading couples reads
-to unrelated properties and execution policy. The Thread codec imports API DTOs
-and omits the newline, while Steps needs a neutral resource owner and the exact
+to unrelated properties and execution policy. At the time, the Thread codec imported API DTOs
+and omitted the newline, while Steps needs a neutral resource owner and the exact
 public encoding for capacity admission.
 
 ## Consequences

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 	"github.com/jackc/pgx/v5/pgconn"
 )

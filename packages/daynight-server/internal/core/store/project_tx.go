@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -109,7 +109,7 @@ func (tx *ProjectTx) Reachable(ctx context.Context, from, to string, replacement
 }
 
 func (tx *ProjectTx) CreateTask(ctx context.Context, id string, values TaskWrite) (model.Task, error) {
-	properties, err := taskproperties.Normalize(values.Properties, false)
+	properties, err := taskproperties.Normalize(values.Properties)
 	if err != nil {
 		return model.Task{}, queryError("validate task properties", err)
 	}
@@ -129,7 +129,7 @@ func (tx *ProjectTx) CreateTask(ctx context.Context, id string, values TaskWrite
 }
 
 func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite) (model.Task, error) {
-	properties, err := taskproperties.Normalize(values.Properties, false)
+	properties, err := taskproperties.Normalize(values.Properties)
 	if err != nil {
 		return model.Task{}, queryError("validate task properties", err)
 	}
