@@ -3,11 +3,12 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createBotDeletion } from "../../../src/commands/worker/bots/delete.js";
 import type { BotDeletionReceipt } from "../../../src/commands/worker/bots/session-api.js";
 import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
@@ -15,10 +16,11 @@ import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
 import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
 import type { BotDefinition, BotRecord, BotDeleted } from "../../../src/commands/worker/bots/types.js";
-import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
+import { controllerExecutionDirectory, controllerTicketPath } from "../../../src/commands/controller/launch-ticket.js";
+import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { readControllerSnapshot, readControllerOperation } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
-import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
+import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { inspectControllerJob } from "../../../src/commands/controller/windows-job.js";
 import { parseControllerMessage, RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
@@ -28,6 +30,29 @@ import snapshotFixture from "../../session/fixtures/snapshot.json" with { type: 
 // The subprocess uses the production Controller, native adapter, journal, IPC and
 // relay. Only the Codex executable and the remote service are controlled fixtures.
 const cleanups: (() => Promise<void>)[] = [];
+const failureDiagnostics: (() => Promise<void>)[] = [];
+// A Windows confirmation can join two 5-second identity queries and a 15-second
+// Job Object query. Proof acquisition, cooperative stop, joined observation,
+// escalation and failure diagnostics fit within this hook's separate budget.
+const cleanupHookTimeout = 180_000;
+const waitForProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], timeoutMs: number): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await confirmControllerProcessesStopped(controller, native)) return;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("Original fixture processes did not stop within the observation window.");
+    await delay(Math.min(100, remaining));
+  }
+};
+const readEvidence = async (file: string) => {
+  if (!existsSync(file)) return { file, exists: false };
+  const handle = await open(file, "r");
+  try {
+    const bytes = Buffer.alloc(64 * 1024), metadata = await handle.stat();
+    const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+    return { file, exists: true, text: bytes.subarray(0, bytesRead).toString("utf8"), truncated: metadata.size > bytesRead };
+  } finally { await handle.close(); }
+};
 // Only fixed fixture processes are diagnosed here; no real service or provider
 // credentials are part of these errors.
 const diagnostic = (stage: string, elapsedMs: number, failure: unknown): void => {
@@ -39,11 +64,49 @@ const diagnostic = (stage: string, elapsedMs: number, failure: unknown): void =>
   };
   console.error(JSON.stringify({ fixture: "bot-process-integration", stage, elapsedMs, error: describe(failure) }));
 };
-afterEach(async () => {
+afterEach(async ({ task }) => {
   const errors: unknown[] = [];
+  const diagnostics = failureDiagnostics.splice(0);
+  if (task.result?.state === "fail") for (const collect of diagnostics) try { await collect(); } catch (error) { errors.push(error); }
   for (const cleanup of cleanups.splice(0).reverse()) try { await cleanup(); } catch (error) { errors.push(error); }
   vi.restoreAllMocks(); vi.unstubAllEnvs();
   if (errors.length) throw new AggregateError(errors, "Bot integration resources did not close safely.");
+}, cleanupHookTimeout);
+
+// These adjacent cases exercise Vitest's actual hook scheduling. The first
+// teardown crosses the runner's default 10-second hook deadline; the next case
+// must retain both its environment and mock until its own teardown starts.
+describe("fixture teardown isolation", { concurrent: false, shuffle: false }, () => {
+  let teardownCompleted = false;
+  const subject = { read: () => "original" };
+  const home = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-teardown-isolation");
+  test("joins cleanup beyond the default hook deadline", () => {
+    vi.stubEnv("DN_CONFIG_DIR", path.join(home, "first-state"));
+    vi.spyOn(subject, "read").mockReturnValue("first");
+    cleanups.push(async () => { await delay(11_000); teardownCompleted = true; });
+  });
+  test("keeps the next parent's ticket path aligned with its prepared child", async () => {
+    const state = path.join(home, "second-state"), launchId = randomUUID();
+    vi.stubEnv("DN_CONFIG_DIR", state);
+    vi.spyOn(subject, "read").mockReturnValue("second");
+    const preparedEnvironment = { ...process.env, DN_CONFIG_DIR: state };
+    await delay(1500);
+    const childTicket = path.join(resolveConfigurationPaths(home, path, preparedEnvironment).stateDirectory, "controller", "launches", `${launchId}.json`);
+    expect(controllerTicketPath(home, launchId)).toBe(childTicket);
+    expect(subject.read()).toBe("second");
+    expect(teardownCompleted).toBe(true);
+  });
+});
+
+test("joins the final process observation before rejecting its expired window", async () => {
+  let active = 0;
+  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockImplementation(async () => {
+    active++;
+    try { await delay(50); return false; } finally { active--; }
+  });
+  const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
+  await expect(waitForProcessesStopped(proof, [], 1)).rejects.toThrow("Original fixture processes did not stop within the observation window.");
+  expect(active).toBe(0);
 });
 
 const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean } = {}) => {
@@ -139,6 +202,24 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
     });
   });
   const journal = () => { const intent = current().intent; return intent === null ? null : readControllerSnapshot(path.join(controllerExecutionDirectory(home, intent.executionId), "journal.sqlite")); };
+  const collectEvidence = async () => {
+    const record = current(), intent = record.intent;
+    const saved = journal();
+    const childState = resolveConfigurationPaths(home, path, { DN_CONFIG_DIR: state }).stateDirectory;
+    const expectedTicket = intent === null ? null : path.join(childState, "controller", "launches", `${intent.launchId}.json`);
+    const parentTicket = intent === null ? null : controllerTicketPath(home, intent.launchId);
+    const directory = intent === null ? null : path.join(childState, "controller", "executions", intent.executionId);
+    const expectedJournal = directory === null ? null : readControllerSnapshot(path.join(directory, "journal.sqlite"));
+    const summarize = (snapshot: typeof saved) => snapshot === null ? null : { lifecycle: snapshot.lifecycle, startup: snapshot.startup,
+      error: snapshot.error, controllerProcess: snapshot.controllerProcess, nativeProcesses: snapshot.nativeProcesses };
+    const logs = await Promise.all([launchLog, ...(directory === null ? [] : [path.join(directory, "controller.log")])].map(readEvidence));
+    console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "original-startup-evidence", home, state,
+      parentTicket, expectedTicket, ticketPathsMatch: parentTicket === expectedTicket,
+      parentTicketExists: parentTicket !== null && existsSync(parentTicket), expectedTicketExists: expectedTicket !== null && existsSync(expectedTicket),
+      parentState: resolveConfigurationPaths(home).stateDirectory, launchSubmission: intent === null ? null : executions.get(record)?.launchSubmission,
+      parentJournal: summarize(saved), expectedJournal: summarize(expectedJournal), logs }));
+  };
+  failureDiagnostics.push(collectEvidence);
   cleanups.push(async () => {
     let stopped = true;
     try {
@@ -160,11 +241,12 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
         try { const ticket = await botProcess.readTicket(record); await requestController(ticket, { kind: "stop", deadline: Date.now() + 10_000 }, { timeoutMs: 12_000 }); } catch { /* Process proof below owns cleanup completion. */ }
         // Shutdown joins startup, which can publish native proofs after the
         // first snapshot. Preserve both observations before checking cleanup.
-        const native = [...(saved?.nativeProcesses ?? []), ...(journal()?.nativeProcesses ?? [])];
+        const native = [...new Map([...(saved?.nativeProcesses ?? []), ...(journal()?.nativeProcesses ?? [])]
+          .map(proof => [JSON.stringify([proof.pid, proof.startedAt, proof.commandHash]), proof])).values()];
         if (proof !== null) {
           // A cooperative stop can finish between process/group probes. Observe
           // that completion before escalating the exact retained process group.
-          try { await vi.waitFor(async () => expect(await confirmControllerProcessesStopped(proof, native)).toBe(true), { timeout: 5000, interval: 100 }); }
+          try { await waitForProcessesStopped(proof, native, 5000); }
           catch { await stopControllerProcesses(proof, native, Date.now() + 10_000); }
           stopped = await confirmControllerProcessesStopped(proof, native);
           expect(stopped).toBe(true);
@@ -175,7 +257,11 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
         const ticket = await botProcess.readTicket(recordNow).catch(() => null);
         if (ticket !== null) await rm(path.dirname(ticket.ipcEndpoint), { recursive: true, force: true });
       }
-    } catch (error) { stopped = false; throw error; }
+    } catch (error) {
+      stopped = false;
+      try { await collectEvidence(); } catch (diagnosticError) { diagnostic("read-original-startup-evidence", 0, diagnosticError); }
+      throw error;
+    }
     finally {
       for (const socket of relay.clients) socket.terminate();
       await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve()));

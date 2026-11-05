@@ -87,6 +87,14 @@ Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/implemented/testing/2026-11-04-native-supervisor-fixture-clock.md)
 records the real-process proof and cleanup requirements.
+Real Bot integration owns a 180-second teardown hook because original process
+proof, IPC stop, Windows Job termination and diagnostics can outlast the ordinary
+hook limit. Each process confirmation probe is joined before another round or
+escalation; only complete teardown restores mocks and environment variables.
+Failed startup records the controlled child's logs, journal and parent/child
+ticket paths while retaining original errors and unknown process ownership. The
+[Bot fixture decision](../.agents/notes/implemented/testing/2026-11-05-bot-fixture-teardown.md)
+owns this isolation and budget rationale.
 The native fsmonitor regression uses a real hook's invocation marker to qualify
 ordinary Git and verify protected-query suppression. Its
 [fixture decision](../.agents/notes/implemented/testing/2026-11-04-fsmonitor-fixture-marker.md)
