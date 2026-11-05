@@ -150,8 +150,15 @@ export const validateAuthCombinedReceipt = (value: unknown, target: CombinedTarg
 const bilingualToken = async (page: Page, context: BrowserContext, origin: string, secrets: Set<string>, signal: AbortSignal): Promise<Token> => {
   await page.goto(`${origin}/account`);
   await page.getByRole('button', { name: 'Access tokens', exact: true }).click();
+  await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('zh-CN');
+  await page.getByRole('button', { name: '创建令牌', exact: true }).click();
+  await expect(page.getByRole('dialog').getByLabel('令牌名称', { exact: false })).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
+  await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click();
+  await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
   await page.getByRole('button', { name: 'Create token', exact: true }).click();
   const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
   const name = `Combined CLI ${randomUUID()}`;
   const input = dialog.getByLabel('Token name', { exact: false });
   await input.fill(name);
@@ -186,19 +193,18 @@ const bilingualToken = async (page: Page, context: BrowserContext, origin: strin
   try {
     await dialog.getByRole('button', { name: 'Create token', exact: true }).click();
     const token = await fetched.promise;
-    await dialog.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('zh-CN');
-    check(await originalInput.evaluate((element) => element.isConnected), 'Language switching replaced the pending token input.');
-    check(await originalInput.evaluate((element) => (element as HTMLInputElement).value) === name && posts === 1, 'Language switching changed token input or repeated submission.');
+    check(await originalInput.evaluate((element) => element.isConnected), 'The pending token input was replaced.');
+    check(await originalInput.evaluate((element) => (element as HTMLInputElement).value) === name && posts === 1, 'The pending token input changed or submission repeated.');
     release.resolve();
     await finished.promise;
-    const secret = page.getByLabel('一次性访问令牌', { exact: true });
+    const secret = page.getByLabel('One-time access token', { exact: true });
     await expect(secret).toBeVisible();
     check(await secret.inputValue() === token.token, 'Production one-time token field differs from its response.');
     const originalSecret = await secret.elementHandle();
     check(originalSecret !== null, 'The revealed token element is missing.');
-    await page.getByRole('dialog').getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
-    check(await originalSecret.evaluate((element) => element.isConnected), 'Language switching replaced the revealed token.');
-    check(await originalSecret.evaluate((element) => (element as HTMLTextAreaElement).value) === token.token && posts === 1, 'Language switching changed the token or repeated submission.');
+    await expect(page.getByRole('dialog').getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
+    check(await originalSecret.evaluate((element) => element.isConnected), 'The revealed token was replaced.');
+    check(await originalSecret.evaluate((element) => (element as HTMLTextAreaElement).value) === token.token && posts === 1, 'The revealed token changed or submission repeated.');
     await page.getByRole('dialog').getByRole('button', { name: 'I have saved it, close', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     return token;
@@ -491,7 +497,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await record('normal-member-writes', { taskId: task.id, privateTaskId: privateTask.id, memberVersion: bobMember.directGrant.version.toString(), administratorDenial: 403 });
     const originalToken = await bilingualToken(bobPage, bobContext, origin, secrets, signal);
     await screenshots(bobPage, 'account-english-after-secret-close');
-    await record('bilingual-token', { tokenId: originalToken.id, requests: 1, pendingInputRetained: true, revealedElementRetained: true, locales: ['en', 'zh-CN', 'en'] });
+    await record('bilingual-token', { tokenId: originalToken.id, requests: 1, pendingInputRetained: true, revealedElementRetained: true, locales: ['zh-CN', 'en'] });
     const bobCli = await cli(originalToken.token, 'original-cli');
     const tokenApi = await tokenContext(playwrightRequest, origin, originalToken.token);
     tokenClients.push(tokenApi);

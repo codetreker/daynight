@@ -106,8 +106,9 @@ their secret/code context through login and account switching; ordinary logout
 returns to the public homepage only after confirmed success. Failed logout stays
 visible and retryable. Both
 complete catalogs provide its `messages.auth` domain, including accessible names,
-validation, notices and already displayed errors. Login, workspace, invitation, device authorization
-and management dialogs expose the shared language selector; native formatters
+validation, notices and already displayed errors. Login, workspace, invitation and device authorization
+pages expose the shared language selector. Shared management dialogs inherit the
+current language without their own selector or preference notice; native formatters
 render dates and counts. Language changes retain form inputs, dialog and
 one-time secrets, identity and pending requests without restarting operations.
 It composes the project list, graph, shared task-detail surfaces and My Workers
@@ -201,7 +202,10 @@ keeping the workspace visible and interactive. Pending verification preserves
 focus, dialogs, drafts, scroll and embedded documents. Each new qualifying return
 aborts and replaces pending verification, so earlier responses cannot overwrite
 the latest identity decision. A failed check retains state behind the blocking
-retry overlay until a successful check; the same user keeps their forms and view,
+retry overlay until a successful check. The native modal inherits the current language,
+contains no language selector or preference feedback, and cannot be dismissed with
+Escape; recovery attempts to restore focus if the original element remains connected.
+The same user keeps their forms and view,
 while a changed user remounts user-owned content. Previously loaded content stays
 visible until identity loss, a different identity or a verification error is
 confirmed. Leaving the top-level page pauses new API reads and writes before
