@@ -141,14 +141,25 @@ it("keeps an already dispatched save and its confirmed receipt across real route
   expect(app.saves()).toBe(1);
 });
 
-it("keeps a definite rejection and draft after navigation without replay", async () => {
+it.each([60, 120])("keeps a definitely rejected draft after navigation and reread of saved value %i", async (savedValue) => {
   const app = setup(); await submitSave();
   await waitFor(() => expect(app.saves()).toBe(1));
   leave(); expect(app.saveSignal?.aborted).toBe(false);
+  app.setSavedProject(project(savedValue, savedValue === 60 ? 1n : 2n));
+  const reads = app.projectReads;
   await act(async () => app.save.resolve(fail(400, "invalid_input", "rejected-save")));
   returnToSettings();
   expect(await screen.findByText("rejected-save")).toBeVisible();
+  await waitFor(() => expect(app.projectReads).toBeGreaterThan(reads));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Saving…" })).toBeNull());
   expect(screen.getByLabelText("Alert threshold")).toHaveValue(90);
+  if (savedValue === 60) {
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled());
+  } else {
+    expect(await screen.findByText(/settings changed while you were away/i)).toBeVisible();
+    expect(screen.getByLabelText("Alert threshold").closest(".project-settings-panel")).toHaveTextContent("120");
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  }
   expect(app.saves()).toBe(1);
 });
 

@@ -60,7 +60,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     routeRef.current = onRoute; ++routeGeneration.current;
     if (onRoute) { returnRead.current = true; returnNotice.current = noticeForRead(notice); }
   }
-  const admission = useRef<{ readonly controller: AbortController; dispatched: boolean } | null>(null);
+  const admission = useRef<{ readonly controller: AbortController; dispatched: boolean; confirmed: boolean } | null>(null);
   const projectRef = useRef(project);
   projectRef.current = project;
   const activityWaiters = useRef(new Set<() => void>());
@@ -152,10 +152,11 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     const finishRead = (status: "succeeded" | "failed" | "cancelled") => {
       if (routeRead.current?.generation === current) routeRead.current.status = status;
     };
-    // Every re-entry read, including retries and access recovery, uses the
-    // same route/version guards and preserves edits made while it is pending.
+    // A return read may replace a submitted draft after confirmation or under
+    // the existing conflict/unknown reconciliation rules, not after other rejections.
     const returning = returnRead.current;
-    const preserveDraft = !submitting.current && (returning || confirmedNeedsRead.current || reconciliationNotice.current !== null);
+    const preserveDraft = (returning && submitting.current && admission.current?.confirmed === false && reconciliationNotice.current === null && !uncertainRef.current)
+      || (!submitting.current && (returning || confirmedNeedsRead.current || reconciliationNotice.current !== null));
     const preserveError = returning || confirmedNeedsRead.current || reconciliationNotice.current !== null;
     const originalDraft = draftGeneration.current;
     const wasDirty = projectRef.current !== null && draftRef.current !== String(projectRef.current.settings.executionWarningMinutes)
@@ -275,7 +276,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     submitting.current = true; setPending(true); setError(null); setWriteError(null); setNotice(null); setInvalid(false);
     retention.current?.(true);
     const lifetime = controller.current!;
-    const operation = { controller: new AbortController(), dispatched: false };
+    const operation = { controller: new AbortController(), dispatched: false, confirmed: false };
     admission.current = operation;
     const signal = AbortSignal.any([lifetime.signal, operation.controller.signal]);
     const operationGeneration = generation.current;
@@ -293,6 +294,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
         if (!routeRef.current || operationRoute !== routeGeneration.current) throw new DOMException("The settings route changed.", "AbortError");
         operation.dispatched = true;
       });
+      operation.confirmed = true;
       // A recovery read that started before this receipt cannot supersede it,
       // even while its publication is waiting for authorization.
       confirmedFloor.current = saved.settings.version;
