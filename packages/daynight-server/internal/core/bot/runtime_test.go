@@ -18,6 +18,15 @@ func TestBindingRulesFreezeConfigurationAndRole(t *testing.T) {
 	if !ValidBindingInput(configuration, role) {
 		t.Fatal("valid frozen binding rejected")
 	}
+	badConfig := configuration
+	badConfig.Args = []string{"bad\x00"}
+	if ValidBindingInput(badConfig, role) {
+		t.Fatal("invalid argument accepted")
+	}
+	badConfig.WorkerID = "invalid"
+	if ValidBindingInput(badConfig, role) {
+		t.Fatal("invalid worker accepted")
+	}
 	bad := role
 	bad.Digest = "wrong"
 	if ValidBindingInput(configuration, bad) {
