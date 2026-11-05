@@ -7,6 +7,13 @@ import { clearSessionDisplayPreference } from '../task-agent-session/useSessionD
 import { BotSessionStorage, clearBotSessionStorage } from './session-storage';
 
 export const botSessionKey = (binding: BotSessionBinding): string => JSON.stringify([binding.ownerUserId, binding.botId, binding.sessionId, binding.testExecutionId]);
+
+/** Clear a Bot's stored draft, receipts and display choices without a mounted cache. */
+export function clearBotStoredSessionState(userId: string, botId: string, sessionId?: string, storage?: Storage | null): void {
+  const sessions = new Set(clearBotSessionStorage(userId, botId, storage));
+  if (sessionId) sessions.add(sessionId);
+  for (const id of sessions) clearSessionDisplayPreference({ userId, sessionId: id });
+}
 type Retained = { readonly storage: BotSessionStorage; bookmark: TimelineReadingBookmark | null };
 export type BotSessionPane = {
   readonly key: string;
@@ -113,8 +120,7 @@ export class BotSessionCache {
   invalidateBot(botId: string, sessionId?: string): void {
     if (!this.isRevoked(botId)) this.guards.revision++;
     this.guards.revoked.add(botId); this.guards.blocked.delete(botId);
-    if (sessionId) clearSessionDisplayPreference({ userId: this.options.userId, sessionId });
-    for (const sessionId of clearBotSessionStorage(this.options.userId, botId, this.options.storage)) clearSessionDisplayPreference({ userId: this.options.userId, sessionId });
+    clearBotStoredSessionState(this.options.userId, botId, sessionId, this.options.storage);
     for (const cache of this.guards.caches) {
       for (const [key, saved] of cache.retained) if (saved.binding.botId === botId) cache.remove(key, true);
       cache.publish();

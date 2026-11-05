@@ -2,7 +2,7 @@ import { ApiError, authRequestsPaused } from '../../api/client';
 import { canonicalId } from '../../api/parse';
 import { BotDeletionUnknown, deleteBot, getBot, parseBot, type BotDefinition, type DeletedBot, type DeleteBotInput } from '../../api/bots';
 import type { TaskCacheScope } from '../task-cache/TaskCacheProvider';
-import type { BotSessionCache } from './session-cache';
+import { clearBotStoredSessionState, type BotSessionCache } from './session-cache';
 
 export type BotDeletionRecord = {
   readonly id: string;
@@ -65,6 +65,9 @@ export class BotDeletionCoordinator {
   private save(record: BotDeletionRecord, rejected = this.records.get(record.id)?.rejected ?? false): void {
     if (this.scope.isInvalidated) return;
     this.records.set(record.id, { record, rejected }); this.view = [...this.records.values()].map(value => value.record);
+    // The original request outlives navigation; its result must clear stored
+    // conversation state even after the page has detached its last cache.
+    if (record.result || record.phase === 'unavailable') clearBotStoredSessionState(this.scope.userId, record.id, record.sessionId ?? undefined);
     for (const cache of this.caches) this.apply(cache, record);
     this.persist();
     for (const listener of this.listeners) listener();

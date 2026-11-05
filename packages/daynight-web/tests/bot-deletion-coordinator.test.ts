@@ -3,6 +3,9 @@ import { getBotDeletionCoordinator, clearPendingBotDeletions } from '../src/feat
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { BOT_USER, botDefinition, botId, botResponse, botError } from './helpers/bots';
 import type { DeletedBot } from '../src/api/bots';
+import { BotSessionCache, botSessionKey } from '../src/features/bots/session-cache';
+import { BotSessionStorage } from '../src/features/bots/session-storage';
+import { botFixture } from './helpers/bot-session';
 
 const scopes: ReturnType<typeof createTaskCacheScope>[] = [];
 afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); sessionStorage.clear(); });
@@ -107,4 +110,61 @@ it('treats a DELETE response for another Worker as unknown and reconciles the or
     return botResponse(botDefinition());
   }));
   await f.coordinator.begin(botDefinition()); expect(f.record().phase).toBe('unknown'); expect(fetch).toHaveBeenCalledTimes(2); expect(f.cache.unblockBot).not.toHaveBeenCalled();
+});
+
+it.each(['pending', 'completed', 'unknown', 'unavailable'] as const)('handles a %s deletion response after the page cache has detached and closed', async outcome => {
+  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const bindings = [1, 2].map(n => ({ ownerUserId: BOT_USER, botId: botId(n), sessionId: botId(30 + n), testExecutionId: botId(40 + n) }));
+  const bots = bindings.map(binding => botFixture(binding));
+  const cache = new BotSessionCache({ userId: BOT_USER, identityScope: scope, isCurrent: () => !scope.isInvalidated, onPrincipalMismatch: scope.principalMismatch, storage: sessionStorage, createApi: binding => bots.find(bot => bot.binding.botId === binding.botId)!.api });
+  const coordinator = getBotDeletionCoordinator(scope), detach = coordinator.attachCache(cache);
+  try {
+    for (const binding of bindings) cache.select(binding);
+    const [a, b] = cache.snapshot();
+    await vi.waitFor(() => { expect(a!.client.snapshot().connected).toBe(true); expect(b!.client.snapshot().connected).toBe(true); });
+    a!.client.setDraft('deleted Bot draft'); b!.client.setDraft('other Bot draft');
+    vi.mocked(bots[0]!.api.command).mockRejectedValue(new Error('receipt unknown'));
+    await expect(a!.client.send('deleted Bot draft')).rejects.toThrow();
+    const ownedPrefix = `daynight:bot-session:${botSessionKey(bindings[0]!)}:`;
+    const otherPrefix = `daynight:bot-session:${botSessionKey(bindings[1]!)}:`;
+    const ownedKeys = Object.keys(sessionStorage).filter(key => key.startsWith(ownedPrefix));
+    expect(ownedKeys.some(key => key.includes('session-draft'))).toBe(true);
+    expect(ownedKeys.some(key => key.includes('session-operations'))).toBe(true);
+    const otherKeys = Object.keys(sessionStorage).filter(key => key.startsWith(otherPrefix));
+    const otherValues = otherKeys.map(key => sessionStorage.getItem(key));
+    const taskKey = `daynight:session-draft:${BOT_USER}:independent-task`;
+    sessionStorage.setItem(taskKey, 'independent Task draft');
+    const displayKey = (sessionId: string) => `daynight.web.session.display.v1:${JSON.stringify([BOT_USER, sessionId])}`;
+    for (const binding of bindings) localStorage.setItem(displayKey(binding.sessionId), '\"standard\"');
+    localStorage.setItem(displayKey(botId(70)), '\"standard\"');
+    const pending = deferred<Response>(); let requestId = '';
+    vi.stubGlobal('fetch', vi.fn(async (_url, init) => {
+      if (init?.method === 'DELETE') { requestId = JSON.parse(init.body).deletionId; return pending.promise; }
+      return outcome === 'unavailable' ? botError(404, 'not_found') : botResponse(botDefinition());
+    }));
+    const operation = coordinator.begin({ ...botDefinition(), sessionId: bindings[0]!.sessionId, testExecutionId: bindings[0]!.testExecutionId });
+    await vi.waitFor(() => expect(requestId).not.toBe(''));
+    expect(cache.isBlocked(botId())).toBe(true);
+    detach(); cache.close();
+    expect(ownedKeys.every(key => sessionStorage.getItem(key) !== null)).toBe(true);
+    pending.resolve(outcome === 'unknown' || outcome === 'unavailable' ? botError(500, 'failure') : botResponse(deleted(outcome, '2', requestId)));
+    await operation;
+    expect(coordinator.snapshot()[0]!.phase).toBe(outcome);
+    if (outcome === 'unknown') {
+      expect(ownedKeys.every(key => sessionStorage.getItem(key) !== null)).toBe(true);
+      expect(a!.retained.storage.getItem(a!.retained.storage.key(0)!)).not.toBeNull();
+      expect(localStorage.getItem(displayKey(bindings[0]!.sessionId))).toBe('\"standard\"');
+    } else {
+      expect(ownedKeys.map(key => sessionStorage.getItem(key))).toEqual(ownedKeys.map(() => null));
+      expect(localStorage.getItem(displayKey(bindings[0]!.sessionId))).toBeNull();
+      a!.retained.storage.setItem('late', 'late deleted Bot state');
+      expect(a!.retained.storage.length).toBe(0);
+      expect(new BotSessionStorage(botSessionKey(bindings[0]!), sessionStorage).length).toBe(0);
+      expect(sessionStorage.getItem(`${ownedPrefix}late`)).toBeNull();
+    }
+    expect(otherKeys.map(key => sessionStorage.getItem(key))).toEqual(otherValues);
+    expect(sessionStorage.getItem(taskKey)).toBe('independent Task draft');
+    expect(localStorage.getItem(displayKey(bindings[1]!.sessionId))).toBe('\"standard\"');
+    expect(localStorage.getItem(displayKey(botId(70)))).toBe('\"standard\"');
+  } finally { detach(); cache.close(); }
 });

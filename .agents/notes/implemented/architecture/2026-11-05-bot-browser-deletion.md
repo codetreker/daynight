@@ -19,6 +19,8 @@ active read or a later rejected retry cannot prove the original attempt ended.
 Explicit retries observe first and preserve the deletion identity.
 
 Confirmed deletion invalidates the target's mounted and retained browser state.
+The account coordinator clears target storage and display preferences even when
+no page cache is attached; attached caches also discard clients and bookmarks.
 Account-scope guards filter late list/detail results across page remounts. Only
 both cleanup phases being completed produces a completion message; inaccessible
 resources remain distinct from confirmed cleanup. Session storage preserves the
@@ -39,6 +41,10 @@ row or binding. Monotonic local guards are required alongside authoritative read
 **Clear all browser state on dispatch.** A rejected deletion would destroy unsent
 input unnecessarily. Reversible blocking keeps lightweight state until access
 is authoritatively revoked.
+
+**Let page caches own all confirmed cleanup.** Navigation detaches and closes
+those caches while the account request remains in flight. A later successful
+response must erase saved input immediately, without waiting for another visit.
 
 **Resume after an unknown DELETE followed by an active GET.** The write may still
 be in flight, so that observation cannot prove the Bot will remain available.
