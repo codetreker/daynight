@@ -359,6 +359,50 @@ describe("authenticated application shell", () => {
     expect(trigger).toHaveFocus();
   });
 
+  it("keeps sign out behind the account menu and supports two-item keyboard navigation", async () => {
+    install();
+    const interaction = userEvent.setup();
+    render(<AuthenticatedApp />);
+    const trigger = await screen.findByRole("button", { name: "账户菜单：Alice" });
+    expect(screen.queryByRole("button", { name: "退出登录" })).toBeNull();
+    trigger.focus();
+    await interaction.keyboard("{ArrowDown}");
+    const settings = screen.getByRole("menuitem", { name: "账户设置" });
+    const signOut = screen.getByRole("menuitem", { name: "退出登录" });
+    expect(settings).toHaveFocus();
+    expect(within(screen.getByRole("menu")).getByRole("separator")).toBeVisible();
+    await interaction.keyboard("{ArrowDown}");
+    expect(signOut).toHaveFocus();
+    await interaction.keyboard("{ArrowDown}");
+    expect(settings).toHaveFocus();
+    await interaction.keyboard("{ArrowUp}");
+    expect(signOut).toHaveFocus();
+    await interaction.keyboard("{Home}");
+    expect(settings).toHaveFocus();
+    await interaction.keyboard("{End}");
+    expect(signOut).toHaveFocus();
+    await interaction.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole("menu")).toBeNull();
+    await interaction.keyboard("{ArrowUp}");
+    expect(screen.getByRole("menuitem", { name: "退出登录" })).toHaveFocus();
+    await interaction.tab();
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it.each(["{Enter}", " "])("signs out from the account menu with %s", async (key) => {
+    install((url) => url === "/api/v1/auth/logout" ? new Response(null, { status: 204 }) : defaults(url));
+    const interaction = userEvent.setup();
+    render(<AuthenticatedApp />);
+    const trigger = await screen.findByRole("button", { name: "账户菜单：Alice" });
+    trigger.focus();
+    await interaction.keyboard("{ArrowUp}");
+    expect(screen.getByRole("menuitem", { name: "退出登录" })).toHaveFocus();
+    await interaction.keyboard(key);
+    await waitFor(() => expect(window.location.pathname).toBe("/"));
+    expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
+  });
+
   it("closes the account menu on route changes and updates both languages", async () => {
     install();
     const interaction = userEvent.setup();
@@ -368,6 +412,7 @@ describe("authenticated application shell", () => {
     view.setLocale("en");
     expect(screen.getByRole("button", { name: "Account menu: Alice" })).toBe(trigger);
     expect(screen.getByRole("menuitem", { name: "Account settings" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeVisible();
     act(() => navigate("/workers"));
     expect(screen.queryByRole("menu")).toBeNull();
     expect(trigger).toHaveAttribute("aria-expanded", "false");
@@ -815,7 +860,8 @@ describe("authenticated application shell", () => {
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问令牌" })); });
-    fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
+    fireEvent.click(screen.getByRole("button", { name: "账户菜单：Alice" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出登录" }));
     await waitFor(() => expect(window.location.pathname).toBe("/"));
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/auth/logout")).toHaveLength(1);
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
@@ -1075,7 +1121,8 @@ describe("authenticated application shell", () => {
     install((url) => url === "/api/v1/auth/logout" ? failed ? fail(503, "internal") : new Response(null, { status: 204 }) : defaults(url));
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "私有项目" });
-    fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
+    fireEvent.click(screen.getByRole("button", { name: "账户菜单：Alice" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "退出登录" }));
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
     failed = false;
     fireEvent.click(await screen.findByRole("button", { name: "重试退出登录" }));

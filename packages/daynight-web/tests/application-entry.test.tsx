@@ -169,7 +169,8 @@ describe("public and authenticated entry ownership", () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url === "/api/v1/auth/logout" ? new Response(null, { status: 204 }) : defaultResponse(url))));
     mount();
     await screen.findByRole("heading", { name: "Personal" });
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Account menu:/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     await screen.findByRole("heading", { name: "Public product introduction" });
     expect(window.location.pathname).toBe("/");
     expect(screen.queryByRole("heading", { name: "Personal" })).toBeNull();

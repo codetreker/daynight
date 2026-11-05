@@ -2100,6 +2100,17 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
       const menu = page.getByRole('menu');
       const item = menu.getByRole('menuitem', { name: '账户设置', exact: true });
       await expect(item).toBeFocused();
+      await expect(page.locator('.topbar').getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
+      await expect(menu.getByRole('separator')).toHaveCount(1);
+      const signOut = menu.getByRole('menuitem', { name: '退出登录', exact: true });
+      await page.keyboard.press('ArrowDown');
+      await expect(signOut).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await expect(item).toBeFocused();
+      await page.keyboard.press('End');
+      await expect(signOut).toBeFocused();
+      await page.keyboard.press('Home');
+      await expect(item).toBeFocused();
       const bounds = await menu.boundingBox();
       expect(bounds).not.toBeNull();
       expect(bounds!.x).toBeGreaterThanOrEqual(0);
@@ -2125,6 +2136,24 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
     await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
     await expect(page.locator('#main-content')).toBeFocused();
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBeNull();
+    for (const width of [1360, 768]) {
+      await page.setViewportSize({ width, height: 900 });
+      const account = page.getByRole('button', { name: /^账户菜单：/ });
+      await expect(page.locator('.topbar').getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
+      await account.focus();
+      await page.keyboard.press('ArrowUp');
+      const menu = page.getByRole('menu');
+      await expect(menu.getByRole('menuitem', { name: '退出登录', exact: true })).toBeFocused();
+      const bounds = await menu.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+      expect(bounds!.y).toBeGreaterThanOrEqual(0);
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(900);
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+      await expect(account).toBeFocused();
+    }
     await page.getByRole('button', { name: /^账户菜单：/ }).click();
     await page.getByRole('menuitem', { name: '账户设置', exact: true }).click();
     await expect(page).toHaveURL(/\/account$/);
