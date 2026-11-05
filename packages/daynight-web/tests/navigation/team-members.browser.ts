@@ -111,7 +111,7 @@ test('admin promotes and removes members and can demote self while another admin
 
 test('a retained invitation result survives returning while the Team read is in flight', async ({ page }) => {
   await page.addInitScript((target) => {
-    const tracked = window as Window & { teamReadSignals: { signal: AbortSignal | undefined; settled: boolean }[] };
+    const tracked = window as unknown as Window & { teamReadSignals: { signal: AbortSignal | undefined; settled: boolean }[] };
     tracked.teamReadSignals = [];
     const fetch = window.fetch.bind(window);
     window.fetch = (input, init) => {
@@ -132,13 +132,13 @@ test('a retained invitation result survives returning while the Team read is in 
   try {
     await traverse(page, `/teams/${teamId}`);
     await expect(page.getByRole('main').getByRole('heading', { name: 'Alpha', exact: true })).toBeVisible();
-    const before = await page.evaluate(() => (window as Window & { teamReadSignals: unknown[] }).teamReadSignals.length);
+    const before = await page.evaluate(() => (window as unknown as Window & { teamReadSignals: unknown[] }).teamReadSignals.length);
     api.holdTeamRead = { started: () => { teamReadStarted = true; }, wait: finishTeamRead.promise };
     const identity = await foreground(page, api); identity.finish();
     await expect.poll(() => teamReadStarted, { message: 'Preference GET must reach its response gate' }).toBe(true);
-    await expect.poll(() => page.evaluate(() => (window as Window & { teamReadSignals: unknown[] }).teamReadSignals.length)).toBe(before + 1);
+    await expect.poll(() => page.evaluate(() => (window as unknown as Window & { teamReadSignals: unknown[] }).teamReadSignals.length)).toBe(before + 1);
     const readState = () => page.evaluate((index) => {
-      const entry = (window as Window & { teamReadSignals: { signal: AbortSignal | undefined; settled: boolean }[] }).teamReadSignals[index]!;
+      const entry = (window as unknown as Window & { teamReadSignals: { signal: AbortSignal | undefined; settled: boolean }[] }).teamReadSignals[index]!;
       return { aborted: entry.signal?.aborted, settled: entry.settled };
     }, before);
     expect(await readState()).toEqual({ aborted: false, settled: false });
