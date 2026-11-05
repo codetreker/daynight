@@ -101,6 +101,12 @@ Codex 原生进程意外退出、Claude SDK 意外 EOF 和 Copilot runtime 失�
 
 Codex 和 Copilot 仅在活动 turn 匹配且原生能力允许时执行 steer；Copilot 使用 SDK `send({mode: "immediate"})`，不能改用 queue 冒充当前 turn 追加。Claude 仅在原生协商支持 msg_lifecycle_v1 与 interrupt_cancel_queued_v1 时提供 steer，以输入 UUID 跟踪 queued、started、completed、cancelled；中断请求包含 cancelQueued 并核验被取消输入。缺少协商能力时运行中普通发送保持禁用。审批、问题和 form 的响应携带 interactionId、revision 和原生请求身份。Codex 等待原生请求 resolved 通知；Claude 等待 matching tool result，elicitation 等待相应 turn 成功结束。SDK callback 返回仅表示响应已交给 SDK，不能立即标记原生 confirmed。超过等待期限的响应保持 unknown；随后原生 resolved 证据仍可按原交互身份将对应 journal 操作补记 confirmed 并发送迟到回执，不再次响应原生请求。
 
+### Codex 审批正文
+
+`codexApprovalDetail` 在 Controller 适配层生成纯文本，沿用 `limited` 的长度限制和截断提示。命令使用请求中的原始 `command` 与 `cwd`，缺失时只从匹配的 `commandExecution` item 补齐；不以 `commandActions` 重构命令。文件审批请求不包含文件清单，适配器暂存当前 thread、turn 的实时 `item/started`，以 `itemId` 关联 `fileChange.changes`。item 完成、turn 切换或交互过期时释放显示上下文，历史投影不填充此缓存。
+
+文件路径、改动类型、重命名目标、原因和请求写入目录在 diff 之前展示，避免单个长 patch 挤掉其他文件或权限范围。已知身份和按钮字段不进入正文；无法解释的请求扩展或改动保留可读原文，包括网络与额外权限信息。Web 渲染及原生响应通路复用原有实现。选择理由与边界见[审批正文决策](../../.agents/notes/implemented/bug-fix/2026-11-06-codex-approval-detail.md)。
+
 ### 角色指令的共享传递
 
 launch ticket 与 `ProviderOptions` 使用同名可选 `instructions`，共享要求见[角色指令契约](../spec/controller-role-instructions.md)。严格解析器只在字段实际存在时允许该键，并检查非空白、良构 Unicode 与 64 KiB UTF-8 上限；返回原对象，不为旧 ticket 注入默认值。既有 canonical payload hash 自然包含提供的角色文本，省略字段的旧 hash 不变；私有 ticket 的不可覆盖写入继续绑定整份启动内容。读写共用 6 MiB 序列化预算：保留原 5 MiB 空间并容纳角色的 JSON 转义。writer 在落盘前检查实际编码字节数并写入同一串内容，reader 在读取前检查文件大小，避免角色与初始输入单独合法但组合文件不可读。
