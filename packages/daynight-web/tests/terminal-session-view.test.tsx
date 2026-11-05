@@ -21,6 +21,8 @@ describe('terminal production view', () => {
     vi.mocked(f.api.current).mockResolvedValue({ status: 'not_registered', protocol: r.protocol, claimId: r.claimId, agentControlMode: 'herdr' });
     const view = render(f.element()); await act(() => vi.advanceTimersByTimeAsync(0));
     const empty = screen.getByText('This execution has not registered a Session yet.');
+    expect(screen.getByText('Waiting for Session')).toBeInTheDocument();
+    expect(screen.queryByText('Disconnected · Last available screen')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Terminal input'), { target: { value: 'draft' } });
     await act(() => vi.advanceTimersByTimeAsync(4500));
     expect(f.api.current).toHaveBeenCalledTimes(4); expect(screen.getByText(empty.textContent!)).toBe(empty);
@@ -42,7 +44,7 @@ describe('terminal production view', () => {
   it('does not poll an inapplicable execution and permits an explicit refresh', async () => {
     vi.useFakeTimers(); const f = fixture(); vi.mocked(f.api.current).mockResolvedValueOnce({ status: 'not_applicable', protocol: r.protocol });
     const view = render(f.element()); await act(() => vi.advanceTimersByTimeAsync(6000));
-    expect(f.api.current).toHaveBeenCalledOnce(); expect(screen.getByText('A terminal Session is not available for this execution.')).toBeInTheDocument();
+    expect(f.api.current).toHaveBeenCalledOnce(); expect(screen.getByText('A terminal Session is not available for this execution.')).toBeInTheDocument(); expect(screen.getByText('Session unavailable')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await act(() => vi.advanceTimersByTimeAsync(0)); expect(f.api.channel).toHaveBeenCalledOnce();
     view.unmount();
   });

@@ -42,7 +42,7 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
   const unknownInitial = control && ['unknown', 'unconfirmed'].includes(control.initialAssignment);
   const tooLarge = new TextEncoder().encode(draft).byteLength > 16 * 1024;
   const fullscreen = useSessionFullscreen({ client, userId: scope.userId, identity: view.session?.sessionId ?? null, active });
-  const stateLabel = !view.session?.connected || view.phase === 'disconnected' ? m.disconnected : control?.state === 'manual' ? ownLease ? m.manual : m.other : control ? m[control.state] : m.readonly;
+  const stateLabel = view.session === null ? view.error ? m.sessionError : view.availability === 'not_registered' ? m.waiting : view.availability === 'not_applicable' ? m.noSession : m.connecting : !view.session.connected || view.phase === 'disconnected' ? view.session.snapshot ? m.disconnected : m.disconnectedPlain : control?.state === 'manual' ? ownLease ? m.manual : m.other : control ? m[control.state] : m.readonly;
   const confirmationCurrent = confirmation !== null && confirmation.client === client && sameConfirmationIdentity(confirmation.snapshot, view, confirmation.action);
   useEffect(() => { if (!active || !current || !confirmationCurrent) { setConfirmation(null); setConfirmed(false); } }, [active, current, confirmationCurrent]);
   const requestConfirmation = (action: ConfirmationAction) => { setConfirmed(false); setConfirmation({ action, snapshot: client.getSnapshot(), client }); };
@@ -69,7 +69,7 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
   else if (view.error) reason = m.error;
   else if (control?.state === 'manual' && !ownLease) reason = m.other;
   else if (control?.state === 'closing' || control?.state === 'closed') reason = m[control.state];
-  else if (!view.session?.connected) reason = m.disconnected;
+  else if (!view.session?.connected) reason = view.session?.snapshot ? m.disconnected : m.disconnectedPlain;
   return <section ref={fullscreen.sectionRef} className={`task-agent-session terminal-session${fullscreen.fullscreen ? ' session-fullscreen' : ''}`} onKeyDown={fullscreen.onKeyDown}>
     <div className="terminal-host-toolbar"><strong>{stateLabel}</strong><button className="button" disabled={view.pending} onClick={() => client.refresh()}>{m.refresh}</button><button ref={fullscreen.buttonRef} className="button" aria-pressed={fullscreen.fullscreen} onClick={fullscreen.toggle}>{fullscreen.fullscreen ? sm.exitFullscreen : sm.enterFullscreen}</button></div>
     {view.phase === 'loading' ? <p role="status">{m.loading}</p> : null}
