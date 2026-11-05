@@ -360,6 +360,48 @@ describe("Team workspace navigation", () => {
     if (outcome === "success") { await act(async () => reply.resolve(json({ teamId: a, deleted: true }))); await waitFor(() => expect(window.location.pathname).toBe(`/teams/${personal}`)); }
     else { await act(async () => reply.reject(new TypeError("connection lost"))); await waitFor(() => expect(screen.getAllByText(/result is unknown/).some((node) => !node.closest('[hidden]'))).toBe(true)); expect(window.location.pathname).toBe(`/teams/${a}/settings`); expect(deletes).toBe(1); }
   });
+  it.each(["success", "lost", "rejected"] as const)("keeps the delete owner when preference 404 arrives first: %s", async (outcome) => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`);
+    const receipt = Promise.withResolvers<Response>(), checks = [Promise.withResolvers<Response>(), Promise.withResolvers<Response>()];
+    const missing = () => json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404);
+    let reads = 0, deletes = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}` && init?.method === "DELETE") { deletes++; return receipt.promise; }
+      if (url === `/api/v1/teams/${a}` && !init?.method && deletes > 0) {
+        reads++;
+        if (reads <= 2) return checks[reads - 1]!.promise;
+        return missing();
+      }
+      return undefined;
+    });
+    render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }, { timeout: 20000 });
+    fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
+    fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha  " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
+    await waitFor(() => expect(deletes).toBe(1));
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBe(2), { timeout: 20000 });
+    await act(async () => checks[1]!.resolve(missing()));
+    await screen.findByRole("heading", { name: "Unable to load Teams" });
+    expect(window.location.pathname).toBe(`/teams/${a}/settings`);
+    expect(screen.getByRole("dialog", { name: "Delete Team" })).toBe(dialog);
+    if (outcome === "success") {
+      await act(async () => receipt.resolve(json({ teamId: a, deleted: true })));
+      await waitFor(() => expect(window.location.pathname).toBe(`/teams/${personal}`));
+    } else if (outcome === "lost") {
+      await act(async () => receipt.reject(new TypeError("connection lost")));
+      await within(dialog).findByText(/result is unknown/);
+      await act(async () => checks[0]!.resolve(missing()));
+      expect(screen.getByRole("dialog", { name: "Delete Team" })).toBe(dialog);
+      expect(window.location.pathname).toBe(`/teams/${a}/settings`);
+      expect(deletes).toBe(1);
+    } else {
+      await act(async () => receipt.resolve(json({ error: { code: "invalid_request", message: "rejected", requestId: "rq" } }, 400)));
+      await waitFor(() => expect(window.location.pathname).toBe("/projects"));
+      expect(deletes).toBe(1);
+    }
+  }, 30000);
   it("does not replace a rename receipt with a late settings reread", async () => {
     window.history.replaceState(null, "", `/teams/${a}/settings`); const patch = Promise.withResolvers<Response>(), late = Promise.withResolvers<Response>(); let reads = 0, patches = 0;
     install((url, init) => {
@@ -372,6 +414,34 @@ describe("Team workspace navigation", () => {
     await act(async () => patch.resolve(json({ ...team(a, "New name"), version: 2n }))); await screen.findByText("Saved");
     await act(async () => late.resolve(json(team(a, "  Alpha  ")))); expect(screen.getByText("New name", { selector: ".team-settings-name span" })).toBeInTheDocument();
   });
+  it("publishes a confirmed rename after a guarded preference 404 while its new read is pending", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`);
+    const receipt = Promise.withResolvers<Response>(), checks = [Promise.withResolvers<Response>(), Promise.withResolvers<Response>()], fresh = Promise.withResolvers<Response>();
+    let reads = 0, patches = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}` && init?.method === "PATCH") { patches++; return receipt.promise; }
+      if (url === `/api/v1/teams/${a}` && !init?.method && patches > 0) {
+        reads++;
+        return reads <= 2 ? checks[reads - 1]!.promise : fresh.promise;
+      }
+      return undefined;
+    });
+    render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: /^Edit$/ }, { timeout: 20000 }));
+    fireEvent.change(screen.getByLabelText("Team name"), { target: { value: "New name" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(patches).toBe(1));
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBe(2), { timeout: 20000 });
+    await act(async () => checks[1]!.resolve(json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404)));
+    await screen.findByRole("heading", { name: "Unable to load Teams" });
+    expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBeVisible();
+    await act(async () => receipt.resolve(json({ ...team(a, "New name"), version: 2n })));
+    await waitFor(() => expect(reads).toBeGreaterThanOrEqual(3));
+    expect(screen.getByText("New name", { selector: ".team-settings-name span" })).toBeVisible();
+    expect(screen.getByText("Saved")).toBeVisible();
+    expect(screen.queryByText("Loading Teams", { selector: "[role=status]" })).toBeNull();
+    await act(async () => fresh.resolve(json({ ...team(a, "New name"), version: 2n })));
+  }, 30000);
   it("returns to Personal for a confirmed unavailable Team without a pending operation", async () => {
     window.history.replaceState(null, "", `/teams/${a}/settings`); let reads = 0;
     install((url, init) => url === `/api/v1/teams/${a}` && !init?.method && ++reads >= 3 ? json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404) : undefined);

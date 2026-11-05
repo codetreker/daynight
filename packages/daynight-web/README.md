@@ -146,7 +146,10 @@ attachment pages defer restoration until the workspace appears. Team-dependent
 links and its project directory wait for a verified selection, while the page's
 own resource and the shared-project directory can load independently. Restoration
 failures expose a workspace retry without replacing the saved choice. Only a
-verified missing Team clears that choice and restores Personal. The
+verified missing Team clears that choice and restores Personal. Background
+checks retain the confirmed Team and all loaded selector pages until a complete
+refreshed prefix is available; actual changes and recoverable errors remain
+visible. Explicit refresh still reads the directory. The
 [browser Team preference decision](../../.agents/notes/implemented/feature/2026-11-04-browser-team-preference.md)
 owns storage, identity and recovery behavior. Shared projects stay outside the
 Team's indented list. Project, member and settings routes select

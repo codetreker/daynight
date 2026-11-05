@@ -86,7 +86,7 @@ export const CreateTeamDialog = ({ admission, onIdentityMismatch, onClose, onCre
   </ManagementDialog>;
 };
 
-export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpdated, onDeleted, onUnavailable, active = true, admissionBlocked = false }: CommonProps & { readonly teamId: string; readonly active?: boolean; readonly admissionBlocked?: boolean; readonly onUpdated: (team: Team) => void; readonly onDeleted: () => void; readonly onUnavailable?: () => "forgotten" | "changed" | "storage_error" }) => {
+export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpdated, onDeleted, onUnavailable, onGuardChange, active = true, admissionBlocked = false }: CommonProps & { readonly teamId: string; readonly active?: boolean; readonly admissionBlocked?: boolean; readonly onUpdated: (team: Team) => void; readonly onDeleted: () => void; readonly onUnavailable?: () => "forgotten" | "changed" | "storage_error"; readonly onGuardChange?: (guarded: boolean) => void }) => {
   const { locale, messages: { auth: { roles } } } = useI18n(), zh = locale === "zh-CN", m = messages(zh);
   const [team, setTeam] = useState<Team | null>(null), [draft, setDraft] = useState(""), [edited, setEdited] = useState(false), [invalid, setInvalid] = useState(false);
   const [loading, setLoading] = useState(true), [readError, setReadError] = useState<unknown>(null), [accessDenied, setAccessDenied] = useState(false), [storageError, setStorageError] = useState(false), [saved, setSaved] = useState(false), [changed, setChanged] = useState(false);
@@ -99,6 +99,11 @@ export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpd
   const renameOpen = useRef(false); renameOpen.current = renaming;
   const read = useRef<AbortController | null>(null), op = useOperation(admission);
   const operation = useRef(op); operation.current = op;
+  const guardCallback = useRef(onGuardChange); guardCallback.current = onGuardChange;
+  const guarded = useRef(false);
+  const setGuard = (value: boolean) => { if (guarded.current !== value) { guarded.current = value; guardCallback.current?.(value); } };
+  useEffect(() => { setGuard(op.pending || op.result?.kind === "unknown"); }, [op.pending, op.result]);
+  useEffect(() => () => { if (guarded.current) { guarded.current = false; guardCallback.current?.(false); } }, []);
   const unavailable = useRef(onUnavailable); unavailable.current = onUnavailable;
   const deleteButton = useRef<HTMLButtonElement>(null), editButton = useRef<HTMLButtonElement>(null), heading = useRef<HTMLHeadingElement>(null), restoreFocus = useRef(false), restoreEditFocus = useRef(false);
   useLayoutEffect(() => {
@@ -134,7 +139,7 @@ export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpd
       try { await admission.ready(signal); } catch { return null; }
       if (signal.aborted || admission.isInvalidated) return null;
       const denied = error instanceof ApiError && error.kind === "server" && ((error.status === 403 && error.code === "forbidden") || (error.status === 404 && error.code === "not_found"));
-      if (denied) setAccessDenied(true);
+      if (denied && !operation.current.guarded()) setAccessDenied(true);
       const unavailableResult = denied && error.status === 404 && !operation.current.guarded() ? unavailable.current?.() : undefined;
       if (unavailableResult !== "forgotten") { setStorageError(unavailableResult === "storage_error"); setReadError(error); }
     } return null; }
@@ -155,15 +160,17 @@ export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpd
   };
   const conflict = (error: unknown) => { if (error instanceof ApiError && (error.code === "version_conflict" || error.code === "forbidden" || error.code === "not_found")) { setTyped(""); void load(true); } };
   const save = (event: FormEvent) => {
-    event.preventDefault(); if (!active || authRequestsPaused() || !fresh.current || !renaming || !team || !editable || loading || readError !== null || !edited || unknown) return;
+    event.preventDefault(); if (!active || authRequestsPaused() || op.guarded() || !fresh.current || !renaming || !team || !editable || loading || readError !== null || !edited || unknown) return;
     if (!validName(draft)) { setInvalid(true); return; }
     setSaved(false);
+    setGuard(true);
     void op.run((signal, dispatched) => renameTeam(admission.userId, team, draft, signal, onIdentityMismatch, dispatched), (value) => { const merged = mergeTeam(latestTeam.current, value); latestTeam.current = merged; setTeam(merged); setDraft(merged.name ?? ""); setEdited(false); setChanged(false); setSaved(true); closeRename(); onUpdated(merged); }, conflict);
   };
   const openDelete = () => { if (!active || !editable || loading || op.pending || unknown) return; void (async () => { const latest = await load(false); if (latest?.kind === "ordinary" && latest.membership.role === "admin") { setTyped(""); setMismatch(false); op.clear(); setDeleting(true); } })(); };
   const remove = (event: FormEvent) => {
-    event.preventDefault(); if (!active || authRequestsPaused() || !fresh.current || !team || !editable || loading || readError !== null || unknown) return;
+    event.preventDefault(); if (!active || authRequestsPaused() || op.guarded() || !fresh.current || !team || !editable || loading || readError !== null || unknown) return;
     if (typed !== textValue(team.name!)) { setMismatch(true); return; }
+    setGuard(true);
     void op.run((signal, dispatched) => deleteTeam(admission.userId, team, signal, onIdentityMismatch, dispatched), () => onDeleted(), conflict);
   };
   return <>

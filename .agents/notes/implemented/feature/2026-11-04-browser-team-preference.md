@@ -56,8 +56,7 @@ The preference is local to one origin and account, and does not grant access or
 follow the user across devices. Recovery needs an additional Team read when a
 selection exists. Storage and network failures remain visible and retryable;
 identity and request lifetime checks keep late results from crossing accounts.
-A preserved member or settings view skips revalidation only while its verified
-Team is still ready; a cancelled intervening read must restart instead of
-leaving the view loading indefinitely. Workspace initialization does not turn
-standalone resources into consumers of Team availability or add cross-tab live
-synchronization.
+The [stable Team checks decision](../bug-fix/2026-11-05-stable-team-checks.md)
+retains a verified snapshot while revalidating the same target, including member
+and settings views. Workspace initialization does not turn standalone resources
+into consumers of Team availability or add cross-tab live synchronization.
