@@ -270,9 +270,9 @@ read failures retain no-store errors; no custom `/me` IndexedDB is used.
 Team settings display the selectable Team ID with an adjacent copy button for every
 viewer. Clipboard success and failure are reported locally; failure leaves the ID
 selectable and retryable. Pending copies are guarded and results are discarded when
-the Team or identity context changes. Team settings, members and invitations retain loaded content, drafts and open
-confirmations during ordinary identity checks. Same-account recovery rereads them
-in the background; writes require fresh Team, membership and invitation admission.
+the Team or identity context changes. Team settings, members and invitations retain loaded content, the invitation area, drafts and open
+confirmations throughout ordinary identity checks and same-account background reads, without loading rows or disabling local editing. Initial reads and actual errors retain their own feedback. Writes require fresh Team, membership and invitation admission;
+explicit reconciliation retains the original operation result and never replays a write or infers its success from a read.
 A changed selected member role or version invalidates its confirmation. Project
 settings, membership and transfer results retain their original scope and wait for
 admission before publication. Current access is rechecked where required; a

@@ -24,6 +24,34 @@ const settings = () => render(<TeamSettingsPanel teamId={teamId} admission={scop
 const create = () => render(<CreateTeamDialog admission={scope} onIdentityMismatch={mismatch} onClose={closed} onCreated={created} />);
 
 describe("Team management", () => {
+  it.each(["rename", "delete"] as const)("keeps the %s dialog and its draft through every background read phase", async (kind) => {
+    const pending = Promise.withResolvers<Team>(), readyGate = Promise.withResolvers<void>();
+    let holdReady = false;
+    const checkedScope = { ...scope, ready: async (signal: AbortSignal) => { if (holdReady) await readyGate.promise; signal.throwIfAborted(); } } as TaskCacheScope;
+    vi.mocked(getTeam).mockResolvedValueOnce(team("Alpha", 1n));
+    if (kind === "delete") vi.mocked(getTeam).mockResolvedValueOnce(team("Alpha", 1n));
+    vi.mocked(getTeam).mockReturnValueOnce(pending.promise);
+    const panel = (blocked: boolean) => <TeamSettingsPanel teamId={teamId} admission={checkedScope} admissionBlocked={blocked} onIdentityMismatch={mismatch} onUpdated={updated} onDeleted={deleted} />;
+    const view = render(panel(false));
+    await screen.findByText("Alpha");
+    fireEvent.click(screen.getByRole("button", { name: kind === "rename" ? "Edit" : "Delete Team" }));
+    const dialog = await screen.findByRole("dialog", { name: kind === "rename" ? "Edit Team name" : "Delete Team" });
+    const input = within(dialog).getByLabelText(kind === "rename" ? "Team name" : "Enter the Team name to confirm") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Alpha draft" } }); input.focus(); input.setSelectionRange(2, 5);
+    const check = () => {
+      expect(screen.getByRole("dialog", { name: kind === "rename" ? "Edit Team name" : "Delete Team" })).toBe(dialog);
+      expect(dialog).toBeVisible(); expect(input).toBeVisible(); expect(input).toBeEnabled();
+      expect(input).toHaveValue("Alpha draft"); expect(input).toHaveFocus();
+      expect(input.selectionStart).toBe(2); expect(input.selectionEnd).toBe(5);
+      expect(document.querySelector(".team-settings-page")).toBeVisible();
+      expect(document.querySelectorAll('.empty-inline[role="status"]')).toHaveLength(0);
+      expect(renameTeam).not.toHaveBeenCalled(); expect(deleteTeam).not.toHaveBeenCalled();
+    };
+    check(); view.rerender(panel(true)); check();
+    view.rerender(panel(false)); await waitFor(() => expect(getTeam).toHaveBeenCalledTimes(kind === "delete" ? 3 : 2)); check();
+    holdReady = true; await act(async () => pending.resolve(team("Alpha", 1n))); check();
+    holdReady = false; await act(async () => readyGate.resolve()); check();
+  });
   it("validates whitespace and submits the entered raw name once", async () => {
     vi.mocked(createTeam).mockImplementation(async (_id, name, _signal, _mismatch, dispatch) => { dispatch(); return team(name); });
     create(); const dialog = screen.getByRole("dialog"), name = within(dialog).getByLabelText(/Team name/);
