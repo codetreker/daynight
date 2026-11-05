@@ -146,7 +146,7 @@ describe("Team members", () => {
     expect(writes(fixture.fetcher)[0]?.[0]).toContain('/invitations');
     expect(writes(fixture.fetcher)[1]?.[0]).toContain('/members/');
   });
-  it.each(["member", "unavailable", "network"] as const)("holds a new invitation secret after navigation and %s until permissions recover", async (access) => {
+  it.each(["member", "unavailable", "network"] as const)("shows a confirmed invitation secret after navigation and %s", async (access) => {
     const inviteId = "00000000-0000-4000-8000-000000000004";
     const link = `${window.location.origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
     const pending = Promise.withResolvers<Response>();
@@ -158,11 +158,6 @@ describe("Team members", () => {
     if (access === "member") fixture.setActor("member"); else if (access === "unavailable") fixture.setUnavailable(true); else fixture.setNetworkFailure(true);
     await act(async () => pending.resolve(response({ id: inviteId, teamId, createdBy: userId, createdAt: time, expiresAt: "2099-10-27T09:00:00Z", consumedBy: null, consumedAt: null, revokedAt: null, link }, 201)));
     fixture.rerender(panel(true, true));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Invite member" })).toBeNull());
-    expect(screen.queryByDisplayValue(link)).toBeNull();
-    if (access === "member" || access === "unavailable") await screen.findByText(/invitation was created, but you no longer have permission/);
-    fixture.setActor("admin"); fixture.setUnavailable(false); fixture.setNetworkFailure(false);
-    fixture.rerender(panel(false, false)); fixture.rerender(panel(true, true));
     expect(await screen.findByDisplayValue(link)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "I have saved it, close" }));
     expect(screen.queryByDisplayValue(link)).toBeNull(); expect(writes(fixture.fetcher)).toHaveLength(1);
@@ -186,7 +181,7 @@ describe("Team members", () => {
     }
     expect(fixture.onUnavailable).not.toHaveBeenCalled(); expect(writes(fixture.fetcher)).toHaveLength(1);
   });
-  it("withholds a late invitation across navigation until the returning roster confirms access", async () => {
+  it("retains a confirmed invitation across navigation while the returning roster is pending", async () => {
     const inviteId = "00000000-0000-4000-8000-000000000004";
     const link = `${window.location.origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
     const write = Promise.withResolvers<Response>(), roster = Promise.withResolvers<Response>(); let reads = 0;
@@ -197,13 +192,13 @@ describe("Team members", () => {
     await waitFor(() => expect(writes(fixture.fetcher)).toHaveLength(1)); fixture.rerender(panel(false));
     await act(async () => write.resolve(response({ id: inviteId, teamId, createdBy: userId, createdAt: time, expiresAt: "2099-10-27T09:00:00Z", consumedBy: null, consumedAt: null, revokedAt: null, link }, 201)));
     fixture.setActor("member"); fixture.rerender(panel(true));
-    await waitFor(() => expect(reads).toBe(2)); expect(screen.queryByDisplayValue(link)).toBeNull();
+    await waitFor(() => expect(reads).toBe(2)); expect(await screen.findByDisplayValue(link)).toBeVisible();
     await act(async () => roster.resolve(response({ items: [{ ...membership(userId, "member", 2n), profile: profile("Alice") }, { ...membership(otherId, "admin", 9007199254740993n), profile: profile(null) }] })));
-    expect(await screen.findByText(/invitation was created, but you no longer have permission/)).toBeVisible();
-    expect(screen.queryByDisplayValue(link)).toBeNull();
+    expect(screen.getByDisplayValue(link)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "I have saved it, close" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Leave Team" })).toBeEnabled());
   });
-  it("keeps a withheld invitation receipt without blocking leave after confirmed demotion", async () => {
+  it("keeps a confirmed invitation receipt without blocking leave after demotion", async () => {
     const inviteId = "00000000-0000-4000-8000-000000000004";
     const link = `${window.location.origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
     const write = Promise.withResolvers<Response>();
@@ -215,14 +210,12 @@ describe("Team members", () => {
     fixture.rerender(panel(true)); fixture.setActor("member"); fixture.rerender(panel(false));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Invite member" })).toBeNull());
     await act(async () => write.resolve(response({ id: inviteId, teamId, createdBy: userId, createdAt: time, expiresAt: "2099-10-27T09:00:00Z", consumedBy: null, consumedAt: null, revokedAt: null, link }, 201)));
-    expect(await screen.findByText(/invitation was created, but you no longer have permission/)).toBeVisible();
-    expect(screen.queryByDisplayValue(link)).toBeNull();
+    expect(await screen.findByDisplayValue(link)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "I have saved it, close" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Leave Team" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    expect(screen.queryByText(/invitation was created, but you no longer have permission/)).toBeNull();
     expect(writes(fixture.fetcher)).toHaveLength(1);
   });
-  it("retains an invitation secret during checking and hides it after confirmed demotion", async () => {
+  it("retains an invitation secret during checking and after confirmed demotion", async () => {
     const inviteId = "00000000-0000-4000-8000-000000000004";
     const link = `${window.location.origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
     const fixture = setup({ mutate: () => response({ id: inviteId, teamId, createdBy: userId, createdAt: time, expiresAt: "2099-10-27T09:00:00Z", consumedBy: null, consumedAt: null, revokedAt: null, link }, 201) });
@@ -232,8 +225,9 @@ describe("Team members", () => {
     const secret = await screen.findByDisplayValue(link); expect(secret).toBeVisible();
     fixture.rerender(panel(true)); expect(secret).toBeVisible();
     fixture.setActor("member"); fixture.rerender(panel(false));
-    await waitFor(() => expect(secret).not.toBeVisible());
-    expect(screen.queryByRole("button", { name: "I have saved it, close" })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Invite member" })).toBeNull());
+    expect(secret).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "I have saved it, close" }));
     expect(writes(fixture.fetcher)).toHaveLength(1);
   });
   it.each(["unguarded", "guarded"] as const)("isolates member actions on 403 and recovers the %s state", async (kind) => {
@@ -247,10 +241,22 @@ describe("Team members", () => {
     fixture.setForbidden(true); fixture.rerender(panel(true)); fixture.rerender(panel(false));
     await waitFor(() => expect(dialog.parentElement).toHaveAttribute("hidden"));
     expect(screen.queryByText("Alice", { selector: ".person-name" })).toBeNull();
-    if (kind === "guarded") { await act(async () => write.reject(new TypeError("lost"))); await waitFor(() => expect(screen.getAllByText(/result is unknown/).some((node) => !node.closest('[hidden]'))).toBe(true)); }
+    if (kind === "guarded") {
+      await act(async () => write.reject(new TypeError("lost")));
+      await waitFor(() => expect(screen.getAllByText(/result is unknown/).some((node) => !node.closest('[hidden]'))).toBe(true));
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      expect(screen.getByText(/result is unknown/)).toBeVisible();
+    }
     fixture.setForbidden(false); fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(dialog.parentElement).not.toHaveAttribute("hidden"));
-    expect(screen.getByRole("dialog", { name: "Remove member" })).toBe(dialog);
+    if (kind === "guarded") {
+      await screen.findByText(otherId, { selector: ".person-name" });
+      const remove = within(row(otherId)).getByRole("button", { name: "Remove" });
+      await waitFor(() => expect(remove).toBeDisabled());
+      fireEvent.click(remove); expect(screen.queryByRole("dialog", { name: "Remove member" })).toBeNull();
+    } else {
+      await waitFor(() => expect(dialog.parentElement).not.toHaveAttribute("hidden"));
+      expect(screen.getByRole("dialog", { name: "Remove member" })).toBe(dialog);
+    }
     expect(writes(fixture.fetcher)).toHaveLength(kind === "guarded" ? 1 : 0);
   });
   it("rejects a response from another principal without installing its success", async () => {

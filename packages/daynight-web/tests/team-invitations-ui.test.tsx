@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
-import { ApiError, pauseAuthRequests } from '../src/api/client';
+import { ApiError, pauseAuthRequests, waitForAuthRequests } from '../src/api/client';
 import type { TeamInvitation } from '../src/api/auth';
 import type { TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { TeamInvitations } from '../src/features/management/TeamInvitations';
@@ -43,7 +43,7 @@ it('displays the secret once and retains a dispatched result across navigation',
   expect(createTeamInvitation).toHaveBeenCalledOnce();
   view.setLocale('en');
   view.rerender(panel(false, false));
-  await act(async () => pending.resolve({ ...invitation, link })); expect(screen.queryByDisplayValue(link)).toBeNull();
+  await act(async () => pending.resolve({ ...invitation, link })); expect(screen.getByDisplayValue(link)).not.toBeVisible();
   view.rerender(panel()); expect(await screen.findByDisplayValue(link)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'I have saved it, close' })); expect(screen.queryByDisplayValue(link)).toBeNull();
 });
@@ -141,18 +141,43 @@ it('does not queue a submission or retain a guard during identity and invitation
   } finally { release(); }
 });
 
-it('holds a new secret until the latest admin check completes', async () => {
+it('holds a confirmed secret through identity checking and publishes it for the same principal', async () => {
   const pending = Promise.withResolvers<TeamInvitation & { link: string }>();
   vi.mocked(createTeamInvitation).mockImplementation(async (_team, _user, _signal, _mismatch, dispatch) => { dispatch?.(); return pending.promise; });
+  scope = { ...scope, ready: waitForAuthRequests } as TaskCacheScope;
+  const view = render(panel()); await openInvite();
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create invitation link' }));
+  await waitFor(() => expect(createTeamInvitation).toHaveBeenCalledOnce());
+  const release = pauseAuthRequests();
+  try {
+    view.rerender(panel(true, true, true, true, false));
+    await act(async () => pending.resolve({ ...invitation, link }));
+    expect(screen.queryByDisplayValue(link)).toBeNull();
+    release(); view.rerender(panel(true, true, true, false, false));
+    expect(await screen.findByDisplayValue(link)).toBeVisible();
+    expect(createTeamInvitation).toHaveBeenCalledOnce();
+  } finally { release(); }
+});
+
+it('publishes the confirmed link but defers invitation metadata until fresh admin access', async () => {
+  const reread = Promise.withResolvers<readonly TeamInvitation[]>(), write = Promise.withResolvers<TeamInvitation & { link: string }>();
+  const next = { ...invitation, id: '00000000-0000-4000-8000-000000000004' };
+  vi.mocked(listTeamInvitations).mockResolvedValueOnce([invitation]).mockReturnValueOnce(reread.promise).mockResolvedValue([invitation, next]);
+  vi.mocked(createTeamInvitation).mockImplementation(async (_team, _user, _signal, _mismatch, dispatch) => { dispatch?.(); return write.promise; });
   const view = render(panel()); await openInvite();
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create invitation link' }));
   await waitFor(() => expect(createTeamInvitation).toHaveBeenCalledOnce());
   view.rerender(panel(true, true, true, true, false));
-  await act(async () => pending.resolve({ ...invitation, link }));
-  view.rerender(panel(true, true, true, false, false));
-  expect(screen.queryByDisplayValue(link)).toBeNull();
-  expect(guard).toHaveBeenLastCalledWith(true, true);
-  view.rerender(panel(true, true, true, false, true));
+  await act(async () => write.resolve({ ...next, link }));
   expect(await screen.findByDisplayValue(link)).toBeVisible();
+  expect(screen.queryByText(next.id)).toBeNull();
+  view.rerender(panel(true, true, true, false, false));
+  await waitFor(() => expect(listTeamInvitations).toHaveBeenCalledTimes(2));
+  await act(async () => reread.resolve([invitation, next]));
+  expect(screen.queryByText(next.id)).toBeNull();
+  view.rerender(panel(true, true, false, false, false));
+  expect(screen.queryByText(next.id)).toBeNull();
+  view.rerender(panel(true, true, true, false, true));
+  await waitFor(() => expect(screen.getByText(next.id)).toBeInTheDocument());
   expect(createTeamInvitation).toHaveBeenCalledOnce();
 });

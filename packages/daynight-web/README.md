@@ -229,9 +229,11 @@ in the background; writes require fresh Team, membership and invitation admissio
 A changed selected member role or version invalidates its confirmation. Project
 settings, membership and transfer results retain their original scope and wait for
 admission before publication. Current access is rechecked where required; a
-confirmed settings write awaiting access is reread without replaying it. New invitation secrets require current admin admission; an already displayed
-secret remains visible during a check and is isolated after confirmed access loss. Actual failures and access
-loss retain their existing handling.
+confirmed settings write awaiting access is reread without replaying it.
+Confirmed one-time invitation receipts remain bound to the original identity and
+available until closed even if resource access changes. Invitation directories
+and new management operations still require current authorization. Actual failures
+and access loss retain their existing handling.
 A failed check keeps requests waiting through recovery. The [foreground verification decision](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 records this presentation policy. Ordinary same-origin
 iframe focus changes do not count as top-level returns. Requests

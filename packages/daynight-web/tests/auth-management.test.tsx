@@ -365,7 +365,7 @@ describe('authoritative project management', () => {
     expect(field).toBeVisible();
   });
 
-  it('holds a new invitation secret through identity and hides it after confirmed role loss', async () => {
+  it('holds a new invitation secret through identity and retains it after confirmed role loss', async () => {
     const created = deferred<auth.CreatedProjectInvitation>();
     const permission = deferred<auth.ProjectAccess>();
     const link = 'https://daynight.test/invitations#once-secret';
@@ -381,18 +381,52 @@ describe('authoritative project management', () => {
     expect(screen.queryByDisplayValue(link)).toBeNull();
     resume();
     await waitFor(() => expect(vi.mocked(auth.getProjectAccess).mock.calls.length).toBeGreaterThan(priorReads));
-    expect(screen.queryByDisplayValue(link)).toBeNull();
+    expect(await screen.findByDisplayValue(link)).toBeVisible();
     actorRole = 'member';
     vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id), member('Alice')]));
     await act(async () => permission.resolve(directAccessFixture('00000000-0000-4000-8000-000000000101', user.id, 'member')));
     await waitFor(() => expect(screen.queryByRole('button', { name: '邀请成员' })).toBeNull());
-    expect(screen.queryByDisplayValue(link)).toBeNull();
+    expect(screen.getByDisplayValue(link)).toBeVisible();
     expect(screen.queryByText(invitation.id)).toBeNull();
     actorRole = 'admin';
     vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'admin'), member('Alice')]));
     fireEvent(window, new Event('focus'));
     expect(await screen.findByDisplayValue(link)).toBeVisible();
     expect(auth.createInvitation).toHaveBeenCalledOnce();
+  });
+
+  it.each(['member', 'denied'] as const)('keeps an existing secret visible after confirmed %s access', async (outcome) => {
+    const link = 'https://daynight.test/invitations#once-secret';
+    vi.mocked(auth.createInvitation).mockResolvedValue({ ...invitation, link });
+    members(); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    const field = await screen.findByDisplayValue(link) as HTMLTextAreaElement;
+    field.focus(); field.setSelectionRange(2, 8);
+    if (outcome === 'member') {
+      actorRole = 'member';
+      vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id), member('Alice')]));
+    } else vi.mocked(auth.getProjectAccess).mockRejectedValue(new ApiError('server', 404, 'not_found'));
+    fireEvent(window, new Event('focus'));
+    if (outcome === 'member') await waitFor(() => expect(screen.queryByRole('button', { name: '邀请成员' })).toBeNull());
+    else await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('项目不存在'));
+    expect(screen.getByDisplayValue(link)).toBe(field); expect(field).toBeVisible();
+    expect(document.activeElement).toBe(field); expect(field.selectionStart).toBe(2); expect(field.selectionEnd).toBe(8);
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
+  });
+
+  it('does not reveal a held secret after identity invalidation', async () => {
+    const created = deferred<auth.CreatedProjectInvitation>();
+    const link = 'https://daynight.test/invitations#once-secret';
+    vi.mocked(auth.createInvitation).mockReturnValueOnce(created.promise);
+    members(); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    await waitFor(() => expect(auth.createInvitation).toHaveBeenCalledOnce());
+    const resume = pauseAuthRequests();
+    await act(async () => created.resolve({ ...invitation, link }));
+    expect(screen.queryByDisplayValue(link)).toBeNull();
+    act(() => invalidateAuthRequests()); resume();
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByDisplayValue(link)).toBeNull();
   });
 
   it('does not publish an in-flight invitation list after a fresh permission downgrade', async () => {
@@ -415,7 +449,7 @@ describe('authoritative project management', () => {
     expect(screen.queryByText(invitation.id)).toBeNull();
   });
 
-  it('rechecks access before revealing a confirmed invitation after leaving and returning', async () => {
+  it('retains a confirmed invitation after leaving and returning with downgraded access', async () => {
     const created = deferred<auth.CreatedProjectInvitation>();
     const link = 'https://daynight.test/invitations#once-secret';
     vi.mocked(auth.createInvitation).mockReturnValueOnce(created.promise);
@@ -430,12 +464,8 @@ describe('authoritative project management', () => {
     vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id), member('Alice')]));
     view.rerender(<MembersPanel {...props} active onRoute />);
     await waitFor(() => expect(screen.queryByRole('button', { name: '邀请成员' })).toBeNull());
-    expect(screen.queryByDisplayValue(link)).toBeNull();
-    expect(await screen.findByText(/变更已确认；确认当前访问权限后可查看详情/)).toBeVisible();
-    actorRole = 'admin';
-    vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'admin'), member('Alice')]));
-    fireEvent(window, new Event('focus'));
     expect(await screen.findByDisplayValue(link)).toBeVisible();
+    expect(screen.queryByText(invitation.id)).toBeNull();
     expect(auth.createInvitation).toHaveBeenCalledOnce();
   });
 
