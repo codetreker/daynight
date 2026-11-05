@@ -6,6 +6,7 @@ import type { WebExecutionStore } from "./backends/web-store.js";
 import type { WorkerSessionApi } from "./backends/session-api.js";
 import { requireImplementedWorkerBackend } from "./backend.js";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { OperationError } from "../../api/operation.js";
@@ -695,7 +696,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     return { task, owner: remoteOwner(remoteTask), remoteTask };
   };
   return {
-    updateConfiguration: (value: WorkerCoordinatorConfiguration): void => { configuration = configurationView(value); },
+    updateConfiguration: (value: WorkerCoordinatorConfiguration): void => {
+      const next = configurationView(value);
+      // Claim admission fences actual view changes, not repeated heartbeat acknowledgments.
+      if (!isDeepStrictEqual(configuration, next)) configuration = next;
+    },
     assertCanAcquire,
     registerClaim,
     tick: async (): Promise<void> => {

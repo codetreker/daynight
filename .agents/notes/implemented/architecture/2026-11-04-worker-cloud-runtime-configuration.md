@@ -116,6 +116,14 @@ both facts.
 configuration and existing execution has its own recovery rules. A claim gate
 would introduce cross-system ordering and storage without proving application.
 
+**Isolate failed Project resource discovery during scheduling.** Per-Project
+isolation would let healthy Projects acquire work while another repository cannot
+be inspected, but a failed Git scan cannot establish that its original resources
+are absent. The existing global discovery gate remains until Project preparation
+and removal can preserve unknown ownership and capacity independently. The single
+configuration owner and retained bindings leave that adaptation possible without
+changing task or claim records.
+
 ## Consequences
 
 Cloud updates can change subsequent scheduling and native choices without
@@ -132,3 +140,12 @@ validation and mapping registration while remote queries and clone operations
 remain independent; a path collision fails that Project without admitting an
 unsafe mapping. Configuration persistence does not become
 a second task or native-process recovery system.
+
+A failed repository preparation can leave a retained mapping that fails global
+Git discovery. The current coordinator queues other eligible active work before
+discovery, but defers pending starts and new claims until discovery succeeds; configuration
+reporting and independent values continue. A failed clone may leave an empty
+directory that the existing preparation logic will not automatically clone
+again. Recovery of Project preparation and independent scheduling must retain
+unknown Git, Herdr and Web ownership rather than treating an inspection failure
+as an empty resource set.

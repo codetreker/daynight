@@ -2387,6 +2387,40 @@ describe("explicit resume with cloud project selection", () => {
   });
 });
 
+describe("Web acquisition configuration changes", () => {
+  it.each(["equivalent", "changed", "changed and restored"] as const)("handles %s updates during capability validation", async mode => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(); f.candidates.splice(1);
+    const webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+    const native: ExecutionConfiguration = { ...configuration, agentControlMode: "web", args: [] };
+    const current = { repositories: [{ project: f.project, configuration: native }], readyProjectIds: [f.project.projectId], targetProjectIds: [f.project.projectId], globalConfiguration: native, maxConcurrent: 1 };
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const verify = vi.fn(async () => { if (verify.mock.calls.length === 1) await waiting; });
+    const runner = createWorkerCoordinator({ ...f.options, ...current, webStore, verifyWebServer: verify, verifyWebUnregistered: async () => {},
+      webBackend: { advance: async record => record, cleanup: async record => ({ task: record, complete: true }) } });
+    const ticking = runner.tick(); void ticking.catch(() => {});
+    try {
+      await eventually(() => expect(verify).toHaveBeenCalledOnce());
+      const changed = { ...native, agent: "copilot" as const, model: null, args: [] };
+      if (mode === "equivalent") runner.updateConfiguration({ ...current, repositories: [{ project: { ...f.project }, configuration: { ...native, args: [...native.args] } }], globalConfiguration: { ...native, args: [...native.args] }, readyProjectIds: [...current.readyProjectIds], targetProjectIds: [...current.targetProjectIds] });
+      else {
+        runner.updateConfiguration({ ...current, repositories: [{ project: f.project, configuration: changed }], globalConfiguration: changed });
+        if (mode === "changed and restored") runner.updateConfiguration(current);
+      }
+      expect(f.remote.claim).not.toHaveBeenCalled();
+      release(); await ticking;
+      if (mode === "equivalent") expect(f.remote.claim).toHaveBeenCalledOnce();
+      else {
+        expect(f.remote.claim).not.toHaveBeenCalled();
+        await runner.tick(); expect(f.remote.claim).toHaveBeenCalledOnce();
+      }
+      expect(vi.mocked(f.remote.claim).mock.calls[0]![0].id).toBe(f.candidates[0]!.id);
+      expect(vi.mocked(f.remote.claim).mock.calls[0]![1].agent).toBe(mode === "changed" ? "copilot" : "codex");
+    } finally { release(); await ticking; await runner.shutdown(); webStore.close(); }
+  });
+});
+
 describe("applied cloud runtime configuration", () => {
   it("keeps an unavailable project tuple distinct from usable global defaults", async () => {
     const f = await fixture();
