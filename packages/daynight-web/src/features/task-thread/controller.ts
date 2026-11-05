@@ -26,6 +26,7 @@ export type ThreadView = {
   readonly consumedAfterId: string | null;
   readonly hasMoreBefore: boolean;
   readonly hasMoreAfter: boolean;
+  readonly initialized: boolean;
   readonly loading: boolean;
   readonly refreshing: boolean;
   readonly loadingOlder: boolean;
@@ -130,7 +131,7 @@ export class ThreadController {
   private live = (): void => { if (this.retired || this.lifetime.signal.aborted || this.options.lifetime.aborted) aborted(); };
   private makeView = (): ThreadView => ({
     visible: ordered(this.visible.values()), incomingCount: [...this.incoming.keys()].filter(id => !this.visible.has(id)).length, consumedAfterId: this.cursor?.id ?? null,
-    hasMoreBefore: this.hasMoreBefore, hasMoreAfter: this.hasMoreAfter,
+    hasMoreBefore: this.hasMoreBefore, hasMoreAfter: this.hasMoreAfter, initialized: this.initialized,
     loading: !this.initialized && this.forwardTask !== null, refreshing: this.initialized && this.forwardTask !== null,
     loadingOlder: this.historyDirection === 'older', loadingNewer: this.historyDirection === 'newer', referenceLoading: this.referenceTarget,
     readError: this.readError, historyError: this.historyError, referenceError: this.referenceError, postError: this.postError,
@@ -266,13 +267,13 @@ export class ThreadController {
   setDocumentVisible = (visible: boolean): void => {
     if (this.retired || this.documentVisible === visible) return;
     this.documentVisible = visible;
-    if (!visible) { this.cancelReads(); this.detailsId = null; }
+    if (!visible) this.cancelReads();
     this.emit(); if (this.readable()) void this.refresh();
   };
   setAdmissionBlocked = (blocked: boolean): void => {
     if (this.retired || this.admissionBlocked === blocked) return;
     this.admissionBlocked = blocked;
-    if (blocked) { this.cancelReads(); this.detailsId = null; }
+    if (blocked) this.cancelReads();
     this.emit();
     if (!blocked) { if (this.confirmed !== null) void this.publishConfirmed(); if (this.readable()) void this.refresh(); }
   };
@@ -324,7 +325,7 @@ export class ThreadController {
         this.readError = null; this.emit();
         if (!page.hasMoreAfter || page.items.length === 0) break;
       } while (this.readable());
-    } catch (error) { this.handle(error, 'read'); }
+    } catch (error) { if (this.currentTicket(ticket)) this.handle(error, 'read'); }
     finally {
       if (this.generations.forward === ticket.generation) { this.forwardTask = null; this.tickets.delete('forward'); this.emit(); this.schedule(); }
     }
@@ -403,7 +404,7 @@ export class ThreadController {
       if (page.items.length !== 1 || page.items[0]!.id !== id) protocol();
       const item = this.normalize(page.items)[0]!;
       this.cacheReference(item); this.presentReference(item, this.referenceReveal);
-    } catch (error) { this.handle(error, 'reference'); }
+    } catch (error) { if (this.currentTicket(ticket)) this.handle(error, 'reference'); }
     finally { if (this.generations.reference === ticket.generation) { this.referenceTask = null; this.referenceTarget = null; this.tickets.delete('reference'); this.emit(); } }
   };
   private presentReference = (message: ThreadMessage, reveal: boolean): void => {

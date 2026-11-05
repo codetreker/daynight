@@ -83,6 +83,35 @@ describe('terminal production view', () => {
     const resume = pauseAuthRequests(); await waitFor(() => expect(f.close).toHaveBeenCalledOnce()); resume();
     await waitFor(() => expect(f.api.channel).toHaveBeenCalledTimes(2)); expect(f.api.command).not.toHaveBeenCalled();
   });
+  it('keeps the frame, draft, focus and checked confirmation through a paused identity check and reconnect', async () => {
+    const f = fixture(); const rendered = render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+    const suspended = structuredClone(f.get()); suspended.control = { ...suspended.control!, controlEpoch: '3', state: 'suspended', initialAssignment: 'transport_completed', availableActions: ['resume_automation', 'acquire_control'] };
+    f.set(suspended); fireEvent.click(screen.getByRole('button', { name: 'Resume automatic execution' })); fireEvent.click(screen.getByRole('checkbox'));
+    const screenNode = screen.getByRole('region', { name: /terminal/i }); const draft = screen.getByRole('textbox', { name: 'Terminal input' }) as HTMLTextAreaElement;
+    fireEvent.change(draft, { target: { value: 'local draft' } }); draft.focus(); draft.setSelectionRange(2, 6); screenNode.scrollTop = 42;
+    const checkbox = screen.getByRole('checkbox'); const confirm = screen.getByRole('button', { name: 'Confirm' });
+    let resolve!: (value: TerminalSessionState) => void; vi.mocked(f.api.state).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const stable = () => {
+      expect(screen.getByRole('region', { name: /terminal/i })).toBe(screenNode); expect(screen.getByRole('textbox', { name: 'Terminal input' })).toBe(draft);
+      expect(draft).toHaveValue('local draft'); expect(document.activeElement).toBe(draft); expect([draft.selectionStart, draft.selectionEnd]).toEqual([2, 6]); expect(screenNode.scrollTop).toBe(42);
+      expect(screen.getByRole('checkbox')).toBe(checkbox); expect(checkbox).toBeChecked();
+      expect(screen.queryByText('Loading session…')).not.toBeInTheDocument(); expect(screen.queryByText('This screen may be out of date.')).not.toBeInTheDocument();
+      expect(f.api.command).not.toHaveBeenCalled();
+    };
+    stable(); const resume = pauseAuthRequests(); rendered.rerender(f.element(true, false)); await waitFor(() => expect(f.close).toHaveBeenCalledOnce()); stable(); expect(confirm).toBeDisabled();
+    resume(); rendered.rerender(f.element()); await waitFor(() => expect(f.api.state).toHaveBeenCalledOnce()); stable(); expect(confirm).toBeDisabled();
+    await act(async () => { resolve(structuredClone(suspended)); }); await waitFor(() => expect(f.api.channel).toHaveBeenCalledTimes(2)); stable(); expect(confirm).toBeDisabled();
+    f.set(structuredClone(suspended)); stable(); expect(confirm).toBeEnabled();
+  });
+  it('keeps the confirmed control label during a pause while refusing input', async () => {
+    const f = fixture(); const rendered = render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+    const browser = vi.mocked(f.api.channel).mock.calls[0]![1];
+    const manual = structuredClone(f.get()); manual.control = structuredClone(read('valid-control').payload); manual.control!.lease!.browserClientId = browser; manual.control!.lease!.holderUserId = owner.ownerUserId; manual.control!.lease!.expiresAt = '2099-01-01T00:00:00Z'; manual.control!.availableActions = ['paste', 'keys', 'release_control', 'renew_control']; f.set(manual);
+    expect(screen.getByText('You have control')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Release control' })).toBeEnabled();
+    rendered.rerender(f.element(true, false)); await waitFor(() => expect(f.close).toHaveBeenCalledOnce());
+    expect(screen.getByText('You have control')).toBeInTheDocument(); expect(screen.queryByText('Another browser has control')).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Release control' })).toBeDisabled();
+    expect(f.api.command).not.toHaveBeenCalled();
+  });
   it('requires separate checked decisions for initial disposition and automation resumption', async () => {
     const f = fixture(); render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
     f.set({ ...f.get(), control: { ...f.get().control!, state: 'suspended', initialAssignment: 'unknown', availableActions: ['resolve_initial_assignment', 'acquire_control'] } });

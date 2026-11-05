@@ -36,20 +36,23 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
   const [confirmed, setConfirmed] = useState(false);
   const control = view.session?.control;
   const ownLease = view.ownsControl;
+  const displayedOwnLease = control?.lease?.holderUserId === scope.userId && control.lease.browserClientId === client.browserClientId;
+  const releaseShown = displayedOwnLease && (!view.inputReady || ownLease);
   const reasonId = useId();
-  const usable = active && current && view.phase === 'ready' && view.session?.connected === true && view.session.capabilities.observe && view.session.capabilities.control && view.session.capabilities.archive && !view.pending && (view.result?.state !== 'unknown' || view.unknownAcknowledged) && !scope.isInvalidated && !authRequestsPaused();
+  const usable = active && current && view.inputReady && view.phase === 'ready' && view.session?.connected === true && view.session.capabilities.observe && view.session.capabilities.control && view.session.capabilities.archive && !view.pending && (view.result?.state !== 'unknown' || view.unknownAcknowledged) && !scope.isInvalidated && !authRequestsPaused();
   const allowed = (action: string) => usable && control?.availableActions.some(value => value === action) === true;
   const unknownInitial = control && ['unknown', 'unconfirmed'].includes(control.initialAssignment);
   const tooLarge = new TextEncoder().encode(draft).byteLength > 16 * 1024;
   const fullscreen = useSessionFullscreen({ client, userId: scope.userId, identity: view.session?.sessionId ?? null, active });
-  const stateLabel = view.session === null ? view.error ? m.sessionError : view.availability === 'not_registered' ? m.waiting : view.availability === 'not_applicable' ? m.noSession : m.connecting : !view.session.connected || view.phase === 'disconnected' ? view.session.snapshot ? m.disconnected : m.disconnectedPlain : control?.state === 'manual' ? ownLease ? m.manual : m.other : control ? m[control.state] : m.readonly;
+  const stateLabel = view.session === null ? view.error ? m.sessionError : view.availability === 'not_registered' ? m.waiting : view.availability === 'not_applicable' ? m.noSession : m.connecting : !view.session.connected || view.phase === 'disconnected' ? view.session.snapshot ? m.disconnected : m.disconnectedPlain : control?.state === 'manual' ? displayedOwnLease ? m.manual : m.other : control ? m[control.state] : m.readonly;
   const confirmationCurrent = confirmation !== null && confirmation.client === client && sameConfirmationIdentity(confirmation.snapshot, view, confirmation.action);
-  useEffect(() => { if (!active || !current || !confirmationCurrent) { setConfirmation(null); setConfirmed(false); } }, [active, current, confirmationCurrent]);
+  useEffect(() => { if (!confirmationCurrent) { setConfirmation(null); setConfirmed(false); } }, [confirmationCurrent]);
   const requestConfirmation = (action: ConfirmationAction) => { setConfirmed(false); setConfirmation({ action, snapshot: client.getSnapshot(), client }); };
   const submitConfirmation = () => {
     if (!confirmation || !confirmed) return;
     // Check the live identity again: the store can advance before React clears an old dialog.
-    if (!active || !current || confirmation.client !== client || !sameConfirmationIdentity(confirmation.snapshot, client.getSnapshot(), confirmation.action)) { setConfirmation(null); setConfirmed(false); return; }
+    if (confirmation.client !== client || !sameConfirmationIdentity(confirmation.snapshot, client.getSnapshot(), confirmation.action)) { setConfirmation(null); setConfirmed(false); return; }
+    if (!active || !current || !view.inputReady || scope.isInvalidated || authRequestsPaused()) return;
     if (confirmation.action === 'acknowledge_unknown') { client.acknowledgeUnknown(); setConfirmation(null); return; }
     if (!allowed(confirmation.action)) return;
     void client.control(confirmation.action, { draftHandled: confirmation.action === 'resume_automation', initialUnknownDisposition: confirmation.action === 'resolve_initial_assignment' ? 'delivered_continue' : null });
@@ -67,7 +70,7 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
   else if (view.error instanceof ApiError && view.error.kind === 'network') reason = m.networkError;
   else if (view.error instanceof ApiError && view.error.kind === 'protocol') reason = m.protocolError;
   else if (view.error) reason = m.error;
-  else if (control?.state === 'manual' && !ownLease) reason = m.other;
+  else if (control?.state === 'manual' && !displayedOwnLease) reason = m.other;
   else if (control?.state === 'closing' || control?.state === 'closed') reason = m[control.state];
   else if (!view.session?.connected) reason = view.session?.snapshot ? m.disconnected : m.disconnectedPlain;
   return <section ref={fullscreen.sectionRef} className={`task-agent-session terminal-session${fullscreen.fullscreen ? ' session-fullscreen' : ''}`} onKeyDown={fullscreen.onKeyDown}>
@@ -81,13 +84,13 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
     {view.phase === 'disconnected' ? <p role="status">{m.expired}</p> : null}
     <div className="terminal-composer"><label>{m.input}<textarea value={draft} placeholder={m.inputHint} aria-describedby={reasonId} onChange={event => setDraft(event.target.value)} /></label>
       <div className="terminal-host-toolbar"><div className="terminal-keys">{keys.map(([key, label]) => <button key={key} className="button" disabled={!ownLease || !allowed('keys')} onClick={() => { void client.key(key); }}>{label}</button>)}</div>
-      <button className="button" disabled={!allowed(ownLease ? 'release_control' : 'acquire_control')} onClick={() => { void client.control(ownLease ? 'release_control' : 'acquire_control'); }}>{ownLease ? m.release : m.take}</button>
+      <button className="button" disabled={!allowed(releaseShown ? 'release_control' : 'acquire_control')} onClick={() => { void client.control(releaseShown ? 'release_control' : 'acquire_control'); }}>{releaseShown ? m.release : m.take}</button>
       <button className="button primary" disabled={!ownLease || !allowed('paste') || !draft || tooLarge} onClick={() => { void client.paste(draft); }}>{m.paste}</button></div>
       {tooLarge ? <p role="alert">{m.size}</p> : null}
       <details className="terminal-input-reason"><summary id={reasonId}>{m.reason}</summary><p>{reason}</p></details>
     </div>
     {view.pending ? <p role="status">{m.busy}</p> : null}
     {view.result?.state === 'unknown' ? <div role="status"><p>{m.unknown}</p><button className="button" disabled={view.pending} onClick={() => { void client.checkOperation(); }}>{m.check}</button>{!view.unknownAcknowledged ? <button className="button" disabled={view.pending} onClick={() => requestConfirmation('acknowledge_unknown')}>{m.acknowledge}</button> : null}</div> : view.result?.state === 'transport_completed' ? <p role="status">{m.transport}</p> : view.result?.state === 'rejected' ? <p role="status">{m.rejected}</p> : null}
-    {confirmation && confirmationCurrent ? <div className="terminal-confirmation" role="group" aria-label={confirmation.action === 'resume_automation' ? m.resume : confirmation.action === 'resolve_initial_assignment' ? m.resolve : m.acknowledge}><label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />{confirmation.action === 'resume_automation' ? m.resumeConfirm : confirmation.action === 'resolve_initial_assignment' ? m.resolveConfirm : m.acknowledgeConfirm}</label><div className="terminal-host-toolbar"><button className="button" onClick={() => setConfirmation(null)}>{m.cancel}</button><button className="button primary" disabled={!confirmed || confirmation.action !== 'acknowledge_unknown' && !allowed(confirmation.action)} onClick={submitConfirmation}>{m.confirm}</button></div></div> : null}
+    {confirmation && confirmationCurrent ? <div className="terminal-confirmation" role="group" aria-label={confirmation.action === 'resume_automation' ? m.resume : confirmation.action === 'resolve_initial_assignment' ? m.resolve : m.acknowledge}><label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />{confirmation.action === 'resume_automation' ? m.resumeConfirm : confirmation.action === 'resolve_initial_assignment' ? m.resolveConfirm : m.acknowledgeConfirm}</label><div className="terminal-host-toolbar"><button className="button" onClick={() => setConfirmation(null)}>{m.cancel}</button><button className="button primary" disabled={!confirmed || !active || !current || !view.inputReady || confirmation.action !== 'acknowledge_unknown' && !allowed(confirmation.action)} onClick={submitConfirmation}>{m.confirm}</button></div></div> : null}
   </section>;
 }

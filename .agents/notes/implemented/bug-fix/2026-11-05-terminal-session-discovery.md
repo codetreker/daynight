@@ -22,6 +22,11 @@ loss or a different claim invalidates the viewer. The
 [Herdr Session design](../../../../docs/design/herdr-session-web.md) describes
 the resulting lifecycle.
 
+When a channel already exists, visibility synchronization also restores a
+control-state reconciliation interrupted by a short admission gate. The
+reconciliation scheduler retains its own delay and serial read limit; it does
+not replace the channel or grant input before the observations agree.
+
 ## Alternatives
 
 **Increase the reconnect delay alone.** Repeated visibility checks would still
