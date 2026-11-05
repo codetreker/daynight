@@ -5,7 +5,7 @@ Apply [authorization and scope](authorization.md) first, find commands in the [C
 
 ## Select and check for duplicates
 
-Use one task per independently tracked result. For multi-stage objectives, follow the [Goal protocol](goal.md) and register only the currently permitted stage.
+Use one task per independently tracked result under the [task quality check](task-content.md#task-quality). For multi-stage objectives, follow the [Goal protocol](goal.md) and register only the currently permitted stage.
 See [final acceptance](final-acceptance.md) for the scope and results of independent acceptance tasks. Do not register routine execution steps as separate tasks.
 
 Confirm the [target project](project-management.md) and search for existing work on the same problem and scope, including completed tasks.
@@ -33,9 +33,9 @@ Platform requirements must come only from confirmed task needs. Do not add depen
 
 1. Register with `task create` and retain the returned ID. New task status and permissions follow [task management](task-management.md).
 2. If the task owns attachments, upload and verify their content before adding actual references to the description. Follow [write safety](write-safety.md) for all writes.
-3. Read back the full task, required attachments, and shared inputs to verify sufficient content and valid resources.
+3. Read back the full task, required attachments, and shared inputs to verify task quality, sufficient content, and valid resources.
    Check dependencies through [post-change verification](task-management.md#verify-dependency-changes).
-   For Goal delivery items, also check the [architecture source index](goal.md#register-the-delivery-breakdown).
+   For Goal delivery items, also apply the [whole-breakdown checks and architecture source index](goal.md#register-the-delivery-breakdown).
 4. Report the task ID, registration result, and specific gaps.
    After partial success, retain existing IDs and resume unfinished operations; unreadable required sources still mean failure.
 

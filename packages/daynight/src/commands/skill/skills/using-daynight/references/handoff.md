@@ -5,14 +5,16 @@ See [authorization and scope](authorization.md) for boundaries; handoff does not
 
 ## Content and responsibility review
 
-Read only the explicitly selected task, preserving the exact version, assignedTo, status, permission, platform, dependencies, and worker records:
+To check the selected task's state and responsibility, read only that task, preserving the exact version, assignedTo, status, permission, platform, dependencies, and worker records:
 
 ```bash
 daynight task show <task-id> --project <project-id> --json
 ```
 
 If it is done, report that it is complete and needs no handoff, then return without an ownership check or further task discovery.
-Read actually required sources under the [task content standard](task-content.md), checking definitions, stage requirements, producer and consumer contracts, and the [Goal architecture index](goal.md#register-the-delivery-breakdown).
+Read actually required sources under the [task content standard](task-content.md), applying its [task quality check](task-content.md#task-quality), stage requirements, producer and consumer contracts, and the [Goal architecture index](goal.md#register-the-delivery-breakdown).
+Read cited source tasks and upstream or downstream contracts only as genuinely needed to assess the selected task. Report incoherent scope, unsuitable granularity, overlapping responsibility, or missing handovers as specific gaps; this review does not authorize repartitioning tasks or changing dependencies.
+Whole-breakdown coverage follows the Goal breakdown checks; handoff does not discover additional work or reconstruct the entire Goal for a selected task.
 
 Compare the selected task's non-null assignedTo with the current authenticated account's local user UUID, independently confirmed during [setup](setup.md) or in the current session. A display name, email, the task's own assignedTo or a worker record cannot establish that identity.
 Do not enumerate project or account task collections to check ownership. A null or different assignment, unknown account UUID, or unreadable task prevents a passing handoff; report the actual assignment or verification error without assigning the task yourself or enabling permission. Recheck the selected task and reassess changes before the exact-version update.
@@ -52,6 +54,6 @@ Without a confirmed response, report only actual observations, without attributi
 Before reporting, read back the complete task and reassess changes that affect the review.
 For each task, report the content and responsibility conclusions, changes or gaps, observed version, assignedTo, permission, status, dependency blockers, and applicable worker ownership; distinguish confirmed updates, uncertain writes, and read-only review.
 
-Handle each task in a fixed group individually; one passing does not mean the others passed.
+Handle each task in a fixed group individually; one passing does not mean the others passed, and per-task handoff is not a new whole-Goal coverage conclusion.
 Permission true is neither permanent proof of review nor proof that execution has started or finished.
 Return without selecting or starting work.

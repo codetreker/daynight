@@ -62,8 +62,14 @@ After the user confirms the solution, perform the registration checks below befo
 
 ## Register the delivery breakdown
 
-The breakdown must collectively cover the confirmed Goal, with independent responsibilities, inputs, deliverables, and observable acceptance criteria for each task.
-Include acceptance in the breakdown when it has an independent result; do not substitute vague placeholders or session execution steps for actual work.
+Apply the [task quality check](task-content.md#task-quality) to each proposed delivery task, then review the breakdown as a whole before requesting solution confirmation:
+
+- Cover the confirmed Goal's required behavior and acceptance, with explicit responsibility for integration and whole-Goal verification. Include a separate acceptance task when it has an independent result.
+- Give each responsibility a clear owner. Resolve omitted work and overlapping or conflicting assignments; keep each task's boundary understandable and reviewable.
+- Reconcile producer and consumer deliverables, interfaces, failure behavior, and acceptance, and identify the actual prerequisite paths needed to combine their results. Assign future outputs to their producing tasks without treating them as existing inputs.
+
+Vague implementation placeholders, routine execution steps, and a collection of individually complete descriptions do not establish a complete breakdown.
+Keep the reviewable breakdown in the solution task's material; substantive revisions to a confirmed solution require renewed confirmation.
 
 Every root delivery task without another ordinary implementation prerequisite must directly depend on the solution task through an ordinary dependency, so all delivery paths inherit the confirmed design's completion conditions.
 Verify cross-chain dependencies and follow [classification and reduction](task-management.md#dependency-classification); external prerequisites cannot replace ordinary design prerequisites.
@@ -76,7 +82,7 @@ Read actual sources under the content standard; do not invent attachments or cop
 For example, in `architecture -> A -> B`, B declares only A as a direct dependency and inherits the architecture prerequisite through A, but B's description still directly lists the required architecture sources.
 Source indexes do not create additional execution dependencies.
 
-Read back every delivery task and its required inputs, checking responsibility coverage, architecture indexes, and source readability.
+Read back every delivery task and its required inputs, rechecking task quality, whole-breakdown coverage and handovers, architecture indexes, and source readability against the confirmed solution.
 Check dependencies through [post-change verification](task-management.md#verify-dependency-changes).
 Keep the solution task in progress while gaps remain; recover partial registration under [write safety](write-safety.md).
 Registration and solution completion do not start delivery or enable automatic-execution permission.

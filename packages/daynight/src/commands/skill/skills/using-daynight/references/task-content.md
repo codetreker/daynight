@@ -61,6 +61,18 @@ Each detailed explanation has one owner; rewrite it coherently when it changes r
 The requirements stage does not require completed requirements in advance, nor does the design stage require a completed design.
 Do not present future prerequisite outputs as existing inputs. See the [Goal protocol](goal.md) for stage requirements.
 
+## Task quality
+
+Check the task's definition and actual sources for its current stage:
+
+- **Coherent result:** one outcome whose completion can be assessed independently, with clear responsibility and observable acceptance. Keep changes necessary for that outcome together; separate independently valuable goals.
+- **Useful granularity:** a reviewer can understand the purpose, affected behavior, contracts, and completion conditions as a coherent unit. File boundaries, technical layers, or routine execution steps alone do not justify separate tasks. Foundations, migrations, and independent acceptance can be tasks when each has a defined result.
+- **Defined handover:** genuinely required inputs have identified owners, and producer and consumer responsibilities agree on the exchanged result and its acceptance. Unresolved decisions required as existing inputs to this task are concrete gaps; decisions the current stage is assigned to produce remain its deliverables.
+
+Judge granularity by purpose and reviewability, without fixed task, file, line, or time limits or a mandatory slicing pattern.
+An independently assessable result can depend on other tasks. Future inputs must have an identified producing prerequisite and a sufficiently defined contract; do not present its future output as already readable.
+The [Goal protocol](goal.md#register-the-delivery-breakdown) additionally checks the breakdown as a whole.
+
 ## Attachments and references
 
 Task details contain neither an attachment listing nor attachment bytes; use `task attachment list/read` separately.
@@ -94,7 +106,7 @@ Citing sources does not create execution dependencies; see [task management](tas
 
 ## Content sufficiency
 
-Before creation, handoff, or execution, check definitions, source readability and applicability, result ownership, and stage requirements.
+Before creation, handoff, or execution, apply the [task quality check](#task-quality) and check source readability and applicability, result ownership, and stage requirements.
 Unknown requirements, interface decisions, design choices, and acceptance thresholds are specific gaps, not details to invent.
 If completing a task requires an architecture or execution plan, it is a required input and cannot be omitted on the grounds that "session plans do not belong in tasks"; actual session steps still follow the content boundary.
 Handle input gaps in managed tasks through the [user interaction workflow](autopilot-managed-task.md#request-user-interaction).

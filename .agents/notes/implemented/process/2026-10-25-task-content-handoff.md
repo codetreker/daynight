@@ -15,6 +15,12 @@ A request can also mix durable task requirements with instructions for the curre
 conversation. Copying both into the task can turn a registration-only arrangement
 into a lasting execution restriction or bury confirmed decisions in discussion history.
 
+Complete individual descriptions can still form a poor breakdown: independent
+goals can be bundled, routine edits can become fragments, responsibility can
+overlap, and integration or whole-outcome verification can have no owner. Content
+sufficiency alone needs a distinction between the quality of one assignment and
+the coverage and handovers of the complete set.
+
 ## Decision
 
 The public `using-daynight` bundle has a `handoff <task-id>` mode and one shared
@@ -28,6 +34,20 @@ requirements task to deliver complete `spec.md`; managed attachments and separat
 review files are recorded by the
 [reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md).
 Each detailed explanation has one owner.
+
+The shared [task quality check](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-content.md#task-quality)
+assesses a coherent result, useful granularity and defined handover for the
+current stage. Purpose and reviewability determine boundaries; a foundation,
+migration or acceptance task may have its own result while still depending on
+other work. Future inputs retain identified producers and defined contracts.
+The [Goal breakdown owner](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/goal.md#register-the-delivery-breakdown)
+checks the complete candidate set before solution confirmation and the actual
+registered set before solution completion, including scope, integration and
+whole-Goal verification ownership, responsibility gaps and producer/consumer
+agreement. Handoff rechecks only selected-task quality and genuinely required
+sources or contracts. It reports boundary gaps under existing state and
+permission rules; it does not reconstruct the whole Goal or authorize
+repartitioning and dependency changes.
 
 The original standard used six categories, including a solution, validation
 methods and a designated task-local confirmation/evidence location. Those choices
@@ -141,7 +161,11 @@ mechanisms rather than infer a certificate from allowAgents.
 ## Consequences
 
 One standard controls creation, Goal breakdown, handoff and execution, including
-stage-specific inputs and outputs. This removes the primary-file gate without
+stage-specific inputs and outputs. Per-task quality and whole-breakdown quality
+have separate owners, so individual handoff cannot certify complete Goal coverage.
+The quality check does not impose a task count, diff size, time limit or uniform
+slicing pattern, and does not make a discussion's future decisions prerequisites
+for starting that discussion. This removes the primary-file gate without
 weakening current-stage content, real dependencies, Goal confirmation or direct
 architecture-source indexing. Task inputs and resulting artifacts remain
 findable through their actual owners. Ordinary tasks may keep complete content
