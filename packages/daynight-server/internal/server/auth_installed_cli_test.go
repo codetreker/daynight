@@ -247,8 +247,8 @@ func TestAuthenticationInstalledCLIUsesPersonalAccessToken(t *testing.T) {
 	if !strings.HasPrefix(stdout, "Project created.\n") || !strings.Contains(stdout, "Name: Installed PAT project\n") || !strings.Contains(stdout, "Repository: "+repository+"\n") {
 		t.Fatal("installed project create did not preserve its documented command output")
 	}
-	if requests.all.Load() != before+4 || requests.authenticatedPAT.Load() != beforePAT+4 {
-		t.Fatal("installed project create must authenticate discovery, current user, Team qualification and creation with its PAT")
+	if requests.all.Load() != before+2 || requests.authenticatedPAT.Load() != beforePAT+2 {
+		t.Fatal("installed project create must authenticate both duplicate lookup and creation with its PAT")
 	}
 	createdOutput := stdout
 	stdout, _ = cli.run(t, "", true, "project", "list", "--json")
