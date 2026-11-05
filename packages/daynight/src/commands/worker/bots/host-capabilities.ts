@@ -113,7 +113,7 @@ export const createAssistantHostCollector = (options: {
           try {
             collection.check();
             const file = resolveExecutable(provider);
-            const version = await runCommand({ file, args: ["--version"], environment, cwd }, collection);
+            const version = await runCommand({ file, args: provider === "copilot" ? ["--no-auto-update", "--version"] : ["--version"], environment, cwd }, collection);
             parseNativeAgentVersion(provider, version.stdout);
             const help = await runCommand({ file, args: helpArguments(provider), environment, cwd }, collection);
             if (!supportsWeb(provider, help.stdout)) return fail("unavailable", new Error("The native executable does not advertise the required Web transport options."));
