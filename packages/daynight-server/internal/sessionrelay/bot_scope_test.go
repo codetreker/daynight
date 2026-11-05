@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/google/uuid"
 )
 
@@ -203,7 +203,7 @@ func TestBotUnboundLifecycleRevalidatesCredentialAfterLockWait(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				code := "directory_missing"
-				report := BotReport{BotVersion: bot.Version, Result: core.BotStartupResult{State: "failed", Code: &code}}
+				report := BotReport{BotVersion: bot.Version, Result: model.BotStartupResult{State: "failed", Code: &code}}
 				if operation == "report_replay" {
 					var err error
 					bot, err = f.s.ReportBot(ctx, f.p, bot.WorkerID, bot.ID, report)
@@ -233,7 +233,7 @@ func TestBotUnboundLifecycleRevalidatesCredentialAfterLockWait(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				var out core.Bot
+				var out model.Bot
 				finished := make(chan struct{})
 				go func() {
 					defer close(finished)
