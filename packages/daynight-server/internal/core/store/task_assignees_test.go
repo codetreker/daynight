@@ -28,12 +28,12 @@ func storeAssigneeUser(t *testing.T, database *Store, projectID string, number i
 func storeAssigneeRead(t *testing.T, database *Store, projectID string, ids []string) (model.TaskAssignees, error) {
 	t.Helper()
 	var result model.TaskAssignees
-	err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+	err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 		var err error
 		if ids == nil {
-			result, err = snapshot.TaskAssignees(context.Background(), projectID)
+			result, err = snapshot.TaskDAO().TaskAssignees(context.Background(), projectID)
 		} else {
-			result, err = snapshot.ResolveTaskAssignees(context.Background(), projectID, ids)
+			result, err = snapshot.TaskDAO().ResolveTaskAssignees(context.Background(), projectID, ids)
 		}
 		return err
 	})
@@ -281,12 +281,12 @@ func TestTaskAssigneeStoreQueryCancellation(t *testing.T) {
 		}
 		traced := &Store{Pool: pool}
 		var result model.TaskAssignees
-		err = traced.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		err = traced.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
 			if resolve {
-				result, err = snapshot.ResolveTaskAssignees(ctx, project.ID, []string{queryID(101)})
+				result, err = snapshot.TaskDAO().ResolveTaskAssignees(ctx, project.ID, []string{queryID(101)})
 			} else {
-				result, err = snapshot.TaskAssignees(ctx, project.ID)
+				result, err = snapshot.TaskDAO().TaskAssignees(ctx, project.ID)
 			}
 			return err
 		})
@@ -314,8 +314,8 @@ func TestTaskAssignmentStoreFiltersAndInvalidSelectors(t *testing.T) {
 		{model.TaskAssignmentFilter{Mode: model.TaskAssignmentUnassigned}, []string{first.ID, queryID(13)}},
 		{model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: userID}, []string{second.ID}},
 	} {
-		if err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
-			page, err := snapshot.Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}, AssignedTo: test.filter})
+		if err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+			page, err := snapshot.TaskDAO().Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}, AssignedTo: test.filter})
 			var ids []string
 			for _, item := range page.Items {
 				ids = append(ids, item.ID)
@@ -329,8 +329,8 @@ func TestTaskAssignmentStoreFiltersAndInvalidSelectors(t *testing.T) {
 		}
 	}
 	for _, invalid := range []model.TaskAssignmentFilter{{Mode: model.TaskAssignmentAll, UserID: userID}, {Mode: model.TaskAssignmentUnassigned, UserID: userID}, {Mode: "unknown"}} {
-		err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
-			page, err := snapshot.Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}, AssignedTo: invalid})
+		err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+			page, err := snapshot.TaskDAO().Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}, AssignedTo: invalid})
 			if len(page.Items) != 0 {
 				t.Fatal("invalid selector returned an unfiltered page")
 			}

@@ -25,9 +25,9 @@ func TestTaskStepsDeleteStoreDeletesTargetAndUpdatesOnlyTail(t *testing.T) {
 	read := func() []model.TaskStep {
 		t.Helper()
 		var rows []model.TaskStep
-		if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
-			rows, err = snapshot.TaskSteps(ctx, task.ID)
+			rows, err = snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -174,19 +174,19 @@ func TestTaskStepsDeleteLostCommitReceiptKeepsUnknownAndCurrentFacts(t *testing.
 	if !errors.As(err, &failure) || failure.Phase != "commit" || !failure.CommitAttempted || failure.CleanupFailed || failure.Outcome != TransactionUnknown || !errors.Is(err, lost) {
 		t.Fatalf("unknown delete completion: %+v %v", failure, err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		header, err := snapshot.TaskHeader(ctx, project.ID, task.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		header, err := snapshot.TaskDAO().TaskHeader(ctx, project.ID, task.ID)
 		if err != nil {
 			return err
 		}
-		rows, err := snapshot.TaskSteps(ctx, task.ID)
+		rows, err := snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 		if err != nil {
 			return err
 		}
 		if header.Version != task.Version+1 || len(rows) != 2 || rows[0].ID != "00000000" || rows[0].Position != 0 || rows[1].ID != "abcdef01" || rows[1].Position != 1 {
 			t.Fatal("current read facts do not reflect retained rows/version")
 		}
-		_, err = snapshot.TaskStep(ctx, task.ID, "11111111")
+		_, err = snapshot.TaskDAO().TaskStep(ctx, task.ID, "11111111")
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatal("current target absence not observed")
 		}

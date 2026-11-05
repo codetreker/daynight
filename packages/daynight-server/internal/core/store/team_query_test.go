@@ -31,9 +31,9 @@ func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) 
 	page.Limit = 1
 	for {
 		var result TeamPage
-		if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
-			result, err = snapshot.Teams(ctx, actor.UserID, page)
+			result, err = snapshot.TeamDAO().Teams(ctx, actor.UserID, page)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -60,8 +60,8 @@ func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) 
 	if len(ids) != 3 || ids[1] != first.ID || ids[2] != second.ID {
 		t.Fatalf("joined list pagination/order %#v", ids)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		last, err := snapshot.Teams(ctx, actor.UserID, page)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		last, err := snapshot.TeamDAO().Teams(ctx, actor.UserID, page)
 		if err == nil && (last.Items == nil || len(last.Items) != 0 || last.HasMore) {
 			t.Fatalf("empty final page %#v", last)
 		}
@@ -75,8 +75,8 @@ func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
 	s, actor, team := storeTeamFixture(t)
 	ctx := context.Background()
 	var changed model.Team
-	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		before, err := snapshot.Teams(ctx, actor.UserID, Page{Limit: 100})
+	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		before, err := snapshot.TeamDAO().Teams(ctx, actor.UserID, Page{Limit: 100})
 		if err != nil {
 			return err
 		}
@@ -91,7 +91,7 @@ func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		observed, err := snapshot.Team(ctx, actor.UserID, team.ID)
+		observed, err := snapshot.TeamDAO().Team(ctx, actor.UserID, team.ID)
 		if err == nil && !reflect.DeepEqual(observed, team) {
 			t.Fatalf("repeatable snapshot mixed metadata %#v", observed)
 		}
@@ -111,15 +111,18 @@ func TestTeamSnapshotAbsenceCancellationAndStoredIntegrityFailures(t *testing.T)
 	ctx := context.Background()
 	_, outsider, _ := testAuthRecords(t, s)
 	for _, target := range []struct{ userID, teamID string }{{outsider.UserID, team.ID}, {actor.UserID, uuid.NewString()}} {
-		err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error { _, err := snapshot.Team(ctx, target.userID, target.teamID); return err })
+		err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			_, err := snapshot.TeamDAO().Team(ctx, target.userID, target.teamID)
+			return err
+		})
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing Team membership cause %v", err)
 		}
 	}
-	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		canceled, cancel := context.WithCancel(ctx)
 		cancel()
-		_, err := snapshot.Teams(canceled, actor.UserID, Page{Limit: 1})
+		_, err := snapshot.TeamDAO().Teams(canceled, actor.UserID, Page{Limit: 1})
 		return err
 	})
 	if !errors.Is(err, context.Canceled) {
@@ -130,10 +133,13 @@ func TestTeamSnapshotAbsenceCancellationAndStoredIntegrityFailures(t *testing.T)
 		t.Fatal(err)
 	}
 	mustQueryExec(t, s, `UPDATE team_members SET role='member' WHERE team_id=$1 AND user_id=$2`, personalID, actor.UserID)
-	for _, read := range []func(*Snapshot) error{
-		func(snapshot *Snapshot) error { _, err := snapshot.Team(ctx, actor.UserID, personalID); return err },
-		func(snapshot *Snapshot) error {
-			page, err := snapshot.Teams(ctx, actor.UserID, Page{Limit: 100})
+	for _, read := range []func(SnapshotScope) error{
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.TeamDAO().Team(ctx, actor.UserID, personalID)
+			return err
+		},
+		func(snapshot SnapshotScope) error {
+			page, err := snapshot.TeamDAO().Teams(ctx, actor.UserID, Page{Limit: 100})
 			if err != nil && page.Items != nil {
 				t.Fatal("corrupt membership published a partial page")
 			}

@@ -75,9 +75,9 @@ func TestTaskTodoGetPaginationAndReadiness(t *testing.T) {
 	unblocked := queryTask(t, database, project.ID, 12, model.TaskTodo, done.ID)
 	blocked := queryTask(t, database, project.ID, 13, model.TaskTodo, pending.ID)
 	dependent := queryTask(t, database, project.ID, 14, model.TaskTodo, unblocked.ID)
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		for _, task := range []model.Task{unblocked, blocked} {
-			read, err := snapshot.Task(ctx, project.ID, task.ID)
+			read, err := snapshot.TaskDAO().Task(ctx, project.ID, task.ID)
 			if err != nil || !reflect.DeepEqual(read, task) || read.Ready != (task.ID == unblocked.ID) {
 				t.Fatalf("todo GET projection: %#v, %v", read, err)
 			}
@@ -88,7 +88,7 @@ func TestTaskTodoGetPaginationAndReadiness(t *testing.T) {
 		page := Page{Limit: 2}
 		var listed []string
 		for {
-			result, err := snapshot.Tasks(ctx, project.ID, TaskQuery{Page: page})
+			result, err := snapshot.TaskDAO().Tasks(ctx, project.ID, TaskQuery{Page: page})
 			if err != nil {
 				return err
 			}
@@ -105,7 +105,7 @@ func TestTaskTodoGetPaginationAndReadiness(t *testing.T) {
 			t.Fatalf("paginated inventory omitted todo: %#v", listed)
 		}
 		ready := true
-		result, err := snapshot.Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}, Ready: &ready})
+		result, err := snapshot.TaskDAO().Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}, Ready: &ready})
 		if err != nil || len(result.Items) != 2 || result.Items[0].ID != pending.ID || result.Items[1].ID != unblocked.ID {
 			t.Fatalf("todo readiness did not match prerequisites: %#v, %v", result, err)
 		}

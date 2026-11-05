@@ -53,23 +53,23 @@ func (s *Projects) TransferPreview(ctx context.Context, principal model.Principa
 	}
 	var result TransferPreview
 	var refusal *model.Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		return completeMembershipOperation(func() error {
-			access, err := RequireProjectRead(ctx, snapshot, principal, id)
+			access, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, id)
 			if err != nil {
 				return err
 			}
 			if err := requireTransferAdmin(access); err != nil {
 				return err
 			}
-			team, err := snapshot.TransferTeam(ctx, target)
+			team, err := snapshot.ProjectDAO().TransferTeam(ctx, target)
 			if errors.Is(err, model.ErrNotFound) {
 				return &model.Fault{Code: "not_found", Message: "Target Team was not found.", Cause: err}
 			}
 			if err != nil {
 				return err
 			}
-			role, err := snapshot.TransferRole(ctx, principal.UserID, id, target)
+			role, err := snapshot.ProjectDAO().TransferRole(ctx, principal.UserID, id, target)
 			if err != nil {
 				return err
 			}

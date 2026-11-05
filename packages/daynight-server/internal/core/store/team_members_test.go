@@ -17,8 +17,8 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 	ctx := context.Background()
 	_, other, _ := testAuthRecords(t, s)
 	mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, other.UserID)
-	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		original, err := snapshot.TeamMembers(ctx, team.ID)
+	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		original, err := snapshot.TeamDAO().TeamMembers(ctx, team.ID)
 		if err != nil {
 			return err
 		}
@@ -46,7 +46,7 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		again, err := snapshot.TeamMembers(ctx, team.ID)
+		again, err := snapshot.TeamDAO().TeamMembers(ctx, team.ID)
 		if err == nil && !reflect.DeepEqual(original, again) {
 			t.Fatalf("snapshot changed: %#v %#v", original, again)
 		}
@@ -117,9 +117,9 @@ func TestTeamMemberDirectoryFailuresDoNotPublishPartialResults(t *testing.T) {
 	ctx := context.Background()
 	for _, mode := range []string{"query", "scan", "stream"} {
 		cause := errors.New("directory stream failure")
-		err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-			snapshot.tx = teamMembersFailureTx{Tx: snapshot.tx, cause: cause, scan: mode == "scan", failQuery: mode == "query"}
-			items, err := snapshot.TeamMembers(ctx, team.ID)
+		err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			snapshot.(*Snapshot).tx = teamMembersFailureTx{Tx: snapshot.(*Snapshot).tx, cause: cause, scan: mode == "scan", failQuery: mode == "query"}
+			items, err := snapshot.TeamDAO().TeamMembers(ctx, team.ID)
 			if items != nil || !errors.Is(err, cause) {
 				t.Fatalf("partial directory %#v: %v", items, err)
 			}
@@ -130,8 +130,8 @@ func TestTeamMemberDirectoryFailuresDoNotPublishPartialResults(t *testing.T) {
 		}
 	}
 	mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, uuid.NewString())
-	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		items, err := snapshot.TeamMembers(ctx, team.ID)
+	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		items, err := snapshot.TeamDAO().TeamMembers(ctx, team.ID)
 		if items != nil || err == nil {
 			t.Fatalf("missing user accepted: %#v %v", items, err)
 		}
@@ -140,10 +140,10 @@ func TestTeamMemberDirectoryFailuresDoNotPublishPartialResults(t *testing.T) {
 	if err == nil || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("integrity failure hidden: %v", err)
 	}
-	err = s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	err = s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		canceled, cancel := context.WithCancel(ctx)
 		cancel()
-		_, err := snapshot.TeamMembers(canceled, team.ID)
+		_, err := snapshot.TeamDAO().TeamMembers(canceled, team.ID)
 		return err
 	})
 	if !errors.Is(err, context.Canceled) {

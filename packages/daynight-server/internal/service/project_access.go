@@ -19,9 +19,9 @@ func (s *Projects) Access(ctx context.Context, principal model.Principal, projec
 	}
 	var result model.ProjectAccess
 	var refusal *model.Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
-		result, err = RequireProjectRead(ctx, snapshot, principal, projectID)
+		result, err = RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID)
 		if errors.As(err, &refusal) {
 			return nil
 		}

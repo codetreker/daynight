@@ -21,9 +21,9 @@ func botPreferenceText(value string) *string { return &value }
 func readBotDefaults(t *testing.T, database *Store, ownerID string) model.BotDefaultsInput {
 	t.Helper()
 	var result model.BotDefaultsInput
-	if err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+	if err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 		var err error
-		result, err = snapshot.BotDefaults(context.Background(), ownerID)
+		result, err = snapshot.BotDAO().BotDefaults(context.Background(), ownerID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -183,8 +183,8 @@ func TestBotPreferencesShareLifecycleTransactionAndRollback(t *testing.T) {
 	if outside.PreferredWorkerID != nil || len(outside.WorkerPreferences) != 0 {
 		t.Fatalf("rollback left preferences: %+v", outside)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		stored, err := snapshot.Bot(ctx, bot.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		stored, err := snapshot.BotDAO().Bot(ctx, bot.ID)
 		if err == nil && (stored.StartupResult.State != "pending" || stored.SessionID != nil) {
 			t.Fatalf("rollback left readiness: %+v", stored)
 		}
@@ -271,8 +271,8 @@ func TestBotPreferencesStorageFailuresDoNotBecomePartialSuccess(t *testing.T) {
 		t.Fatal("closed transaction became empty defaults")
 	}
 	mustQueryExec(t, database, `UPDATE workers SET telemetry='{"machine":42}' WHERE user_id=$1`, candidate.OwnerUserID)
-	if err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
-		_, err := snapshot.BotDefaults(context.Background(), candidate.OwnerUserID)
+	if err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+		_, err := snapshot.BotDAO().BotDefaults(context.Background(), candidate.OwnerUserID)
 		return err
 	}); err == nil || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("corrupt worker became an empty candidate list: %v", err)

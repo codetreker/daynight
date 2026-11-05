@@ -187,8 +187,8 @@ func TestProjectTransactionsCancelActualQueryWait(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		result <- s.ReadSnapshot(waiting, func(snapshot *Snapshot) error {
-			_, err := snapshot.Task(waiting, project.ID, task.ID)
+		result <- s.ReadSnapshot(waiting, func(snapshot SnapshotScope) error {
+			_, err := snapshot.TaskDAO().Task(waiting, project.ID, task.ID)
 			return err
 		})
 	}()
@@ -216,7 +216,7 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 	for _, operation := range []func() error{
 		func() error { _, err := s.CreateProject(canceled, queryID(99), "Canceled", "repo"); return err },
 		func() error {
-			return s.ReadSnapshot(canceled, func(*Snapshot) error { t.Fatal("canceled snapshot began"); return nil })
+			return s.ReadSnapshot(canceled, func(SnapshotScope) error { t.Fatal("canceled snapshot began"); return nil })
 		},
 		func() error {
 			return s.WriteProject(canceled, project.ID, func(*ProjectTx) error { t.Fatal("canceled writer began"); return nil })
@@ -226,8 +226,8 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 			t.Fatalf("canceled begin cause: %v", err)
 		}
 	}
-	var expiredSnapshot *Snapshot
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error { expiredSnapshot = snapshot; return nil }); err != nil {
+	var expiredSnapshot SnapshotScope
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error { expiredSnapshot = snapshot; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	var expiredProject *ProjectTx
@@ -235,10 +235,10 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, operation := range []func() error{
-		func() error { _, err := expiredSnapshot.Projects(ctx, Page{Limit: 10}); return err },
+		func() error { _, err := expiredSnapshot.ProjectDAO().Projects(ctx, Page{Limit: 10}); return err },
 		func() error { _, err := expiredSnapshot.ObservedAt(ctx); return err },
 		func() error {
-			_, err := expiredSnapshot.Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}})
+			_, err := expiredSnapshot.TaskDAO().Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}})
 			return err
 		},
 		func() error { _, err := expiredProject.TasksByID(ctx, []string{task.ID}); return err },
@@ -280,8 +280,8 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 			}
 		})
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.Task(ctx, project.ID, queryID(12))
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.TaskDAO().Task(ctx, project.ID, queryID(12))
 		return err
 	}); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("failed create was persisted: %v", err)

@@ -13,19 +13,6 @@ import (
 
 const threadClockBudget = 100 * time.Millisecond
 
-// ThreadClockError means the bounded preparation did not obtain a reliable
-// forward position; it does not assert that the database clock moved backwards.
-type ThreadClockError struct {
-	Head     model.ThreadPosition
-	Observed time.Time
-	Cause    error
-}
-
-func (err *ThreadClockError) Error() string {
-	return "reliable forward clock position was not obtained within budget"
-}
-func (err *ThreadClockError) Unwrap() error { return err.Cause }
-
 func (tx *ThreadTx) LockTaskPresence(ctx context.Context, projectID, taskID string) (TaskPresence, error) {
 	return taskPresence(ctx, tx.tx, projectID, taskID, " FOR SHARE")
 }

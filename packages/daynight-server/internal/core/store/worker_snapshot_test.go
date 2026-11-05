@@ -39,9 +39,9 @@ func putWorkerSnapshot(t *testing.T, database *Store, worker model.WorkerSnapsho
 func readWorkerSnapshot(t *testing.T, database *Store, userID, workerID string, observedAt time.Time) model.WorkerSnapshot {
 	t.Helper()
 	var result model.WorkerSnapshot
-	err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+	err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 		var err error
-		result, err = snapshot.Worker(context.Background(), userID, workerID, observedAt)
+		result, err = snapshot.WorkerDAO().Worker(context.Background(), userID, workerID, observedAt)
 		return err
 	})
 	if err != nil {
@@ -189,9 +189,9 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 		t.Fatalf("current permission filtering changed saved state or leaked rows: %#v", read.TaskSnapshot)
 	}
 	var page WorkerPage
-	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
-		page, err = snapshot.Workers(ctx, userID, stamp.Add(time.Hour), Page{Limit: 50})
+		page, err = snapshot.WorkerDAO().Workers(ctx, userID, stamp.Add(time.Hour), Page{Limit: 50})
 		return err
 	})
 	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], read) {
@@ -214,9 +214,9 @@ func TestWorkerSnapshotReadsCurrentVisibilityWithoutReplacingSavedState(t *testi
 		t.Fatalf("regrant did not restore the historical observation: %#v", restored.TaskSnapshot)
 	}
 	var saved model.WorkerSnapshot
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
-		saved, err = scanWorkerSnapshot(snapshot.tx.QueryRow(ctx, `SELECT `+workerSnapshotProjection+` FROM workers WHERE user_id=$1 AND worker_id=$2`, userID, workerID))
+		saved, err = scanWorkerSnapshot(snapshot.(*Snapshot).tx.QueryRow(ctx, `SELECT `+workerSnapshotProjection+` FROM workers WHERE user_id=$1 AND worker_id=$2`, userID, workerID))
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -246,9 +246,9 @@ func TestWorkerSnapshotRecentWindowAccountIsolationAndStablePagination(t *testin
 	var position *Position
 	for index, expectedID := range []string{queryID(2), queryID(3), queryID(4)} {
 		var page WorkerPage
-		err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
-			page, err = snapshot.Workers(ctx, userID, stamp, Page{Limit: 1, After: position})
+			page, err = snapshot.WorkerDAO().Workers(ctx, userID, stamp, Page{Limit: 1, After: position})
 			return err
 		})
 		if err != nil || len(page.Items) != 1 || page.Items[0].WorkerID != expectedID || page.HasMore != (index < 2) {
@@ -260,8 +260,8 @@ func TestWorkerSnapshotRecentWindowAccountIsolationAndStablePagination(t *testin
 		putWorkerSnapshot(t, database, last)
 	}
 	for _, test := range []struct{ user, worker string }{{userID, queryID(5)}, {queryID(101), queryID(2)}, {userID, queryID(900)}} {
-		err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-			_, err := snapshot.Worker(ctx, test.user, test.worker, stamp)
+		err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			_, err := snapshot.WorkerDAO().Worker(ctx, test.user, test.worker, stamp)
 			return err
 		})
 		if !errors.Is(err, model.ErrNotFound) {
@@ -380,16 +380,16 @@ func TestWorkerSnapshotReadCancellationAndCorruptStorageStayVisible(t *testing.T
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled database clock hid its cause: %v", err)
 	}
-	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.Workers(canceled, worker.UserID, stamp, Page{Limit: 10})
+	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.WorkerDAO().Workers(canceled, worker.UserID, stamp, Page{Limit: 10})
 		return err
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled worker list hid its cause: %v", err)
 	}
 	mustQueryExec(t, database, `UPDATE workers SET telemetry='{"cpu":"invalid"}' WHERE user_id=$1 AND worker_id=$2`, worker.UserID, worker.WorkerID)
-	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.Workers(ctx, worker.UserID, stamp, Page{Limit: 10})
+	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.WorkerDAO().Workers(ctx, worker.UserID, stamp, Page{Limit: 10})
 		return err
 	})
 	if err == nil || errors.Is(err, model.ErrNotFound) {

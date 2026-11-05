@@ -224,12 +224,12 @@ func (s *Bots) Get(ctx context.Context, principal model.Principal, id string) (m
 		return model.Bot{}, err
 	}
 	var result model.Bot
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := snapshot.Credential(ctx, principal); err != nil {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 			return botCredentialError(err)
 		}
 		var err error
-		result, err = snapshot.Bot(ctx, id)
+		result, err = snapshot.BotDAO().Bot(ctx, id)
 		if errors.Is(err, model.ErrNotFound) {
 			return &model.Fault{Code: "not_found", Message: "Bot was not found.", Cause: err}
 		}
@@ -266,17 +266,17 @@ func (s *Bots) list(ctx context.Context, principal model.Principal, workerID *st
 		return BotPage{}, err
 	}
 	var records store.BotPage
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := snapshot.Credential(ctx, principal); err != nil {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 			return botCredentialError(err)
 		}
 		if workerID != nil {
-			if err := botWorkerError(snapshot.BotWorker(ctx, principal.UserID, *workerID)); err != nil {
+			if err := botWorkerError(snapshot.BotDAO().BotWorker(ctx, principal.UserID, *workerID)); err != nil {
 				return err
 			}
 		}
 		var err error
-		records, err = snapshot.Bots(ctx, principal.UserID, workerID, page)
+		records, err = snapshot.BotDAO().Bots(ctx, principal.UserID, workerID, page)
 		return err
 	})
 	if err != nil {

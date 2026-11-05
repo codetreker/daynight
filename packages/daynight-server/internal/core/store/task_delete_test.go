@@ -69,8 +69,8 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.Task(ctx, project.ID, pre.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.TaskDAO().Task(ctx, project.ID, pre.ID)
 		if !errors.Is(err, model.ErrTaskDeleted) {
 			t.Fatalf("deleted marker was not observed: %v", err)
 		}

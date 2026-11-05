@@ -47,34 +47,34 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	var original model.ProjectMember
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
-		original, err = snapshot.DirectProjectMember(ctx, admin.UserID, project.ID)
+		original, err = snapshot.ProjectDAO().DirectProjectMember(ctx, admin.UserID, project.ID)
 		if err != nil {
 			return err
 		}
 		if original.Grant.Role != model.ProjectAdmin || original.Grant.UserID != admin.UserID || original.Grant.Version < 1 {
 			t.Fatalf("first admin: %+v", original)
 		}
-		access, err := snapshot.ProjectAccess(ctx, admin, project.ID)
+		access, err := snapshot.ProjectDAO().ProjectAccess(ctx, admin, project.ID)
 		if err != nil || (access.ProjectID != project.ID || access.UserID != admin.UserID || access.Role != model.ProjectAdmin || !reflect.DeepEqual(access.DirectGrant, &original.Grant)) {
 			t.Fatalf("admin access: %+v %v", access, err)
 		}
-		page, err := snapshot.AccessibleProjects(ctx, admin, Page{Limit: 1})
+		page, err := snapshot.ProjectDAO().AccessibleProjects(ctx, admin, Page{Limit: 1})
 		if err != nil {
 			return err
 		}
 		if len(page.Items) != 1 || page.Items[0].ID != project.ID || !page.HasMore {
 			t.Fatalf("first filtered page: %+v", page)
 		}
-		next, err := snapshot.AccessibleProjects(ctx, admin, Page{Limit: 1, After: &Position{ID: page.Items[0].ID, CreatedAt: page.Items[0].CreatedAt}})
+		next, err := snapshot.ProjectDAO().AccessibleProjects(ctx, admin, Page{Limit: 1, After: &Position{ID: page.Items[0].ID, CreatedAt: page.Items[0].CreatedAt}})
 		if err != nil {
 			return err
 		}
 		if len(next.Items) != 1 || next.Items[0].ID != later.ID || next.HasMore {
 			t.Fatalf("second filtered page: %+v", next)
 		}
-		_, err = snapshot.ProjectAccess(ctx, member, project.ID)
+		_, err = snapshot.ProjectDAO().ProjectAccess(ctx, member, project.ID)
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("nonmember found: %v", err)
 		}
@@ -99,15 +99,15 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		found, err := snapshot.Invitation(ctx, invitation.TokenHash)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		found, err := snapshot.ProjectDAO().Invitation(ctx, invitation.TokenHash)
 		if err != nil {
 			return err
 		}
 		if found.CreatedBy != admin.UserID || found.ExpiresAt.Sub(found.CreatedAt) != 7*24*time.Hour {
 			t.Fatal("invitation persistence")
 		}
-		invitations, err := snapshot.Invitations(ctx, project.ID, time.Now())
+		invitations, err := snapshot.ProjectDAO().Invitations(ctx, project.ID, time.Now())
 		if err != nil {
 			return err
 		}
@@ -135,19 +135,19 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		access, err := snapshot.ProjectAccess(ctx, member, project.ID)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		access, err := snapshot.ProjectDAO().ProjectAccess(ctx, member, project.ID)
 		if err != nil || (access.ProjectID != project.ID || access.UserID != member.UserID || access.Role != model.ProjectMemberRole || !reflect.DeepEqual(access.DirectGrant, &invited.Grant)) {
 			t.Fatalf("invited access: %+v %v", access, err)
 		}
-		members, err := snapshot.ProjectParticipants(ctx, project.ID)
+		members, err := snapshot.ProjectDAO().ProjectParticipants(ctx, project.ID)
 		if err != nil {
 			return err
 		}
 		if len(members) != 2 {
 			t.Fatal("membership list")
 		}
-		invitations, err := snapshot.Invitations(ctx, project.ID, time.Now())
+		invitations, err := snapshot.ProjectDAO().Invitations(ctx, project.ID, time.Now())
 		if err != nil {
 			return err
 		}
@@ -256,21 +256,21 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 			case "private-project":
 				_, err = s.CreatePrivateProject(ctx, admin, uuid.NewString(), "Missing", "https://example.com/missing")
 			case "project-member", "project-access", "accessible", "members", "inspect", "list-invites":
-				err = s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+				err = s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 					var err error
 					switch phase {
 					case "project-member":
-						_, err = snapshot.DirectProjectMember(ctx, admin.UserID, project.ID)
+						_, err = snapshot.ProjectDAO().DirectProjectMember(ctx, admin.UserID, project.ID)
 					case "project-access":
-						_, err = snapshot.ProjectAccess(ctx, admin, project.ID)
+						_, err = snapshot.ProjectDAO().ProjectAccess(ctx, admin, project.ID)
 					case "accessible":
-						_, err = snapshot.AccessibleProjects(ctx, admin, Page{Limit: 1})
+						_, err = snapshot.ProjectDAO().AccessibleProjects(ctx, admin, Page{Limit: 1})
 					case "members":
-						_, err = snapshot.ProjectParticipants(ctx, project.ID)
+						_, err = snapshot.ProjectDAO().ProjectParticipants(ctx, project.ID)
 					case "inspect":
-						_, err = snapshot.Invitation(ctx, invite.TokenHash)
+						_, err = snapshot.ProjectDAO().Invitation(ctx, invite.TokenHash)
 					case "list-invites":
-						_, err = snapshot.Invitations(ctx, project.ID, time.Now())
+						_, err = snapshot.ProjectDAO().Invitations(ctx, project.ID, time.Now())
 					}
 					return err
 				})
@@ -328,8 +328,8 @@ func TestProjectParticipantsKeepGrantFactsAndRequireCanonicalProfiles(t *testing
 	if _, err := s.Pool.Exec(ctx, `UPDATE users SET name=$2,email=$3,avatar_url=$4 WHERE id=$1`, admin.UserID, name, email, avatar); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		people, err := snapshot.ProjectParticipants(ctx, project.ID)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		people, err := snapshot.ProjectDAO().ProjectParticipants(ctx, project.ID)
 		if err != nil {
 			return err
 		}
@@ -350,8 +350,8 @@ func TestProjectParticipantsKeepGrantFactsAndRequireCanonicalProfiles(t *testing
 		t.Fatal(err)
 	}
 	var integrity *Error
-	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		people, err := snapshot.ProjectParticipants(ctx, project.ID)
+	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		people, err := snapshot.ProjectDAO().ProjectParticipants(ctx, project.ID)
 		if people != nil {
 			t.Fatalf("integrity failure returned a partial roster: %#v", people)
 		}
