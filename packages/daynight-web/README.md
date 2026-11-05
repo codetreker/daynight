@@ -1958,7 +1958,14 @@ loss and GET-only recovery with preserved task materials. The
 `task-assignment-layout` journey covers bilingual 1366px/390px/320px layouts,
 long/null names, avatar failure, popup/focus/scroll/fullscreen behavior, former
 members, read-only browsing, local filters and complete progress with hidden
-siblings.
+siblings. It also checks persisted changed-or-missing profile reads and real
+current-account HTTP validation without routing that would disable Chromium's
+cache. Its request-ID collector joins independently ordered CDP lifecycle and
+extra-information events before checking the original 200/304/401 wire status,
+outgoing validator and encoded transfer bytes. Missing observations remain
+pending, and the profile/cache attachment records collected receipts on success
+and failure. The [wire receipt decision](../../.agents/notes/implemented/testing/2026-11-05-cdp-wire-receipts.md)
+owns the ordering constraint and regression coverage.
 
 The `task-pause` journey verifies pause discovery in the project overview,
 standalone and chain lists, dependency graph and common detail heading. It admits
