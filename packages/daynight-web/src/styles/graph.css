@@ -31,3 +31,5 @@
 .task-agent-permission-on { background: #f3f1fd; color: #6b61a1; border-color: #e7e2f7; }
 .task-agent-permission-compact { padding: 0 3px; font-size: 8px; line-height: 14px; }
 .task-row-status { flex-wrap: wrap; justify-content: flex-end; }
+
+.goal-task-machine { min-width: 0; max-width: 100%; color: #5c687b; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }

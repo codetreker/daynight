@@ -25,11 +25,11 @@ const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot 
       done: tasks.filter((item) => item.status === 'done').length + 1,
       ready: tasks.filter((item) => item.ready).length, blocked: 0 },
   };
-  return { graph, index: buildGraphIndex(graph), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: 0, receivedMonotonic: 0, revision: 1 };
+  return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: 0, receivedMonotonic: 0, revision: 1 };
 };
 const noop = () => {};
 const content = (value: GraphSnapshot, onOpenTask = noop) => <TaskExecutionClockProvider projectId="project" snapshot={value}>
-  <ChainList projectId="00000000-0000-4000-8000-000000000101" index={value.index} representativeIds={['Goal']} allRepresentativeIds={['Goal']} openChainId={null}
+  <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={value.index} representativeIds={['Goal']} allRepresentativeIds={['Goal']} openChainId={null}
     onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showAll onShowAllChange={noop} />
 </TaskExecutionClockProvider>;
 const row = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!;

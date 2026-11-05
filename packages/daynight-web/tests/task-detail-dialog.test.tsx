@@ -42,7 +42,7 @@ const snapshot = (tasks = [detail()], revision = 1): GraphSnapshot => {
       blocked: tasks.filter((task) => task.status === 'todo' && !task.ready).length,
     },
   };
-  const value = { observedAt: graph.observedAt, graph, index: buildGraphIndex(graph), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: Date.now(), revision };
+  const value = { observedAt: graph.observedAt, graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: Date.now(), revision };
   snapshotDetails.set(value, tasks);
   return value;
 };
