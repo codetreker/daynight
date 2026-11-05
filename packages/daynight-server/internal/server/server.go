@@ -2,16 +2,19 @@ package server
 
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
@@ -21,6 +24,7 @@ import (
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -30,7 +34,6 @@ import (
 	teamhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/team"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 )
 
 func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Handler, error) {
@@ -57,9 +60,13 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	taskhttp.TaskThreadRoutes(mux, taskservice.NewTaskThreads(dependencies.Store), auth, logger)
 	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(dependencies.Store, config.TaskSyncOverlap), auth, logger, config.TaskSyncOverlap)
 	attachmenthttp.RegisterRoutes(mux, attachmentservice.NewAttachments(dependencies.Store, dependencies.Files), auth, logger)
-	relay := newSessionRoutes(sessionrelay.New(dependencies.Store, dependencies.Files), auth, logger)
-	bothttp.RegisterRoutes(mux, botservice.New(dependencies.Store), relay.service, auth, logger)
-	relay.register(mux)
+	engine := sessioncore.NewEngine(dependencies.Files)
+	sessions := sessionservice.New(dependencies.Store, engine)
+	deletions := botservice.NewDeletions(dependencies.Store, dependencies.Files, engine)
+	relay := sessionhttp.NewRoutes(sessions, auth, logger)
+	bothttp.RegisterRoutes(mux, botservice.New(dependencies.Store), deletions, auth, logger)
+	bothttp.RegisterRuntimeRoutes(mux, sessions, deletions, auth, relay, logger)
+	relay.RegisterRoutes(mux)
 	healthRoutes(mux, dependencies.Store, logger)
 	web := webhttp.New(webresources.New())
 	web.RegisterRoutes(mux, logger)
@@ -67,7 +74,18 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay}, nil
+	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: engine}, nil
+}
+
+type sessionApplication struct {
+	http.Handler
+	relay   *sessionhttp.Routes
+	service *sessionservice.Service
+	engine  *sessioncore.Engine
+}
+
+func (a *sessionApplication) Shutdown(ctx context.Context) error {
+	return errors.Join(a.relay.Shutdown(ctx), a.engine.Stop(ctx))
 }
 
 func healthRoutes(mux *http.ServeMux, database *store.Store, logger *slog.Logger) {
