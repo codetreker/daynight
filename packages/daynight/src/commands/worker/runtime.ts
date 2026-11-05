@@ -322,7 +322,7 @@ export const runWorker = async (options: {
     bots = createWorkerBotHost({ ...options, paths, owner: { serverOrigin: serverUrl, ownerUserId: userId, workerId }, serverToken, emit,
       configuration: () => {
         const effective = manager.current().effective;
-        return effective.native === null || effective.recoveryLimit === null ? null : resolveCloudNative(effective.native, "web", effective.recoveryLimit);
+        return effective.native === null || effective.recoveryLimit === null ? null : resolveCloudNative(effective.native, local.agentControlMode, effective.recoveryLimit);
       },
       pollIntervalMs: () => manager.current().effective.pollIntervalMs,
       recoveryLimit: () => manager.current().effective.recoveryLimit,

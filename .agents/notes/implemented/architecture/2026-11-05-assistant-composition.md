@@ -16,9 +16,13 @@ and the Worker's responsibility for stopping every owned execution.
 The foreground Worker composes the existing Bot inventory, process, Session API
 and deletion manager beside the Task coordinator. Bot discovery does not wait
 for repository preparation or consume task slots. Current effective native
-configuration supplies hosting observations and new execution defaults; existing
-Bot configuration and role text remain frozen. Shutdown joins management work and
-all execution stop attempts before stores close and the instance lock releases.
+configuration supplies hosting observations and new execution defaults. It is
+resolved under the Worker's own control mode before the assistant collector
+checks Web argument compatibility. Valid Herdr arguments that Web cannot accept
+make that assistant provider unavailable without breaking ordinary Task reports.
+Existing Bot configuration and role text remain frozen. Shutdown joins management
+work and all execution stop attempts before stores close and the instance lock
+releases.
 
 The authenticated sidebar exposes `/bots` and `/bots/{botId}`. The server serves
 the application shell at both paths for direct navigation and reload, and reserves

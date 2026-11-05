@@ -5,6 +5,7 @@ import { stringify } from "yaml";
 import Database from "better-sqlite3";
 import * as configurationFiles from "../../../src/config/files.js";
 import { ApiError } from "../../../src/api/client.js";
+import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
 import { runWorker as runWorkerRuntime } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -24,7 +25,7 @@ vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: moc
 vi.mock("../../../src/commands/worker/worktrees.js", () => ({ createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
-vi.mock("../../../src/commands/worker/herdr/version-probe.js", () => ({ probeNativeAgentVersion: mocks.probe }));
+vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({
   ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, filename: "worker.jsonl" }),
 }));
@@ -325,6 +326,29 @@ describe("worker cloud-first startup", () => {
     });
     await runWorker({ ...f, signal: cancellation.signal });
     expect(mocks.coordinator).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Herdr-only defaults observable while reporting unsupported assistant arguments", async () => {
+    const f = await fixture(), target = desired();
+    mocks.remote().configuration.mockResolvedValue(resource({ ...target, value: { ...target.value, native: { ...target.value.native, args: ["--search"] } } }));
+    mocks.remote.mockClear();
+    const actual = await vi.importActual<typeof import("../../../src/commands/worker/bots/host-capabilities.js")>("../../../src/commands/worker/bots/host-capabilities.js");
+    mocks.hostCollector.mockImplementation((options: Parameters<typeof actual.createAssistantHostCollector>[0]) => actual.createAssistantHostCollector({ ...options,
+      resolveExecutable: () => { throw Object.assign(new Error("Fixture has no native assistant executable."), { code: "ENOENT" }); },
+    }));
+    const { cancellation, running } = start(f);
+    try {
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      const coordinator = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      expect(coordinator.globalConfiguration).toMatchObject({ agentControlMode: "herdr", args: ["--search"] });
+      const operation = createOperation();
+      try {
+        const sample = await (mocks.reporter.mock.calls[0]![0] as ReporterOptions).collect(operation);
+        expect(sample.telemetry.versions.daynight).toBe(f.version);
+        expect(sample.telemetry.assistantHost?.providers.find(provider => provider.provider === "codex")).toEqual({ provider: "codex", available: false, reason: "unsupported_arguments", model: null, args: [] });
+        expect(sample.issues).toEqual(expect.arrayContaining([expect.objectContaining({ component: "assistantHost_codex", code: "unavailable" })]));
+      } finally { operation.dispose(); }
+    } finally { cancellation.abort(); await running; }
   });
 
   it("keeps a prepared project's frozen Web recovery available when its new native defaults fail", async () => {
